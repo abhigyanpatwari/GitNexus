@@ -320,11 +320,14 @@ export function runScopeResolution(
   // resolves write-access targets via `resolveDefGraphId` which consults
   // `nodeLookup`). Without this rebuild, Property nodes added by the
   // heritage hook are invisible and ACCESSES edges silently fail to emit.
-  const postHeritageNodeLookup = provider.emitHeritageEdges !== undefined
-    ? buildGraphNodeLookup(graph)
-    : nodeLookup;
+  const postHeritageNodeLookup =
+    provider.emitHeritageEdges !== undefined ? buildGraphNodeLookup(graph) : nodeLookup;
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);
-  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, postHeritageNodeLookup);
+  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(
+    graph,
+    parsedFiles,
+    postHeritageNodeLookup,
+  );
 
   // Replace the empty MethodDispatchIndex that finalizeScopeModel
   // builds by design with the populated one derived from the

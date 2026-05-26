@@ -153,9 +153,7 @@ end
 
   it('resolves save → serialize as CALLS edge', () => {
     const calls = getRelationships(result, 'CALLS');
-    const serializeCall = calls.find(
-      (c) => c.target === 'serialize' && c.source === 'save',
-    );
+    const serializeCall = calls.find((c) => c.target === 'serialize' && c.source === 'save');
     expect(serializeCall).toBeDefined();
   });
 });
@@ -311,9 +309,7 @@ end
     const calls = getRelationships(result, 'CALLS');
     const formatCall = calls.find(
       (c) =>
-        c.target === 'format' &&
-        c.source === 'main' &&
-        c.targetFilePath?.includes('formatter.rb'),
+        c.target === 'format' && c.source === 'main' && c.targetFilePath?.includes('formatter.rb'),
     );
     expect(formatCall).toBeDefined();
   });
@@ -372,9 +368,7 @@ end
 
   it('resolves run → process() as CALLS edge inside block scope', () => {
     const calls = getRelationships(result, 'CALLS');
-    const processCall = calls.find(
-      (c) => c.target === 'process' && c.source === 'run',
-    );
+    const processCall = calls.find((c) => c.target === 'process' && c.source === 'run');
     expect(processCall).toBeDefined();
   });
 });
@@ -425,9 +419,7 @@ end
 
   it('resolves bark → speak as CALLS edge', () => {
     const calls = getRelationships(result, 'CALLS');
-    const speakCall = calls.find(
-      (c) => c.target === 'speak' && c.source === 'bark',
-    );
+    const speakCall = calls.find((c) => c.target === 'speak' && c.source === 'bark');
     expect(speakCall).toBeDefined();
   });
 });
@@ -483,9 +475,7 @@ end
 
   it('resolves main → c.greet() as CALLS edge', () => {
     const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find(
-      (c) => c.target === 'greet' && c.source === 'main',
-    );
+    const greetCall = calls.find((c) => c.target === 'greet' && c.source === 'main');
     expect(greetCall).toBeDefined();
   });
 });

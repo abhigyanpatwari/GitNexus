@@ -331,22 +331,11 @@ export function emitRubyScopeCaptures(
           if (argList !== null) {
             for (let ai = 0; ai < argList.namedChildCount; ai++) {
               const arg = argList.namedChild(ai);
-              if (
-                arg !== null &&
-                (arg.type === 'simple_symbol' || arg.type === 'symbol')
-              ) {
+              if (arg !== null && (arg.type === 'simple_symbol' || arg.type === 'symbol')) {
                 const propName = arg.text.replace(/^:/, '');
                 out.push({
-                  '@type-binding.return': syntheticCapture(
-                    '@type-binding.return',
-                    attrNode,
-                    text,
-                  ),
-                  '@type-binding.name': syntheticCapture(
-                    '@type-binding.name',
-                    attrNode,
-                    propName,
-                  ),
+                  '@type-binding.return': syntheticCapture('@type-binding.return', attrNode, text),
+                  '@type-binding.name': syntheticCapture('@type-binding.name', attrNode, propName),
                   '@type-binding.type': syntheticCapture(
                     '@type-binding.type',
                     attrNode,
@@ -404,8 +393,7 @@ export function emitRubyScopeCaptures(
     const body = methodNode.childForFieldName('body');
     if (body === null) continue;
     // Find the last expression in the method body
-    const lastChild =
-      body.namedChildCount > 0 ? body.namedChild(body.namedChildCount - 1) : null;
+    const lastChild = body.namedChildCount > 0 ? body.namedChild(body.namedChildCount - 1) : null;
     if (lastChild === null) continue;
     // Check if the last expression is a `ClassName.new(...)` call
     if (lastChild.type === 'call') {

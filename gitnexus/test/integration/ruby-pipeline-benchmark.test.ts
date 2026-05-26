@@ -166,7 +166,12 @@ function generateRubyFixture(
     fs.writeFileSync(path.join(modelsDir, `${className.toLowerCase()}.rb`), content);
   }
 
-  return { dir, classCount, moduleCount: moduleCount + baseModuleCount, mixinModuleCount: moduleCount };
+  return {
+    dir,
+    classCount,
+    moduleCount: moduleCount + baseModuleCount,
+    mixinModuleCount: moduleCount,
+  };
 }
 
 async function runBenchmark(
@@ -174,7 +179,10 @@ async function runBenchmark(
   moduleLevels: number,
   budgetMs: number,
 ): Promise<BenchResult> {
-  const { dir, classCount, moduleCount, mixinModuleCount } = generateRubyFixture(fileCount, moduleLevels);
+  const { dir, classCount, moduleCount, mixinModuleCount } = generateRubyFixture(
+    fileCount,
+    moduleLevels,
+  );
 
   let peakHeapMB = 0;
   const heapSampler = setInterval(() => {
@@ -232,15 +240,23 @@ async function runBenchmark(
 
 function printResults(label: string, results: BenchResult[]) {
   console.log(`\n${label}`);
-  console.log('┌──────────┬─────────┬──────────┬───────────┬──────────┬───────┬───────┬──────┬───────┬─────┐');
-  console.log('│ Files    │ Classes │ Modules  │ Time (ms) │ Heap MB  │ Nodes │ Edges │ IMPL │ PROPS │ EXT │');
-  console.log('├──────────┼─────────┼──────────┼───────────┼──────────┼───────┼───────┼──────┼───────┼─────┤');
+  console.log(
+    '┌──────────┬─────────┬──────────┬───────────┬──────────┬───────┬───────┬──────┬───────┬─────┐',
+  );
+  console.log(
+    '│ Files    │ Classes │ Modules  │ Time (ms) │ Heap MB  │ Nodes │ Edges │ IMPL │ PROPS │ EXT │',
+  );
+  console.log(
+    '├──────────┼─────────┼──────────┼───────────┼──────────┼───────┼───────┼──────┼───────┼─────┤',
+  );
   for (const r of results) {
     console.log(
       `│ ${String(r.fileCount).padStart(8)} │ ${String(r.classCount).padStart(7)} │ ${String(r.moduleCount).padStart(8)} │ ${String(r.elapsedMs).padStart(9)} │ ${String(r.peakHeapMB).padStart(8)} │ ${String(r.nodeCount).padStart(5)} │ ${String(r.edgeCount).padStart(5)} │ ${String(r.implementsCount).padStart(4)} │ ${String(r.hasPropertyCount).padStart(5)} │ ${String(r.extendsCount).padStart(3)} │`,
     );
   }
-  console.log('└──────────┴─────────┴──────────┴───────────┴──────────┴───────┴───────┴──────┴───────┴─────┘');
+  console.log(
+    '└──────────┴─────────┴──────────┴───────────┴──────────┴───────┴───────┴──────┴───────┴─────┘',
+  );
 
   if (results.length >= 2) {
     console.log('\nScaling ratios (time_ratio / file_ratio):');

@@ -735,24 +735,30 @@ describe('Ruby YARD generic type annotations (Hash<Symbol, User>)', () => {
     expect(saveCall).toBeDefined();
   });
 
-  pit('does NOT resolve cache param to a class (Hash<Symbol, UserRepo> is a generic container)', () => {
-    // The @param cache [Hash<Symbol, UserRepo>] should extract type "Hash" — not "UserRepo".
-    // Since Hash is not a class in the fixture, no type binding is created for cache.
-    // This verifies the bracket-balanced split doesn't break on the inner comma.
-    const calls = getRelationships(result, 'CALLS');
-    // No calls should originate from cache.* since cache has no resolved type
-    const cacheCall = calls.find(
-      (c) => c.source === 'sync' && c.target === 'save' && c.targetFilePath.includes('admin'),
-    );
-    expect(cacheCall).toBeUndefined();
-  });
+  pit(
+    'does NOT resolve cache param to a class (Hash<Symbol, UserRepo> is a generic container)',
+    () => {
+      // The @param cache [Hash<Symbol, UserRepo>] should extract type "Hash" — not "UserRepo".
+      // Since Hash is not a class in the fixture, no type binding is created for cache.
+      // This verifies the bracket-balanced split doesn't break on the inner comma.
+      const calls = getRelationships(result, 'CALLS');
+      // No calls should originate from cache.* since cache has no resolved type
+      const cacheCall = calls.find(
+        (c) => c.source === 'sync' && c.target === 'save' && c.targetFilePath.includes('admin'),
+      );
+      expect(cacheCall).toBeUndefined();
+    },
+  );
 
-  pit('resolves admin_repo.save in audit() to AdminRepo#save via alternate @param [AdminRepo] order', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // audit() calls admin_repo.save — should resolve via the alternate YARD format
-    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'audit');
-    expect(saveCall).toBeDefined();
-  });
+  pit(
+    'resolves admin_repo.save in audit() to AdminRepo#save via alternate @param [AdminRepo] order',
+    () => {
+      const calls = getRelationships(result, 'CALLS');
+      // audit() calls admin_repo.save — should resolve via the alternate YARD format
+      const saveCall = calls.find((c) => c.target === 'save' && c.source === 'audit');
+      expect(saveCall).toBeDefined();
+    },
+  );
 
   pit('resolves admin_repo.find_all in audit() to AdminRepo#find_all', () => {
     const calls = getRelationships(result, 'CALLS');
