@@ -14,6 +14,7 @@ import {
   resolveTsImportTarget,
   type TsResolveContext,
 } from '../../../../src/core/ingestion/languages/typescript/import-target.js';
+import { buildSuffixIndex } from '../../../../src/core/ingestion/import-resolvers/utils.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -398,5 +399,29 @@ describe('resolveTsImportTarget — standard suffix + alias resolution', () => {
       }),
     );
     expect(result).toBe('src/a.js');
+  });
+
+  it('uses a prebuilt suffix index for package-style imports', () => {
+    const parsed: ParsedImport = {
+      kind: 'named',
+      localName: 'Button',
+      importedName: 'Button',
+      targetRaw: 'components/Button',
+    };
+    const files = ['src/main.ts', 'src/components/Button.ts'];
+    const index = buildSuffixIndex(
+      files.map((f) => f.toLowerCase()),
+      files,
+    );
+    const result = resolveTsImportTarget(
+      parsed,
+      ctx('src/main.ts', files, {
+        allFileList: [],
+        normalizedFileList: [],
+        index,
+      }),
+    );
+
+    expect(result).toBe('src/components/Button.ts');
   });
 });
