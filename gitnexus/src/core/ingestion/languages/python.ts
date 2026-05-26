@@ -104,6 +104,16 @@ function normalizePythonStringLiteral(text: string): string | undefined {
   return raw.replace(/\s+/g, ' ');
 }
 
+/** Detect Django URL config files by naming convention. */
+function isDjangoRouteFile(filePath: string): boolean {
+  return (
+    filePath.endsWith('.py') &&
+    (filePath.endsWith('/urls.py') ||
+      filePath.endsWith('/urls/__init__.py') ||
+      filePath === 'urls.py')
+  );
+}
+
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   extensions: ['.py'],
@@ -137,6 +147,7 @@ export const pythonProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
+  isRouteFile: isDjangoRouteFile,
   labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

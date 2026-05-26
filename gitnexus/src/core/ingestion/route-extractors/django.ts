@@ -1,0 +1,366 @@
+import type Parser from 'tree-sitter';
+import { extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
+import type { ExtractedRoute } from './laravel.js';
+
+interface DjangoRouteContext {
+  prefix: string | null;
+}
+
+interface WalkFrame {
+  node: SyntaxNode;
+  routeCtx: DjangoRouteContext;
+  currentFilePath: string;
+}
+
+const DJANGO_ROUTE_FUNCTIONS = new Set(['path', 're_path', 'url']);
+const DJANGO_INCLUDE_FUNCTION = 'include';
+const MAX_INCLUDE_DEPTH = 8;
+
+function modulePathToFilePath(modulePath: string): string {
+  return modulePath.replace(/\./g, '/');
+}
+
+export type DjangoFileReader = (relativePath: string) => string | null;
+
+function extractStringArg(argsNode: SyntaxNode | null): string | null {
+  if (!argsNode) return null;
+  for (const child of argsNode.children ?? []) {
+    if (child.type === '(' || child.type === ')' || child.type === ',') continue;
+    if (child.type === 'string') {
+      return extractStringContent(child);
+    }
+    if (child.type === 'binary_operator') {
+      let concat = '';
+      for (const part of child.children ?? []) {
+        if (part.type === 'string') {
+          const s = extractStringContent(part);
+          if (s !== null) concat += s;
+        }
+      }
+      if (concat) return concat;
+    }
+  }
+  return null;
+}
+
+function extractViewTarget(argsNode: SyntaxNode | null): {
+  viewName: string | null;
+  viewCall: string | null;
+} {
+  if (!argsNode) return { viewName: null, viewCall: null };
+  const positionalArgs: SyntaxNode[] = [];
+  for (const child of argsNode.children ?? []) {
+    if (child.type === '(' || child.type === ')' || child.type === ',') continue;
+    positionalArgs.push(child);
+  }
+  const viewNode = positionalArgs[1];
+  if (!viewNode) return { viewName: null, viewCall: null };
+  if (viewNode.type === 'attribute') return { viewName: viewNode.text, viewCall: null };
+  if (viewNode.type === 'call') return { viewName: null, viewCall: viewNode.text };
+  if (viewNode.type === 'identifier') return { viewName: viewNode.text, viewCall: null };
+  if (viewNode.type === 'string')
+    return { viewName: extractStringContent(viewNode), viewCall: null };
+  return { viewName: null, viewCall: null };
+}
+
+function inferHttpMethod(viewName: string | null): string {
+  if (!viewName) return '*';
+  const lower = viewName.toLowerCase();
+  const m = lower.match(/\.(get|post|put|patch|delete|head|options)(_|$)/);
+  if (m) {
+    return m[1].toUpperCase();
+  }
+  return '*';
+}
+
+function findUrlpatternsLists(rootNode: SyntaxNode): SyntaxNode[] {
+  const assignmentNodes: SyntaxNode[] = [];
+  _collectAssignments(rootNode, assignmentNodes);
+  const lists: SyntaxNode[] = [];
+  for (const node of assignmentNodes) {
+    const left = node.childForFieldName?.('left') ?? node.children?.[0] ?? null;
+    if (left?.type === 'identifier' && left.text === 'urlpatterns') {
+      const right = node.childForFieldName?.('right') ?? node.children?.[2] ?? null;
+      if (right?.type === 'list') {
+        lists.push(right);
+      }
+    }
+  }
+  return lists;
+}
+
+function _collectAssignments(node: SyntaxNode, out: SyntaxNode[]): void {
+  if (node.type === 'assignment' || node.type === 'augmented_assignment') {
+    out.push(node);
+  }
+  for (const child of node.children ?? []) {
+    _collectAssignments(child, out);
+  }
+}
+
+function emitDjangoRoute(
+  callNode: SyntaxNode,
+  filePath: string,
+  ctx: DjangoRouteContext,
+): ExtractedRoute {
+  const argsNode = callNode.childForFieldName?.('arguments') ?? null;
+  const routePath = extractStringArg(argsNode);
+
+  const { viewName, viewCall } = extractViewTarget(argsNode);
+  const httpMethod = inferHttpMethod(viewName);
+
+  let routeName: string | null = null;
+  if (argsNode) {
+    for (let i = 0; i < argsNode.children.length; i++) {
+      const child = argsNode.children[i];
+      if (child.type === 'keyword_argument' && child.childForFieldName?.('name')?.text === 'name') {
+        const valueNode = child.childForFieldName?.('value');
+        if (valueNode?.type === 'string') {
+          routeName = extractStringContent(valueNode);
+        }
+      }
+    }
+  }
+
+  return {
+    filePath,
+    httpMethod,
+    routePath,
+    routeName,
+    controllerName: viewName ?? viewCall,
+    methodName: null,
+    middleware: [],
+    prefix: ctx.prefix,
+    lineNumber: callNode.startPosition.row,
+  };
+}
+
+function getIncludeModulePath(callNode: SyntaxNode): string | null {
+  const funcName =
+    callNode.childForFieldName?.('function')?.text ??
+    callNode.children?.find((c) => c.type === 'identifier')?.text;
+  if (funcName !== DJANGO_INCLUDE_FUNCTION) return null;
+  const argsNode = callNode.childForFieldName?.('arguments');
+  if (!argsNode) return null;
+
+  const modulePath = extractStringArg(argsNode);
+  if (modulePath) return modulePath;
+
+  for (const child of argsNode.children ?? []) {
+    if (child.type === '(' || child.type === ')' || child.type === ',') continue;
+    if (child.type === 'tuple' || child.type === 'parenthesized_expression') {
+      for (const inner of child.children ?? []) {
+        if (inner.type === '(' || inner.type === ')' || inner.type === ',') continue;
+        if (inner.type === 'string') return extractStringContent(inner);
+      }
+    }
+  }
+  return null;
+}
+
+function makePrefix(parentPrefix: string | null, childPrefix: string | null): string | null {
+  if (!childPrefix) return parentPrefix;
+  if (!parentPrefix) return childPrefix;
+  return `${parentPrefix}/${childPrefix}`.replace(/\/+/g, '/');
+}
+
+function getCallFuncName(node: SyntaxNode): string | null {
+  return (
+    node.childForFieldName?.('function')?.text ??
+    node.children?.find((c) => c.type === 'identifier')?.text ??
+    null
+  );
+}
+
+let _djangoParser: Parser | null = null;
+
+export function setDjangoParser(p: Parser): void {
+  _djangoParser = p;
+}
+
+/**
+ * Given a Django dotted module path like `app.submodule.urls`,
+ * try multiple path resolution strategies to find the file on disk.
+ *
+ * Strategies tried in order:
+ *  1. Direct dot-to-slash: `module/path.py` and `module/path/__init__.py`
+ *  2. Relative to the current file's directory
+ *  3. Walk up the directory tree from the current file, trying each ancestor
+ */
+function resolveIncludedFile(
+  modulePath: string,
+  currentFilePath: string,
+  readFile: DjangoFileReader,
+): { filePath: string; content: string } | null {
+  const basePath = modulePathToFilePath(modulePath);
+
+  const candidates: string[] = [];
+
+  // Strategy 1: direct path (app/urls.py, app/urls/__init__.py)
+  candidates.push(basePath + '.py');
+  candidates.push(basePath + '/__init__.py');
+
+  // Strategy 2: relative to current file's directory
+  if (currentFilePath.includes('/')) {
+    const dir = currentFilePath.substring(0, currentFilePath.lastIndexOf('/') + 1);
+    candidates.push(dir + basePath + '.py');
+    candidates.push(dir + basePath + '/__init__.py');
+  }
+
+  // Strategy 3: walk up from current file, trying each ancestor
+  let parentDir = currentFilePath.includes('/')
+    ? currentFilePath.substring(0, currentFilePath.lastIndexOf('/'))
+    : '';
+  while (parentDir.length > 0) {
+    const prefix = parentDir + '/';
+    candidates.push(prefix + basePath + '.py');
+    candidates.push(prefix + basePath + '/__init__.py');
+    const nextSep = parentDir.lastIndexOf('/');
+    if (nextSep < 0) break;
+    parentDir = parentDir.substring(0, nextSep);
+  }
+
+  // Strategy 4: bare path with just the last segment (e.g. 'urls.py' from 'app.urls')
+  const segments = basePath.split('/');
+  if (segments.length > 1) {
+    const lastSegment = segments[segments.length - 1];
+    candidates.push(lastSegment + '.py');
+    candidates.push(lastSegment + '/__init__.py');
+  }
+
+  for (const candidate of candidates) {
+    const content = readFile(candidate);
+    if (content !== null) return { filePath: candidate, content };
+  }
+
+  return null;
+}
+
+export function extractDjangoRoutes(
+  tree: Parser.Tree,
+  filePath: string,
+  readFile?: DjangoFileReader | null,
+  _visited?: Set<string>,
+): ExtractedRoute[] {
+  const routeSet = _visited ?? new Set<string>();
+  if (routeSet.has(filePath)) return [];
+  routeSet.add(filePath);
+
+  const listNodes = findUrlpatternsLists(tree.rootNode);
+  if (listNodes.length === 0) return [];
+
+  const routes: ExtractedRoute[] = [];
+  const walkStack: WalkFrame[] = [];
+
+  for (const listNode of listNodes) {
+    walkStack.push({ node: listNode, routeCtx: { prefix: null }, currentFilePath: filePath });
+  }
+
+  while (walkStack.length > 0) {
+    const { node, routeCtx, currentFilePath } = walkStack.pop()!;
+
+    if (node.type === 'list') {
+      const children = node.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        if (child.type === '[' || child.type === ']' || child.type === ',') continue;
+        walkStack.push({ node: child, routeCtx, currentFilePath });
+      }
+      continue;
+    }
+
+    if (node.type === 'call') {
+      const funcName = getCallFuncName(node);
+
+      if (!funcName) {
+        for (const child of node.children ?? []) {
+          if (child.type === 'call' || child.type === 'list') {
+            walkStack.push({ node: child, routeCtx, currentFilePath });
+          }
+        }
+        continue;
+      }
+
+      if (DJANGO_ROUTE_FUNCTIONS.has(funcName)) {
+        const argsNode = node.childForFieldName?.('arguments') ?? null;
+
+        let hasIncludeChild = false;
+        if (argsNode) {
+          for (const child of argsNode.children ?? []) {
+            if (child.type === 'call' && getCallFuncName(child) === DJANGO_INCLUDE_FUNCTION) {
+              hasIncludeChild = true;
+              const modulePath = getIncludeModulePath(child);
+              if (modulePath && readFile && _djangoParser) {
+                const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
+                if (resolved && !routeSet.has(resolved.filePath)) {
+                  routeSet.add(resolved.filePath);
+                  let childTree: Parser.Tree;
+                  try {
+                    childTree = parseSourceSafe(_djangoParser, resolved.content);
+                  } catch {
+                    continue;
+                  }
+                  const childLists = findUrlpatternsLists(childTree.rootNode);
+                  for (const childList of childLists) {
+                    const childPrefix = makePrefix(routeCtx.prefix, extractStringArg(argsNode));
+                    walkStack.push({
+                      node: childList,
+                      routeCtx: { prefix: childPrefix },
+                      currentFilePath: resolved.filePath,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (!hasIncludeChild) {
+          routes.push(emitDjangoRoute(node, currentFilePath, routeCtx));
+        }
+        continue;
+      }
+
+      if (funcName === DJANGO_INCLUDE_FUNCTION && readFile && _djangoParser) {
+        const modulePath = getIncludeModulePath(node);
+        if (modulePath) {
+          const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
+          if (resolved && !routeSet.has(resolved.filePath)) {
+            routeSet.add(resolved.filePath);
+            let childTree: Parser.Tree;
+            try {
+              childTree = parseSourceSafe(_djangoParser, resolved.content);
+            } catch {
+              continue;
+            }
+            const childLists = findUrlpatternsLists(childTree.rootNode);
+            for (const childList of childLists) {
+              walkStack.push({
+                node: childList,
+                routeCtx,
+                currentFilePath: resolved.filePath,
+              });
+            }
+          }
+        }
+        continue;
+      }
+
+      for (const child of node.children ?? []) {
+        if (child.type === 'call' || child.type === 'list') {
+          walkStack.push({ node: child, routeCtx, currentFilePath });
+        }
+      }
+      continue;
+    }
+
+    for (const child of node.children ?? []) {
+      if (child.type === '(' || child.type === ')' || child.type === ',') continue;
+      if (child.type === 'call' || child.type === 'list') {
+        walkStack.push({ node: child, routeCtx, currentFilePath });
+      }
+    }
+  }
+
+  return routes;
+}

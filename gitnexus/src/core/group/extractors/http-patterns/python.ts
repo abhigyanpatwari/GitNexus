@@ -11,6 +11,7 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 /**
  * Python HTTP plugin. Handles:
  *   - FastAPI `@app.get("/path")` provider decorators
+ *   - Django `path("route/", view)` provider calls
  *   - `requests.get/post/...("url")` consumer calls
  *   - Generic `requests.request("METHOD", "url")` consumer calls
  *   - `httpx.AsyncClient` instances calling `.get/.post/...("url")`, including
@@ -43,6 +44,37 @@ const FASTAPI_PATTERNS = compilePatterns({
               object: (identifier) @obj (#eq? @obj "app")
               attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
             arguments: (argument_list . (string) @path)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Provider: Django path()/re_path()/url() ─────────────────────────
+const DJANGO_PATH_PATTERNS = compilePatterns({
+  name: 'python-django-path',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (call
+          function: (identifier) @func (#match? @func "^(path|re_path)$")
+          arguments: (argument_list . (string) @path))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const DJANGO_URL_PATTERNS = compilePatterns({
+  name: 'python-django-url',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (call
+          function: (identifier) @func (#eq? @func "url")
+          arguments: (argument_list . (string) @pattern . (identifier) @view))
       `,
     },
   ],
@@ -470,6 +502,36 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
         path,
         name: null,
         confidence: 0.8,
+      });
+    }
+
+    // Providers: Django path()/re_path()/url()
+    for (const match of runCompiledPatterns(DJANGO_PATH_PATTERNS, tree)) {
+      const pathNode = match.captures.path;
+      if (!pathNode) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      out.push({
+        role: 'provider',
+        framework: 'django',
+        method: '*',
+        path,
+        name: null,
+        confidence: 0.7,
+      });
+    }
+    for (const match of runCompiledPatterns(DJANGO_URL_PATTERNS, tree)) {
+      const patternNode = match.captures.pattern;
+      if (!patternNode) continue;
+      const path = unquoteLiteral(patternNode.text);
+      if (path === null) continue;
+      out.push({
+        role: 'provider',
+        framework: 'django',
+        method: '*',
+        path,
+        name: null,
+        confidence: 0.7,
       });
     }
 
