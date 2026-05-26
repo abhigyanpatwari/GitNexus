@@ -598,6 +598,14 @@ export const createWorkerPool = (
   const poolOptions = resolveWorkerPoolOptions(options, size);
   const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url));
   const workers: (Worker | undefined)[] = new Array(size);
+  type RetiredWorkerRecord = {
+    worker: Worker;
+    workerIndex: number;
+    reason: string;
+    cleanup: () => void;
+    terminate: () => Promise<void>;
+  };
+  const retiredWorkers = new Set<RetiredWorkerRecord>();
   const respawnCount: number[] = new Array(size).fill(0);
   const activeSlots: Set<number> = new Set();
   // Layer 3 (quarantine): tracked via the dedicated `quarantine.ts`
@@ -624,6 +632,17 @@ export const createWorkerPool = (
   const slotGenerations: number[] = new Array(size).fill(0);
   let poolBroken = false;
   let poolFailure: Error | undefined;
+
+  const terminateTrackedWorkers = async (
+    liveWorkers: readonly (Worker | undefined)[],
+  ): Promise<void> => {
+    const retired = Array.from(retiredWorkers);
+    await Promise.all([
+      ...liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)),
+      ...retired.map((record) => record.terminate()),
+    ]);
+    retiredWorkers.clear();
+  };
 
   for (let i = 0; i < size; i++) {
     workers[i] = spawnWorker(workerUrl);
@@ -755,10 +774,88 @@ export const createWorkerPool = (
         onProgress(next);
       };
 
-      const replaceWorker = async (workerIndex: number): Promise<boolean> => {
+      type WorkerRemovalMode = 'terminate' | 'retire';
+
+      const retireWorkerAfterTimeout = (
+        worker: Worker,
+        workerIndex: number,
+        reason: string,
+      ): void => {
+        let cleaned = false;
+        let terminateStarted = false;
+
+        function cleanupRetired() {
+          if (cleaned) return;
+          cleaned = true;
+          worker.removeListener('message', onRetiredMessage);
+          worker.removeListener('error', onRetiredError);
+          worker.removeListener('exit', onRetiredExit);
+          worker.removeListener('messageerror', onRetiredMessageError);
+          retiredWorkers.delete(record);
+        }
+
+        async function terminateRetired() {
+          if (terminateStarted) return;
+          terminateStarted = true;
+          cleanupRetired();
+          await worker.terminate().catch(() => undefined);
+        }
+
+        function terminateWhenBackInJs() {
+          void terminateRetired();
+        }
+
+        function onRetiredMessage(raw: unknown) {
+          if (raw === null || typeof raw !== 'object') return;
+          const type = (raw as { type?: unknown }).type;
+          if (type === 'sub-batch-done' || type === 'result' || type === 'error') {
+            terminateWhenBackInJs();
+          }
+        }
+
+        const onRetiredError = () => cleanupRetired();
+        const onRetiredExit = () => cleanupRetired();
+        const onRetiredMessageError = () => terminateWhenBackInJs();
+        const record: RetiredWorkerRecord = {
+          worker,
+          workerIndex,
+          reason,
+          cleanup: cleanupRetired,
+          terminate: terminateRetired,
+        };
+        retiredWorkers.add(record);
+        worker.on('message', onRetiredMessage);
+        worker.once('error', onRetiredError);
+        worker.once('exit', onRetiredExit);
+        worker.once('messageerror', onRetiredMessageError);
+        (worker as Worker & { unref?: () => void }).unref?.();
+        logger.warn(
+          { workerIndex, reason },
+          `Worker ${workerIndex} timed out; retiring without immediate terminate to avoid aborting native parser state.`,
+        );
+      };
+
+      const removeWorkerFromSlot = async (
+        workerIndex: number,
+        mode: WorkerRemovalMode,
+        reason: string,
+      ): Promise<void> => {
         const existing = workers[workerIndex];
-        await existing?.terminate().catch(() => undefined);
         workers[workerIndex] = undefined;
+        if (!existing) return;
+        if (mode === 'retire') {
+          retireWorkerAfterTimeout(existing, workerIndex, reason);
+          return;
+        }
+        await existing.terminate().catch(() => undefined);
+      };
+
+      const replaceWorker = async (
+        workerIndex: number,
+        mode: WorkerRemovalMode = 'terminate',
+        reason = 'replacing worker',
+      ): Promise<boolean> => {
+        await removeWorkerFromSlot(workerIndex, mode, reason);
         if (stopped) return false;
         const replacement = spawnWorker(workerUrl);
         try {
@@ -803,7 +900,7 @@ export const createWorkerPool = (
         const liveWorkers = workers.slice();
         for (let i = 0; i < workers.length; i++) workers[i] = undefined;
         activeSlots.clear();
-        void Promise.all(liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)));
+        void terminateTrackedWorkers(liveWorkers);
       };
 
       const maybeDone = () => {
@@ -893,6 +990,7 @@ export const createWorkerPool = (
         workerIndex: number,
         reason: string,
         excludePaths: readonly string[],
+        removalMode: WorkerRemovalMode = 'terminate',
       ) => {
         if (stopped) return;
         consecutiveFailuresPerSlot[workerIndex]++;
@@ -921,9 +1019,7 @@ export const createWorkerPool = (
             },
             `Worker ${workerIndex} exceeded respawn budget; dropping slot.`,
           );
-          const dead = workers[workerIndex];
-          await dead?.terminate().catch(() => undefined);
-          workers[workerIndex] = undefined;
+          await removeWorkerFromSlot(workerIndex, removalMode, reason);
           activeSlots.delete(workerIndex);
           if (activeSlots.size === 0) {
             tripBreaker(
@@ -945,7 +1041,7 @@ export const createWorkerPool = (
           },
           `Worker ${workerIndex} died; respawning slot (attempt ${respawnCount[workerIndex]}/${poolOptions.maxRespawnsPerSlot}).`,
         );
-        const respawned = await replaceWorker(workerIndex);
+        const respawned = await replaceWorker(workerIndex, removalMode, reason);
         if (!respawned) {
           activeSlots.delete(workerIndex);
           if (activeSlots.size === 0) {
@@ -1211,7 +1307,12 @@ export const createWorkerPool = (
                   activeWorkers--;
                   busySlots.delete(workerIndex);
                   requeueRemainder(job, decision.excludePaths);
-                  await handleWorkerDeath(workerIndex, decision.reason, decision.excludePaths);
+                  await handleWorkerDeath(
+                    workerIndex,
+                    decision.reason,
+                    decision.excludePaths,
+                    'retire',
+                  );
                   if (stopped) return;
                   if (activeSlots.has(workerIndex)) runWorker(workerIndex);
                   wakeIdleSlots();
@@ -1255,9 +1356,11 @@ export const createWorkerPool = (
                       },
                       `Worker ${workerIndex} hit consecutive-failure threshold on idle-timeout retry; tripping circuit breaker.`,
                     );
-                    const dead = workers[workerIndex];
-                    await dead?.terminate().catch(() => undefined);
-                    workers[workerIndex] = undefined;
+                    await removeWorkerFromSlot(
+                      workerIndex,
+                      'retire',
+                      'idle-timeout retry consecutive-failure threshold',
+                    );
                     activeSlots.delete(workerIndex);
                     tripBreaker(
                       new WorkerPoolDispatchError(
@@ -1278,12 +1381,18 @@ export const createWorkerPool = (
                       },
                       `Worker ${workerIndex} exceeded respawn budget during idle-timeout retry; dropping slot.`,
                     );
-                    const dead = workers[workerIndex];
-                    await dead?.terminate().catch(() => undefined);
-                    workers[workerIndex] = undefined;
+                    await removeWorkerFromSlot(
+                      workerIndex,
+                      'retire',
+                      'idle-timeout retry respawn budget exhausted',
+                    );
                     activeSlots.delete(workerIndex);
                   } else {
-                    const respawned = await replaceWorker(workerIndex);
+                    const respawned = await replaceWorker(
+                      workerIndex,
+                      'retire',
+                      'idle-timeout retry',
+                    );
                     if (!respawned) {
                       activeSlots.delete(workerIndex);
                     }
@@ -1482,7 +1591,7 @@ export const createWorkerPool = (
     // exception when this is called from `runChunkedParseAndResolve`'s
     // finally block — masking the real failure and leaving `workers[]`
     // populated with dead references because the lines below never run.
-    await Promise.all(workers.map((w) => w?.terminate().catch(() => undefined)));
+    await terminateTrackedWorkers(workers);
     workers.length = 0;
     activeSlots.clear();
   };

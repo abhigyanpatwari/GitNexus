@@ -438,6 +438,28 @@ export interface ScopeResolver {
   ) => Map<string /* DefId */, string[] /* ancestor DefIds */>;
 
   /**
+   * Optional pre-MRO hook to emit heritage edges (IMPLEMENTS) that the
+   * generic `preEmitInheritanceEdges` pass cannot produce. Runs AFTER
+   * `preEmitInheritanceEdges` (which emits EXTENDS from `@reference.inherits`
+   * sites) and BEFORE `buildMro` (which reads the graph for EXTENDS +
+   * IMPLEMENTS). Languages whose heritage declarations are syntactic method
+   * calls rather than grammar-level heritage clauses (e.g., Ruby
+   * `include`/`extend`/`prepend`) use this hook to emit IMPLEMENTS edges
+   * from parsed import or reference data.
+   *
+   * Receives the graph (writable), parsedFiles, and nodeLookup — same
+   * surface as `buildMro`. Must be idempotent (the orchestrator may call
+   * it more than once during re-resolution).
+   *
+   * Default: undefined (no extra heritage edges needed).
+   */
+  readonly emitHeritageEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+  ) => void;
+
+  /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
    * owner. Python's rule: methods (Function defs whose parent scope
    * is Class) AND class-body fields (defs in Class scopes) are owned

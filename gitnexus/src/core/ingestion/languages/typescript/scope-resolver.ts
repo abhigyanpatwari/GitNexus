@@ -19,6 +19,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
+import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
 import {
   typescriptArityCompatibility,
   typescriptMergeBindings,
@@ -50,6 +51,7 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
     readonly allFilePaths: Set<string>;
     readonly allFileList: readonly string[];
     readonly normalizedFileList: readonly string[];
+    readonly index: SuffixIndex;
     readonly resolveCache: Map<string, string | null>;
   }
   let cached: PassCache | null = null;
@@ -57,11 +59,13 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
   return (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
     if (cached === null || cached.key !== allFilePaths) {
       const allFileList = Array.from(allFilePaths);
+      const normalizedFileList = allFileList.map((f) => f.toLowerCase());
       cached = {
         key: allFilePaths,
         allFilePaths: new Set(allFilePaths),
         allFileList,
-        normalizedFileList: allFileList.map((f) => f.toLowerCase()),
+        normalizedFileList,
+        index: buildSuffixIndex(normalizedFileList, allFileList),
         resolveCache: new Map(),
       };
     }
@@ -72,6 +76,7 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
       allFilePaths: cached.allFilePaths,
       allFileList: cached.allFileList,
       normalizedFileList: cached.normalizedFileList,
+      index: cached.index,
       resolveCache: cached.resolveCache,
       tsconfigPaths: cfg?.tsconfigPaths ?? null,
     };
