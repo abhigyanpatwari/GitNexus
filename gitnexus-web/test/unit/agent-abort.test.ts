@@ -77,8 +77,6 @@ describe('streamAgentResponse abort', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks).toEqual([
-      { type: 'error', error: 'Cannot abort the current transaction' },
-    ]);
+    expect(chunks).toEqual([{ type: 'error', error: 'Cannot abort the current transaction' }]);
   });
 });

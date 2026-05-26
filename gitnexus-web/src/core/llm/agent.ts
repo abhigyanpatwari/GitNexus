@@ -443,15 +443,12 @@ export async function* streamAgentResponse(
     const formattedMessages = buildLangChainMessages(messages);
 
     // Use BOTH modes: 'values' for structure, 'messages' for token streaming
-    const stream = await agent.stream(
-      { messages: formattedMessages },
-      {
-        streamMode: ['values', 'messages'] as any,
-        // Allow longer tool/reasoning loops (more Cursor-like persistence)
-        recursionLimit: 50,
-        ...(options.signal ? { signal: options.signal } : {}),
-      } as any,
-    );
+    const stream = await agent.stream({ messages: formattedMessages }, {
+      streamMode: ['values', 'messages'] as any,
+      // Allow longer tool/reasoning loops (more Cursor-like persistence)
+      recursionLimit: 50,
+      ...(options.signal ? { signal: options.signal } : {}),
+    } as any);
 
     // Track what we've yielded to avoid duplicates
     const yieldedToolCalls = new Set<string>();
