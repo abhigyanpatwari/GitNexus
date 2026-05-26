@@ -588,6 +588,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Agent state — agent runs on main thread now (I/O-bound, not CPU-bound)
   const agentRef = useRef<any>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const chatStateRef = useRef<'idle' | 'streaming' | 'aborting'>('idle');
 
   const initializeAgent = useCallback(
     async (overrideProjectName?: string): Promise<void> => {
@@ -646,7 +648,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   const sendChatMessage = useCallback(
     async (message: string): Promise<void> => {
-      if (isChatLoading) return;
+      if (chatStateRef.current !== 'idle') return;
 
       // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
       clearAICodeReferences();
@@ -685,7 +687,12 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       }
 
       setIsChatLoading(true);
+      chatStateRef.current = 'streaming';
       setCurrentToolCalls([]);
+
+      chatAbortRef.current?.abort();
+      const chatAbortController = new AbortController();
+      chatAbortRef.current = chatAbortController;
 
       const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
 
@@ -742,11 +749,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         });
       };
       let pendingUpdate = false;
+      let rafHandle: number | null = null;
       const scheduleMessageUpdate = () => {
         if (pendingUpdate) return;
         pendingUpdate = true;
-        requestAnimationFrame(() => {
+        rafHandle = requestAnimationFrame(() => {
           pendingUpdate = false;
+          rafHandle = null;
           updateMessage();
         });
       };
@@ -893,7 +902,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                 if (idx < 0) {
                   idx = toolCallsForMessage.findIndex((t) => t.name === tc.name && !t.result);
                 }
-                if (idx >= 0) {
+                if (idx >= 0 && toolCallsForMessage[idx].status !== 'stopped') {
                   toolCallsForMessage[idx] = {
                     ...toolCallsForMessage[idx],
                     result: tc.result,
@@ -909,7 +918,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                     (s.toolCall.id === tc.id ||
                       (s.toolCall.name === tc.name && s.toolCall.status === 'running')),
                 );
-                if (stepIdx >= 0 && stepsForMessage[stepIdx].toolCall) {
+                if (
+                  stepIdx >= 0 &&
+                  stepsForMessage[stepIdx].toolCall &&
+                  stepsForMessage[stepIdx].toolCall!.status !== 'stopped'
+                ) {
                   stepsForMessage[stepIdx] = {
                     ...stepsForMessage[stepIdx],
                     toolCall: {
@@ -930,6 +943,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                     targetIdx = prev.findIndex((t) => t.name === tc.name && !t.result);
                   }
                   if (targetIdx >= 0) {
+                    const target = prev[targetIdx];
+                    if (target.status === 'stopped') return prev;
                     return prev.map((t, i) =>
                       i === targetIdx ? { ...t, result: tc.result, status: 'completed' } : t,
                     );
@@ -1028,13 +1043,24 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const { streamAgentResponse } = await import('../core/llm/agent');
         for await (const chunk of streamAgentResponse(agent, history, {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
+          signal: chatAbortController.signal,
         })) {
+          if (chunk.type === 'cancelled') {
+            break;
+          }
           onChunk(chunk);
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setAgentError(message);
+        if (!chatAbortController.signal.aborted) {
+          const message = error instanceof Error ? error.message : String(error);
+          setAgentError(message);
+        }
       } finally {
+        if (rafHandle != null) {
+          cancelAnimationFrame(rafHandle);
+          rafHandle = null;
+        }
+        chatStateRef.current = 'idle';
         setIsChatLoading(false);
         setCurrentToolCalls([]);
       }
@@ -1050,22 +1076,56 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
-      isChatLoading,
     ],
   );
 
   const stopChatResponse = useCallback(() => {
-    if (isChatLoading) {
-      // Agent streaming will be interrupted by the AbortController in sendChatMessage
-      setIsChatLoading(false);
-      setCurrentToolCalls([]);
-    }
-  }, [isChatLoading]);
+    if (!chatAbortRef.current) return;
+
+    chatStateRef.current = 'aborting';
+    chatAbortRef.current.abort();
+    chatAbortRef.current = null;
+
+    const stoppedLabel = i18n.t('chat:stopped');
+    const markStoppedToolCall = (tc: ToolCallInfo): ToolCallInfo =>
+      tc.status === 'running' || tc.status === 'pending'
+        ? { ...tc, status: 'stopped', result: stoppedLabel }
+        : tc;
+
+    setCurrentToolCalls((prev) => prev.map(markStoppedToolCall));
+
+    setChatMessages((prev) => {
+      const lastAssistantIdx = [...prev]
+        .map((m, i) => (m.role === 'assistant' ? i : -1))
+        .filter((i) => i >= 0)
+        .pop();
+      if (lastAssistantIdx === undefined) return prev;
+
+      const message = prev[lastAssistantIdx];
+
+      const updated: ChatMessage = {
+        ...message,
+        toolCalls: message.toolCalls?.map(markStoppedToolCall),
+        steps: message.steps?.map((step) =>
+          step.type === 'tool_call' && step.toolCall
+            ? { ...step, toolCall: markStoppedToolCall(step.toolCall) }
+            : step,
+        ),
+      };
+      return prev.map((m, i) => (i === lastAssistantIdx ? updated : m));
+    });
+
+    setIsChatLoading(false);
+  }, []);
 
   const clearChat = useCallback(() => {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    chatStateRef.current = 'idle';
     setChatMessages([]);
     setCurrentToolCalls([]);
     setAgentError(null);
+    setIsChatLoading(false);
   }, []);
 
   // Switch to a different repo on the connected server
