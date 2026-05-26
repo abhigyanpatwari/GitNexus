@@ -59,6 +59,15 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
+import {
+  extractDjangoRoutes,
+  setDjangoParser,
+  type DjangoFileReader,
+} from './route-extractors/django.js';
+import { discoverDjangoRootUrl } from './route-extractors/django-root-discovery.js';
+import { extractLaravelRoutes } from './route-extractors/laravel.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -363,11 +372,17 @@ const processParsingSequential = async (
   astCache: ASTCache,
   scopeTreeCache: ASTCache | undefined,
   onFileProgress?: FileProgressCallback,
+  outRoutes?: ExtractedRoute[],
 ) => {
   const parser = await loadParser();
   const total = files.length;
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
+
+  // Pre-compute file content map and discover Django root URL for route extraction
+  const fileContentMap = new Map<string, string>();
+  for (const f of files) fileContentMap.set(f.path, f.content);
+  const djangoRootUrlFile = discoverDjangoRootUrl(files, fileContentMap);
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -825,6 +840,32 @@ const processParsingSequential = async (
         });
       }
     });
+
+    // ── Route extraction (Django / Laravel) ──
+    // Replicates the per-file route extraction from parse-worker.ts processFileGroup.
+    const isRouteFile = provider.isRouteFile?.(file.path) ?? false;
+    if (isRouteFile) {
+      if (language === SupportedLanguages.Python) {
+        const isDjangoRoot =
+          djangoRootUrlFile !== null ? file.path === djangoRootUrlFile : isRouteFile;
+        if (!isDjangoRoot) continue;
+        setDjangoParser(parser);
+        const djangoReader: DjangoFileReader = (relativePath: string) => {
+          const cached = fileContentMap.get(relativePath);
+          if (cached != null) return cached;
+          try {
+            return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf-8');
+          } catch {
+            return null;
+          }
+        };
+        const extractedRoutes = extractDjangoRoutes(tree, file.path, djangoReader);
+        for (const r of extractedRoutes) outRoutes?.push(r);
+      } else {
+        const extractedRoutes = extractLaravelRoutes(tree, file.path);
+        for (const r of extractedRoutes) outRoutes?.push(r);
+      }
+    }
   }
 
   if (skippedByLang && skippedByLang.size > 0) {
@@ -871,6 +912,14 @@ export const processParsing = async (
    * artifact to cache there). See `gitnexus/src/storage/parse-cache.ts`.
    */
   outRawResults?: ParseWorkerResult[],
+  /**
+   * Optional out-parameter for extracted routes from the sequential
+   * fallback path. The worker path returns routes inside the
+   * `WorkerExtractedData` return value; the sequential path writes
+   * them here so the caller can feed them into the deferred route
+   * processing pipeline (`processRoutesFromExtracted`).
+   */
+  outRoutes?: ExtractedRoute[],
 ): Promise<WorkerExtractedData | null> => {
   let lastProgress = 0;
   const reportProgress: FileProgressCallback | undefined = onFileProgress
@@ -969,6 +1018,7 @@ export const processParsing = async (
     astCache,
     scopeTreeCache,
     reportProgress,
+    outRoutes,
   );
   return null;
 };

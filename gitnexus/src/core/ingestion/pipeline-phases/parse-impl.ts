@@ -519,9 +519,8 @@ export async function runChunkedParseAndResolve(
             scopeTreeCache,
             progressForChunk,
             activeWorkerPool,
-            // Capture raw results only when we have a cache to write to —
-            // otherwise we'd retain extra arrays for nothing.
             parseCache && chunkHash && activeWorkerPool ? rawResults : undefined,
+            allExtractedRoutes,
           );
         } catch (err) {
           if (!(err instanceof WorkerPoolInitializationError)) throw err;
@@ -546,6 +545,7 @@ export async function runChunkedParseAndResolve(
             progressForChunk,
             undefined,
             undefined,
+            allExtractedRoutes,
           );
         }
         // Persist the raw results for this chunk hash. Sequential path

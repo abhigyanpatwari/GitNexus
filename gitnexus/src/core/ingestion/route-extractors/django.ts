@@ -1,4 +1,5 @@
 import type Parser from 'tree-sitter';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
 import type { ExtractedRoute } from './laravel.js';
 
