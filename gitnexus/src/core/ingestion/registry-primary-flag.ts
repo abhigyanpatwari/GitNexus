@@ -11,8 +11,9 @@
  * ## Contract
  *
  *   - Env-var name per language: `REGISTRY_PRIMARY_<UPPER(enum-value)>`.
- *     Example: `SupportedLanguages.Python` → `REGISTRY_PRIMARY_PYTHON`;
- *     `SupportedLanguages.CPlusPlus` (value `'cpp'`) → `REGISTRY_PRIMARY_CPP`.
+ *   Example: `SupportedLanguages.Python` → `REGISTRY_PRIMARY_PYTHON`;
+ *   `SupportedLanguages.CPlusPlus` (value `'cpp'`) → `REGISTRY_PRIMARY_CPP`.
+ *   `SupportedLanguages.Cobol` (value `'cobol'`) → `REGISTRY_PRIMARY_COBOL`.
  *   - Truthy values: `'true'`, `'1'`, `'yes'` (case-insensitive,
  *     whitespace-trimmed). Anything else — including `undefined`, empty
  *     string, or unknown tokens — is `false`.
@@ -79,6 +80,7 @@ export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<Suppo
   SupportedLanguages.Kotlin,
   SupportedLanguages.Java,
   SupportedLanguages.Rust,
+  SupportedLanguages.Ruby,
 ]);
 
 /**

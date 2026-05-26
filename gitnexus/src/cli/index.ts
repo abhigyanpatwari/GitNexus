@@ -5,7 +5,7 @@
 
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
-import { createLazyAction } from './lazy-action.js';
+import { createLazyAction, createLbugLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
@@ -89,7 +89,7 @@ program
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
   .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
   .addHelpText('after', () => t('help.analyze.environment'))
-  .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+  .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
   .command('index [path...]')
@@ -105,12 +105,12 @@ program
   .description('Start local HTTP server for web UI connection')
   .option('-p, --port <port>', 'Port number', '4747')
   .option('--host <host>', 'Bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)')
-  .action(createLazyAction(() => import('./serve.js'), 'serveCommand'));
+  .action(createLbugLazyAction(() => import('./serve.js'), 'serveCommand'));
 
 program
   .command('mcp')
   .description('Start MCP server (stdio) — serves all indexed repos')
-  .action(createLazyAction(() => import('./mcp.js'), 'mcpCommand'));
+  .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program
   .command('list')
@@ -177,12 +177,12 @@ program
     '--lang <lang>',
     'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
   )
-  .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
+  .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
   .command('augment <pattern>')
   .description('Augment a search pattern with knowledge graph context (used by hooks)')
-  .action(createLazyAction(() => import('./augment.js'), 'augmentCommand'));
+  .action(createLbugLazyAction(() => import('./augment.js'), 'augmentCommand'));
 
 program
   .command('publish [path]')
@@ -207,7 +207,7 @@ program
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
   .option('--content', 'Include full symbol source code')
-  .action(createLazyAction(() => import('./tool.js'), 'queryCommand'));
+  .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
   .command('context [name]')
@@ -216,7 +216,7 @@ program
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('--content', 'Include full symbol source code')
-  .action(createLazyAction(() => import('./tool.js'), 'contextCommand'));
+  .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program
   .command('impact <target>')
@@ -228,13 +228,13 @@ program
   .option('--limit <n>', 'Max symbols per depth level (default: 100)')
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
-  .action(createLazyAction(() => import('./tool.js'), 'impactCommand'));
+  .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program
   .command('cypher <query>')
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')
-  .action(createLazyAction(() => import('./tool.js'), 'cypherCommand'));
+  .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
   .command('detect-changes')
@@ -243,7 +243,7 @@ program
   .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare', 'unstaged')
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
-  .action(createLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
+  .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
@@ -256,7 +256,7 @@ program
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
   )
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
-  .action(createLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
+  .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
 registerGroupCommands(program);
 localizeCliHelp(program);

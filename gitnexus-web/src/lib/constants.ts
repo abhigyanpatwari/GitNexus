@@ -101,7 +101,9 @@ export const getCommunityColor = (communityIndex: number): string => {
   return COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length];
 };
 
-// Labels to show by default (hide imports and variables by default as they clutter)
+// Labels to show by default (hide imports by default as they clutter).
+// Property/Const are the Kotlin/Java equivalents of Variable — include them so
+// Kotlin repos don't appear to have no leaf nodes.
 export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Project',
   'Package',
@@ -111,6 +113,8 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Class',
   'Function',
   'Method',
+  'Property', // Kotlin/Java fields (HAS_PROPERTY + DEFINES File→Property)
+  'Const', // Top-level constants
   'Interface',
   'Enum',
   'Type',
@@ -127,6 +131,8 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Function',
   'Method',
   'Variable',
+  'Property', // Kotlin/Java field nodes
+  'Const',
   'Decorator',
   'Import',
 ];
