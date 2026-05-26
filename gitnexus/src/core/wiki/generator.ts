@@ -614,7 +614,10 @@ export class WikiGenerator {
               break;
             }
           }
-          if (subBatch.length === 1 && this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET) {
+          if (
+            subBatch.length === 1 &&
+            this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET
+          ) {
             subBatch[0] = this.trimSymbolsToFit(subBatch[0]);
           }
           batches.push(subBatch);
@@ -672,9 +675,13 @@ export class WikiGenerator {
     if (lo >= symbols.length) return file;
     return {
       filePath: file.filePath,
-      symbols: lo > 0
-        ? [...symbols.slice(0, lo), { name: `... and ${symbols.length - lo} more`, type: 'truncated' }]
-        : [{ name: 'no exports (truncated)', type: 'truncated' }],
+      symbols:
+        lo > 0
+          ? [
+              ...symbols.slice(0, lo),
+              { name: `... and ${symbols.length - lo} more`, type: 'truncated' },
+            ]
+          : [{ name: 'no exports (truncated)', type: 'truncated' }],
     };
   }
 
