@@ -208,17 +208,21 @@ export function formatImpactResult(result: any): string {
 
   const depthCounts = result.byDepthCounts || {};
   for (const depth of [1, 2, 3]) {
-    const items = byDepth[depth];
-    if (!items || items.length === 0) continue;
-
+    const items = byDepth[depth] || [];
     const trueCount = depthCounts[depth] ?? items.length;
+    if (trueCount === 0) continue;
+
     lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${trueCount})`);
-    for (const item of items.slice(0, 12)) {
-      const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
-      lines.push(`  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`);
-    }
-    if (trueCount > 12) {
-      lines.push(`  ... and ${trueCount - 12} more`);
+    if (items.length === 0) {
+      lines.push(`  (0 items on this page — adjust offset)`);
+    } else {
+      for (const item of items.slice(0, 12)) {
+        const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
+        lines.push(`  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`);
+      }
+      if (trueCount > 12) {
+        lines.push(`  ... and ${trueCount - 12} more`);
+      }
     }
     lines.push('');
   }

@@ -2885,8 +2885,8 @@ export class LocalBackend {
       relationTypes: effectiveRelationTypes,
       includeTests,
       minConfidence,
-      limit: params.limit ?? 100,
-      offset: params.offset,
+      limit: Number.isFinite(params.limit) ? params.limit : 100,
+      offset: Number.isFinite(params.offset) ? params.offset : 0,
       summaryOnly: params.summaryOnly,
     });
   }
@@ -3376,7 +3376,7 @@ export class LocalBackend {
       ...base,
       ...(anyTruncated && {
         pagination: {
-          limit: paginationLimit === Infinity ? null : paginationLimit,
+          ...(Number.isFinite(paginationLimit) && { limit: paginationLimit }),
           offset: paginationOffset,
           truncated: true,
         },
@@ -3535,9 +3535,9 @@ export class LocalBackend {
       if (typeof params.subgroup === 'string') impactArgs.subgroup = params.subgroup;
       if (params.timeoutMs !== undefined) impactArgs.timeoutMs = params.timeoutMs;
       if (params.timeout !== undefined) impactArgs.timeout = params.timeout;
-      if (params.limit !== undefined) impactArgs.limit = params.limit;
-      if (params.offset !== undefined) impactArgs.offset = params.offset;
-      if (params.summaryOnly !== undefined) impactArgs.summaryOnly = params.summaryOnly;
+      // limit/offset/summaryOnly are not forwarded to group-mode impact:
+      // runGroupImpact uses GROUP_LOCAL_PHASE_LIMIT internally for UID
+      // collection and does not re-paginate the local result yet.
       return svc.groupImpact(impactArgs);
     }
     if (method === 'query') {

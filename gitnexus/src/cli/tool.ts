@@ -135,8 +135,12 @@ export async function impactCommand(
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
-      limit: options?.limit ? parseInt(options.limit, 10) : undefined,
-      offset: options?.offset ? parseInt(options.offset, 10) : undefined,
+      limit: Number.isFinite(parseInt(options?.limit, 10))
+        ? parseInt(options.limit, 10)
+        : undefined,
+      offset: Number.isFinite(parseInt(options?.offset, 10))
+        ? parseInt(options.offset, 10)
+        : undefined,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
     output(result);

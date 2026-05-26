@@ -23,11 +23,11 @@ import {
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
 import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
+import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
 // sees (nearly) all symbols. Bypasses the MCP-facing default of 100.
 const GROUP_LOCAL_PHASE_LIMIT = 10000;
-import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 
 /** Cross-boundary hops beyond this value are clamped (multi-hop reserved for future work). */
 export const MAX_SUPPORTED_CROSS_DEPTH = 1;
