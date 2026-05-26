@@ -23,6 +23,7 @@ import { rustScopeResolver } from '../../languages/rust/scope-resolver.js';
 import { javascriptScopeResolver } from '../../languages/javascript/scope-resolver.js';
 import { kotlinScopeResolver } from '../../languages/kotlin/scope-resolver.js';
 import { rubyScopeResolver } from '../../languages/ruby/scope-resolver.js';
+import { cobolScopeResolver } from '../../languages/cobol/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The phase iterates
  *  this map intersected with `MIGRATED_LANGUAGES` (the per-language
@@ -44,4 +45,5 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.JavaScript, javascriptScopeResolver],
   [SupportedLanguages.Kotlin, kotlinScopeResolver],
   [SupportedLanguages.Ruby, rubyScopeResolver],
+  [SupportedLanguages.Cobol, cobolScopeResolver],
 ]);
