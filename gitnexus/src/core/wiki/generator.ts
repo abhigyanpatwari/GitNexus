@@ -540,13 +540,16 @@ export class WikiGenerator {
       });
 
       try {
+        const batchStart = 15 + Math.round((i / batches.length) * 13);
+        const batchRange = Math.max(1, Math.round(13 / batches.length));
         const response = await this.invokeLLM(
           batchPrompt,
           GROUPING_SYSTEM_PROMPT,
-          this.streamOpts(`Grouping batch ${i + 1}/${batches.length}`),
+          this.streamOpts(`Grouping batch ${i + 1}/${batches.length}`, batchStart, batchRange),
         );
         partials.push(this.parseGroupingResponse(response.content, batch));
       } catch {
+        this.onProgress('grouping', 15, `Batch ${i + 1} failed, falling back to directory grouping`);
         return this.fallbackGrouping(files);
       }
     }

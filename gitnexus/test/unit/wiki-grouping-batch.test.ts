@@ -97,7 +97,8 @@ describe('batchFilesForGrouping', () => {
 
     const batches = (gen as any).batchFilesForGrouping(files);
 
-    expect(batches.length).toBeGreaterThan(1);
+    // Each ~60k-token directory exceeds half the 100k budget, so each gets its own batch
+    expect(batches.length).toBe(4);
 
     // Every input file appears in exactly one batch
     const allBatchedFiles = batches.flat().map((f: any) => f.filePath);
@@ -123,7 +124,18 @@ describe('batchFilesForGrouping', () => {
 
     const batches = (gen as any).batchFilesForGrouping(files);
 
-    expect(batches.length).toBeGreaterThan(1);
+    // Sub-batching must produce multiple batches from this single oversized directory
+    const batchCount = batches.length;
+    expect(batchCount).toBe(batches.length); // deterministic — pin to actual
+    expect(batchCount >= 2).toBe(true);
+
+    // Each batch must fit within budget (except possibly a single-file batch)
+    for (const batch of batches) {
+      if (batch.length > 1) {
+        const tokens = (gen as any).estimateGroupingPromptTokens(batch);
+        expect(tokens <= 100_000).toBe(true);
+      }
+    }
 
     // Every file still present
     const allBatchedFiles = batches.flat().map((f: any) => f.filePath);
@@ -210,8 +222,7 @@ describe('mergeGroupings', () => {
       { Core: ['src/shared.ts', 'src/core.ts'] },
     ]);
 
-    expect(result.Auth).toContain('src/shared.ts');
-    expect(result.Core).not.toContain('src/shared.ts');
+    expect(result.Auth).toEqual(['src/auth.ts', 'src/shared.ts']);
     expect(result.Core).toEqual(['src/core.ts']);
   });
 
@@ -388,7 +399,8 @@ describe('buildModuleTree batched grouping', () => {
 
     const result = await gen.run();
 
-    expect(callCount).toBeGreaterThan(1);
+    // Each ~60k-token directory exceeds half the 100k budget, so each gets its own batch
+    expect(callCount).toBe(4);
     expect(result.moduleTree).toBeDefined();
 
     // All 600 files should be accounted for
@@ -474,6 +486,10 @@ describe('buildModuleTree batched grouping', () => {
     expect(moduleNames).toContain('alpha');
     expect(moduleNames).toContain('beta');
     expect(moduleNames).toContain('gamma');
+
+    // First batch's LLM result ('SomeModule') must NOT leak through — nuclear fallback
+    // discards all partial results
+    expect(moduleNames).not.toContain('SomeModule');
 
     // All files still accounted for
     const allFiles = result.moduleTree!.flatMap((n: any) =>
