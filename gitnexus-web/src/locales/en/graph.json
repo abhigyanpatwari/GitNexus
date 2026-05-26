@@ -113,6 +113,7 @@
   },
   "canvas": {
     "viewModes": {
+      "label": "Graph view mode",
       "force": "Force Graph",
       "tree": "Sequential Layout",
       "circles": "Radial Layout"

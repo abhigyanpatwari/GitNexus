@@ -308,6 +308,11 @@ export const knowledgeGraphToGraphology = (
     // TYPE RELATIONSHIPS - Warm colors (OOP)
     EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 }, // Orange - extension
     IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 }, // Pink - interface implementation
+
+    // KOTLIN/JAVA HIERARCHY — same hues as their logical equivalents so force
+    // mode renders these consistently with tree/circles view.
+    HAS_METHOD: { color: EDGE_INFO.DEFINES.color, sizeMultiplier: 0.4 }, // Class→Method (≈ DEFINES)
+    HAS_PROPERTY: { color: EDGE_INFO.CONTAINS.color, sizeMultiplier: 0.35 }, // Class→Property (≈ CONTAINS)
   };
 
   // Two-pass insertion so hierarchy/DEFINES edges are drawn first (behind)

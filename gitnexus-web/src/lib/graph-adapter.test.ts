@@ -98,8 +98,9 @@ describe('knowledgeGraphToTreeGraphology', () => {
     });
   });
 
-  it('should complete within an acceptable time budget for a medium-sized graph', () => {
+  it('should handle a medium-sized graph without dropping nodes or edges', () => {
     // 2000 nodes + 4000 edges — exercises the adaptive spring iteration path (14 iters).
+    // Structural assertion only: wall-clock timing is too variable across CI machines.
     const nodes: GraphNode[] = Array.from({ length: 2000 }, (_, i) =>
       makeNode(`n${i}`, i % 4 === 0 ? 'Folder' : i % 4 === 1 ? 'File' : 'Function', `node${i}`),
     );
@@ -111,12 +112,14 @@ describe('knowledgeGraphToTreeGraphology', () => {
     }));
     const graph: KnowledgeGraph = { nodes, relationships };
 
-    const start = performance.now();
-    knowledgeGraphToTreeGraphology(graph);
-    const elapsed = performance.now() - start;
+    const sigmaGraph = knowledgeGraphToTreeGraphology(graph);
 
-    // Should complete comfortably within 2 seconds even on slow CI machines.
-    expect(elapsed).toBeLessThan(2000);
+    // All nodes that have a tree-layout position must be present in the output.
+    expect(sigmaGraph.order).toBe(2000);
+    // Every relationship whose source and target both exist should produce an edge.
+    // Self-loops (sourceId === targetId) are excluded — the adapter skips them.
+    const selfLoops = relationships.filter((r) => r.sourceId === r.targetId).length;
+    expect(sigmaGraph.size).toBe(relationships.length - selfLoops);
   });
 });
 

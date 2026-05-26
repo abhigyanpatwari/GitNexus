@@ -272,8 +272,14 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       </div>
 
       {/* View Mode Tabs */}
-      <div className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-lg border border-border-subtle bg-elevated/90 p-1 backdrop-blur-sm">
+      <div
+        role="tablist"
+        aria-label={t('canvas.viewModes.label')}
+        className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-lg border border-border-subtle bg-elevated/90 p-1 backdrop-blur-sm"
+      >
         <button
+          role="tab"
+          aria-selected={graphViewMode === 'force'}
           onClick={() => handleViewModeChange('force')}
           className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
             graphViewMode === 'force'
@@ -285,6 +291,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           {t('canvas.viewModes.force')}
         </button>
         <button
+          role="tab"
+          aria-selected={graphViewMode === 'tree'}
           onClick={() => handleViewModeChange('tree')}
           className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
             graphViewMode === 'tree'
@@ -296,6 +304,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           {t('canvas.viewModes.tree')}
         </button>
         <button
+          role="tab"
+          aria-selected={graphViewMode === 'circles'}
           onClick={() => handleViewModeChange('circles')}
           className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
             graphViewMode === 'circles'

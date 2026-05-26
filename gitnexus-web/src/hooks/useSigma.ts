@@ -586,10 +586,19 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       edgeReducer: (edge, data) => {
         const res = { ...data };
 
-        // Check edge type visibility first
+        // Check edge type visibility first.
+        // HAS_METHOD / HAS_PROPERTY are Kotlin/Java hierarchy edges not in the
+        // EdgeType union — normalize them so they follow DEFINES / CONTAINS
+        // visibility instead of being silently hidden.
         const visibleTypes = visibleEdgeTypesRef.current;
         if (visibleTypes && data.relationType) {
-          if (!visibleTypes.includes(data.relationType as EdgeType)) {
+          const normalizedType =
+            data.relationType === 'HAS_METHOD'
+              ? 'DEFINES'
+              : data.relationType === 'HAS_PROPERTY'
+                ? 'CONTAINS'
+                : data.relationType;
+          if (!visibleTypes.includes(normalizedType as EdgeType)) {
             res.hidden = true;
             return res;
           }

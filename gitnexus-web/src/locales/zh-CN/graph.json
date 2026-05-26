@@ -113,6 +113,7 @@
   },
   "canvas": {
     "viewModes": {
+      "label": "图形视图模式",
       "force": "力导向图",
       "tree": "顺序布局",
       "circles": "径向布局"
