@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { ParameterTypeClass, SymbolDefinition } from 'gitnexus-shared';
 import { cppConversionRank } from '../../../../src/core/ingestion/languages/cpp/conversion-rank.js';
 import {
@@ -44,6 +44,10 @@ const mkDef = (
   parameterTypeClasses: [...parameterTypeClasses],
 });
 
+afterEach(() => {
+  clearCppUserDefinedConversions();
+});
+
 describe('cppConversionRank pointer/nullptr/ellipsis ranks (#1637)', () => {
   it('ranks nullptr -> T* ahead of nullptr -> bool', () => {
     expect(cppConversionRank('null', 'int', value('null'), pointer('int'))).toBe(2);
@@ -72,8 +76,6 @@ describe('cppConversionRank user-defined conversion ranks (#1631)', () => {
 
     expect(cppConversionRank('int', 'Wrap', value('int'), value('Wrap'))).toBe(4);
     expect(cppConversionRank('int', 'double', value('int'), value('double'))).toBe(2);
-
-    clearCppUserDefinedConversions();
   });
 
   it('keeps tied user-defined conversion candidates ambiguous', () => {
@@ -90,7 +92,6 @@ describe('cppConversionRank user-defined conversion ranks (#1631)', () => {
     });
 
     expect(result.map((d) => d.nodeId)).toEqual(['h:WrapA', 'h:WrapB']);
-    clearCppUserDefinedConversions();
   });
 });
 

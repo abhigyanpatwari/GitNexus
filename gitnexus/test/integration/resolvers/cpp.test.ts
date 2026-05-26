@@ -2017,6 +2017,35 @@ describe('C++ overload resolution — user-defined conversion rank (#1631)', () 
 
     expect(hCalls.length).toBe(0);
   });
+
+  it('e(42) ignores the explicit-constructor overload and keeps the implicit UDC viable', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const eCalls = calls.filter((c) => c.source === 'run' && c.target === 'e');
+
+    expect(eCalls.length).toBe(1);
+    const target = result.graph.getNode(eCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['Wrap']);
+  });
+});
+
+describe('C++ overload resolution — UDC namespace collision guard (#1631)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-udc-namespace-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not let beta::Token(int) tie the valid alpha::Other(int) conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+
+    expect(fCalls.length).toBe(1);
+    const target = result.graph.getNode(fCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['Other']);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -3,9 +3,19 @@ import type { ScopeId } from 'gitnexus-shared';
 import { normalizeCppParamType } from './arity-metadata.js';
 
 const userDefinedConversions = new Set<string>();
+const pendingUserDefinedConversions: PendingUserDefinedConversion[] = [];
+const classIdentitiesBySimpleName = new Map<string, Set<string>>();
+
+interface PendingUserDefinedConversion {
+  readonly argType: string;
+  readonly paramType: string;
+  readonly ownerClassName: string;
+}
 
 export function clearCppUserDefinedConversions(): void {
   userDefinedConversions.clear();
+  pendingUserDefinedConversions.length = 0;
+  classIdentitiesBySimpleName.clear();
 }
 
 export function hasCppUserDefinedConversion(argType: string, paramType: string): boolean {
@@ -19,6 +29,12 @@ export function populateCppUserDefinedConversions(parsed: ParsedFile): void {
   for (const classScope of parsed.scopes) {
     if (classScope.kind !== 'Class') continue;
     const classDef = classScope.ownedDefs.find(isClassLike);
+    if (classDef !== undefined) recordClassIdentity(classDef);
+  }
+
+  for (const classScope of parsed.scopes) {
+    if (classScope.kind !== 'Class') continue;
+    const classDef = classScope.ownedDefs.find(isClassLike);
     if (classDef === undefined) continue;
     const className = normalizedSimpleName(classDef);
     if (className === '') continue;
@@ -27,16 +43,13 @@ export function populateCppUserDefinedConversions(parsed: ParsedFile): void {
     for (const def of methodDefs) {
       const simpleName = simpleNameOf(def);
       if (simpleName === className && def.parameterTypes?.length === 1) {
-        registerCppUserDefinedConversion(def.parameterTypes[0], className);
-        continue;
-      }
-
-      const operatorTarget = conversionOperatorTarget(simpleName);
-      if (operatorTarget !== undefined && def.parameterTypes?.length === 0) {
-        registerCppUserDefinedConversion(className, operatorTarget);
+        if (def.isExplicit === true) continue;
+        registerPendingCppUserDefinedConversion(def.parameterTypes[0], className, className);
       }
     }
   }
+
+  rebuildCppUserDefinedConversions();
 }
 
 export function registerCppUserDefinedConversion(argType: string, paramType: string): void {
@@ -67,15 +80,47 @@ function collectClassMethodDefs(
   return methods;
 }
 
-function conversionOperatorTarget(simpleName: string): string | undefined {
-  const match = /^operator\s+(.+)$/.exec(simpleName);
-  if (match === null) return undefined;
-  const target = normalizeCppParamType(match[1]);
-  return target.length > 0 ? target : undefined;
-}
-
 function conversionKey(argType: string, paramType: string): string {
   return `${argType}\0${paramType}`;
+}
+
+function registerPendingCppUserDefinedConversion(
+  argType: string,
+  paramType: string,
+  ownerClassName: string,
+): void {
+  if (argType === '' || paramType === '') return;
+  if (argType === paramType) return;
+  pendingUserDefinedConversions.push({ argType, paramType, ownerClassName });
+}
+
+function rebuildCppUserDefinedConversions(): void {
+  userDefinedConversions.clear();
+  for (const conversion of pendingUserDefinedConversions) {
+    if (isAmbiguousClassName(conversion.ownerClassName)) continue;
+    userDefinedConversions.add(conversionKey(conversion.argType, conversion.paramType));
+  }
+}
+
+function recordClassIdentity(def: SymbolDefinition): void {
+  const simpleName = normalizedSimpleName(def);
+  if (simpleName === '') return;
+  const identities = classIdentitiesBySimpleName.get(simpleName) ?? new Set<string>();
+  identities.add(normalizedQualifiedClassName(def));
+  classIdentitiesBySimpleName.set(simpleName, identities);
+}
+
+function isAmbiguousClassName(simpleName: string): boolean {
+  return (classIdentitiesBySimpleName.get(simpleName)?.size ?? 0) > 1;
+}
+
+function normalizedQualifiedClassName(def: SymbolDefinition): string {
+  const qualifiedName = def.qualifiedName ?? simpleNameOf(def);
+  if (qualifiedName === '' || !qualifiedName.includes('.')) return `${def.filePath}:${def.nodeId}`;
+  return qualifiedName
+    .split('.')
+    .map((part) => normalizeCppParamType(part))
+    .join('.');
 }
 
 function normalizedSimpleName(def: SymbolDefinition): string {

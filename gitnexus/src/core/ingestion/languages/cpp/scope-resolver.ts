@@ -116,8 +116,8 @@ export const cppScopeResolver: ScopeResolver = {
     // associated namespace for Koenig lookup.
     populateCppAssociatedNamespaces(parsed);
     // Build conservative one-step user-defined conversion facts for
-    // overload ranking (#1631): converting constructors and conversion
-    // operators only, with no chaining or explicit-constructor handling.
+    // overload ranking (#1631): implicit converting constructors only,
+    // with no chaining or conversion-operator handling.
     populateCppUserDefinedConversions(parsed);
   },
 
