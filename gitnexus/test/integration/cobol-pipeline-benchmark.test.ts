@@ -76,8 +76,13 @@ function generateCobolFixture(
           ? `           CALL '${crossProgram}' USING ${copybookNames[p % copybookCount]}-KEY.`
           : '';
 
+      // COPY in paragraphs adds preprocessing stress — non-idiomatic but
+      // exercises the preprocessor's expansion path per-paragraph.
+      const copyLine = `           COPY ${copybookNames[f % copybookCount]}.`;
+
       paragraphs.push(
         `       ${paraName}.`,
+        copyLine,
         performLine,
         callLine,
         `           DISPLAY '${programName} ${paraName}'.`,
