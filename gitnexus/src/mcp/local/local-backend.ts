@@ -959,6 +959,7 @@ export class LocalBackend {
     // unavailable the search helper may return an unexpected shape.
     const bm25Results = bm25SearchResult?.results ?? [];
     const ftsUsed = bm25SearchResult?.ftsUsed ?? false;
+    const containsFallback = bm25SearchResult?.containsFallback ?? false;
 
     // Merge via reciprocal rank fusion
     timer.start('merge');
@@ -1181,8 +1182,9 @@ export class LocalBackend {
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(!ftsUsed && {
-        warning:
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
+        warning: containsFallback
+          ? 'FTS extension unavailable on this platform — using CONTAINS keyword fallback (less accurate than BM25 but functional).'
+          : 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       }),
     };
   }
@@ -1194,7 +1196,7 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
-  ): Promise<{ results: any[]; ftsUsed: boolean }> {
+  ): Promise<{ results: any[]; ftsUsed: boolean; containsFallback?: boolean }> {
     let searchFTSFromLbug;
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
@@ -1202,9 +1204,9 @@ export class LocalBackend {
       // Module import can fail in sandboxed MCP contexts (#1489)
       logger.warn(
         { err: err?.message },
-        'GitNexus: bm25-index.js import failed — falling back to semantic-only',
+        'GitNexus: bm25-index.js import failed — falling back to CONTAINS keyword scan',
       );
-      return { results: [], ftsUsed: false };
+      return await this.containsKeywordFallback(repo, query, limit);
     }
     let ftsResponse;
     try {
@@ -1212,15 +1214,23 @@ export class LocalBackend {
     } catch (err: any) {
       logger.error(
         { err: err.message },
-        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) -',
+        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) — falling back to CONTAINS keyword scan',
       );
-      return { results: [], ftsUsed: false };
+      return await this.containsKeywordFallback(repo, query, limit);
     }
 
     // Guard against unexpected response shape (#1489) — ftsResponse.results
     // could be undefined when the FTS extension is unavailable in the MCP process.
     const bm25Results = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
+
+    // FTS reported unavailable (e.g. Windows where the LadybugDB FTS extension
+    // is not loaded due to the pool-adapter SIGSEGV guard). Fall through to
+    // a graph-based CONTAINS scan so `query` still returns useful results
+    // instead of an empty list with a warning.
+    if (!ftsUsed) {
+      return await this.containsKeywordFallback(repo, query, limit);
+    }
 
     const results: any[] = [];
 
@@ -1285,6 +1295,79 @@ export class LocalBackend {
     }
 
     return { results, ftsUsed };
+  }
+
+  /**
+   * CONTAINS-based keyword search fallback for platforms without LadybugDB FTS.
+   *
+   * On Windows the LadybugDB FTS extension is not loaded (see pool-adapter.ts
+   * win32 SIGSEGV guard), so `searchFTSFromLbug` reports `ftsAvailable: false`
+   * and returns zero results. Previously the query tool surfaced an empty
+   * payload with a warning. This fallback runs a per-label CONTAINS scan
+   * against indexed node tables so `query` returns ranked symbol matches even
+   * without a true BM25 index. Less accurate than FTS (no TF-IDF / BM25
+   * scoring, just token-presence count) but functional.
+   *
+   * Mirrors the `augment` CONTAINS fallback added in #1476.
+   */
+  private async containsKeywordFallback(
+    repo: RepoHandle,
+    query: string,
+    limit: number,
+  ): Promise<{ results: any[]; ftsUsed: boolean; containsFallback: boolean }> {
+    const tokens = String(query)
+      .toLowerCase()
+      .split(/[^a-z0-9_]+/i)
+      .filter((t) => t.length > 2);
+    if (tokens.length === 0) {
+      return { results: [], ftsUsed: false, containsFallback: true };
+    }
+    const labels = ['Method', 'Function', 'Class', 'Interface', 'File'];
+    const collected: any[] = [];
+    const nameConditions = tokens.map((_, i) => `lower(n.name) CONTAINS $t${i}`).join(' OR ');
+    const scoreExpr = tokens
+      .map((_, i) => `(CASE WHEN lower(n.name) CONTAINS $t${i} THEN 1 ELSE 0 END)`)
+      .join(' + ');
+    const params: Record<string, string> = Object.fromEntries(
+      tokens.map((t, i) => [`t${i}`, t]),
+    );
+    for (const label of labels) {
+      try {
+        const rows = await executeParameterized(
+          repo.id,
+          `
+            MATCH (n:${label})
+            WHERE ${nameConditions}
+            RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, (${scoreExpr}) AS score
+            ORDER BY score DESC
+            LIMIT ${limit}
+          `,
+          params,
+        );
+        for (const r of rows) {
+          collected.push({
+            nodeId: r.id ?? r[0],
+            name: r.name ?? r[1],
+            type: label,
+            filePath: r.filePath ?? r[2],
+            startLine: r.startLine ?? r[3],
+            endLine: r.endLine ?? r[4],
+            bm25Score: Number(r.score ?? r[5] ?? 0),
+          });
+        }
+      } catch (err: any) {
+        logger.warn(
+          { err: err?.message, label },
+          'GitNexus: CONTAINS fallback per-label query failed',
+        );
+      }
+    }
+    collected.sort((a, b) => (b.bm25Score ?? 0) - (a.bm25Score ?? 0));
+    return {
+      results: collected.slice(0, limit),
+      ftsUsed: false,
+      containsFallback: true,
+    };
   }
 
   /**
