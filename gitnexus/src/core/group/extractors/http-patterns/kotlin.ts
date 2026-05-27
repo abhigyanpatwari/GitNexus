@@ -9,18 +9,26 @@ import {
 import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 
 /**
- * Kotlin HTTP plugin (Spring providers).
+ * Kotlin HTTP plugin (Spring providers + consumers).
  *
- * Mirrors the Java plugin for Spring `@RequestMapping` class prefixes
- * and `@(Get|Post|...)Mapping` method annotations on Kotlin Spring
- * Boot controllers. Both positional shorthand (`@GetMapping("/x")`)
- * and named annotation arguments (`@GetMapping(value = "/x")` and
+ * **Providers** (#1849) — Spring `@RequestMapping` class prefixes and
+ * `@(Get|Post|...)Mapping` method annotations on Kotlin Spring Boot
+ * controllers. Both positional shorthand (`@GetMapping("/x")`) and
+ * named annotation arguments (`@GetMapping(value = "/x")` and
  * `@GetMapping(path = "/x")`) are supported.
  *
- * Consumer detection (RestTemplate / WebClient / OkHttp) is intentionally
- * out of scope for this plugin — Kotlin call-site ASTs are sufficiently
- * different from Java's `method_invocation` shape that they warrant a
- * separate, focused follow-up.
+ * **Consumers** (this PR) — three call-site patterns common in Kotlin
+ * Spring projects:
+ *
+ *   1. `restTemplate.getForObject("/x", ...)` and friends
+ *   2. `webClient.get().uri("/x")` (short form, 1 verb hop + 1 uri hop)
+ *   3. `Request.Builder().url("/x")` (OkHttp)
+ *
+ * The long-form `webClient.method(HttpMethod.X).uri("/y")` chain is
+ * intentionally deferred to a follow-up: it requires walk-up logic
+ * to recover the verb from a sibling `call_expression`, and we can
+ * land 80% of real-world Kotlin Spring consumer coverage with the
+ * three simpler patterns above.
  *
  * tree-sitter-kotlin (fwcd) AST shapes used here:
  *   class_declaration
@@ -33,6 +41,20 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  *               (simple_identifier  "=")? ← absent for positional, present for named
  *               string_literal
  *     type_identifier                     ← class name
+ *
+ * Consumer call shape (Kotlin chains everything via `navigation_expression`):
+ *   call_expression                       ← outer `.uri("/x")` or `.url("/x")`
+ *     navigation_expression
+ *       call_expression                   ← inner `.get()` / `Request.Builder()` / `restTemplate.x`
+ *         navigation_expression
+ *           simple_identifier             ← receiver: `webClient` / `Request` / `restTemplate`
+ *           navigation_suffix             ← `.method` / `.Builder` / `.getForObject`
+ *         call_suffix (value_arguments)
+ *       navigation_suffix                 ← `.uri` / `.url`
+ *     call_suffix
+ *       value_arguments
+ *         value_argument
+ *           string_literal                ← the path
  *
  * tree-sitter-kotlin is an optional npm dependency — when its native
  * binding is unavailable the plugin gracefully exports `null` and
@@ -55,6 +77,36 @@ const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
   PutMapping: 'PUT',
   DeleteMapping: 'DELETE',
   PatchMapping: 'PATCH',
+};
+
+/**
+ * RestTemplate method-name → HTTP verb. Mirrors the Java plugin's
+ * `REST_TEMPLATE_TO_HTTP` (java.ts) so a polyglot repo emits the
+ * same contract IDs from .java and .kt sources.
+ */
+const REST_TEMPLATE_TO_HTTP: Record<string, string> = {
+  getForObject: 'GET',
+  getForEntity: 'GET',
+  postForObject: 'POST',
+  postForEntity: 'POST',
+  put: 'PUT',
+  delete: 'DELETE',
+  patchForObject: 'PATCH',
+};
+
+/**
+ * WebClient short-form verb → HTTP verb. The reactive WebClient API
+ * exposes `.get()`, `.post()`, `.put()`, `.delete()`, `.patch()` as
+ * one-liners that return a `RequestHeadersUriSpec` whose `.uri(...)`
+ * carries the path. We capture both pieces in a single query (see
+ * `WEB_CLIENT_SHORT_PATTERNS` below) and translate the verb here.
+ */
+const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
+  get: 'GET',
+  post: 'POST',
+  put: 'PUT',
+  delete: 'DELETE',
+  patch: 'PATCH',
 };
 
 /**
@@ -157,6 +209,130 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     ],
   } satisfies LanguagePatterns<Record<string, never>>);
 
+  // ─── Consumer: Spring RestTemplate ────────────────────────────────────
+  // Kotlin call-site shape mirrors the Java plugin's
+  // `REST_TEMPLATE_PATTERNS`, but goes through tree-sitter-kotlin's
+  // `navigation_expression` instead of Java's `method_invocation`:
+  //
+  //   restTemplate.getForObject("/x", User::class.java)
+  //
+  // becomes
+  //
+  //   call_expression
+  //     navigation_expression
+  //       simple_identifier "restTemplate"
+  //       navigation_suffix → simple_identifier "getForObject"
+  //     call_suffix
+  //       value_arguments
+  //         value_argument . string_literal "/x"   ← captured
+  //         value_argument User::class.java
+  //
+  // The receiver name is constrained to `restTemplate` (#eq? @obj),
+  // matching the Java plugin's heuristic. This means a non-conventional
+  // field name (e.g. `userServiceTemplate`) will not be picked up;
+  // that's the same trade-off already accepted on the Java side.
+  const REST_TEMPLATE_PATTERNS = compilePatterns({
+    name: 'kotlin-rest-template',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (call_expression
+            (navigation_expression
+              (simple_identifier) @obj (#eq? @obj "restTemplate")
+              (navigation_suffix (simple_identifier) @method))
+            (call_suffix
+              (value_arguments . (value_argument . (string_literal) @path))))
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
+  // ─── Consumer: Spring WebClient (short form) ──────────────────────────
+  // Reactive WebClient exposes one-liner verb helpers:
+  //
+  //   webClient.get().uri("/x").retrieve().awaitBody<T>()
+  //   webClient.post().uri("/x")...
+  //
+  // The chain `webClient.get().uri("/x")` parses as two nested
+  // `call_expression` nodes — the OUTER call is `.uri("/x")` and the
+  // INNER call is `webClient.get()`. We anchor on the outer call and
+  // require:
+  //   - inner receiver is `webClient`
+  //   - inner suffix is one of the HTTP verbs (#match?)
+  //   - outer suffix is exactly `uri`
+  //   - outer call's first value_argument is a string literal
+  //
+  // The long-form `webClient.method(HttpMethod.GET).uri("/x")` chain
+  // uses an extra navigation hop and an enum field access — it's
+  // intentionally out of scope here (see file header).
+  const WEB_CLIENT_SHORT_PATTERNS = compilePatterns({
+    name: 'kotlin-web-client-short',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (call_expression
+            (navigation_expression
+              (call_expression
+                (navigation_expression
+                  (simple_identifier) @obj (#eq? @obj "webClient")
+                  (navigation_suffix
+                    (simple_identifier) @verb (#match? @verb "^(get|post|put|delete|patch)$")))
+                (call_suffix (value_arguments)))
+              (navigation_suffix (simple_identifier) @uri (#eq? @uri "uri")))
+            (call_suffix
+              (value_arguments . (value_argument . (string_literal) @path))))
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
+  // ─── Consumer: OkHttp Request.Builder().url("/x") ─────────────────────
+  // Kotlin parses `Request.Builder()` as a `call_expression` whose
+  // callee is a `navigation_expression` (Request → .Builder), NOT as
+  // Java's `object_creation_expression`. The chain `.url("/x")` then
+  // wraps that in another `call_expression`. The query mirrors Java's
+  // `OK_HTTP_PATTERNS` (java.ts) but adapts the node types.
+  //
+  // Receiver `Request` is constrained by name (#eq? @cls); a project
+  // that imports OkHttp's `Request` under an alias (`import okhttp3.Request as OkRequest`)
+  // would not be picked up — this matches the Java plugin's heuristic.
+  //
+  // **Known limitation — verb defaults to GET.** OkHttp encodes the
+  // verb on a *sibling* call further down the builder chain (e.g.
+  // `.post(body)` / `.get()` / `.delete()`), not on `.url(...)` itself.
+  // This query intentionally does not walk the chain to recover the
+  // verb — it emits `method: 'GET'` for every match, mirroring
+  // `java.ts:OK_HTTP_PATTERNS`. So a `Request.Builder().url("/x").post(body).build()`
+  // call becomes `http::GET::/x`, not `http::POST::/x`. This is the
+  // same trade-off Java has accepted; pinned by an anti-overreach
+  // test in `http-route-extractor.test.ts` so a future verb-walk
+  // implementation has to update this comment in lockstep.
+  const OK_HTTP_PATTERNS = compilePatterns({
+    name: 'kotlin-okhttp',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (call_expression
+            (navigation_expression
+              (call_expression
+                (navigation_expression
+                  (simple_identifier) @cls (#eq? @cls "Request")
+                  (navigation_suffix (simple_identifier) @builder (#eq? @builder "Builder")))
+                (call_suffix (value_arguments)))
+              (navigation_suffix (simple_identifier) @method (#eq? @method "url")))
+            (call_suffix
+              (value_arguments . (value_argument . (string_literal) @path))))
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
   /**
    * Find the nearest enclosing class_declaration ancestor for a node, or
    * null if the node is top-level. Mirrors the Java plugin's helper.
@@ -220,6 +396,60 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           path: fullPath,
           name: nameNode?.text ?? null,
           confidence: 0.8,
+        });
+      }
+
+      // ─── Consumers: RestTemplate ────────────────────────────────────
+      for (const match of runCompiledPatterns(REST_TEMPLATE_PATTERNS, tree)) {
+        const methodNode = match.captures.method;
+        const pathNode = match.captures.path;
+        if (!methodNode || !pathNode) continue;
+        const httpMethod = REST_TEMPLATE_TO_HTTP[methodNode.text];
+        if (!httpMethod) continue;
+        const path = unquoteLiteral(pathNode.text);
+        if (path === null) continue;
+        out.push({
+          role: 'consumer',
+          framework: 'spring-rest-template',
+          method: httpMethod,
+          path,
+          name: null,
+          confidence: 0.7,
+        });
+      }
+
+      // ─── Consumers: WebClient short form (.get()/.post()/etc → .uri) ─
+      for (const match of runCompiledPatterns(WEB_CLIENT_SHORT_PATTERNS, tree)) {
+        const verbNode = match.captures.verb;
+        const pathNode = match.captures.path;
+        if (!verbNode || !pathNode) continue;
+        const httpMethod = WEB_CLIENT_SHORT_TO_HTTP[verbNode.text];
+        if (!httpMethod) continue;
+        const path = unquoteLiteral(pathNode.text);
+        if (path === null) continue;
+        out.push({
+          role: 'consumer',
+          framework: 'spring-web-client',
+          method: httpMethod,
+          path,
+          name: null,
+          confidence: 0.7,
+        });
+      }
+
+      // ─── Consumers: OkHttp Request.Builder().url("path") ────────────
+      for (const match of runCompiledPatterns(OK_HTTP_PATTERNS, tree)) {
+        const pathNode = match.captures.path;
+        if (!pathNode) continue;
+        const path = unquoteLiteral(pathNode.text);
+        if (path === null) continue;
+        out.push({
+          role: 'consumer',
+          framework: 'okhttp',
+          method: 'GET',
+          path,
+          name: null,
+          confidence: 0.7,
         });
       }
 
