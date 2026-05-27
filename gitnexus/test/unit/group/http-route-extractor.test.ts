@@ -584,12 +584,14 @@ class UserController {
       expect(route).toBeDefined();
     });
 
-    itKotlin('extracts Kotlin @RequestMapping(value = "/orders") (named class prefix)', async () => {
-      const dir = path.join(tmpDir, 'kotlin-spring-class-named-value');
-      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'src/controller/OrderController.kt'),
-        `package com.example
+    itKotlin(
+      'extracts Kotlin @RequestMapping(value = "/orders") (named class prefix)',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-spring-class-named-value');
+        fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src/controller/OrderController.kt'),
+          `package com.example
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -600,13 +602,14 @@ class OrderController {
   @GetMapping("/list") fun list() {}
 }
 `,
-      );
+        );
 
-      const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      const providers = contracts.filter((c) => c.role === 'provider');
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
 
-      expect(providers.find((c) => c.contractId === 'http::GET::/orders/list')).toBeDefined();
-    });
+        expect(providers.find((c) => c.contractId === 'http::GET::/orders/list')).toBeDefined();
+      },
+    );
 
     itKotlin('extracts Kotlin method-level @GetMapping(value = "/users")', async () => {
       const dir = path.join(tmpDir, 'kotlin-spring-method-named-value');
@@ -798,15 +801,17 @@ class UserController {
       },
     );
 
-    itKotlin('uses Kotlin `path` (not non-route key) as class prefix when both appear', async () => {
-      // Anti-regression: without the key constraint, the LAST captured
-      // value_argument would win in the prefix map. Here `name = "myApi"`
-      // appears after `path = "/api"` — the prefix must remain `/api`.
-      const dir = path.join(tmpDir, 'kotlin-spring-class-prefix-key-wins');
-      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'src/controller/UserController.kt'),
-        `package com.example
+    itKotlin(
+      'uses Kotlin `path` (not non-route key) as class prefix when both appear',
+      async () => {
+        // Anti-regression: without the key constraint, the LAST captured
+        // value_argument would win in the prefix map. Here `name = "myApi"`
+        // appears after `path = "/api"` — the prefix must remain `/api`.
+        const dir = path.join(tmpDir, 'kotlin-spring-class-prefix-key-wins');
+        fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src/controller/UserController.kt'),
+          `package com.example
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -817,14 +822,15 @@ class UserController {
   @GetMapping("/users") fun list() {}
 }
 `,
-      );
+        );
 
-      const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      const providers = contracts.filter((c) => c.role === 'provider');
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
 
-      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
-      expect(providers.find((c) => c.contractId === 'http::GET::/myApi/users')).toBeUndefined();
-    });
+        expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/myApi/users')).toBeUndefined();
+      },
+    );
 
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
