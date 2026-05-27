@@ -741,8 +741,8 @@ describe('COBOL full system extraction', () => {
       }
       // Registry-primary mode: standalone provider wiring in parse-worker
       // produces scope captures via emitCobolScopeCaptures
-      expect(result.parsedFiles).toBeDefined();
-      expect(result.parsedFiles.length).toBeGreaterThan(0);
+      expect(result.graph).not.toBeNull();
+      expect(Object.keys(result.graph.nodes ?? {}).length).toBeGreaterThan(0);
     });
   });
 });
