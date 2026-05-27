@@ -6,6 +6,9 @@
  * preprocessing, COPY expansion, CALL resolution, and scope extraction.
  *
  * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/cobol-pipeline-benchmark.test.ts
+ *
+ * Results differ by REGISTRY_PRIMARY_COBOL mode. Under =1,
+ * cobolPhase is gated, so node/edge counts will be ~0.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -73,12 +76,8 @@ function generateCobolFixture(
           ? `           CALL '${crossProgram}' USING ${copybookNames[p % copybookCount]}-KEY.`
           : '';
 
-      // COPY statement: each file gets a unique copybook, repeat to increase load
-      const copyLine = `           COPY ${copybookNames[f % copybookCount]}.`;
-
       paragraphs.push(
         `       ${paraName}.`,
-        copyLine,
         performLine,
         callLine,
         `           DISPLAY '${programName} ${paraName}'.`,
