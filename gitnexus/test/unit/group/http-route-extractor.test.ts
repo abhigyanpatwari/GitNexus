@@ -306,8 +306,33 @@ public class UserController {
       expect(route!.symbolName).toBe('list');
     });
 
+    it('extracts Spring method-level @GetMapping(path = "/users") (named path)', async () => {
+      const dir = path.join(tmpDir, 'spring-method-named-path-get');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @GetMapping(path = "/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/users');
+      expect(route).toBeDefined();
+      expect(route!.symbolName).toBe('list');
+    });
+
     it('extracts Spring method-level @PostMapping(path = "/users") (named path)', async () => {
-      const dir = path.join(tmpDir, 'spring-method-named-path');
+      const dir = path.join(tmpDir, 'spring-method-named-path-post');
       fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
       fs.writeFileSync(
         path.join(dir, 'src/controller/UserController.java'),
