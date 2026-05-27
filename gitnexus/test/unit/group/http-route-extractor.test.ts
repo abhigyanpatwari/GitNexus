@@ -1397,6 +1397,259 @@ class ApiClient {
       ).toBeDefined();
     });
 
+    // ─── Kotlin consumers (RestTemplate / WebClient short / OkHttp) ──
+    // Same shape as the Java consumer test above, but parsed by the
+    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Three
+    // consumer flavors covered here (long-form WebClient
+    // `webClient.method(HttpMethod.X).uri(...)` is intentionally
+    // deferred to a follow-up — see kotlin.ts file header).
+    //
+    // tree-sitter-kotlin is an optionalDependency. If the binding is
+    // unavailable, `getPluginForFile` returns undefined for `.kt` and
+    // we skip the suite (matches the gating on the Provider tests).
+    const kotlinConsumerAvailable = getPluginForFile('Probe.kt') !== undefined;
+    const itKotlinConsumer = kotlinConsumerAvailable ? it : it.skip;
+
+    itKotlinConsumer('extracts Kotlin RestTemplate verbs', async () => {
+      const dir = path.join(tmpDir, 'kotlin-rest-template');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ApiClient.kt'),
+        `package com.example
+import org.springframework.web.client.RestTemplate
+
+class ApiClient(private val restTemplate: RestTemplate) {
+  fun run() {
+    restTemplate.getForObject("/api/users/1", User::class.java)
+    restTemplate.getForEntity("/api/users/2", User::class.java)
+    restTemplate.postForObject("/api/users", body, User::class.java)
+    restTemplate.postForEntity("/api/users", body, User::class.java)
+    restTemplate.put("/api/users/3", body)
+    restTemplate.delete("/api/users/4")
+    restTemplate.patchForObject("/api/users/5", body, User::class.java)
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/users')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::PUT::/api/users/{param}')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+      ).toBeDefined();
+
+      // Framework label must be the same `spring-rest-template` used
+      // by the Java plugin so polyglot repos coalesce on a single key.
+      const restConsumers = consumers.filter((c) => c.meta.framework === 'spring-rest-template');
+      expect(restConsumers.length).toBeGreaterThanOrEqual(5);
+    });
+
+    itKotlinConsumer('extracts Kotlin WebClient short-form verbs', async () => {
+      const dir = path.join(tmpDir, 'kotlin-web-client-short');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OrderClient.kt'),
+        `package com.example
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+import org.springframework.web.reactive.function.client.awaitBodilessEntity
+
+class OrderClient(private val webClient: WebClient) {
+  suspend fun run() {
+    val r1 = webClient.get().uri("/api/orders/1").retrieve().awaitBody<Order>()
+    val r2 = webClient.post().uri("/api/orders").retrieve().awaitBody<Order>()
+    val r3 = webClient.put().uri("/api/orders/2").retrieve().awaitBody<Order>()
+    val r4 = webClient.delete().uri("/api/orders/3").retrieve().awaitBodilessEntity()
+    val r5 = webClient.patch().uri("/api/orders/4").retrieve().awaitBody<Order>()
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/orders/{param}'),
+      ).toBeDefined();
+
+      const wcConsumers = consumers.filter((c) => c.meta.framework === 'spring-web-client');
+      expect(wcConsumers.length).toBeGreaterThanOrEqual(5);
+    });
+
+    itKotlinConsumer('extracts Kotlin OkHttp Request.Builder().url(...)', async () => {
+      const dir = path.join(tmpDir, 'kotlin-okhttp');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OkClient.kt'),
+        `package com.example
+import okhttp3.OkHttpClient
+import okhttp3.Request
+
+class OkClient(private val client: OkHttpClient) {
+  fun fetch() {
+    val req = Request.Builder().url("/api/items").build()
+    val resp = client.newCall(req).execute()
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const okConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/items');
+      expect(okConsumer).toBeDefined();
+      expect(okConsumer!.meta.framework).toBe('okhttp');
+    });
+
+    itKotlinConsumer(
+      'OkHttp Request.Builder().url("/x").post(body) — verb defaults to GET (Java parity)',
+      async () => {
+        // Anti-overreach / known-limitation pin: OkHttp encodes the
+        // HTTP verb on a sibling call (`.post(body)` / `.delete()` /
+        // ...), not on `.url(...)`. The query at `kotlin.ts:OK_HTTP_PATTERNS`
+        // intentionally does not walk the chain to recover the verb —
+        // it emits `method: 'GET'` for every match, mirroring the Java
+        // plugin's `OK_HTTP_PATTERNS` (java.ts).
+        //
+        // This test pins the accepted behavior so a future verb-walk
+        // implementation must update kotlin.ts's known-limitation
+        // comment in lockstep. Concretely:
+        //   - `Request.Builder().url("/api/users").post(body).build()`
+        //     → ONE consumer: `http::GET::/api/users` (heuristic-default)
+        //     → NO `http::POST::/api/users` consumer
+        //
+        // Test signal:
+        //   - if this becomes correct (POST detected) without updating
+        //     the kotlin.ts comment + java.ts behavior together, this
+        //     test goes red and the reviewer must reconcile both sides.
+        const dir = path.join(tmpDir, 'kotlin-okhttp-post-chain');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OkPostClient.kt'),
+          `package com.example
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkPostClient(private val client: OkHttpClient, private val body: RequestBody) {
+  fun create() {
+    val req = Request.Builder().url("/api/users").post(body).build()
+    client.newCall(req).execute()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        const fromThisFile = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('OkPostClient.kt'),
+        );
+
+        // Heuristic-default GET: exactly one consumer is emitted for
+        // the .url("/x") capture, with method=GET regardless of the
+        // sibling .post(body) call.
+        expect(fromThisFile).toHaveLength(1);
+        expect(fromThisFile[0].contractId).toBe('http::GET::/api/users');
+        expect(fromThisFile[0].meta.method).toBe('GET');
+
+        // Anti-overreach: no second contract with POST should appear.
+        // If a future verb-walk lands and this assertion needs to flip
+        // (i.e. POST is now detected), bump kotlin.ts's known-limitation
+        // comment and java.ts in the same PR.
+        expect(fromThisFile.find((c) => c.contractId === 'http::POST::/api/users')).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'does NOT match Kotlin WebClient long form (deferred to follow-up)',
+      async () => {
+        // Anti-overreach: confirm the short-form query does NOT
+        // accidentally fire on the long-form chain
+        // `webClient.method(HttpMethod.GET).uri(...)`. The long form
+        // is intentionally unsupported in this PR; if a future change
+        // to the short-form query starts capturing it we want a loud
+        // signal here. Long-form support will arrive in a follow-up
+        // with a dedicated query + verb walk-up helper.
+        const dir = path.join(tmpDir, 'kotlin-web-client-long');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'LegacyClient.kt'),
+          `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+
+class LegacyClient(private val webClient: WebClient) {
+  suspend fun run() {
+    val r = webClient.method(HttpMethod.GET).uri("/api/legacy").retrieve().awaitBody<String>()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        // No consumer should be emitted from this file by the
+        // current short-form query. Documented as a known limitation.
+        const fromLegacy = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('LegacyClient.kt'),
+        );
+        expect(fromLegacy).toHaveLength(0);
+      },
+    );
+
+    itKotlinConsumer(
+      'does NOT pick up unrelated string-literal calls on a non-restTemplate receiver',
+      async () => {
+        // Anti-regression: the RestTemplate receiver constraint
+        // (#eq? @obj "restTemplate") must hold. A field with a
+        // different conventional name (e.g. `cacheClient`) calling
+        // `.getForObject("/x", ...)` should NOT produce a route.
+        const dir = path.join(tmpDir, 'kotlin-rest-template-other-receiver');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'CacheClient.kt'),
+          `package com.example
+
+class CacheClient(private val cacheClient: SomeCache) {
+  fun run() {
+    cacheClient.getForObject("/cache/key", String::class.java)
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        expect(consumers.find((c) => c.contractId === 'http::GET::/cache/key')).toBeUndefined();
+        const fromCache = consumers.filter((c) => c.symbolRef.filePath.endsWith('CacheClient.kt'));
+        expect(fromCache).toHaveLength(0);
+      },
+    );
+
     it('extracts Go stdlib and resty calls', async () => {
       const dir = path.join(tmpDir, 'go-consumer');
       fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
