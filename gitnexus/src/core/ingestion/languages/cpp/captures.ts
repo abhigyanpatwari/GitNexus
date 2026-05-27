@@ -126,6 +126,13 @@ export function emitCppScopeCaptures(
             JSON.stringify(arity.parameterTypeClasses),
           );
         }
+        if (hasExplicitSpecifier(fnNode)) {
+          grouped['@declaration.is-explicit'] = syntheticCapture(
+            '@declaration.is-explicit',
+            fnNode,
+            'true',
+          );
+        }
 
         // Detect static storage class (file-local linkage)
         if (hasStaticStorageClass(fnNode)) {
@@ -1540,6 +1547,20 @@ function extractDeclaratorLeafName(node: SyntaxNode): string | null {
     cur = next;
   }
   return null;
+}
+
+/**
+ * Check if a C++ declaration has an `explicit` specifier. Tree-sitter-cpp
+ * exposes `explicit` as a direct keyword child on constructor declarations in
+ * current grammar builds; the bounded text prefix keeps this resilient across
+ * small grammar shape differences without scanning whole function bodies.
+ */
+function hasExplicitSpecifier(node: SyntaxNode): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child !== null && child.text === 'explicit') return true;
+  }
+  return /\bexplicit\b/.test(node.text.slice(0, 128));
 }
 
 /**

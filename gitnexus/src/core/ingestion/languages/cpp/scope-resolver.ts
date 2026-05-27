@@ -34,6 +34,10 @@ import {
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
 import { cppConstraintCompatibility } from './constraint-filter.js';
+import {
+  clearCppUserDefinedConversions,
+  populateCppUserDefinedConversions,
+} from './user-defined-conversions.js';
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -61,6 +65,7 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppDependentBases();
     clearCppAdlState();
     clearCppInlineNamespaces();
+    clearCppUserDefinedConversions();
     return scanCppHeaderFiles(repoPath);
   },
 
@@ -110,6 +115,10 @@ export const cppScopeResolver: ScopeResolver = {
     // by ADL (U2 of plan 2026-05-13-001) to identify each argument type's
     // associated namespace for Koenig lookup.
     populateCppAssociatedNamespaces(parsed);
+    // Build conservative one-step user-defined conversion facts for
+    // overload ranking (#1631): implicit converting constructors only,
+    // with no chaining or conversion-operator handling.
+    populateCppUserDefinedConversions(parsed);
   },
 
   // Resolve recorded template-class → dependent-base simple names to
