@@ -1521,6 +1521,67 @@ class OkClient(private val client: OkHttpClient) {
     });
 
     itKotlinConsumer(
+      'OkHttp Request.Builder().url("/x").post(body) — verb defaults to GET (Java parity)',
+      async () => {
+        // Anti-overreach / known-limitation pin: OkHttp encodes the
+        // HTTP verb on a sibling call (`.post(body)` / `.delete()` /
+        // ...), not on `.url(...)`. The query at `kotlin.ts:OK_HTTP_PATTERNS`
+        // intentionally does not walk the chain to recover the verb —
+        // it emits `method: 'GET'` for every match, mirroring the Java
+        // plugin's `OK_HTTP_PATTERNS` (java.ts).
+        //
+        // This test pins the accepted behavior so a future verb-walk
+        // implementation must update kotlin.ts's known-limitation
+        // comment in lockstep. Concretely:
+        //   - `Request.Builder().url("/api/users").post(body).build()`
+        //     → ONE consumer: `http::GET::/api/users` (heuristic-default)
+        //     → NO `http::POST::/api/users` consumer
+        //
+        // Test signal:
+        //   - if this becomes correct (POST detected) without updating
+        //     the kotlin.ts comment + java.ts behavior together, this
+        //     test goes red and the reviewer must reconcile both sides.
+        const dir = path.join(tmpDir, 'kotlin-okhttp-post-chain');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OkPostClient.kt'),
+          `package com.example
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkPostClient(private val client: OkHttpClient, private val body: RequestBody) {
+  fun create() {
+    val req = Request.Builder().url("/api/users").post(body).build()
+    client.newCall(req).execute()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        const fromThisFile = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('OkPostClient.kt'),
+        );
+
+        // Heuristic-default GET: exactly one consumer is emitted for
+        // the .url("/x") capture, with method=GET regardless of the
+        // sibling .post(body) call.
+        expect(fromThisFile).toHaveLength(1);
+        expect(fromThisFile[0].contractId).toBe('http::GET::/api/users');
+        expect(fromThisFile[0].meta.method).toBe('GET');
+
+        // Anti-overreach: no second contract with POST should appear.
+        // If a future verb-walk lands and this assertion needs to flip
+        // (i.e. POST is now detected), bump kotlin.ts's known-limitation
+        // comment and java.ts in the same PR.
+        expect(fromThisFile.find((c) => c.contractId === 'http::POST::/api/users')).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
       'does NOT match Kotlin WebClient long form (deferred to follow-up)',
       async () => {
         // Anti-overreach: confirm the short-form query does NOT
