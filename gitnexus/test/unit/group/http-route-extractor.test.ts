@@ -217,6 +217,302 @@ public class UserController {
       expect(getByIdRoute).toBeDefined();
     });
 
+    // ─── #1834 — Spring named annotation arguments ──────────────────
+    // Spring annotations accept both positional shorthand
+    // (`@GetMapping("/users")`) and named arguments
+    // (`@GetMapping(value = "/users")` or `@GetMapping(path = "/users")`).
+    // The two AST shapes produced by tree-sitter-java differ:
+    //   @GetMapping("/users")          → annotation_argument_list > string_literal
+    //   @GetMapping(value = "/users")  → annotation_argument_list > element_value_pair
+    // The named-arg pattern in `http-patterns/java.ts` MUST constrain
+    // the `key` field to `path`/`value`; without that constraint the
+    // query also captures other string-valued attributes such as
+    // `produces`, `consumes`, `headers`, `name`, `params` (see PR #1834
+    // review). The tests below pin both the positive cases and the
+    // negative anti-regression cases.
+    it('extracts Spring class-level @RequestMapping(path = "/api")', async () => {
+      const dir = path.join(tmpDir, 'spring-class-named-path');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(path = "/api/v3")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/api/v3/users');
+      expect(route).toBeDefined();
+      expect(route!.meta.path).toBe('/api/v3/users');
+    });
+
+    it('extracts Spring class-level @RequestMapping(value = "/api")', async () => {
+      const dir = path.join(tmpDir, 'spring-class-named-value');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/OrderController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(value = "/orders")
+public class OrderController {
+    @GetMapping("/list")
+    public List<Order> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/orders/list');
+      expect(route).toBeDefined();
+    });
+
+    it('extracts Spring method-level @GetMapping(value = "/users") (named value)', async () => {
+      const dir = path.join(tmpDir, 'spring-method-named-value');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @GetMapping(value = "/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/users');
+      expect(route).toBeDefined();
+      expect(route!.symbolName).toBe('list');
+    });
+
+    it('extracts Spring method-level @GetMapping(path = "/users") (named path)', async () => {
+      const dir = path.join(tmpDir, 'spring-method-named-path-get');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @GetMapping(path = "/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/users');
+      expect(route).toBeDefined();
+      expect(route!.symbolName).toBe('list');
+    });
+
+    it('extracts Spring method-level @PostMapping(path = "/users") (named path)', async () => {
+      const dir = path.join(tmpDir, 'spring-method-named-path-post');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @PostMapping(path = "/users")
+    public User create(@RequestBody User user) { return service.save(user); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::POST::/users');
+      expect(route).toBeDefined();
+      expect(route!.symbolName).toBe('create');
+    });
+
+    it('combines class named-arg prefix with method positional path', async () => {
+      const dir = path.join(tmpDir, 'spring-mixed-class-named-method-pos');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(path = "/api")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(route).toBeDefined();
+    });
+
+    it('combines class positional prefix with method named-arg path', async () => {
+      const dir = path.join(tmpDir, 'spring-mixed-class-pos-method-named');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class UserController {
+    @GetMapping(value = "/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(route).toBeDefined();
+    });
+
+    it('does NOT emit a provider for @GetMapping(produces = ...) without path/value', async () => {
+      // Anti-regression: without the `key:` constraint, the named-arg
+      // query would capture `produces = "application/json"` and emit
+      // a bogus `http::GET::/application/json` contract.
+      const dir = path.join(tmpDir, 'spring-produces-only');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/MisleadingController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class MisleadingController {
+    @GetMapping(produces = "application/json")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      // No GET provider should be emitted for this method — the only
+      // string literal in the annotation is a non-route attribute.
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/application/json'),
+      ).toBeUndefined();
+      // And the controller has no other route, so providers list for
+      // this file should be empty.
+      const fromThisFile = providers.filter((c) =>
+        c.symbolRef.filePath.endsWith('MisleadingController.java'),
+      );
+      expect(fromThisFile).toHaveLength(0);
+    });
+
+    it('emits exactly one provider for @GetMapping(name = "...", value = "/users")', async () => {
+      // Anti-regression: without the `key:` constraint, the named-arg
+      // query would capture both string literals and emit two
+      // contracts (`/listUsers` + `/users`). With the constraint, only
+      // `/users` is emitted.
+      const dir = path.join(tmpDir, 'spring-name-and-value');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @GetMapping(name = "listUsers", value = "/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const usersRoute = providers.find((c) => c.contractId === 'http::GET::/users');
+      expect(usersRoute).toBeDefined();
+      expect(usersRoute!.symbolName).toBe('list');
+
+      // The non-route `name` attribute must NOT produce a route.
+      expect(providers.find((c) => c.contractId === 'http::GET::/listUsers')).toBeUndefined();
+
+      const fromThisFile = providers.filter((c) =>
+        c.symbolRef.filePath.endsWith('UserController.java'),
+      );
+      expect(fromThisFile).toHaveLength(1);
+    });
+
+    it('uses `path` (not non-route key) as class prefix when both appear', async () => {
+      // Anti-regression: without the `key:` constraint, the LAST
+      // element_value_pair in the annotation wins because
+      // prefixByClassId.set is called per match, in document order. So
+      // `@RequestMapping(path = "/api", name = "myApi")` would mistakenly
+      // set the prefix to `myApi`. With the constraint, only the
+      // `path`/`value` pair is captured and the prefix stays `/api`.
+      const dir = path.join(tmpDir, 'spring-class-prefix-last-wins');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(path = "/api", name = "myApi")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const route = providers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(route).toBeDefined();
+
+      // Must NOT have used `myApi` as the class prefix.
+      expect(providers.find((c) => c.contractId === 'http::GET::/myApi/users')).toBeUndefined();
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
