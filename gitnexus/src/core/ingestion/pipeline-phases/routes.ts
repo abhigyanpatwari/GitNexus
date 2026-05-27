@@ -383,7 +383,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
               allFetchCalls.push({
                 filePath,
                 fetchURL: match[1],
-                lineNumber: content.substring(0, match.index).split('\n').length - 1,
+                lineNumber: content.substring(0, match.index).split('\n').length,
               });
             }
           }

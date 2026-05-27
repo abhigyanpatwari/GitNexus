@@ -150,7 +150,7 @@ export const mergeChunkResults = (
     for (const item of result.heritage) allHeritage.push(item);
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
-    for (const item of result.fetchWrapperDefs) allFetchWrapperDefs.push(item);
+    for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
