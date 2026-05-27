@@ -225,6 +225,12 @@ const CPP_SCOPE_QUERY = `
     declarator: (function_declarator
       declarator: (field_identifier) @declaration.name))) @declaration.method
 
+;; Constructor prototype in class body: User(int id);
+(field_declaration_list
+  (declaration
+    declarator: (function_declarator
+      declarator: (identifier) @declaration.name)) @declaration.method)
+
 ;; Method prototype with reference return: User& getRef();
 (field_declaration
   declarator: (reference_declarator
