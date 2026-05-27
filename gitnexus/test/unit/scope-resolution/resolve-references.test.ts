@@ -175,4 +175,52 @@ describe('resolveReferenceSites', () => {
       'def:User.save#1',
     );
   });
+
+  it('limits resolution to reference sites from sourceFileFilter', () => {
+    const foo = mkDef({
+      nodeId: 'def:foo',
+      type: 'Function',
+      qualifiedName: 'foo',
+      filePath: 'defs.ts',
+    });
+    const scopeA = mkScope({
+      id: 'scope:a',
+      parent: null,
+      filePath: 'a.ts',
+      bindings: { foo: [{ def: foo, origin: 'local' }] },
+    });
+    const scopeB = mkScope({
+      id: 'scope:b',
+      parent: null,
+      filePath: 'b.ts',
+      bindings: { foo: [{ def: foo, origin: 'local' }] },
+    });
+    const references: ReferenceSite[] = [
+      {
+        name: 'foo',
+        atRange: range(3, 2, 3, 5),
+        inScope: 'scope:a',
+        kind: 'call',
+        arity: 0,
+      },
+      {
+        name: 'foo',
+        atRange: range(7, 2, 7, 5),
+        inScope: 'scope:b',
+        kind: 'call',
+        arity: 0,
+      },
+    ];
+    const indexes = makeIndexes([scopeA, scopeB], [foo], references);
+
+    const result = resolveReferenceSites({
+      scopes: indexes,
+      ownedMembersByOwner: () => [],
+      sourceFileFilter: new Set(['a.ts']),
+    });
+
+    expect(result.stats).toEqual({ sitesProcessed: 1, referencesEmitted: 1, unresolved: 0 });
+    expect(result.referenceIndex.bySourceScope.has('scope:a')).toBe(true);
+    expect(result.referenceIndex.bySourceScope.has('scope:b')).toBe(false);
+  });
 });

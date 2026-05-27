@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
+import type { GraphRelationship, RelationshipType } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -1731,6 +1732,97 @@ export const deleteNodesForFile = async (
   }
 };
 
+const escapeLbugString = (value: string): string => value.replace(/'/g, "''");
+
+const toCypherStringList = (values: readonly string[]): string =>
+  `[${values.map((v) => `'${escapeLbugString(v)}'`).join(',')}]`;
+
+const chunkArray = <T>(items: readonly T[], size: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+/**
+ * Delete all nodes (and their relationships) for multiple files using
+ * batched label-level queries. This is the incremental writeback hot path:
+ * issuing deleteNodesForFile() for hundreds of files can generate tens of
+ * thousands of tiny DETACH DELETE transactions and has been observed to crash
+ * the native LadybugDB engine on large importer expansions. Batched deletes
+ * keep the same semantics while bounding query count by label * batch count.
+ */
+export const deleteNodesForFiles = async (
+  filePaths: readonly string[],
+  dbPath?: string,
+  options: { batchSize?: number } = {},
+): Promise<{ deletedNodes: number }> => {
+  const uniqueFilePaths = [...new Set(filePaths)].filter((p) => p.length > 0);
+  if (uniqueFilePaths.length === 0) return { deletedNodes: 0 };
+
+  const usePerQuery = !!dbPath;
+  let tempHandle: LbugConnectionHandle | null = null;
+  let tempConn: lbug.Connection | null = null;
+  let targetConn: lbug.Connection | null = conn;
+
+  if (usePerQuery) {
+    tempHandle = await openLbugConnection(lbug, dbPath);
+    tempConn = tempHandle.conn;
+    targetConn = tempConn;
+  } else if (!conn) {
+    throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
+  }
+
+  const batchSize = options.batchSize ?? 100;
+  const batches = chunkArray(uniqueFilePaths, batchSize);
+
+  try {
+    let deletedNodes = 0;
+    for (const tableName of NODE_TABLES) {
+      if (tableName === 'Community' || tableName === 'Process') continue;
+      const tn = escapeTableName(tableName);
+      for (const batch of batches) {
+        const list = toCypherStringList(batch);
+        try {
+          const countResult = await targetConn!.query(
+            `MATCH (n:${tn}) WHERE n.filePath IN ${list} RETURN count(n) AS cnt`,
+          );
+          const rows = await readQueryRows(countResult);
+          const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+          if (count > 0) {
+            await queryAndDrain(
+              targetConn!,
+              `MATCH (n:${tn}) WHERE n.filePath IN ${list} DETACH DELETE n`,
+            );
+            deletedNodes += count;
+          }
+        } catch {
+          // Some tables may not support this query, skip the table/batch.
+        }
+      }
+    }
+
+    for (const batch of chunkArray(uniqueFilePaths, 25)) {
+      const predicate = batch
+        .map((p) => `e.nodeId STARTS WITH '${escapeLbugString(p)}'`)
+        .join(' OR ');
+      try {
+        await queryAndDrain(
+          targetConn!,
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE ${predicate} DELETE e`,
+        );
+      } catch {
+        // Embedding table may not exist or nodeId format may differ.
+      }
+    }
+
+    return { deletedNodes };
+  } finally {
+    if (tempHandle) await closeLbugConnection(tempHandle);
+  }
+};
+
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
@@ -1771,6 +1863,84 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
   } catch {
     return [];
   }
+};
+
+export interface StoredScopeResolutionEdge extends GraphRelationship {
+  readonly sourceFile: string;
+}
+
+const SCOPE_RESOLUTION_REPLAY_TYPES = new Set<RelationshipType>([
+  'IMPORTS',
+  'CALLS',
+  'ACCESSES',
+  'EXTENDS',
+  'IMPLEMENTS',
+  'USES',
+]);
+
+/**
+ * Load previously persisted scope-resolution-style code edges from the
+ * current LadybugDB connection. Incremental TypeScript scope-resolution
+ * replays these for unchanged source files so downstream graph phases see a
+ * complete graph while fresh resolution is limited to affected files.
+ */
+export const queryScopeResolutionReplayEdges = async (): Promise<StoredScopeResolutionEdge[]> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const cypher = `
+    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+    WHERE (
+      r.type = 'IMPORTS' OR
+      r.type = 'CALLS' OR
+      r.type = 'ACCESSES' OR
+      r.type = 'EXTENDS' OR
+      r.type = 'IMPLEMENTS' OR
+      r.type = 'USES'
+    )
+    RETURN a.id AS sourceId,
+           a.filePath AS sourceFile,
+           b.id AS targetId,
+           r.type AS type,
+           r.confidence AS confidence,
+           r.reason AS reason,
+           r.step AS step
+    ORDER BY sourceFile, sourceId, type, targetId, reason, confidence, step
+  `;
+  const rows = await executeQuery(cypher);
+  const out: StoredScopeResolutionEdge[] = [];
+  let idx = 0;
+  for (const row of rows) {
+    const sourceId = (row as { sourceId?: unknown }).sourceId;
+    const sourceFile = (row as { sourceFile?: unknown }).sourceFile;
+    const targetId = (row as { targetId?: unknown }).targetId;
+    const type = (row as { type?: unknown }).type;
+    if (
+      typeof sourceId !== 'string' ||
+      typeof sourceFile !== 'string' ||
+      sourceFile.length === 0 ||
+      typeof targetId !== 'string' ||
+      typeof type !== 'string' ||
+      !SCOPE_RESOLUTION_REPLAY_TYPES.has(type as RelationshipType)
+    ) {
+      continue;
+    }
+    const confidenceRaw = (row as { confidence?: unknown }).confidence;
+    const stepRaw = (row as { step?: unknown }).step;
+    const reasonRaw = (row as { reason?: unknown }).reason;
+    out.push({
+      id: `replay:${idx++}:${type}:${sourceId}->${targetId}`,
+      sourceId,
+      targetId,
+      type: type as RelationshipType,
+      confidence:
+        typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw) ? confidenceRaw : 1,
+      reason: typeof reasonRaw === 'string' ? reasonRaw : '',
+      step: typeof stepRaw === 'number' && Number.isFinite(stepRaw) ? stepRaw : undefined,
+      sourceFile,
+    });
+  }
+  return out;
 };
 
 /**

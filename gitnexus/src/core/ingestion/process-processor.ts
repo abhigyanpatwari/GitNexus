@@ -10,7 +10,7 @@
  * Processes help agents understand how features work through the codebase.
  */
 
-import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
@@ -137,7 +137,7 @@ export const processProcesses = async (
 
   // Step 4: Limit to max processes (prioritize longer traces)
   const limitedTraces = endpointDeduped
-    .sort((a, b) => b.length - a.length)
+    .sort((a, b) => b.length - a.length || compareString(traceKey(a), traceKey(b)))
     .slice(0, cfg.maxProcesses);
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
@@ -156,7 +156,7 @@ export const processProcesses = async (
       const comm = membershipMap.get(nodeId);
       if (comm) communitiesSet.add(comm);
     });
-    const communities = Array.from(communitiesSet);
+    const communities = Array.from(communitiesSet).sort(compareString);
 
     // Determine process type
     const processType: 'intra_community' | 'cross_community' =
@@ -227,16 +227,29 @@ type AdjacencyList = Map<string, string[]>;
  */
 const MIN_TRACE_CONFIDENCE = 0.5;
 
+const compareString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+const compareCallRelationship = (a: GraphRelationship, b: GraphRelationship): number =>
+  compareString(a.sourceId, b.sourceId) ||
+  compareString(a.targetId, b.targetId) ||
+  compareString(a.type, b.type) ||
+  a.confidence - b.confidence ||
+  compareString(a.reason ?? '', b.reason ?? '');
+
+const traceKey = (trace: readonly string[]): string => trace.join('\0');
+
 const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      if (!adj.has(rel.sourceId)) {
-        adj.set(rel.sourceId, []);
-      }
-      adj.get(rel.sourceId)!.push(rel.targetId);
+  const callRelationships = [...graph.iterRelationships()]
+    .filter((rel) => rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE)
+    .sort(compareCallRelationship);
+
+  for (const rel of callRelationships) {
+    if (!adj.has(rel.sourceId)) {
+      adj.set(rel.sourceId, []);
     }
+    adj.get(rel.sourceId)!.push(rel.targetId);
   }
 
   return adj;
@@ -245,13 +258,15 @@ const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      if (!adj.has(rel.targetId)) {
-        adj.set(rel.targetId, []);
-      }
-      adj.get(rel.targetId)!.push(rel.sourceId);
+  const callRelationships = [...graph.iterRelationships()]
+    .filter((rel) => rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE)
+    .sort(compareCallRelationship);
+
+  for (const rel of callRelationships) {
+    if (!adj.has(rel.targetId)) {
+      adj.set(rel.targetId, []);
     }
+    adj.get(rel.targetId)!.push(rel.sourceId);
   }
 
   return adj;
@@ -316,7 +331,9 @@ const findEntryPoints = (
   }
 
   // Sort by score descending and return top candidates
-  const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
+  const sorted = entryPointCandidates.sort(
+    (a, b) => b.score - a.score || compareString(a.id, b.id),
+  );
 
   // DEBUG: Log top candidates with new scoring details
   if (sorted.length > 0 && isDev) {
@@ -405,7 +422,9 @@ const deduplicateTraces = (traces: string[][]): string[][] => {
   if (traces.length === 0) return [];
 
   // Sort by length descending
-  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  const sorted = [...traces].sort(
+    (a, b) => b.length - a.length || compareString(traceKey(a), traceKey(b)),
+  );
   const unique: string[][] = [];
 
   for (const trace of sorted) {
@@ -437,7 +456,9 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
 
   const byEndpoints = new Map<string, string[]>();
   // Sort longest first so the first seen per key is the longest
-  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  const sorted = [...traces].sort(
+    (a, b) => b.length - a.length || compareString(traceKey(a), traceKey(b)),
+  );
 
   for (const trace of sorted) {
     const key = `${trace[0]}::${trace[trace.length - 1]}`;
@@ -446,7 +467,9 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
     }
   }
 
-  return Array.from(byEndpoints.values());
+  return Array.from(byEndpoints.values()).sort(
+    (a, b) => b.length - a.length || compareString(traceKey(a), traceKey(b)),
+  );
 };
 
 // ============================================================================

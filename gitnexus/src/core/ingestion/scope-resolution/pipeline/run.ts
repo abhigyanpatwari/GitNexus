@@ -60,6 +60,7 @@ function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+  sourceFileFilter?: ReadonlySet<string>,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -71,6 +72,9 @@ function preEmitInheritanceEdges(
   for (const site of scopes.referenceSites) {
     if (site.kind !== 'inherits') continue;
     const scope = scopes.scopeTree.getScope(site.inScope);
+    if (sourceFileFilter !== undefined) {
+      if (scope === undefined || !sourceFileFilter.has(scope.filePath)) continue;
+    }
     const siteKey =
       scope?.filePath !== undefined
         ? `${scope.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`
@@ -174,6 +178,14 @@ interface RunScopeResolutionInput {
    */
   readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
   /**
+   * Optional source-file filter for incremental scope-resolution. All files
+   * are still extracted and finalized so workspace indexes stay complete, but
+   * fresh reference resolution and edge emission are limited to these source
+   * files. Callers must replay/cache edges for every unfiltered file before
+   * downstream graph phases run.
+   */
+  readonly sourceFileFilter?: ReadonlySet<string>;
+  /**
    * Optional progress callback for UI updates during long-running scope
    * resolution. Called periodically during the extract loop and at each
    * sub-phase boundary (finalize, resolve, emit).
@@ -187,6 +199,7 @@ interface RunScopeResolutionInput {
 
 interface RunScopeResolutionStats {
   readonly filesProcessed: number;
+  readonly freshFilesProcessed: number;
   readonly filesSkipped: number;
   readonly importsEmitted: number;
   readonly resolve: ResolveStats;
@@ -280,6 +293,7 @@ export function runScopeResolution(
   if (parsedFiles.length === 0) {
     return {
       filesProcessed: 0,
+      freshFilesProcessed: 0,
       filesSkipped,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
@@ -307,7 +321,12 @@ export function runScopeResolution(
         provider.mergeBindings(existing, incoming, scopeId),
     },
   });
-  const preEmittedInheritanceSites = preEmitInheritanceEdges(graph, finalized, nodeLookup);
+  const preEmittedInheritanceSites = preEmitInheritanceEdges(
+    graph,
+    finalized,
+    nodeLookup,
+    input.sourceFileFilter,
+  );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -403,6 +422,7 @@ export function runScopeResolution(
     providers: registryProviders,
     ownedMembersByOwner: (ownerDefId, memberName) =>
       lookupOwnedMembersByOwner(readonlyModel, ownerDefId, memberName),
+    sourceFileFilter: input.sourceFileFilter,
   });
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
@@ -420,6 +440,7 @@ export function runScopeResolution(
     readonlyModel,
     {
       recordResolutionOutcome,
+      sourceFileFilter: input.sourceFileFilter,
     },
   );
   const unresolvedReceiverExtras =
@@ -464,11 +485,16 @@ export function runScopeResolution(
     indexes.imports,
     indexes.scopeTree,
     provider.importEdgeReason,
+    input.sourceFileFilter,
   );
 
   if (PROF) {
     const tEnd = process.hrtime.bigint();
     const ns = (a: bigint, b: bigint): number => Number(b - a) / 1_000_000;
+    const freshFiles =
+      input.sourceFileFilter === undefined
+        ? parsedFiles.length
+        : parsedFiles.filter((file) => input.sourceFileFilter?.has(file.filePath)).length;
     logger.warn(
       `[scope-resolution prof] extract=${ns(tStart, tExtract).toFixed(0)}ms` +
         ` finalize=${ns(tExtract, tFinalize).toFixed(0)}ms` +
@@ -476,12 +502,18 @@ export function runScopeResolution(
         ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
         ` total=${ns(tStart, tEnd).toFixed(0)}ms` +
-        ` (${parsedFiles.length} files)`,
+        ` (${parsedFiles.length} files, ${freshFiles} fresh)`,
     );
   }
 
+  const freshFilesProcessed =
+    input.sourceFileFilter === undefined
+      ? parsedFiles.length
+      : parsedFiles.filter((file) => input.sourceFileFilter?.has(file.filePath)).length;
+
   return {
     filesProcessed: parsedFiles.length,
+    freshFilesProcessed,
     filesSkipped,
     importsEmitted,
     resolve: resolveStats,

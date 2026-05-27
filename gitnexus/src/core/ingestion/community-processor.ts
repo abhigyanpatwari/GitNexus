@@ -16,7 +16,7 @@ import type { AbstractGraph, Attributes } from 'graphology-types';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -234,6 +234,26 @@ export const processCommunities = async (
  */
 const MIN_CONFIDENCE_LARGE = 0.5;
 
+const compareString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+const compareGraphNode = (a: GraphNode, b: GraphNode): number =>
+  compareString(a.id, b.id) || compareString(a.label, b.label);
+
+const compareClusteringRelationship = (a: GraphRelationship, b: GraphRelationship): number => {
+  const aFirst = a.sourceId < a.targetId ? a.sourceId : a.targetId;
+  const aSecond = a.sourceId < a.targetId ? a.targetId : a.sourceId;
+  const bFirst = b.sourceId < b.targetId ? b.sourceId : b.targetId;
+  const bSecond = b.sourceId < b.targetId ? b.targetId : b.sourceId;
+
+  return (
+    compareString(aFirst, bFirst) ||
+    compareString(aSecond, bSecond) ||
+    compareString(a.type, b.type) ||
+    a.confidence - b.confidence ||
+    compareString(a.reason ?? '', b.reason ?? '')
+  );
+};
+
 const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean): GraphInstance => {
   const GraphCtor = Graph as unknown as new (options: {
     type: string;
@@ -245,33 +265,40 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
   const clusteringRelTypes = new Set(['CALLS', 'EXTENDS', 'IMPLEMENTS']);
   const connectedNodes = new Set<string>();
   const nodeDegree = new Map<string, number>();
+  const clusteringRelationships = [...knowledgeGraph.iterRelationships()]
+    .filter((rel) => {
+      if (!clusteringRelTypes.has(rel.type) || rel.sourceId === rel.targetId) return false;
+      if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return false;
+      return true;
+    })
+    .sort(compareClusteringRelationship);
 
-  knowledgeGraph.forEachRelationship((rel) => {
-    if (!clusteringRelTypes.has(rel.type) || rel.sourceId === rel.targetId) return;
-    if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
-
+  for (const rel of clusteringRelationships) {
     connectedNodes.add(rel.sourceId);
     connectedNodes.add(rel.targetId);
     nodeDegree.set(rel.sourceId, (nodeDegree.get(rel.sourceId) || 0) + 1);
     nodeDegree.set(rel.targetId, (nodeDegree.get(rel.targetId) || 0) + 1);
-  });
+  }
 
-  knowledgeGraph.forEachNode((node) => {
-    if (!symbolTypes.has(node.label) || !connectedNodes.has(node.id)) return;
-    // For large graphs, skip degree-1 nodes — they just become singletons or
-    // get absorbed into their single neighbor's community, but cost iteration time.
-    if (isLarge && (nodeDegree.get(node.id) || 0) < 2) return;
+  const symbolNodes = [...knowledgeGraph.iterNodes()]
+    .filter((node) => {
+      if (!symbolTypes.has(node.label) || !connectedNodes.has(node.id)) return false;
+      // For large graphs, skip degree-1 nodes — they just become singletons or
+      // get absorbed into their single neighbor's community, but cost iteration time.
+      if (isLarge && (nodeDegree.get(node.id) || 0) < 2) return false;
+      return true;
+    })
+    .sort(compareGraphNode);
 
+  for (const node of symbolNodes) {
     graph.addNode(node.id, {
       name: node.properties.name,
       filePath: node.properties.filePath,
       type: node.label,
     });
-  });
+  }
 
-  knowledgeGraph.forEachRelationship((rel) => {
-    if (!clusteringRelTypes.has(rel.type)) return;
-    if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
+  for (const rel of clusteringRelationships) {
     if (
       graph.hasNode(rel.sourceId) &&
       graph.hasNode(rel.targetId) &&
@@ -281,7 +308,7 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
         graph.addEdge(rel.sourceId, rel.targetId);
       }
     }
-  });
+  }
 
   return graph;
 };

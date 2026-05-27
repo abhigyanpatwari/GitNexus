@@ -204,3 +204,53 @@ withTestLbugDB(
     },
   },
 );
+
+withTestLbugDB(
+  'core-adapter-bulk-delete',
+  () => {
+    describe('core adapter bulk delete', () => {
+      it('deleteNodesForFiles removes all file-scoped rows in batches', async () => {
+        const { deleteNodesForFiles, executeQuery } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        const result = await deleteNodesForFiles(
+          ['src/index.ts', 'src/index.ts', 'missing.ts'],
+          undefined,
+          { batchSize: 1 },
+        );
+
+        expect(result.deletedNodes).toBe(3);
+
+        const deletedRows = await executeQuery(
+          "MATCH (n) WHERE n.filePath = 'src/index.ts' RETURN n.id AS id",
+        );
+        expect(deletedRows).toHaveLength(0);
+
+        const survivingFiles = await executeQuery('MATCH (n:File) RETURN n.filePath AS filePath');
+        expect(survivingFiles).toEqual([{ filePath: 'src/utils.ts' }]);
+
+        const survivingEdges = await executeQuery(
+          'MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId',
+        );
+        expect(survivingEdges).toEqual([
+          {
+            sourceId: 'File:src/utils.ts',
+            targetId: 'Function:src/utils.ts:helper:1',
+          },
+        ]);
+      });
+    });
+  },
+  {
+    afterSetup: async (handle) => {
+      const { loadGraphToLbug } = await import('../../src/core/lbug/lbug-adapter.js');
+      const { createMinimalTestGraph } = await import('../helpers/test-graph.js');
+
+      const graph = createMinimalTestGraph();
+      const storagePath = path.join(handle.tmpHandle.dbPath, 'storage');
+      await fs.mkdir(storagePath, { recursive: true });
+
+      await loadGraphToLbug(graph, '/test/repo', storagePath);
+    },
+  },
+);

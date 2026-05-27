@@ -66,6 +66,12 @@ export interface ResolveReferencesInput {
   readonly providers?: RegistryProviders;
   /** Required owner-keyed member lookup used by Step 2 receiver/MRO walks. */
   readonly ownedMembersByOwner: RegistryContext['ownedMembersByOwner'];
+  /**
+   * Optional source-file filter for incremental scope-resolution. When set,
+   * only reference sites whose containing scope belongs to one of these files
+   * are resolved. Workspace indexes still contain every file.
+   */
+  readonly sourceFileFilter?: ReadonlySet<string>;
 }
 
 export interface ResolveStats {
@@ -112,6 +118,10 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
   let unresolved = 0;
 
   for (const site of scopes.referenceSites) {
+    if (input.sourceFileFilter !== undefined) {
+      const scope = scopes.scopeTree.getScope(site.inScope);
+      if (scope === undefined || !input.sourceFileFilter.has(scope.filePath)) continue;
+    }
     sitesProcessed++;
 
     const resolutions = lookupForSite(site, classRegistry, methodRegistry, fieldRegistry);

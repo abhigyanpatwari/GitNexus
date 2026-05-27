@@ -13,6 +13,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import { walkRepositoryPaths } from './ingestion/filesystem-walker.js';
 import {
   initLbug,
   loadGraphToLbug,
@@ -21,7 +22,7 @@ import {
   executeWithReusedStatement,
   closeLbug,
   loadCachedEmbeddings,
-  deleteNodesForFile,
+  deleteNodesForFiles,
   deleteAllCommunitiesAndProcesses,
   queryImporters,
 } from './lbug/lbug-adapter.js';
@@ -42,9 +43,11 @@ import {
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
   extractChangedSubgraph,
-  computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
-import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import {
+  computeIncrementalWritableFiles,
+  DEFAULT_MAX_IMPORTER_BFS_DEPTH,
+} from './incremental/affected-files.js';
 import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
 import {
   getCurrentCommit,
@@ -360,6 +363,62 @@ export async function runFullAnalysis(
     }
   }
 
+  // ── Early-return: indexed file contents are unchanged ─────────────
+  // The git fast path above is intentionally conservative: a dirty
+  // working tree, or a new commit whose contents were already indexed
+  // before committing, defeats the `lastCommit === HEAD && clean` check.
+  //
+  // For Git repos with per-file hashes, use the stronger invariant: if
+  // the current scanned file set hashes exactly match meta.json, the DB
+  // already represents this workspace state. This avoids minutes of
+  // parse/scope-resolution work for repeated `gitnexus analyze .` runs
+  // after an initial incremental pass, while still falling through when
+  // any indexed file was added, changed, deleted, or size-filtered
+  // differently.
+  if (
+    existingMeta &&
+    !options.force &&
+    repoHasGit &&
+    existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    existingMeta.fileHashes &&
+    Object.keys(existingMeta.fileHashes).length > 0
+  ) {
+    progress('scan', 1, 'Checking file hashes...');
+    const scanned = await walkRepositoryPaths(repoPath);
+    const scannedPaths = scanned.map((f) => f.path);
+    const currentHashes = await computeFileHashes(repoPath, scannedPaths);
+    const contentDiff = diffFileHashes(currentHashes, existingMeta.fileHashes);
+    if (
+      contentDiff.changed.length === 0 &&
+      contentDiff.added.length === 0 &&
+      contentDiff.deleted.length === 0
+    ) {
+      const meta =
+        existingMeta.lastCommit === currentCommit && existingMeta.incrementalInProgress === undefined
+          ? existingMeta
+          : {
+              ...existingMeta,
+              lastCommit: currentCommit,
+              indexedAt: new Date().toISOString(),
+              incrementalInProgress: undefined,
+            };
+      if (meta !== existingMeta) {
+        await saveMeta(storagePath, meta);
+      }
+      await ensureGitNexusIgnored(repoPath);
+      progress('done', 100, 'Done');
+      return {
+        repoName:
+          options.registryName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath)),
+        repoPath,
+        stats: meta.stats ?? {},
+        alreadyUpToDate: true,
+      };
+    }
+  }
+
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
   //   --embeddings              -> load cache, restore, then generate any new ones
@@ -446,6 +505,19 @@ export async function runFullAnalysis(
   // Loaded into a single ParseCache object that the pipeline mutates
   // in-place (cache hits leave entries unchanged; misses add new ones).
   const parseCache = await loadParseCache(storagePath);
+  const incrementalScopeResolution =
+    process.env.GITNEXUS_INCREMENTAL_SCOPE_RESOLUTION === '1' &&
+    !options.force &&
+    !!existingMeta &&
+    existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    !!existingMeta.fileHashes &&
+    Object.keys(existingMeta.fileHashes).length > 0 &&
+    repoHasGit
+      ? {
+          lbugPath,
+          previousFileHashes: existingMeta.fileHashes,
+        }
+      : undefined;
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(
@@ -458,7 +530,7 @@ export async function runFullAnalysis(
         : p.message || phaseLabel;
       progress(p.phase, scaled, message);
     },
-    { parseCache, workerPoolSize: options.workerPoolSize },
+    { parseCache, workerPoolSize: options.workerPoolSize, incrementalScopeResolution },
   );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
@@ -504,15 +576,6 @@ export async function runFullAnalysis(
           allFilePaths.length - hashDiff.toWrite.length
         } unchanged file rows preserved)`,
     );
-    // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
-    // success at the meta-save step.
-    await saveMeta(storagePath, {
-      ...existingMeta!,
-      incrementalInProgress: {
-        startedAt: Date.now(),
-        toWriteCount: hashDiff.toWrite.length,
-      },
-    });
   } else {
     // Full rebuild path: wipe DB files first.
     await closeLbug();
@@ -559,7 +622,7 @@ export async function runFullAnalysis(
       //    into the writable set so their rows are deleted + rewritten
       //    against the refined edges.
       //
-      //    BFS bound: MAX_IMPORTER_BFS_DEPTH. Practically sized to
+      //    BFS bound: DEFAULT_MAX_IMPORTER_BFS_DEPTH. Practically sized to
       //    catch nested barrel chains (e.g. `index.ts → submodule/index.ts
       //    → submodule/impl.ts`) without ballooning into a near-full-
       //    rebuild on monorepos with deep re-export pyramids. Beyond
@@ -571,10 +634,6 @@ export async function runFullAnalysis(
       //    state, so the result is "files that USED TO import the
       //    target" — exactly the set whose previously-stored edges may
       //    no longer match what cross-file resolution produces this run.
-      const MAX_IMPORTER_BFS_DEPTH = 4;
-      const writableFiles = new Set<string>(hashDiff.toWrite);
-      const directlyChangedCount = writableFiles.size;
-
       // Shadow-seed: for ADDED files, queryImporters returns 0 (the new
       // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
       // existing unchanged files may have IMPORTS edges whose module-
@@ -585,80 +644,54 @@ export async function runFullAnalysis(
       // importers — surfaced via queryImporters — get their CALLS edges
       // re-resolved against the new file. See shadow-candidates.ts for
       // the full pattern catalogue.
-      const priorFileSet = new Set<string>(
-        existingMeta?.fileHashes ? Object.keys(existingMeta.fileHashes) : [],
-      );
-      const shadowSeed: string[] = [];
-      for (const added of hashDiff.added) {
-        for (const cand of shadowCandidatesFor(added)) {
-          if (priorFileSet.has(cand) && !writableFiles.has(cand)) {
-            shadowSeed.push(cand);
-          }
-        }
-      }
-
-      {
-        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
-        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
-          const nextFrontier: string[] = [];
-          for (const f of frontier) {
-            try {
-              const importers = await queryImporters(f);
-              for (const i of importers) {
-                if (!writableFiles.has(i)) {
-                  writableFiles.add(i);
-                  nextFrontier.push(i);
-                }
-              }
-            } catch {
-              /* per-file importer query failure → skip; correctness degrades on
-                 that branch, but DB stays writable. */
-            }
-          }
-          frontier = nextFrontier;
-        }
-      }
-      const importerExpansion = writableFiles.size - directlyChangedCount;
+      const priorFileSet = new Set<string>(Object.keys(existingMeta?.fileHashes ?? {}));
+      const { writableFiles, shadowSeeds, importerExpansionCount } =
+        await computeIncrementalWritableFiles({
+          hashDiff,
+          priorFileSet,
+          queryImporters,
+          maxImporterDepth: DEFAULT_MAX_IMPORTER_BFS_DEPTH,
+        });
+      const importerExpansion = importerExpansionCount;
       if (importerExpansion > 0) {
         log(
           `Incremental: +${importerExpansion} importer(s) added to writable set ` +
-            `(BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH}` +
-            (shadowSeed.length > 0 ? `, ${shadowSeed.length} shadow-seed(s)` : '') +
+            `(BFS depth ≤ ${DEFAULT_MAX_IMPORTER_BFS_DEPTH}` +
+            (shadowSeeds.length > 0 ? `, ${shadowSeeds.length} shadow-seed(s)` : '') +
             `)`,
         );
       }
 
-      // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
-      //    composed:
-      //      (a) `writableFiles` — toWrite ∪ transitive importers of
-      //          changed/deleted files (the bounded BFS above, reading
-      //          IMPORTS from the pre-pipeline DB).
-      //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
-      //          edges and pulls in any unchanged-side file that sits
-      //          on a writable-boundary-crossing edge (catches refined
-      //          cross-file CALLS edges that the pre-run DB couldn't
-      //          predict, e.g. a barrel re-export shifting `foo` from
-      //          B to D).
-      //    The composed set is the input to BOTH deleteNodesForFile
-      //    and extractChangedSubgraph — asymmetry between the two would
-      //    leave stale rows or PK-conflict at COPY time.
-      const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+      // 1. The writable set owns row replacement. Do NOT expand it to
+      //    every opposite endpoint of every boundary-crossing edge:
+      //    relationship COPY can connect rewritten nodes to unchanged
+      //    nodes already present in the DB. Expanding endpoints turns
+      //    common utility edits (e.g. logger.ts) into near-full deletes,
+      //    which is both slow and unsafe for the native DB. Importer BFS
+      //    above is the correctness boundary for unchanged files whose
+      //    outgoing edges may change because a dependency changed.
+      const effectiveWriteSet = writableFiles;
       // Deduped: deleted entries may already appear via importer-BFS
       // expansion (queryImporters can return a now-deleted path), which
       // would otherwise call deleteNodesForFile twice for the same file
       // (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
-      for (let i = 0; i < filesToDelete.length; i++) {
-        const f = filesToDelete[i];
-        try {
-          await deleteNodesForFile(f);
-        } catch {
-          /* file may not have rows (e.g. an unparseable file) — fine */
-        }
-        if (i % 20 === 0) {
-          progress('lbug', 62, `Removing rows for changed files (${i}/${filesToDelete.length})...`);
-        }
-      }
+
+      // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
+      // success at the meta-save step. Use the expanded write count here,
+      // not just hashDiff.toWrite, so crash recovery metadata reflects the
+      // actual blast radius.
+      await saveMeta(storagePath, {
+        ...existingMeta!,
+        incrementalInProgress: {
+          startedAt: Date.now(),
+          toWriteCount: filesToDelete.length,
+        },
+      });
+
+      progress('lbug', 62, `Removing rows for changed files (${filesToDelete.length} files)...`);
+      await deleteNodesForFiles(filesToDelete);
+
       // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
       //    from the fresh pipeline output below. Required for the
       //    "Leiden runs on the FULL graph" correctness invariant.

@@ -146,6 +146,7 @@ export function emitReceiverBoundCalls(
   model: SemanticModel,
   options: {
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+    readonly sourceFileFilter?: ReadonlySet<string>;
   } = {},
 ): number {
   let emitted = 0;
@@ -224,6 +225,9 @@ export function emitReceiverBoundCalls(
   };
 
   for (const parsed of parsedFiles) {
+    if (options.sourceFileFilter !== undefined && !options.sourceFileFilter.has(parsed.filePath)) {
+      continue;
+    }
     const namespaceTargets = collectNamespaceTargets(parsed, scopes);
 
     for (const site of parsed.referenceSites) {

@@ -38,6 +38,21 @@ import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
+import {
+  computeFileHashes,
+  diffFileHashes,
+  type FileHashDiff,
+} from '../../../../storage/file-hash.js';
+import {
+  computeIncrementalWritableFiles,
+  DEFAULT_MAX_IMPORTER_BFS_DEPTH,
+} from '../../../incremental/affected-files.js';
+import {
+  queryImporters,
+  queryScopeResolutionReplayEdges,
+  withLbugDb,
+  type StoredScopeResolutionEdge,
+} from '../../../lbug/lbug-adapter.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -71,6 +86,73 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   perLanguage: new Map(),
 });
 
+const DEFAULT_MAX_SCOPE_AFFECTED_RATIO = 0.3;
+const MAX_REPLAY_ATTACH_FAILURE_RATIO = 0.02;
+
+interface IncrementalScopePlan {
+  readonly affectedFiles: ReadonlySet<string>;
+  readonly replayEdges: readonly StoredScopeResolutionEdge[];
+  readonly hashDiff: FileHashDiff;
+  readonly importerExpansionCount: number;
+  readonly shadowSeedCount: number;
+}
+
+interface ReplayResult {
+  readonly ok: boolean;
+  readonly replayed: number;
+  readonly imports: number;
+  readonly references: number;
+  readonly considered: number;
+  readonly missingEndpoints: number;
+}
+
+function replayStoredScopeEdges(
+  graph: PipelineContext['graph'],
+  edges: readonly StoredScopeResolutionEdge[],
+  sourceFiles: ReadonlySet<string>,
+): ReplayResult {
+  const candidates = edges.filter((edge) => sourceFiles.has(edge.sourceFile));
+  const attachable: StoredScopeResolutionEdge[] = [];
+  let missingEndpoints = 0;
+  for (const edge of candidates) {
+    if (graph.getNode(edge.sourceId) === undefined || graph.getNode(edge.targetId) === undefined) {
+      missingEndpoints++;
+      continue;
+    }
+    attachable.push(edge);
+  }
+
+  if (
+    candidates.length > 0 &&
+    missingEndpoints / candidates.length > MAX_REPLAY_ATTACH_FAILURE_RATIO
+  ) {
+    return {
+      ok: false,
+      replayed: 0,
+      imports: 0,
+      references: 0,
+      considered: candidates.length,
+      missingEndpoints,
+    };
+  }
+
+  let imports = 0;
+  let references = 0;
+  for (const edge of attachable) {
+    graph.addRelationship(edge);
+    if (edge.type === 'IMPORTS') imports++;
+    else references++;
+  }
+  return {
+    ok: true,
+    replayed: attachable.length,
+    imports,
+    references,
+    considered: candidates.length,
+    missingEndpoints,
+  };
+}
+
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
   name: 'scopeResolution',
   // Depends on `parse` because emit-references attaches edges to
@@ -91,7 +173,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ScopeResolutionOutput> {
-    const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { scannedFiles, allPaths } = getPhaseOutput<StructureOutput>(deps, 'structure');
     // Reach into the parse phase's AST cache so per-file extract can
     // skip a second tree-sitter parse. Cache miss is safe (re-parses).
     // Worker-mode parses leave the cache empty for those files; they
@@ -103,6 +185,49 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // rebuilding parallel indexes. See ARCHITECTURE.md § "Semantic-model
     // source of truth".
     const model = resolutionContext.model;
+    let incrementalPlan: IncrementalScopePlan | undefined;
+    const incrementalOptions = ctx.options?.incrementalScopeResolution;
+    if (incrementalOptions !== undefined) {
+      try {
+        const currentHashes = await computeFileHashes(ctx.repoPath, allPaths);
+        const hashDiff = diffFileHashes(currentHashes, incrementalOptions.previousFileHashes);
+        const priorFileSet = new Set(Object.keys(incrementalOptions.previousFileHashes));
+        const affected = await withLbugDb(
+          incrementalOptions.lbugPath,
+          async () =>
+            computeIncrementalWritableFiles({
+              hashDiff,
+              priorFileSet,
+              queryImporters,
+              maxImporterDepth:
+                incrementalOptions.maxImporterDepth ?? DEFAULT_MAX_IMPORTER_BFS_DEPTH,
+            }),
+          { readOnly: true },
+        );
+        const currentFileSet = new Set(allPaths);
+        incrementalPlan = {
+          affectedFiles: new Set(
+            [...affected.writableFiles].filter((filePath) => currentFileSet.has(filePath)),
+          ),
+          replayEdges: await withLbugDb(
+            incrementalOptions.lbugPath,
+            () => queryScopeResolutionReplayEdges(),
+            { readOnly: true },
+          ),
+          hashDiff,
+          importerExpansionCount: affected.importerExpansionCount,
+          shadowSeedCount: affected.shadowSeeds.length,
+        };
+      } catch (err) {
+        if (isDev) {
+          logger.warn(
+            `[scope-resolution:incremental] full fallback: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    }
 
     // Build a per-file lookup of ParsedFile artifacts the workers (or
     // sequential extracts) already produced. Threading this into
@@ -195,6 +320,87 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         });
       }
 
+      let sourceFileFilter: ReadonlySet<string> | undefined;
+      let replayResult: ReplayResult | undefined;
+      let incrementalFallbackReason: string | undefined;
+      if (lang === SupportedLanguages.TypeScript && incrementalPlan !== undefined) {
+        const langPathSet = new Set(filePaths);
+        const affectedLangFiles = new Set(
+          [...incrementalPlan.affectedFiles].filter((filePath) => langPathSet.has(filePath)),
+        );
+        const maxAffectedRatio =
+          incrementalOptions?.maxAffectedRatio ?? DEFAULT_MAX_SCOPE_AFFECTED_RATIO;
+        const affectedRatio = langFileCount > 0 ? affectedLangFiles.size / langFileCount : 1;
+
+        if (affectedRatio > maxAffectedRatio) {
+          incrementalFallbackReason = `affected ratio ${(affectedRatio * 100).toFixed(1)}% exceeds ${(maxAffectedRatio * 100).toFixed(0)}%`;
+        } else {
+          const replaySourceFiles = new Set(filePaths.filter((fp) => !affectedLangFiles.has(fp)));
+          if (incrementalPlan.replayEdges.length === 0 && replaySourceFiles.size > 0) {
+            incrementalFallbackReason = 'no previous scope edges available for replay';
+          } else {
+            replayResult = replayStoredScopeEdges(
+              ctx.graph,
+              incrementalPlan.replayEdges,
+              replaySourceFiles,
+            );
+            if (!replayResult.ok) {
+              incrementalFallbackReason =
+                `replay endpoint validation failed ` +
+                `(${replayResult.missingEndpoints}/${replayResult.considered} missing)`;
+              replayResult = undefined;
+            } else {
+              sourceFileFilter = affectedLangFiles;
+              if (isDev) {
+                logger.info(
+                  `[scope-resolution:${lang}] incremental plan: ` +
+                    `${affectedLangFiles.size}/${langFileCount} fresh file(s), ` +
+                    `${replaySourceFiles.size} replay file(s), ` +
+                    `${replayResult.replayed} replayed edge(s), ` +
+                    `changed=${incrementalPlan.hashDiff.changed.length}, ` +
+                    `added=${incrementalPlan.hashDiff.added.length}, ` +
+                    `deleted=${incrementalPlan.hashDiff.deleted.length}, ` +
+                    `importerExpansion=${incrementalPlan.importerExpansionCount}, ` +
+                    `shadowSeeds=${incrementalPlan.shadowSeedCount}`,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      if (incrementalFallbackReason !== undefined && isDev) {
+        logger.info(
+          `[scope-resolution:${lang}] incremental full fallback: ${incrementalFallbackReason}`,
+        );
+      }
+
+      if (sourceFileFilter !== undefined && sourceFileFilter.size === 0) {
+        files.length = 0;
+        contents.clear();
+        for (const fp of filePaths) {
+          preExtractedByPath.delete(fp);
+        }
+
+        processedScopeFiles += langFileCount;
+        anyRan = true;
+        totalFiles += langFileCount;
+        totalImports += replayResult?.imports ?? 0;
+        totalRefs += replayResult?.references ?? 0;
+        perLanguage.set(lang, {
+          filesProcessed: langFileCount,
+          importsEmitted: replayResult?.imports ?? 0,
+          referenceEdgesEmitted: replayResult?.references ?? 0,
+        });
+        if (isDev) {
+          logger.info(
+            `[scope-resolution:${lang}] incremental replay only: ${langFileCount} files → ` +
+              `${replayResult?.imports ?? 0} IMPORTS + ${replayResult?.references ?? 0} reference edges replayed`,
+          );
+        }
+        continue;
+      }
+
       const stats = runScopeResolution(
         {
           graph: ctx.graph,
@@ -206,6 +412,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           recordResolutionOutcome: (outcome) => {
             resolutionOutcomes.push(outcome);
           },
+          sourceFileFilter,
           onWarn: (msg) => {
             if (isSemanticModelValidatorEnabled()) {
               logger.warn(`[scope-resolution:${lang}] ${msg}`);
@@ -266,18 +473,27 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       processedScopeFiles += langFileCount;
       anyRan = true;
       totalFiles += stats.filesProcessed;
-      totalImports += stats.importsEmitted;
-      totalRefs += stats.referenceEdgesEmitted;
+      totalImports += stats.importsEmitted + (replayResult?.imports ?? 0);
+      totalRefs += stats.referenceEdgesEmitted + (replayResult?.references ?? 0);
       perLanguage.set(lang, {
         filesProcessed: stats.filesProcessed,
-        importsEmitted: stats.importsEmitted,
-        referenceEdgesEmitted: stats.referenceEdgesEmitted,
+        importsEmitted: stats.importsEmitted + (replayResult?.imports ?? 0),
+        referenceEdgesEmitted: stats.referenceEdgesEmitted + (replayResult?.references ?? 0),
       });
 
       if (isDev) {
-        logger.info(
-          `[scope-resolution:${lang}] ${stats.filesProcessed} files → ${stats.importsEmitted} IMPORTS + ${stats.referenceEdgesEmitted} reference edges (${stats.resolve.unresolved} unresolved sites, ${stats.referenceSkipped} skipped)`,
-        );
+        if (sourceFileFilter !== undefined) {
+          logger.info(
+            `[scope-resolution:${lang}] incremental ${stats.freshFilesProcessed}/${stats.filesProcessed} fresh files → ` +
+              `${stats.importsEmitted + (replayResult?.imports ?? 0)} IMPORTS + ` +
+              `${stats.referenceEdgesEmitted + (replayResult?.references ?? 0)} reference edges ` +
+              `(${replayResult?.replayed ?? 0} replayed, ${stats.resolve.unresolved} unresolved sites, ${stats.referenceSkipped} skipped)`,
+          );
+        } else {
+          logger.info(
+            `[scope-resolution:${lang}] ${stats.filesProcessed} files → ${stats.importsEmitted} IMPORTS + ${stats.referenceEdgesEmitted} reference edges (${stats.resolve.unresolved} unresolved sites, ${stats.referenceSkipped} skipped)`,
+          );
+        }
       }
     }
 

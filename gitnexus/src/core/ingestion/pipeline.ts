@@ -119,6 +119,18 @@ export interface PipelineOptions {
    * without leaking `process.env` state across invocations.
    */
   chunkByteBudget?: number;
+  /**
+   * Advisory data for warm incremental scope-resolution. When present,
+   * scopeResolutionPhase may replay unchanged TypeScript edges from the
+   * existing DB and resolve only affected TypeScript files. It must fall back
+   * to the full path whenever safety checks fail.
+   */
+  incrementalScopeResolution?: {
+    readonly lbugPath: string;
+    readonly previousFileHashes: Readonly<Record<string, string>>;
+    readonly maxAffectedRatio?: number;
+    readonly maxImporterDepth?: number;
+  };
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

@@ -114,6 +114,43 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('new commit with unchanged file hashes takes the content-hash fast path', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const firstMeta = await loadMeta(storagePath);
+      expect(firstMeta).not.toBeNull();
+
+      execSync(
+        'git -c user.name=test -c user.email=t@t -c commit.gpgsign=false commit --allow-empty -q -m empty',
+        { cwd: repo.dbPath, stdio: 'pipe' },
+      );
+      const head = execSync('git rev-parse HEAD', {
+        cwd: repo.dbPath,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+
+      const second = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(second.alreadyUpToDate).toBe(true);
+
+      const secondMeta = await loadMeta(storagePath);
+      expect(secondMeta).not.toBeNull();
+      expect(secondMeta!.lastCommit).toBe(head);
+      expect(secondMeta!.incrementalInProgress).toBeUndefined();
+      expect(secondMeta!.stats).toEqual(firstMeta!.stats);
+      expect(secondMeta!.fileHashes).toEqual(firstMeta!.fileHashes);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('second run after a comment-only edit takes the incremental path, clears the dirty flag, and preserves graph stats exactly', async () => {
     const repo = await setupMiniRepo();
     try {
