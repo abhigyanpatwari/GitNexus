@@ -200,6 +200,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build',
     'useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create',
   ]),
+  ruby: new Set<string>([
+    // Ruby scope-resolution currently achieves 89/127 parity.
+    // Tests listed here are scope-resolver-only correctness wins
+    // (pass under registry-primary, fail under legacy). Currently
+    // empty — all 127 tests pass under legacy mode.
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class
@@ -307,6 +313,14 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
     "h(1, 'a') resolves to h(int, double), not h(int, ...)",
     'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
+    // User-defined conversion ranking (#1631) builds on the C++
+    // conversion-rank hook and the registry-primary C++ owner sidecars.
+    // Legacy DAG has no user-defined-conversion sidecar or ranking path.
+    'f(42) resolves to f(double) because standard conversion beats constructor UDC',
+    'g(42) keeps a single constructor UDC viable when no standard conversion overload exists',
+    'h(42) emits zero CALLS edges when two single-step constructor UDCs tie',
+    'e(42) ignores the explicit-constructor overload and keeps the implicit UDC viable',
+    'does not let beta::Token(int) tie the valid alpha::Other(int) conversion',
     // The legacy DAG path lacks the SFINAE / `requires`-clause aware
     // overload filter (issue #1579). The two `process<T>` overloads
     // guarded by mutually-exclusive `enable_if_t` predicates collapse

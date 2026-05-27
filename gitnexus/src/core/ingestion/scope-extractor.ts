@@ -574,6 +574,7 @@ function buildDefFromDeclarationMatch(
   const declaredType = match['@declaration.field-type']?.text;
   const returnType = match['@declaration.return-type']?.text;
   const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
+  const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -588,6 +589,7 @@ function buildDefFromDeclarationMatch(
     ...(returnType !== undefined ? { returnType } : {}),
     ...(templateArguments !== undefined ? { templateArguments } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
+    ...(isExplicit === true ? { isExplicit: true } : {}),
   };
 }
 
@@ -608,6 +610,13 @@ function parseIntCapture(cap: { readonly text: string } | undefined): number | u
   if (cap === undefined) return undefined;
   const n = Number.parseInt(cap.text, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function parseBooleanCapture(cap: { readonly text: string } | undefined): boolean | undefined {
+  if (cap === undefined) return undefined;
+  if (cap.text === 'true') return true;
+  if (cap.text === 'false') return false;
+  return undefined;
 }
 
 function parseJsonParameterTypeClassesCapture(
@@ -1079,6 +1088,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-types',
   '@declaration.parameter-type-classes',
   '@declaration.template-constraints',
+  '@declaration.is-explicit',
 ]);
 
 /**

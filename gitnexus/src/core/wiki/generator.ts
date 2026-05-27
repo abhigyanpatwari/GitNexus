@@ -99,6 +99,7 @@ export interface WikiRunResult {
 // ─── Constants ────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
+const GROUPING_TOKEN_BUDGET = 100_000;
 const WIKI_DIR = 'wiki';
 
 // ─── Generator Class ──────────────────────────────────────────────────
@@ -470,15 +471,22 @@ export class WikiGenerator {
       DIRECTORY_TREE: dirTree,
     });
 
-    // Grouping is a structured-data phase (JSON output), not documentation.
-    // Do NOT apply buildSystemPrompt here — a language instruction would risk
-    // translating module-name keys, breaking slug stability and JSON parsing.
-    const response = await this.invokeLLM(
-      prompt,
-      GROUPING_SYSTEM_PROMPT,
-      this.streamOpts('Grouping files', 15, 13),
-    );
-    const grouping = this.parseGroupingResponse(response.content, files);
+    const promptTokens = estimateTokens(prompt);
+    let grouping: Record<string, string[]>;
+
+    if (promptTokens <= GROUPING_TOKEN_BUDGET) {
+      // Grouping is a structured-data phase (JSON output), not documentation.
+      // Do NOT apply buildSystemPrompt here — a language instruction would risk
+      // translating module-name keys, breaking slug stability and JSON parsing.
+      const response = await this.invokeLLM(
+        prompt,
+        GROUPING_SYSTEM_PROMPT,
+        this.streamOpts('Grouping files', 15, 13),
+      );
+      grouping = this.parseGroupingResponse(response.content, files);
+    } else {
+      grouping = await this.batchedGrouping(files);
+    }
 
     // Convert to tree nodes
     const tree: ModuleTreeNode[] = [];
@@ -507,6 +515,202 @@ export class WikiGenerator {
     this.onProgress('grouping', 28, `Created ${tree.length} modules`);
 
     return tree;
+  }
+
+  /**
+   * Run grouping in batches when the full file list exceeds GROUPING_TOKEN_BUDGET.
+   */
+  private async batchedGrouping(files: FileWithExports[]): Promise<Record<string, string[]>> {
+    const batches = this.batchFilesForGrouping(files);
+    const partials: Record<string, string[]>[] = [];
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      this.onProgress(
+        'grouping',
+        15 + Math.round(((i + 1) / batches.length) * 13),
+        `Grouping batch ${i + 1}/${batches.length} (LLM)...`,
+      );
+
+      const batchFileList = formatFileListForGrouping(batch);
+      const batchDirTree = formatDirectoryTree(batch.map((f) => f.filePath));
+      const batchPrompt = fillTemplate(GROUPING_USER_PROMPT, {
+        FILE_LIST: batchFileList,
+        DIRECTORY_TREE: batchDirTree,
+      });
+
+      try {
+        const batchStart = 15 + Math.round((i / batches.length) * 13);
+        const batchRange = Math.max(1, Math.round(13 / batches.length));
+        const response = await this.invokeLLM(
+          batchPrompt,
+          GROUPING_SYSTEM_PROMPT,
+          this.streamOpts(`Grouping batch ${i + 1}/${batches.length}`, batchStart, batchRange),
+        );
+        partials.push(this.parseGroupingResponse(response.content, batch));
+      } catch {
+        this.onProgress(
+          'grouping',
+          15,
+          `Batch ${i + 1} failed, falling back to directory grouping`,
+        );
+        return this.fallbackGrouping(files);
+      }
+    }
+
+    const merged = this.mergeGroupings(partials);
+
+    const assignedFiles = new Set(Object.values(merged).flat());
+    const unassigned = files.map((f) => f.filePath).filter((fp) => !assignedFiles.has(fp));
+    if (unassigned.length > 0) {
+      merged['Other'] = [...(merged['Other'] ?? []), ...unassigned];
+    }
+
+    return Object.keys(merged).length > 0 ? merged : this.fallbackGrouping(files);
+  }
+
+  /**
+   * Partition files into batches that fit within GROUPING_TOKEN_BUDGET.
+   * Groups by top-level directory for semantic coherence.
+   */
+  private batchFilesForGrouping(files: FileWithExports[]): FileWithExports[][] {
+    if (files.length === 0) return [];
+
+    const dirGroups = new Map<string, FileWithExports[]>();
+    for (const f of files) {
+      const parts = f.filePath.replace(/\\/g, '/').split('/');
+      const topDir = parts.length > 1 ? parts[0] : 'Root';
+      let group = dirGroups.get(topDir);
+      if (!group) {
+        group = [];
+        dirGroups.set(topDir, group);
+      }
+      group.push(f);
+    }
+
+    const batches: FileWithExports[][] = [];
+    let currentBatch: FileWithExports[] = [];
+
+    for (const dirFiles of dirGroups.values()) {
+      const dirPromptSize = this.estimateGroupingPromptTokens(dirFiles);
+
+      if (dirPromptSize > GROUPING_TOKEN_BUDGET) {
+        if (currentBatch.length > 0) {
+          batches.push(currentBatch);
+          currentBatch = [];
+        }
+        // Sub-batch this large directory by fixed chunks
+        for (let i = 0; i < dirFiles.length; ) {
+          const subBatch: FileWithExports[] = [];
+          while (i < dirFiles.length) {
+            subBatch.push(dirFiles[i]);
+            i++;
+            if (
+              this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET &&
+              subBatch.length > 1
+            ) {
+              subBatch.pop();
+              i--;
+              break;
+            }
+          }
+          if (
+            subBatch.length === 1 &&
+            this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET
+          ) {
+            subBatch[0] = this.trimSymbolsToFit(subBatch[0]);
+          }
+          batches.push(subBatch);
+        }
+        continue;
+      }
+
+      const candidateBatch = [...currentBatch, ...dirFiles];
+      if (this.estimateGroupingPromptTokens(candidateBatch) > GROUPING_TOKEN_BUDGET) {
+        if (currentBatch.length > 0) {
+          batches.push(currentBatch);
+        }
+        currentBatch = dirFiles;
+      } else {
+        currentBatch = candidateBatch;
+      }
+    }
+
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    return batches;
+  }
+
+  private estimateGroupingPromptTokens(files: FileWithExports[]): number {
+    const fileList = formatFileListForGrouping(files);
+    const dirTree = formatDirectoryTree(files.map((f) => f.filePath));
+    const prompt = fillTemplate(GROUPING_USER_PROMPT, {
+      FILE_LIST: fileList,
+      DIRECTORY_TREE: dirTree,
+    });
+    return estimateTokens(prompt);
+  }
+
+  private trimSymbolsToFit(file: FileWithExports): FileWithExports {
+    const symbols = file.symbols;
+    let lo = 0;
+    let hi = symbols.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >>> 1;
+      const candidate: FileWithExports = {
+        filePath: file.filePath,
+        symbols: [
+          ...symbols.slice(0, mid),
+          { name: `... and ${symbols.length - mid} more`, type: 'truncated' },
+        ],
+      };
+      if (this.estimateGroupingPromptTokens([candidate]) <= GROUPING_TOKEN_BUDGET) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (lo >= symbols.length) return file;
+    return {
+      filePath: file.filePath,
+      symbols:
+        lo > 0
+          ? [
+              ...symbols.slice(0, lo),
+              { name: `... and ${symbols.length - lo} more`, type: 'truncated' },
+            ]
+          : [{ name: 'no exports (truncated)', type: 'truncated' }],
+    };
+  }
+
+  /**
+   * Merge partial groupings from multiple batches. Same module name across
+   * batches gets file lists concatenated. Deduplicates (first-seen wins).
+   */
+  private mergeGroupings(partials: Record<string, string[]>[]): Record<string, string[]> {
+    const merged: Record<string, string[]> = {};
+    const seen = new Set<string>();
+    const slugToCanonical = new Map<string, string>();
+
+    for (const partial of partials) {
+      for (const [mod, paths] of Object.entries(partial)) {
+        const slug = this.slugify(mod);
+        const canonical = slugToCanonical.get(slug) ?? mod;
+        if (!slugToCanonical.has(slug)) slugToCanonical.set(slug, mod);
+
+        for (const fp of paths) {
+          if (!seen.has(fp)) {
+            seen.add(fp);
+            if (!merged[canonical]) merged[canonical] = [];
+            merged[canonical].push(fp);
+          }
+        }
+      }
+    }
+
+    return merged;
   }
 
   /**

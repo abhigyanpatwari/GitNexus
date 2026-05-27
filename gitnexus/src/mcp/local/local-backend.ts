@@ -304,6 +304,21 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
  */
 export const REPO_ID_HASH_LENGTH = 6;
 
+interface ImpactParams {
+  target: string;
+  target_uid?: string;
+  file_path?: string;
+  kind?: string;
+  direction: 'upstream' | 'downstream';
+  maxDepth?: number;
+  relationTypes?: string[];
+  includeTests?: boolean;
+  minConfidence?: number;
+  limit?: number;
+  offset?: number;
+  summaryOnly?: boolean;
+}
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -2750,20 +2765,7 @@ export class LocalBackend {
     };
   }
 
-  private async impact(
-    repo: RepoHandle,
-    params: {
-      target: string;
-      target_uid?: string;
-      file_path?: string;
-      kind?: string;
-      direction: 'upstream' | 'downstream';
-      maxDepth?: number;
-      relationTypes?: string[];
-      includeTests?: boolean;
-      minConfidence?: number;
-    },
-  ): Promise<any> {
+  private async impact(repo: RepoHandle, params: ImpactParams): Promise<any> {
     try {
       return await this._impactImpl(repo, params);
     } catch (err: any) {
@@ -2780,20 +2782,7 @@ export class LocalBackend {
     }
   }
 
-  private async _impactImpl(
-    repo: RepoHandle,
-    params: {
-      target: string;
-      target_uid?: string;
-      file_path?: string;
-      kind?: string;
-      direction: 'upstream' | 'downstream';
-      maxDepth?: number;
-      relationTypes?: string[];
-      includeTests?: boolean;
-      minConfidence?: number;
-    },
-  ): Promise<any> {
+  private async _impactImpl(repo: RepoHandle, params: ImpactParams): Promise<any> {
     await this.ensureInitialized(repo.id);
 
     const { target, direction } = params;
@@ -2896,6 +2885,9 @@ export class LocalBackend {
       relationTypes: effectiveRelationTypes,
       includeTests,
       minConfidence,
+      limit: Number.isFinite(params.limit) ? params.limit : 100,
+      offset: Number.isFinite(params.offset) ? params.offset : 0,
+      summaryOnly: params.summaryOnly,
     });
   }
 
@@ -2912,9 +2904,20 @@ export class LocalBackend {
       relationTypes: string[];
       includeTests: boolean;
       minConfidence: number;
+      limit?: number;
+      offset?: number;
+      summaryOnly?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
+    const hasExplicitLimit = typeof opts.limit === 'number' && Number.isFinite(opts.limit);
+    const paginationLimit = hasExplicitLimit
+      ? Math.max(1, Math.min(Math.trunc(opts.limit!), 10000))
+      : Infinity;
+    const rawOffset =
+      typeof opts.offset === 'number' && Number.isFinite(opts.offset) ? opts.offset : 0;
+    const paginationOffset = Math.max(0, Math.trunc(rawOffset));
+    const summaryOnly = opts.summaryOnly ?? false;
     const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
 
@@ -3326,7 +3329,13 @@ export class LocalBackend {
       risk = 'MEDIUM';
     }
 
-    return {
+    // Build per-depth counts (always included, even in summaryOnly mode)
+    const byDepthCounts: Record<number, number> = {};
+    for (const [depth, items] of Object.entries(grouped)) {
+      byDepthCounts[Number(depth)] = items.length;
+    }
+
+    const base = {
       target: {
         id: symId,
         name: sym.name || sym[1],
@@ -3342,9 +3351,37 @@ export class LocalBackend {
         processes_affected: processCount,
         modules_affected: moduleCount,
       },
+      byDepthCounts,
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
-      byDepth: grouped,
+    };
+
+    if (summaryOnly) {
+      return base;
+    }
+
+    // Apply limit/offset pagination per depth level
+    const paginatedGrouped: Record<number, any[]> = {};
+    let anyTruncated = false;
+    for (const [depth, items] of Object.entries(grouped)) {
+      const total = items.length;
+      const sliced = items.slice(paginationOffset, paginationOffset + paginationLimit);
+      paginatedGrouped[Number(depth)] = sliced;
+      if (paginationOffset > 0 || paginationOffset + paginationLimit < total) {
+        anyTruncated = true;
+      }
+    }
+
+    return {
+      ...base,
+      ...(anyTruncated && {
+        pagination: {
+          ...(Number.isFinite(paginationLimit) && { limit: paginationLimit }),
+          offset: paginationOffset,
+          truncated: true,
+        },
+      }),
+      byDepth: paginatedGrouped,
     };
   }
 
@@ -3498,6 +3535,9 @@ export class LocalBackend {
       if (typeof params.subgroup === 'string') impactArgs.subgroup = params.subgroup;
       if (params.timeoutMs !== undefined) impactArgs.timeoutMs = params.timeoutMs;
       if (params.timeout !== undefined) impactArgs.timeout = params.timeout;
+      // limit/offset/summaryOnly are not forwarded to group-mode impact:
+      // runGroupImpact uses GROUP_LOCAL_PHASE_LIMIT internally for UID
+      // collection and does not re-paginate the local result yet.
       return svc.groupImpact(impactArgs);
     }
     if (method === 'query') {

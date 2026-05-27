@@ -24,6 +24,7 @@
     "clearChat": "Clear chat",
     "stopResponse": "Stop response"
   },
+  "stopped": "Stopped by user",
   "badges": {
     "configureAI": "Configure AI",
     "connecting": "Connecting"

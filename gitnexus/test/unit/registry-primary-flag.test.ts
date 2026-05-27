@@ -108,20 +108,20 @@ describe('isRegistryPrimary', () => {
   it('isolates flags per-language (one on does not affect others)', () => {
     process.env['REGISTRY_PRIMARY_PYTHON'] = 'true';
     expect(isRegistryPrimary(SupportedLanguages.Python)).toBe(true);
-    // Ruby is not in MIGRATED_LANGUAGES — default false stays
+    // Swift is not in MIGRATED_LANGUAGES — default false stays
     // false regardless of Python's flag.
-    expect(isRegistryPrimary(SupportedLanguages.Ruby)).toBe(false);
+    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(false);
   });
 
   it('respects a mid-process env-var mutation (no stale cache)', () => {
-    // Use Ruby — not in MIGRATED_LANGUAGES — so the unset default is
+    // Use Swift — not in MIGRATED_LANGUAGES — so the unset default is
     // deterministically `false`, independent of which languages have
     // been flipped to registry-primary.
-    expect(isRegistryPrimary(SupportedLanguages.Ruby)).toBe(false);
-    process.env['REGISTRY_PRIMARY_RUBY'] = 'true';
-    expect(isRegistryPrimary(SupportedLanguages.Ruby)).toBe(true);
-    delete process.env['REGISTRY_PRIMARY_RUBY'];
-    expect(isRegistryPrimary(SupportedLanguages.Ruby)).toBe(false);
+    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(false);
+    process.env['REGISTRY_PRIMARY_SWIFT'] = 'true';
+    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(true);
+    delete process.env['REGISTRY_PRIMARY_SWIFT'];
+    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(false);
   });
 
   it('handles the CPlusPlus → REGISTRY_PRIMARY_CPP mapping correctly', () => {
