@@ -158,6 +158,11 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
 
+      // Standalone providers (COBOL, JCL) don't emit graph edges yet
+      // through the scope-resolution path. Skip them to avoid reading
+      // all files from disk for no output until edge emission lands.
+      if (provider.languageProvider.parseStrategy === 'standalone') continue;
+
       const langFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
       if (langFiles.length === 0) continue;
 
