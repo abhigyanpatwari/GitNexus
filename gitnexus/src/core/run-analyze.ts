@@ -41,9 +41,7 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
 } from '../storage/repo-manager.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
-import {
-  extractChangedSubgraph,
-} from './incremental/subgraph-extract.js';
+import { extractChangedSubgraph } from './incremental/subgraph-extract.js';
 import {
   computeIncrementalWritableFiles,
   DEFAULT_MAX_IMPORTER_BFS_DEPTH,
@@ -394,7 +392,8 @@ export async function runFullAnalysis(
       contentDiff.deleted.length === 0
     ) {
       const meta =
-        existingMeta.lastCommit === currentCommit && existingMeta.incrementalInProgress === undefined
+        existingMeta.lastCommit === currentCommit &&
+        existingMeta.incrementalInProgress === undefined
           ? existingMeta
           : {
               ...existingMeta,

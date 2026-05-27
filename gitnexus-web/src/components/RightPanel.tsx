@@ -292,7 +292,7 @@ export const RightPanel = () => {
           )}
 
           {/* Messages */}
-          <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
+          <div ref={scrollContainerRef} className="flex-1 scrollbar-thin overflow-y-auto p-4">
             {chatMessages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center px-4 text-center">
                 <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
@@ -417,7 +417,7 @@ export const RightPanel = () => {
                 onKeyDown={handleKeyDown}
                 placeholder={t('chat:input.placeholder')}
                 rows={1}
-                className="scrollbar-thin min-h-[36px] flex-1 resize-none border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                className="min-h-[36px] flex-1 resize-none scrollbar-thin border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
                 style={{ height: '36px', overflowY: 'hidden' }}
               />
               <button

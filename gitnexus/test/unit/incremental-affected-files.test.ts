@@ -49,11 +49,7 @@ describe('computeIncrementalWritableFiles', () => {
       }),
     });
 
-    expect([...result.writableFiles].sort()).toEqual([
-      'src/leaf.ts',
-      'src/mid.ts',
-      'src/root.ts',
-    ]);
+    expect([...result.writableFiles].sort()).toEqual(['src/leaf.ts', 'src/mid.ts', 'src/root.ts']);
     expect(result.importerExpansionCount).toBe(2);
   });
 
@@ -122,11 +118,7 @@ describe('computeIncrementalWritableFiles', () => {
     });
 
     expect(result.importerQueryFailures).toEqual(['src/a.ts']);
-    expect([...result.writableFiles].sort()).toEqual([
-      'src/a.ts',
-      'src/b-importer.ts',
-      'src/b.ts',
-    ]);
+    expect([...result.writableFiles].sort()).toEqual(['src/a.ts', 'src/b-importer.ts', 'src/b.ts']);
     expect(result.importerExpansionCount).toBe(1);
   });
 });
