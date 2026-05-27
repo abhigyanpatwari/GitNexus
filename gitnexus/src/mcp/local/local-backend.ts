@@ -3066,6 +3066,15 @@ export class LocalBackend {
     const directCount = (grouped[1] || []).length;
     let affectedProcesses: any[] = [];
     let affectedModules: any[] = [];
+    // Per-symbol process membership: maps impacted symbol id -> list of processes
+    // it participates in. Populated by a second chunked Cypher pass below when
+    // any process is affected at all. Surfaced as `processes: [...]` on each
+    // byDepth item so consumers can tell which caller belongs to which cron/
+    // webhook/route without a follow-up query.
+    const perSymbolProcesses = new Map<
+      string,
+      Array<{ id: string; label: string; processType: string; step: number }>
+    >();
 
     if (impacted.length > 0) {
       const CHUNK_SIZE = 100;
@@ -3218,6 +3227,47 @@ export class LocalBackend {
         }))
         .sort((a, b) => b.total_hits - a.total_hits);
 
+      // ── Per-symbol process membership enrichment ────────────────────
+      // The aggregation query above used WITH p, COUNT(DISTINCT s.id) which
+      // loses per-symbol info. Run a second chunked pass to collect per-symbol
+      // process membership. Gated on `affectedProcesses.length > 0` (no point
+      // querying if nothing is affected) and `!summaryOnly` (summary callers
+      // don't get byDepth, so per-symbol data is unused there).
+      if (affectedProcesses.length > 0 && !summaryOnly) {
+        const maxPerSymbolItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
+        const perSymbolImpacted = impacted.slice(0, maxPerSymbolItems);
+        for (let i = 0; i < perSymbolImpacted.length; i += CHUNK_SIZE) {
+          const chunkIds = perSymbolImpacted.slice(i, i + CHUNK_SIZE).map((it) => String(it.id ?? ''));
+          try {
+            const rows = await executeParameterized(
+              repo.id,
+              `
+              MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+              WHERE s.id IN $ids
+              RETURN s.id AS sid, p.id AS pid, p.heuristicLabel AS pName,
+                     p.processType AS pType, r.step AS step
+            `,
+              { ids: chunkIds },
+            ).catch(() => []);
+            for (const row of rows) {
+              const sid = row.sid ?? row[0];
+              if (!sid) continue;
+              const procEntry = {
+                id: String(row.pid ?? row[1] ?? ''),
+                label: String(row.pName ?? row[2] ?? ''),
+                processType: String(row.pType ?? row[3] ?? ''),
+                step: typeof row.step === 'number' ? row.step : (row[4] ?? -1),
+              };
+              const list = perSymbolProcesses.get(String(sid));
+              if (list) list.push(procEntry);
+              else perSymbolProcesses.set(String(sid), [procEntry]);
+            }
+          } catch (e) {
+            logQueryError('impact:per-symbol-process-chunk', e);
+          }
+        }
+      }
+
       // ── Module enrichment: use same cap as process enrichment and parameterized queries
       const maxItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
       const cappedImpacted = impacted.slice(0, maxItems);
@@ -3360,12 +3410,20 @@ export class LocalBackend {
       return base;
     }
 
-    // Apply limit/offset pagination per depth level
+    // Apply limit/offset pagination per depth level. Each item is enriched with
+    // `processes: [...]` listing the processes that symbol participates in.
+    // The list is empty for symbols not in any process or when no processes are
+    // affected globally (the enrichment pass above is skipped in that case).
     const paginatedGrouped: Record<number, any[]> = {};
     let anyTruncated = false;
     for (const [depth, items] of Object.entries(grouped)) {
       const total = items.length;
-      const sliced = items.slice(paginationOffset, paginationOffset + paginationLimit);
+      const sliced = items
+        .slice(paginationOffset, paginationOffset + paginationLimit)
+        .map((it: any) => ({
+          ...it,
+          processes: perSymbolProcesses.get(String(it.id)) ?? [],
+        }));
       paginatedGrouped[Number(depth)] = sliced;
       if (paginationOffset > 0 || paginationOffset + paginationLimit < total) {
         anyTruncated = true;

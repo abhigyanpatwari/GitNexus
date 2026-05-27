@@ -647,6 +647,95 @@ describe('LocalBackend.callTool', () => {
     expect(result.target).toBeDefined();
   });
 
+  it('impact byDepth items include a processes field (default empty when no processes)', async () => {
+    // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
+    (executeParameterized as any).mockResolvedValue([
+      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+    ]);
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/uses-main.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+    expect(d1.length).toBeGreaterThan(0);
+    for (const item of d1) {
+      expect(item).toHaveProperty('processes');
+      expect(Array.isArray(item.processes)).toBe(true);
+    }
+  });
+
+  it('impact populates byDepth processes when STEP_IN_PROCESS rows exist', async () => {
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // Symbol resolver name-lookup
+      if (cypher.includes('WHERE n.name =')) {
+        return Promise.resolve([
+          { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+        ]);
+      }
+      // Aggregation pass (must return at least one row so per-symbol pass is gated open)
+      if (cypher.includes('COUNT(DISTINCT s.id)')) {
+        return Promise.resolve([
+          {
+            pId: 'proc:cron_daily',
+            name: 'Daily cron',
+            heuristicLabel: 'Daily cron',
+            processType: 'cron',
+            entryPointId: 'func:cron_entry',
+            hits: 1,
+            minStep: 1,
+            stepCount: 5,
+            epName: 'cron_entry',
+            epType: 'Function',
+            epFilePath: 'src/cron.ts',
+          },
+        ]);
+      }
+      // New per-symbol pass added by this change
+      if (cypher.includes('RETURN s.id AS sid')) {
+        return Promise.resolve([
+          {
+            sid: 'func:caller',
+            pid: 'proc:cron_daily',
+            pName: 'Daily cron',
+            pType: 'cron',
+            step: 2,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/uses-main.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+    const caller = d1.find((it: any) => it.id === 'func:caller');
+    expect(caller).toBeDefined();
+    expect(caller.processes).toHaveLength(1);
+    expect(caller.processes[0]).toMatchObject({
+      id: 'proc:cron_daily',
+      label: 'Daily cron',
+      processType: 'cron',
+      step: 2,
+    });
+  });
+
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path
