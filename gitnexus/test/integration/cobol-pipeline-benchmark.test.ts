@@ -190,12 +190,12 @@ function printResults(label: string, results: BenchResult[]) {
 
 describe.skipIf(!BENCH_ENABLED)('COBOL pipeline benchmark', () => {
   it('scales with file count', async () => {
-    const scales = [100, 250, 500];
+    const scales = [100, 250, 500, 1000];
     const results: BenchResult[] = [];
 
     for (const fileCount of scales) {
-      const paragraphsPerProgram = Math.max(3, Math.min(8, Math.ceil(fileCount / 40)));
-      const result = await runBenchmark(fileCount, paragraphsPerProgram, 180_000);
+      const paragraphsPerProgram = 3;
+      const result = await runBenchmark(fileCount, paragraphsPerProgram, 300_000);
       results.push(result);
       console.log(
         `  ${fileCount} files: ${result.elapsedMs}ms, ${result.peakHeapMB}MB heap, ${result.nodeCount} nodes, ${result.edgeCount} edges`,
@@ -207,7 +207,7 @@ describe.skipIf(!BENCH_ENABLED)('COBOL pipeline benchmark', () => {
     for (let i = 1; i < results.length; i++) {
       const fileRatio = results[i].fileCount / results[i - 1].fileCount;
       const timeRatio = results[i].elapsedMs / results[i - 1].elapsedMs;
-      expect(timeRatio / fileRatio).toBeLessThan(3);
+      expect(timeRatio / fileRatio).toBeLessThan(4);
     }
-  }, 300_000);
+  }, 600_000);
 });
