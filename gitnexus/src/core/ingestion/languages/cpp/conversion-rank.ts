@@ -12,7 +12,8 @@
  *   - rank 2: standard conversion (arithmetic, nullptr -> T*, T* -> bool,
  *             T* -> void*)
  *   - rank 3: nullptr -> bool (kept worse than nullptr -> T*)
- *   - rank 4: ellipsis conversion (worst viable)
+ *   - rank 4: user-defined conversion (one-step, conservative)
+ *   - rank 5: ellipsis conversion (worst viable)
  *   - Infinity: mismatch (string -> int, user types, unsupported shapes)
  *
  * This function is intentionally C++-specific. Other languages may define
@@ -20,6 +21,7 @@
  */
 
 import type { ParameterTypeClass } from 'gitnexus-shared';
+import { hasCppUserDefinedConversion } from './user-defined-conversions.js';
 
 /** Set of normalized arithmetic types that support implicit conversion. */
 const ARITHMETIC = new Set(['int', 'double', 'char', 'bool']);
@@ -34,7 +36,8 @@ const INTEGRAL_PROMOTION = new Map([
  * Return the conversion rank from `argType` to `paramType`.
  *
  * @returns 0 for exact match, 1 for integral promotion, 2 for standard
- *          conversion, 3 for nullptr -> bool, 4 for ellipsis, Infinity
+ *          conversion, 3 for nullptr -> bool, 4 for user-defined conversion,
+ *          5 for ellipsis, Infinity
  *          for mismatch.
  */
 export function cppConversionRank(
@@ -46,13 +49,14 @@ export function cppConversionRank(
   if (argType === paramType) {
     return exactShapeCompatible(argTypeClass, paramTypeClass) ? 0 : Infinity;
   }
-  if (paramType === '...') return 4;
+  if (paramType === '...') return 5;
   if (INTEGRAL_PROMOTION.get(argType) === paramType) return 1;
   if (ARITHMETIC.has(argType) && ARITHMETIC.has(paramType)) return 2;
   if (argType === 'null' && isPointer(paramTypeClass)) return 2;
   if (argType === 'null' && paramType === 'bool') return 3;
   if (isPointer(argTypeClass) && paramType === 'bool') return 2;
   if (isPointer(argTypeClass) && isPointer(paramTypeClass) && paramType === 'void') return 2;
+  if (hasCppUserDefinedConversion(argType, paramType)) return 4;
   return Infinity;
 }
 
