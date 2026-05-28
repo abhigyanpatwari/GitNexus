@@ -27,6 +27,7 @@ import type {
   ExtractedDecoratorRoute,
   ExtractedToolDef,
   ExtractedORMQuery,
+  FetchWrapperDef,
 } from '../workers/parse-worker.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
@@ -45,6 +46,7 @@ export interface ParseOutput {
    */
   readonly exportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly allFetchCalls: readonly ExtractedFetchCall[];
+  readonly allFetchWrapperDefs: readonly FetchWrapperDef[];
   readonly allExtractedRoutes: readonly ExtractedRoute[];
   readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];
   readonly allToolDefs: readonly ExtractedToolDef[];
