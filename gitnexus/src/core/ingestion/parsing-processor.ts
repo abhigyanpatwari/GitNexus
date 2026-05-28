@@ -49,15 +49,17 @@ import type {
   ExtractedRoute,
   ExtractedFetchCall,
   ExtractedDecoratorRoute,
-  ExtractedRouterImport,
-  ExtractedRouterInclude,
-  ExtractedRouterModuleAlias,
   ExtractedToolDef,
   FileConstructorBindings,
   FileScopeBindings,
   ExtractedORMQuery,
   FetchWrapperDef,
 } from './workers/parse-worker.js';
+import type {
+  ExtractedRouterImport,
+  ExtractedRouterInclude,
+  ExtractedRouterModuleAlias,
+} from './route-extractors/fastapi-router-bindings.js';
 import {
   getTreeSitterBufferSize,
   getTreeSitterContentByteLength,
@@ -161,11 +163,9 @@ export const mergeChunkResults = (
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
-    if (result.routerIncludes)
-      for (const item of result.routerIncludes) allRouterIncludes.push(item);
-    if (result.routerImports) for (const item of result.routerImports) allRouterImports.push(item);
-    if (result.routerModuleAliases)
-      for (const item of result.routerModuleAliases) allRouterModuleAliases.push(item);
+    for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
+    for (const item of result.routerImports ?? []) allRouterImports.push(item);
+    for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     for (const item of result.constructorBindings) allConstructorBindings.push(item);

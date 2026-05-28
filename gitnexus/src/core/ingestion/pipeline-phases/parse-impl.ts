@@ -59,13 +59,15 @@ import type {
   ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
-  ExtractedRouterImport,
-  ExtractedRouterInclude,
-  ExtractedRouterModuleAlias,
   ExtractedToolDef,
   FileConstructorBindings,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
+import type {
+  ExtractedRouterImport,
+  ExtractedRouterInclude,
+  ExtractedRouterModuleAlias,
+} from '../route-extractors/fastapi-router-bindings.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
