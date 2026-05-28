@@ -73,6 +73,16 @@ sync_from_host \
 sync_from_host \
     /host/.claude/.claude.json /home/node/.claude/.claude.json 644
 
+# State files that USED to be single-file bind mounts but couldn't be: on
+# Docker Desktop Windows the named volume (ext4) and the host bind-mount
+# (9p drvfs) are different filesystems, so atomic config writes
+# (`tmp -> rename onto target`) trip EXDEV / Device-or-resource-busy.
+# Copy host's version into the named volume on container-create; container
+# can rewrite freely from there until next rebuild resyncs.
+sync_from_host /host/.claude/settings.json /home/node/.claude/settings.json 644
+sync_from_host /host/.claude.json         /home/node/.claude.json         644
+sync_from_host /host/.codex/config.toml   /home/node/.codex/config.toml   644
+
 # Plugin registry path translation. Claude writes absolute OS-native paths
 # into known_marketplaces.json (`installLocation`), installed_plugins.json
 # (`installPath`), and plugin-catalog-cache.json — `C:\Users\X\.claude\...`
