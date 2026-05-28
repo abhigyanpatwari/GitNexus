@@ -14,9 +14,9 @@
 // requirement beyond Docker Desktop and the VS Code Dev Containers
 // extension — everything else runs inside the container.
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // Windows-native auto-setup. VS Code resolves the bind-mount sources via
 // `${localEnv:HOME}` reading its own process env, and Windows doesn't set
@@ -33,48 +33,38 @@ const path = require("path");
 // Subsequent runs detect `HOME` is set, skip this block, and proceed
 // normally. Mac/Linux/WSL hosts have `HOME` set by the shell, so this
 // block is a no-op on those platforms.
-if (process.platform === "win32" && !process.env.HOME) {
+if (process.platform === 'win32' && !process.env.HOME) {
   const userprofile = process.env.USERPROFILE;
   if (userprofile) {
     try {
-      require("child_process").execFileSync("setx", ["HOME", userprofile], {
-        stdio: "ignore",
+      require('child_process').execFileSync('setx', ['HOME', userprofile], {
+        stdio: 'ignore',
       });
-      console.error("");
-      console.error("=".repeat(70));
-      console.error(" GitNexus devcontainer one-time Windows setup");
-      console.error("=".repeat(70));
-      console.error("");
+      console.error('');
+      console.error('='.repeat(70));
+      console.error(' GitNexus devcontainer one-time Windows setup');
+      console.error('='.repeat(70));
+      console.error('');
       console.error(`HOME has been set to %USERPROFILE% (${userprofile}).`);
-      console.error(
-        "VS Code reads this at startup, so the current session can't pick it up.",
-      );
-      console.error("");
-      console.error(
-        " 1. Close ALL VS Code windows (File > Exit, not just the window).",
-      );
-      console.error(
-        " 2. Reopen VS Code, open this folder, and re-run Reopen in Container.",
-      );
-      console.error("");
-      console.error(
-        "This is a one-time setup. Subsequent rebuilds work normally.",
-      );
-      console.error("=".repeat(70));
+      console.error("VS Code reads this at startup, so the current session can't pick it up.");
+      console.error('');
+      console.error(' 1. Close ALL VS Code windows (File > Exit, not just the window).');
+      console.error(' 2. Reopen VS Code, open this folder, and re-run Reopen in Container.');
+      console.error('');
+      console.error('This is a one-time setup. Subsequent rebuilds work normally.');
+      console.error('='.repeat(70));
       process.exit(1);
     } catch (err) {
-      console.error("ERROR: failed to set HOME automatically: " + err.message);
-      console.error("");
-      console.error("Run this in a Windows shell, then restart VS Code:");
+      console.error('ERROR: failed to set HOME automatically: ' + err.message);
+      console.error('');
+      console.error('Run this in a Windows shell, then restart VS Code:');
       console.error('  setx HOME "%USERPROFILE%"');
       process.exit(1);
     }
   } else {
-    console.error("ERROR: neither HOME nor USERPROFILE is set on this host.");
-    console.error("");
-    console.error(
-      "Set HOME to your user profile directory and restart VS Code:",
-    );
+    console.error('ERROR: neither HOME nor USERPROFILE is set on this host.');
+    console.error('');
+    console.error('Set HOME to your user profile directory and restart VS Code:');
     console.error('  setx HOME "%USERPROFILE%"');
     process.exit(1);
   }
@@ -90,28 +80,28 @@ const home = os.homedir();
 // are also created for the /host/.<cli> read-only stage mounts that
 // post-create.sh reads credentials from.
 const dirs = [
-  ".claude",
-  path.join(".claude", "plugins"),
+  '.claude',
+  path.join('.claude', 'plugins'),
   // Plugin registry source dirs — content is path-independent so these
   // get RW bind-mounted bidirectionally. The path-DEPENDENT registry
   // JSONs (known_marketplaces.json, installed_plugins.json,
   // plugin-catalog-cache.json) stay in the container's named volume.
-  path.join(".claude", "plugins", "marketplaces"),
-  path.join(".claude", "plugins", "cache"),
-  path.join(".claude", "skills"),
-  path.join(".claude", "agents"),
-  path.join(".claude", "memory"),
-  path.join(".claude", "commands"),
-  ".codex",
-  path.join(".codex", "memories"),
-  path.join(".codex", "skills"),
-  ".cursor",
-  ".ssh",
-  ".docker",
-  ".aws",
-  ".azure",
-  path.join(".config", "gh"),
-  path.join(".config", "git"),
+  path.join('.claude', 'plugins', 'marketplaces'),
+  path.join('.claude', 'plugins', 'cache'),
+  path.join('.claude', 'skills'),
+  path.join('.claude', 'agents'),
+  path.join('.claude', 'memory'),
+  path.join('.claude', 'commands'),
+  '.codex',
+  path.join('.codex', 'memories'),
+  path.join('.codex', 'skills'),
+  '.cursor',
+  '.ssh',
+  '.docker',
+  '.aws',
+  '.azure',
+  path.join('.config', 'gh'),
+  path.join('.config', 'git'),
 ];
 for (const dir of dirs) {
   if (fs.existsSync(path.join(home, dir))) {
@@ -127,14 +117,13 @@ for (const dir of dirs) {
 // per-project trust; `~/.claude/settings.json` carries theme + enabled
 // plugins; `~/.codex/config.toml` carries Codex user prefs.
 const files = [
-  ".claude.json",
-  path.join(".claude", "settings.json"),
-  path.join(".codex", "config.toml"),
+  '.claude.json',
+  path.join('.claude', 'settings.json'),
+  path.join('.codex', 'config.toml'),
 ];
 for (const file of files) {
   const fullPath = path.join(home, file);
   if (!fs.existsSync(fullPath)) {
-    fs.closeSync(fs.openSync(fullPath, "a"));
+    fs.closeSync(fs.openSync(fullPath, 'a'));
   }
 }
-
