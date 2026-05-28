@@ -241,6 +241,12 @@ export const TYPESCRIPT_QUERIES = `
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
 
+; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
+(call_expression
+  function: (identifier) @_wrapper_fn (#match? @_wrapper_fn "^(api(Fetch|Get|Post|Put|Delete|Patch|Request)|fetch(API|JSON|Data|Endpoint|Resource|Url)|http(Fetch|Get|Post|Put|Delete|Patch|Request))$")
+  arguments: (arguments
+    (string (string_fragment) @route.url))) @route.fetch
+
 ; axios.get/post/put/delete/patch('/path'), $.get/post/ajax({url:'/path'})
 (call_expression
   function: (member_expression
@@ -433,6 +439,12 @@ export const JAVASCRIPT_QUERIES = `
   arguments: (arguments
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
+
+; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
+(call_expression
+  function: (identifier) @_wrapper_fn (#match? @_wrapper_fn "^(api(Fetch|Get|Post|Put|Delete|Patch|Request)|fetch(API|JSON|Data|Endpoint|Resource|Url)|http(Fetch|Get|Post|Put|Delete|Patch|Request))$")
+  arguments: (arguments
+    (string (string_fragment) @route.url))) @route.fetch
 
 ; axios.get/post, $.get/post/ajax
 (call_expression
