@@ -59,6 +59,8 @@ import type {
   ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
+  ExtractedRouterImport,
+  ExtractedRouterInclude,
   ExtractedToolDef,
   FileConstructorBindings,
   FetchWrapperDef,
@@ -357,6 +359,8 @@ export async function runChunkedParseAndResolve(
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouterIncludes: ExtractedRouterInclude[] = [];
+  const allRouterImports: ExtractedRouterImport[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const deferredWorkerCalls: ExtractedCall[] = [];
@@ -674,6 +678,12 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.decoratorRoutes?.length) {
           for (const item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(item);
+        }
+        if (chunkWorkerData.routerIncludes?.length) {
+          for (const item of chunkWorkerData.routerIncludes) allRouterIncludes.push(item);
+        }
+        if (chunkWorkerData.routerImports?.length) {
+          for (const item of chunkWorkerData.routerImports) allRouterImports.push(item);
         }
         if (chunkWorkerData.toolDefs?.length) {
           for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
@@ -1084,6 +1094,84 @@ export async function runChunkedParseAndResolve(
   importCtx.resolveCache.clear();
   importCtx.index = EMPTY_INDEX;
   importCtx.normalizedFileList = [];
+
+  // FastAPI router-prefix resolution (cross-file).
+  //
+  // Workers emit two kinds of records per Python file:
+  //   • `routerIncludes` — every `app.include_router(<routerExpr>, prefix='/x')`
+  //     site, where `routerExpr` is either `<module>.router` (Shape A) or a
+  //     bare local name (Shape B).
+  //   • `routerImports`  — every `from <module> import router [as <alias>]`,
+  //     mapping a local name to a module key (the basename of the source
+  //     module). These let us resolve Shape-B router includes back to the
+  //     module that defines the router.
+  //
+  // We build `module-basename → Set<prefix>` and then walk
+  // `allDecoratorRoutes`: any decorator route emitted from a `router.<verb>`
+  // decorator inherits its file-basename's prefix. When a router is mounted
+  // under multiple prefixes we duplicate the route entry, mirroring FastAPI's
+  // runtime behaviour.
+  if (allRouterIncludes.length > 0 && allDecoratorRoutes.length > 0) {
+    // Group `routerImports` by file so we can resolve Shape-B locals against
+    // imports declared in the SAME file as the include_router call.
+    const importsByFile = new Map<string, Map<string, string>>();
+    for (const imp of allRouterImports) {
+      let m = importsByFile.get(imp.filePath);
+      if (!m) {
+        m = new Map();
+        importsByFile.set(imp.filePath, m);
+      }
+      m.set(imp.localName, imp.moduleKey);
+    }
+
+    const prefixesByModule = new Map<string, Set<string>>();
+    for (const inc of allRouterIncludes) {
+      let moduleKey: string | undefined;
+      // Shape A: `<module>.router`. The worker emits `routerExpr` already
+      // including `.router`, so split it back.
+      const dotIdx = inc.routerExpr.indexOf('.router');
+      if (dotIdx > 0) {
+        moduleKey = inc.routerExpr.slice(0, dotIdx);
+      } else {
+        // Shape B: bare local name. Resolve through this file's imports.
+        moduleKey = importsByFile.get(inc.filePath)?.get(inc.routerExpr);
+      }
+      if (!moduleKey) continue;
+      let set = prefixesByModule.get(moduleKey);
+      if (!set) {
+        set = new Set();
+        prefixesByModule.set(moduleKey, set);
+      }
+      set.add(inc.prefix);
+    }
+
+    if (prefixesByModule.size > 0) {
+      const basenameModule = (rel: string): string => {
+        const slash = rel.lastIndexOf('/');
+        const file = slash >= 0 ? rel.slice(slash + 1) : rel;
+        return file.endsWith('.py') ? file.slice(0, -3) : file;
+      };
+
+      const expanded: ExtractedDecoratorRoute[] = [];
+      for (const dr of allDecoratorRoutes) {
+        if (dr.decoratorReceiver !== 'router' || !dr.filePath.endsWith('.py')) {
+          expanded.push(dr);
+          continue;
+        }
+        const moduleKey = basenameModule(dr.filePath);
+        const prefixes = prefixesByModule.get(moduleKey);
+        if (!prefixes || prefixes.size === 0) {
+          expanded.push(dr);
+          continue;
+        }
+        for (const prefix of prefixes) {
+          expanded.push({ ...dr, prefix });
+        }
+      }
+      allDecoratorRoutes.length = 0;
+      for (const dr of expanded) allDecoratorRoutes.push(dr);
+    }
+  }
 
   return {
     exportedTypeMap,

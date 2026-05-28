@@ -198,7 +198,6 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       }
     }
 
-    const ensureSlash = (path: string) => (path.startsWith('/') ? path : '/' + path);
     let duplicateRoutes = 0;
     const namedRouteRegistry = new Map<string, string>();
     const addRoute = (url: string, entry: RouteEntry) => {
@@ -220,7 +219,8 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       }
     }
     for (const dr of allDecoratorRoutes) {
-      addRoute(ensureSlash(dr.routePath), {
+      const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
+      addRoute(url, {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
       });

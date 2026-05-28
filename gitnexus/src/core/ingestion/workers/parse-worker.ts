@@ -209,6 +209,44 @@ export interface ExtractedDecoratorRoute {
   httpMethod: string;
   decoratorName: string;
   lineNumber: number;
+  /**
+   * Decorator receiver identifier (e.g. `router` for `@router.get(...)`,
+   * `app` for `@app.get(...)`). Used by parse-impl to decide which routes
+   * participate in `include_router(prefix=...)` joining.
+   */
+  decoratorReceiver?: string;
+  /**
+   * FastAPI `app.include_router(prefix='/x')` prefix that applies to
+   * this route. Filled by parse-impl after cross-file aggregation; the
+   * routes phase joins it via `normalizeExtractedRoutePath`. `null` /
+   * absent ⇒ no prefix applies.
+   */
+  prefix?: string | null;
+}
+
+/**
+ * One `app.include_router(<routerExpr>, prefix='/x')` site discovered
+ * during parsing. `routerExpr` is the raw text of the first argument
+ * (either `<module>.router` attribute access or a bare local name).
+ * parse-impl resolves it to a module key (file basename) using
+ * `ExtractedRouterImport` records from the same file.
+ */
+export interface ExtractedRouterInclude {
+  filePath: string;
+  routerExpr: string;
+  prefix: string;
+  lineNumber: number;
+}
+
+/**
+ * One `from <module> import router [as <alias>]` discovered in a
+ * Python file. Lets parse-impl map a local name back to the module
+ * basename when resolving an `include_router(name, ...)` call.
+ */
+export interface ExtractedRouterImport {
+  filePath: string;
+  localName: string;
+  moduleKey: string;
 }
 
 export interface ExtractedToolDef {
@@ -275,6 +313,8 @@ export interface ParseWorkerResult {
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  routerIncludes: ExtractedRouterInclude[];
+  routerImports: ExtractedRouterImport[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -740,6 +780,8 @@ const processBatch = (
     fetchCalls: [],
     fetchWrapperDefs: [],
     decoratorRoutes: [],
+    routerIncludes: [],
+    routerImports: [],
     toolDefs: [],
     ormQueries: [],
     constructorBindings: [],
@@ -965,6 +1007,99 @@ export function extractORMQueries(
         lineNumber: content.substring(0, m.index).split('\n').length - 1,
       });
     }
+  }
+}
+
+// ============================================================================
+// FastAPI router prefix detection (Python)
+// ============================================================================
+//
+// Mirrors the http-route-extractor python plugin's prepareRepo logic but
+// runs at parse time so the ingestion graph (Route nodes) sees prefixes.
+// We use regex rather than a tree-sitter pre-pass because the worker is
+// per-file: full cross-file resolution happens in parse-impl, which only
+// needs the raw extraction here.
+//
+// Module keying: file basename without `.py` extension. `from .api.assistant
+// import router` is keyed as `assistant`; `app.include_router(assistant.router,
+// prefix='/ai')` is keyed the same.
+
+const INCLUDE_ROUTER_ATTR_RE =
+  /\b(?:[A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\.router\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
+const INCLUDE_ROUTER_NAME_RE =
+  /\b(?:[A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
+const FROM_IMPORT_ROUTER_RE = /^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
+
+function lastDottedSegment(text: string): string {
+  const dot = text.lastIndexOf('.');
+  return dot >= 0 ? text.slice(dot + 1) : text;
+}
+
+export function extractFastAPIRouterBindings(
+  filePath: string,
+  content: string,
+  outIncludes: ExtractedRouterInclude[],
+  outImports: ExtractedRouterImport[],
+): void {
+  if (!content.includes('include_router') && !content.includes('router')) return;
+
+  // `from <module> import router [as <alias>]`. We capture every name in
+  // the import list and look for `router` (with or without an `as` alias).
+  if (content.includes(' import ')) {
+    FROM_IMPORT_ROUTER_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = FROM_IMPORT_ROUTER_RE.exec(content)) !== null) {
+      const moduleText = m[1];
+      const importList = m[2];
+      // Strip surrounding parens / trailing whitespace; split on commas.
+      const cleaned = importList.replace(/[()]/g, '').trim();
+      for (const rawPart of cleaned.split(',')) {
+        const part = rawPart.trim();
+        if (!part) continue;
+        // `router` or `router as foo`
+        const aliasMatch = /^router(?:\s+as\s+([A-Za-z_]\w*))?$/.exec(part);
+        if (!aliasMatch) continue;
+        const localName = aliasMatch[1] ?? 'router';
+        outImports.push({
+          filePath,
+          localName,
+          moduleKey: lastDottedSegment(moduleText),
+        });
+      }
+    }
+  }
+
+  if (!content.includes('include_router')) return;
+
+  // Shape A: `app.include_router(<module>.router, prefix='/x')`
+  INCLUDE_ROUTER_ATTR_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INCLUDE_ROUTER_ATTR_RE.exec(content)) !== null) {
+    outIncludes.push({
+      filePath,
+      routerExpr: `${m[1]}.router`,
+      prefix: m[3],
+      lineNumber: content.substring(0, m.index).split('\n').length,
+    });
+  }
+
+  // Shape B: `app.include_router(my_router, prefix='/x')`. Resolution to a
+  // module key happens in parse-impl using outImports from the same file.
+  INCLUDE_ROUTER_NAME_RE.lastIndex = 0;
+  while ((m = INCLUDE_ROUTER_NAME_RE.exec(content)) !== null) {
+    // Skip cases that already matched Shape A — INCLUDE_ROUTER_NAME_RE is
+    // intentionally permissive and would re-capture `<mod>.router` as the
+    // bare name `mod`. Discriminate by re-checking the immediate source
+    // around the captured argument position.
+    const argStart = m.index + m[0].indexOf(m[1]);
+    const dotProbe = content.slice(argStart + m[1].length, argStart + m[1].length + 8);
+    if (/^\s*\.\s*router/.test(dotProbe)) continue;
+    outIncludes.push({
+      filePath,
+      routerExpr: m[1],
+      prefix: m[3],
+      lineNumber: content.substring(0, m.index).split('\n').length,
+    });
   }
 }
 
@@ -1200,6 +1335,7 @@ const processFileGroup = (
       if (captureMap['decorator'] && captureMap['decorator.name']) {
         const decoratorName = captureMap['decorator.name'].text;
         const decoratorArg = captureMap['decorator.arg']?.text;
+        const decoratorReceiver = captureMap['decorator.receiver']?.text;
         const decoratorNode = captureMap['decorator'];
         // Store by the decorator's end line — the definition follows immediately after
         fileDecorators.set(decoratorNode.endPosition.row, {
@@ -1219,6 +1355,7 @@ const processFileGroup = (
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
+            ...(decoratorReceiver ? { decoratorReceiver } : {}),
           });
         }
         // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
@@ -1994,6 +2131,19 @@ const processFileGroup = (
     // Extract ORM queries (Prisma, Supabase)
     extractORMQueries(file.path, parseContent, result.ormQueries);
 
+    // Extract FastAPI include_router(prefix=...) and `from <mod> import router`
+    // sites. parse-impl aggregates these into a per-module prefix map and
+    // injects the resolved prefix onto each ExtractedDecoratorRoute that
+    // came from a `@router.<verb>` decorator. Python-only.
+    if (language === SupportedLanguages.Python) {
+      extractFastAPIRouterBindings(
+        file.path,
+        parseContent,
+        result.routerIncludes,
+        result.routerImports,
+      );
+    }
+
     // Vue: emit CALLS edges for components used in <template>
     if (language === SupportedLanguages.Vue) {
       const templateComponents = extractTemplateComponents(file.content);
@@ -2026,6 +2176,8 @@ let accumulated: ParseWorkerResult = {
   fetchCalls: [],
   fetchWrapperDefs: [],
   decoratorRoutes: [],
+  routerIncludes: [],
+  routerImports: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
@@ -2055,6 +2207,8 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.fetchCalls, src.fetchCalls);
   appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
   appendAll(target.decoratorRoutes, src.decoratorRoutes);
+  if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
+  if (src.routerImports) appendAll(target.routerImports, src.routerImports);
   appendAll(target.toolDefs, src.toolDefs);
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
@@ -2147,6 +2301,8 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         fetchCalls: [],
         fetchWrapperDefs: [],
         decoratorRoutes: [],
+        routerIncludes: [],
+        routerImports: [],
         toolDefs: [],
         ormQueries: [],
         constructorBindings: [],
