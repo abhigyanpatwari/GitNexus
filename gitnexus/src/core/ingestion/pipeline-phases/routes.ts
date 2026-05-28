@@ -131,6 +131,10 @@ export function normalizeExtractedRoutePath(routePath: string, prefix: string | 
   return joined.replace(/\/+/g, '/') || '/';
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export const routesPhase: PipelinePhase<RoutesOutput> = {
   name: 'routes',
   deps: ['parse'],
@@ -142,6 +146,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     const {
       allPaths,
       allFetchCalls: parseFetchCalls,
+      allFetchWrapperDefs,
       allExtractedRoutes,
       allDecoratorRoutes,
     } = getPhaseOutput<ParseOutput>(deps, 'parse');
@@ -351,6 +356,35 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             const url = match[2] ?? match[1];
             if (url && url.startsWith('/')) {
               allFetchCalls.push({ filePath, fetchURL: url, lineNumber: 0 });
+            }
+          }
+        }
+      }
+    }
+
+    // ── Cross-file fetch wrapper consumer extraction ──
+    // When the parse phase discovered functions that internally call fetch(),
+    // scan JS/TS consumer files for calls to those wrapper functions with
+    // URL-like string arguments and add them to allFetchCalls so
+    // processNextjsFetchRoutes can create FETCHES edges.
+    if (allFetchWrapperDefs && allFetchWrapperDefs.length > 0 && routeRegistry.size > 0) {
+      const wrapperNames = new Set(allFetchWrapperDefs.map((d) => d.functionName));
+      const jsFiles = allPaths.filter((p) => /\.[jt]sx?$/.test(p));
+      if (jsFiles.length > 0 && wrapperNames.size > 0) {
+        const jsContents = await readFileContents(ctx.repoPath, jsFiles);
+        for (const [filePath, content] of jsContents) {
+          for (const name of wrapperNames) {
+            const regex = new RegExp(
+              `\\b${escapeRegex(name)}\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+              'g',
+            );
+            let match;
+            while ((match = regex.exec(content)) !== null) {
+              allFetchCalls.push({
+                filePath,
+                fetchURL: match[1],
+                lineNumber: content.substring(0, match.index).split('\n').length,
+              });
             }
           }
         }
