@@ -31,7 +31,7 @@ import {
   lastTwoSegmentsAsPath,
   type ExtractedRouterInclude,
   type ExtractedRouterImport,
-} from '../../src/core/ingestion/workers/fastapi-router-bindings.js';
+} from '../../src/core/ingestion/route-extractors/fastapi-router-bindings.js';
 
 function run(filePath: string, content: string) {
   const includes: ExtractedRouterInclude[] = [];

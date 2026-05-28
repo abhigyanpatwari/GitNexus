@@ -231,19 +231,19 @@ export interface ExtractedDecoratorRoute {
  * parse-impl resolves it to a module key (file basename) using
  * `ExtractedRouterImport` records from the same file.
  *
- * @deprecated Re-exported from `./fastapi-router-bindings` for back
- * compatibility — import from there in new code.
+ * @deprecated Re-exported from `../route-extractors/fastapi-router-bindings`
+ * for back compatibility — import from there in new code.
  */
 import type {
   ExtractedRouterInclude,
   ExtractedRouterImport,
   ExtractedRouterModuleAlias,
-} from './fastapi-router-bindings.js';
+} from '../route-extractors/fastapi-router-bindings.js';
 export type {
   ExtractedRouterInclude,
   ExtractedRouterImport,
   ExtractedRouterModuleAlias,
-} from './fastapi-router-bindings.js';
+} from '../route-extractors/fastapi-router-bindings.js';
 
 export interface ExtractedToolDef {
   filePath: string;
@@ -1021,11 +1021,17 @@ export function extractORMQueries(
 // FastAPI router prefix detection (Python)
 // ============================================================================
 //
-// The actual extraction lives in `./fastapi-router-bindings` so it can
-// be unit-tested without booting a worker thread. This module just
-// re-exports the function for parsing-processor compatibility.
+// The actual extraction lives in `../route-extractors/fastapi-router-bindings`
+// so it can be unit-tested without booting a worker thread. This file is just
+// a thin re-export for parsing-processor compatibility.
+//
+// IMPORTANT: `fastapi-router-bindings.ts` is a pure-function module — it does
+// NOT spawn a worker thread, does NOT import `worker_threads`, and is not a
+// new worker entry point. The `workers/` directory only hosts this file's
+// re-export shim; the real implementation lives alongside the other route
+// extractors (expo, nextjs, php, …) in `route-extractors/`.
 
-import { extractFastAPIRouterBindings } from './fastapi-router-bindings.js';
+import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
 export { extractFastAPIRouterBindings };
 
 const processFileGroup = (

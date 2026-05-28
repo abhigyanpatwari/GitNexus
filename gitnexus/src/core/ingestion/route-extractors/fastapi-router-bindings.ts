@@ -1,9 +1,21 @@
 /**
- * FastAPI router-prefix detection for the parse worker.
+ * FastAPI router-prefix detection — pure functions, no worker thread.
+ *
+ * NOT A WORKER. This module exports plain synchronous functions; it
+ * does not import `worker_threads`, does not call `parentPort`, and
+ * is not a new worker entry point. It lives next to the other route
+ * extractors (expo, nextjs, php, laravel) for that reason.
+ *
+ * The implementation was historically inlined in `workers/parse-worker.ts`,
+ * but parse-worker.ts is itself the worker entry point and cannot be
+ * loaded from the main thread (see the same constraint used by
+ * `test/unit/call-attribution-issue-1166.test.ts`). Splitting the pure
+ * extraction here lets unit tests import the function directly without
+ * booting a worker, satisfying DoD §2.7.
  *
  * Worker phase is per-file, so the heavy cross-file resolution lives in
- * parse-impl. Here we only extract two raw record kinds and let the
- * pipeline aggregate them across files:
+ * `pipeline-phases/parse-impl.ts`. Here we only extract two raw record
+ * kinds and let the pipeline aggregate them across files:
  *
  *   • {@link ExtractedRouterInclude} — every
  *     `<host>.include_router(<routerExpr>, prefix='/x')` site, where
