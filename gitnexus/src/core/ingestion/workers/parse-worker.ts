@@ -23,6 +23,11 @@ import {
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
+import type {
+  ExtractedRouterInclude,
+  ExtractedRouterImport,
+  ExtractedRouterModuleAlias,
+} from '../route-extractors/fastapi-router-bindings.js';
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
@@ -223,21 +228,6 @@ export interface ExtractedDecoratorRoute {
    */
   prefix?: string | null;
 }
-
-/**
- * Local-only type imports for `ExtractedRouterInclude` /
- * `ExtractedRouterImport` / `ExtractedRouterModuleAlias`. These types
- * are owned by `../route-extractors/fastapi-router-bindings`;
- * downstream consumers (parse-impl, parsing-processor, tests) import
- * them directly from there. The aliases here are used only to type the
- * corresponding fields on `ParseWorkerResult` below — this file does NOT
- * re-export them.
- */
-import type {
-  ExtractedRouterInclude,
-  ExtractedRouterImport,
-  ExtractedRouterModuleAlias,
-} from '../route-extractors/fastapi-router-bindings.js';
 
 export interface ExtractedToolDef {
   filePath: string;
