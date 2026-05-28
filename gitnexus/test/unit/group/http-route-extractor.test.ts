@@ -1811,6 +1811,84 @@ async def create_user(user: UserCreate):
       expect(providers.find((c) => c.contractId === 'http::GET::/users')).toBeDefined();
       expect(providers.find((c) => c.contractId === 'http::POST::/users')).toBeDefined();
     });
+
+    it('joins FastAPI @router.<verb> path with include_router(prefix=...) from main.py (attribute shape)', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-attr');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+from api import assistant
+app = FastAPI()
+app.include_router(assistant.router, prefix='/ai', tags=['ai'])
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'api/assistant.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.post("/assistant")
+async def assistant(req):
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::POST::/ai/assistant')).toBeDefined();
+      // bare unprefixed form should not be emitted when a prefix mapping exists
+      expect(providers.find((c) => c.contractId === 'http::POST::/assistant')).toBeUndefined();
+    });
+
+    it('joins FastAPI @router.<verb> path with include_router(prefix=...) (named-import shape)', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-named');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+from api.predict import router as predict_router
+app = FastAPI()
+app.include_router(predict_router, prefix='/ai')
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'api/predict.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/concurrent")
+async def concurrent():
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/ai/concurrent')).toBeDefined();
+    });
+
+    it('emits @router.<verb> path unmodified when no include_router prefix is configured', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-no-prefix');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'api/loose.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/standalone")
+async def standalone():
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+      expect(providers.find((c) => c.contractId === 'http::GET::/standalone')).toBeDefined();
+    });
   });
 
   describe('consumer extraction — graph-first (Strategy A)', () => {
