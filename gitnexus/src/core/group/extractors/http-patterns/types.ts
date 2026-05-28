@@ -51,15 +51,48 @@ export interface HttpDetection {
  * `LanguagePatterns.language` in `tree-sitter-scanner.ts` — the
  * grammar modules export different shapes.
  */
+/**
+ * Per-repo state a plugin can build during a `prepareRepo` pass before
+ * any per-file `scan` is invoked. The orchestrator threads this opaque
+ * value back into each `scan` call so plugins can resolve cross-file
+ * facts (e.g. FastAPI `app.include_router(prefix=...)` mappings live
+ * in `main.py` but apply to handlers declared in `api/*.py`).
+ *
+ * Plugins that have no cross-file state can omit `prepareRepo` and
+ * receive `undefined`.
+ */
+export type RepoContext = unknown;
+
 export interface HttpLanguagePlugin {
   /** Human-readable plugin name for diagnostics. */
   name: string;
   /** tree-sitter grammar object (passed to the shared parser). */
   language: unknown;
   /**
+   * Optional pre-pass: walk the relevant files in the repo and produce
+   * an opaque context that `scan` can use to resolve cross-file facts.
+   * Implementations must not throw — return undefined on any error so
+   * the orchestrator falls back to context-less scanning.
+   */
+  prepareRepo?(args: {
+    repoPath: string;
+    files: string[];
+    parser: Parser;
+    readFile: (rel: string) => string | null;
+    parseSource: (parser: Parser, src: string) => Parser.Tree | null;
+  }): RepoContext | undefined;
+  /**
    * Scan a parsed tree and return zero or more HTTP detections. Plugins
    * must not throw — they should swallow per-match errors so a single
    * malformed construct does not abort the whole file.
+   *
+   * `repoContext` is whatever the plugin's `prepareRepo` produced (or
+   * `undefined` if there is no `prepareRepo`).
+   *
+   * `fileRel` is the repo-relative path of the file being scanned;
+   * plugins that resolve cross-file facts (e.g. FastAPI router prefix
+   * joining) need it to key into `repoContext`. Optional so existing
+   * single-file plugins can keep their unary `scan(tree)` shape.
    */
-  scan(tree: Parser.Tree): HttpDetection[];
+  scan(tree: Parser.Tree, repoContext?: RepoContext, fileRel?: string): HttpDetection[];
 }

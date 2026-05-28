@@ -41,6 +41,8 @@ const emptyWorkerResult = (filePath: string, name: string): ParseWorkerResult =>
   fetchCalls: [],
   fetchWrapperDefs: [],
   decoratorRoutes: [],
+  routerIncludes: [],
+  routerImports: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
@@ -74,7 +76,7 @@ fs.writeFileSync(${JSON.stringify(markerPath)}, 'spawned');
 parentPort.postMessage({ type: 'ready' });
 const accumulated = {
   nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [],
-  routes: [], fetchCalls: [], fetchWrapperDefs: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [],
+  routes: [], fetchCalls: [], fetchWrapperDefs: [], decoratorRoutes: [], routerIncludes: [], routerImports: [], toolDefs: [], ormQueries: [], constructorBindings: [],
   fileScopeBindings: [], parsedFiles: [], skippedLanguages: {}, fileCount: 0,
 };
 parentPort.on('message', (msg) => {
