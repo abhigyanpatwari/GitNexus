@@ -736,6 +736,63 @@ describe('LocalBackend.callTool', () => {
     });
   });
 
+  it('impact summaryOnly:true skips the per-symbol STEP_IN_PROCESS enrichment pass', async () => {
+    // Resolver returns target; BFS returns one caller; aggregation returns one process row.
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      if (cypher.includes('WHERE n.name =')) {
+        return Promise.resolve([
+          { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+        ]);
+      }
+      if (cypher.includes('COUNT(DISTINCT s.id)')) {
+        return Promise.resolve([
+          {
+            pId: 'proc:daily',
+            name: 'Daily cron',
+            heuristicLabel: 'Daily cron',
+            processType: 'cron',
+            entryPointId: 'func:cron_entry',
+            hits: 1,
+            minStep: 1,
+            stepCount: 5,
+            epName: 'cron_entry',
+            epType: 'Function',
+            epFilePath: 'src/cron.ts',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      summaryOnly: true,
+    });
+
+    // summaryOnly should return base fields only, no byDepth
+    expect(result.summary).toBeDefined();
+    expect(result.byDepth).toBeUndefined();
+
+    // The per-symbol enrichment query contains 'RETURN s.id AS sid'; verify it
+    // was never called (the gate should have suppressed it).
+    const perSymbolCalls = (executeParameterized as any).mock.calls.filter(
+      ([, cypher]: [string, string]) =>
+        typeof cypher === 'string' && cypher.includes('RETURN s.id AS sid'),
+    );
+    expect(perSymbolCalls).toHaveLength(0);
+  });
+
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path

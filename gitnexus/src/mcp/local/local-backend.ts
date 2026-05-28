@@ -3076,12 +3076,15 @@ export class LocalBackend {
       Array<{ id: string; label: string; processType: string; step: number }>
     >();
 
-    if (impacted.length > 0) {
-      const CHUNK_SIZE = 100;
-      // Max number of chunks to process to avoid unbounded DB round-trips.
-      // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
-      const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
+    // Chunking bounds for batched DB round-trips. Declared at function scope so
+    // both the in-block enrichment passes and the post-pagination per-symbol
+    // process enrichment can reference them.
+    const CHUNK_SIZE = 100;
+    // Max number of chunks to process to avoid unbounded DB round-trips.
+    // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
+    const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
 
+    if (impacted.length > 0) {
       // ── Process enrichment: batched chunking (bounded by MAX_CHUNKS) ─
       // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
       // process + entry point info in 1 round-trip per chunk. Converted to
@@ -3227,48 +3230,9 @@ export class LocalBackend {
         }))
         .sort((a, b) => b.total_hits - a.total_hits);
 
-      // ── Per-symbol process membership enrichment ────────────────────
-      // The aggregation query above used WITH p, COUNT(DISTINCT s.id) which
-      // loses per-symbol info. Run a second chunked pass to collect per-symbol
-      // process membership. Gated on `affectedProcesses.length > 0` (no point
-      // querying if nothing is affected) and `!summaryOnly` (summary callers
-      // don't get byDepth, so per-symbol data is unused there).
-      if (affectedProcesses.length > 0 && !summaryOnly) {
-        const maxPerSymbolItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
-        const perSymbolImpacted = impacted.slice(0, maxPerSymbolItems);
-        for (let i = 0; i < perSymbolImpacted.length; i += CHUNK_SIZE) {
-          const chunkIds = perSymbolImpacted
-            .slice(i, i + CHUNK_SIZE)
-            .map((it) => String(it.id ?? ''));
-          try {
-            const rows = await executeParameterized(
-              repo.id,
-              `
-              MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-              WHERE s.id IN $ids
-              RETURN s.id AS sid, p.id AS pid, p.heuristicLabel AS pName,
-                     p.processType AS pType, r.step AS step
-            `,
-              { ids: chunkIds },
-            ).catch(() => []);
-            for (const row of rows) {
-              const sid = row.sid ?? row[0];
-              if (!sid) continue;
-              const procEntry = {
-                id: String(row.pid ?? row[1] ?? ''),
-                label: String(row.pName ?? row[2] ?? ''),
-                processType: String(row.pType ?? row[3] ?? ''),
-                step: typeof row.step === 'number' ? row.step : (row[4] ?? -1),
-              };
-              const list = perSymbolProcesses.get(String(sid));
-              if (list) list.push(procEntry);
-              else perSymbolProcesses.set(String(sid), [procEntry]);
-            }
-          } catch (e) {
-            logQueryError('impact:per-symbol-process-chunk', e);
-          }
-        }
-      }
+      // Per-symbol process membership is populated post-pagination (see below)
+      // so it covers exactly the symbols returned in byDepth, not a pre-capped
+      // flat slice that could miss depth-2+ symbols when depth-1 is large.
 
       // ── Module enrichment: use same cap as process enrichment and parameterized queries
       const maxItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
@@ -3412,23 +3376,71 @@ export class LocalBackend {
       return base;
     }
 
-    // Apply limit/offset pagination per depth level. Each item is enriched with
-    // `processes: [...]` listing the processes that symbol participates in.
-    // The list is empty for symbols not in any process or when no processes are
-    // affected globally (the enrichment pass above is skipped in that case).
+    // Apply limit/offset pagination per depth level.
     const paginatedGrouped: Record<number, any[]> = {};
     let anyTruncated = false;
     for (const [depth, items] of Object.entries(grouped)) {
       const total = items.length;
-      const sliced = items
-        .slice(paginationOffset, paginationOffset + paginationLimit)
-        .map((it: any) => ({
-          ...it,
-          processes: perSymbolProcesses.get(String(it.id)) ?? [],
-        }));
+      const sliced = items.slice(paginationOffset, paginationOffset + paginationLimit);
       paginatedGrouped[Number(depth)] = sliced;
       if (paginationOffset > 0 || paginationOffset + paginationLimit < total) {
         anyTruncated = true;
+      }
+    }
+
+    // ── Per-symbol process membership enrichment (post-pagination) ───────
+    // Runs after paginatedGrouped is built so we enrich only the IDs that
+    // actually appear in the response. This eliminates the false-empty
+    // processes:[] case where a depth-2+ symbol's flat position in `impacted`
+    // exceeded MAX_CHUNKS*CHUNK_SIZE even though it is returned by byDepth.
+    // Also uses DISTINCT + MIN(r.step) per (symbol, process) pair to avoid
+    // duplicate entries when a symbol has multiple STEP_IN_PROCESS edges.
+    if (affectedProcesses.length > 0) {
+      // Collect unique IDs from the paginated result in one pass.
+      const pageIds = new Set<string>();
+      for (const items of Object.values(paginatedGrouped)) {
+        for (const it of items) {
+          const id = String(it.id ?? '');
+          if (id) pageIds.add(id);
+        }
+      }
+      const pageIdArr = Array.from(pageIds);
+      for (let i = 0; i < pageIdArr.length; i += CHUNK_SIZE) {
+        const chunkIds = pageIdArr.slice(i, i + CHUNK_SIZE);
+        try {
+          const rows = await executeParameterized(
+            repo.id,
+            `
+            MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+            WHERE s.id IN $ids
+            RETURN s.id AS sid, p.id AS pid, p.heuristicLabel AS pName,
+                   p.processType AS pType, MIN(r.step) AS step
+          `,
+            { ids: chunkIds },
+          ).catch(() => []);
+          for (const row of rows) {
+            const sid = row.sid ?? row[0];
+            if (!sid) continue;
+            const procEntry = {
+              id: String(row.pid ?? row[1] ?? ''),
+              label: String(row.pName ?? row[2] ?? ''),
+              processType: String(row.pType ?? row[3] ?? ''),
+              step: Number(row.step ?? row[4] ?? -1),
+            };
+            const list = perSymbolProcesses.get(String(sid));
+            if (list) list.push(procEntry);
+            else perSymbolProcesses.set(String(sid), [procEntry]);
+          }
+        } catch (e) {
+          logQueryError('impact:per-symbol-process-chunk', e);
+        }
+      }
+    }
+
+    // Attach processes field to each paginated item.
+    for (const items of Object.values(paginatedGrouped)) {
+      for (const it of items) {
+        it.processes = perSymbolProcesses.get(String(it.id)) ?? [];
       }
     }
 
@@ -3527,11 +3539,17 @@ export class LocalBackend {
           ];
 
     try {
+      // summaryOnly:true suppresses the per-symbol STEP_IN_PROCESS enrichment
+      // pass. Group-mode cross-repo fan-out may fan across many repos; the
+      // per-symbol pass adds up to MAX_CHUNKS extra round-trips per repo, which
+      // is unacceptable at group scale. Group callers only consume top-level
+      // affected_processes, not byDepth.processes, so this is a no-op for them.
       return await this._runImpactBFS(repo, sym, symType, dir, {
         maxDepth: opts.maxDepth,
         relationTypes,
         includeTests: opts.includeTests,
         minConfidence: opts.minConfidence,
+        summaryOnly: true,
       });
     } catch {
       return null;

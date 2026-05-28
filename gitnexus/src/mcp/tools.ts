@@ -336,7 +336,7 @@ Output includes:
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
-- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated)
+- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[...] field listing the execution flows that symbol participates in (empty when none, or when the symbol falls beyond the enrichment cap — see partial:true)
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
