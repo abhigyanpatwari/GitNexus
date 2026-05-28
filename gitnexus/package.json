@@ -94,6 +94,7 @@
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
     "node-gyp-build": "^4.8.0",
+    "tree-sitter-cuda": "^0.20.5",
     "tree-sitter-kotlin": "^0.3.8"
   },
   "devDependencies": {

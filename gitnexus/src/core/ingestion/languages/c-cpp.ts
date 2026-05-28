@@ -409,7 +409,7 @@ export const cProvider = defineLanguage({
 
 export const cppProvider = defineLanguage({
   id: SupportedLanguages.CPlusPlus,
-  extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
+  extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh', '.cu', '.cuh'],
   entryPointPatterns: [
     /^main$/,
     /^init_/,

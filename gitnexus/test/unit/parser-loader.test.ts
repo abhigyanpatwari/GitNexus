@@ -42,6 +42,18 @@ describe('parser-loader', () => {
       await expect(loadLanguage(SupportedLanguages.CPlusPlus)).resolves.not.toThrow();
     });
 
+    it('loads CUDA grammar for .cu files when tree-sitter-cuda is installed', async () => {
+      await expect(
+        loadLanguage(SupportedLanguages.CPlusPlus, 'src/force/force.cu'),
+      ).resolves.not.toThrow();
+    });
+
+    it('loads CUDA grammar for .cuh files when tree-sitter-cuda is installed', async () => {
+      await expect(
+        loadLanguage(SupportedLanguages.CPlusPlus, 'src/force/force.cuh'),
+      ).resolves.not.toThrow();
+    });
+
     it('loads C# language', async () => {
       await expect(loadLanguage(SupportedLanguages.CSharp)).resolves.not.toThrow();
     });

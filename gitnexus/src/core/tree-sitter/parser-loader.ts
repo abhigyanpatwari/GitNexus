@@ -86,6 +86,14 @@ const SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'C++ parsing requires `tree-sitter-cpp`. Check the install and native binding.',
   },
+  cuda: {
+    load: () => _require('tree-sitter-cuda'),
+    optional: true,
+    unavailableNote:
+      'CUDA parsing disabled: `tree-sitter-cuda` is an optionalDependency and is not ' +
+      'installed (or its native binding failed to build). .cu/.cuh files fall back to ' +
+      'unparsed File nodes. Install with `npm install` in gitnexus/ and re-run analyze.',
+  },
   [SupportedLanguages.Go]: {
     load: () => _require('tree-sitter-go'),
     unavailableNote: 'Go parsing requires `tree-sitter-go`. Check the install and native binding.',
@@ -186,10 +194,19 @@ const logFailure = (key: string, result: LoadResult): void => {
   }
 };
 
-export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string =>
-  language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
-    ? `${language}:tsx`
-    : language;
+export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string => {
+  if (language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')) {
+    return `${language}:tsx`;
+  }
+  if (
+    language === SupportedLanguages.CPlusPlus &&
+    filePath &&
+    (filePath.endsWith('.cu') || filePath.endsWith('.cuh'))
+  ) {
+    return 'cuda';
+  }
+  return language;
+};
 
 const loadGrammar = (key: string): LoadResult => {
   const cached = loadCache.get(key);
@@ -226,13 +243,22 @@ const loadGrammar = (key: string): LoadResult => {
   return result;
 };
 
-export const isLanguageAvailable = (language: SupportedLanguages, filePath?: string): boolean =>
-  loadGrammar(resolveLanguageKey(language, filePath)).ok;
+export const isLanguageAvailable = (language: SupportedLanguages, filePath?: string): boolean => {
+  const key = resolveLanguageKey(language, filePath);
+  const result = loadGrammar(key);
+  if (result.ok) return true;
+  if (key === 'cuda') return loadGrammar(SupportedLanguages.CPlusPlus).ok;
+  return false;
+};
 
 export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): unknown => {
   const key = resolveLanguageKey(language, filePath);
   const result = loadGrammar(key);
   if (result.ok === true) return result.grammar;
+  if (key === 'cuda') {
+    const cpp = loadGrammar(SupportedLanguages.CPlusPlus);
+    if (cpp.ok === true) return cpp.grammar;
+  }
   // Fatal failures throw the original underlying error (preserving stack)
   // after the note has been logged. Optional failures fall through to the
   // standard "Unsupported language" message that callers already handle.
