@@ -2907,9 +2907,11 @@ export class LocalBackend {
       limit?: number;
       offset?: number;
       summaryOnly?: boolean;
+      skipPerSymbolEnrichment?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
+    const skipPerSymbolEnrichment = opts.skipPerSymbolEnrichment ?? false;
     const hasExplicitLimit = typeof opts.limit === 'number' && Number.isFinite(opts.limit);
     const paginationLimit = hasExplicitLimit
       ? Math.max(1, Math.min(Math.trunc(opts.limit!), 10000))
@@ -3395,7 +3397,11 @@ export class LocalBackend {
     // exceeded MAX_CHUNKS*CHUNK_SIZE even though it is returned by byDepth.
     // Also uses DISTINCT + MIN(r.step) per (symbol, process) pair to avoid
     // duplicate entries when a symbol has multiple STEP_IN_PROCESS edges.
-    if (affectedProcesses.length > 0) {
+    // Skipped entirely when `skipPerSymbolEnrichment` is set (group cross-repo
+    // fan-out, which consumes byDepth but not byDepth[].processes); the
+    // attach-loop below still stamps an empty processes:[] for shape stability.
+    let perSymbolEnrichmentCapped = false;
+    if (affectedProcesses.length > 0 && !skipPerSymbolEnrichment) {
       // Collect unique IDs from the paginated result in one pass.
       const pageIds = new Set<string>();
       for (const items of Object.values(paginatedGrouped)) {
@@ -3404,7 +3410,17 @@ export class LocalBackend {
           if (id) pageIds.add(id);
         }
       }
-      const pageIdArr = Array.from(pageIds);
+      // Bound the enrichment to the same ceiling as the aggregation pass
+      // (MAX_CHUNKS * CHUNK_SIZE) so a large paginated page cannot trigger
+      // unbounded DB round-trips (DoD 2.6). When capped, mark the result
+      // partial so callers know some returned symbols may carry an empty
+      // processes:[] that is a cap artifact, not a true absence.
+      const maxPageIds = MAX_CHUNKS * CHUNK_SIZE;
+      let pageIdArr = Array.from(pageIds);
+      if (pageIdArr.length > maxPageIds) {
+        pageIdArr = pageIdArr.slice(0, maxPageIds);
+        perSymbolEnrichmentCapped = true;
+      }
       for (let i = 0; i < pageIdArr.length; i += CHUNK_SIZE) {
         const chunkIds = pageIdArr.slice(i, i + CHUNK_SIZE);
         try {
@@ -3446,6 +3462,10 @@ export class LocalBackend {
 
     return {
       ...base,
+      // Surface partial if the per-symbol enrichment was capped, even when the
+      // BFS traversal itself completed — some returned symbols may carry an
+      // empty processes:[] that is a cap artifact rather than a true absence.
+      ...(perSymbolEnrichmentCapped && { partial: true }),
       ...(anyTruncated && {
         pagination: {
           ...(Number.isFinite(paginationLimit) && { limit: paginationLimit }),
@@ -3539,17 +3559,20 @@ export class LocalBackend {
           ];
 
     try {
-      // summaryOnly:true suppresses the per-symbol STEP_IN_PROCESS enrichment
-      // pass. Group-mode cross-repo fan-out may fan across many repos; the
-      // per-symbol pass adds up to MAX_CHUNKS extra round-trips per repo, which
-      // is unacceptable at group scale. Group callers only consume top-level
-      // affected_processes, not byDepth.processes, so this is a no-op for them.
+      // skipPerSymbolEnrichment suppresses ONLY the per-symbol STEP_IN_PROCESS
+      // enrichment pass while preserving byDepth. Group-mode cross-repo fan-out
+      // may fan across many repos; the per-symbol pass adds up to MAX_CHUNKS
+      // extra round-trips per repo, which is unacceptable at group scale. But
+      // cross-impact fan-out DOES consume byDepth (cross-impact.ts reads
+      // fan.byDepth to populate group by_depth), so summaryOnly would wrongly
+      // drop it. Group callers do not consume byDepth[].processes, so skipping
+      // only that enrichment is the correct, targeted suppression.
       return await this._runImpactBFS(repo, sym, symType, dir, {
         maxDepth: opts.maxDepth,
         relationTypes,
         includeTests: opts.includeTests,
         minConfidence: opts.minConfidence,
-        summaryOnly: true,
+        skipPerSymbolEnrichment: true,
       });
     } catch {
       return null;

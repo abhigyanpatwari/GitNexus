@@ -793,6 +793,83 @@ describe('LocalBackend.callTool', () => {
     expect(perSymbolCalls).toHaveLength(0);
   });
 
+  it('impactByUid preserves byDepth while skipping per-symbol enrichment (group fan-out)', async () => {
+    // Regression guard for the cross-repo by_depth contract: impactByUid must
+    // suppress only the per-symbol STEP_IN_PROCESS pass, NOT the whole byDepth
+    // field. cross-impact.ts reads fan.byDepth to populate group `by_depth`;
+    // using summaryOnly here would silently empty it.
+    //
+    // impactByUid takes an explicit repoId and calls refreshRepos() internally.
+    // Use a fresh backend whose repo path is already absolute/resolved so the
+    // derived repoId stays stable across that refresh (an unresolved POSIX
+    // fixture path triggers the path-collision rehash and drops the key).
+    const resolvedRepoPath = path.resolve('/tmp/test-project');
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: resolvedRepoPath },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // UID resolver
+      if (cypher.includes('WHERE n.id = $uid')) {
+        return Promise.resolve([
+          { id: 'func:main', name: 'main', filePath: 'src/index.ts', type: 'Function' },
+        ]);
+      }
+      // Aggregation pass (returns a process row so affectedProcesses > 0; if the
+      // per-symbol pass were not skipped, this would open its gate)
+      if (cypher.includes('COUNT(DISTINCT s.id)')) {
+        return Promise.resolve([
+          {
+            pId: 'proc:daily',
+            name: 'Daily cron',
+            heuristicLabel: 'Daily cron',
+            processType: 'cron',
+            entryPointId: 'func:cron_entry',
+            hits: 1,
+            minStep: 1,
+            stepCount: 5,
+            epName: 'cron_entry',
+            epType: 'Function',
+            epFilePath: 'src/cron.ts',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/uses-main.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.impactByUid('test-project', 'uid:main', 'upstream', {
+      maxDepth: 5,
+      relationTypes: ['CALLS'],
+      minConfidence: 0,
+      includeTests: true,
+    });
+
+    // byDepth must survive (Finding A regression guard)
+    expect(result).not.toBeNull();
+    expect(result.byDepth).toBeDefined();
+    const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+    expect(d1.find((it: any) => it.id === 'func:caller')).toBeDefined();
+
+    // The per-symbol enrichment query must never fire under skipPerSymbolEnrichment
+    const perSymbolCalls = (executeParameterized as any).mock.calls.filter(
+      ([, cypher]: [string, string]) =>
+        typeof cypher === 'string' && cypher.includes('RETURN s.id AS sid'),
+    );
+    expect(perSymbolCalls).toHaveLength(0);
+  });
+
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path
