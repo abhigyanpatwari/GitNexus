@@ -20,6 +20,8 @@ import {
 } from './helpers.js';
 import { isRegistryPrimary } from '../../../src/core/ingestion/registry-primary-flag.js';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
+import { cobolProvider } from '../../../src/core/ingestion/languages/cobol.js';
 
 const isPrimary = isRegistryPrimary(SupportedLanguages.Cobol);
 
@@ -743,6 +745,24 @@ describe('COBOL full system extraction', () => {
       // produces scope captures via emitCobolScopeCaptures
       expect(result.graph).not.toBeNull();
       expect(Object.keys(result.graph.nodes ?? {}).length).toBeGreaterThan(0);
+    });
+
+    it('extractParsedFile works for standalone COBOL provider', () => {
+      const source = `
+           IDENTIFICATION DIVISION.
+           PROGRAM-ID. TESTPROG.
+           PROCEDURE DIVISION.
+               DISPLAY 'hello'.
+               STOP RUN.
+           END PROGRAM TESTPROG.
+      `;
+      const parsedFile = extractParsedFile(cobolProvider, source, 'TESTPROG.cbl', () => {});
+
+      expect(parsedFile).not.toBeNull();
+      // Use toBe for strict equality — not.toBeNull() per DoD
+      expect(parsedFile!.scopes.length).toBeGreaterThan(0);
+      expect(typeof parsedFile!.moduleScope).toBe('string');
+      expect(parsedFile!.moduleScope.length).toBeGreaterThan(0);
     });
   });
 });

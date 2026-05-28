@@ -459,10 +459,12 @@ export function runScopeResolution(
     postHeritageNodeLookup,
     handledSites,
   );
-  const importsEmitted =
-    provider.languageProvider.parseStrategy === 'standalone'
-      ? 0
-      : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
+  const importsEmitted = emitImportEdges(
+    graph,
+    indexes.imports,
+    indexes.scopeTree,
+    provider.importEdgeReason,
+  );
 
   if (PROF) {
     const tEnd = process.hrtime.bigint();

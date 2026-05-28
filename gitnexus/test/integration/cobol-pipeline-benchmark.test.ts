@@ -7,8 +7,10 @@
  *
  * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/cobol-pipeline-benchmark.test.ts
  *
- * Results differ by REGISTRY_PRIMARY_COBOL mode. Under =1,
- * cobolPhase is gated, so node/edge counts will be ~0.
+ * Results are identical under both REGISTRY_PRIMARY_COBOL modes because
+ * cobolPhase runs in both modes. Under =1, scope-resolution is skipped for
+ * COBOL (standalone guard at phase.ts:164), so node/edge counts come entirely
+ * from the legacy cobolPhase.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
