@@ -51,6 +51,7 @@ import type {
   ExtractedDecoratorRoute,
   ExtractedRouterImport,
   ExtractedRouterInclude,
+  ExtractedRouterModuleAlias,
   ExtractedToolDef,
   FileConstructorBindings,
   FileScopeBindings,
@@ -76,6 +77,7 @@ export interface WorkerExtractedData {
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
+  routerModuleAliases: ExtractedRouterModuleAlias[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -120,6 +122,7 @@ export const mergeChunkResults = (
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
+  const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
@@ -161,6 +164,8 @@ export const mergeChunkResults = (
     if (result.routerIncludes)
       for (const item of result.routerIncludes) allRouterIncludes.push(item);
     if (result.routerImports) for (const item of result.routerImports) allRouterImports.push(item);
+    if (result.routerModuleAliases)
+      for (const item of result.routerModuleAliases) allRouterModuleAliases.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     for (const item of result.constructorBindings) allConstructorBindings.push(item);
@@ -180,6 +185,7 @@ export const mergeChunkResults = (
     decoratorRoutes: allDecoratorRoutes,
     routerIncludes: allRouterIncludes,
     routerImports: allRouterImports,
+    routerModuleAliases: allRouterModuleAliases,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
@@ -223,6 +229,7 @@ const processParsingWithWorkers = async (
       decoratorRoutes: [],
       routerIncludes: [],
       routerImports: [],
+      routerModuleAliases: [],
       toolDefs: [],
       ormQueries: [],
       constructorBindings: [],

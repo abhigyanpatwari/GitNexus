@@ -82,10 +82,16 @@ const INCLUDE_ROUTER_ATTR_PATTERNS = compilePatterns({
   patterns: [
     {
       meta: {},
+      // Match any `<host>.include_router(<module>.router, ..., prefix='/x')`
+      // call. We deliberately do NOT pin `<host>` to the literal name `app`
+      // — production code routinely uses `api`, `application`, `asgi_app`,
+      // etc. The shape (`include_router` invoked with a router argument and
+      // a `prefix=` keyword) is specific enough on its own; restricting the
+      // host produces false negatives without removing meaningful false
+      // positives.
       query: `
         (call
           function: (attribute
-            object: (identifier) @host (#eq? @host "app")
             attribute: (identifier) @incl (#eq? @incl "include_router"))
           arguments: (argument_list
             (attribute
@@ -105,10 +111,10 @@ const INCLUDE_ROUTER_NAME_PATTERNS = compilePatterns({
   patterns: [
     {
       meta: {},
+      // Same `<host>` rationale as INCLUDE_ROUTER_ATTR_PATTERNS — see above.
       query: `
         (call
           function: (attribute
-            object: (identifier) @host (#eq? @host "app")
             attribute: (identifier) @incl (#eq? @incl "include_router"))
           arguments: (argument_list
             (identifier) @router_name
@@ -142,6 +148,36 @@ const FROM_IMPORT_ROUTER_PATTERNS = compilePatterns({
           module_name: (_) @module
           name: (aliased_import
             name: (dotted_name (identifier) @imported (#eq? @imported "router"))
+            alias: (identifier) @alias))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// `from api import users` / `from api import users as u` — module-level
+// imports where the imported name is itself the module that owns
+// `<name>.router`. Lets Shape A (`<host>.include_router(<name>.router, …)`)
+// look up the full package path of `<name>` and pin the prefix onto the
+// exact file (`api/users.py`) rather than every file basenamed `users.py`.
+const FROM_IMPORT_MODULE_PATTERNS = compilePatterns({
+  name: 'python-fastapi-from-import-module',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (import_from_statement
+          module_name: (_) @module
+          name: (dotted_name (identifier) @imported))
+      `,
+    },
+    {
+      meta: {},
+      query: `
+        (import_from_statement
+          module_name: (_) @module
+          name: (aliased_import
+            name: (dotted_name (identifier) @imported)
             alias: (identifier) @alias))
       `,
     },
@@ -565,24 +601,78 @@ const HTTPX_ASYNC_CLIENT_GENERIC_PATTERNS = compilePatterns({
 // separate detections — this matches FastAPI's behaviour when one
 // router is mounted under several prefixes.
 //
-// Module keying uses the **basename** of the .py file (e.g.
-// `api/assistant.py` → `assistant`) so it lines up with both
-// `app.include_router(assistant.router, ...)` and
-// `from api.assistant import router` shapes used in the wild.
+// Module keying is two-tiered to avoid prefix bleed between same-named
+// files in different packages (e.g. `api/users.py` vs `admin/users.py`):
+//   • short key — file basename without `.py`           (`users`)
+//   • long  key — `<parent-dir>/<basename>`             (`api/users`)
+// The pre-pass records prefixes against the long key whenever the import
+// site supplies enough context (`from api.users import router as ...` →
+// long key `api/users`); otherwise it falls back to the short key.
+// At scan time the file's own long key is consulted first; only when no
+// long-key entry targets this file do we look up the short key. This
+// preserves the previous coarse-grained behaviour where context is
+// missing while delivering precision wherever the import statement
+// gives us a multi-segment module path.
 interface PythonRepoContext {
-  /** module basename (without extension) → set of prefixes */
-  prefixesByModule: Map<string, Set<string>>;
+  /** `<parent>/<stem>` → set of prefixes (precise, package-aware) */
+  prefixesByLongKey: Map<string, Set<string>>;
+  /** stem only → set of prefixes (basename fallback, may collide) */
+  prefixesByShortKey: Map<string, Set<string>>;
 }
 
-function basenameModule(rel: string): string {
+/** Strip `.py` and return the bare basename (e.g. `api/users.py` → `users`). */
+function fileShortKey(rel: string): string {
   const slash = rel.lastIndexOf('/');
   const file = slash >= 0 ? rel.slice(slash + 1) : rel;
   return file.endsWith('.py') ? file.slice(0, -3) : file;
 }
 
+/**
+ * Long key for a `.py` file: parent directory + stem, joined with `/`.
+ * Files at the repo root return the empty string (no parent), in which
+ * case callers should fall back to the short key.
+ */
+function fileLongKey(rel: string): string {
+  const noExt = rel.endsWith('.py') ? rel.slice(0, -3) : rel;
+  const lastSlash = noExt.lastIndexOf('/');
+  if (lastSlash < 0) return '';
+  const beforeLast = noExt.slice(0, lastSlash);
+  const stem = noExt.slice(lastSlash + 1);
+  const prevSlash = beforeLast.lastIndexOf('/');
+  const parent = prevSlash >= 0 ? beforeLast.slice(prevSlash + 1) : beforeLast;
+  return `${parent}/${stem}`;
+}
+
+/** Last `.`-separated segment of a (possibly relative) module path. */
 function lastSegmentOfDotted(text: string): string {
-  const dot = text.lastIndexOf('.');
-  return dot >= 0 ? text.slice(dot + 1) : text;
+  const stripped = text.replace(/^\.+/, '');
+  if (!stripped) return '';
+  const dot = stripped.lastIndexOf('.');
+  return dot >= 0 ? stripped.slice(dot + 1) : stripped;
+}
+
+/**
+ * Last two `.`-separated segments of a (possibly relative) module path
+ * joined with `/`, e.g. `api.users` → `api/users`. Single-segment paths
+ * and pure-dot inputs return the empty string; callers should fall back
+ * to the short key in that case.
+ */
+function lastTwoSegmentsAsLongKey(text: string): string {
+  const stripped = text.replace(/^\.+/, '');
+  if (!stripped) return '';
+  const last = stripped.lastIndexOf('.');
+  if (last <= 0) return '';
+  const beforeLast = stripped.slice(0, last);
+  const stem = stripped.slice(last + 1);
+  const prev = beforeLast.lastIndexOf('.');
+  const parent = prev >= 0 ? beforeLast.slice(prev + 1) : beforeLast;
+  return `${parent}/${stem}`;
+}
+
+function recordPrefix(target: Map<string, Set<string>>, key: string, prefix: string): void {
+  const set = target.get(key) ?? new Set<string>();
+  set.add(prefix);
+  target.set(key, set);
 }
 
 function buildPythonRepoContext(
@@ -591,7 +681,8 @@ function buildPythonRepoContext(
   readFile: (rel: string) => string | null,
   parseSource: (parser: Parser, src: string) => Parser.Tree | null,
 ): PythonRepoContext {
-  const prefixesByModule = new Map<string, Set<string>>();
+  const prefixesByLongKey = new Map<string, Set<string>>();
+  const prefixesByShortKey = new Map<string, Set<string>>();
 
   // Pre-pass over .py files. We deliberately run this even on files
   // that don't contain `include_router` — the cost of an extra parse
@@ -606,52 +697,90 @@ function buildPythonRepoContext(
     const tree = parseSource(parser, src);
     if (!tree) continue;
 
-    // Local name → module map for the current file, populated from
-    // `from <module> import router [as <alias>]` statements. The
+    // Local name → (short, long) map for the current file, populated
+    // from `from <module> import router [as <alias>]` statements. The
     // alias (or 'router' when there is no alias) is the local name
-    // we'll later see passed to `app.include_router`.
-    const localNameToModule = new Map<string, string>();
+    // we'll later see passed to `<host>.include_router`.
+    interface LocalImport {
+      moduleShort: string;
+      moduleLong: string;
+    }
+    const localNameToModule = new Map<string, LocalImport>();
     for (const m of runCompiledPatterns(FROM_IMPORT_ROUTER_PATTERNS, tree)) {
       const moduleNode = m.captures.module;
       const aliasNode = m.captures.alias;
       const importedNode = m.captures.imported;
       if (!moduleNode || !importedNode) continue;
       const localName = aliasNode?.text ?? importedNode.text;
-      const moduleKey = lastSegmentOfDotted(moduleNode.text);
-      localNameToModule.set(localName, moduleKey);
+      const moduleShort = lastSegmentOfDotted(moduleNode.text);
+      if (!moduleShort) continue;
+      const moduleLong = lastTwoSegmentsAsLongKey(moduleNode.text);
+      localNameToModule.set(localName, { moduleShort, moduleLong });
     }
 
-    // Shape A: `app.include_router(<module>.router, prefix='/x')`
+    // Module-alias map: name imported from a multi-segment package →
+    // long key. Lets Shape A look up the precise file for `<name>.router`
+    // even when `<name>` collides with another package's basename.
+    const localNameToModuleAlias = new Map<string, string>();
+    for (const m of runCompiledPatterns(FROM_IMPORT_MODULE_PATTERNS, tree)) {
+      const moduleNode = m.captures.module;
+      const importedNode = m.captures.imported;
+      const aliasNode = m.captures.alias;
+      if (!moduleNode || !importedNode) continue;
+      // Skip the `router` shape — already handled by FROM_IMPORT_ROUTER_PATTERNS
+      // above and stored under its router-aware semantics.
+      if (importedNode.text === 'router') continue;
+      const moduleLong = lastTwoSegmentsAsLongKey(`${moduleNode.text}.${importedNode.text}`);
+      if (!moduleLong) continue;
+      const localName = aliasNode?.text ?? importedNode.text;
+      localNameToModuleAlias.set(localName, moduleLong);
+    }
+
+    // Shape A: `<host>.include_router(<module>.router, prefix='/x')`.
+    // The call site gives us only a short module name. We promote to a
+    // long key when the same file imports `<module>` via either
+    // `from <pkg> import <module>` (recorded in `localNameToModuleAlias`
+    // — the typical pattern) or, less commonly, a router-aware import
+    // statement. Only fall back to the basename short key when neither
+    // alias is available.
     for (const m of runCompiledPatterns(INCLUDE_ROUTER_ATTR_PATTERNS, tree)) {
       const modNode = m.captures.router_module;
       const prefixNode = m.captures.prefix;
       if (!modNode || !prefixNode) continue;
       const prefix = unquoteLiteral(prefixNode.text);
       if (prefix === null) continue;
-      const moduleKey = modNode.text;
-      const set = prefixesByModule.get(moduleKey) ?? new Set<string>();
-      set.add(prefix);
-      prefixesByModule.set(moduleKey, set);
+      const moduleShort = modNode.text;
+      const aliasLong = localNameToModuleAlias.get(moduleShort);
+      const sameFileImport = localNameToModule.get(moduleShort);
+      const longKey = aliasLong ?? sameFileImport?.moduleLong;
+      if (longKey) {
+        recordPrefix(prefixesByLongKey, longKey, prefix);
+      } else {
+        recordPrefix(prefixesByShortKey, moduleShort, prefix);
+      }
     }
 
-    // Shape B: `app.include_router(my_router, prefix='/x')` — resolve
-    // `my_router` via a `from <module> import router [as my_router]`
-    // statement in the same file.
+    // Shape B: `<host>.include_router(my_router, prefix='/x')` — resolve
+    // `my_router` via the import map built above. Whenever the import
+    // statement supplied a multi-segment module path the long key is
+    // recorded, eliminating cross-package collisions.
     for (const m of runCompiledPatterns(INCLUDE_ROUTER_NAME_PATTERNS, tree)) {
       const nameNode = m.captures.router_name;
       const prefixNode = m.captures.prefix;
       if (!nameNode || !prefixNode) continue;
-      const moduleKey = localNameToModule.get(nameNode.text);
-      if (!moduleKey) continue;
+      const localImp = localNameToModule.get(nameNode.text);
+      if (!localImp) continue;
       const prefix = unquoteLiteral(prefixNode.text);
       if (prefix === null) continue;
-      const set = prefixesByModule.get(moduleKey) ?? new Set<string>();
-      set.add(prefix);
-      prefixesByModule.set(moduleKey, set);
+      if (localImp.moduleLong) {
+        recordPrefix(prefixesByLongKey, localImp.moduleLong, prefix);
+      } else {
+        recordPrefix(prefixesByShortKey, localImp.moduleShort, prefix);
+      }
     }
   }
 
-  return { prefixesByModule };
+  return { prefixesByLongKey, prefixesByShortKey };
 }
 
 function joinPrefix(prefix: string, route: string): string {
@@ -706,8 +835,15 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const rawPath = unquoteLiteral(pathNode.text);
       if (rawPath === null) continue;
 
-      const moduleKey = fileRel ? basenameModule(fileRel) : '';
-      const prefixSet = ctx?.prefixesByModule.get(moduleKey);
+      // Long key first (precise, package-aware), short key as fallback.
+      // Mirrors the ingestion-side resolution in parse-impl.ts so the
+      // graph nodes and group contracts agree on which prefix applies.
+      const longKey = fileRel ? fileLongKey(fileRel) : '';
+      const longPrefixes = longKey ? ctx?.prefixesByLongKey.get(longKey) : undefined;
+      const shortKey = fileRel ? fileShortKey(fileRel) : '';
+      const shortPrefixes =
+        longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
+      const prefixSet = longPrefixes ?? shortPrefixes;
       const paths =
         prefixSet && prefixSet.size > 0
           ? [...prefixSet].map((p) => joinPrefix(p, rawPath))

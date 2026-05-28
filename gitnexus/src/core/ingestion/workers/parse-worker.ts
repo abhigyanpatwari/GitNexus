@@ -230,24 +230,20 @@ export interface ExtractedDecoratorRoute {
  * (either `<module>.router` attribute access or a bare local name).
  * parse-impl resolves it to a module key (file basename) using
  * `ExtractedRouterImport` records from the same file.
+ *
+ * @deprecated Re-exported from `./fastapi-router-bindings` for back
+ * compatibility — import from there in new code.
  */
-export interface ExtractedRouterInclude {
-  filePath: string;
-  routerExpr: string;
-  prefix: string;
-  lineNumber: number;
-}
-
-/**
- * One `from <module> import router [as <alias>]` discovered in a
- * Python file. Lets parse-impl map a local name back to the module
- * basename when resolving an `include_router(name, ...)` call.
- */
-export interface ExtractedRouterImport {
-  filePath: string;
-  localName: string;
-  moduleKey: string;
-}
+import type {
+  ExtractedRouterInclude,
+  ExtractedRouterImport,
+  ExtractedRouterModuleAlias,
+} from './fastapi-router-bindings.js';
+export type {
+  ExtractedRouterInclude,
+  ExtractedRouterImport,
+  ExtractedRouterModuleAlias,
+} from './fastapi-router-bindings.js';
 
 export interface ExtractedToolDef {
   filePath: string;
@@ -315,6 +311,16 @@ export interface ParseWorkerResult {
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
+  /**
+   * Optional. `from <pkg> import <module>` records from Python files
+   * where `<module>` is later used as a Shape-A include receiver
+   * (`<host>.include_router(<module>.router, prefix='/x')`). parse-impl
+   * uses these to promote Shape-A short-key entries to long keys, so
+   * same-named modules in different packages don't share prefixes.
+   * Optional for cache backward compatibility (older cache entries
+   * predate the field; consumers must guard with `if (… ?? [])`).
+   */
+  routerModuleAliases?: ExtractedRouterModuleAlias[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -782,6 +788,7 @@ const processBatch = (
     decoratorRoutes: [],
     routerIncludes: [],
     routerImports: [],
+    routerModuleAliases: [],
     toolDefs: [],
     ormQueries: [],
     constructorBindings: [],
@@ -1014,94 +1021,12 @@ export function extractORMQueries(
 // FastAPI router prefix detection (Python)
 // ============================================================================
 //
-// Mirrors the http-route-extractor python plugin's prepareRepo logic but
-// runs at parse time so the ingestion graph (Route nodes) sees prefixes.
-// We use regex rather than a tree-sitter pre-pass because the worker is
-// per-file: full cross-file resolution happens in parse-impl, which only
-// needs the raw extraction here.
-//
-// Module keying: file basename without `.py` extension. `from .api.assistant
-// import router` is keyed as `assistant`; `app.include_router(assistant.router,
-// prefix='/ai')` is keyed the same.
+// The actual extraction lives in `./fastapi-router-bindings` so it can
+// be unit-tested without booting a worker thread. This module just
+// re-exports the function for parsing-processor compatibility.
 
-const INCLUDE_ROUTER_ATTR_RE =
-  /\b(?:[A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\.router\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
-const INCLUDE_ROUTER_NAME_RE =
-  /\b(?:[A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
-const FROM_IMPORT_ROUTER_RE = /^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
-
-function lastDottedSegment(text: string): string {
-  const dot = text.lastIndexOf('.');
-  return dot >= 0 ? text.slice(dot + 1) : text;
-}
-
-export function extractFastAPIRouterBindings(
-  filePath: string,
-  content: string,
-  outIncludes: ExtractedRouterInclude[],
-  outImports: ExtractedRouterImport[],
-): void {
-  if (!content.includes('include_router') && !content.includes('router')) return;
-
-  // `from <module> import router [as <alias>]`. We capture every name in
-  // the import list and look for `router` (with or without an `as` alias).
-  if (content.includes(' import ')) {
-    FROM_IMPORT_ROUTER_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = FROM_IMPORT_ROUTER_RE.exec(content)) !== null) {
-      const moduleText = m[1];
-      const importList = m[2];
-      // Strip surrounding parens / trailing whitespace; split on commas.
-      const cleaned = importList.replace(/[()]/g, '').trim();
-      for (const rawPart of cleaned.split(',')) {
-        const part = rawPart.trim();
-        if (!part) continue;
-        // `router` or `router as foo`
-        const aliasMatch = /^router(?:\s+as\s+([A-Za-z_]\w*))?$/.exec(part);
-        if (!aliasMatch) continue;
-        const localName = aliasMatch[1] ?? 'router';
-        outImports.push({
-          filePath,
-          localName,
-          moduleKey: lastDottedSegment(moduleText),
-        });
-      }
-    }
-  }
-
-  if (!content.includes('include_router')) return;
-
-  // Shape A: `app.include_router(<module>.router, prefix='/x')`
-  INCLUDE_ROUTER_ATTR_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = INCLUDE_ROUTER_ATTR_RE.exec(content)) !== null) {
-    outIncludes.push({
-      filePath,
-      routerExpr: `${m[1]}.router`,
-      prefix: m[3],
-      lineNumber: content.substring(0, m.index).split('\n').length,
-    });
-  }
-
-  // Shape B: `app.include_router(my_router, prefix='/x')`. Resolution to a
-  // module key happens in parse-impl using outImports from the same file.
-  INCLUDE_ROUTER_NAME_RE.lastIndex = 0;
-  while ((m = INCLUDE_ROUTER_NAME_RE.exec(content)) !== null) {
-    // Skip cases that already matched Shape A — INCLUDE_ROUTER_NAME_RE is
-    // intentionally permissive and would re-capture `<mod>.router` as the
-    // bare name `mod`. Discriminate by re-checking the immediate source
-    // around the captured argument position.
-    const argStart = m.index + m[0].indexOf(m[1]);
-    const dotProbe = content.slice(argStart + m[1].length, argStart + m[1].length + 8);
-    if (/^\s*\.\s*router/.test(dotProbe)) continue;
-    outIncludes.push({
-      filePath,
-      routerExpr: m[1],
-      prefix: m[3],
-      lineNumber: content.substring(0, m.index).split('\n').length,
-    });
-  }
-}
+import { extractFastAPIRouterBindings } from './fastapi-router-bindings.js';
+export { extractFastAPIRouterBindings };
 
 const processFileGroup = (
   files: ParseWorkerInput[],
@@ -2141,6 +2066,7 @@ const processFileGroup = (
         parseContent,
         result.routerIncludes,
         result.routerImports,
+        (result.routerModuleAliases ??= []),
       );
     }
 
@@ -2178,6 +2104,7 @@ let accumulated: ParseWorkerResult = {
   decoratorRoutes: [],
   routerIncludes: [],
   routerImports: [],
+  routerModuleAliases: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
@@ -2209,6 +2136,10 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.decoratorRoutes, src.decoratorRoutes);
   if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
   if (src.routerImports) appendAll(target.routerImports, src.routerImports);
+  if (src.routerModuleAliases) {
+    target.routerModuleAliases ??= [];
+    appendAll(target.routerModuleAliases, src.routerModuleAliases);
+  }
   appendAll(target.toolDefs, src.toolDefs);
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
@@ -2303,6 +2234,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         decoratorRoutes: [],
         routerIncludes: [],
         routerImports: [],
+        routerModuleAliases: [],
         toolDefs: [],
         ormQueries: [],
         constructorBindings: [],
