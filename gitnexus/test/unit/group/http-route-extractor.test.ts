@@ -14,6 +14,36 @@ import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-rout
 import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
+// ─── CI tripwire: tree-sitter-kotlin grammar must be available ────────
+// The Kotlin Provider suite (PR #1849) and Consumer suite (PR #1855)
+// each guard their `it()` calls behind:
+//
+//   const kotlinAvailable = getPluginForFile('Probe.kt') !== undefined;
+//   const itKotlin = kotlinAvailable ? it : it.skip;
+//
+// This is intentional locally: contributors on platforms where the
+// optional `tree-sitter-kotlin` native binding doesn't build (or
+// haven't installed it) shouldn't be blocked by red Kotlin tests.
+//
+// On CI the same pattern becomes a silent-skip hazard: if the optional
+// dep ever fails to install (npm registry hiccup, build-toolchain
+// drift, ABI bump) all 17+ Kotlin cases would silently skip and CI
+// would still be green — the exact failure mode flagged in Claude's
+// review on PR #1855 (Finding 2). Mirrors the existing tripwire in
+// `test/integration/object-literal-owner-resolution.test.ts`.
+//
+// Module-load throw is intentional: it surfaces as a hard red, not a
+// silent zero-test pass. Contributors running on a platform without
+// the grammar can still iterate locally — only CI is gated.
+if (process.env.CI && getPluginForFile('Probe.kt') === undefined) {
+  throw new Error(
+    'tree-sitter-kotlin grammar is unavailable on CI. ' +
+      'The Kotlin Provider/Consumer test suites in this file would silently skip. ' +
+      'Check `optionalDependencies` in gitnexus/package.json and the runner build toolchain. ' +
+      'Local note: this tripwire only fires when CI=true; local runs without the grammar still skip cleanly.',
+  );
+}
+
 describe('HttpRouteExtractor', () => {
   let tmpDir: string;
   let extractor: HttpRouteExtractor;
