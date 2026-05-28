@@ -97,7 +97,10 @@ describe('impact: batching and grouping', () => {
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
       const params = args[2] || {};
-      if (query.includes('STEP_IN_PROCESS')) {
+      // Match only the aggregation chunk (which uses COUNT(DISTINCT s.id)),
+      // not the per-symbol enrichment pass added by impact byDepth processes
+      // (which also matches STEP_IN_PROCESS but has a different RETURN shape).
+      if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
         // Count ids passed in as params.ids
         const ids = Array.isArray(params.ids) ? params.ids : [];
         const cnt = ids.length;
@@ -263,7 +266,10 @@ describe('impact: batching and grouping', () => {
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
       const params = args[2] || {};
-      if (query.includes('STEP_IN_PROCESS')) {
+      // Match only the aggregation chunk (which uses COUNT(DISTINCT s.id)),
+      // not the per-symbol enrichment pass added by impact byDepth processes
+      // (which also matches STEP_IN_PROCESS but has a different RETURN shape).
+      if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
         const ids = Array.isArray(params.ids) ? params.ids : [];
         chunkSizes.push(ids.length);
         return [
