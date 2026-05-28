@@ -13,18 +13,16 @@
 // Extracted from a post-create.sh heredoc so the regex + deep rewrite are
 // lintable and unit-tested (the regex has had path-handling bugs before).
 
-"use strict";
+'use strict';
 
-const fs = require("fs");
-const path = require("path");
+const fs = require('fs');
+const path = require('path');
 
 // Match an absolute path that contains `<sep>.<cli><sep>plugins<sep><rest>`
 // where <sep> is `/` or `\`. Anchored at start; the lazy `.*?` consumes the
 // home prefix up to the FIRST `.<cli>/plugins` segment.
 function buildRe(cliName) {
-  return new RegExp(
-    `^(?:[A-Za-z]:)?[\\\\/].*?[\\\\/]\\.${cliName}[\\\\/]plugins[\\\\/](.*)$`,
-  );
+  return new RegExp(`^(?:[A-Za-z]:)?[\\\\/].*?[\\\\/]\\.${cliName}[\\\\/]plugins[\\\\/](.*)$`);
 }
 
 // Recursively rewrite every string value in `obj` that matches `re`,
@@ -32,33 +30,29 @@ function buildRe(cliName) {
 // Windows backslashes to forward slashes.
 function rewriteDeep(obj, re, ctr) {
   if (Array.isArray(obj)) return obj.map((v) => rewriteDeep(v, re, ctr));
-  if (obj && typeof obj === "object") {
+  if (obj && typeof obj === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(obj)) out[k] = rewriteDeep(v, re, ctr);
     return out;
   }
-  if (typeof obj === "string") {
-    return obj.replace(re, (_, rest) => `${ctr}/${rest.replace(/\\/g, "/")}`);
+  if (typeof obj === 'string') {
+    return obj.replace(re, (_, rest) => `${ctr}/${rest.replace(/\\/g, '/')}`);
   }
   return obj;
 }
 
 const REGISTRIES = [
   {
-    cli: "claude",
-    host: "/host/.claude/plugins",
-    ctr: "/home/node/.claude/plugins",
-    files: [
-      "known_marketplaces.json",
-      "installed_plugins.json",
-      "plugin-catalog-cache.json",
-    ],
+    cli: 'claude',
+    host: '/host/.claude/plugins',
+    ctr: '/home/node/.claude/plugins',
+    files: ['known_marketplaces.json', 'installed_plugins.json', 'plugin-catalog-cache.json'],
   },
   {
-    cli: "cursor",
-    host: "/host/.cursor/plugins",
-    ctr: "/home/node/.cursor/plugins",
-    files: ["installed_plugins.json"],
+    cli: 'cursor',
+    host: '/host/.cursor/plugins',
+    ctr: '/home/node/.cursor/plugins',
+    files: ['installed_plugins.json'],
   },
 ];
 
@@ -68,9 +62,7 @@ function translate(registries) {
     try {
       fs.mkdirSync(reg.ctr, { recursive: true });
     } catch (err) {
-      console.error(
-        `[post-create] ERROR: failed to create ${reg.ctr}: ${err && err.message}`,
-      );
+      console.error(`[post-create] ERROR: failed to create ${reg.ctr}: ${err && err.message}`);
       process.exit(1);
     }
     for (const name of reg.files) {
@@ -79,19 +71,14 @@ function translate(registries) {
       if (!fs.existsSync(src) || fs.statSync(src).size === 0) continue;
       let data;
       try {
-        data = JSON.parse(fs.readFileSync(src, "utf8"));
+        data = JSON.parse(fs.readFileSync(src, 'utf8'));
       } catch {
         continue; // skip a malformed host registry rather than abort
       }
       try {
-        fs.writeFileSync(
-          dst,
-          JSON.stringify(rewriteDeep(data, re, reg.ctr), null, 2),
-        );
+        fs.writeFileSync(dst, JSON.stringify(rewriteDeep(data, re, reg.ctr), null, 2));
       } catch (err) {
-        console.error(
-          `[post-create] ERROR: failed to write ${dst}: ${err && err.message}`,
-        );
+        console.error(`[post-create] ERROR: failed to write ${dst}: ${err && err.message}`);
         process.exit(1);
       }
     }

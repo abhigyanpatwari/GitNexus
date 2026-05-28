@@ -14,17 +14,17 @@
 // test harness). DISABLE_AUTOUPDATER=1 (containerEnv) already neutralizes
 // runtime updates; this purely silences the doctor mismatch + native probe.
 
-"use strict";
+'use strict';
 
-const fs = require("fs");
+const fs = require('fs');
 
 // Host binary-management / machine-install fields — never valid for an
 // `npm install -g` container. Stripping lets Claude auto-detect npm-global.
 const MACHINE_FIELDS = [
-  "installMethod",
-  "autoUpdates",
-  "autoUpdatesProtectedForNative",
-  "shiftEnterKeyBindingInstalled",
+  'installMethod',
+  'autoUpdates',
+  'autoUpdatesProtectedForNative',
+  'shiftEnterKeyBindingInstalled',
 ];
 
 // Pure transform: take whatever the host file parsed to and return the
@@ -34,7 +34,7 @@ const MACHINE_FIELDS = [
 // hasCompletedOnboarding assignment, and re-trigger onboarding every rebuild).
 function sanitizeClaudeConfig(parsed) {
   let cfg = parsed;
-  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+  if (cfg === null || typeof cfg !== 'object' || Array.isArray(cfg)) {
     cfg = {};
   }
   for (const k of MACHINE_FIELDS) {
@@ -47,7 +47,7 @@ function sanitizeClaudeConfig(parsed) {
 function readHostConfig(src) {
   try {
     if (fs.existsSync(src) && fs.statSync(src).size > 0) {
-      return JSON.parse(fs.readFileSync(src, "utf8"));
+      return JSON.parse(fs.readFileSync(src, 'utf8'));
     }
   } catch {
     // Malformed/unreadable host file — fall back to an empty config so the
@@ -57,16 +57,14 @@ function readHostConfig(src) {
 }
 
 function main() {
-  const src = process.argv[2] || "/host/.claude.json";
-  const dst = process.argv[3] || "/home/node/.claude.json";
+  const src = process.argv[2] || '/host/.claude.json';
+  const dst = process.argv[3] || '/home/node/.claude.json';
   const cfg = sanitizeClaudeConfig(readHostConfig(src));
   try {
     fs.writeFileSync(dst, JSON.stringify(cfg, null, 2));
     fs.chmodSync(dst, 0o644);
   } catch (err) {
-    console.error(
-      `[post-create] ERROR: failed to seed ${dst}: ${err && err.message}`,
-    );
+    console.error(`[post-create] ERROR: failed to seed ${dst}: ${err && err.message}`);
     process.exit(1);
   }
 }
