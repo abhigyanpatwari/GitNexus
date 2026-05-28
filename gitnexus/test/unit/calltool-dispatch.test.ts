@@ -357,6 +357,80 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('query parameter is required');
   });
 
+  it('query excludes test-file results by default (matches impact precedent)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (searchFTSFromLbug as any).mockResolvedValue({
+      results: [
+        { filePath: 'src/auth.ts', score: 1.0 },
+        { filePath: 'src/auth.test.ts', score: 1.0 },
+        { filePath: 'src/__tests__/login.ts', score: 1.0 },
+      ],
+      ftsAvailable: true,
+    });
+    (executeParameterized as any).mockImplementation(
+      (_repoId: string, cypher: string, params: any) => {
+        if (cypher.includes('n.filePath = $filePath')) {
+          return Promise.resolve([
+            {
+              id: `${params.filePath}#sym`,
+              name: 'foo',
+              type: 'Function',
+              filePath: params.filePath,
+              startLine: 1,
+              endLine: 10,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      },
+    );
+
+    const result = await backend.callTool('query', { query: 'auth' });
+    const allPaths = [
+      ...(result.process_symbols ?? []).map((s: any) => s.filePath),
+      ...(result.definitions ?? []).map((d: any) => d.filePath),
+    ];
+    expect(allPaths).toContain('src/auth.ts');
+    expect(allPaths.some((p: string) => p.endsWith('.test.ts'))).toBe(false);
+    expect(allPaths.some((p: string) => p.includes('__tests__'))).toBe(false);
+  });
+
+  it('query includes test-file results when includeTests is true', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (searchFTSFromLbug as any).mockResolvedValue({
+      results: [
+        { filePath: 'src/auth.ts', score: 1.0 },
+        { filePath: 'src/auth.test.ts', score: 1.0 },
+      ],
+      ftsAvailable: true,
+    });
+    (executeParameterized as any).mockImplementation(
+      (_repoId: string, cypher: string, params: any) => {
+        if (cypher.includes('n.filePath = $filePath')) {
+          return Promise.resolve([
+            {
+              id: `${params.filePath}#sym`,
+              name: 'foo',
+              type: 'Function',
+              filePath: params.filePath,
+              startLine: 1,
+              endLine: 10,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      },
+    );
+
+    const result = await backend.callTool('query', { query: 'auth', includeTests: true });
+    const allPaths = [
+      ...(result.process_symbols ?? []).map((s: any) => s.filePath),
+      ...(result.definitions ?? []).map((d: any) => d.filePath),
+    ];
+    expect(allPaths).toContain('src/auth.ts');
+    expect(allPaths.some((p: string) => p.endsWith('.test.ts'))).toBe(true);
+  });
+
   it('dispatches cypher tool and blocks write queries', async () => {
     (executeParameterized as any).mockRejectedValueOnce(new Error('read-only database'));
     const result = await backend.callTool('cypher', { query: 'CREATE (n:Test)' });

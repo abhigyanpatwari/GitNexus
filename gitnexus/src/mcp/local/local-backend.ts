@@ -924,6 +924,7 @@ export class LocalBackend {
       limit?: number;
       max_symbols?: number;
       include_content?: boolean;
+      includeTests?: boolean;
     },
   ): Promise<any> {
     if (!params.query?.trim()) {
@@ -935,6 +936,7 @@ export class LocalBackend {
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
+    const includeTests = params.includeTests ?? false;
     const searchQuery = params.query.trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
@@ -989,8 +991,13 @@ export class LocalBackend {
       }
     }
 
+    // Exclude test files by default so production paths outrank tests. Mirrors
+    // the include_tests opt-in convention already used by impact. Filter at the
+    // merge step so excluded items never incur the per-symbol STEP_IN_PROCESS
+    // round-trip.
     const merged = Array.from(scoreMap.entries())
       .sort((a, b) => b[1].score - a[1].score)
+      .filter(([, item]) => includeTests || !isTestFilePath(item.data.filePath || ''))
       .slice(0, searchLimit);
     timer.stop(); // merge
 

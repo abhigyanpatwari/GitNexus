@@ -121,6 +121,11 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
           description: 'Include full symbol source code (default: false)',
           default: false,
         },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test files in results (default: false, matching impact)',
+          default: false,
+        },
         repo: {
           type: 'string',
           description:
