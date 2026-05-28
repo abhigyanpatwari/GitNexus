@@ -12,9 +12,13 @@ FROM mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm
 # devcontainer-canonical pin.
 ARG CLAUDE_CODE_VERSION
 ARG CODEX_VERSION
-ARG CURSOR_VERSION
 ARG TZ=UTC
 ARG USERNAME=node
+# NOTE: there is intentionally no CURSOR_VERSION ARG. The cursor.com/install
+# script does not honour a version pin, so an ARG would be dead config that
+# implies a guarantee the installer can't keep. Cursor is currently installed
+# unpinned (see the install step below); pinning is tracked as a follow-up in
+# README § "What's not included (yet)".
 
 # Promote build-only ARGs into runtime ENV so shells and lifecycle scripts
 # can read them. CLAUDE_CONFIG_DIR is intentionally NOT set here — the
@@ -22,7 +26,6 @@ ARG USERNAME=node
 # of truth; runtime-time wins anyway).
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION} \
     CODEX_VERSION=${CODEX_VERSION} \
-    CURSOR_VERSION=${CURSOR_VERSION} \
     TZ=${TZ} \
     DEVCONTAINER=true \
     NODE_OPTIONS=--max-old-space-size=4096 \
@@ -69,10 +72,15 @@ RUN npm install -g \
 # reliable. Long-term hardening (tracked as a follow-up): pin a specific
 # downloads.cursor.com/lab/<version>/<arch>/agent-cli-package.tar.gz URL
 # with a hard sha256 verification and skip the install script entirely.
+#
+# `timeout 300` wraps the installer because the script makes its OWN network
+# requests (it downloads the actual Cursor binary) that `curl --max-time`
+# above does NOT cover — without it a slow/hung Cursor CDN would block the
+# Docker build indefinitely with no watchdog.
 RUN curl -fsS --retry 3 --max-time 60 -o /tmp/cursor-install.sh https://cursor.com/install \
     && echo "Cursor installer sha256:" \
     && sha256sum /tmp/cursor-install.sh \
-    && bash /tmp/cursor-install.sh \
+    && timeout 300 bash /tmp/cursor-install.sh \
     && rm -f /tmp/cursor-install.sh
 
 # ~/.local/bin (where Cursor's installer drops `agent` and `cursor-agent`
