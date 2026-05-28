@@ -129,6 +129,7 @@ const accumulated = {
   heritage: [],
   routes: [],
   fetchCalls: [],
+  fetchWrapperDefs: [],
   decoratorRoutes: [],
   toolDefs: [],
   ormQueries: [],
