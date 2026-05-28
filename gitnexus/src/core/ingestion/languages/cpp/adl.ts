@@ -24,22 +24,18 @@
  * V2 additionally walks class ancestors (via MRO), so base-class enclosing
  * namespaces also contribute associated namespaces.
  *
- * **GitNexus approximation (not strict ISO C++ ADL):** passing a qualified
- * function reference like `utils::worker` contributes `utils` to the associated
- * set, enabling resolution of unqualified calls like `with_callback(utils::worker)`
- * to `utils::with_callback`. Under ISO C++ `[basic.lookup.argdep]`, associated
- * entities for function-type arguments come from the **parameter types and return
- * type** of each function in the overload set — NOT the function's enclosing
- * namespace. For `void worker()`, the standard-compliant associated set is empty.
- * GitNexus instead contributes the enclosing namespace of any Function/Method
- * def whose simple name matches, because it enables the dominant real-world ADL
- * pattern at reasonable precision cost.
+ * Function-reference arguments follow ISO C++ `[basic.lookup.argdep]`:
+ * associated entities come from the parameter types and return type of each
+ * referenced function in the overload set, not from the function's enclosing
+ * namespace. For `void worker()`, the associated set is empty. For
+ * `void worker(api::Token)` or `api::Token make_token()`, `api` is associated
+ * through `Token`.
  *
- * For qualified refs (e.g. `utils::worker`) the namespace is confirmed via a
- * workspace lookup (only contributed when a Function/Method named `worker` exists
- * in `utils`). For unqualified refs the workspace is searched for any Function
- * def with that simple name. Locally-declared function-pointer variables
- * (e.g. `void (*g)()`) and function parameters are excluded from this path.
+ * For qualified refs (e.g. `utils::worker`) the workspace lookup is restricted
+ * to functions/methods named `worker` in `utils`; for unqualified refs the
+ * workspace is searched for matching functions/methods by simple name. Locally
+ * declared function-pointer variables and function parameters are excluded
+ * from this path.
  *
  * ADL candidates are merged with ordinary unqualified-lookup candidates
  * in the free-call fallback before overload narrowing.
@@ -70,6 +66,7 @@
 
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { normalizeCppParamType } from './arity-metadata.js';
 import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 
 /**
@@ -97,11 +94,8 @@ export interface CppAdlArgInfo {
   /** When set, the arg is a potential free-function reference (not a locally-
    *  declared function-pointer variable or function parameter). Contains the
    *  identifier text as written in source (e.g. `"utils::worker"` or
-   *  `"worker"`). GitNexus approximation: the function's enclosing namespace
-   *  is contributed to the ADL associated set. For qualified refs a workspace
-   *  lookup confirms a Function/Method with that simple name exists in the
-   *  namespace before contributing; for unqualified refs every namespace
-   *  containing a matching Function/Method def is contributed. */
+   *  `"worker"`). Resolution contributes associated namespaces from each
+   *  referenced Function/Method def's parameter and return types. */
   readonly functionRefText?: string;
 }
 
@@ -207,7 +201,12 @@ export function pickCppAdlCandidates(
   for (const arg of args) {
     collectAssociatedNamespacesForAdlArg(arg, scopes, associatedNamespaces);
     if (arg.functionRefText !== undefined) {
-      collectFunctionRefNamespaces(arg.functionRefText, parsedFiles, associatedNamespaces);
+      collectFunctionTypeAssociatedNamespaces(
+        arg.functionRefText,
+        scopes,
+        parsedFiles,
+        associatedNamespaces,
+      );
     }
   }
   if (associatedNamespaces.size === 0) return undefined;
@@ -472,23 +471,12 @@ function findCppClassDefBySimpleName(
 }
 
 /**
- * Contribute associated namespaces for a function-reference argument.
- *
- * - **Qualified refs** (`utils::worker`, `outer::inner::fn`): the namespace
- *   is extracted from the qualifier text (converting `::` to `.` for dot-joined
- *   QName matching). A workspace lookup then **verifies** that a Function or
- *   Method def named `worker` (the simple name after the last `::`) actually
- *   exists in the extracted namespace. This prevents false positives from
- *   namespace-qualified variables, enum values, and static data members, which
- *   also produce `qualified_identifier` AST nodes in tree-sitter-cpp (the
- *   AST node type alone does not distinguish functions from non-function names).
- * - **Unqualified refs** (`worker`): the workspace is searched for any
- *   Function/Method def whose simple name matches. Every distinct enclosing
- *   namespace found is added — overloads across the same namespace produce
- *   a single entry; GitNexus does not select a specific overload at this stage.
+ * Contribute associated namespaces for a function-reference argument by walking
+ * the referenced overload set's parameter and return types.
  */
-function collectFunctionRefNamespaces(
+function collectFunctionTypeAssociatedNamespaces(
   refText: string,
+  scopes: ScopeResolutionIndexes,
   parsedFiles: readonly ParsedFile[],
   out: Set<string>,
 ): void {
@@ -511,30 +499,130 @@ function collectFunctionRefNamespaces(
         for (const def of scope.ownedDefs) {
           if (def.type !== 'Function' && def.type !== 'Method') continue;
           const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-          if (simple === simpleName) {
-            out.add(nsText);
-            return; // Namespace confirmed; no need to scan further files.
-          }
+          if (simple === simpleName) collectAssociatedNamespacesForFunctionDef(def, scopes, out);
         }
       }
     }
     return;
   }
 
-  // Unqualified: search all namespace scopes for a Function def with this
-  // simple name and contribute its enclosing namespace.
+  // Unqualified function references are approximated workspace-wide, matching
+  // the previous V1 lookup scope. The stricter part of this PR is what each
+  // overload contributes: only namespaces from parameter/return types, never
+  // the function's own enclosing namespace.
   for (const parsed of parsedFiles) {
-    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
-    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Namespace') continue;
       for (const def of scope.ownedDefs) {
         if (def.type !== 'Function' && def.type !== 'Method') continue;
         const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
         if (simple !== refText) continue;
-        const nsQName = computeNamespaceQName(scope, scopesById);
-        if (nsQName !== '') out.add(nsQName);
+        collectAssociatedNamespacesForFunctionDef(def, scopes, out);
       }
     }
   }
+}
+
+function collectAssociatedNamespacesForFunctionDef(
+  def: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+  out: Set<string>,
+): void {
+  const parameterTypes = def.parameterTypeClasses?.map((typeClass) => typeClass.base);
+  for (const paramType of parameterTypes ?? def.parameterTypes ?? []) {
+    collectAssociatedNamespacesForFunctionTypeText(paramType, scopes, out);
+  }
+  if (def.returnType !== undefined) {
+    collectAssociatedNamespacesForFunctionTypeText(def.returnType, scopes, out);
+  }
+}
+
+function collectAssociatedNamespacesForFunctionTypeText(
+  typeText: string,
+  scopes: ScopeResolutionIndexes,
+  out: Set<string>,
+): void {
+  for (const token of extractCppTypeNameTokens(typeText)) {
+    if (isIgnoredCppAdlNamespace(token.namespaceName)) continue;
+    addAssociatedNamespaceForClassName(token.simpleName, scopes, out);
+    if (token.namespaceName !== '') out.add(token.namespaceName);
+  }
+}
+
+function extractCppTypeNameTokens(typeText: string): readonly {
+  readonly simpleName: string;
+  readonly namespaceName: string;
+}[] {
+  const cleaned = normalizeCppParamType(typeText);
+  if (cleaned === '' || isPrimitiveCppAdlType(cleaned)) return [];
+  const out: { simpleName: string; namespaceName: string }[] = [];
+  const seen = new Set<string>();
+  const tokenSource = typeText.includes('<') ? `${cleaned} ${typeText}` : cleaned;
+  for (const rawToken of tokenSource.match(/[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*/g) ?? []) {
+    if (isPrimitiveCppAdlType(rawToken)) continue;
+    const segments = rawToken.split('::').filter((part) => part.length > 0);
+    const simpleName = segments.at(-1) ?? '';
+    if (simpleName === '' || isPrimitiveCppAdlType(simpleName)) continue;
+    const namespaceName = segments.length > 1 ? segments.slice(0, -1).join('.') : '';
+    const key = `${namespaceName}\0${simpleName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      simpleName,
+      namespaceName,
+    });
+  }
+  return out;
+}
+
+const CPP_ADL_PRIMITIVE_OR_KEYWORD_TYPES = new Set<string>([
+  'alignas',
+  'alignof',
+  'auto',
+  'bool',
+  'char',
+  'char8_t',
+  'char16_t',
+  'char32_t',
+  'class',
+  'const',
+  'consteval',
+  'constexpr',
+  'constinit',
+  'decltype',
+  'double',
+  'enum',
+  'explicit',
+  'extern',
+  'float',
+  'inline',
+  'int',
+  'long',
+  'mutable',
+  'noexcept',
+  'null',
+  'register',
+  'short',
+  'signed',
+  'static',
+  'string',
+  'struct',
+  'template',
+  'thread_local',
+  'typename',
+  'union',
+  'unknown',
+  'unsigned',
+  'void',
+  'volatile',
+  'wchar_t',
+  '...',
+]);
+
+function isPrimitiveCppAdlType(typeText: string): boolean {
+  return CPP_ADL_PRIMITIVE_OR_KEYWORD_TYPES.has(typeText);
+}
+
+function isIgnoredCppAdlNamespace(namespaceName: string): boolean {
+  return namespaceName === 'std' || namespaceName.startsWith('std.');
 }
