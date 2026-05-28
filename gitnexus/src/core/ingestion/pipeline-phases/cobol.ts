@@ -13,8 +13,6 @@ import { getPhaseOutput } from './types.js';
 import { processCobol, isCobolFile, isJclFile } from '../cobol-processor.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
-import { SupportedLanguages } from 'gitnexus-shared';
-import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
@@ -32,12 +30,6 @@ export const cobolPhase: PipelinePhase<CobolOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<CobolOutput> {
-    // When registry-primary is active, scope-resolution handles COBOL —
-    // skip the legacy standalone processor to prevent double emission.
-    if (isRegistryPrimary(SupportedLanguages.Cobol)) {
-      return { programs: 0, paragraphs: 0, sections: 0 };
-    }
-
     const { scannedFiles, allPathSet } = getPhaseOutput<StructureOutput>(deps, 'structure');
 
     const cobolScanned = scannedFiles.filter((f) => isCobolFile(f.path) || isJclFile(f.path));
