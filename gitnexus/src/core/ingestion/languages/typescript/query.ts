@@ -277,10 +277,16 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; via \`(filePath, type, qualifiedName)\` — second wins. Acceptable;
 ;; multi-arrow-callback APIs are rare (\`new Promise(executor)\` is the
 ;; main one and takes a single executor).
+;;
+;; NOTE: Split into identifier vs member_expression patterns. Member
+;; expressions are filtered with a blocklist of common array methods
+;; (map, filter, reduce, etc.) to avoid false positives like
+;; \`const x = arr.map(a => ...)\` being classified as Function.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -288,13 +294,35 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
 
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -302,8 +330,60 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+
+;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
+;; The callee identifier provides @declaration.name since there is no
+;; variable_declarator. Covers Nuxt/h3 defineEventHandler, Next.js API
+;; route handlers, and any HOC used as a default export. Member-expression
+;; callees (e.g. \`React.memo\`) use the property as the name.
+(export_statement
+  (call_expression
+    function: (identifier) @declaration.name
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+
+(export_statement
+  (call_expression
+    function: (identifier) @declaration.name
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+
+(export_statement
+  (call_expression
+    function: (member_expression
+      property: (property_identifier) @declaration.name)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+
+(export_statement
+  (call_expression
+    function: (member_expression
+      property: (property_identifier) @declaration.name)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
 
 ;; Method definitions — regular + private (#field) methods.
 (method_definition

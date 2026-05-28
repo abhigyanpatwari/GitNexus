@@ -67,6 +67,46 @@ import {
   jsArityCompatibility,
 } from './javascript/index.js';
 
+// Array prototype methods that must never be treated as HOC wrappers.
+// Mirrors the #not-any-of? blocklist in the tree-sitter query files.
+// Defined at module level to avoid re-allocating on every parse node.
+const ARRAY_METHODS: ReadonlySet<string> = new Set([
+  'map',
+  'filter',
+  'reduce',
+  'forEach',
+  'find',
+  'findIndex',
+  'some',
+  'every',
+  'flatMap',
+  'sort',
+  'splice',
+  'slice',
+  'concat',
+  'fill',
+  'copyWithin',
+  'join',
+  'flat',
+  'at',
+  'entries',
+  'keys',
+  'values',
+  'indexOf',
+  'lastIndexOf',
+  'includes',
+  'pop',
+  'push',
+  'shift',
+  'unshift',
+  'reverse',
+  'reduceRight',
+  'toSorted',
+  'toReversed',
+  'toSpliced',
+  'with',
+]);
+
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
  * anonymous AST nodes — they take their name from the surrounding
@@ -141,28 +181,53 @@ const tsExtractFunctionName = (
   // `arguments`, grandparent is `call_expression`, great-grandparent is
   // `variable_declarator`. Walk the chain up and take the variable's name
   // — the meaningful identifier the developer wrote on the LHS. Mirrors
-  // the four registry-primary patterns in `typescript/query.ts`. The
-  // wrapping callee (`forwardRef`, `memo`, `React.memo`, `useCallback`,
-  // user-defined HOCs) is intentionally NOT constrained: any function
-  // call whose result is bound to a const and whose first/positional
-  // argument is an arrow takes the const's name. Chained array-method
-  // calls (`const x = arr.find((y) => p(y))`) match too and produce a
-  // mostly-harmless `Function:x` (consumed as a value, never invoked),
-  // accepted as a small false-positive cost vs. the much larger gain of
-  // capturing the React UI-component idiom.
+  // the four registry-primary patterns in `typescript/query.ts`.
+  //
+  // NOTE: Excludes common array methods (map, filter, reduce, etc.) to avoid
+  // false positives like `const x = arr.map(a => ...)` being classified as
+  // Function when it's actually a Const holding an array.
   if (parent.type === 'arguments') {
     const callExpr = parent.parent;
     if (!callExpr || callExpr.type !== 'call_expression') {
       return { funcName: null, label: 'Function' };
     }
+
+    // Check if callee is a member_expression calling an array method
+    const callee = callExpr.childForFieldName?.('function');
+    if (callee?.type === 'member_expression') {
+      const property = callee.childForFieldName?.('property');
+      if (property?.type === 'property_identifier' && ARRAY_METHODS.has(property.text)) {
+        return { funcName: null, label: 'Function' };
+      }
+    }
+
     const declarator = callExpr.parent;
-    if (!declarator || declarator.type !== 'variable_declarator') {
+
+    // Existing path: const X = HOC(arrow)
+    if (declarator?.type === 'variable_declarator') {
+      const nameNode = declarator.childForFieldName?.('name');
+      if (nameNode?.type === 'identifier') {
+        return { funcName: nameNode.text, label: 'Function' };
+      }
       return { funcName: null, label: 'Function' };
     }
-    const nameNode = declarator.childForFieldName?.('name');
-    if (nameNode?.type === 'identifier') {
-      return { funcName: nameNode.text, label: 'Function' };
+
+    // NEW: export default HOC(arrow) — derive name from callee.
+    // Covers Nuxt/h3 defineEventHandler, Next.js API route handlers, etc.
+    if (declarator?.type === 'export_statement') {
+      if (callee?.type === 'identifier') {
+        return { funcName: callee.text, label: 'Function' };
+      }
+      // Member-expression callees like React.memo: use the property name
+      if (callee?.type === 'member_expression') {
+        const property = callee.childForFieldName?.('property');
+        if (property) {
+          return { funcName: property.text, label: 'Function' };
+        }
+      }
+      return { funcName: null, label: 'Function' };
     }
+
     return { funcName: null, label: 'Function' };
   }
 

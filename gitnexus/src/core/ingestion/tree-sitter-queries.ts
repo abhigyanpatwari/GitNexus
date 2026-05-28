@@ -95,10 +95,17 @@ export const TYPESCRIPT_QUERIES = `
 ; \`tsExtractFunctionName\` for the resolution logic and the \`query.ts\`
 ; comment for the full anchor-discipline rationale and the chained-
 ; array-method trade-off.
+;
+; NOTE: Excludes member-expression calls to common array methods (map, filter,
+; reduce, etc.) to avoid false positives like \`const x = arr.map(a => ...)\`
+; being classified as a Function when it's actually a Const holding an array.
+; Direct identifier calls and member expressions on non-array-methods (like
+; React.memo) are still matched.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -106,14 +113,36 @@ export const TYPESCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (arrow_function)))))) @definition.function
 
@@ -122,15 +151,40 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (function_expression)))))) @definition.function
 
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (arrow_function)))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (function_expression)))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
 ; \`var X = HOC(...)\` parity with registry-primary. Legacy code (and any
 ; transpiler output that downlevels \`const\` to \`var\`) hits this shape.
+; Same array-method exclusions as const/let patterns above.
 (variable_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -138,8 +192,62 @@ export const TYPESCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
+; The callee identifier (e.g. \`defineEventHandler\`) provides the @name since
+; there is no variable_declarator. Mirrors the registry-primary patterns in
+; \`languages/typescript/query.ts\`. Covers Nuxt/h3 defineEventHandler,
+; Next.js API route handlers, Express middleware factories, and any
+; user-defined HOC used as a default export. The callee name is taken as
+; the function name — see \`tsExtractFunctionName\` for the matching logic.
+(export_statement
+  (call_expression
+    function: (identifier) @name
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(export_statement
+  (call_expression
+    function: (identifier) @name
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+(export_statement
+  (call_expression
+    function: (member_expression
+      property: (property_identifier) @name)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(export_statement
+  (call_expression
+    function: (member_expression
+      property: (property_identifier) @name)
+    arguments: (arguments
+      (function_expression)))) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.
@@ -329,10 +437,12 @@ export const JAVASCRIPT_QUERIES = `
 ; / debounce / user-defined HOC factories). Both \`const\` and \`var\` forms
 ; are mirrored so JS code that uses \`var\` (or transpiler output) gets the
 ; same attribution as the registry-primary path.
+; Excludes common array methods (map, filter, reduce, etc.) to avoid false positives.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -340,14 +450,36 @@ export const JAVASCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (arrow_function)))))) @definition.function
 
@@ -356,14 +488,39 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (function_expression)))))) @definition.function
 
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (arrow_function)))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (function_expression)))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
 ; \`var X = HOC(...)\` parity with registry-primary.
+; Same array-method exclusions as const/let patterns.
 (variable_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -371,8 +528,56 @@ export const JAVASCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+; HOC-wrapped default exports (JS parity with TS patterns above).
+(export_statement
+  (call_expression
+    function: (identifier) @name
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(export_statement
+  (call_expression
+    function: (identifier) @name
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+(export_statement
+  (call_expression
+    function: (member_expression
+      property: (property_identifier) @name)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(export_statement
+  (call_expression
+    function: (member_expression
+      property: (property_identifier) @name)
+    arguments: (arguments
+      (function_expression)))) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.

@@ -303,4 +303,57 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
       'no Function-sourced CALLS from nested.tsx (all anchors should be File)',
     ).toEqual([]);
   });
+
+  // ─────────────────────────────────────────────────────────────────
+  // export default HOC(arrow) — issue #1876
+  //
+  // `export default defineEventHandler(async (e) => { ... })` has no
+  // variable_declarator ancestor, so the old patterns were invisible.
+  // The new export_statement patterns derive the name from the callee
+  // identifier. The function is registered as Function:defineEventHandler
+  // and its inner calls attribute to that name.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('export default HOC: defineEventHandler calls attribute to defineEventHandler', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/export-default-hoc.ts' && c.source === 'defineEventHandler',
+    );
+    const targets = new Set(calls.map((c) => c.target));
+    expect(targets, 'defineEventHandler must call doStuff').toContain('doStuff');
+    expect(targets, 'defineEventHandler must call helper').toContain('helper');
+  });
+
+  it('export default HOC: defineEventHandler is registered as a Function node', () => {
+    const functions = new Set(getNodesByLabel(result, 'Function'));
+    expect(functions, 'defineEventHandler (export default HOC) must be a Function node').toContain(
+      'defineEventHandler',
+    );
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Negative: array methods must NOT produce Function nodes (issue #1876)
+  //
+  // `const x = arr.map(a => ...)` was incorrectly classified as a Function.
+  // The fix splits HOC patterns into identifier vs member_expression variants
+  // and applies a blocklist for common array methods.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('array method callbacks are not registered as Function nodes', () => {
+    const functions = new Set(getNodesByLabel(result, 'Function'));
+    expect(functions, 'mappedData must NOT be a Function node').not.toContain('mappedData');
+    expect(functions, 'filtered must NOT be a Function node').not.toContain('filtered');
+    expect(functions, 'reduced must NOT be a Function node').not.toContain('reduced');
+  });
+
+  it('array method callback calls do not attribute to the const name', () => {
+    for (const constName of ['mappedData', 'filtered', 'reduced']) {
+      const calls = getRelationships(result, 'CALLS').filter(
+        (c) => c.sourceFilePath === 'src/array-method-fp.ts' && c.source === constName,
+      );
+      expect(
+        calls,
+        `no CALLS should attribute to ${constName} (it is an array, not a function)`,
+      ).toEqual([]);
+    }
+  });
 });
