@@ -8,7 +8,7 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 
 ## Where to discuss
 
-- **Issues & feature ideas:** use [GitHub Issues](https://github.com/abhigyanpatwari/GitNexus/issues) for the upstream repo, or your fork‚Äôs tracker if you work from a fork.
+- **Issues & feature ideas:** use [GitHub Issues](https://github.com/langkeshuo-ai/GitNexus/issues) for the upstream repo, or your fork‚Äôs tracker if you work from a fork.
 - **Community:** see the Discord link in the root [README.md](README.md).
 
 ## Development setup
@@ -21,7 +21,7 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 ## Branch and pull requests
 
 - Use short-lived branches off the default branch of the repo you are targeting.
-- **PR titles MUST follow the conventional-commit format** ‚Äî `pr-labeler.yml` enforces this on every PR and auto-applies the matching label so release notes group the change correctly.
+- **PR titles MUST follow the conventional-commit format** ‚Ä?`pr-labeler.yml` enforces this on every PR and auto-applies the matching label so release notes group the change correctly.
 - **PR description:** what changed, why, how to verify (commands), and any risk or rollback notes.
 
 ### Pull request titles
@@ -34,7 +34,7 @@ Allowed types and the release-notes section each one lands in (defined in `.gith
 | ------------------ | --------------- | ------------------------------------------------------------ |
 | `feat`             | `enhancement`   | üöÄ Features                                                  |
 | `fix`              | `bug`           | üêõ Bug Fixes                                                 |
-| `perf`             | `performance`   | üèéÔ∏è Performance                                               |
+| `perf`             | `performance`   | üèéÔ∏?Performance                                               |
 | `refactor`         | `refactor`      | üîÑ Refactoring                                               |
 | `test`             | `test`          | üß™ Tests                                                     |
 | `ci`               | `ci`            | üë∑ CI/CD                                                     |
@@ -42,7 +42,7 @@ Allowed types and the release-notes section each one lands in (defined in `.gith
 | `docs`             | `documentation` | (grouped under Other Changes unless a Docs section is added) |
 | `chore` / `revert` | `chore`         | (excluded from release notes)                                |
 
-Append `!` to the type (e.g. `feat(api)!: drop /v1 endpoint`) or include `BREAKING CHANGE:` in the PR body to flag a breaking change ‚Äî the labeler then adds the `breaking` label and the üí• Breaking Changes section is rendered first.
+Append `!` to the type (e.g. `feat(api)!: drop /v1 endpoint`) or include `BREAKING CHANGE:` in the PR body to flag a breaking change ‚Ä?the labeler then adds the `breaking` label and the üí• Breaking Changes section is rendered first.
 
 Examples:
 
@@ -54,7 +54,7 @@ chore(deps): bump vitest to 3.0.0
 ci: standardize workflow concurrency
 ```
 
-Commits within a PR may use any style ‚Äî only the **merged PR title** shows up in release notes, so that's the one the convention applies to.
+Commits within a PR may use any style ‚Ä?only the **merged PR title** shows up in release notes, so that's the one the convention applies to.
 
 ## Before you open a PR
 
@@ -62,22 +62,22 @@ Commits within a PR may use any style ‚Äî only the **merged PR title** shows up 
 - [ ] Typecheck passes: `npx tsc --noEmit` in `gitnexus/` and `npx tsc -b --noEmit` in `gitnexus-web/`.
 - [ ] No secrets, tokens, or machine-specific paths committed.
 - [ ] Documentation updated if behavior or public CLI/MCP contract changes.
-- [ ] Pre-commit hook runs clean (`.husky/pre-commit` ‚Äî formatting via lint-staged + typecheck for staged packages; tests run in CI only).
+- [ ] Pre-commit hook runs clean (`.husky/pre-commit` ‚Ä?formatting via lint-staged + typecheck for staged packages; tests run in CI only).
 
 ## Code review
 
 Maintainers may request changes for correctness, tests, performance, or consistency with existing patterns. Keeping diffs focused makes review faster.
 
-## GitHub Actions ‚Äî Concurrency Convention
+## GitHub Actions ‚Ä?Concurrency Convention
 
 Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:` block using this convention:
 
 - **Group key** starts with `${{ github.workflow }}` so no two workflows can collide on the same group name. The discriminator that follows is chosen per event shape:
   - Branch/tag scope: `${{ github.workflow }}-${{ github.ref }}`
   - Per-PR scope (for `issue_comment`, `pull_request_review*`, `pull_request` meta events): `${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}`
-  - `workflow_run` scope (e.g. `ci-report.yml`): `${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}` ‚Äî the fork fallback must be stable across reruns (never `workflow_run.id`, which is per-run-unique and defeats serialization).
+  - `workflow_run` scope (e.g. `ci-report.yml`): `${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}` ‚Ä?the fork fallback must be stable across reruns (never `workflow_run.id`, which is per-run-unique and defeats serialization).
   - Global single-slot (manual dispatch utilities): `${{ github.workflow }}`
-  - **Reusable workflows invoked via `workflow_call`:** do NOT use `${{ github.workflow }}` in the group key ‚Äî in called-workflow context its evaluation is ambiguous and can resolve to the caller's name, which would deadlock against the caller's own group. Use a hardcoded literal prefix and a `github.event_name`-aware expression that falls through to `github.run_id` for reusable invocations (see `ci.yml` for the canonical form). Approved literal prefixes: `CI-` (`ci.yml`) and `docker-build-push-` (`docker.yml`). The `check-workflow-concurrency.py` validation script must be updated whenever a new approved literal prefix is added.
+  - **Reusable workflows invoked via `workflow_call`:** do NOT use `${{ github.workflow }}` in the group key ‚Ä?in called-workflow context its evaluation is ambiguous and can resolve to the caller's name, which would deadlock against the caller's own group. Use a hardcoded literal prefix and a `github.event_name`-aware expression that falls through to `github.run_id` for reusable invocations (see `ci.yml` for the canonical form). Approved literal prefixes: `CI-` (`ci.yml`) and `docker-build-push-` (`docker.yml`). The `check-workflow-concurrency.py` validation script must be updated whenever a new approved literal prefix is added.
   - **Merge queue (`merge_group`)**: when this event is added, use `${{ github.workflow }}-${{ github.event.merge_group.head_ref }}` with `cancel-in-progress: false` (every queue entry is a distinct ref; never cancel).
 - **`cancel-in-progress` policy:**
 
@@ -105,7 +105,7 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
 
 ## CI automation contracts
 
-Two workflows produce machine-readable signals on every PR. Coding agents and humans alike can rely on the names and shapes below ‚Äî change them with intent.
+Two workflows produce machine-readable signals on every PR. Coding agents and humans alike can rely on the names and shapes below ‚Ä?change them with intent.
 
 ### `gitnexus/autofix`
 
@@ -114,8 +114,8 @@ Two workflows produce machine-readable signals on every PR. Coding agents and hu
 | Surface           | Where                                                                                                                                                                                                                                                                                                   | Notes                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Sticky PR comment | Top-level comment with the HTML marker `<!-- gitnexus:pr-autofix-summary -->` and heading `## :sparkles: PR Autofix`. Only posted when there is something to fix; clean PRs stay silent.                                                                                                                | Edit-in-place via marker; one comment per PR.                          |
-| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v2` with fields `state` (`fixes-available`), `pr_number`, `head_sha`, `changed_lines`, `run_id`, and `apply_command` (literal `/autofix`). | Parseable signal ‚Äî preferred over regexing prose. v1 fields preserved as a superset. |
-| Check Run         | Stable name `gitnexus/autofix` on the PR head SHA. Conclusion: `success` (clean) or `neutral` (`fixes-available`). The neutral title is `Autofix available ‚Äî comment /autofix to apply`.                                                                                                                | Surfaced under PR Checks; readable via `gh pr checks <pr>`.            |
+| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v2` with fields `state` (`fixes-available`), `pr_number`, `head_sha`, `changed_lines`, `run_id`, and `apply_command` (literal `/autofix`). | Parseable signal ‚Ä?preferred over regexing prose. v1 fields preserved as a superset. |
+| Check Run         | Stable name `gitnexus/autofix` on the PR head SHA. Conclusion: `success` (clean) or `neutral` (`fixes-available`). The neutral title is `Autofix available ‚Ä?comment /autofix to apply`.                                                                                                                | Surfaced under PR Checks; readable via `gh pr checks <pr>`.            |
 
 To detect outcome from an agent: `gh pr checks <pr> --json name,conclusion,output | jq '.[] | select(.name == "gitnexus/autofix")'`.
 
@@ -128,13 +128,13 @@ Comment `/autofix` on the PR (whole-line, no arguments). The `pr-autofix-apply.y
 1. Validates the comment body matches `^/autofix\s*$` exactly. Quoted or inline mentions are silently ignored.
 2. Validates the commenter has `admin`, `write`, or `maintain` permission on the repo, OR is the PR author. Other commenters get a üëé reaction and a refusal reply.
 3. Locates the most recent successful `pr-autofix.yml` run for the PR's current head SHA, downloads its `autofix` artifact, applies the patch, and pushes a `chore(autofix): ...` commit back to the PR head branch.
-4. Reacts ‚úÖ on success, üëé on stale-patch / push-failure, and posts a short reply with the apply-run URL in either case.
+4. Reacts ‚ú?on success, üëé on stale-patch / push-failure, and posts a short reply with the apply-run URL in either case.
 
-The apply workflow runs from the default branch's copy of the file regardless of where the comment originates ‚Äî that's the trust anchor. There is no diff-size cap (the apply workflow uses `git apply` + push, not the GitHub review-comment API).
+The apply workflow runs from the default branch's copy of the file regardless of where the comment originates ‚Ä?that's the trust anchor. There is no diff-size cap (the apply workflow uses `git apply` + push, not the GitHub review-comment API).
 
 For fork PRs, the push succeeds only when the contributor has **Allow edits by maintainers** enabled on the PR (the default). When they have disabled it, the workflow fails loud with a üëé reaction and an explanation comment.
 
-Re-invoking `/autofix` after a successful apply is a safe no-op ‚Äî the workflow detects the already-applied state via `git apply --check --reverse` and reacts ‚úÖ without pushing.
+Re-invoking `/autofix` after a successful apply is a safe no-op ‚Ä?the workflow detects the already-applied state via `git apply --check --reverse` and reacts ‚ú?without pushing.
 
 **Sensitive paths.** The apply workflow refuses any patch that touches `.github/` (workflow files, CODEOWNERS, dependabot config). A malicious PR could ship a custom prettier or ESLint config that reformats workflow YAML; if accepted, those edits would be pushed under `contents: write` without human review. Apply formatter changes to files under `.github/` manually in a normal commit so they get the same review every other workflow change gets.
 
@@ -144,15 +144,15 @@ If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUD
 
 ## Releases
 
-One workflow ships `gitnexus` to npm ‚Äî `.github/workflows/publish.yml`. It
+One workflow ships `gitnexus` to npm ‚Ä?`.github/workflows/publish.yml`. It
 routes between two modes based on the triggering event:
 
-- **Stable mode** ‚Äî triggered by pushing any `v<X.Y.Z>` tag (no `-rc.*`
+- **Stable mode** ‚Ä?triggered by pushing any `v<X.Y.Z>` tag (no `-rc.*`
   suffix; RC tags are excluded at trigger via a negative glob). Publishes to
   the `latest` dist-tag with a changelog-backed GitHub release. Maintainers
   are expected to tag from `main` as a convention; the workflow itself does
   not enforce branch reachability. No Docker build (RC-only).
-- **Release-candidate mode** ‚Äî runs on every push to `main` (typically a
+- **Release-candidate mode** ‚Ä?runs on every push to `main` (typically a
   merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
   via `paths-ignore`. Publishes to the `rc` dist-tag with version
   `X.Y.Z-rc.N` and a GitHub prerelease, where:
@@ -166,10 +166,10 @@ routes between two modes based on the triggering event:
     registry. First rc for a given base is `rc.1`.
   - After the npm publish succeeds, the workflow calls `docker.yml` as a
     reusable workflow to build and push the corresponding RC Docker images
-    (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`, mirrored to
+    (e.g. `ghcr.io/langkeshuo-ai/GitNexus:1.7.0-rc.1`, mirrored to
     `docker.io/akonlabs/gitnexus:1.7.0-rc.1`). The images are signed
     with Cosign; the OIDC identity is `docker.yml@refs/heads/main` (the
-    caller's ref ‚Äî see README.md ¬ß Docker for the verify command).
+    caller's ref ‚Ä?see README.md ¬ß Docker for the verify command).
 
   Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
   `v<RC>` release tag **atomically, before** calling `npm publish`. The
@@ -178,7 +178,7 @@ routes between two modes based on the triggering event:
   tag points at a detached release commit whose `package.json` matches
   the npm tarball exactly (traceable releases). The RC tag is excluded
   from this workflow's `push: tags:` filter, so it does **not** re-trigger
-  publishing ‚Äî preventing the double-publish failure mode tracked in #1609.
+  publishing ‚Ä?preventing the double-publish failure mode tracked in #1609.
   Recovery after a partial failure: the workflow's `if: failure()` cleanup
   step in the `publish` job auto-deletes the v-tag and marker on most
   post-publish failures, so the typical retry is just:
@@ -200,11 +200,11 @@ routes between two modes based on the triggering event:
   **Release-PR-skip subject pattern.** The rc-guard job recognizes a
   squash-merged release commit by matching the commit subject against
   `^chore: release vX.Y.Z` (optionally followed by ` (#NNNN)` for the
-  squash-merge PR-number suffix). Match is case-insensitive ‚Äî `Chore: Release v1.2.3`
+  squash-merge PR-number suffix). Match is case-insensitive ‚Ä?`Chore: Release v1.2.3`
   works too. PRs that should suppress the RC build must either use this
   subject shape, or carry the `release` label so the label-based fallback
   fires. Other release-style subjects (`chore(release): v1.2.3`,
-  `release: v1.2.3`) will NOT trigger the skip ‚Äî please name the release
+  `release: v1.2.3`) will NOT trigger the skip ‚Ä?please name the release
   PR exactly `chore: release vX.Y.Z` to keep the dedup deterministic.
 
   **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags

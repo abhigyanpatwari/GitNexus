@@ -13,7 +13,7 @@
  *     ENOTEMPTY: directory not empty, rmdir
  *       '.../gitnexus/vendor/tree-sitter-proto/node_modules/node-addon-api'
  *
- *   (See https://github.com/abhigyanpatwari/GitNexus/issues/836.)
+ *   (See https://github.com/langkeshuo-ai/GitNexus/issues/836.)
  *
  *   We stripped `dependencies` and the `install` script from the vendored
  *   package.json, hoisted `node-addon-api` and `node-gyp-build` into
@@ -24,7 +24,7 @@
  *   (which npm creates as a copy of vendor/tree-sitter-proto/ when
  *   resolving the file: dep). Build output lands in
  *   `node_modules/tree-sitter-proto/build/Release/tree_sitter_proto_binding.node`
- *   â€” under npm-managed territory, safe on upgrade.
+ *   â€?under npm-managed territory, safe on upgrade.
  *
  *   Mirrors the tree-sitter-dart build helper. Best-effort: if any
  *   precondition fails (optional dep absent, no toolchain, --ignore-scripts),
@@ -36,7 +36,7 @@ const { execSync } = require('child_process');
 
 // Opt-out: skip the native rebuild entirely. Proto parsing becomes
 // unavailable but `npm install gitnexus` finishes much faster on machines
-// without a C++ toolchain. Strict `=== '1'` only â€” '=true', '=yes', '=0'
+// without a C++ toolchain. Strict `=== '1'` only â€?'=true', '=yes', '=0'
 // (read as a string), and any other value all fall through to the rebuild.
 if (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1') {
   console.warn(

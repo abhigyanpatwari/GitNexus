@@ -22,9 +22,9 @@ AI coding tools don't understand your codebase structure. They edit a function w
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files â€” all in one command.
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files â€?all in one command.
 
-To configure MCP for your editor, run `npx gitnexus setup` once â€” or set it up manually below.
+To configure MCP for your editor, run `npx gitnexus setup` once â€?or set it up manually below.
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
 
@@ -34,9 +34,9 @@ To configure MCP for your editor, run `npx gitnexus setup` once â€” or set it up
 |--------|-----|--------|---------------------|---------|
 | **Claude Code** | Yes | Yes | Yes (PreToolUse) | **Full** |
 | **Cursor** | Yes | Yes | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full** |
-| **Codex** | Yes | Yes | â€” | MCP + Skills |
-| **Windsurf** | Yes | â€” | â€” | MCP |
-| **OpenCode** | Yes | Yes | â€” | MCP + Skills |
+| **Codex** | Yes | Yes | â€?| MCP + Skills |
+| **Windsurf** | Yes | â€?| â€?| MCP |
+| **OpenCode** | Yes | Yes | â€?| MCP + Skills |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
 
@@ -50,7 +50,7 @@ To configure MCP for your editor, run `npx gitnexus setup` once â€” or set it up
 
 If you prefer to configure manually instead of using `gitnexus setup`:
 
-### Claude Code (full support â€” MCP + skills + hooks)
+### Claude Code (full support â€?MCP + skills + hooks)
 
 ```bash
 # macOS / Linux
@@ -60,7 +60,7 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 ```
 
-### Codex (full support â€” MCP + skills)
+### Codex (full support â€?MCP + skills)
 
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
@@ -68,7 +68,7 @@ codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 
 ### Cursor / Windsurf
 
-Add to `~/.cursor/mcp.json` (global â€” works for all projects):
+Add to `~/.cursor/mcp.json` (global â€?works for all projects):
 
 ```json
 {
@@ -100,14 +100,14 @@ Add to `~/.config/opencode/config.json`:
 
 GitNexus builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
 
-1. **Structure** â€” Walks the file tree and maps folder/file relationships
-2. **Parsing** â€” Extracts functions, classes, methods, and interfaces using Tree-sitter ASTs
-3. **Resolution** â€” Resolves imports and function calls across files with language-aware logic
-   - **Field & Property Type Resolution** â€” Tracks field types across classes and interfaces for deep chain resolution (e.g., `user.address.city.getName()`)
-   - **Return-Type-Aware Variable Binding** â€” Infers variable types from function return types, enabling accurate call-result binding
-4. **Clustering** â€” Groups related symbols into functional communities
-5. **Processes** â€” Traces execution flows from entry points through call chains
-6. **Search** â€” Builds hybrid search indexes for fast retrieval
+1. **Structure** â€?Walks the file tree and maps folder/file relationships
+2. **Parsing** â€?Extracts functions, classes, methods, and interfaces using Tree-sitter ASTs
+3. **Resolution** â€?Resolves imports and function calls across files with language-aware logic
+   - **Field & Property Type Resolution** â€?Tracks field types across classes and interfaces for deep chain resolution (e.g., `user.address.city.getName()`)
+   - **Return-Type-Aware Variable Binding** â€?Infers variable types from function return types, enabling accurate call-result binding
+4. **Clustering** â€?Groups related symbols into functional communities
+5. **Processes** â€?Traces execution flows from entry points through call chains
+6. **Search** â€?Builds hybrid search indexes for fast retrieval
 
 The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
 
@@ -117,11 +117,11 @@ Your AI agent gets these tools automatically:
 
 | Tool | What It Does | `repo` Param |
 |------|-------------|--------------|
-| `list_repos` | Discover all indexed repositories | â€” |
+| `list_repos` | Discover all indexed repositories | â€?|
 | `query` | Process-grouped hybrid search (BM25 + semantic + RRF) | Optional |
-| `context` | 360-degree symbol view â€” categorized refs, process participation | Optional |
+| `context` | 360-degree symbol view â€?categorized refs, process participation | Optional |
 | `impact` | Blast radius analysis with depth grouping and confidence | Optional |
-| `detect_changes` | Git-diff impact â€” maps changed lines to affected processes | Optional |
+| `detect_changes` | Git-diff impact â€?maps changed lines to affected processes | Optional |
 | `rename` | Multi-file coordinated rename with graph + text search | Optional |
 | `cypher` | Raw Cypher graph queries | Optional |
 
@@ -143,7 +143,7 @@ Your AI agent gets these tools automatically:
 
 | Prompt | What It Does |
 |--------|-------------|
-| `detect_impact` | Pre-commit change analysis â€” scope, affected processes, risk level |
+| `detect_impact` | Pre-commit change analysis â€?scope, affected processes, risk level |
 | `generate_map` | Architecture documentation from the knowledge graph with mermaid diagrams |
 
 ## CLI Commands
@@ -158,7 +158,7 @@ gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexu
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
-gitnexus mcp                     # Start MCP server (stdio) â€” serves all indexed repos
+gitnexus mcp                     # Start MCP server (stdio) â€?serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
 gitnexus list                    # List all indexed repositories
@@ -205,30 +205,30 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 
 | Language | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
 |----------|---------|----------------|---------|----------|-----------------|---------------------|--------|------------|-------------|
-| TypeScript | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ |
-| JavaScript | âœ“ | âœ“ | âœ“ | âœ“ | â€” | âœ“ | âœ“ | âœ“ | âœ“ |
-| Python | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ |
-| Java | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | â€” | âœ“ | âœ“ |
-| Kotlin | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | â€” | âœ“ | âœ“ |
-| C# | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ |
-| Go | âœ“ | â€” | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ |
-| Rust | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | â€” | âœ“ | âœ“ |
-| PHP | âœ“ | âœ“ | âœ“ | â€” | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ |
-| Ruby | âœ“ | â€” | âœ“ | âœ“ | â€” | âœ“ | â€” | âœ“ | âœ“ |
-| Swift | â€” | â€” | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ | âœ“ |
-| C | â€” | â€” | âœ“ | â€” | âœ“ | âœ“ | â€” | âœ“ | âœ“ |
-| C++ | â€” | â€” | âœ“ | âœ“ | âœ“ | âœ“ | â€” | âœ“ | âœ“ |
+| TypeScript | âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?|
+| JavaScript | âœ?| âœ?| âœ?| âœ?| â€?| âœ?| âœ?| âœ?| âœ?|
+| Python | âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?|
+| Java | âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| â€?| âœ?| âœ?|
+| Kotlin | âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| â€?| âœ?| âœ?|
+| C# | âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?|
+| Go | âœ?| â€?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?|
+| Rust | âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| â€?| âœ?| âœ?|
+| PHP | âœ?| âœ?| âœ?| â€?| âœ?| âœ?| âœ?| âœ?| âœ?|
+| Ruby | âœ?| â€?| âœ?| âœ?| â€?| âœ?| â€?| âœ?| âœ?|
+| Swift | â€?| â€?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?| âœ?|
+| C | â€?| â€?| âœ?| â€?| âœ?| âœ?| â€?| âœ?| âœ?|
+| C++ | â€?| â€?| âœ?| âœ?| âœ?| âœ?| â€?| âœ?| âœ?|
 
-**Imports** â€” cross-file import resolution Â· **Named Bindings** â€” `import { X as Y }` / re-export tracking Â· **Exports** â€” public/exported symbol detection Â· **Heritage** â€” class inheritance, interfaces, mixins Â· **Type Annotations** â€” explicit type extraction for receiver resolution Â· **Constructor Inference** â€” infer receiver type from constructor calls (`self`/`this` resolution included for all languages) Â· **Config** â€” language toolchain config parsing (tsconfig, go.mod, etc.) Â· **Frameworks** â€” AST-based framework pattern detection Â· **Entry Points** â€” entry point scoring heuristics
+**Imports** â€?cross-file import resolution Â· **Named Bindings** â€?`import { X as Y }` / re-export tracking Â· **Exports** â€?public/exported symbol detection Â· **Heritage** â€?class inheritance, interfaces, mixins Â· **Type Annotations** â€?explicit type extraction for receiver resolution Â· **Constructor Inference** â€?infer receiver type from constructor calls (`self`/`this` resolution included for all languages) Â· **Config** â€?language toolchain config parsing (tsconfig, go.mod, etc.) Â· **Frameworks** â€?AST-based framework pattern detection Â· **Entry Points** â€?entry point scoring heuristics
 
 ## Agent Skills
 
 GitNexus ships with skill files that teach AI agents how to use the tools effectively:
 
-- **Exploring** â€” Navigate unfamiliar code using the knowledge graph
-- **Debugging** â€” Trace bugs through call chains
-- **Impact Analysis** â€” Analyze blast radius before changes
-- **Refactoring** â€” Plan safe refactors using dependency mapping
+- **Exploring** â€?Navigate unfamiliar code using the knowledge graph
+- **Debugging** â€?Trace bugs through call chains
+- **Impact Analysis** â€?Analyze blast radius before changes
+- **Refactoring** â€?Plan safe refactors using dependency mapping
 
 Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global).
 
@@ -246,18 +246,17 @@ try in-flight fixes without waiting for the next stable cut. (Docs-only
 merges are skipped.)
 
 ```bash
-# Try the latest release candidate (pre-stable â€” may change at any time)
+# Try the latest release candidate (pre-stable â€?may change at any time)
 npm install -g gitnexus@rc
-# â€” or â€”
-npx gitnexus@rc analyze
+# â€?or â€?npx gitnexus@rc analyze
 ```
 
 Release-candidate versions follow the standard semver prerelease format
 `X.Y.Z-rc.N`, where `X.Y.Z` is the next stable target (bumped from the
 current `latest` by patch by default; `minor` or `major` when kicking off a
 bigger cycle) and `N` increments per published rc. Example sequence:
-`1.6.2-rc.1`, `1.6.2-rc.2`, â€¦, then once `1.6.2` ships stable,
-`1.6.3-rc.1`. See the [Releases page](https://github.com/abhigyanpatwari/GitNexus/releases)
+`1.6.2-rc.1`, `1.6.2-rc.2`, â€? then once `1.6.2` ships stable,
+`1.6.3-rc.1`. See the [Releases page](https://github.com/langkeshuo-ai/GitNexus/releases)
 for the full list; stable `latest` is unaffected.
 
 ## Troubleshooting
@@ -270,8 +269,7 @@ It is fixed in **gitnexus v1.6.2+**. Upgrade to the latest version:
 
 ```bash
 npx gitnexus@latest analyze          # always uses the newest release
-# â€” or â€”
-npm install -g gitnexus@latest       # upgrade a global install
+# â€?or â€?npm install -g gitnexus@latest       # upgrade a global install
 ```
 
 If you still hit npm install issues after upgrading, these generic workarounds
@@ -284,7 +282,7 @@ npm cache clean --force              # clear a possibly corrupt cache
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Kotlin, Swift) require native compilation. If they fail, GitNexus still works â€” those languages will be skipped.
+Some optional language grammars (Dart, Kotlin, Swift) require native compilation. If they fail, GitNexus still works â€?those languages will be skipped.
 
 If `npm install -g gitnexus` fails on native modules:
 
@@ -299,7 +297,7 @@ npm install -g gitnexus
 
 ### Analyze warns about unavailable FTS or VECTOR extensions
 
-GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions â€” they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process `INSTALL` if `LOAD` fails and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
+GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions â€?they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process `INSTALL` if `LOAD` fails and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
 
 Configure the behavior with two environment variables:
 
@@ -331,7 +329,7 @@ echo "dist/" >> .gitnexusignore
 
 ### Large files are being skipped
 
-By default the walker skips files larger than **512 KB** (see log line `Skipped N large files (>512KB)`). Raise the threshold via either the CLI flag or the environment variable â€” both accept a value in **KB**:
+By default the walker skips files larger than **512 KB** (see log line `Skipped N large files (>512KB)`). Raise the threshold via either the CLI flag or the environment variable â€?both accept a value in **KB**:
 
 ```bash
 # CLI flag (takes precedence over the env var)
@@ -378,9 +376,9 @@ Three env vars expose the pool's resilience layers (respawn budget, cumulative-t
 
 ## Web UI
 
-GitNexus also has a browser-based UI at [gitnexus.vercel.app](https://gitnexus.vercel.app) â€” 100% client-side, your code never leaves the browser.
+GitNexus also has a browser-based UI at [gitnexus.vercel.app](https://gitnexus.vercel.app) â€?100% client-side, your code never leaves the browser.
 
-**Local Backend Mode:** Run `gitnexus serve` and open the web UI locally â€” it auto-detects the server and shows all your indexed repos, with full AI chat support. No need to re-upload or re-index. The agent's tools (Cypher queries, search, code navigation) route through the backend HTTP API automatically.
+**Local Backend Mode:** Run `gitnexus serve` and open the web UI locally â€?it auto-detects the server and shows all your indexed repos, with full AI chat support. No need to re-upload or re-index. The agent's tools (Cypher queries, search, code navigation) route through the backend HTTP API automatically.
 
 ## License
 

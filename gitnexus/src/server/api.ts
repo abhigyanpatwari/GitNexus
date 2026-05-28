@@ -718,8 +718,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // on OPTIONS requests and expects the allow header in the response.
   // Note: the actual Allow-Private-Network header is already set by the global
   // middleware above, so we just need to call next() here.
-  app.options('*', (_req, res, next) => {
-    next();
+  app.use((req, res, next) => {
+    if (req.method !== 'OPTIONS') {
+      next();
+      return;
+    }
+
+    res.sendStatus(204);
   });
 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)

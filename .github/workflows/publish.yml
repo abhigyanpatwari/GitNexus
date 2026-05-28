@@ -2,27 +2,27 @@ name: Publish
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sole publisher for the `gitnexus` npm package, GitHub Releases, and Docker
-# images. Replaces the former two-workflow design — see issue #1609 for the
+# images. Replaces the former two-workflow design �?see issue #1609 for the
 # double-publish race this unification closes.
 #
 # Two release modes, both routed through this file:
-#   • Release candidate (rc)  — triggered by push to `main` or workflow_dispatch.
+#   �?Release candidate (rc)  �?triggered by push to `main` or workflow_dispatch.
 #       The RC path computes the next rc version, applies it in-CI, pushes a
 #       detached release commit with v<X.Y.Z>-rc.<N> + rc/<SHA> marker
 #       atomically, then publishes to npm with --tag rc and creates a GitHub
 #       prerelease. RC-only docker.yml invocation follows.
-#   • Stable                  — triggered by push of a v<X.Y.Z> tag (no -rc.*
+#   �?Stable                  �?triggered by push of a v<X.Y.Z> tag (no -rc.*
 #       suffix). Verifies package.json matches the tag, publishes to npm with
 #       --tag latest, creates a stable GitHub Release. No docker (RC-only).
 #
-# ⚠️  SELF-TRIGGER INVARIANT — DO NOT WEAKEN ⚠️
+# ⚠️  SELF-TRIGGER INVARIANT �?DO NOT WEAKEN ⚠️
 # The `tags:` filter below uses a negative glob `'!v*-rc.*'` to prevent the
 # workflow from re-triggering itself when the RC path pushes its own v-tag.
 # Without this exclusion, every RC publish double-fires (the bug fixed by
 # #1609). If a NEW prerelease channel is introduced (e.g. `-beta.N`,
 # `-alpha.N`, `-next.N`), the negative-glob list MUST be extended in
 # lock-step or self-trigger returns. The same invariant applies to the
-# `Classify` step further below — its accepted-tag regex must align with
+# `Classify` step further below �?its accepted-tag regex must align with
 # the trigger filter's exclusion list.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ jobs:
           MODE=""
           case "${EVENT_NAME}" in
             workflow_dispatch)
-              # Manual dispatch is only valid on main — that's the only ref
+              # Manual dispatch is only valid on main �?that's the only ref
               # where a real publish makes sense.
               if [ "${GH_REF}" = "refs/heads/main" ]; then
                 MODE="rc"
@@ -166,7 +166,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          # rc-guard reads only — no git pushes from this job. Skip the
+          # rc-guard reads only �?no git pushes from this job. Skip the
           # default extraheader credential persistence (artipacked audit).
           persist-credentials: false
 
@@ -185,7 +185,7 @@ jobs:
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
           if [ "$FORCE" = "true" ]; then
-            echo "Force flag set — running regardless of marker tag."
+            echo "Force flag set �?running regardless of marker tag."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -194,7 +194,7 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ] \
              && [ -n "${BUMP_INPUT:-}" ] \
              && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
-            echo "Explicit bump=$BUMP_INPUT — bypassing marker dedup."
+            echo "Explicit bump=$BUMP_INPUT �?bypassing marker dedup."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -207,12 +207,12 @@ jobs:
           #      release-PR title). Anchored to require the bare title or the
           #      squash-merge `(#NNNN)` suffix exactly. Case-insensitive so
           #      `Chore: Release v1.2.3` (IDE auto-capitalization) still
-          #      matches — prior commit-author conventions left the door open.
+          #      matches �?prior commit-author conventions left the door open.
           #   2. Squash-merged PR carries the `release` label.
-          # Either match suppresses the rc build — stable releases publish on
+          # Either match suppresses the rc build �?stable releases publish on
           # the v-tag instead.
           HEAD_SUBJECT="$(git log -1 --pretty=%s HEAD)"
-          # Sanitize GitHub-Actions annotation prefixes before logging — even
+          # Sanitize GitHub-Actions annotation prefixes before logging �?even
           # though %s strips newlines, a crafted subject containing `::error::`
           # could forge log annotations.
           HEAD_SUBJECT_SAFE="${HEAD_SUBJECT//::/__}"
@@ -220,7 +220,7 @@ jobs:
           shopt -s nocasematch
           if [[ "$HEAD_SUBJECT" =~ $RELEASE_SUBJECT_RE ]]; then
             shopt -u nocasematch
-            echo "HEAD commit subject matches a release commit — skipping rc."
+            echo "HEAD commit subject matches a release commit �?skipping rc."
             echo "  subject (sanitised): $HEAD_SUBJECT_SAFE"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -230,33 +230,32 @@ jobs:
           # Squash-merge commits include `(#NNNN)` at the end of the subject.
           if [[ "$HEAD_SUBJECT" =~ \(#([0-9]+)\)[[:space:]]*$ ]]; then
             PR_NUM="${BASH_REMATCH[1]}"
-            echo "Detected squash-merge of PR #$PR_NUM — checking labels."
+            echo "Detected squash-merge of PR #$PR_NUM �?checking labels."
             if LABELS_JSON="$(gh pr view "$PR_NUM" --repo "$REPO" --json labels 2>/dev/null)"; then
               if printf '%s' "$LABELS_JSON" | jq -e '.labels[] | select(.name == "release")' >/dev/null; then
-                echo "PR #$PR_NUM has the 'release' label — skipping rc."
+                echo "PR #$PR_NUM has the 'release' label �?skipping rc."
                 echo "should_run=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              echo "PR #$PR_NUM has no 'release' label — proceeding."
+              echo "PR #$PR_NUM has no 'release' label �?proceeding."
             else
-              # Lookup failure is not fatal — fall through to dedup check.
-              echo "::warning::Could not read labels for PR #${PR_NUM} — falling through."
+              # Lookup failure is not fatal �?fall through to dedup check.
+              echo "::warning::Could not read labels for PR #${PR_NUM} �?falling through."
             fi
           fi
 
           # Dedup: is there already an rc/<HEAD_SHA> marker pointing at HEAD?
           MARKER="rc/${HEAD_SHA}"
           if git rev-parse "refs/tags/$MARKER" >/dev/null 2>&1; then
-            echo "HEAD already has marker $MARKER — skipping."
+            echo "HEAD already has marker $MARKER �?skipping."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
-            echo "No marker on HEAD — proceeding."
+            echo "No marker on HEAD �?proceeding."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
 
   # ── Phase 3: reusable CI gate ──────────────────────────────────────────────
-  # Runs for both rc (when guard says go) and stable. No `secrets:` passed —
-  # ci.yml and its entire reusable-workflow chain (ci-quality, ci-tests,
+  # Runs for both rc (when guard says go) and stable. No `secrets:` passed �?  # ci.yml and its entire reusable-workflow chain (ci-quality, ci-tests,
   # ci-e2e, ci-scope-parity, ci-report) reference zero `secrets.*` values;
   # passing any would be unused surface. GITHUB_TOKEN is implicit.
   ci:
@@ -281,10 +280,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      # contents: write — RC path needs it for `git push --atomic` (v-tag +
+      # contents: write �?RC path needs it for `git push --atomic` (v-tag +
       # marker). Stable path runs in the same job and inherits the grant; it
       # never invokes `git push`, so the elevated scope is unused there.
-      # id-token: write — npm provenance attestation.
+      # id-token: write �?npm provenance attestation.
       contents: write
       id-token: write
     outputs:
@@ -298,11 +297,11 @@ jobs:
       # ~1h expiry, not tied to a user seat, organizationally auditable.
       # Replaces a prior fine-grained PAT.
       #
-      # Required secrets (set in repo Settings → Secrets and variables → Actions):
-      #   secrets.RELEASE_APP_ID         — the App's numeric ID
-      #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
-      # (The App ID is technically not sensitive — it's visible on the App's
-      # settings page — but storing it as a secret is harmless and avoids
+      # Required secrets (set in repo Settings �?Secrets and variables �?Actions):
+      #   secrets.RELEASE_APP_ID         �?the App's numeric ID
+      #   secrets.RELEASE_APP_PRIVATE_KEY �?the App's PEM private key
+      # (The App ID is technically not sensitive �?it's visible on the App's
+      # settings page �?but storing it as a secret is harmless and avoids
       # mixing storage classes for the same App.)
       # The App must be installed on this repository with:
       #   - Contents: write         (push the v-tag and rc marker)
@@ -350,7 +349,7 @@ jobs:
       - name: Checkout (stable)
         if: needs.route.outputs.mode == 'stable'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
+        # No `token:` �?actions/checkout uses GITHUB_TOKEN by default. Stable
         # path performs no git pushes; the default scope is sufficient.
         with:
           # No git pushes from the stable path either. Skip credential
@@ -365,7 +364,7 @@ jobs:
         shell: bash
         run: |
           if [ ! -f gitnexus/package.json ]; then
-            echo "::error::no working tree at gitnexus/package.json — route classification likely failed silently."
+            echo "::error::no working tree at gitnexus/package.json �?route classification likely failed silently."
             exit 1
           fi
 
@@ -374,7 +373,7 @@ jobs:
           # Node 24 ships with npm >= 11.5.x, which is the minimum that
           # supports npm Trusted Publishing OIDC. Node 22 ships with npm
           # 10.9.x (no OIDC) and `npm install -g npm@latest` to self-upgrade
-          # is fragile — it can crash the in-flight reify with
+          # is fragile �?it can crash the in-flight reify with
           # `MODULE_NOT_FOUND` on `promise-retry` etc. Bumping the Node
           # version is the clean fix; the package's `engines` field is
           # `>=22.0.0` so consumer-side compatibility is unaffected (this
@@ -391,7 +390,7 @@ jobs:
           # Community discussion #176761 for the upstream bug and consensus
           # workaround.
           #
-          # Hermetic install for published artifacts — opt out of the v5+
+          # Hermetic install for published artifacts �?opt out of the v5+
           # default packageManager-based caching (clears the zizmor
           # cache-poisoning audit). ~30s slower per release; runs rarely.
           package-manager-cache: false
@@ -412,10 +411,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          # Stable mode REJECTS prerelease suffixes — those are filtered at
+          # Stable mode REJECTS prerelease suffixes �?those are filtered at
           # trigger by the negative-glob filter, but defend at the bash layer too.
           if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ — got v$TAG_VERSION"
+            echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ �?got v$TAG_VERSION"
             exit 1
           fi
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -438,7 +437,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Current published `latest` — the floor for any new rc base.
+          # 1. Current published `latest` �?the floor for any new rc base.
           #    Only E404 ("never published") falls back to package.json; any
           #    other error (network, auth, malformed response) fails fast
           #    (retry-loud policy: never silently substitute on transient errors).
@@ -448,7 +447,7 @@ jobs:
           else
             if grep -qiE 'E404|not found' "$NPM_STDERR_LATEST"; then
               CURRENT_LATEST="$(node -p "require('./package.json').version")"
-              echo "Package not on registry (E404) — seeding from package.json: $CURRENT_LATEST"
+              echo "Package not on registry (E404) �?seeding from package.json: $CURRENT_LATEST"
             else
               echo "::error::npm registry unreachable for 'view version':" >&2
               cat "$NPM_STDERR_LATEST" >&2
@@ -459,7 +458,7 @@ jobs:
           rm -f "$NPM_STDERR_LATEST"
           CURRENT_LATEST_CLEAN="${CURRENT_LATEST%%-*}"
 
-          # 2. Full version list — needed for the counter and active-cycle
+          # 2. Full version list �?needed for the counter and active-cycle
           #    inference. Same E404-only fallback.
           NPM_STDERR_VERSIONS="$(mktemp)"
           if VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>"$NPM_STDERR_VERSIONS")"; then
@@ -478,10 +477,10 @@ jobs:
           rm -f "$NPM_STDERR_VERSIONS"
 
           # 3. Base selection.
-          #    - workflow_dispatch + bump != auto → explicit cycle reset.
-          #    - Otherwise (push, or dispatch with bump=auto) → continue the
+          #    - workflow_dispatch + bump != auto �?explicit cycle reset.
+          #    - Otherwise (push, or dispatch with bump=auto) �?continue the
           #      highest active rc base > latest if any; else patch from latest.
-          # Curated wrapper around `npx semver` — bare npx errors are noisy
+          # Curated wrapper around `npx semver` �?bare npx errors are noisy
           # and don't distinguish registry-unreachable from invalid-bump-spec.
           semver_bump() {
             local kind="$1" current="$2" stderr_file out
@@ -501,7 +500,7 @@ jobs:
              && [ -n "${BUMP_INPUT:-}" ] \
              && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
             BASE="$(semver_bump "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
-            echo "Explicit bump=$BUMP_INPUT → BASE=$BASE"
+            echo "Explicit bump=$BUMP_INPUT �?BASE=$BASE"
           else
             cat > /tmp/active_base.mjs <<'NODESCRIPT'
           const latest = process.env.LATEST;
@@ -526,10 +525,10 @@ jobs:
             ACTIVE_BASE="$(LATEST="$CURRENT_LATEST_CLEAN" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/active_base.mjs)"
             if [ -n "$ACTIVE_BASE" ]; then
               BASE="$ACTIVE_BASE"
-              echo "Continuing active rc cycle → BASE=$BASE"
+              echo "Continuing active rc cycle �?BASE=$BASE"
             else
               BASE="$(semver_bump patch "$CURRENT_LATEST_CLEAN")"
-              echo "No active rc cycle → patch bump from latest → BASE=$BASE"
+              echo "No active rc cycle �?patch bump from latest �?BASE=$BASE"
             fi
           fi
 
@@ -555,12 +554,12 @@ jobs:
           NPM_STDERR_EXISTS="$(mktemp)"
           if npm view "$PKG_NAME@$RC_VERSION" version 2>"$NPM_STDERR_EXISTS" >/dev/null; then
             rm -f "$NPM_STDERR_EXISTS"
-            echo "::error::Version $RC_VERSION already exists on npm — aborting."
+            echo "::error::Version $RC_VERSION already exists on npm �?aborting."
             exit 1
           else
             if grep -qiE 'E404|not found' "$NPM_STDERR_EXISTS"; then
               rm -f "$NPM_STDERR_EXISTS"
-              # Version doesn't exist — safe to proceed.
+              # Version doesn't exist �?safe to proceed.
             else
               echo "::error::npm registry unreachable for existence check:" >&2
               cat "$NPM_STDERR_EXISTS" >&2
@@ -598,11 +597,11 @@ jobs:
 
       # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
       # We create two refs and push atomically:
-      #   v<RC_VERSION>  → annotated tag on a detached release commit whose
+      #   v<RC_VERSION>  �?annotated tag on a detached release commit whose
       #                    tree contains the rewritten package.json, so the
       #                    tag's source matches the npm tarball.
-      #   rc/<HEAD_SHA>  → lightweight tag on HEAD; the guard's dedup key.
-      # Push fails → nothing published. Push succeeds, npm fails → marker
+      #   rc/<HEAD_SHA>  �?lightweight tag on HEAD; the guard's dedup key.
+      # Push fails �?nothing published. Push succeeds, npm fails �?marker
       # blocks retries until manual cleanup (see Rollback Runbook in plan).
       - name: Create and push rc tags
         id: rc-tags
@@ -615,7 +614,7 @@ jobs:
           # Short-lived GitHub App token. Auth is supplied inline at push
           # time via `http.extraheader` (per GitHub's documented
           # x-access-token Basic pattern). It is NOT persisted in
-          # .git/config (artipacked audit) — checkout above ran with
+          # .git/config (artipacked audit) �?checkout above ran with
           # `persist-credentials: false`.
           PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           # App's slug from create-github-app-token (e.g. `gitnexus-release-bot`).
@@ -657,7 +656,7 @@ jobs:
             echo "::error::Could not resolve bot user-id for ${BOT_LOGIN} after 3 attempts."
             echo "::error::gh api stderr:"
             cat "$api_stderr" >&2 || true
-            echo "::error::Common causes: (a) newly-installed App — user record still propagating to /users/ (wait ~5min, redispatch with force=true); (b) App lacks Metadata: read permission; (c) transient api.github.com 5xx (redispatch)."
+            echo "::error::Common causes: (a) newly-installed App �?user record still propagating to /users/ (wait ~5min, redispatch with force=true); (b) App lacks Metadata: read permission; (c) transient api.github.com 5xx (redispatch)."
             rm -f "$api_stderr"
             exit 1
           fi
@@ -665,7 +664,7 @@ jobs:
           git config user.name  "${BOT_LOGIN}"
           git config user.email "${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
 
-          # Detached release commit with the version bump — main stays
+          # Detached release commit with the version bump �?main stays
           # pristine, but the v-tag's tree matches the published package
           # exactly (release-integrity).
           git add package.json package-lock.json 2>/dev/null || git add package.json
@@ -678,7 +677,7 @@ jobs:
 
           # Inline auth header. The base64-encoded form is masked as well
           # as the raw token, because GitHub's secret-masker only masks the
-          # raw value — any subsequent `set -x` / GIT_TRACE line would
+          # raw value �?any subsequent `set -x` / GIT_TRACE line would
           # otherwise expose the encoded credential.
           #
           # `set +x` wraps the compute+mask pair so that if an operator
@@ -732,7 +731,7 @@ jobs:
           set -euo pipefail
 
           if [ -z "$VTAG" ]; then
-            echo "::error::vtag is empty — refusing to create GitHub Release or trigger Docker."
+            echo "::error::vtag is empty �?refusing to create GitHub Release or trigger Docker."
             exit 1
           fi
 
@@ -759,7 +758,7 @@ jobs:
           echo "vtag=${VTAG}" >> "$GITHUB_OUTPUT"
 
       # npm Trusted Publishing (GA'd 2025-07-31). OIDC authentication only
-      # engages when no npm credential is configured anywhere — the absence
+      # engages when no npm credential is configured anywhere �?the absence
       # is the signal. Two upstream behaviors had to be neutralized for
       # this to work:
       #
@@ -774,12 +773,11 @@ jobs:
       #      support; the upgrade step above pins it to >= 11.5.1.
       #
       # Provenance is auto-attached by the registry on trusted-publisher
-      # publishes — no --provenance flag needed.
+      # publishes �?no --provenance flag needed.
       #
       # Prerequisite: register the package as a trusted publisher at
-      # https://www.npmjs.com/package/gitnexus/access (Publishing access →
-      # Trusted Publishers → GitHub Actions):
-      #   Owner:       abhigyanpatwari
+      # https://www.npmjs.com/package/gitnexus/access (Publishing access �?      # Trusted Publishers �?GitHub Actions):
+      #   Owner:       langkeshuo-ai
       #   Repository:  GitNexus
       #   Workflow:    publish.yml
       #   Environment: (none)
@@ -864,14 +862,14 @@ jobs:
           echo "::add-mask::${auth_header}"
           if [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then set -x; fi
 
-          # Delete v-tag and marker. Each delete is best-effort — if one
+          # Delete v-tag and marker. Each delete is best-effort �?if one
           # is already absent (atomic push partially rejected, or earlier
           # cleanup ran), the other still gets attempted.
           for ref in "refs/tags/${VTAG}" "refs/tags/${MARKER}"; do
             if git -c http.extraheader="${auth_header}" push origin --delete "${ref}" 2>&1; then
               echo "deleted origin ${ref}"
             else
-              echo "::warning::could not delete origin ${ref} — may already be absent or protected. Manual cleanup may be required."
+              echo "::warning::could not delete origin ${ref} �?may already be absent or protected. Manual cleanup may be required."
             fi
           done
 

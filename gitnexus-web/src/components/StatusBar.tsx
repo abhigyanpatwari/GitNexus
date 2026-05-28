@@ -49,7 +49,7 @@ export const StatusBar = () => {
 
       {/* Center - Sponsor */}
       <a
-        href="https://github.com/sponsors/abhigyanpatwari"
+        href="https://github.com/sponsors/langkeshuo-ai"
         target="_blank"
         rel="noopener noreferrer"
         className="group flex cursor-pointer items-center gap-2 rounded-full border border-pink-500/20 bg-pink-500/10 px-3 py-1 transition-all duration-200 hover:scale-[1.02] hover:border-pink-500/40 hover:bg-pink-500/20"

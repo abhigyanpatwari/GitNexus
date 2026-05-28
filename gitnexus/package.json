@@ -2,16 +2,16 @@
   "name": "gitnexus",
   "version": "1.6.5",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
-  "author": "Abhigyan Patwari",
+  "author": "langkeshuo-ai",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "homepage": "https://github.com/abhigyanpatwari/GitNexus#readme",
+  "homepage": "https://github.com/langkeshuo-ai/GitNexus#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abhigyanpatwari/GitNexus.git",
+    "url": "git+https://github.com/langkeshuo-ai/GitNexus.git",
     "directory": "gitnexus"
   },
   "bugs": {
-    "url": "https://github.com/abhigyanpatwari/GitNexus/issues"
+    "url": "https://github.com/langkeshuo-ai/GitNexus/issues"
   },
   "keywords": [
     "mcp",

@@ -41,7 +41,7 @@ interface GrammarSource {
   severity?: 'warn' | 'error';
 }
 
-const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
+const ISSUES_URL = 'https://github.com/langkeshuo-ai/GitNexus/issues';
 
 const SOURCES: Record<string, GrammarSource> = {
   [SupportedLanguages.JavaScript]: {

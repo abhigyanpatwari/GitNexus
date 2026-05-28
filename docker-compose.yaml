@@ -1,6 +1,6 @@
 services:
   gitnexus-server:
-    image: ${SERVER_IMAGE:-ghcr.io/abhigyanpatwari/gitnexus:latest}
+    image: ${SERVER_IMAGE:-ghcr.io/langkeshuo-ai/gitnexus:latest}
     container_name: ${SERVER_CONTAINER_NAME:-gitnexus-server}
     # Map the server to the same host port the web UI expects by default
     # (http://localhost:4747). The browser runs on the host, so the UI's
@@ -26,7 +26,7 @@ services:
       start_period: 15s
 
   gitnexus-web:
-    image: ${WEB_IMAGE:-ghcr.io/abhigyanpatwari/gitnexus-web:latest}
+    image: ${WEB_IMAGE:-ghcr.io/langkeshuo-ai/gitnexus-web:latest}
     container_name: ${WEB_CONTAINER_NAME:-gitnexus-web}
     ports:
       - '${WEB_HOST_PORT:-4173}:4173'

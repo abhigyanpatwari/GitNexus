@@ -703,7 +703,7 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
             GitNexus — open source codebase graph explorer
           </span>
           <a
-            href="https://github.com/abhigyanpatwari/GitNexus"
+            href="https://github.com/langkeshuo-ai/GitNexus"
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: 11, color: '#a78bfa', textDecoration: 'none' }}

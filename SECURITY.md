@@ -10,13 +10,13 @@ GitNexus is developed on `main`. Security fixes are applied to the latest releas
 
 Use **GitHub Private Vulnerability Reporting** for this repository:
 
-â†’ https://github.com/abhigyanpatwari/GitNexus/security/advisories/new
+â†?https://github.com/langkeshuo-ai/GitNexus/security/advisories/new
 
 Please include:
 
 - A description of the issue and its potential impact
 - Steps to reproduce (a minimal repro repo or commit hash if possible)
-- The affected version(s) â€” `npm view gitnexus version`, image digest, or commit SHA
+- The affected version(s) â€?`npm view gitnexus version`, image digest, or commit SHA
 - Any suggested mitigation
 
 ### What to expect
@@ -43,17 +43,17 @@ Out of scope:
 
 ## Recommended Hardening for Forks and Self-Hosted Deployments
 
-If you fork GitNexus or self-host it, we recommend enabling the following in your repository's **Settings â†’ Code security and analysis**:
+If you fork GitNexus or self-host it, we recommend enabling the following in your repository's **Settings â†?Code security and analysis**:
 
-- **Private vulnerability reporting** â€” the channel described above.
-- **Dependabot alerts** â€” alerts on advisories affecting your dependencies.
-- **Dependabot security updates** â€” automated PRs for security patches (this repo's `.github/dependabot.yml` already covers version updates).
-- **Secret scanning** and **Push protection** â€” blocks pushes that introduce known secret patterns. Defense-in-depth on top of the in-CI Gitleaks scan documented below.
-- **Code scanning** â€” surfaces SARIF results from CodeQL, Trivy, Scorecard, and zizmor in one place.
+- **Private vulnerability reporting** â€?the channel described above.
+- **Dependabot alerts** â€?alerts on advisories affecting your dependencies.
+- **Dependabot security updates** â€?automated PRs for security patches (this repo's `.github/dependabot.yml` already covers version updates).
+- **Secret scanning** and **Push protection** â€?blocks pushes that introduce known secret patterns. Defense-in-depth on top of the in-CI Gitleaks scan documented below.
+- **Code scanning** â€?surfaces SARIF results from CodeQL, Trivy, Scorecard, and zizmor in one place.
 
 ## Automated Scans Running in CI
 
-This repository runs the following scans automatically. Findings appear under the repository's **Security â†’ Code scanning** tab.
+This repository runs the following scans automatically. Findings appear under the repository's **Security â†?Code scanning** tab.
 
 | Scan | Tool | Trigger | Action on finding |
 |------|------|---------|-------------------|
@@ -64,4 +64,4 @@ This repository runs the following scans automatically. Findings appear under th
 | Workflow lint | [zizmor](https://github.com/woodruffw/zizmor) | PR (touching `.github/**`) | **Blocks PR** at `high+` severity |
 | Container image scan | [Trivy](https://github.com/aquasecurity/trivy-action) | Weekly, `main` push | Advisory (Security tab) |
 
-Dependency version updates are managed separately by Dependabot â€” see `.github/dependabot.yml`.
+Dependency version updates are managed separately by Dependabot â€?see `.github/dependabot.yml`.
