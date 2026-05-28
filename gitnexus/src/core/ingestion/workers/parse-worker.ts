@@ -198,6 +198,11 @@ export interface ExtractedFetchCall {
   lineNumber: number;
 }
 
+export interface FetchWrapperDef {
+  filePath: string;
+  functionName: string;
+}
+
 export interface ExtractedDecoratorRoute {
   filePath: string;
   routePath: string;
@@ -268,6 +273,7 @@ export interface ParseWorkerResult {
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
+  fetchWrapperDefs: FetchWrapperDef[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
@@ -732,6 +738,7 @@ const processBatch = (
     heritage: [],
     routes: [],
     fetchCalls: [],
+    fetchWrapperDefs: [],
     decoratorRoutes: [],
     toolDefs: [],
     ormQueries: [],
@@ -841,6 +848,23 @@ const EXPRESS_ROUTE_METHODS = new Set([
   'use',
   'route',
 ]);
+
+/**
+ * Walk a tree-sitter AST subtree looking for a call to the global `fetch()` function.
+ * Returns `true` if found within `maxDepth` levels of nesting — keeps the check
+ * lightweight so it doesn't slow down parse-worker on large function bodies.
+ */
+const checkForFetchCall = (node: SyntaxNode, depth = 0, maxDepth = 5): boolean => {
+  if (depth > maxDepth) return false;
+  if (node.type === 'call_expression') {
+    const fn = node.childForFieldName('function');
+    if (fn?.type === 'identifier' && fn.text === 'fetch') return true;
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    if (checkForFetchCall(node.child(i)!, depth + 1, maxDepth)) return true;
+  }
+  return false;
+};
 
 // HTTP client methods that are ONLY used by clients, not Express route registration.
 // Methods like get/post/put/delete/patch overlap with Express — those are captured by
@@ -1944,6 +1968,21 @@ const processFileGroup = (
             : '',
         });
       }
+
+      // ── Fetch wrapper detection: record functions that call fetch() internally ──
+      if (
+        nodeLabel === 'Function' &&
+        definitionNode &&
+        nameNode &&
+        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
+      ) {
+        if (checkForFetchCall(definitionNode)) {
+          result.fetchWrapperDefs.push({
+            filePath: file.path,
+            functionName: nameNode.text,
+          });
+        }
+      }
     }
 
     // Extract framework routes via provider detection (e.g., Laravel routes.php)
@@ -1985,6 +2024,7 @@ let accumulated: ParseWorkerResult = {
   heritage: [],
   routes: [],
   fetchCalls: [],
+  fetchWrapperDefs: [],
   decoratorRoutes: [],
   toolDefs: [],
   ormQueries: [],
@@ -2013,6 +2053,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.heritage, src.heritage);
   appendAll(target.routes, src.routes);
   appendAll(target.fetchCalls, src.fetchCalls);
+  appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
   appendAll(target.decoratorRoutes, src.decoratorRoutes);
   appendAll(target.toolDefs, src.toolDefs);
   appendAll(target.ormQueries, src.ormQueries);
@@ -2104,6 +2145,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         heritage: [],
         routes: [],
         fetchCalls: [],
+        fetchWrapperDefs: [],
         decoratorRoutes: [],
         toolDefs: [],
         ormQueries: [],

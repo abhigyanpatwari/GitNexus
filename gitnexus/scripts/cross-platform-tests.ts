@@ -29,6 +29,7 @@ const PLATFORM_LOGIC = [
   'test/unit/setup.test.ts',
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
+  'test/unit/setup-antigravity.test.ts',
   'test/unit/platform-capabilities.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-win-fts-probe.test.ts',
@@ -58,6 +59,7 @@ const LBUG_NATIVE = [
   'test/integration/lbug-close-handle-release.test.ts',
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
+  'test/integration/lbug-non-ascii-path.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
@@ -79,6 +81,8 @@ const SPAWN_CLI = [
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
   'test/integration/setup-skills.test.ts',
+  'test/integration/setup-antigravity.test.ts',
+  'test/integration/antigravity-hook-e2e.test.ts',
   'test/unit/local-cli-subprocess.test.ts',
 ];
 

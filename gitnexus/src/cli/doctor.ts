@@ -1,6 +1,7 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
+import { checkLbugNative } from '../core/lbug/native-check.js';
 import { t } from './i18n/index.js';
 
 function isCombiningMark(codePoint: number): boolean {
@@ -59,6 +60,13 @@ export const doctorCommand = async () => {
   console.log(`  ${label('doctor.labels.node', 10)}${fingerprint.node}`);
   console.log(`  ${label('doctor.labels.gitnexus', 10)}${fingerprint.gitnexus}`);
   console.log(`  ${label('doctor.labels.ladybugdb', 10)}${fingerprint.ladybugdb ?? 'unknown'}`);
+  const nativeCheck = checkLbugNative();
+  if (nativeCheck.ok) {
+    console.log(`  ${padDisplayEnd('native', 10)}✓ lbugjs.node loaded`);
+  } else {
+    console.log(`  ${padDisplayEnd('native', 10)}✗ lbugjs.node missing`);
+    process.stderr.write(`\n${nativeCheck.message?.replace(/^/gm, '  ')}\n\n`);
+  }
   console.log(`  ${label('doctor.labels.onnx', 10)}${fingerprint.onnxruntime ?? 'unknown'}`);
   console.log('');
   console.log(t('doctor.capabilities'));

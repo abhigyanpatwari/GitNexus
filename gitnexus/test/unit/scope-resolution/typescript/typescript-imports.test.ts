@@ -6,7 +6,7 @@
  * set of fake file paths (with and without tsconfig path aliases).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { emitTsScopeCaptures } from '../../../../src/core/ingestion/languages/typescript/captures.js';
 import { splitImportStatement } from '../../../../src/core/ingestion/languages/typescript/import-decomposer.js';
 import { interpretTsImport } from '../../../../src/core/ingestion/languages/typescript/interpret.js';
@@ -14,6 +14,9 @@ import {
   resolveTsImportTarget,
   type TsResolveContext,
 } from '../../../../src/core/ingestion/languages/typescript/import-target.js';
+import { buildSuffixIndex } from '../../../../src/core/ingestion/import-resolvers/utils.js';
+import * as importResolverUtils from '../../../../src/core/ingestion/import-resolvers/utils.js';
+import { typescriptScopeResolver } from '../../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -398,5 +401,69 @@ describe('resolveTsImportTarget — standard suffix + alias resolution', () => {
       }),
     );
     expect(result).toBe('src/a.js');
+  });
+
+  it('uses a prebuilt suffix index for package-style imports', () => {
+    const parsed: ParsedImport = {
+      kind: 'named',
+      localName: 'Button',
+      importedName: 'Button',
+      targetRaw: 'components/Button',
+    };
+    const files = ['src/main.ts', 'src/components/Button.ts'];
+    const index = buildSuffixIndex(
+      files.map((f) => f.toLowerCase()),
+      files,
+    );
+    const result = resolveTsImportTarget(
+      parsed,
+      ctx('src/main.ts', files, {
+        allFileList: files,
+        normalizedFileList: files.map((f) => f.toLowerCase()),
+        index,
+      }),
+    );
+
+    expect(result).toBe('src/components/Button.ts');
+  });
+});
+
+describe('typescriptScopeResolver.resolveImportTarget — real wiring', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('builds suffix index and resolves package-style imports through the production path', () => {
+    const spy = vi.spyOn(importResolverUtils, 'buildSuffixIndex');
+    const files = new Set(['src/main.ts', 'src/components/Button.ts']);
+
+    const result = typescriptScopeResolver.resolveImportTarget!(
+      'components/Button',
+      'src/main.ts',
+      files,
+    );
+
+    expect(result).toBe('src/components/Button.ts');
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it('returns null for unresolvable package-style imports', () => {
+    const files = new Set(['src/main.ts', 'src/utils/helper.ts']);
+
+    const result = typescriptScopeResolver.resolveImportTarget!(
+      'nonexistent/Module',
+      'src/main.ts',
+      files,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('resolves relative imports through the scope-resolver entry point', () => {
+    const files = new Set(['src/main.ts', 'src/utils.ts']);
+
+    const result = typescriptScopeResolver.resolveImportTarget!('./utils', 'src/main.ts', files);
+
+    expect(result).toBe('src/utils.ts');
   });
 });

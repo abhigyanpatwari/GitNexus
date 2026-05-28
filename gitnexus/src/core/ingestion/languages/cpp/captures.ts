@@ -126,6 +126,13 @@ export function emitCppScopeCaptures(
             JSON.stringify(arity.parameterTypeClasses),
           );
         }
+        if (hasExplicitSpecifier(fnNode)) {
+          grouped['@declaration.is-explicit'] = syntheticCapture(
+            '@declaration.is-explicit',
+            fnNode,
+            'true',
+          );
+        }
 
         // Detect static storage class (file-local linkage)
         if (hasStaticStorageClass(fnNode)) {
@@ -475,8 +482,9 @@ function detectCppDependentBases(root: SyntaxNode, filePath: string): void {
             for (const base of iterBaseClasses(baseClause)) {
               if (isBaseDependent(base, params)) {
                 const baseName = extractBaseLookupName(base);
+                const baseQualifier = extractBaseLookupQualifier(base);
                 if (baseName !== '') {
-                  markCppDependentBase(filePath, className, baseName);
+                  markCppDependentBase(filePath, className, baseName, baseQualifier);
                 }
               }
             }
@@ -553,10 +561,14 @@ function* iterBaseClasses(baseClause: SyntaxNode): IterableIterator<SyntaxNode> 
  */
 function isBaseDependent(baseNode: SyntaxNode, templateParams: Set<string>): boolean {
   if (baseNode.type !== 'template_type') {
-    // Bare `type_identifier` or `qualified_identifier` bases — not
-    // dependent (the base name itself doesn't reference a template
-    // parameter at this level).
-    return false;
+    if (baseNode.type === 'qualified_identifier') {
+      // Qualified identifier bases (e.g. `detail::Inner<T>`) may contain
+      // template_type children — descend into them for template param check.
+      // Fall through to the stack walk below.
+    } else {
+      // Bare `type_identifier` bases — not dependent.
+      return false;
+    }
   }
   // Walk all descendants of the template_argument_list looking for any
   // type_identifier matching a template parameter, or any conservative-
@@ -619,6 +631,27 @@ function extractBaseLookupName(baseNode: SyntaxNode): string {
       if (child === null) continue;
       const nested = extractBaseLookupName(child);
       if (nested.length > 0) return nested;
+    }
+  }
+  return '';
+}
+
+/** Extract the syntactic namespace qualifier from a base class node.
+ *  For `detail::Inner<T>`, returns `'detail'`.
+ *  For unqualified bases (`Inner<T>`, `Base<int>`), returns `''`.
+ *  Nested qualifiers (`a::b::Inner<T>`) return the full scope text.
+ */
+function extractBaseLookupQualifier(baseNode: SyntaxNode): string {
+  if (baseNode.type === 'qualified_identifier') {
+    const scopeNode = baseNode.childForFieldName('scope');
+    if (scopeNode !== null) return scopeNode.text;
+  }
+  // template_type nodes may have a qualified_identifier as their name child
+  if (baseNode.type === 'template_type') {
+    const nameNode = baseNode.childForFieldName('name');
+    if (nameNode !== null && nameNode.type === 'qualified_identifier') {
+      const scopeNode = nameNode.childForFieldName('scope');
+      if (scopeNode !== null) return scopeNode.text;
     }
   }
   return '';
@@ -1514,6 +1547,20 @@ function extractDeclaratorLeafName(node: SyntaxNode): string | null {
     cur = next;
   }
   return null;
+}
+
+/**
+ * Check if a C++ declaration has an `explicit` specifier. Tree-sitter-cpp
+ * exposes `explicit` as a direct keyword child on constructor declarations in
+ * current grammar builds; the bounded text prefix keeps this resilient across
+ * small grammar shape differences without scanning whole function bodies.
+ */
+function hasExplicitSpecifier(node: SyntaxNode): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child !== null && child.text === 'explicit') return true;
+  }
+  return /\bexplicit\b/.test(node.text.slice(0, 128));
 }
 
 /**

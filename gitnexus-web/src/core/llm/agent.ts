@@ -363,7 +363,16 @@ export type AgentMessage = { role: 'user'; content: string } | AgentHistoryMessa
 export interface AgentRuntimeOptions {
   /** Capture assistant/tool messages for providers that require exact transcript replay. */
   captureHistory?: boolean;
+  /** When aborted (e.g. user clicked Stop), the stream ends with a `cancelled` chunk. */
+  signal?: AbortSignal;
 }
+
+const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  if (signal?.aborted) return true;
+  return false;
+};
 
 export const buildLangChainMessages = (messages: AgentMessage[]): BaseMessage[] =>
   messages.map((message) => {
@@ -438,6 +447,7 @@ export async function* streamAgentResponse(
       streamMode: ['values', 'messages'] as any,
       // Allow longer tool/reasoning loops (more Cursor-like persistence)
       recursionLimit: 50,
+      signal: options.signal,
     } as any);
 
     // Track what we've yielded to avoid duplicates
@@ -455,6 +465,10 @@ export async function* streamAgentResponse(
     let lastStepMessages: any[] | null = null;
 
     for await (const event of stream) {
+      if (options.signal?.aborted) {
+        break;
+      }
+
       // Events come as [streamMode, data] tuples when using multiple modes
       // or just data when using single mode
       let mode: string;
@@ -511,10 +525,11 @@ export async function* streamAgentResponse(
             // - After all tools are done: treat as final content
             const isReasoning =
               !hasSeenToolCallThisTurn || toolCalls.length > 0 || pendingToolCalls > 0;
-            yield {
-              type: isReasoning ? 'reasoning' : 'content',
-              [isReasoning ? 'reasoning' : 'content']: content,
-            };
+            if (isReasoning) {
+              yield { type: 'reasoning', reasoning: content };
+            } else {
+              yield { type: 'content', content };
+            }
           }
 
           // Track tool calls from message chunks
@@ -627,6 +642,11 @@ export async function* streamAgentResponse(
       }
     }
 
+    if (options.signal?.aborted) {
+      yield { type: 'cancelled' };
+      return;
+    }
+
     // DEBUG: Stream completed normally
     if (import.meta.env.DEV) {
       console.log('✅ Stream completed normally, yielding done');
@@ -640,6 +660,10 @@ export async function* streamAgentResponse(
           : undefined,
     };
   } catch (error) {
+    if (isAbortError(error, options.signal)) {
+      yield { type: 'cancelled' };
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     // DEBUG: Stream error
     if (import.meta.env.DEV) {

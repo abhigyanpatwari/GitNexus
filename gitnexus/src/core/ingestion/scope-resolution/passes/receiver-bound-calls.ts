@@ -620,15 +620,21 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 3b: chain-typebinding (`city → user.get_city`) ──────
+      // Also handles compound member-call rawNames (`city → addr.get_city()`)
+      // where the rawName includes both `.` and `()` — Ruby's
+      // member-call-return captures produce this shape.
       const chainHead =
-        typeRef !== undefined && typeRef.rawName.includes('.') && !typeRef.rawName.includes('(')
+        typeRef !== undefined && typeRef.rawName.includes('.')
           ? (typeRef.rawName.split('.', 1)[0] ?? '')
           : undefined;
       if (typeRef !== undefined && chainHead !== undefined && !namespaceTargets.has(chainHead)) {
         // Try the plain dotted-field walk first — covers property /
         // collection-accessor shapes (`.Values`, Kotlin `.size`) and
         // field chains. Fall back to call-form (`x()`) which treats
-        // the last segment as a method invocation.
+        // the last segment as a method invocation. For rawNames that
+        // already contain `()` (Ruby member-call-return captures),
+        // pass through directly — the compound resolver handles the
+        // full expression including the call syntax.
         let ownerDef = resolveCompoundReceiverClass(
           typeRef.rawName,
           typeRef.declaredAtScope,
@@ -636,7 +642,7 @@ export function emitReceiverBoundCalls(
           index,
           compoundOpts,
         );
-        if (ownerDef === undefined) {
+        if (ownerDef === undefined && !typeRef.rawName.includes('(')) {
           ownerDef = resolveCompoundReceiverClass(
             typeRef.rawName + '()',
             typeRef.declaredAtScope,

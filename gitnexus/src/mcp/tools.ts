@@ -336,12 +336,14 @@ Output includes:
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
-- byDepth: all affected symbols grouped by traversal depth
+- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated)
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
 - d=2: LIKELY AFFECTED (indirect)
 - d=3: MAY NEED TESTING (transitive)
+
+TIP: For hub symbols (base error classes, shared utilities) with many direct callers, use summaryOnly: true first to see counts and risk, then drill into specific depths with limit/offset. maxDepth alone does not bound output size when most dependents are at depth 1. limit and offset apply independently to each depth level, not to the total result set — use byDepthCounts to see totals per depth.
 
 TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
 
@@ -421,6 +423,27 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'string',
           description:
             'Optional group subgroup prefix (member repo paths) limiting which repos participate in cross fan-out.',
+        },
+        limit: {
+          type: 'integer',
+          description:
+            'Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.',
+          default: 100,
+          minimum: 1,
+          maximum: 10000,
+        },
+        offset: {
+          type: 'integer',
+          description:
+            'Skip this many symbols per depth level before applying limit. Single-repo only; ignored in group mode (@groupName). Use with limit for pagination.',
+          default: 0,
+          minimum: 0,
+        },
+        summaryOnly: {
+          type: 'boolean',
+          description:
+            'When true, returns target, summary, risk, byDepthCounts, affected_processes, and affected_modules — omits byDepth. Single-repo only; ignored in group mode (@groupName). Use for hub symbols to get actionable signal without output explosion.',
+          default: false,
         },
         timeoutMs: {
           type: 'number',
