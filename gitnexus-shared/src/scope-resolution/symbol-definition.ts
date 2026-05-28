@@ -53,6 +53,10 @@ export interface SymbolDefinition {
    *  `ScopeResolver.constraintCompatibility` hook during overload narrowing.
    *  Absent for symbols that have no constraints (the common case). */
   templateConstraints?: unknown;
+  /** True when the producing language marked this callable as explicit.
+   *  Currently used by C++ overload ranking to exclude explicit constructors
+   *  from implicit user-defined conversion candidates. */
+  isExplicit?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
 }

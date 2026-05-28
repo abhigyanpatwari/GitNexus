@@ -778,24 +778,27 @@ describe('PreToolUse concurrency guard (integration)', () => {
       `;
 
       const N = 10;
-      const claimers = Array.from({ length: N }, () => {
-        const child = spawn(process.execPath, ['-e', claimerScript], {
+      const claimers = Array.from({ length: N }, () =>
+        spawn(process.execPath, ['-e', claimerScript], {
           stdio: ['ignore', 'pipe', 'ignore'],
           detached: false,
-        });
-        const decision = new Promise<string>((resolve) => {
-          let buf = '';
-          child.stdout!.on('data', (d) => {
-            buf += d.toString();
-            if (buf.includes('\n')) resolve(buf.split('\n')[0]);
-          });
-          child.on('exit', () => resolve(buf.split('\n')[0] || 'EXIT'));
-        });
-        return { child, decision };
-      });
+        }),
+      );
       try {
         // Wait until every claimer has printed its decision.
-        const decisions = await Promise.all(claimers.map((c) => c.decision));
+        const decisions = await Promise.all(
+          claimers.map(
+            (c) =>
+              new Promise<string>((resolve) => {
+                let buf = '';
+                c.stdout!.on('data', (d) => {
+                  buf += d.toString();
+                  if (buf.includes('\n')) resolve(buf.split('\n')[0]);
+                });
+                c.on('exit', () => resolve(buf.split('\n')[0] || 'EXIT'));
+              }),
+          ),
+        );
         const claimedCount = decisions.filter((d) => d.startsWith('CLAIMED:')).length;
         const skippedCount = decisions.filter((d) => d === 'SKIPPED').length;
 
@@ -820,7 +823,7 @@ describe('PreToolUse concurrency guard (integration)', () => {
       } finally {
         for (const c of claimers) {
           try {
-            c.child.kill();
+            c.kill();
           } catch {
             /* ignore */
           }
