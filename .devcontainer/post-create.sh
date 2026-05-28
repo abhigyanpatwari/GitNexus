@@ -33,23 +33,31 @@ echo "[post-create] 2/2: sync AI CLI credentials + identity from host"
 for p in plugins skills agents memory commands; do
     [ -L "/home/node/.claude/$p" ] && rm "/home/node/.claude/$p"
 done
-for p in config.toml memories skills; do
+for p in plugins prompts memories skills config.toml; do
     [ -L "/home/node/.codex/$p" ] && rm "/home/node/.codex/$p"
 done
-mkdir -p /home/node/.claude/plugins
+for p in plugins rules commands agents skills; do
+    [ -L "/home/node/.cursor/$p" ] && rm "/home/node/.cursor/$p"
+done
+mkdir -p /home/node/.claude/plugins /home/node/.cursor/plugins
 
-# Plugins, skills, agents, memory, commands, settings.json, $HOME/.claude.json,
-# Codex config.toml/memories/skills are all RW bind-mounted directly from
-# host in devcontainer.json — they live on host and reads/writes go
-# bidirectionally. Nothing for this script to do for those.
+# Shareable content is RW bind-mounted directly from host in
+# devcontainer.json — reads/writes go bidirectionally, nothing for this
+# script to do for those:
+#   - Claude: plugins/{marketplaces,cache}, skills, agents, memory, commands
+#   - Codex:  plugins (whole dir), prompts, memories, skills
+#   - Cursor: plugins/{marketplaces,local}, rules, commands, agents, skills
 #
 # What stays per-container (in the named volume) and gets SYNCED from
 # host on container-create:
 #   - .credentials.json (Claude OAuth tokens)
 #   - .claude/.claude.json (Claude identity: userID, oauthAccount,
 #     migration tracking — different file from $HOME/.claude.json)
-#   - auth.json (Codex)
-#   - cli-config.json (Cursor — conflates auth + settings)
+#   - settings.json (Claude), config.toml (Codex), mcp.json (Cursor) —
+#     single config files that can't be bind-mounted (EXDEV on Windows)
+#   - auth.json (Codex), cli-config.json (Cursor — conflates auth+settings)
+#   - plugins registry JSONs with absolute paths (Claude + Cursor) —
+#     translated below
 #
 # Sync semantics: ALWAYS overwrite from host on container-create, so a
 # fresh container starts logged in as host's user (if host had creds).
@@ -83,61 +91,66 @@ sync_from_host /host/.claude/settings.json /home/node/.claude/settings.json 644
 sync_from_host /host/.claude.json         /home/node/.claude.json         644
 sync_from_host /host/.codex/config.toml   /home/node/.codex/config.toml   644
 
-# Plugin registry path translation. Claude writes absolute OS-native paths
-# into known_marketplaces.json (`installLocation`), installed_plugins.json
-# (`installPath`), and plugin-catalog-cache.json — `C:\Users\X\.claude\...`
-# on Windows hosts, `/Users/X/.claude/...` on macOS — so the host versions
-# can't be bind-mounted into the Linux container (Claude would fail with
-# `cache-miss` trying to resolve a Windows path inside Linux). Read host's
-# registry files, rewrite every absolute path that ends in
-# `/.claude/plugins/<rest>` to `/home/node/.claude/plugins/<rest>`, and
-# write the result into the container's named volume.
-mkdir -p /home/node/.claude/plugins
+# Plugin registry path translation (Claude + Cursor). Both write absolute
+# OS-native install paths into their plugin registry JSONs —
+# `C:\Users\X\.claude\plugins\...` on Windows, `/Users/X/.cursor/plugins/...`
+# on macOS — so the host versions can't be bind-mounted into the Linux
+# container (the CLI fails with `cache-miss` resolving a Windows path under
+# Linux). For each CLI, read host's registry files, rewrite every absolute
+# path ending in `/.<cli>/plugins/<rest>` to
+# `/home/node/.<cli>/plugins/<rest>`, and write the result into the named
+# volume. (Codex needs no translation — its enablement registry is
+# config.toml with git URLs, not filesystem paths, so its whole plugins/
+# dir is bind-mounted instead.)
 node <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
-const HOST = "/host/.claude/plugins";
-const CTR = "/home/node/.claude/plugins";
+const buildRe = (cliName) =>
+    new RegExp(`^(?:[A-Za-z]:)?[\\\\/].*?[\\\\/]\\.${cliName}[\\\\/]plugins[\\\\/](.*)$`);
 
-// Match any absolute path (Windows `C:\Users\…\.claude\plugins\<rest>`
-// or POSIX `/Users/…/.claude/plugins/<rest>` or
-// `/home/…/.claude/plugins/<rest>`) and translate to the container path.
-const rewrite = (s) => {
-    if (typeof s !== "string") return s;
-    return s.replace(
-        /^(?:[A-Za-z]:)?[\\/].*?[\\/]\.claude[\\/]plugins[\\/](.*)$/,
-        (_, rest) => `${CTR}/${rest.replace(/\\/g, "/")}`,
-    );
-};
-
-const rewriteDeep = (obj) => {
-    if (Array.isArray(obj)) return obj.map(rewriteDeep);
+const rewriteDeep = (obj, re, ctr) => {
+    if (Array.isArray(obj)) return obj.map((v) => rewriteDeep(v, re, ctr));
     if (obj && typeof obj === "object") {
         const out = {};
-        for (const [k, v] of Object.entries(obj)) {
-            out[k] = typeof v === "string" ? rewrite(v) : rewriteDeep(v);
-        }
+        for (const [k, v] of Object.entries(obj)) out[k] = rewriteDeep(v, re, ctr);
         return out;
     }
+    if (typeof obj === "string")
+        return obj.replace(re, (_, rest) => `${ctr}/${rest.replace(/\\/g, "/")}`);
     return obj;
 };
 
-for (const name of [
-    "known_marketplaces.json",
-    "installed_plugins.json",
-    "plugin-catalog-cache.json",
-]) {
-    const src = path.join(HOST, name);
-    const dst = path.join(CTR, name);
-    if (!fs.existsSync(src) || fs.statSync(src).size === 0) continue;
-    let data;
-    try {
-        data = JSON.parse(fs.readFileSync(src, "utf8"));
-    } catch {
-        continue;
+const REGISTRIES = [
+    {
+        cli: "claude",
+        host: "/host/.claude/plugins",
+        ctr: "/home/node/.claude/plugins",
+        files: ["known_marketplaces.json", "installed_plugins.json", "plugin-catalog-cache.json"],
+    },
+    {
+        cli: "cursor",
+        host: "/host/.cursor/plugins",
+        ctr: "/home/node/.cursor/plugins",
+        files: ["installed_plugins.json"],
+    },
+];
+
+for (const reg of REGISTRIES) {
+    const re = buildRe(reg.cli);
+    fs.mkdirSync(reg.ctr, { recursive: true });
+    for (const name of reg.files) {
+        const src = path.join(reg.host, name);
+        const dst = path.join(reg.ctr, name);
+        if (!fs.existsSync(src) || fs.statSync(src).size === 0) continue;
+        let data;
+        try {
+            data = JSON.parse(fs.readFileSync(src, "utf8"));
+        } catch {
+            continue;
+        }
+        fs.writeFileSync(dst, JSON.stringify(rewriteDeep(data, re, reg.ctr), null, 2));
     }
-    fs.writeFileSync(dst, JSON.stringify(rewriteDeep(data), null, 2));
 }
 NODE
 
@@ -151,8 +164,14 @@ sync_from_host \
 # Cursor CLI — cli-config.json conflates auth + settings. Cursor has known
 # upstream issues authenticating inside Docker even with correctly-copied
 # config; if `cursor-agent` reports auth errors after copy, re-run
-# `cursor-agent login` inside the container.
+# `cursor-agent login` inside the container. mcp.json (Cursor's MCP server
+# config) is a single file too — copy-on-create, not bind (EXDEV).
+# hooks.json is deliberately NOT synced: Cursor hooks run shell commands,
+# so sharing them would widen the supply-chain attack surface into the
+# container. Add it yourself if you want host hooks inside the container.
 sync_from_host \
     /host/.cursor/cli-config.json /home/node/.cursor/cli-config.json
+sync_from_host \
+    /host/.cursor/mcp.json /home/node/.cursor/mcp.json 644
 
 echo "[post-create] done"

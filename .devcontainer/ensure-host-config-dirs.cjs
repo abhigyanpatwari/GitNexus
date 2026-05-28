@@ -82,20 +82,36 @@ const home = os.homedir();
 const dirs = [
   '.claude',
   path.join('.claude', 'plugins'),
-  // Plugin registry source dirs — content is path-independent so these
-  // get RW bind-mounted bidirectionally. The path-DEPENDENT registry
-  // JSONs (known_marketplaces.json, installed_plugins.json,
-  // plugin-catalog-cache.json) stay in the container's named volume.
+  // Claude plugin SOURCE dirs — content is path-independent so these get
+  // RW bind-mounted bidirectionally. The path-DEPENDENT registry JSONs
+  // (known_marketplaces.json, installed_plugins.json,
+  // plugin-catalog-cache.json) stay in the container's named volume,
+  // translated by post-create.sh.
   path.join('.claude', 'plugins', 'marketplaces'),
   path.join('.claude', 'plugins', 'cache'),
   path.join('.claude', 'skills'),
   path.join('.claude', 'agents'),
   path.join('.claude', 'memory'),
   path.join('.claude', 'commands'),
+  // Codex shareable surface. The whole plugins/ dir is bound (no
+  // path-bearing registry inside it — enablement is in config.toml at the
+  // root), plus prompts/ (saved prompt library), memories/, skills/.
   '.codex',
+  path.join('.codex', 'plugins'),
+  path.join('.codex', 'prompts'),
   path.join('.codex', 'memories'),
   path.join('.codex', 'skills'),
+  // Cursor shareable surface (cursor-agent CLI shares the Cursor 2.5
+  // plugin/rules/commands/agents/skills dirs). plugins/ sub-dirs are
+  // bound individually because plugins/installed_plugins.json carries
+  // absolute paths and is translated (not bound) by post-create.sh.
   '.cursor',
+  path.join('.cursor', 'plugins', 'marketplaces'),
+  path.join('.cursor', 'plugins', 'local'),
+  path.join('.cursor', 'rules'),
+  path.join('.cursor', 'commands'),
+  path.join('.cursor', 'agents'),
+  path.join('.cursor', 'skills'),
   '.ssh',
   '.docker',
   '.aws',
@@ -110,12 +126,16 @@ for (const dir of dirs) {
   fs.mkdirSync(path.join(home, dir), { recursive: true });
 }
 
-// File bind-mount sources. devcontainer.json bind-mounts each file
-// individually (so the host file IS the container file — bidirectional
-// share). Touch-empty if absent so Docker doesn't reject the mount.
-// `~/.claude.json` carries `hasCompletedOnboarding` + MCP user-scope +
-// per-project trust; `~/.claude/settings.json` carries theme + enabled
-// plugins; `~/.codex/config.toml` carries Codex user prefs.
+// Single-file sources. `~/.claude.json` is bind-mounted READ-ONLY at
+// /host/.claude.json, so it must exist or Docker rejects the mount —
+// touch-empty if absent. The others are read by post-create.sh from the
+// /host/.<cli> read-only dir stages and COPIED into the named volume
+// (copy-on-create, never single-file-bound — that trips EXDEV on Docker
+// Desktop Windows). Touching them is harmless and gives sync a source:
+// `~/.claude/settings.json` (theme + enabled plugins), `~/.codex/config.toml`
+// (Codex prefs + plugin enablement). `~/.cursor/{mcp.json,cli-config.json}`
+// are left untouched — sync_from_host no-ops if the host never created
+// them, which is the correct "not configured yet" state.
 const files = [
   '.claude.json',
   path.join('.claude', 'settings.json'),

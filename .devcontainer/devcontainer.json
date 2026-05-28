@@ -111,14 +111,47 @@
     // DIRECTORY binds — bidirectional, atomic writes inside the dir work
     // fine (same filesystem). Sub-path writes from container go to host
     // immediately; host changes are visible to container immediately.
+    //
+    // Claude: plugins SOURCE dirs (marketplaces/ git clones + cache/
+    // extracted files) are path-independent; the path-bearing registry
+    // JSONs at plugins/ root stay in the volume and are translated by
+    // post-create.sh (see SINGLE-FILE note below).
     "source=${localEnv:HOME}/.claude/plugins/marketplaces,target=/home/node/.claude/plugins/marketplaces,type=bind",
     "source=${localEnv:HOME}/.claude/plugins/cache,target=/home/node/.claude/plugins/cache,type=bind",
     "source=${localEnv:HOME}/.claude/skills,target=/home/node/.claude/skills,type=bind",
     "source=${localEnv:HOME}/.claude/agents,target=/home/node/.claude/agents,type=bind",
     "source=${localEnv:HOME}/.claude/memory,target=/home/node/.claude/memory,type=bind",
     "source=${localEnv:HOME}/.claude/commands,target=/home/node/.claude/commands,type=bind",
+    //
+    // Codex: bind the WHOLE plugins/ dir (parent of cache/). `codex plugin
+    // add` stages installs INSIDE plugins/cache/<marketplace>/ and renames
+    // intra-dir (verified by strace), so under a single 9p bind of plugins/
+    // the rename stays intra-9p — no EXDEV. Unlike Claude, Codex has NO
+    // path-bearing registry file under plugins/ (enablement lives in
+    // config.toml at the .codex root as git URLs, not FS paths), so no
+    // translation is needed and the whole dir can be bound. `.tmp/` (the
+    // ext4 marketplace-clone staging area) is deliberately NOT bound — it
+    // must stay on the volume as the cross-fs source side.
+    "source=${localEnv:HOME}/.codex/plugins,target=/home/node/.codex/plugins,type=bind",
+    "source=${localEnv:HOME}/.codex/prompts,target=/home/node/.codex/prompts,type=bind",
     "source=${localEnv:HOME}/.codex/memories,target=/home/node/.codex/memories,type=bind",
     "source=${localEnv:HOME}/.codex/skills,target=/home/node/.codex/skills,type=bind",
+    //
+    // Cursor: cursor-agent (CLI, not just the IDE) shares the Cursor 2.5
+    // plugin/rules/commands/agents/skills surface on disk. Bind the SOURCE
+    // dirs (path-independent). plugins/installed_plugins.json carries
+    // absolute Windows paths like Claude's registry, so it stays in the
+    // volume and is translated by post-create.sh — that's why plugins/
+    // sub-dirs are bound individually rather than the whole plugins/ dir.
+    // mcp.json + hooks.json are single files (EXDEV-unsafe as binds) and
+    // are handled as copy-on-create; hooks.json is intentionally NOT
+    // shared (it executes shell commands — supply-chain surface).
+    "source=${localEnv:HOME}/.cursor/plugins/marketplaces,target=/home/node/.cursor/plugins/marketplaces,type=bind",
+    "source=${localEnv:HOME}/.cursor/plugins/local,target=/home/node/.cursor/plugins/local,type=bind",
+    "source=${localEnv:HOME}/.cursor/rules,target=/home/node/.cursor/rules,type=bind",
+    "source=${localEnv:HOME}/.cursor/commands,target=/home/node/.cursor/commands,type=bind",
+    "source=${localEnv:HOME}/.cursor/agents,target=/home/node/.cursor/agents,type=bind",
+    "source=${localEnv:HOME}/.cursor/skills,target=/home/node/.cursor/skills,type=bind",
     //
     // SINGLE-FILE binds for settings.json / .claude.json / config.toml
     // are deliberately ABSENT. On Docker Desktop Windows the named-volume

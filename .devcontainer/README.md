@@ -88,17 +88,21 @@ The three AI CLIs use a **hybrid mount topology**: shareable subdirs/files (plug
 | Host Claude state, read-only stage | `$HOME/.claude` | `/host/.claude` | **read-only** | `post-create.sh` reads credentials + identity from here on container-create |
 | Host Codex state, read-only stage | `$HOME/.codex` | `/host/.codex` | **read-only** | Same purpose for Codex |
 | Host Cursor state, read-only stage | `$HOME/.cursor` | `/host/.cursor` | **read-only** | Same purpose for Cursor |
-| **Claude shareable subdirs** (overlay on the volume) | `$HOME/.claude/{plugins,skills,agents,memory,commands}` | `/home/node/.claude/{plugins,skills,agents,memory,commands}` | rw | **Bidirectional** — install plugin on host or in container, both sides see it |
-| **Claude shareable files** (overlay on the volume) | `$HOME/.claude/settings.json`, `$HOME/.claude.json` | `/home/node/.claude/settings.json`, `/home/node/.claude.json` | rw | Theme, enabled plugins, MCP user-scope, `hasCompletedOnboarding`, project trust — all shared |
-| **Codex shareable** | `$HOME/.codex/{config.toml,memories,skills}` | `/home/node/.codex/{config.toml,memories,skills}` | rw | Symmetric with Claude's shareable surface |
+| **Claude shareable subdirs** (overlay on the volume) | `$HOME/.claude/{plugins/marketplaces,plugins/cache,skills,agents,memory,commands}` | same under `/home/node/.claude/` | rw | **Bidirectional** dir binds — install plugin on host or in container, both sides see it |
+| **Codex shareable subdirs** | `$HOME/.codex/{plugins,prompts,memories,skills}` | same under `/home/node/.codex/` | rw | **Bidirectional** — whole `plugins/` dir bound (no path-bearing registry inside it) |
+| **Cursor shareable subdirs** | `$HOME/.cursor/{plugins/marketplaces,plugins/local,rules,commands,agents,skills}` | same under `/home/node/.cursor/` | rw | **Bidirectional** — cursor-agent shares the Cursor 2.5 plugin/rules/commands surface |
 
-**What gets shared bidirectionally (RW bind from host):**
+**What gets shared bidirectionally (RW dir bind from host):**
 
-- **Claude**: `plugins/`, `skills/`, `agents/`, `memory/`, `commands/` (the user-installed surface), `settings.json` (theme + `enabledPlugins` + `extraKnownMarketplaces`), `$HOME/.claude.json` (`hasCompletedOnboarding` + MCP user-scope + per-project trust + activity counters)
-- **Codex**: `config.toml` (prefs), `memories/` + `skills/` (user-installed surface)
-- **Cursor**: nothing structural (Cursor doesn't expose plugin/skill/agent dirs — `cli-config.json` conflates auth+settings and stays per-container)
+- **Claude**: `plugins/marketplaces`, `plugins/cache`, `skills/`, `agents/`, `memory/`, `commands/`
+- **Codex**: `plugins/` (whole dir — installed plugins land on host), `prompts/`, `memories/`, `skills/`
+- **Cursor**: `plugins/marketplaces`, `plugins/local`, `rules/`, `commands/`, `agents/`, `skills/`
 
-Install a plugin on the host or inside the container — both sides see it immediately. Run `/plugin marketplace add` from inside the container and it lands in your host `~/.claude/plugins/marketplaces/`. Save a memory via the `/remember` skill from either side and it persists to the same host file.
+Install a plugin on the host or inside the container — both sides see it immediately. `/plugin marketplace add` from inside the container lands in your host `~/.<cli>/plugins/`, and `codex plugin add` / `cursor-agent` plugin installs write straight through to Windows. Save a memory from either side and it persists to the same host file.
+
+**Single config files are copied on container-create, not bind-mounted** — on Docker Desktop Windows a single-file bind is 9p while the named volume is ext4, and atomic config writes (`tmp` → rename onto target) trip EXDEV (this is what caused Codex's `config/batchWrite failed in TUI`). So these are synced from host on rebuild and the container rewrites its own copy until the next rebuild: `settings.json` + `$HOME/.claude.json` (Claude), `config.toml` (Codex), `cli-config.json` + `mcp.json` (Cursor). `hooks.json` (Cursor) is deliberately **not** synced — Cursor hooks execute shell commands, so sharing them would widen the supply-chain attack surface; add it yourself if you want it.
+
+**Plugin registry files with absolute paths are translated, not shared** — Claude's `known_marketplaces.json` / `installed_plugins.json` / `plugin-catalog-cache.json` and Cursor's `installed_plugins.json` bake in `C:\Users\…` (Windows) or `/Users/…` (macOS) install paths. `post-create.sh` rewrites those to `/home/node/.<cli>/plugins/…` and writes the result into the named volume, so plugins resolve inside Linux instead of failing with `cache-miss`. Codex needs no translation — its enablement registry is `config.toml` (git URLs + logical keys, no filesystem paths), which is why its whole `plugins/` dir can be bound directly.
 
 **What stays per-container (in the named volume) and is synced from host on container-create:**
 
