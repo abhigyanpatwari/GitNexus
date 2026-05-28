@@ -395,7 +395,8 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const interfaceNode = match.captures.interface;
       if (!prefixNode || !interfaceNode) continue;
       const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix !== null && !feignPrefixByInterfaceId.has(interfaceNode.id)) feignPrefixByInterfaceId.set(interfaceNode.id, prefix);
+      if (prefix !== null && !feignPrefixByInterfaceId.has(interfaceNode.id))
+        feignPrefixByInterfaceId.set(interfaceNode.id, prefix);
     }
 
     for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
