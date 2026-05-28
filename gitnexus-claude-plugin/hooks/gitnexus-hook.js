@@ -239,9 +239,29 @@ function runGitNexusCli(args, cwd, timeout) {
 }
 
 /**
+ * Detect whether the hook is running under Codex rather than Claude Code.
+ * Codex sets CODEX_* environment variables in its hook runtime.
+ */
+function isCodexRuntime() {
+  return Boolean(
+    process.env.CODEX_THREAD_ID ||
+    process.env.CODEX_CI ||
+    process.env.CODEX_MANAGED_PACKAGE_ROOT,
+  );
+}
+
+/**
  * Emit a hook response with additional context for the agent.
+ *
+ * Claude Code expects the context nested under its hook-specific output
+ * object; Codex's SDK expects a top-level `additionalContext`. Emitting the
+ * wrong shape makes Codex reject the hook with "invalid post-tool-use JSON".
  */
 function sendHookResponse(hookEventName, message) {
+  if (isCodexRuntime()) {
+    console.log(JSON.stringify({ additionalContext: message }));
+    return;
+  }
   console.log(
     JSON.stringify({
       hookSpecificOutput: { hookEventName, additionalContext: message },

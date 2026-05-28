@@ -1438,6 +1438,31 @@ describe('PostToolUse staleness detection (integration)', () => {
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
     });
+
+    it(`${label}: emits top-level additionalContext under Codex runtime`, () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'aaaaaaa0000000000000000000000000deadbeef', stats: {} }),
+      );
+
+      const result = runHook(
+        hookPath,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        },
+        undefined,
+        { env: { ...process.env, CODEX_THREAD_ID: 'test-thread' } },
+      );
+
+      // Codex expects top-level additionalContext, NOT hookSpecificOutput.
+      const parsed = JSON.parse(result.stdout.trim());
+      expect(parsed.additionalContext).toContain('stale');
+      expect(parsed.hookSpecificOutput).toBeUndefined();
+    });
   }
 });
 
