@@ -3237,7 +3237,9 @@ export class LocalBackend {
         const maxPerSymbolItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
         const perSymbolImpacted = impacted.slice(0, maxPerSymbolItems);
         for (let i = 0; i < perSymbolImpacted.length; i += CHUNK_SIZE) {
-          const chunkIds = perSymbolImpacted.slice(i, i + CHUNK_SIZE).map((it) => String(it.id ?? ''));
+          const chunkIds = perSymbolImpacted
+            .slice(i, i + CHUNK_SIZE)
+            .map((it) => String(it.id ?? ''));
           try {
             const rows = await executeParameterized(
               repo.id,
