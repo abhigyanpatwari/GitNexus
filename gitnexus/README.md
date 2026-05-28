@@ -195,6 +195,15 @@ gitnexus analyze . --embeddings
 
 Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. When unset, local embeddings are used unchanged.
 
+## System ONNX Runtime Binding (Advanced)
+
+If your environment provides a system-built onnxruntime-node binding (for example, Nix),
+you can direct GitNexus to use it instead of the package's bundled binary:
+
+```bash
+export GITNEXUS_ORT_BINDING_PATH=/absolute/path/to/onnxruntime_binding.node
+```
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.

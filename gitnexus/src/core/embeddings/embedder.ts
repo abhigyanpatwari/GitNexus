@@ -28,6 +28,7 @@ import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } fr
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
+import { applyOnnxruntimeNodeBindingOverride } from './onnxruntime-node-loader.js';
 import { logger } from '../logger.js';
 
 /**
@@ -168,6 +169,7 @@ export const initEmbedder = async (
     try {
       // Configure transformers.js environment
       env.allowLocalModels = false;
+      applyOnnxruntimeNodeBindingOverride();
       // Bridge user-controlled env vars to transformers.js: HF_HOME →
       // env.cacheDir, HF_ENDPOINT → env.remoteHost (#1205). Centralised in
       // applyHfEnvOverrides so the MCP embedder entry point behaves

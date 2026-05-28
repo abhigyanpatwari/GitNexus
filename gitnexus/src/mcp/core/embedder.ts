@@ -17,6 +17,7 @@ import {
   isHfDownloadFailure,
   withHfDownloadRetry,
 } from '../../core/embeddings/hf-env.js';
+import { applyOnnxruntimeNodeBindingOverride } from '../../core/embeddings/onnxruntime-node-loader.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 import { logger } from '../../core/logger.js';
@@ -49,6 +50,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
   initPromise = (async () => {
     try {
       env.allowLocalModels = false;
+      applyOnnxruntimeNodeBindingOverride();
       // Bridge user-controlled env vars to transformers.js: HF_HOME →
       // env.cacheDir, HF_ENDPOINT → env.remoteHost (#1205). Centralised in
       // applyHfEnvOverrides so this MCP entry point behaves identically to
