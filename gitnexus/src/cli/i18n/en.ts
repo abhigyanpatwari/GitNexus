@@ -209,6 +209,7 @@ export const en = {
   'help.option.query.context': 'Task context to improve ranking',
   'help.option.query.goal': 'What you want to find',
   'help.option.query.limit': 'Max processes to return (default: 5)',
+  'help.option.query.includeTests': 'Include test files in results',
   'help.option.content': 'Include full symbol source code',
   'help.option.repo.target': 'Target repository',
   'help.option.context.uid': 'Direct symbol UID (zero-ambiguity lookup)',

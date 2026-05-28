@@ -207,7 +207,7 @@ program
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
   .option('--content', 'Include full symbol source code')
-  .option('--include-tests', 'Include test files in results (default: false, matching impact)')
+  .option('--include-tests', 'Include test files in results')
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program

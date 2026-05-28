@@ -95,6 +95,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'query|-g, --goal <text>': 'help.option.query.goal',
   'query|-l, --limit <n>': 'help.option.query.limit',
   'query|--content': 'help.option.content',
+  'query|--include-tests': 'help.option.query.includeTests',
   'context|-r, --repo <name>': 'help.option.repo.target',
   'context|-u, --uid <uid>': 'help.option.context.uid',
   'context|-f, --file <path>': 'help.option.context.file',

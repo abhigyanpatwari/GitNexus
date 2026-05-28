@@ -195,6 +195,7 @@ export const zhCN = {
   'help.option.query.context': '用于提升排序质量的任务上下文',
   'help.option.query.goal': '你想查找的目标',
   'help.option.query.limit': '最多返回的流程数（默认：5）',
+  'help.option.query.includeTests': '在结果中包含测试文件',
   'help.option.content': '包含完整符号源码',
   'help.option.repo.target': '目标仓库',
   'help.option.context.uid': '直接符号 UID（零歧义查找）',
