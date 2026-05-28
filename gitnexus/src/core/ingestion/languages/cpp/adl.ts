@@ -506,6 +506,10 @@ function collectFunctionTypeAssociatedNamespaces(
     return;
   }
 
+  // Unqualified function references are approximated workspace-wide, matching
+  // the previous V1 lookup scope. The stricter part of this PR is what each
+  // overload contributes: only namespaces from parameter/return types, never
+  // the function's own enclosing namespace.
   for (const parsed of parsedFiles) {
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Namespace') continue;
@@ -539,6 +543,7 @@ function collectAssociatedNamespacesForFunctionTypeText(
   out: Set<string>,
 ): void {
   for (const token of extractCppTypeNameTokens(typeText)) {
+    if (isIgnoredCppAdlNamespace(token.namespaceName)) continue;
     addAssociatedNamespaceForClassName(token.simpleName, scopes, out);
     if (token.namespaceName !== '') out.add(token.namespaceName);
   }
@@ -551,30 +556,73 @@ function extractCppTypeNameTokens(typeText: string): readonly {
   const cleaned = normalizeCppParamType(typeText);
   if (cleaned === '' || isPrimitiveCppAdlType(cleaned)) return [];
   const out: { simpleName: string; namespaceName: string }[] = [];
-  for (const rawToken of cleaned.match(/[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*/g) ?? []) {
+  const seen = new Set<string>();
+  const tokenSource = typeText.includes('<') ? `${cleaned} ${typeText}` : cleaned;
+  for (const rawToken of tokenSource.match(/[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*/g) ?? []) {
     if (isPrimitiveCppAdlType(rawToken)) continue;
     const segments = rawToken.split('::').filter((part) => part.length > 0);
     const simpleName = segments.at(-1) ?? '';
     if (simpleName === '' || isPrimitiveCppAdlType(simpleName)) continue;
+    const namespaceName = segments.length > 1 ? segments.slice(0, -1).join('.') : '';
+    const key = `${namespaceName}\0${simpleName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({
       simpleName,
-      namespaceName: segments.length > 1 ? segments.slice(0, -1).join('.') : '',
+      namespaceName,
     });
   }
   return out;
 }
 
+const CPP_ADL_PRIMITIVE_OR_KEYWORD_TYPES = new Set<string>([
+  'alignas',
+  'alignof',
+  'auto',
+  'bool',
+  'char',
+  'char8_t',
+  'char16_t',
+  'char32_t',
+  'class',
+  'const',
+  'consteval',
+  'constexpr',
+  'constinit',
+  'decltype',
+  'double',
+  'enum',
+  'explicit',
+  'extern',
+  'float',
+  'inline',
+  'int',
+  'long',
+  'mutable',
+  'noexcept',
+  'null',
+  'register',
+  'short',
+  'signed',
+  'static',
+  'string',
+  'struct',
+  'template',
+  'thread_local',
+  'typename',
+  'union',
+  'unknown',
+  'unsigned',
+  'void',
+  'volatile',
+  'wchar_t',
+  '...',
+]);
+
 function isPrimitiveCppAdlType(typeText: string): boolean {
-  return (
-    typeText === 'void' ||
-    typeText === 'bool' ||
-    typeText === 'char' ||
-    typeText === 'int' ||
-    typeText === 'double' ||
-    typeText === 'float' ||
-    typeText === 'string' ||
-    typeText === 'null' ||
-    typeText === 'unknown' ||
-    typeText === '...'
-  );
+  return CPP_ADL_PRIMITIVE_OR_KEYWORD_TYPES.has(typeText);
+}
+
+function isIgnoredCppAdlNamespace(namespaceName: string): boolean {
+  return namespaceName === 'std' || namespaceName.startsWith('std.');
 }

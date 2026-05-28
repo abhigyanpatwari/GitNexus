@@ -428,9 +428,12 @@ export function emitCppScopeCaptures(
 function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined {
   const typeNode = fnNode.childForFieldName('type');
   if (typeNode === null) return undefined;
+  const funcDeclarator = findFunctionDeclarator(fnNode);
+  if (funcDeclarator !== null && isCppUnsupportedReturnTypeDeclarator(funcDeclarator)) {
+    return undefined;
+  }
   const typeText = typeNode.text.trim();
   if (typeText !== 'auto') return typeText.length > 0 ? typeText : undefined;
-  const funcDeclarator = findFunctionDeclarator(fnNode);
   if (funcDeclarator === null) return typeText;
   for (let i = 0; i < funcDeclarator.namedChildCount; i++) {
     const child = funcDeclarator.namedChild(i);
@@ -439,6 +442,11 @@ function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined
     return typeDesc?.text.trim() || typeText;
   }
   return typeText;
+}
+
+function isCppUnsupportedReturnTypeDeclarator(funcDeclarator: SyntaxNode): boolean {
+  const text = funcDeclarator.text;
+  return /\boperator\b/.test(text) || /(^|[(:\s])~\s*[A-Za-z_]\w*/.test(text);
 }
 
 /**
