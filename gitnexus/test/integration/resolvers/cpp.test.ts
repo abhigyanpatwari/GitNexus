@@ -2963,41 +2963,66 @@ describe('C++ ADL — block-scope function declaration suppresses ADL', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ADL V2 — free-function reference args contribute their namespace.
+// ADL V2 - strict function-type associated entities.
 //
-// GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
-// like `utils::worker` is passed as an argument, GitNexus contributes the
-// enclosing namespace (`utils`) to the associated set, provided a Function or
-// Method named `worker` is found in the `utils` namespace at resolution time.
-// Under ISO C++ [basic.lookup.argdep] the associated entities for a function-type
-// argument come from the parameter types and return type of the overload set —
-// NOT the function's enclosing namespace. For `void worker()`, the standard-
-// compliant associated set is empty. The approximation captures the dominant
-// real-world pattern (pass a utility function → find its sibling) at the cost
-// of potential false positives when an unrelated function with the same simple
-// name exists in the same namespace (bounded by the workspace-function lookup).
+// Function-reference arguments follow strict ISO C++ ADL: GitNexus walks the
+// referenced overload set's parameter and return types instead of contributing
+// the referenced function's enclosing namespace.
+// For `void worker()`, the associated set is empty; for `void worker(api::Token)`
+// or `api::Token make_token()`, `api` is associated through `Token`.
 // ---------------------------------------------------------------------------
 
-describe('C++ ADL — qualified free-function reference contributes its namespace', () => {
+describe('C++ ADL - free-function reference does not contribute its namespace', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-free-func-ref'), () => {});
   }, 60000);
 
-  it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
+  it('with_callback(utils::worker) emits zero CALLS edges when worker has no class parameter or return type', () => {
     const calls = getRelationships(result, 'CALLS');
     const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
-    // Ordinary lookup inside caller::run finds nothing (no `using`, no local
-    // declaration). utils::worker is a qualified_identifier argument, so ADL
-    // contributes `utils` to the associated-namespace set. utils::with_callback
-    // is then discovered as the sole candidate.
-    expect(cbCalls.length).toBe(1);
-    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+    expect(cbCalls.length).toBe(0);
   });
 });
 
-describe('C++ ADL — overloaded free-function reference does not crash', () => {
+describe('C++ ADL - free-function reference contributes parameter-type associated namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-strict'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_callback(utils::worker) resolves hidden friend through worker(api::Token)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_callback');
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ ADL - free-function reference contributes return-type associated namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-return-strict'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_callback(utils::make_token) resolves hidden friend through api::Token return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_callback');
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ ADL - overloaded free-function reference stays strict', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -3007,15 +3032,10 @@ describe('C++ ADL — overloaded free-function reference does not crash', () => 
     );
   }, 60000);
 
-  it('with_callback(utils::worker) with overloaded utils::worker still resolves utils::with_callback via ADL', () => {
+  it('with_callback(utils::worker) with overloaded utils::worker still emits zero CALLS edges', () => {
     const calls = getRelationships(result, 'CALLS');
     const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
-    // utils::worker has two overloads (worker() and worker(int)). V1
-    // simplification: contribute the namespace if ANY overload exists in the
-    // workspace, regardless of which one would be selected. The namespace
-    // `utils` is still added, and utils::with_callback is discovered.
-    expect(cbCalls.length).toBe(1);
-    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+    expect(cbCalls.length).toBe(0);
   });
 });
 
@@ -3035,10 +3055,10 @@ describe('C++ ADL — namespace-qualified variable arg does NOT contribute names
     // data::value is a namespace-qualified integer variable. tree-sitter-cpp
     // produces a qualified_identifier AST node regardless of whether `value`
     // denotes a function, variable, enum, or static member. The GitNexus guard
-    // in collectFunctionRefNamespaces verifies that a Function/Method named
-    // `value` exists in the `data` namespace before contributing it. Since
-    // `data::value` is an int variable, `data` is never added to the associated
-    // set, so data::process is never found as an ADL candidate.
+    // in collectFunctionTypeAssociatedNamespaces verifies that a Function/Method
+    // named `value` exists in the `data` namespace before walking any function
+    // type. Since `data::value` is an int variable, no function type is walked,
+    // so data::process is never found as an ADL candidate.
     expect(processCalls.length).toBe(0);
   });
 });
