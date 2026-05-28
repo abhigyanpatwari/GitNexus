@@ -61,6 +61,7 @@ import type {
   ExtractedRoute,
   ExtractedToolDef,
   FileConstructorBindings,
+  FetchWrapperDef,
 } from '../workers/parse-worker.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
@@ -141,6 +142,7 @@ export async function runChunkedParseAndResolve(
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
+  allFetchWrapperDefs: FetchWrapperDef[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];
@@ -352,6 +354,7 @@ export async function runChunkedParseAndResolve(
   // it, and later wildcard chunks re-run it themselves.
   let hasSynthesized = false;
   const allFetchCalls: ExtractedFetchCall[] = [];
+  const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
@@ -662,6 +665,9 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.fetchCalls?.length) {
           for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
+        }
+        if (chunkWorkerData.fetchWrapperDefs?.length) {
+          for (const item of chunkWorkerData.fetchWrapperDefs) allFetchWrapperDefs.push(item);
         }
         if (chunkWorkerData.routes?.length) {
           for (const item of chunkWorkerData.routes) allExtractedRoutes.push(item);
@@ -1082,6 +1088,7 @@ export async function runChunkedParseAndResolve(
   return {
     exportedTypeMap,
     allFetchCalls,
+    allFetchWrapperDefs,
     allExtractedRoutes,
     allDecoratorRoutes,
     allToolDefs,

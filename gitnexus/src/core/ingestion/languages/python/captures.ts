@@ -21,6 +21,7 @@ import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/as
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
+import { synthesizeDependsReferences } from './depends-references.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
@@ -98,6 +99,7 @@ export function emitPythonScopeCaptures(
       if (fnNode !== null) {
         const synth = synthesizeReceiverTypeBinding(fnNode);
         if (synth !== null) out.push(synth);
+        for (const depRef of synthesizeDependsReferences(fnNode)) out.push(depRef);
       }
       continue;
     }

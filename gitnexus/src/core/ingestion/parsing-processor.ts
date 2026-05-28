@@ -53,6 +53,7 @@ import type {
   FileConstructorBindings,
   FileScopeBindings,
   ExtractedORMQuery,
+  FetchWrapperDef,
 } from './workers/parse-worker.js';
 import {
   getTreeSitterBufferSize,
@@ -78,6 +79,7 @@ export interface WorkerExtractedData {
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
+  fetchWrapperDefs: FetchWrapperDef[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
@@ -119,6 +121,7 @@ export const mergeChunkResults = (
   const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
+  const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
@@ -156,6 +159,7 @@ export const mergeChunkResults = (
     for (const item of result.heritage) allHeritage.push(item);
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
+    for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
@@ -172,6 +176,7 @@ export const mergeChunkResults = (
     heritage: allHeritage,
     routes: allRoutes,
     fetchCalls: allFetchCalls,
+    fetchWrapperDefs: allFetchWrapperDefs,
     decoratorRoutes: allDecoratorRoutes,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
@@ -212,6 +217,7 @@ const processParsingWithWorkers = async (
       heritage: [],
       routes: [],
       fetchCalls: [],
+      fetchWrapperDefs: [],
       decoratorRoutes: [],
       toolDefs: [],
       ormQueries: [],
