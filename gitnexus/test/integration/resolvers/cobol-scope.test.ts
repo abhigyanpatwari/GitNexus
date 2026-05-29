@@ -14,7 +14,7 @@ import path from 'path';
 import fs from 'fs';
 import { emitCobolScopeCaptures } from '../../../src/core/ingestion/languages/cobol/captures.js';
 
-const FIXTURES = path.resolve(process.cwd(), 'test/fixtures/cobol');
+const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'cobol');
 
 // ---------------------------------------------------------------------------
 // Helpers

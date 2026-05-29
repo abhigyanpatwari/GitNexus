@@ -80,7 +80,11 @@ export function emitCobolScopeCaptures(
         : rangeOf(startLine, startCol, endLine, endCol);
 
     const grouped: Record<string, Capture> = {
-      '@scope.module': capture('@scope.module', nameRange, name),
+      '@scope.module': capture(
+        '@scope.module',
+        rangeOf(startLine, startCol, endLine, endCol),
+        name,
+      ),
       '@declaration.program': capture(
         '@declaration.program',
         rangeOf(startLine, startCol, endLine, endCol),
@@ -118,7 +122,11 @@ export function emitCobolScopeCaptures(
         : rangeOf(startLine, startCol, endLine, endCol);
 
     const grouped: Record<string, Capture> = {
-      '@scope.module': capture('@scope.module', nameRange, prog.name),
+      '@scope.module': capture(
+        '@scope.module',
+        rangeOf(startLine, startCol, endLine, endCol),
+        prog.name,
+      ),
       '@declaration.program': capture(
         '@declaration.program',
         rangeOf(startLine, startCol, endLine, endCol),
