@@ -116,6 +116,20 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       preExtractedByPath.set(pf.filePath, pf);
     }
 
+    // Drop pre-extracted entries for standalone providers — these
+    // languages are skipped by the canonical guard below (line 164)
+    // and never consume preExtractedByPath, so holding onto their
+    // entries leaks memory until the cleanup loop at 262-264 which
+    // also never runs for skipped providers.
+    for (const [path] of preExtractedByPath) {
+      const lang = getLanguageFromFilename(path);
+      if (lang === null) continue;
+      const provider = SCOPE_RESOLVERS.get(lang);
+      if (provider?.languageProvider.parseStrategy === 'standalone') {
+        preExtractedByPath.delete(path);
+      }
+    }
+
     let totalFiles = 0;
     let totalImports = 0;
     let totalRefs = 0;
@@ -157,6 +171,14 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
+
+      // Standalone providers (COBOL, JCL) don't emit graph edges yet
+      // through the scope-resolution path. This is the canonical guard:
+      // runScopeResolution is never called for standalone providers, which
+      // keeps cobolPhase as the sole IMPORTS edge producer. Keep this guard
+      // in sync with any additional standalone providers added to
+      // SCOPE_RESOLVERS.
+      if (provider.languageProvider.parseStrategy === 'standalone') continue;
 
       const langFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
       if (langFiles.length === 0) continue;
