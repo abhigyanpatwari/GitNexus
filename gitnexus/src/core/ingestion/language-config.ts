@@ -4,6 +4,7 @@ import type { ImportConfigs } from './import-resolvers/types.js';
 import type { CsharpFileStructure } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
+import { getMaxFileSizeBytes } from './utils/max-file-size.js';
 
 import { logger } from '../logger.js';
 // ============================================================================
@@ -227,6 +228,10 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   let dirsScanned = 0;
   let truncated = false;
+  // Per-file read cap (shared with the Phase-1 walker). A `.cs`/`.csproj` larger
+  // than this is skipped unread so a single huge generated file can't pull an
+  // unbounded buffer into memory during the always-on scan.
+  const maxFileSizeBytes = getMaxFileSizeBytes();
 
   while (scanQueue.length > 0) {
     if (dirsScanned >= CSHARP_SCAN_MAX_DIRS) {
@@ -250,7 +255,7 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
     // in entry order (config precedence matters) while `.cs` namespace results
     // land in shared Sets where order is irrelevant.
     const csprojReads: Promise<CSharpProjectConfig | null>[] = [];
-    const csReads: Promise<void>[] = [];
+    const csReads: Promise<boolean>[] = [];
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (CSHARP_SCAN_SKIP_DIRS.has(entry.name)) continue;
@@ -264,9 +269,11 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
       if (!entry.isFile()) continue;
       const filePath = path.join(dir, entry.name);
       if (entry.name.endsWith('.csproj')) {
-        csprojReads.push(readCsprojConfig(filePath, entry.name, repoRoot, dir));
+        csprojReads.push(readCsprojConfig(filePath, entry.name, repoRoot, dir, maxFileSizeBytes));
       } else if (entry.name.endsWith('.cs')) {
-        csReads.push(collectDeclaredNamespaces(filePath, declaredNamespaces, rootNamespaces));
+        csReads.push(
+          collectDeclaredNamespaces(filePath, declaredNamespaces, rootNamespaces, maxFileSizeBytes),
+        );
       }
     }
     for (const config of await Promise.all(csprojReads)) {
@@ -275,7 +282,12 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
         rootNamespaces.add(config.rootNamespace);
       }
     }
-    await Promise.all(csReads);
+    // A `.cs` that was skipped (oversized) or unreadable leaves its namespaces
+    // uncollected, so the scan is incomplete → mark truncated to fail the
+    // #1881 gate OPEN rather than wrongly suppress an import declared there.
+    for (const skipped of await Promise.all(csReads)) {
+      if (skipped) truncated = true;
+    }
   }
 
   if (truncated) {
@@ -294,8 +306,11 @@ async function readCsprojConfig(
   fileName: string,
   repoRoot: string,
   dir: string,
+  maxFileSizeBytes: number,
 ): Promise<CSharpProjectConfig | null> {
   try {
+    const stat = await fs.stat(csprojPath);
+    if (stat.size > maxFileSizeBytes) return null; // oversized .csproj → skip unread
     const content = await fs.readFile(csprojPath, 'utf-8');
     const nsMatch = content.match(CSHARP_ROOT_NAMESPACE_RE);
     const rootNamespace = nsMatch ? nsMatch[1].trim() : fileName.replace(/\.csproj$/, '');
@@ -311,16 +326,29 @@ async function readCsprojConfig(
   }
 }
 
+/**
+ * Collect declared `namespace` names from one `.cs` file into the shared Sets.
+ *
+ * Returns `true` when the file was skipped (oversized) or could not be read, so
+ * the caller can mark the scan truncated — its namespaces are missing, and the
+ * #1881 gate must fail OPEN rather than wrongly suppress an import declared in
+ * the unread file. Returns `false` on a successful read.
+ */
 async function collectDeclaredNamespaces(
   filePath: string,
   declaredNamespaces: Set<string>,
   rootNamespaces: Set<string>,
-): Promise<void> {
+  maxFileSizeBytes: number,
+): Promise<boolean> {
   let content: string;
   try {
+    const stat = await fs.stat(filePath);
+    if (stat.size > maxFileSizeBytes) {
+      return true; // oversized source → skip unread, signal truncation
+    }
     content = await fs.readFile(filePath, 'utf-8');
   } catch {
-    return; // unreadable source
+    return true; // unreadable source → signal truncation (was a silent skip)
   }
   const scan = await getCsharpStructureScanner();
   for (const ns of scan(content).namespaces) {
@@ -328,6 +356,7 @@ async function collectDeclaredNamespaces(
     const dot = ns.indexOf('.');
     rootNamespaces.add(dot === -1 ? ns : ns.slice(0, dot));
   }
+  return false;
 }
 
 export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {

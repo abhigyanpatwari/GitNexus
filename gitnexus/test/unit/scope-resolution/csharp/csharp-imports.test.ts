@@ -14,6 +14,7 @@ import { emitCsharpScopeCaptures } from '../../../../src/core/ingestion/language
 import { interpretCsharpImport } from '../../../../src/core/ingestion/languages/csharp/interpret.js';
 import { resolveCsharpImportTarget } from '../../../../src/core/ingestion/languages/csharp/import-target.js';
 import { loadCsharpResolutionConfig } from '../../../../src/core/ingestion/languages/csharp/resolution-config.js';
+import { getMaxFileSizeBytes } from '../../../../src/core/ingestion/utils/max-file-size.js';
 import {
   csharpSuffixFallbackAllowed,
   importAlignsWithDeclaredNamespaces,
@@ -218,11 +219,11 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     };
     const result = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/OrderService.cs', [
+      ctx(
         'Services/OrderService.cs',
-        'Tasks.cs',
-        'Events/OrderCreatedEvent.cs',
-      ], new Set(['MyApp.Services', 'MyApp.Events', 'MyApp.Legacy'])),
+        ['Services/OrderService.cs', 'Tasks.cs', 'Events/OrderCreatedEvent.cs'],
+        new Set(['MyApp.Services', 'MyApp.Events', 'MyApp.Legacy']),
+      ),
     );
     expect(result).toBe(null);
   });
@@ -236,7 +237,11 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     };
     const result = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/UserService.cs', ['Services/UserService.cs', 'Models/User.cs'], new Set(['MyApp.Models', 'MyApp.Services'])),
+      ctx(
+        'Services/UserService.cs',
+        ['Services/UserService.cs', 'Models/User.cs'],
+        new Set(['MyApp.Models', 'MyApp.Services']),
+      ),
     );
     expect(result).toBe('Models/User.cs');
   });
@@ -250,10 +255,15 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     };
     const result = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/OrderService.cs', ['Services/OrderService.cs', 'Models/User.cs'], new Set(['MyApp.Services', 'MyApp.Models']), {
-        rootNamespaces: new Set(['MyApp']),
-        csharpConfigs: [{ rootNamespace: 'MyApp', projectDir: '' }],
-      }),
+      ctx(
+        'Services/OrderService.cs',
+        ['Services/OrderService.cs', 'Models/User.cs'],
+        new Set(['MyApp.Services', 'MyApp.Models']),
+        {
+          rootNamespaces: new Set(['MyApp']),
+          csharpConfigs: [{ rootNamespace: 'MyApp', projectDir: '' }],
+        },
+      ),
     );
     expect(result).toBe('Models/User.cs');
   });
@@ -272,10 +282,15 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     };
     const result = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/OrderService.cs', ['Services/OrderService.cs', 'Foo/Bar.cs'], new Set(['MyApp.Models']), {
-        rootNamespaces: new Set(['MyApp']),
-        csharpConfigs: [{ rootNamespace: 'MyApp', projectDir: '' }],
-      }),
+      ctx(
+        'Services/OrderService.cs',
+        ['Services/OrderService.cs', 'Foo/Bar.cs'],
+        new Set(['MyApp.Models']),
+        {
+          rootNamespaces: new Set(['MyApp']),
+          csharpConfigs: [{ rootNamespace: 'MyApp', projectDir: '' }],
+        },
+      ),
     );
     expect(result).toBe(null);
   });
@@ -292,15 +307,24 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     };
     const anchored = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/OrderService.cs', ['Services/OrderService.cs', 'Core/Thing.cs'], new Set(['MyApp.Core.Models']), {
-        rootNamespaces: new Set(['MyApp.Core']),
-      }),
+      ctx(
+        'Services/OrderService.cs',
+        ['Services/OrderService.cs', 'Core/Thing.cs'],
+        new Set(['MyApp.Core.Models']),
+        {
+          rootNamespaces: new Set(['MyApp.Core']),
+        },
+      ),
     );
     expect(anchored).toBe('Core/Thing.cs');
 
     const unanchored = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/OrderService.cs', ['Services/OrderService.cs', 'Core/Thing.cs'], new Set(['MyApp.Core.Models'])),
+      ctx(
+        'Services/OrderService.cs',
+        ['Services/OrderService.cs', 'Core/Thing.cs'],
+        new Set(['MyApp.Core.Models']),
+      ),
     );
     expect(unanchored).toBe(null);
   });
@@ -317,9 +341,14 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     };
     const result = resolveCsharpImportTarget(
       parsed,
-      ctx('Services/OrderService.cs', ['Services/OrderService.cs', 'Other/Thing.cs'], new Set(['MyApp.Models']), {
-        rootNamespaces: new Set(['MyApp']),
-      }),
+      ctx(
+        'Services/OrderService.cs',
+        ['Services/OrderService.cs', 'Other/Thing.cs'],
+        new Set(['MyApp.Models']),
+        {
+          rootNamespaces: new Set(['MyApp']),
+        },
+      ),
     );
     expect(result).toBe(null);
   });
@@ -389,7 +418,11 @@ describe('importAlignsWithDeclaredNamespaces — declared-namespace gate (#1881)
     // open the gate for `using System.Threading.Tasks;`.
     const declared = new Set(['System.Threading.Tasks.Extensions', 'MyApp.Models']);
     expect(
-      importAlignsWithDeclaredNamespaces('System.Threading.Tasks', declared, new Set(['MyApp', 'System'])),
+      importAlignsWithDeclaredNamespaces(
+        'System.Threading.Tasks',
+        declared,
+        new Set(['MyApp', 'System']),
+      ),
     ).toBe(false);
     // Same conclusion without explicit roots (top-level segment fallback).
     expect(importAlignsWithDeclaredNamespaces('System.Threading.Tasks', declared)).toBe(false);
@@ -397,7 +430,11 @@ describe('importAlignsWithDeclaredNamespaces — declared-namespace gate (#1881)
 
   it('returns false for an unrelated BCL namespace', () => {
     expect(
-      importAlignsWithDeclaredNamespaces('System.Linq', new Set(['MyApp.Services']), new Set(['MyApp'])),
+      importAlignsWithDeclaredNamespaces(
+        'System.Linq',
+        new Set(['MyApp.Services']),
+        new Set(['MyApp']),
+      ),
     ).toBe(false);
   });
 
@@ -500,7 +537,8 @@ describe('loadCsharpResolutionConfig — one-pass namespace scan (#1881)', () =>
 
   it('collects file-scoped, block, and multiple-per-file namespaces; skips bin/obj; reads csproj root', async () => {
     const root = await makeTempRepo({
-      'App.csproj': '<Project><PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup></Project>',
+      'App.csproj':
+        '<Project><PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup></Project>',
       'Scoped.cs': 'namespace Alpha.Scoped;\npublic class A {}',
       'Block.cs': 'namespace Beta.Block\n{\n    public class B {}\n}',
       'Multi.cs': 'namespace Gamma.One { }\nnamespace Gamma.Two { }',
@@ -536,7 +574,8 @@ describe('loadCsharpResolutionConfig — one-pass namespace scan (#1881)', () =>
     // whole repo. Proving truncated===false here pins the gate ON for repos
     // of normal depth.
     const root = await makeTempRepo({
-      'App.csproj': '<Project><PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup></Project>',
+      'App.csproj':
+        '<Project><PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup></Project>',
       'a/b/c/d/e/f/g/h/Deep.cs': 'namespace MyApp.Deep.Feature;',
     });
     try {
@@ -558,6 +597,29 @@ describe('loadCsharpResolutionConfig — one-pass namespace scan (#1881)', () =>
     const root = await makeTempRepo({
       'Shallow.cs': 'namespace Shallow.Ns;',
       [`${deepChain}/Deep.cs`]: 'namespace Deep.Ns;',
+    });
+    try {
+      const config = await loadCsharpResolutionConfig(root);
+      const ns = config.namespaces!;
+      expect(ns.truncated).toBe(true);
+      expect(ns.declaredNamespaces!.has('Shallow.Ns')).toBe(true);
+      expect(ns.declaredNamespaces!.has('Deep.Ns')).toBe(false);
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips an oversized .cs file and fails open via truncation (#1881)', async () => {
+    // A .cs file larger than the per-file size cap is skipped unread so the
+    // always-on scan can't pull an unbounded buffer into memory. Its namespace
+    // is then missing, so `truncated` trips and the gate fails OPEN rather than
+    // wrongly suppress an import declared there. Sized to the real cap — do NOT
+    // lower the production cap for the test.
+    const cap = getMaxFileSizeBytes();
+    const oversized = `namespace Deep.Ns;\n${'// pad\n'.repeat(Math.ceil(cap / 7) + 1)}`;
+    const root = await makeTempRepo({
+      'Shallow.cs': 'namespace Shallow.Ns;',
+      'Huge.cs': oversized,
     });
     try {
       const config = await loadCsharpResolutionConfig(root);
