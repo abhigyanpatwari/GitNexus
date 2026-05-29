@@ -147,9 +147,13 @@ const SPRING_TYPE_DECLARATION_PATTERNS = compilePatterns({
 //   @RequestLine("GET /users/{id}")
 //   @RequestLine("POST /users?status=active")
 //
+// Both positional and named-argument (`value = "..."`) forms are matched
+// in a single query via tree-sitter alternation, so `compilePatterns`
+// builds and `runCompiledPatterns` invokes exactly one query.
+//
 // Captured tokens:
-//   @line  → the literal `@RequestLine`
-//   @value → the request-line string literal (e.g. `"GET /users/{id}"`)
+//   @line   → the literal `@RequestLine`
+//   @value  → the request-line string literal (e.g. `"GET /users/{id}"`)
 //   @method → the enclosing method node, used for enclosing-interface lookup
 const FEIGN_REQUEST_LINE_PATTERNS = compilePatterns({
   name: 'java-feign-request-line',
@@ -158,26 +162,23 @@ const FEIGN_REQUEST_LINE_PATTERNS = compilePatterns({
     {
       meta: {},
       query: `
-        (method_declaration
-          (modifiers
-            (annotation
-              name: (identifier) @line (#eq? @line "RequestLine")
-              arguments: (annotation_argument_list (string_literal) @value)))
-          name: (identifier) @method_name) @method
-      `,
-    },
-    {
-      meta: {},
-      query: `
-        (method_declaration
-          (modifiers
-            (annotation
-              name: (identifier) @line (#eq? @line "RequestLine")
-              arguments: (annotation_argument_list
-                (element_value_pair
-                  key: (identifier) @key (#eq? @key "value")
-                  value: (string_literal) @value))))
-          name: (identifier) @method_name) @method
+        [
+          (method_declaration
+            (modifiers
+              (annotation
+                name: (identifier) @line (#eq? @line "RequestLine")
+                arguments: (annotation_argument_list (string_literal) @value)))
+            name: (identifier) @method_name) @method
+          (method_declaration
+            (modifiers
+              (annotation
+                name: (identifier) @line (#eq? @line "RequestLine")
+                arguments: (annotation_argument_list
+                  (element_value_pair
+                    key: (identifier) @key (#eq? @key "value")
+                    value: (string_literal) @value))))
+            name: (identifier) @method_name) @method
+        ]
       `,
     },
   ],
