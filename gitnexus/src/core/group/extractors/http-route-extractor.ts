@@ -6,7 +6,13 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import { getPluginForFile, HTTP_SCAN_GLOB, type HttpDetection } from './http-patterns/index.js';
+import {
+  getPluginForFile,
+  HTTP_SCAN_GLOB,
+  type HttpDetection,
+  type HttpLanguagePlugin,
+  type HttpScanInput,
+} from './http-patterns/index.js';
 
 /**
  * Language-agnostic orchestrator for HTTP route (provider + consumer)
@@ -160,6 +166,12 @@ export class HttpRouteExtractor implements ContractExtractor {
     // both graph-assisted enrichment and source-scan emission.
     const parser = new Parser();
     const cachedDetections = new Map<string, HttpDetection[]>();
+    const cachedInputs = new Map<
+      string,
+      { plugin: HttpLanguagePlugin; input: HttpScanInput; repoContext: unknown } | null
+    >();
+    const projectDetections = new Map<string, HttpDetection[]>();
+    let projectScanComplete = false;
 
     // Per-plugin cross-file context (e.g. Python's FastAPI router →
     // include_router(prefix=...) map). Built lazily on first
@@ -189,30 +201,48 @@ export class HttpRouteExtractor implements ContractExtractor {
       }
     };
 
-    const getDetections = async (rel: string): Promise<HttpDetection[]> => {
-      const cached = cachedDetections.get(rel);
-      if (cached) return cached;
+    const getScanInput = async (
+      rel: string,
+    ): Promise<{
+      plugin: HttpLanguagePlugin;
+      input: HttpScanInput;
+      repoContext: unknown;
+    } | null> => {
+      if (cachedInputs.has(rel)) return cachedInputs.get(rel) ?? null;
       const plugin = getPluginForFile(rel);
       if (!plugin) {
-        cachedDetections.set(rel, []);
-        return [];
+        cachedInputs.set(rel, null);
+        return null;
       }
       const repoContext = await ensureRepoContext(plugin);
       const content = readSafe(repoPath, rel);
       if (!content) {
-        cachedDetections.set(rel, []);
-        return [];
+        cachedInputs.set(rel, null);
+        return null;
       }
       try {
         parser.setLanguage(plugin.language);
         const tree = parseSourceSafe(parser, content);
-        const detections = plugin.scan(tree, repoContext, rel);
-        cachedDetections.set(rel, detections);
-        return detections;
+        const input = { filePath: rel, tree };
+        const item = { plugin, input, repoContext };
+        cachedInputs.set(rel, item);
+        return item;
       } catch {
-        cachedDetections.set(rel, []);
-        return [];
+        cachedInputs.set(rel, null);
+        return null;
       }
+    };
+
+    const getDetections = async (rel: string): Promise<HttpDetection[]> => {
+      const cached = cachedDetections.get(rel);
+      if (cached) return cached;
+      const scanInput = await getScanInput(rel);
+      const ownDetections = scanInput
+        ? scanInput.plugin.scan(scanInput.input.tree, scanInput.repoContext, rel)
+        : [];
+      const detections = [...ownDetections, ...(projectDetections.get(rel) ?? [])];
+      cachedDetections.set(rel, detections);
+      return detections;
     };
 
     // Glob the source-scan file list at most once per extract() —
@@ -224,20 +254,46 @@ export class HttpRouteExtractor implements ContractExtractor {
       return scannedFiles;
     };
 
+    const collectProjectDetections = async (files: string[]): Promise<void> => {
+      if (projectScanComplete) return;
+      projectScanComplete = true;
+      const byPlugin = new Map<HttpLanguagePlugin, HttpScanInput[]>();
+      for (const rel of files) {
+        const scanInput = await getScanInput(rel);
+        if (!scanInput?.plugin.scanProject) continue;
+        const items = byPlugin.get(scanInput.plugin) ?? [];
+        items.push(scanInput.input);
+        byPlugin.set(scanInput.plugin, items);
+      }
+
+      for (const [plugin, inputs] of byPlugin) {
+        const results = plugin.scanProject?.(inputs) ?? [];
+        for (const result of results) {
+          const existing = projectDetections.get(result.filePath) ?? [];
+          projectDetections.set(result.filePath, [...existing, ...result.detections]);
+        }
+      }
+
+      cachedDetections.clear();
+    };
+
+    const files = await getScannedFiles();
+    await collectProjectDetections(files);
+
     const graphProviders =
       dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
     // Source scan always runs to capture routes in languages/files not covered
     // by graph edges; the glob and per-file parse results are cached above.
     const providers = this.mergeGraphAndSourceContracts(
       graphProviders,
-      await this.extractProvidersSourceScan(await getScannedFiles(), getDetections),
+      await this.extractProvidersSourceScan(files, getDetections),
     );
 
     const graphConsumers =
       dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
     const consumers = this.mergeGraphAndSourceContracts(
       graphConsumers,
-      await this.extractConsumersSourceScan(await getScannedFiles(), getDetections),
+      await this.extractConsumersSourceScan(files, getDetections),
     );
 
     return [...providers, ...consumers];

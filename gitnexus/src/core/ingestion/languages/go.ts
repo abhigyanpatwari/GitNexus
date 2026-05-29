@@ -39,6 +39,56 @@ import {
   interpretGoTypeBinding,
 } from './go/index.js';
 
+const GO_BUILT_INS: ReadonlySet<string> = new Set([
+  // built-in functions
+  'make',
+  'new',
+  'len',
+  'cap',
+  'append',
+  'copy',
+  'delete',
+  'close',
+  'panic',
+  'recover',
+  'print',
+  'println',
+  'complex',
+  'real',
+  'imag',
+  'clear',
+  'min',
+  'max',
+  // built-in types
+  'error',
+  'bool',
+  'string',
+  'int',
+  'int8',
+  'int16',
+  'int32',
+  'int64',
+  'uint',
+  'uint8',
+  'uint16',
+  'uint32',
+  'uint64',
+  'uintptr',
+  'float32',
+  'float64',
+  'complex64',
+  'complex128',
+  'byte',
+  'rune',
+  'any',
+  'comparable',
+  // built-in values
+  'true',
+  'false',
+  'nil',
+  'iota',
+]);
+
 export const goProvider = defineLanguage({
   id: SupportedLanguages.Go,
   extensions: ['.go'],
@@ -92,6 +142,7 @@ export const goProvider = defineLanguage({
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
   heritageExtractor: createHeritageExtractor(goHeritageConfig),
+  builtInNames: GO_BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitGoScopeCaptures,

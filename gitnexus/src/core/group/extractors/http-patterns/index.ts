@@ -8,7 +8,13 @@ import { PYTHON_HTTP_PLUGIN } from './python.js';
 import { PHP_HTTP_PLUGIN } from './php.js';
 import { JAVASCRIPT_HTTP_PLUGIN, TYPESCRIPT_HTTP_PLUGIN, TSX_HTTP_PLUGIN } from './node.js';
 
-export type { HttpDetection, HttpLanguagePlugin, HttpRole } from './types.js';
+export type {
+  HttpDetection,
+  HttpFileDetections,
+  HttpLanguagePlugin,
+  HttpRole,
+  HttpScanInput,
+} from './types.js';
 
 /**
  * File-extension → HTTP language plugin registry. The top-level

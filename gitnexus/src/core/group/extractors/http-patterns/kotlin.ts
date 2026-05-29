@@ -17,18 +17,22 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  * named annotation arguments (`@GetMapping(value = "/x")` and
  * `@GetMapping(path = "/x")`) are supported.
  *
- * **Consumers** (this PR) — three call-site patterns common in Kotlin
+ * **Consumers** — four call-site patterns common in Kotlin
  * Spring projects:
  *
- *   1. `restTemplate.getForObject("/x", ...)` and friends
- *   2. `webClient.get().uri("/x")` (short form, 1 verb hop + 1 uri hop)
- *   3. `Request.Builder().url("/x")` (OkHttp)
+ *   1. `restTemplate.getForObject("/x", ...)` and friends (#1855)
+ *   2. `webClient.get().uri("/x")` — short form (#1855)
+ *   3. `Request.Builder().url("/x")` — OkHttp (#1855)
+ *   4. `webClient.method(HttpMethod.X).uri("/y")` — long form (this PR)
  *
- * The long-form `webClient.method(HttpMethod.X).uri("/y")` chain is
- * intentionally deferred to a follow-up: it requires walk-up logic
- * to recover the verb from a sibling `call_expression`, and we can
- * land 80% of real-world Kotlin Spring consumer coverage with the
- * three simpler patterns above.
+ * The long form puts the verb on a sibling `call_expression` two hops
+ * away from the path. Rather than introducing imperative walk-up logic,
+ * we use a single deeper tree-sitter query that matches the full chain
+ * structurally — see `WEB_CLIENT_LONG_PATTERNS` below. The verb is
+ * captured directly as the `simple_identifier` of `HttpMethod.X`, so
+ * variable-bound verbs (`val verb = HttpMethod.PATCH; webClient.method(verb)...`)
+ * are intentionally NOT picked up — those need a graph-aware resolver
+ * and are out of scope for source-scan.
  *
  * tree-sitter-kotlin (fwcd) AST shapes used here:
  *   class_declaration
@@ -108,6 +112,16 @@ const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
   delete: 'DELETE',
   patch: 'PATCH',
 };
+
+/**
+ * Allowed HTTP verbs for the WebClient long-form path
+ * `webClient.method(HttpMethod.X).uri("/y")`. Compiled once at module
+ * load (instead of inside the scan loop) per maintainer feedback on
+ * PR #1884. Mirrors the keys of `WEB_CLIENT_SHORT_TO_HTTP` above —
+ * keeping HEAD/OPTIONS/TRACE intentionally excluded for symmetry
+ * with the short form and the Java plugin.
+ */
+const WEB_CLIENT_LONG_VERB_RE = /^(GET|POST|PUT|DELETE|PATCH)$/;
 
 /**
  * Build the plugin only if the Kotlin grammar is available. Compiling
@@ -265,8 +279,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   //   - outer call's first value_argument is a string literal
   //
   // The long-form `webClient.method(HttpMethod.GET).uri("/x")` chain
-  // uses an extra navigation hop and an enum field access — it's
-  // intentionally out of scope here (see file header).
+  // uses an extra navigation hop and an enum field access — handled
+  // by `WEB_CLIENT_LONG_PATTERNS` below, separately so each query is
+  // straightforward to reason about.
   const WEB_CLIENT_SHORT_PATTERNS = compilePatterns({
     name: 'kotlin-web-client-short',
     language,
@@ -282,6 +297,59 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
                   (navigation_suffix
                     (simple_identifier) @verb (#match? @verb "^(get|post|put|delete|patch)$")))
                 (call_suffix (value_arguments)))
+              (navigation_suffix (simple_identifier) @uri (#eq? @uri "uri")))
+            (call_suffix
+              (value_arguments . (value_argument . (string_literal) @path))))
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
+  // ─── Consumer: Spring WebClient (long form) ───────────────────────────
+  // The fluent long form passes the verb as a `HttpMethod.X` enum field
+  // access through `.method(...)`, then carries the path on a separate
+  // `.uri(...)` hop further down the chain:
+  //
+  //   webClient.method(HttpMethod.GET).uri("/x").retrieve().awaitBody<T>()
+  //
+  // Compared to the short form there are two extra structural hops:
+  //   - the inner `.method(...)` `call_expression` has a `value_argument`
+  //     whose payload is itself a `navigation_expression` (HttpMethod → .GET)
+  //   - the outer `.uri(...)` is reached via one more
+  //     `navigation_expression` wrapping that inner call
+  //
+  // We capture the verb at the `simple_identifier` under `HttpMethod`'s
+  // `navigation_suffix`. That `simple_identifier` is the literal field
+  // name (`GET`, `POST`, ...) used in source — Kotlin enum fields by
+  // convention are upper-case, matching `HttpMethod` from
+  // `org.springframework.http`. We forward the captured text as-is.
+  //
+  // Variable-bound verbs (`val verb = HttpMethod.PATCH; webClient.method(verb)...`)
+  // do NOT match — they fail the `(navigation_expression ...)` shape
+  // because the value_argument carries a bare `simple_identifier` instead
+  // of a `HttpMethod.X` field access. This is intentional: source-scan
+  // can't follow the binding without graph context. Pinned by an
+  // anti-overreach test in the consumer suite.
+  const WEB_CLIENT_LONG_PATTERNS = compilePatterns({
+    name: 'kotlin-web-client-long',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (call_expression
+            (navigation_expression
+              (call_expression
+                (navigation_expression
+                  (simple_identifier) @obj (#eq? @obj "webClient")
+                  (navigation_suffix
+                    (simple_identifier) @method_call (#eq? @method_call "method")))
+                (call_suffix
+                  (value_arguments
+                    . (value_argument
+                        (navigation_expression
+                          (simple_identifier) @httpMethodCls (#eq? @httpMethodCls "HttpMethod")
+                          (navigation_suffix (simple_identifier) @verb))))))
               (navigation_suffix (simple_identifier) @uri (#eq? @uri "uri")))
             (call_suffix
               (value_arguments . (value_argument . (string_literal) @path))))
@@ -431,6 +499,33 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           role: 'consumer',
           framework: 'spring-web-client',
           method: httpMethod,
+          path,
+          name: null,
+          confidence: 0.7,
+        });
+      }
+
+      // ─── Consumers: WebClient long form (.method(HttpMethod.X) → .uri) ─
+      for (const match of runCompiledPatterns(WEB_CLIENT_LONG_PATTERNS, tree)) {
+        const verbNode = match.captures.verb;
+        const pathNode = match.captures.path;
+        if (!verbNode || !pathNode) continue;
+        // The captured text is the literal `HttpMethod.X` field name.
+        // Spring's `org.springframework.http.HttpMethod` defines GET,
+        // POST, PUT, DELETE, PATCH, HEAD, OPTIONS, TRACE — we only
+        // emit for the five verbs we already handle elsewhere, so
+        // exotic ones are silently skipped (consistent with the
+        // short form's WEB_CLIENT_SHORT_TO_HTTP guard). The accepted
+        // verb regex is hoisted to module scope (see
+        // `WEB_CLIENT_LONG_VERB_RE` near the top of this file).
+        const verbText = verbNode.text;
+        if (!WEB_CLIENT_LONG_VERB_RE.test(verbText)) continue;
+        const path = unquoteLiteral(pathNode.text);
+        if (path === null) continue;
+        out.push({
+          role: 'consumer',
+          framework: 'spring-web-client',
+          method: verbText,
           path,
           name: null,
           confidence: 0.7,
