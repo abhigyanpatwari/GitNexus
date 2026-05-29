@@ -1844,12 +1844,13 @@ class HttpClients {
       ).toBeDefined();
     });
 
-    // ─── Kotlin consumers (RestTemplate / WebClient short / OkHttp) ──
+    // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
     // Same shape as the Java consumer test above, but parsed by the
-    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Three
-    // consumer flavors covered here (long-form WebClient
-    // `webClient.method(HttpMethod.X).uri(...)` is intentionally
-    // deferred to a follow-up — see kotlin.ts file header).
+    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Four
+    // consumer flavors covered here: RestTemplate (#1855), WebClient
+    // short form (#1855), OkHttp (#1855), and WebClient long form
+    // (`webClient.method(HttpMethod.X).uri(...)`, this PR / #1884) —
+    // see kotlin.ts file header for the full list.
     //
     // tree-sitter-kotlin is an optionalDependency. If the binding is
     // unavailable, `getPluginForFile` returns undefined for `.kt` and
@@ -2028,28 +2029,104 @@ class OkPostClient(private val client: OkHttpClient, private val body: RequestBo
       },
     );
 
+    itKotlinConsumer('extracts Kotlin WebClient long form GET', async () => {
+      const dir = path.join(tmpDir, 'kotlin-web-client-long-get');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'LongGetClient.kt'),
+        `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+
+class LongGetClient(private val webClient: WebClient) {
+  suspend fun run() {
+    val r = webClient.method(HttpMethod.GET).uri("/api/users").retrieve().awaitBody<User>()
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const route = consumers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(route).toBeDefined();
+      expect(route!.meta.framework).toBe('spring-web-client');
+    });
+
+    itKotlinConsumer('extracts Kotlin WebClient long form POST/PUT/DELETE/PATCH', async () => {
+      const dir = path.join(tmpDir, 'kotlin-web-client-long-verbs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'LongVerbClient.kt'),
+        `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+import org.springframework.web.reactive.function.client.awaitBodilessEntity
+
+class LongVerbClient(private val webClient: WebClient) {
+  suspend fun run() {
+    webClient.method(HttpMethod.POST).uri("/api/orders").retrieve().awaitBody<Order>()
+    webClient.method(HttpMethod.PUT).uri("/api/orders/1").retrieve().awaitBody<Order>()
+    webClient.method(HttpMethod.DELETE).uri("/api/orders/2").retrieve().awaitBodilessEntity()
+    webClient.method(HttpMethod.PATCH).uri("/api/orders/3").retrieve().awaitBody<Order>()
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/orders/{param}'),
+      ).toBeDefined();
+
+      // All four should be tagged as `spring-web-client` so polyglot
+      // repos coalesce on the same framework key as the short form.
+      // The fixture is fully deterministic — exactly 4 long-form calls,
+      // no short-form / RestTemplate / OkHttp calls mixed in — so an
+      // exact count is meaningful (DoD §2.7). If a future change
+      // accidentally emits a 5th consumer (e.g. duplicate query firing,
+      // or a regressed receiver constraint matching unrelated calls),
+      // this assertion catches it.
+      const wcConsumers = consumers.filter((c) => c.meta.framework === 'spring-web-client');
+      expect(wcConsumers).toHaveLength(4);
+    });
+
     itKotlinConsumer(
-      'does NOT match Kotlin WebClient long form (deferred to follow-up)',
+      'short-form query does NOT also fire on Kotlin WebClient long form (no double-emit)',
       async () => {
-        // Anti-overreach: confirm the short-form query does NOT
-        // accidentally fire on the long-form chain
-        // `webClient.method(HttpMethod.GET).uri(...)`. The long form
-        // is intentionally unsupported in this PR; if a future change
-        // to the short-form query starts capturing it we want a loud
-        // signal here. Long-form support will arrive in a follow-up
-        // with a dedicated query + verb walk-up helper.
-        const dir = path.join(tmpDir, 'kotlin-web-client-long');
+        // The long-form query handles `webClient.method(HttpMethod.X).uri(...)`,
+        // and the short-form query handles `webClient.get().uri(...)`. Both
+        // queries carry sibling `(navigation_suffix (simple_identifier) @verb)`
+        // constraints — short form requires the verb name itself
+        // (`get`/`post`/...), long form requires the literal name
+        // `method`. The two are disjoint.
+        //
+        // This test pins that disjointness: a single `.method(HttpMethod.GET)`
+        // call must emit ONE consumer, not two (one from each query).
+        const dir = path.join(tmpDir, 'kotlin-web-client-long-no-double');
         fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
         fs.writeFileSync(
-          path.join(dir, 'src', 'LegacyClient.kt'),
+          path.join(dir, 'src', 'NoDoubleClient.kt'),
           `package com.example
 import org.springframework.http.HttpMethod
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.awaitBody
 
-class LegacyClient(private val webClient: WebClient) {
+class NoDoubleClient(private val webClient: WebClient) {
   suspend fun run() {
-    val r = webClient.method(HttpMethod.GET).uri("/api/legacy").retrieve().awaitBody<String>()
+    webClient.method(HttpMethod.GET).uri("/api/single").retrieve().awaitBody<String>()
   }
 }
 `,
@@ -2058,12 +2135,49 @@ class LegacyClient(private val webClient: WebClient) {
         const contracts = await extractor.extract(null, dir, makeRepo(dir));
         const consumers = contracts.filter((c) => c.role === 'consumer');
 
-        // No consumer should be emitted from this file by the
-        // current short-form query. Documented as a known limitation.
-        const fromLegacy = consumers.filter((c) =>
-          c.symbolRef.filePath.endsWith('LegacyClient.kt'),
+        const fromThisFile = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('NoDoubleClient.kt'),
         );
-        expect(fromLegacy).toHaveLength(0);
+        expect(fromThisFile).toHaveLength(1);
+        expect(fromThisFile[0].contractId).toBe('http::GET::/api/single');
+      },
+    );
+
+    itKotlinConsumer(
+      'does NOT match Kotlin WebClient long form with variable-bound verb',
+      async () => {
+        // Anti-overreach: source-scan can't follow `val verb = HttpMethod.X`
+        // back to the literal — that's a graph-aware concern. The long-form
+        // query requires `(navigation_expression HttpMethod . verb)` as the
+        // `value_argument` shape, so a bare `simple_identifier` (the
+        // variable name) fails to match. Pin this so a future relaxation
+        // of the value_argument shape cannot silently start guessing the
+        // verb from arbitrary identifiers.
+        const dir = path.join(tmpDir, 'kotlin-web-client-long-var-verb');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'VariableVerbClient.kt'),
+          `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+
+class VariableVerbClient(private val webClient: WebClient) {
+  suspend fun run() {
+    val verb = HttpMethod.PATCH
+    val r = webClient.method(verb).uri("/api/dynamic").retrieve().awaitBody<String>()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        const fromThisFile = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('VariableVerbClient.kt'),
+        );
+        expect(fromThisFile).toHaveLength(0);
       },
     );
 
