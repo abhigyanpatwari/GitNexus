@@ -25,6 +25,9 @@ import {
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['let_declaration', 'let_condition']);
 
+const isSameSyntaxNodeRange = (a: SyntaxNode, b: SyntaxNode): boolean =>
+  a.startIndex === b.startIndex && a.endIndex === b.endIndex && a.type === b.type;
+
 /** Walk up the AST to find the enclosing impl block and extract the implementing type name. */
 const findEnclosingImplType = (node: SyntaxNode): string | undefined => {
   let current = node.parent;
@@ -351,7 +354,7 @@ const extractPatternBinding: PatternBindingExtractor = (
     const child = patternNode.namedChild(i);
     if (!child) continue;
     // Skip the type node itself
-    if (child === wrapperTypeNode) continue;
+    if (isSameSyntaxNodeRange(child, wrapperTypeNode)) continue;
     if (child.type === 'identifier') {
       innerVar = child.text;
       break;

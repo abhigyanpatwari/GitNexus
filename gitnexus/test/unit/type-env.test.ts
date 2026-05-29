@@ -1732,6 +1732,27 @@ class RepoService {
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
+      it('Phase 5.2: extracts Ok and Err bindings from Result<T, E>', () => {
+        const tree = parse(
+          `
+          fn process(res: Result<User, AppError>) {
+            if let Ok(user) = res {
+              user.save();
+            }
+            if let Err(error) = res {
+              error.report();
+            }
+          }
+        `,
+          Rust,
+        );
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
+        expect(flatGet(typeEnv, 'error')).toBe('AppError');
+        expect(flatGet(typeEnv, 'Ok')).toBeUndefined();
+        expect(flatGet(typeEnv, 'Err')).toBeUndefined();
+      });
+
       it('Phase 5.2: does NOT extract binding when source variable is unknown', () => {
         const tree = parse(
           `
