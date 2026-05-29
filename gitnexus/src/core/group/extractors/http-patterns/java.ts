@@ -19,7 +19,8 @@ import type {
  *   - Spring `RestTemplate.getForObject/...`, `exchange(...)`
  *   - Spring `WebClient.method(HttpMethod.X, ...)`, `WebClient.get().uri(...)`
  *   - OkHttp `new Request.Builder().url("...")`
- *   - OpenFeign interfaces with Spring MVC method annotations
+ *   - OpenFeign interfaces with Spring MVC method annotations or
+ *     native `@RequestLine("METHOD /path")` annotations
  *   - Java / Apache HttpClient literal request construction
  *
  * The plugin runs two pattern bundles: one to collect class-level
@@ -134,6 +135,77 @@ const SPRING_TYPE_DECLARATION_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Consumer: OpenFeign `@RequestLine("METHOD /path")` ──────────────
+// OpenFeign's native annotation pairs an HTTP method and path in a single
+// string literal — see https://github.com/OpenFeign/feign#interface-annotations.
+// It is method-level only and is mutually exclusive with Spring MVC
+// `@GetMapping` / `@PostMapping` etc. on the same method (mixing them
+// requires a different Feign Contract — they are not combined here).
+//
+// Examples:
+//   @RequestLine("GET /users/{id}")
+//   @RequestLine("POST /users?status=active")
+//
+// Captured tokens:
+//   @line  → the literal `@RequestLine`
+//   @value → the request-line string literal (e.g. `"GET /users/{id}"`)
+//   @method → the enclosing method node, used for enclosing-interface lookup
+const FEIGN_REQUEST_LINE_PATTERNS = compilePatterns({
+  name: 'java-feign-request-line',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @line (#eq? @line "RequestLine")
+              arguments: (annotation_argument_list (string_literal) @value)))
+          name: (identifier) @method_name) @method
+      `,
+    },
+    {
+      meta: {},
+      query: `
+        (method_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @line (#eq? @line "RequestLine")
+              arguments: (annotation_argument_list
+                (element_value_pair
+                  key: (identifier) @key (#eq? @key "value")
+                  value: (string_literal) @value))))
+          name: (identifier) @method_name) @method
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const REQUEST_LINE_VERB_RE = /^\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S.*?)\s*$/i;
+
+/**
+ * Parse a Feign `@RequestLine` value into a method + path pair.
+ *
+ * `@RequestLine("METHOD /path[?query]")` packs both fields in one string;
+ * the query portion is dropped because contract IDs are method+path only
+ * (consistent with how other consumers like RestTemplate/WebClient drop
+ * query strings when their values are inline literals).
+ *
+ * Returns null if the value is not a recognized HTTP verb followed by a
+ * path beginning with `/`.
+ */
+function parseRequestLine(raw: string): { method: string; path: string } | null {
+  const match = REQUEST_LINE_VERB_RE.exec(raw);
+  if (!match) return null;
+  const [, verb, rest] = match;
+  if (typeof verb !== 'string' || typeof rest !== 'string') return null;
+  const queryIdx = rest.indexOf('?');
+  const pathOnly = (queryIdx >= 0 ? rest.slice(0, queryIdx) : rest).trim();
+  if (!pathOnly.startsWith('/')) return null;
+  return { method: verb.toUpperCase(), path: pathOnly };
+}
 
 // ─── Consumer: OpenFeign interface-level prefixes ───────────────────
 // Feign's `name`/`value` attributes identify a service, not an HTTP path,
@@ -641,6 +713,34 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         path: fullPath,
         name: nameNode?.text ?? null,
         confidence: 0.8,
+      });
+    }
+
+    // ─── Consumers: OpenFeign `@RequestLine("METHOD /path")` ────────
+    // The native Feign annotation. Method-level only; the enclosing
+    // interface MUST carry `@FeignClient`, otherwise the pattern is
+    // a false positive (the same annotation name exists in non-Feign
+    // libraries and could appear in non-client code).
+    for (const match of runCompiledPatterns(FEIGN_REQUEST_LINE_PATTERNS, tree)) {
+      const valueNode = match.captures.value;
+      const nameNode = match.captures.method_name;
+      const methodNode = match.captures.method;
+      if (!valueNode || !methodNode) continue;
+      const raw = unquoteLiteral(valueNode.text);
+      if (raw === null) continue;
+      const parsed = parseRequestLine(raw);
+      if (!parsed) continue;
+      const enclosingInterface = findEnclosingInterface(methodNode);
+      if (!enclosingInterface || !hasAnnotation(enclosingInterface, 'FeignClient')) continue;
+      const prefix = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? '';
+      const fullPath = joinPath(prefix, parsed.path);
+      out.push({
+        role: 'consumer',
+        framework: 'openfeign',
+        method: parsed.method,
+        path: fullPath,
+        name: nameNode?.text ?? null,
+        confidence: 0.75,
       });
     }
 

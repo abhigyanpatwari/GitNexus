@@ -1774,6 +1774,198 @@ interface PrecedenceClient {
       expect(consumers.find((c) => c.contractId === 'http::GET::/rm-path/orders')).toBeUndefined();
     });
 
+    it('extracts native @RequestLine consumers on @FeignClient interfaces', async () => {
+      const dir = path.join(tmpDir, 'java-feign-request-line-basic');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'AiClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import feign.RequestLine;
+
+@FeignClient(name = "ai-backend")
+interface AiClient {
+  @RequestLine("POST /ai/summarize")
+  String summarize();
+
+  @RequestLine("GET /ai/health")
+  String health();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/ai/summarize' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/ai/health' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+    });
+
+    it('joins @FeignClient(path=...) prefix with @RequestLine paths', async () => {
+      const dir = path.join(tmpDir, 'java-feign-request-line-prefix');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OrderClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import feign.RequestLine;
+
+@FeignClient(name = "order-service", path = "/api")
+interface OrderClient {
+  @RequestLine("GET /orders/{id}")
+  OrderDto get(Long id);
+
+  @RequestLine("DELETE /orders/{id}")
+  void delete(Long id);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('strips query strings from @RequestLine values when forming contract IDs', async () => {
+      const dir = path.join(tmpDir, 'java-feign-request-line-query');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'SearchClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import feign.RequestLine;
+
+@FeignClient(name = "search-service")
+interface SearchClient {
+  @RequestLine("GET /search?q={query}&limit={limit}")
+  SearchResult search();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // Query string is dropped — contract ID is method+path only.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/search')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId.includes('?') || c.contractId.includes('limit')),
+      ).toBeUndefined();
+    });
+
+    it('ignores @RequestLine on interfaces without @FeignClient', async () => {
+      const dir = path.join(tmpDir, 'java-request-line-no-feign');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'PlainInterface.java'),
+        `
+import feign.RequestLine;
+
+interface PlainInterface {
+  @RequestLine("GET /not-a-feign-client")
+  String shouldNotBeExtracted();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/not-a-feign-client'),
+      ).toBeUndefined();
+    });
+
+    it('mixes @RequestLine and @GetMapping methods on the same @FeignClient interface', async () => {
+      const dir = path.join(tmpDir, 'java-feign-mixed-annotations');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'MixedClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import feign.RequestLine;
+
+@FeignClient(name = "mixed-service", path = "/api")
+interface MixedClient {
+  @GetMapping("/spring-style")
+  String springStyle();
+
+  @RequestLine("GET /native-style")
+  String nativeStyle();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // Both annotation styles produce contracts — they don't conflict.
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/spring-style' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/native-style' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+    });
+
+    it('extracts @RequestLine values written with the named "value" argument', async () => {
+      const dir = path.join(tmpDir, 'java-feign-request-line-named');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'NamedArgClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import feign.RequestLine;
+
+@FeignClient(name = "named-arg-service")
+interface NamedArgClient {
+  @RequestLine(value = "POST /create")
+  String create();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) => c.contractId === 'http::POST::/create' && c.meta.framework === 'openfeign',
+        ),
+      ).toBeDefined();
+    });
+
     it('extracts Java and Apache HttpClient literal request construction', async () => {
       const dir = path.join(tmpDir, 'java-http-client-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
