@@ -31,8 +31,34 @@ echo "[post-create] 1/2: chown AI CLI named-volume mount points"
 # following it. So it never lands on a target across a filesystem boundary, and
 # it never aborts on a broken symlink under `set -e`. For regular files and
 # directories `-h` does nothing extra.
-for d in /home/node/.claude /home/node/.codex /home/node/.cursor \
-         /home/node/.local /commandhistory; do
+#
+# The session volumes (mount group 6: .claude/projects, .codex/sessions,
+# .cursor/chats, .cursor/projects) are their OWN filesystems mounted at
+# sub-paths, so `-xdev` rooted at the config-volume parent deliberately skips
+# them. That is why each one is listed as its own root below: rooted there,
+# `-xdev` walks just that volume and chowns its top level, so the CLI's first
+# write doesn't hit EACCES on a stale image UID. We DO chown these (unlike the
+# host bind mounts) precisely because they are container-private volumes, not
+# the host's own files.
+DIRS=(
+    /home/node/.claude
+    /home/node/.claude/projects
+    /home/node/.codex
+    /home/node/.codex/sessions
+    /home/node/.cursor
+    /home/node/.cursor/chats
+    /home/node/.cursor/projects
+    /home/node/.local
+    /commandhistory
+)
+for d in "${DIRS[@]}"; do
+    # Skip a root that isn't present rather than aborting the whole run under
+    # `set -e`. Docker creates every declared volume's mount point before this
+    # script runs, so in the normal case all roots exist and this is a no-op.
+    # The guard matters only if a session volume is later removed from
+    # devcontainer.json without its matching DIRS entry being removed too — then
+    # provisioning skips it instead of failing before credentials ever sync.
+    [ -d "$d" ] || continue
     sudo find "$d" -xdev -exec chown -h node:node {} +
 done
 

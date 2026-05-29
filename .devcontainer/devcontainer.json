@@ -97,6 +97,23 @@
   //    the same repo never collide). This keeps tree-sitter native binaries and
   //    onnxruntime off the workspace bind mount, which is faster on Windows and
   //    macOS.
+  //
+  // 6. Per-workspace session state — dedicated named volumes for each CLI's
+  //    resume/transcript dirs (Claude projects/, Codex sessions/, Cursor chats/
+  //    + projects/). Same `${localWorkspaceFolderBasename}` + `${devcontainerId}`
+  //    keying as group 5, but SEPARATE volumes from the group-2 config volumes.
+  //    That separation is the point: the `docker volume rm <cli>-config-*`
+  //    re-login / EACCES fix (README § Rebuild/reset) no longer wipes sessions,
+  //    so `claude --resume`, `codex resume`, and `cursor-agent resume` survive a
+  //    rebuild, a full delete-and-recreate, AND that wipe. They overlay the
+  //    config volume at the session sub-paths (Docker precedence: more specific
+  //    path wins). Container-private by design — transcripts can hold pasted
+  //    secrets, so unlike the group-1 plugin/agent binds these add NO host
+  //    write-through surface and leak no other projects' transcripts. They do
+  //    NOT survive `docker volume prune`, a `${devcontainerId}` change (moving
+  //    the checkout, WSL vs native), or a new machine — same tier as group 5.
+  //    To make sessions host-visible/portable instead, see the commented
+  //    host-bind block below and README § "Session resume across recreation".
   "mounts": [
     // One named volume per container for credentials and identity state. Each
     // CLI's real `~/.<cli>` config folder lives in a volume. That keeps
@@ -108,6 +125,58 @@
     "source=claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
     "source=codex-config-${devcontainerId},target=/home/node/.codex,type=volume",
     "source=cursor-config-${devcontainerId},target=/home/node/.cursor,type=volume",
+
+    // Per-workspace SESSION volumes (mount group 6). These OVERLAY the config
+    // volumes above at the session sub-paths so "resume my last session"
+    // survives container recreation the way the host-bound plugin dirs do.
+    // They are SEPARATE volumes from <cli>-config-${devcontainerId}, so the
+    // README's `docker volume rm <cli>-config-${devcontainerId}` re-login fix
+    // does not touch them. post-create.sh chowns each one explicitly (its
+    // `find -xdev` stops at the config-volume filesystem boundary and won't
+    // descend into these).
+    //
+    // KEEP IN SYNC: if you add/rename/remove a session sub-path, update all
+    // three places that name it — (1) the mount line here, (2) the DIRS array
+    // in post-create.sh (so its chown covers the volume), and (3) the mount
+    // table + Session-resume section in README.md.
+    //
+    // Claude: projects/ holds <encoded-cwd>/<uuid>.jsonl transcripts plus the
+    // sessions-index.json that the `/resume` picker reads. The container cwd is
+    // always /workspace (encodes to the `-workspace` subdir), so this is the
+    // container's own slice only. Pure JSONL/JSON — no SQLite/WAL, so a volume
+    // here is clean. `claude --resume` / `--continue` read straight from it.
+    "source=${localWorkspaceFolderBasename}-claude-sessions-${devcontainerId},target=/home/node/.claude/projects,type=volume",
+    // Codex: sessions/ holds YYYY/MM/DD/rollout-*.jsonl transcripts. The thread
+    // index (state_5.sqlite + -wal/-shm) stays at the ~/.codex root on the
+    // config volume — it is a single WAL file we must NOT split onto a host
+    // bind. On a recreation that drops the config volume, that index is cleanly
+    // absent and Codex rebuilds it from these rollout files on the next start
+    // (backfill). See README for the one-time-rebuild and corruption caveats.
+    "source=${localWorkspaceFolderBasename}-codex-sessions-${devcontainerId},target=/home/node/.codex/sessions,type=volume",
+    // Cursor: chats/{hash}/{uuid}/store.db is one SQLite db per session, each in
+    // its own leaf dir — a DIRECTORY volume keeps each db beside its -wal/-shm
+    // sidecar, so there is no cross-filesystem single-file hazard. projects/
+    // (agent-transcripts) is added too. cursor-agent's on-disk layout is
+    // community-reverse-engineered (LOW confidence), so this is best-effort;
+    // keeping it container-private means a wrong guess can't corrupt host state.
+    "source=${localWorkspaceFolderBasename}-cursor-sessions-${devcontainerId},target=/home/node/.cursor/chats,type=volume",
+    "source=${localWorkspaceFolderBasename}-cursor-projects-${devcontainerId},target=/home/node/.cursor/projects,type=volume",
+    //
+    // OPT-IN: host-shared sessions (like the plugin/skill binds). Uncomment to
+    // put transcripts on the host — fully visible and portable, but they then
+    // land on host disk and become a write-through surface for a compromised
+    // in-container dependency, and the whole-dir binds expose OTHER projects'
+    // transcripts to the container. Claude is scoped to /workspace's encoded
+    // subdir to limit that leak; Codex/Cursor stores are not project-scoped, so
+    // they expose every project. If you enable these, also add the matching
+    // source dirs to ensure-host-config-dirs.cjs — to its DIRS array (these are
+    // directory binds), not FILES (which is only for single-file bind sources
+    // like ~/.claude.json) — so Docker can resolve the binds. Read README
+    // § "Session resume across recreation" first.
+    //   "source=${localEnv:HOME}/.claude/projects/-workspace,target=/home/node/.claude/projects/-workspace,type=bind",
+    //   "source=${localEnv:HOME}/.codex/sessions,target=/home/node/.codex/sessions,type=bind",
+    //   "source=${localEnv:HOME}/.cursor/chats,target=/home/node/.cursor/chats,type=bind",
+    //   "source=${localEnv:HOME}/.cursor/projects,target=/home/node/.cursor/projects,type=bind",
 
     // Read-only host stage that post-create.sh copies credentials and
     // identity from on container-create. It is read-only so a container

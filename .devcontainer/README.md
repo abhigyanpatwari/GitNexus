@@ -93,6 +93,9 @@ The three AI CLIs use a **hybrid mount topology**: shareable subdirs/files (plug
 | Container Claude config dir | _named volume_ `claude-config-${devcontainerId}` | `/home/node/.claude` | rw | Per-container credentials + identity |
 | Container Codex config dir | _named volume_ `codex-config-${devcontainerId}` | `/home/node/.codex` | rw | Per-container credentials |
 | Container Cursor config dir | _named volume_ `cursor-config-${devcontainerId}` | `/home/node/.cursor` | rw | Per-container credentials |
+| **Claude sessions** (overlay on the config volume) | _named volume_ `…-claude-sessions-${devcontainerId}` | `/home/node/.claude/projects` | rw | `--resume` transcripts; survives the `<cli>-config` volume wipe — see [Session resume](#session-resume-across-container-recreation) |
+| **Codex sessions** | _named volume_ `…-codex-sessions-${devcontainerId}` | `/home/node/.codex/sessions` | rw | `codex resume` rollouts; SQLite index backfills on recreation |
+| **Cursor sessions** | _named volumes_ `…-cursor-sessions-${devcontainerId}`, `…-cursor-projects-${devcontainerId}` | `/home/node/.cursor/chats`, `/home/node/.cursor/projects` | rw | `cursor-agent resume` store (best-effort — layout reverse-engineered) |
 | Host Claude state, read-only stage | `$HOME/.claude` | `/host/.claude` | **read-only** | `post-create.sh` reads credentials + identity from here on container-create |
 | Host Codex state, read-only stage | `$HOME/.codex` | `/host/.codex` | **read-only** | Same purpose for Codex |
 | Host Cursor state, read-only stage | `$HOME/.cursor` | `/host/.cursor` | **read-only** | Same purpose for Cursor |
@@ -128,6 +131,30 @@ Install a plugin on the host or inside the container — both sides see it immed
 **Trade-off accepted: write-through to host CLI config.** A compromised npm package in the workspace dep tree, running inside the container, can write to `~/.claude/plugins/`, `~/.claude/agents/`, `~/.claude/memory/`, etc. on host. The next host Claude session would auto-load whatever it dropped. This is the explicit cost of the bidirectional RW bind. The alternative (read-only stage + symlinks) made `/plugin marketplace add` inside the container fail with EROFS — unacceptable. Credentials stay in the per-container named volume, so an attacker has to compromise the OAuth-bearing file specifically in container to get them; the volume isn't shared back to host.
 
 **Refresh-token divergence between rebuilds.** Container's credentials match host's at container-create time; after that, container manages its own refresh until the next rebuild. Anthropic rotates refresh tokens on every use, so an unattended container that hasn't talked to the API in weeks can hit a silent 401 if the host has refreshed since. Re-run `claude login` inside the container, or rebuild, to recover.
+
+### Session resume across container recreation
+
+`claude --resume`, `codex resume`, and `cursor-agent resume` all read **local** transcript files. Those live *inside* each CLI's config dir, which is a per-container named volume — so they already survive an ordinary **Rebuild Container**. What they did *not* survive were the very things this README tells you to do: `docker volume rm <cli>-config-${devcontainerId}` to force a re-login or clear an `EACCES`, a `${devcontainerId}` change, or a full delete-and-recreate. Each of those drops the config volume and takes your session history with it.
+
+So the resume/transcript directories get their **own** named volumes (mount group 6 in `devcontainer.json`), keyed like the `node_modules` volumes (`${localWorkspaceFolderBasename}-…-${devcontainerId}`) and mounted *over* the config volume at the session sub-paths:
+
+| Resume command | Persisted volume → target | What's stored |
+|---|---|---|
+| `claude --resume` / `--continue` | `…-claude-sessions-…` → `~/.claude/projects` | `<encoded-cwd>/<uuid>.jsonl` transcripts + `sessions-index.json`. Container cwd is always `/workspace`, so only that slice is stored. Pure JSONL/JSON — no SQLite. |
+| `codex resume` / `resume --last` | `…-codex-sessions-…` → `~/.codex/sessions` | `YYYY/MM/DD/rollout-*.jsonl`. The `state_5.sqlite` thread index stays on the config volume (a single WAL file we don't split out); when it's absent after a recreation, Codex rebuilds it from these rollouts on the next start (a one-time backfill). |
+| `cursor-agent resume` / `ls` | `…-cursor-sessions-…` → `~/.cursor/chats`; `…-cursor-projects-…` → `~/.cursor/projects` | `chats/{hash}/{uuid}/store.db` (one SQLite db per session, each in its own dir) + `projects/.../agent-transcripts`. cursor-agent's layout is reverse-engineered, so treat this as best-effort. |
+
+Because these are **separate** volumes from `<cli>-config-${devcontainerId}`, the re-login fix (`docker volume rm claude-config-…`) no longer destroys your sessions — that was the point.
+
+**Survives:** Rebuild Container, Rebuild Without Cache, a full delete-and-recreate of the container, and the `docker volume rm <cli>-config-…` re-login / `EACCES` fix.
+
+**Does *not* survive** (same durability tier as the `node_modules` volumes): `docker volume prune`, a `${devcontainerId}` change (moving the checkout to a new path, or switching between Windows-native and WSL2), or moving to a new machine. To deliberately wipe sessions, remove the session volumes too — see [Rebuild / reset](#rebuild--reset). Two checkouts with the **same folder name** on one host would share session volumes only if they also share a `${devcontainerId}`; they don't, so they stay separate.
+
+**First rebuild after adopting this, one-time:** if a container created *before* these volumes existed already had sessions on the config volume (`~/.claude/projects`, `~/.codex/sessions`, …), the new empty session volume mounts *over* that sub-path and **masks** the old content — same Docker-precedence shadowing described for plugins above. The old sessions are hidden, not deleted. To carry them forward once, copy them out of the config volume into the session volume; or just start fresh — new sessions land on the session volume from then on.
+
+**Why volumes and not host bind mounts (like plugins).** Plugins/skills/agents are bind-mounted to the host so they sync both ways. Sessions are deliberately *not*, because a transcript can contain anything you pasted or the agent read — API keys, file contents, connection strings. Putting them on the host would (a) spill that to host disk, (b) add them to the in-container write-through surface a compromised dependency can reach (there's still [no egress firewall](#whats-not-included-yet)), and (c) leak *every other project's* transcripts into the container (Codex `sessions/` and Cursor `chats/` aren't project-scoped). Container-private volumes avoid all three while still surviving recreation. And Claude/Codex transcripts embed the container cwd (`/workspace`), so even if you *did* bind them to the host, the host CLI wouldn't natively `--resume` them — its encoded-cwd folder differs.
+
+**Opt in to host-shared sessions anyway.** If you want transcripts visible/portable on the host and accept the trade-offs above, uncomment the host-bind block in `devcontainer.json` (just below the group-6 volumes) and add the matching source dirs to `ensure-host-config-dirs.cjs`'s `DIRS` so Docker can resolve the binds. That block scopes Claude to `/workspace`'s encoded subdir to limit the cross-project leak; the Codex and Cursor stores can't be scoped that way, so they expose every project's transcripts.
 
 ### Other host bind mounts
 
@@ -183,6 +210,7 @@ Host and container share a single trust boundary by design — fine for personal
 - **Host AI CLI state** — the read-only stage at `/host/.claude`, `/host/.codex`, `/host/.cursor` (credentials + identity), **and** the read-write-bound shareable dirs (plugins, skills, agents, memory, commands, etc.) which ARE your host directories
 - The **container's own credential snapshots** at `/home/node/.claude/.credentials.json` etc. (copied from host on container-create)
 - `~/.claude/memory/` / per-project memory (which may contain user-stored secrets if you've used the `/remember` skill)
+- The **current container's own session transcripts** (`~/.claude/projects`, `~/.codex/sessions`, `~/.cursor/chats`/`projects` — the group-6 volumes), which can hold anything pasted into or read during a session. These are container-private (see one-way note below), so this is read access to *this* container's sessions only, not the host's or other projects'
 - Your **`gh` token** (`~/.config/gh`)
 - Your **SSH private keys** (`~/.ssh/`)
 - Docker registry tokens in **`~/.docker/config.json`** (if you've `docker login`-ed)
@@ -190,7 +218,7 @@ Host and container share a single trust boundary by design — fine for personal
 
 It also has **write-through** to host for the shareable dirs — this is the deliberate cost of bidirectional plugin/skill/memory sync, **not** something the design prevents. A compromised in-container dep CAN write into your host `~/.claude/{plugins,agents,skills,commands,memory}/`, `~/.codex/{plugins,prompts,memories,skills}/`, and `~/.cursor/{plugins,rules,commands,agents,skills}/`. Because several of those (agents, commands, skills, rules) are instruction/shell-executing surfaces an agent auto-loads, that write-through means a single in-container compromise can persist across container teardown and run in your next **host** session. The only deliberately-withheld auto-executing surface is Cursor's `hooks.json` (synced read-only via copy-on-create, never bound) because hooks fire without an agent invoking them — but that is a narrowing of the surface, not a closed boundary.
 
-**What stays one-way (genuinely protected):** credentials never flow back to host — `.credentials.json` / `auth.json` / `cli-config.json` live only in the per-container named volumes, and the `/host/.<cli>` stage they're copied from is mounted **read-only**, so the snapshot can't be overwritten back. `~/.ssh`, `~/.config/git`, `~/.aws`, `~/.azure`, **`~/.config/gh`, and `~/.docker`** are read-only binds with the same one-way property — readable but not writable from the container, so a compromised dep can *read* your `gh`/registry tokens but cannot *rewrite* them to hijack your future host auth. If you need the shareable AI-CLI dirs to be one-way too, switch them from `type=bind` to copy-on-create (or to named volumes — see the enterprise note below).
+**What stays one-way (genuinely protected):** credentials never flow back to host — `.credentials.json` / `auth.json` / `cli-config.json` live only in the per-container named volumes, and the `/host/.<cli>` stage they're copied from is mounted **read-only**, so the snapshot can't be overwritten back. `~/.ssh`, `~/.config/git`, `~/.aws`, `~/.azure`, **`~/.config/gh`, and `~/.docker`** are read-only binds with the same one-way property — readable but not writable from the container, so a compromised dep can *read* your `gh`/registry tokens but cannot *rewrite* them to hijack your future host auth. If you need the shareable AI-CLI dirs to be one-way too, switch them from `type=bind` to copy-on-create (or to named volumes — see the enterprise note below). **Session transcripts are already on the protected side:** they live in per-workspace named volumes (mount group 6), so a compromised dependency can read *this* container's sessions but they are never written back to the host and the container can't see any *other* project's transcripts. The opt-in host-bind block in `devcontainer.json` reverses that — only enable it if you accept transcripts on host disk; see [Session resume across container recreation](#session-resume-across-container-recreation).
 
 **The egress firewall is the key compensating control that is still missing.** It's deferred (see "What's not included (yet)" below), so a compromised package currently has unrestricted outbound network to exfiltrate anything in the read list above. Until it lands, treat that read surface as exposed to any code you run in the container — don't use this devcontainer on a machine whose host credentials you couldn't afford to rotate. The isolated-volume setup below removes host AI-CLI config/credentials from that surface entirely.
 
@@ -284,12 +312,18 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 
 ## Rebuild / reset
 
-- **Rebuild Container** (Command Palette) — re-runs the Dockerfile build and `postCreateCommand` against the existing named volumes (auth + history persist).
+- **Rebuild Container** (Command Palette) — re-runs the Dockerfile build and `postCreateCommand` against the existing named volumes (auth, history, **and sessions** persist).
 - **Rebuild Container Without Cache** — fresh image layers, same volumes.
-- **To clear a stale named volume** (e.g., force a re-login):
+- **To force a re-login / clear an `EACCES`** — remove the per-container *config* volumes and rebuild. As of the session-volume change this **no longer drops your `--resume` history** (sessions are on separate volumes — see [Session resume](#session-resume-across-container-recreation)):
   ```bash
-  docker volume ls | grep gitnexus   # find the per-devcontainer volume
-  docker volume rm <volume-name>
+  docker volume ls | grep -- -config-          # the credential / identity volumes
+  docker volume rm claude-config-<id> codex-config-<id> cursor-config-<id>
+  ```
+- **To also wipe session history** (a true clean slate) — remove the session volumes too (`<name>` is your workspace folder name):
+  ```bash
+  docker volume ls | grep -E -- '-(sessions|cursor-projects)-'   # the group-6 volumes
+  docker volume rm <name>-claude-sessions-<id> <name>-codex-sessions-<id> \
+                   <name>-cursor-sessions-<id> <name>-cursor-projects-<id>
   ```
   Then rebuild.
 
