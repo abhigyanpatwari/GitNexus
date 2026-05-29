@@ -443,6 +443,9 @@ export function populateCsharpNamespaceSiblings(
     if (struct === undefined) continue;
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
+    // Per-file de-dup sets keyed by simple name, seeded lazily from the
+    // augmentation bucket — replaces the per-member O(A) `.some` scan below.
+    const seenByName = new Map<string, Set<string>>();
 
     for (const fullPath of struct.usingStaticPaths) {
       const lastDot = fullPath.lastIndexOf('.');
@@ -477,7 +480,14 @@ export function populateCsharpNamespaceSiblings(
         // `lookupBindingsAt`, which fans out across `bindings` +
         // `bindingAugmentations`.
         const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
-        if (bucketArr.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
+        let seen = seenByName.get(simpleName);
+        if (seen === undefined) {
+          seen = new Set<string>();
+          for (const b of bucketArr) seen.add(b.def.nodeId);
+          seenByName.set(simpleName, seen);
+        }
+        if (seen.has(memberDef.nodeId)) continue;
+        seen.add(memberDef.nodeId);
         bucketArr.push({ def: memberDef, origin: 'import' });
       }
     }
@@ -493,6 +503,9 @@ export function populateCsharpNamespaceSiblings(
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
+    // Per-file de-dup sets keyed by simple name, seeded lazily from the
+    // augmentation bucket — replaces the per-def O(A) `.some` scan below.
+    const seenByName = new Map<string, Set<string>>();
     for (const imp of parsed.parsedImports) {
       if (imp.kind !== 'namespace') continue;
       const targetNs = imp.targetRaw;
@@ -505,7 +518,14 @@ export function populateCsharpNamespaceSiblings(
         const simpleName = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
         if (simpleName === '') continue;
         const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
-        if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+        let seen = seenByName.get(simpleName);
+        if (seen === undefined) {
+          seen = new Set<string>();
+          for (const b of bucketArr) seen.add(b.def.nodeId);
+          seenByName.set(simpleName, seen);
+        }
+        if (seen.has(def.nodeId)) continue;
+        seen.add(def.nodeId);
         bucketArr.push({ def, origin: 'namespace' });
       }
     }
