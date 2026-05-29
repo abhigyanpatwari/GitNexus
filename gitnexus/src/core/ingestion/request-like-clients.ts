@@ -1,7 +1,13 @@
+import { SupportedLanguages } from 'gitnexus-shared';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
 const REQUEST_LIKE_IMPORT_SOURCES = new Set(['umi-request']);
 const REQUEST_LIKE_LOCAL_BASENAMES = new Set(['request']);
+const REQUEST_LIKE_CLIENT_LANGUAGES = new Set<SupportedLanguages>([
+  SupportedLanguages.JavaScript,
+  SupportedLanguages.TypeScript,
+  SupportedLanguages.Vue,
+]);
 const REQUEST_LIKE_MEMBER_METHODS = new Set([
   'get',
   'post',
@@ -15,6 +21,10 @@ const REQUEST_LIKE_MEMBER_METHODS = new Set([
 ]);
 
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
+
+export function isRequestLikeClientLanguage(language: SupportedLanguages): boolean {
+  return REQUEST_LIKE_CLIENT_LANGUAGES.has(language);
+}
 
 function stripExtension(specifier: string): string {
   return specifier.replace(/\.(?:[cm]?[jt]sx?)$/i, '');
@@ -84,17 +94,17 @@ function getMemberCallReceiver(callNode: SyntaxNode | undefined): SyntaxNode | u
 }
 
 function nodeTextStartsWithPath(node: SyntaxNode): boolean {
-  return node.text.startsWith('/') || node.text.startsWith('`/');
+  return node.text.startsWith('/');
 }
 
 export function getRequestLikeMemberCallUrl(
   captureMap: Record<string, SyntaxNode>,
   requestLikeBindings: ReadonlySet<string>,
 ): string | null {
-  const callNode = captureMap['http_client'] ?? captureMap['express_route'];
+  const callNode = captureMap['http_client'];
   const receiverNode = getMemberCallReceiver(callNode);
-  const methodNode = captureMap['http_client.method'] ?? captureMap['express_route.method'];
-  const urlNode = captureMap['http_client.url'] ?? captureMap['express_route.path'];
+  const methodNode = captureMap['http_client.method'];
+  const urlNode = captureMap['http_client.url'];
 
   if (!receiverNode || !methodNode || !urlNode) return null;
   if (!requestLikeBindings.has(receiverNode.text)) return null;

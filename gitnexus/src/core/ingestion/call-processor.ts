@@ -54,6 +54,7 @@ import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
   collectRequestLikeImportBindings,
   getRequestLikeMemberCallUrl,
+  isRequestLikeClientLanguage,
 } from './request-like-clients.js';
 import {
   CLASS_CONTAINER_TYPES,
@@ -3499,6 +3500,8 @@ export const processNextjsFetchRoutes = (
  * Workers handle this via tree-sitter captures in parse-worker; this function
  * provides the same extraction for the sequential fallback path.
  */
+const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
+
 export const extractFetchCallsFromFiles = async (
   files: { path: string; content: string }[],
   astCache: ASTCache,
@@ -3539,7 +3542,9 @@ export const extractFetchCallsFromFiles = async (
       continue;
     }
 
-    const requestLikeBindings = collectRequestLikeImportBindings(file.content);
+    const requestLikeBindings = isRequestLikeClientLanguage(language)
+      ? collectRequestLikeImportBindings(file.content)
+      : undefined;
 
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
@@ -3557,15 +3562,16 @@ export const extractFetchCallsFromFiles = async (
       } else if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
-        const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
-        const requestLikeUrl = getRequestLikeMemberCallUrl(captureMap, requestLikeBindings);
+        const requestLikeUrl = requestLikeBindings
+          ? getRequestLikeMemberCallUrl(captureMap, requestLikeBindings)
+          : null;
         if (requestLikeUrl) {
           result.push({
             filePath: file.path,
             fetchURL: requestLikeUrl,
             lineNumber: captureMap['http_client'].startPosition.row,
           });
-        } else if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
+        } else if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
           result.push({
             filePath: file.path,
             fetchURL: url,

@@ -94,6 +94,7 @@ import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/l
 import {
   collectRequestLikeImportBindings,
   getRequestLikeMemberCallUrl,
+  isRequestLikeClientLanguage,
 } from '../request-like-clients.js';
 
 import { logger } from '../../logger.js';
@@ -1096,7 +1097,9 @@ const processFileGroup = (
     }
 
     const provider = getProvider(language);
-    const requestLikeBindings = collectRequestLikeImportBindings(file.content);
+    const requestLikeBindings = isRequestLikeClientLanguage(language)
+      ? collectRequestLikeImportBindings(file.content)
+      : undefined;
 
     // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
     // resolution pipeline. No-op (returns undefined) for every language
@@ -1304,7 +1307,9 @@ const processFileGroup = (
       if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
-        const requestLikeUrl = getRequestLikeMemberCallUrl(captureMap, requestLikeBindings);
+        const requestLikeUrl = requestLikeBindings
+          ? getRequestLikeMemberCallUrl(captureMap, requestLikeBindings)
+          : null;
         if (requestLikeUrl) {
           result.fetchCalls.push({
             filePath: file.path,

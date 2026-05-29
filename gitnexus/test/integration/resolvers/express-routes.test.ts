@@ -59,11 +59,19 @@ describe('Express/Hono route detection', () => {
 
   it('creates FETCHES edges for imported request-like client member calls', () => {
     const edges = getRelationships(result, 'FETCHES');
-    const clientFetch = edges.find(
-      (e) => e.sourceFilePath.includes('client.ts') && e.target === '/api/items',
-    );
+    const clientFetchTargets = edges
+      .filter((e) => e.sourceFilePath.includes('client.ts'))
+      .map((e) => e.target);
 
-    expect(clientFetch).toBeDefined();
+    expect(clientFetchTargets).toEqual(
+      expect.arrayContaining([
+        '/api/items',
+        '/api/items/create',
+        '/api/items/update',
+        '/api/items/patch',
+        '/api/items/delete',
+      ]),
+    );
   });
 
   it('does not create provider route artifacts from imported request-like client member calls', () => {
