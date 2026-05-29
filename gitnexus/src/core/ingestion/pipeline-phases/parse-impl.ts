@@ -63,6 +63,11 @@ import type {
   FileConstructorBindings,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
+import type {
+  ExtractedRouterImport,
+  ExtractedRouterInclude,
+  ExtractedRouterModuleAlias,
+} from '../route-extractors/fastapi-router-bindings.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
@@ -357,6 +362,9 @@ export async function runChunkedParseAndResolve(
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouterIncludes: ExtractedRouterInclude[] = [];
+  const allRouterImports: ExtractedRouterImport[] = [];
+  const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const deferredWorkerCalls: ExtractedCall[] = [];
@@ -674,6 +682,15 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.decoratorRoutes?.length) {
           for (const item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(item);
+        }
+        if (chunkWorkerData.routerIncludes?.length) {
+          for (const item of chunkWorkerData.routerIncludes) allRouterIncludes.push(item);
+        }
+        if (chunkWorkerData.routerImports?.length) {
+          for (const item of chunkWorkerData.routerImports) allRouterImports.push(item);
+        }
+        if (chunkWorkerData.routerModuleAliases?.length) {
+          for (const item of chunkWorkerData.routerModuleAliases) allRouterModuleAliases.push(item);
         }
         if (chunkWorkerData.toolDefs?.length) {
           for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
@@ -1084,6 +1101,157 @@ export async function runChunkedParseAndResolve(
   importCtx.resolveCache.clear();
   importCtx.index = EMPTY_INDEX;
   importCtx.normalizedFileList = [];
+
+  // FastAPI router-prefix resolution (cross-file).
+  //
+  // Workers emit two kinds of records per Python file:
+  //   • `routerIncludes` — every `app.include_router(<routerExpr>, prefix='/x')`
+  //     site, where `routerExpr` is either `<module>.router` (Shape A) or a
+  //     bare local name (Shape B).
+  //   • `routerImports`  — every `from <module> import router [as <alias>]`,
+  //     mapping a local name to a module key (the basename of the source
+  //     module). These let us resolve Shape-B router includes back to the
+  //     module that defines the router.
+  //
+  // We build `module-basename → Set<prefix>` and then walk
+  // `allDecoratorRoutes`: any decorator route emitted from a `router.<verb>`
+  // decorator inherits its file-basename's prefix. When a router is mounted
+  // under multiple prefixes we duplicate the route entry, mirroring FastAPI's
+  // runtime behaviour.
+  if (allRouterIncludes.length > 0 && allDecoratorRoutes.length > 0) {
+    // Group `routerImports` by file so we can resolve Shape-B locals against
+    // imports declared in the SAME file as the include_router call. We carry
+    // both the short module key (file basename) and, when available, the long
+    // key (`<dir>/<basename>`) so cross-package same-name modules don't blur
+    // their prefixes together. `routerModuleAliases` lifts the same long-key
+    // information for Shape-A includes whose receiving module was imported
+    // via `from <pkg> import <module>`.
+    interface LocalImport {
+      moduleKey: string;
+      moduleKeyLong: string | undefined;
+    }
+    const importsByFile = new Map<string, Map<string, LocalImport>>();
+    for (const imp of allRouterImports) {
+      let m = importsByFile.get(imp.filePath);
+      if (!m) {
+        m = new Map();
+        importsByFile.set(imp.filePath, m);
+      }
+      m.set(imp.localName, {
+        moduleKey: imp.moduleKey,
+        moduleKeyLong: imp.moduleKeyLong,
+      });
+    }
+    // Module-alias map keyed by file: `localName` (the imported module
+    // identifier in this file) → long key. Shape-A receivers like
+    // `users.router` are matched against this map; the long key, when
+    // present, scopes the prefix to the precise source file.
+    const moduleAliasesByFile = new Map<string, Map<string, string>>();
+    for (const alias of allRouterModuleAliases) {
+      let m = moduleAliasesByFile.get(alias.filePath);
+      if (!m) {
+        m = new Map();
+        moduleAliasesByFile.set(alias.filePath, m);
+      }
+      m.set(alias.localName, alias.moduleKeyLong);
+    }
+
+    // Two parallel maps: long-key (precise) and short-key (basename
+    // fallback). Long-key entries are preferred when the file's own long
+    // key matches; short-key entries match any file with that basename and
+    // remain the fallback when no long key is known (e.g. Shape A includes
+    // without a corresponding import statement).
+    const prefixesByLongKey = new Map<string, Set<string>>();
+    const prefixesByShortKey = new Map<string, Set<string>>();
+
+    const recordPrefix = (target: Map<string, Set<string>>, key: string, prefix: string): void => {
+      let set = target.get(key);
+      if (!set) {
+        set = new Set();
+        target.set(key, set);
+      }
+      set.add(prefix);
+    };
+
+    for (const inc of allRouterIncludes) {
+      // Shape A: `<module>.router`. The worker emits `routerExpr` already
+      // including `.router`, so split it back. We only know a short module
+      // key here — the call site doesn't carry the dotted package path. If
+      // the same file imports `<module>` via `from <pkg> import <module>`
+      // (recorded in `allRouterModuleAliases`) we promote to a long key.
+      const dotIdx = inc.routerExpr.indexOf('.router');
+      if (dotIdx > 0) {
+        const moduleShort = inc.routerExpr.slice(0, dotIdx);
+        const aliasLong = moduleAliasesByFile.get(inc.filePath)?.get(moduleShort);
+        if (aliasLong) {
+          recordPrefix(prefixesByLongKey, aliasLong, inc.prefix);
+        } else {
+          recordPrefix(prefixesByShortKey, moduleShort, inc.prefix);
+        }
+        continue;
+      }
+
+      // Shape B: bare local name. Resolve through this file's imports. The
+      // import line gives us a long key whenever the module path was multi-
+      // segment, so cross-package collisions are eliminated for Shape B.
+      const localImp = importsByFile.get(inc.filePath)?.get(inc.routerExpr);
+      if (!localImp) continue;
+      if (localImp.moduleKeyLong) {
+        recordPrefix(prefixesByLongKey, localImp.moduleKeyLong, inc.prefix);
+      } else {
+        recordPrefix(prefixesByShortKey, localImp.moduleKey, inc.prefix);
+      }
+    }
+
+    if (prefixesByLongKey.size > 0 || prefixesByShortKey.size > 0) {
+      const fileLongKey = (rel: string): string => {
+        // Strip `.py`, then take the last two path segments. `api/users.py`
+        // → `api/users`. Files at the repo root return the empty string,
+        // which can never match a long-key entry (those always include a
+        // parent directory) and so fall through to the short-key lookup.
+        const noExt = rel.endsWith('.py') ? rel.slice(0, -3) : rel;
+        const lastSlash = noExt.lastIndexOf('/');
+        if (lastSlash < 0) return '';
+        const beforeLast = noExt.slice(0, lastSlash);
+        const stem = noExt.slice(lastSlash + 1);
+        const prevSlash = beforeLast.lastIndexOf('/');
+        const parent = prevSlash >= 0 ? beforeLast.slice(prevSlash + 1) : beforeLast;
+        return `${parent}/${stem}`;
+      };
+
+      const fileShortKey = (rel: string): string => {
+        const slash = rel.lastIndexOf('/');
+        const file = slash >= 0 ? rel.slice(slash + 1) : rel;
+        return file.endsWith('.py') ? file.slice(0, -3) : file;
+      };
+
+      const expanded: ExtractedDecoratorRoute[] = [];
+      for (const dr of allDecoratorRoutes) {
+        if (dr.decoratorReceiver !== 'router' || !dr.filePath.endsWith('.py')) {
+          expanded.push(dr);
+          continue;
+        }
+        // Long-key lookup first; only fall back to the short key when no
+        // long-key prefix targets this file. This avoids prefix leakage
+        // between e.g. `api/users.py` and `admin/users.py`.
+        const longKey = fileLongKey(dr.filePath);
+        const longPrefixes = longKey ? prefixesByLongKey.get(longKey) : undefined;
+        const shortPrefixes = longPrefixes
+          ? undefined
+          : prefixesByShortKey.get(fileShortKey(dr.filePath));
+        const prefixes = longPrefixes ?? shortPrefixes;
+        if (!prefixes || prefixes.size === 0) {
+          expanded.push(dr);
+          continue;
+        }
+        for (const prefix of prefixes) {
+          expanded.push({ ...dr, prefix });
+        }
+      }
+      allDecoratorRoutes.length = 0;
+      for (const dr of expanded) allDecoratorRoutes.push(dr);
+    }
+  }
 
   return {
     exportedTypeMap,
