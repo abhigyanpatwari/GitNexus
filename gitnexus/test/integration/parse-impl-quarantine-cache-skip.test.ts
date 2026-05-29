@@ -131,6 +131,8 @@ const accumulated = {
   fetchCalls: [],
   fetchWrapperDefs: [],
   decoratorRoutes: [],
+  routerIncludes: [],
+  routerImports: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
