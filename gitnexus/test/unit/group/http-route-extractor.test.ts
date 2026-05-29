@@ -1667,12 +1667,13 @@ class HttpClients {
       ).toBeDefined();
     });
 
-    // ─── Kotlin consumers (RestTemplate / WebClient short / OkHttp) ──
+    // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
     // Same shape as the Java consumer test above, but parsed by the
-    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Three
-    // consumer flavors covered here (long-form WebClient
-    // `webClient.method(HttpMethod.X).uri(...)` is intentionally
-    // deferred to a follow-up — see kotlin.ts file header).
+    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Four
+    // consumer flavors covered here: RestTemplate (#1855), WebClient
+    // short form (#1855), OkHttp (#1855), and WebClient long form
+    // (`webClient.method(HttpMethod.X).uri(...)`, this PR / #1884) —
+    // see kotlin.ts file header for the full list.
     //
     // tree-sitter-kotlin is an optionalDependency. If the binding is
     // unavailable, `getPluginForFile` returns undefined for `.kt` and
@@ -1915,8 +1916,14 @@ class LongVerbClient(private val webClient: WebClient) {
 
       // All four should be tagged as `spring-web-client` so polyglot
       // repos coalesce on the same framework key as the short form.
+      // The fixture is fully deterministic — exactly 4 long-form calls,
+      // no short-form / RestTemplate / OkHttp calls mixed in — so an
+      // exact count is meaningful (DoD §2.7). If a future change
+      // accidentally emits a 5th consumer (e.g. duplicate query firing,
+      // or a regressed receiver constraint matching unrelated calls),
+      // this assertion catches it.
       const wcConsumers = consumers.filter((c) => c.meta.framework === 'spring-web-client');
-      expect(wcConsumers.length).toBeGreaterThanOrEqual(4);
+      expect(wcConsumers).toHaveLength(4);
     });
 
     itKotlinConsumer(
