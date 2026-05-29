@@ -1370,6 +1370,8 @@ shadowed_module_client.get("/module-level-rebind-fp")
       fs.writeFileSync(
         path.join(dir, 'src', 'ApiClient.java'),
         `
+import java.net.URI;
+import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.http.HttpMethod;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -1379,6 +1381,11 @@ class ApiClient {
   void run(RestTemplate restTemplate, WebClient webClient) {
     restTemplate.getForObject("/api/users/{id}", String.class, 42);
     restTemplate.exchange("/api/users/{id}/details", HttpMethod.GET, null, String.class);
+    restTemplate.getForEntity(URI.create("/api/uri-users/42"), String.class);
+    restTemplate.exchange(URI.create("/api/uri-users/42/details"), HttpMethod.POST, null, String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromPath("/api").path("/builder-users").pathSegment("42").build().toUriString(),
+        String.class);
     webClient.post().uri("/api/users");
     new Request.Builder().url("/api/orders/42").build();
   }
@@ -1405,6 +1412,15 @@ class ApiClient {
         ),
       ).toBeDefined();
       expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/uri-users/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/uri-users/{param}/details'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/builder-users/{param}'),
+      ).toBeDefined();
+      expect(
         consumers.find(
           (c) =>
             c.contractId === 'http::POST::/api/users' &&
@@ -1414,7 +1430,7 @@ class ApiClient {
       ).toBeDefined();
     });
 
-    it('does NOT match Java WebClient long-form method(HttpMethod).uri(...) yet', async () => {
+    it('extracts Java WebClient long-form method(HttpMethod).uri(...) calls', async () => {
       const dir = path.join(tmpDir, 'java-web-client-long-form');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
@@ -1435,8 +1451,84 @@ class LongFormClient {
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
       expect(
-        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::PATCH::/api/users/{param}' &&
+            c.meta.framework === 'spring-web-client' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+    });
+
+    it('extracts fully-qualified Java Spring annotations', async () => {
+      const dir = path.join(tmpDir, 'java-fully-qualified-spring-annotations');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'QualifiedClient.java'),
+        `
+@org.springframework.cloud.openfeign.FeignClient(name = "order-service", path = "/api")
+interface QualifiedClient {
+  @org.springframework.web.bind.annotation.GetMapping("/orders/{id}")
+  OrderDto getOrder(String id);
+}
+
+@org.springframework.web.bind.annotation.RequestMapping(path = "/v1")
+class QualifiedController {
+  @org.springframework.web.bind.annotation.PostMapping(path = "/orders")
+  void createOrder() {}
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/orders/{param}' && c.meta.framework === 'openfeign',
+        ),
+      ).toBeDefined();
+      expect(
+        providers.find(
+          (c) => c.contractId === 'http::POST::/v1/orders' && c.meta.framework === 'spring',
+        ),
+      ).toBeDefined();
+    });
+
+    it('keeps Spring controller interface prefixes for non-Feign providers', async () => {
+      const dir = path.join(tmpDir, 'java-spring-controller-interface-prefix');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'UsersApi.java'),
+        `
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/api")
+interface UsersApi {
+  @GetMapping("/users/{id}")
+  UserDto getUser(String id);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}'),
       ).toBeUndefined();
+      expect(
+        providers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/users/{param}' &&
+            c.meta.framework === 'spring' &&
+            c.confidence === 0.8,
+        ),
+      ).toBeDefined();
     });
 
     it('extracts OpenFeign clients as consumers, not providers', async () => {
@@ -1622,6 +1714,13 @@ class HttpClients {
         .uri(URI.create("/api/users"))
         .POST(HttpRequest.BodyPublishers.ofString("{}"))
         .build();
+    HttpRequest patch = HttpRequest.newBuilder()
+        .uri(URI.create("/api/users/2"))
+        .method("PATCH", HttpRequest.BodyPublishers.ofString("{}"))
+        .build();
+    HttpRequest defaultGet = HttpRequest.newBuilder()
+        .uri(URI.create("/api/default-users/3"))
+        .build();
 
     new HttpGet("/api/orders/2");
     new HttpPost("/api/orders");
@@ -1646,6 +1745,21 @@ class HttpClients {
         ),
       ).toBeDefined();
       expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::PATCH::/api/users/{param}' &&
+            c.meta.framework === 'java-http-client' &&
+            c.confidence === 0.65,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/default-users/{param}' &&
+            c.meta.framework === 'java-http-client',
+        ),
+      ).toBeDefined();
+      expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
       ).toBeDefined();
       expect(
@@ -1654,6 +1768,48 @@ class HttpClients {
             c.contractId === 'http::POST::/api/orders' &&
             c.meta.framework === 'apache-http-client' &&
             c.confidence === 0.65,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('infers Java OkHttp verbs from sibling Request.Builder calls', async () => {
+      const dir = path.join(tmpDir, 'java-okhttp-verbs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OkHttpVerbs.java'),
+        `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkHttpVerbs {
+  void run(RequestBody body) {
+    new Request.Builder().url("/api/orders").post(body).build();
+    new Request.Builder().url("/api/orders/1").put(body).build();
+    new Request.Builder().url("/api/orders/2").delete().build();
+    new Request.Builder().url("/api/orders/3").method("PATCH", body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/api/orders' &&
+            c.meta.framework === 'okhttp' &&
+            c.confidence === 0.7,
         ),
       ).toBeDefined();
       expect(
