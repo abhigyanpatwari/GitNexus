@@ -6,7 +6,7 @@ tools:
   - Grep
   - Glob
   - Bash
-model: sonnet
+model: claude-sonnet-4-6
 maxTurns: 30
 ---
 
@@ -17,6 +17,7 @@ You build a PR-specific Definition of Done by translating repo guidance document
 ## Rules
 
 - **Do not edit files.** You are read-only.
+- **Bash is read-only.** Permitted: `git log`, `git diff`, `git show`, `git grep`, `git ls-files`, `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue view`, and inspection tools (`grep`, `cat`, `find`, `ls`). Prohibited: any command that writes files, modifies git state (`git commit`, `git add`, `git checkout -- <path>`), posts to GitHub (`gh pr comment`, `gh pr review`, `gh issue comment`), installs packages, or runs arbitrary scripts.
 - If any repo guidance doc is missing, note that and use the closest available project guidance.
 - If the problem statement is incomplete, make that a **required verification task**, not an assumption.
 

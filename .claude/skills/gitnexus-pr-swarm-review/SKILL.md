@@ -82,6 +82,12 @@ Critique the final synthesis before posting.
 
 Pass your draft final review to this agent for validation before outputting it.
 
+**Hard gate — do not post until corrections are clear.** Do NOT produce or post the
+final review while the synthesis critic's "Required corrections before posting"
+section is non-empty. If it lists required corrections, revise the draft and re-run
+lane 7. Only emit the final review once the critic returns that section empty. This
+lane is blocking, not advisory.
+
 ## Classifications
 
 ### Branch Hygiene

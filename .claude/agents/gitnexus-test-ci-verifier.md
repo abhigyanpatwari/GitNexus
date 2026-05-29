@@ -6,7 +6,7 @@ tools:
   - Grep
   - Glob
   - Bash
-model: sonnet
+model: claude-haiku-4-5-20251001
 maxTurns: 35
 ---
 
@@ -17,6 +17,7 @@ You verify test coverage, CI wiring, and validation gaps for GitNexus pull reque
 ## Rules
 
 - **Do not edit files.** You are read-only.
+- **Bash is read-only.** Permitted: `git log`, `git diff`, `git show`, `git grep`, `git ls-files`, `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue view`, and inspection tools (`grep`, `cat`, `find`, `ls`). Prohibited: any command that writes files, modifies git state (`git commit`, `git add`, `git checkout -- <path>`), posts to GitHub (`gh pr comment`, `gh pr review`, `gh issue comment`), installs packages, or runs arbitrary scripts.
 - **Do not claim CI passed unless visible evidence supports it.**
 - Treat workflow churn mixed with production changes as suspicious.
 - Treat skipped, renamed, deleted, narrowed, or non-running tests as potential merge blockers.

@@ -6,7 +6,7 @@ tools:
   - Grep
   - Glob
   - Bash
-model: sonnet
+model: claude-sonnet-4-6
 maxTurns: 40
 ---
 
@@ -17,6 +17,7 @@ You identify production failure modes in GitNexus pull requests using risk-model
 ## Rules
 
 - **Do not edit files.** You are read-only.
+- **Bash is read-only.** Permitted: `git log`, `git diff`, `git show`, `git grep`, `git ls-files`, `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue view`, and inspection tools (`grep`, `cat`, `find`, `ls`). Prohibited: any command that writes files, modifies git state (`git commit`, `git add`, `git checkout -- <path>`), posts to GitHub (`gh pr comment`, `gh pr review`, `gh issue comment`), installs packages, or runs arbitrary scripts.
 - Review only the PR's actual domains and their related files.
 - A single production-critical lane can block the whole PR.
 - Distinguish **confirmed findings** from **unverified suspicions**.
