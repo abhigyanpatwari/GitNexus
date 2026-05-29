@@ -17,6 +17,7 @@ import {
   serviceContractId,
 } from '../../../src/core/group/extractors/grpc-extractor.js';
 import type { ProtoServiceInfo } from '../../../src/core/group/extractors/grpc-extractor.js';
+import { buildProviderIndex, runWildcardMatch } from '../../../src/core/group/matching.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 import { _captureLogger } from '../../../src/core/logger.js';
 
@@ -514,12 +515,14 @@ public class AdminContentClient {
       ]);
     });
 
-    it('test_import_derived_fqn_overrides_unrelated_local_proto_with_same_short_name', async () => {
-      // The consumer happens to live in a repo that has its OWN
-      // unrelated `.proto` defining a service with the same short
-      // name. Without this fix, `resolveProtoConflict` would pick
-      // the local proto's package and produce a wrong FQN. The
-      // import-derived FQN must win.
+    it('test_local_proto_overrides_unrelated_import_with_same_short_name', async () => {
+      // Symmetric to Finding 2: when the consumer repo carries its
+      // OWN `.proto` defining the same short service name, the proto
+      // is authoritative and wins over a Java import that points at a
+      // different package. Without this Step-2 cross-check, a typo'd
+      // or stale Java import (or genuinely unrelated same-name
+      // service in the same repo) would silently corrupt the
+      // contract id of the locally-defined service.
       writeFile(
         'protos/local-other.proto',
         `syntax = "proto3";
@@ -548,9 +551,11 @@ public class AuthClient {
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
       expect(consumers).toHaveLength(1);
-      // Import wins — NOT the local-unrelated proto package.
-      expect(consumers[0].contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
-      expect(consumers[0].meta.protoPackageSource).toBe('import');
+      // Local proto wins. The disagreement is recorded so operators
+      // can investigate the divergent import.
+      expect(consumers[0].contractId).toBe('grpc::local.unrelated.AuthService/*');
+      expect(consumers[0].meta.protoPackageSource).toBe('proto-override');
+      expect(consumers[0].meta.importPackage).toBe('com.acme.auth.proto');
     });
 
     it('test_consumer_without_import_falls_back_to_proto_map', async () => {
@@ -733,6 +738,210 @@ public class AdminContentClient {
       expect(ids.has('grpc::cn.unipus.ucf.admin.proto.client.service.ContentRpcService/*')).toBe(
         true,
       );
+    });
+  });
+
+  // ─── Java `option java_package` divergence ────────────────────
+  // Java protobuf projects frequently set
+  // `option java_package = "..."` to publish their generated Java
+  // classes under a namespace different from the proto `package`
+  // declaration. Google Cloud Java SDKs are the canonical example:
+  // proto `package google.cloud.speech.v1` + `option java_package =
+  // "com.google.cloud.speech.v1"`. Without specific handling, the
+  // import-derived FQN would reflect the Java namespace instead of
+  // the wire-protocol namespace and never match a provider's
+  // contract id.
+  //
+  // The cases below pin the four resolution branches in
+  // `detectionToContract`:
+  //
+  //   1. java_package translation (same-repo provider with the
+  //      option set; consumer in the same repo imports via the
+  //      java_package — the reverse index translates back to the
+  //      proto package);
+  //   2. proto-map cross-check (local proto exists for the same
+  //      service short name and AGREES with the import — both paths
+  //      produce the same FQN, marker confirms import path took
+  //      precedence);
+  //   2b. proto-map cross-check (local proto DISAGREES with the
+  //       import — the proto wins authoritatively, the import package
+  //       is recorded as `meta.importPackage` for diagnostics);
+  //   3. import-derived fallback known limitation (consumer repo
+  //      carries no proto AND the published proto sets a divergent
+  //      java_package — we cannot translate without the proto in
+  //      reach, so the FQN reflects the Java namespace and will not
+  //      match a provider repo. This is documented as a scope
+  //      limitation; the test pins the limitation to catch any
+  //      accidental change in behaviour).
+  describe('Java option java_package divergence', () => {
+    it('test_provider_proto_with_diverging_java_package_emits_proto_package_FQN', async () => {
+      // Provider side: proto declares both `package` and a
+      // different `option java_package`. The provider contract id
+      // must use the proto `package` — that's the wire identity any
+      // consumer (regardless of its language) will see at runtime.
+      writeFile(
+        'proto/speech.proto',
+        `syntax = "proto3";
+package google.cloud.speech.v1;
+option java_package = "com.google.cloud.speech.v1";
+service Speech {
+    rpc Recognize (RecognizeRequest) returns (RecognizeResponse);
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const recognize = providers.find((c) => c.contractId.endsWith('Speech/Recognize'));
+      expect(recognize).toBeDefined();
+      // Wire-protocol package, NOT the java_package value.
+      expect(recognize!.contractId).toBe('grpc::google.cloud.speech.v1.Speech/Recognize');
+    });
+
+    it('test_consumer_with_java_package_translation_uses_proto_package', async () => {
+      // Same repo carries the proto with a divergent java_package
+      // AND a Java consumer that imports via the java_package. The
+      // reverse index built by `buildProtoContext` should translate
+      // the import back to the proto package so the consumer's
+      // contract id matches the provider's.
+      writeFile(
+        'proto/speech.proto',
+        `syntax = "proto3";
+package google.cloud.speech.v1;
+option java_package = "com.google.cloud.speech.v1";
+service Speech {
+    rpc Recognize (RecognizeRequest) returns (RecognizeResponse);
+}`,
+      );
+      writeFile(
+        'src/main/java/SpeechClient.java',
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+import com.google.cloud.speech.v1.SpeechGrpc;
+
+public class SpeechClient {
+    public SpeechClient(ManagedChannel ch) {
+        SpeechGrpc.newBlockingStub(ch).recognize(null);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      // The reverse-index translation kicked in:
+      //   import     "com.google.cloud.speech.v1"
+      //              ↓ (javaPackageMap lookup)
+      //   proto pkg  "google.cloud.speech.v1"   ← used in contract id
+      expect(consumers[0].contractId).toBe('grpc::google.cloud.speech.v1.Speech/*');
+      expect(consumers[0].meta.protoPackageSource).toBe('import-translated');
+      expect(consumers[0].meta.package).toBe('google.cloud.speech.v1');
+    });
+
+    it('test_consumer_without_local_proto_and_diverging_java_package_is_known_limitation', async () => {
+      // Client-jar consumer: zero `.proto` in this repo, and the
+      // published proto (somewhere else) uses a divergent
+      // java_package. We have no way to translate from
+      // java_package back to proto package without sight of the
+      // source proto. The current behaviour is to use the
+      // import-derived java_package literally; the resulting
+      // contract id will not match a provider's. This is a
+      // documented scope limitation — resolving it requires
+      // group-level proto knowledge that's out of scope for this
+      // change. The test pins the limitation so it cannot
+      // regress silently.
+      writeFile(
+        'src/main/java/SpeechClient.java',
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+import com.google.cloud.speech.v1.SpeechGrpc;
+
+public class SpeechClient {
+    public SpeechClient(ManagedChannel ch) {
+        SpeechGrpc.newBlockingStub(ch).recognize(null);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      // Pinned limitation: the FQN reflects the Java namespace.
+      expect(consumers[0].contractId).toBe('grpc::com.google.cloud.speech.v1.Speech/*');
+      expect(consumers[0].meta.protoPackageSource).toBe('import');
+    });
+  });
+
+  // ─── End-to-end wildcard match (Finding 3) ────────────────────
+  // The 9 unit tests above pin contract-id shape; this block pins
+  // the next stage of the pipeline — `runWildcardMatch` against a
+  // provider index — so a regression in either contract-id format
+  // OR in the matcher's wildcard logic would fail here. Per DoD §2.7
+  // ("tests cover the real changed path"), exercising the pipeline
+  // end to end is the production-readiness signal we need.
+  describe('Java client-jar consumer — end-to-end wildcard match', () => {
+    it('test_e2e_client_jar_consumer_FQN_creates_wildcard_cross_link', async () => {
+      // Two-repo group fixture, written into separate subdirectories
+      // of tmpDir so the per-repo `extract()` can run isolated.
+      const providerDir = path.join(tmpDir, 'provider-repo');
+      const consumerDir = path.join(tmpDir, 'consumer-repo');
+      fs.mkdirSync(path.join(providerDir, 'proto'), { recursive: true });
+      fs.mkdirSync(path.join(consumerDir, 'src/main/java'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(providerDir, 'proto/auth.proto'),
+        `syntax = "proto3";
+package com.acme.auth.proto;
+service AuthService {
+    rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      // Consumer repo carries NO `.proto` — typical client-jar pattern.
+      fs.writeFileSync(
+        path.join(consumerDir, 'src/main/java/AuthClient.java'),
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+import com.acme.auth.proto.AuthServiceGrpc;
+
+public class AuthClient {
+    public AuthClient(ManagedChannel ch) {
+        AuthServiceGrpc.newBlockingStub(ch).login(null);
+    }
+}`,
+      );
+
+      const providerExtracted = await extractor.extract(null, providerDir, makeRepo(providerDir));
+      const consumerExtracted = await extractor.extract(null, consumerDir, makeRepo(consumerDir));
+
+      // Stamp `repo` on the contracts so they look like StoredContract;
+      // matching.ts skips same-repo cross-links by comparing this field.
+      const stored = [
+        ...providerExtracted.map((c) => ({ ...c, repo: 'provider' })),
+        ...consumerExtracted.map((c) => ({ ...c, repo: 'consumer' })),
+      ];
+
+      const providerIndex = buildProviderIndex(stored);
+      const consumerWildcards = stored.filter(
+        (c) => c.role === 'consumer' && c.contractId.endsWith('/*'),
+      );
+      const result = runWildcardMatch(consumerWildcards, providerIndex);
+
+      // The consumer's contract id is the package-qualified service
+      // wildcard (`grpc::com.acme.auth.proto.AuthService/*`); the
+      // provider emits a method-level id (`grpc::com.acme.auth.proto.
+      // AuthService/Login`). The wildcard matcher pairs them and
+      // produces exactly one cross-link.
+      expect(result.matched).toHaveLength(1);
+      const cross = result.matched[0];
+      expect(cross.contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
+      expect(cross.matchType).toBe('wildcard');
+      expect(cross.from.repo).toBe('consumer');
+      expect(cross.to.repo).toBe('provider');
     });
   });
 
