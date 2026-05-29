@@ -189,6 +189,10 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
 // pathological trees (deep generated output, huge monorepos).
 const CSHARP_SCAN_MAX_DEPTH = 24;
 const CSHARP_SCAN_MAX_DIRS = 20000;
+// Bound on in-flight file reads per directory so a directory with thousands of
+// `.cs` files can't exhaust file descriptors / spike memory. Mirrors the
+// Phase-1 walker's `READ_CONCURRENCY` (see `filesystem-walker.ts`).
+const CSHARP_SCAN_READ_CONCURRENCY = 32;
 const CSHARP_SCAN_SKIP_DIRS = new Set(['node_modules', '.git', 'bin', 'obj']);
 const CSHARP_ROOT_NAMESPACE_RE = /<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/;
 
@@ -218,8 +222,8 @@ function getCsharpStructureScanner(): Promise<(content: string) => CsharpFileStr
  * `namespace` declarations. That `.cs` read cost is the price of the #1881
  * gate, not a saving: collapsing the csproj and namespace walks into one BFS
  * avoids a second directory traversal, but the per-file `.cs` reads are new
- * work this scan introduces. Reads within a directory are issued in parallel
- * (see below); directories are still visited breadth-first.
+ * work this scan introduces. Reads within a directory are issued in bounded
+ * windows (see below); directories are still visited breadth-first.
  */
 export async function scanCSharpProject(repoRoot: string): Promise<CSharpProjectScan> {
   const configs: CSharpProjectConfig[] = [];
@@ -251,11 +255,13 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
       truncated = true;
       continue;
     }
-    // Issue all file reads in this directory concurrently; csproj results stay
-    // in entry order (config precedence matters) while `.cs` namespace results
-    // land in shared Sets where order is irrelevant.
-    const csprojReads: Promise<CSharpProjectConfig | null>[] = [];
-    const csReads: Promise<boolean>[] = [];
+    // Collect read targets, then issue them in bounded windows (rather than all
+    // at once) so a directory with thousands of `.cs` files can't exhaust file
+    // descriptors / spike memory. csproj reads keep entry order (config
+    // precedence matters); `.cs` namespace results land in shared Sets where
+    // order is irrelevant.
+    const csprojNames: string[] = [];
+    const csNames: string[] = [];
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (CSHARP_SCAN_SKIP_DIRS.has(entry.name)) continue;
@@ -267,26 +273,45 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
         continue;
       }
       if (!entry.isFile()) continue;
-      const filePath = path.join(dir, entry.name);
       if (entry.name.endsWith('.csproj')) {
-        csprojReads.push(readCsprojConfig(filePath, entry.name, repoRoot, dir, maxFileSizeBytes));
+        csprojNames.push(entry.name);
       } else if (entry.name.endsWith('.cs')) {
-        csReads.push(
-          collectDeclaredNamespaces(filePath, declaredNamespaces, rootNamespaces, maxFileSizeBytes),
-        );
+        csNames.push(entry.name);
       }
     }
-    for (const config of await Promise.all(csprojReads)) {
-      if (config) {
-        configs.push(config);
-        rootNamespaces.add(config.rootNamespace);
+    for (let i = 0; i < csprojNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
+      const batch = csprojNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map((name) =>
+          readCsprojConfig(path.join(dir, name), name, repoRoot, dir, maxFileSizeBytes),
+        ),
+      );
+      for (const r of settled) {
+        const config = r.status === 'fulfilled' ? r.value : null;
+        if (config) {
+          configs.push(config);
+          rootNamespaces.add(config.rootNamespace);
+        }
       }
     }
-    // A `.cs` that was skipped (oversized) or unreadable leaves its namespaces
-    // uncollected, so the scan is incomplete → mark truncated to fail the
-    // #1881 gate OPEN rather than wrongly suppress an import declared there.
-    for (const skipped of await Promise.all(csReads)) {
-      if (skipped) truncated = true;
+    for (let i = 0; i < csNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
+      const batch = csNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map((name) =>
+          collectDeclaredNamespaces(
+            path.join(dir, name),
+            declaredNamespaces,
+            rootNamespaces,
+            maxFileSizeBytes,
+          ),
+        ),
+      );
+      // A `.cs` that was skipped (oversized), unreadable, or whose read/scan
+      // unexpectedly rejected leaves its namespaces uncollected → mark truncated
+      // to fail the #1881 gate OPEN rather than wrongly suppress an import.
+      for (const r of settled) {
+        if (r.status !== 'fulfilled' || r.value) truncated = true;
+      }
     }
   }
 
