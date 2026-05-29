@@ -126,6 +126,14 @@ export function emitCppScopeCaptures(
             JSON.stringify(arity.parameterTypeClasses),
           );
         }
+        const returnType = extractCppDeclarationReturnType(fnNode);
+        if (returnType !== undefined) {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNode,
+            returnType,
+          );
+        }
         if (hasExplicitSpecifier(fnNode)) {
           grouped['@declaration.is-explicit'] = syntheticCapture(
             '@declaration.is-explicit',
@@ -415,6 +423,30 @@ export function emitCppScopeCaptures(
   detectCppDependentBases(tree.rootNode, filePath);
 
   return out;
+}
+
+function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined {
+  const typeNode = fnNode.childForFieldName('type');
+  if (typeNode === null) return undefined;
+  const funcDeclarator = findFunctionDeclarator(fnNode);
+  if (funcDeclarator !== null && isCppUnsupportedReturnTypeDeclarator(funcDeclarator)) {
+    return undefined;
+  }
+  const typeText = typeNode.text.trim();
+  if (typeText !== 'auto') return typeText.length > 0 ? typeText : undefined;
+  if (funcDeclarator === null) return typeText;
+  for (let i = 0; i < funcDeclarator.namedChildCount; i++) {
+    const child = funcDeclarator.namedChild(i);
+    if (child?.type !== 'trailing_return_type') continue;
+    const typeDesc = child.firstNamedChild;
+    return typeDesc?.text.trim() || typeText;
+  }
+  return typeText;
+}
+
+function isCppUnsupportedReturnTypeDeclarator(funcDeclarator: SyntaxNode): boolean {
+  const text = funcDeclarator.text;
+  return /\boperator\b/.test(text) || /(^|[(:\s])~\s*[A-Za-z_]\w*/.test(text);
 }
 
 /**
