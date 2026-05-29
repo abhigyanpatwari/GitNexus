@@ -1,18 +1,21 @@
 // Unit tests for the devcontainer host->container config transforms.
-// Coverage for the logic that used to live inline in post-create.sh heredocs
-// (invisible to lint and untestable):
+//
+// This code used to live inside post-create.sh heredocs, where lint could not
+// see it and tests could not reach it. We test three things:
 //   - plugin-registry path translation (buildRe + rewriteDeep + the real
-//     filesystem translate() driver), which has had path-handling bugs before
-//   - the $HOME/.claude.json machine-field strip (sanitizeClaudeConfig +
-//     readHostConfig + the seed-claude-config main() entry point)
-//   - the host bind-source bootstrap (ensurePaths), incl. a regression guard
-//     that it does NOT pre-create settings.json / config.toml on the host
+//     filesystem translate() driver). Path handling here has had bugs before.
+//   - the strip of machine-specific fields from $HOME/.claude.json
+//     (sanitizeClaudeConfig + readHostConfig + the seed-claude-config main()
+//     entry point)
+//   - the host bind-source bootstrap (ensurePaths). One test guards against a
+//     regression: ensurePaths must NOT pre-create settings.json / config.toml
+//     on the host.
 //
-// Both pure-function and filesystem-I/O paths are exercised; the I/O tests use
-// throwaway os.tmpdir() trees and clean up after themselves, so they run in CI
-// with no mounts and never touch the real home dir.
+// We test both pure functions and code that touches the filesystem. The
+// filesystem tests use throwaway directories under os.tmpdir() and delete them
+// when done. So they run in CI with no mounts and never touch the real home dir.
 //
-// Run with the built-in Node test runner (no deps):
+// Run with the built-in Node test runner (no extra dependencies):
 //   node --test .devcontainer/
 
 'use strict';
@@ -31,8 +34,8 @@ const { ensurePaths, DIRS, FILES } = require('./ensure-host-config-dirs.cjs');
 const CLAUDE = '/home/node/.claude/plugins';
 const CURSOR = '/home/node/.cursor/plugins';
 
-// Fresh throwaway directory under the OS temp root. mkdtemp avoids Date.now()/
-// random naming and guarantees uniqueness per call.
+// Make a fresh throwaway directory under the OS temp root. mkdtemp picks a
+// unique name on every call, so we don't need Date.now() or random names.
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'gn-dc-'));
 }
@@ -142,7 +145,7 @@ test('sanitizeClaudeConfig: empty object still gets hasCompletedOnboarding', () 
   assert.deepEqual(sanitizeClaudeConfig({}), { hasCompletedOnboarding: true });
 });
 
-// --- readHostConfig: filesystem read + fallback paths -----------------------
+// --- readHostConfig: reading the file, and the fallbacks when it fails ------
 
 test('readHostConfig: missing file -> {}', () => {
   const dir = tmp();
@@ -188,12 +191,12 @@ test('readHostConfig: valid object is parsed through', () => {
   }
 });
 
-// --- translate(): real registry files on disk -------------------------------
+// --- translate(): runs against real registry files on disk ------------------
 
 test('translate: rewrites host absolute paths and writes into the ctr dir', () => {
   const hostDir = tmp();
   const ctrParent = tmp();
-  const ctrDir = path.join(ctrParent, 'plugins'); // need not pre-exist; translate mkdirs it
+  const ctrDir = path.join(ctrParent, 'plugins'); // need not exist yet; translate creates it
   try {
     const reg = [{ cli: 'claude', host: hostDir, ctr: ctrDir, files: ['installed_plugins.json'] }];
     fs.writeFileSync(
@@ -253,7 +256,7 @@ test('translate: empty and missing host registries are skipped without error', (
     const reg = [
       { cli: 'claude', host: hostDir, ctr: ctrDir, files: ['empty.json', 'missing.json'] },
     ];
-    fs.writeFileSync(path.join(hostDir, 'empty.json'), ''); // missing.json never created
+    fs.writeFileSync(path.join(hostDir, 'empty.json'), ''); // we never create missing.json
     translate(reg);
     assert.equal(fs.existsSync(path.join(ctrDir, 'empty.json')), false);
     assert.equal(fs.existsSync(path.join(ctrDir, 'missing.json')), false);
@@ -263,7 +266,7 @@ test('translate: empty and missing host registries are skipped without error', (
   }
 });
 
-// --- seed-claude-config main(): end-to-end via the real CLI entry point -----
+// --- seed-claude-config main(): end-to-end, through the real CLI entry point
 
 const SEED_SCRIPT = path.join(__dirname, 'seed-claude-config.cjs');
 
@@ -306,13 +309,18 @@ test('seed main: missing host file still writes a valid onboarding-bearing file'
 });
 
 test('seed main: chmodSync widens a pre-existing restrictive dst to 0o644', () => {
-  // POSIX mode bits only. Under the CI default umask (022) a plain writeFileSync
-  // already yields 0o644, so asserting 0o644 after a fresh write does NOT prove
-  // the explicit chmodSync did anything. Pre-create dst at 0o600 first: a 'w'
-  // write truncates content but PRESERVES an existing file's mode, so the file
-  // can only reach 0o644 via seed-claude-config.cjs's chmodSync. This isolates
-  // the chmod from the umask-default path (delete the chmodSync line and this
-  // test fails, where the other seed test would still pass).
+  // This checks the file's permission bits, which only exist on POSIX systems.
+  //
+  // The catch: CI's default umask is 022, so a plain writeFileSync already
+  // creates files at mode 0o644. Asserting 0o644 right after a fresh write
+  // would therefore NOT prove the explicit chmodSync did anything.
+  //
+  // So we pre-create dst at the stricter mode 0o600. Opening a file in 'w'
+  // mode replaces its contents but KEEPS the mode of a file that already
+  // exists. That means the only way dst can end up at 0o644 is the chmodSync
+  // inside seed-claude-config.cjs. This pins the test to the chmod and not to
+  // the umask: delete the chmodSync line and this test fails, while the other
+  // seed test still passes.
   if (process.platform === 'win32') return;
   const dir = tmp();
   try {
@@ -329,7 +337,7 @@ test('seed main: chmodSync widens a pre-existing restrictive dst to 0o644', () =
   }
 });
 
-// --- ensurePaths: host bind-source bootstrap --------------------------------
+// --- ensurePaths: sets up the host paths the bind mounts point at -----------
 
 test('ensurePaths: creates every DIR and FILE under a temp home, idempotently', () => {
   const home = tmp();
@@ -341,7 +349,7 @@ test('ensurePaths: creates every DIR and FILE under a temp home, idempotently', 
     for (const f of FILES) {
       assert.equal(fs.statSync(path.join(home, f)).isFile(), true, `not a file: ${f}`);
     }
-    // Rerun must not throw and must not clobber existing content.
+    // Running it again must not throw and must not overwrite existing content.
     fs.writeFileSync(path.join(home, '.claude.json'), '{"keep":true}');
     ensurePaths(home);
     assert.equal(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'), '{"keep":true}');

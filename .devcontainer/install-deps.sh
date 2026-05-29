@@ -1,32 +1,34 @@
 #!/usr/bin/env bash
-# Devcontainer updateContentCommand — runs on container-create AND whenever
-# workspace content changes (lockfile updates etc., per the Dev Container
-# spec). Handles workspace dependency installation only; AI CLI state sync
-# lives in post-create.sh which runs once after this.
+# Devcontainer updateContentCommand. The Dev Container spec runs this when the
+# container is created AND whenever workspace content changes (for example a
+# lockfile update). This script installs workspace dependencies only. Syncing AI
+# CLI state lives in post-create.sh, which runs once right after this.
 #
-# Why split out: `updateContentCommand` re-runs on content updates, while
-# `postCreateCommand` runs only on container-create. Putting `npm install`
-# here means a rebuild after pulling new dependencies refreshes them
-# without re-running the AI CLI credential/path-translation work each time.
+# Why the split: updateContentCommand re-runs on content changes, but
+# postCreateCommand runs only at container-create. Keeping `npm install` here
+# means a rebuild after pulling new dependencies refreshes them. The AI CLI
+# credential and path-translation work does not re-run each time.
 
 set -euo pipefail
 cd /workspace
 
 echo "[install-deps] 1/4: chown workspace node_modules + npm cache mount points"
-# Named volumes (workspace/*/node_modules, ~/.npm) created at first mount
-# inherit ownership from the image's pre-realignment UID. After
-# `updateRemoteUserUID: true` shifts the `node` user, the volumes end up
-# owned by the stale UID — npm install can't write. Re-chown
-# post-realignment; idempotent on subsequent runs.
+# The named volumes (workspace/*/node_modules and ~/.npm) are created at first
+# mount. They inherit ownership from the image's UID before realignment. Then
+# `updateRemoteUserUID: true` shifts the `node` user's UID. Now the volumes are
+# owned by the old, stale UID and npm install cannot write to them. So we chown
+# again here, after realignment. Running it again later changes nothing.
 #
-# `find -xdev -exec chown -h` (same idiom as post-create.sh) rather than a bare
-# `chown -R`. Two distinct guards: `-xdev` bounds find's DESCENT to each
-# volume's own filesystem (it won't recurse into a sub-mounted host bind), and
-# `-h` makes chown act on a symlink ITSELF rather than dereferencing it. Without
-# `-h`, a symlink inside the tree (a dep postinstall dropping one, or a dangling
-# node_modules/.bin link) would either redirect the chown onto its cross-fs
-# target or abort provisioning under `set -e` with a dereference error. `-h` is
-# a no-op for regular files/dirs, so the intended ownership fix is unchanged.
+# We use `find -xdev -exec chown -h` (the same idiom as post-create.sh) instead
+# of a plain `chown -R`. There are two separate guards. First, `-xdev` stops
+# find from descending past each volume's own filesystem, so it won't recurse
+# into a host folder mounted underneath. Second, `-h` makes chown change the
+# symlink itself instead of following it to its target. Without `-h`, a symlink
+# in the tree (one a dependency's postinstall drops, or a dangling
+# node_modules/.bin link) would either send the chown onto a target on another
+# filesystem, or fail to follow and abort the whole script under `set -e`. For
+# regular files and directories `-h` does nothing, so the ownership fix is the
+# same.
 for d in /workspace/node_modules \
          /workspace/gitnexus/node_modules \
          /workspace/gitnexus-web/node_modules \
@@ -36,28 +38,28 @@ for d in /workspace/node_modules \
 done
 
 echo "[install-deps] 2/4: clear stale .husky/_ runtime cache"
-# Docker Desktop's Windows bind-mount permission translation refuses to
-# let the new container's `node` user overwrite a `.husky/_/h` left by a
-# prior container with a different effective UID. `.husky/_` is
-# gitignored runtime cache; husky regenerates it during the root
-# `npm install`. Upstream husky has no fix for this UID-clash case.
+# On Docker Desktop for Windows, the bind-mount permission translation won't let
+# the new container's `node` user overwrite a `.husky/_/h` file that an earlier
+# container wrote under a different UID. So we delete it. `.husky/_` is a
+# gitignored runtime cache, and husky rebuilds it during the root `npm install`.
+# Husky upstream has no fix for this UID clash.
 rm -rf .husky/_
 
 echo "[install-deps] 3/4: npm install at root, then gitnexus-shared (build required)"
-# Install order: root first (lint-staged + husky + prettier), then
-# gitnexus-shared (build needed BEFORE gitnexus-web or gitnexus install
-# because both consume it via `file:../gitnexus-shared`).
+# Install order matters. Root goes first, for lint-staged, husky, and prettier.
+# Then gitnexus-shared, which must be built before installing gitnexus-web or
+# gitnexus. Both of those depend on it via `file:../gitnexus-shared`.
 npm install
 cd /workspace/gitnexus-shared
 npm install
 npm run build
 
 echo "[install-deps] 4/4: npm install gitnexus-web, then gitnexus"
-# gitnexus-web before gitnexus: gitnexus's `prepare` script runs
-# scripts/build.js, which compiles gitnexus-web when the directory is
-# present. In the devcontainer the full workspace is bind-mounted, so
-# gitnexus-web/ is present at gitnexus install time (not the case in the
-# production Dockerfiles, which COPY selectively).
+# gitnexus-web goes before gitnexus. The gitnexus `prepare` script runs
+# scripts/build.js, which compiles gitnexus-web when that directory is present.
+# In the devcontainer the whole workspace is bind-mounted, so gitnexus-web/ is
+# present when gitnexus installs. The production Dockerfiles COPY only selected
+# files, so the directory is not present there.
 cd /workspace/gitnexus-web
 npm install
 cd /workspace/gitnexus

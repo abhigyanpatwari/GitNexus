@@ -1,11 +1,12 @@
-// Devcontainer for GitNexus. Pre-installs Claude Code, OpenAI Codex CLI,
-// and Cursor CLI alongside the Node.js native build chain. Cross-platform
-// across macOS, Linux, Windows-via-WSL2, and Windows-native (the latter
-// needs a one-time HOME setup performed automatically by
-// initializeCommand — see .devcontainer/README.md § Windows 11 setup).
-// Opens via the VS Code Dev Containers extension.
+// Devcontainer for GitNexus. It pre-installs Claude Code, the OpenAI Codex
+// CLI, and the Cursor CLI, plus the Node.js native build chain. It works on
+// macOS, Linux, Windows via WSL2, and Windows native. Windows native needs a
+// one-time HOME setup. That setup runs automatically via initializeCommand.
+// See .devcontainer/README.md § Windows 11 setup. Open it with the VS Code
+// Dev Containers extension.
 //
-// First-time setup, auth flows, and troubleshooting: .devcontainer/README.md.
+// For first-time setup, auth flows, and troubleshooting, see
+// .devcontainer/README.md.
 {
   "name": "GitNexus AI CLI Devcontainer",
 
@@ -15,9 +16,10 @@
     "args": {
       "CLAUDE_CODE_VERSION": "2.1.153",
       "CODEX_VERSION": "0.134.0",
-      // Cursor: pinned version + per-arch tarball sha256, verified at build
-      // time in the Dockerfile (no remote install script is executed). Bump
-      // all three together; re-hash each arch with:
+      // Cursor: a pinned version plus one sha256 hash per CPU arch. The
+      // Dockerfile checks the tarball against the hash at build time, so it
+      // never runs a remote install script. Bump all three values together.
+      // Re-hash each arch with:
       //   curl -fSL https://downloads.cursor.com/lab/<ver>/linux/<x64|arm64>/agent-cli-package.tar.gz | sha256sum
       "CURSOR_VERSION": "2026.05.28-a70ca7c",
       "CURSOR_SHA256_X64": "7f8b6a09393e0b84b288cc6952b292fc98d15775f644cc01b0b9aa4f04b268df",
@@ -26,15 +28,16 @@
     }
   },
 
-  // Runs on the HOST (not the container) before container create. The
-  // single-string form is the spec-canonical shape for cross-platform
-  // command-property dispatch; the object form is "named parallel tasks",
-  // not OS dispatch. We use Node so the same command works in cmd.exe on
-  // Windows and bash/zsh on Linux/macOS/WSL — the script reads `os.homedir()`
-  // (which respects $HOME on POSIX and %USERPROFILE% on Windows) and creates
-  // the host-side bind mount sources idempotently. Host prerequisite: Node
-  // on PATH (the only host-side toolchain dependency beyond Docker Desktop
-  // and the VS Code Dev Containers extension).
+  // Runs on the HOST, not the container, before the container is created. We
+  // write it as a single string on purpose. The spec treats the single-string
+  // form as one command that each OS runs its own way. The object form means
+  // "named parallel tasks", not per-OS dispatch. We run it with Node so the
+  // same command works in cmd.exe on Windows and in bash/zsh on Linux, macOS,
+  // and WSL. The script reads `os.homedir()`, which respects $HOME on
+  // Linux/macOS and %USERPROFILE% on Windows. It then creates the host-side
+  // bind mount source folders, and it is safe to re-run. Host prerequisite:
+  // Node on PATH. That is the only host-side tool needed beyond Docker Desktop
+  // and the VS Code Dev Containers extension.
   "initializeCommand": "node .devcontainer/ensure-host-config-dirs.cjs",
 
   "features": {
@@ -49,88 +52,98 @@
 
   // Mount topology, by group:
   //
-  // 1. AI CLI host config — TWO roles. (a) A read-only stage at /host/.<cli>
-  //    that `post-create.sh` COPIES credentials + identity + single config
-  //    files from on container-create (read-only so the credential snapshot
-  //    can't be written back to host). (b) Direct READ-WRITE bind mounts of
-  //    the shareable subdirs (Claude plugins/skills/agents/memory/commands;
-  //    Codex plugins/prompts/memories/skills; Cursor plugins/rules/commands/
-  //    agents/skills) overlaid onto the named volume at their sub-paths.
-  //    Those RW binds are BIDIRECTIONAL: installing a plugin in the container
-  //    writes straight to the host, and vice versa. This is a deliberate
-  //    write-through trade-off — a compromised npm dep CAN drop files into
-  //    your host plugin/agent/skill dirs that the next host session loads.
-  //    See README § "Trust boundary, concretely". Credentials never join
-  //    this surface — they stay in the volume (role 2).
+  // 1. AI CLI host config — this has TWO roles. (a) A read-only stage at
+  //    /host/.<cli>. On container-create, `post-create.sh` COPIES credentials,
+  //    identity, and single config files out of it. It is read-only so a
+  //    container can't write the credential snapshot back to the host.
+  //    (b) Direct read-write bind mounts of the shareable subfolders (Claude
+  //    plugins/skills/agents/memory/commands; Codex plugins/prompts/memories/
+  //    skills; Cursor plugins/rules/commands/agents/skills). These overlay the
+  //    named volume at their sub-paths. These read-write binds go both ways.
+  //    Install a plugin in the container and it lands on the host; add one on
+  //    the host and the container sees it. This write-through is a deliberate
+  //    trade-off. A compromised npm dependency CAN drop files into your host
+  //    plugin/agent/skill folders, which the next host session then loads. See
+  //    README § "Trust boundary, concretely". Credentials never live on this
+  //    surface. They stay in the volume (role 2).
   //
-  // 2. AI CLI container config — per-devcontainer named volumes. CODEX_HOME
-  //    points here; CLAUDE_CONFIG_DIR is intentionally unset so it resolves
-  //    to the default ~/.claude (same path). Credentials + identity +
-  //    single config files (.credentials.json, ~/.claude/.claude.json,
-  //    settings.json, config.toml, cli-config.json, mcp.json) live here with
-  //    proper Linux perms and are NOT bind-mounted (single-file binds trip
-  //    EXDEV on Docker Desktop Windows). Container-managed state (sessions,
-  //    history, caches, IDE locks) stays isolated per devcontainer, so two
-  //    GitNexus checkouts on the same host don't corrupt each other.
+  // 2. AI CLI container config — one named volume per devcontainer. CODEX_HOME
+  //    points here. CLAUDE_CONFIG_DIR is left unset on purpose, so it resolves
+  //    to the default ~/.claude, which is this same path. Credentials,
+  //    identity, and single config files (.credentials.json,
+  //    ~/.claude/.claude.json, settings.json, config.toml, cli-config.json,
+  //    mcp.json) live here with correct Linux permissions. They are NOT
+  //    bind-mounted, because single-file binds break on Docker Desktop Windows
+  //    (the EXDEV error — see the SINGLE-FILE note below). Container-managed
+  //    state (sessions, history, caches, IDE locks) stays separate per
+  //    devcontainer. So two GitNexus checkouts on the same host can't corrupt
+  //    each other.
   //
-  // 3. Other host config — READ-ONLY bind mounts for credential/identity
-  //    dirs that don't have the perm-flattening / onboarding-state complexity
-  //    Claude Code does (ssh, aws, azure, git config, and gh + docker — the
-  //    latter two RO so a compromised dep can't rewrite the GitHub token or
-  //    Docker credHelper; see the inline note at those mounts). `~/.gitconfig`
-  //    is handled separately by VS Code's auto-copy mechanism (not mounted).
+  // 3. Other host config — read-only bind mounts for credential and identity
+  //    folders that lack the permission-flattening and onboarding-state
+  //    complications Claude Code has (ssh, aws, azure, git config, plus gh and
+  //    docker). gh and docker are read-only so a compromised dependency can't
+  //    rewrite the GitHub token or the Docker credHelper. See the inline note
+  //    at those mounts. `~/.gitconfig` is not mounted here. VS Code auto-copies
+  //    it separately.
   //
-  // 4. Per-instance state — `${devcontainerId}`-scoped: shell history,
-  //    npm cache. Survive rebuilds, isolated between sibling instances.
+  // 4. Per-instance state — scoped by `${devcontainerId}`: shell history and
+  //    the npm cache. These survive rebuilds and stay separate between sibling
+  //    instances.
   //
-  // 5. Per-workspace-name AND per-instance state — workspace `node_modules`
-  //    volumes use both `${localWorkspaceFolderBasename}` (debuggable in
-  //    `docker volume ls`) and `${devcontainerId}` (collision-free between
-  //    sibling instances of the same repo). Keeps tree-sitter native
-  //    binaries and onnxruntime off the workspace bind mount (Win/Mac perf).
+  // 5. Per-workspace-name AND per-instance state — the workspace `node_modules`
+  //    volumes use both `${localWorkspaceFolderBasename}` (so you can spot them
+  //    in `docker volume ls`) and `${devcontainerId}` (so sibling instances of
+  //    the same repo never collide). This keeps tree-sitter native binaries and
+  //    onnxruntime off the workspace bind mount, which is faster on Windows and
+  //    macOS.
   "mounts": [
-    // Per-container named volumes for credentials + identity state. Each
-    // CLI's actual `~/.<cli>` config dir lives in a volume so credentials
-    // (with proper Linux 600 perms) and per-container session state stay
-    // isolated from the host. Login in container vs login on host =
-    // independent. Bind mounts BELOW these volumes override the volume's
-    // contents at the bound sub-paths — Docker mount precedence: more
-    // specific path wins.
+    // One named volume per container for credentials and identity state. Each
+    // CLI's real `~/.<cli>` config folder lives in a volume. That keeps
+    // credentials (with correct Linux 600 permissions) and per-container
+    // session state separate from the host. Logging in inside the container
+    // and logging in on the host are independent. The bind mounts BELOW these
+    // volumes override the volume's contents at the paths they cover. Docker
+    // mount precedence is: the more specific path wins.
     "source=claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
     "source=codex-config-${devcontainerId},target=/home/node/.codex,type=volume",
     "source=cursor-config-${devcontainerId},target=/home/node/.cursor,type=volume",
 
-    // Read-only host stage for post-create.sh to copy credentials +
-    // identity from on container-create. Kept read-only so a container
-    // process can't write back to host CLI state files (the write-through
-    // attack vector). Only the credential/identity files are READ here;
-    // shareable content is bind-mounted directly RW below, not staged.
+    // Read-only host stage that post-create.sh copies credentials and
+    // identity from on container-create. It is read-only so a container
+    // process can't write back to host CLI state files. That write-back is the
+    // attack vector we are blocking. Only the credential and identity files
+    // are READ here. Shareable content is bind-mounted directly read-write
+    // below, not staged here.
     "source=${localEnv:HOME}/.claude,target=/host/.claude,type=bind,readonly",
     "source=${localEnv:HOME}/.codex,target=/host/.codex,type=bind,readonly",
     "source=${localEnv:HOME}/.cursor,target=/host/.cursor,type=bind,readonly",
 
-    // Direct RW bind mounts for shareable subdirs + files. These OVERLAY
-    // the named volume at their target paths, so reads/writes from inside
-    // the container go straight to host. `/plugin marketplace add` in
-    // container = installed on host. New skill on host = visible in
-    // container next read. Trade-off accepted: a compromised npm dep can
-    // write into host plugin/skill/agent/memory/command dirs.
-    // Plugins are split: the SOURCE (marketplaces/ git clones + cache/
-    // extracted plugin files) is path-independent and bind-mounted
-    // bidirectionally. The REGISTRY (known_marketplaces.json,
-    // installed_plugins.json, plugin-catalog-cache.json) carries absolute
+    // Direct read-write bind mounts for shareable subfolders and files. These
+    // OVERLAY the named volume at their target paths, so reads and writes
+    // inside the container go straight to the host. `/plugin marketplace add`
+    // in the container means it is installed on the host. A new skill on the
+    // host shows up in the container on the next read. We accept the trade-off:
+    // a compromised npm dependency can write into host plugin, skill, agent,
+    // memory, and command folders.
+    // Plugins are split in two. The SOURCE (the marketplaces/ git clones and
+    // the cache/ of extracted plugin files) does not depend on absolute paths,
+    // so it is bind-mounted both ways. The REGISTRY (known_marketplaces.json,
+    // installed_plugins.json, plugin-catalog-cache.json) holds absolute,
     // OS-specific paths (`C:\Users\X\.claude\plugins\...` on Windows,
-    // `/Users/x/...` on macOS) so it CANNOT be shared as-is — stays in
-    // the named volume, generated by post-create.sh from host's versions
-    // with paths translated to the container's Linux paths.
-    // DIRECTORY binds — bidirectional, atomic writes inside the dir work
-    // fine (same filesystem). Sub-path writes from container go to host
-    // immediately; host changes are visible to container immediately.
+    // `/Users/x/...` on macOS), so it CANNOT be shared as-is. It stays in the
+    // named volume. post-create.sh generates it from the host's versions, with
+    // the paths rewritten to the container's Linux paths.
+    // These are DIRECTORY binds, so they work both ways. Atomic writes inside
+    // a directory work fine, because the temp file and the target are on the
+    // same filesystem. Writes under these paths in the container reach the host
+    // right away, and host changes are visible to the container right away.
     //
-    // Claude: plugins SOURCE dirs (marketplaces/ git clones + cache/
-    // extracted files) are path-independent; the path-bearing registry
-    // JSONs at plugins/ root stay in the volume and are translated by
-    // post-create.sh (see SINGLE-FILE note below).
+    // Claude: the plugin SOURCE folders (the marketplaces/ git clones and the
+    // cache/ of extracted files) do not depend on absolute paths. The registry
+    // JSON files at the plugins/ root DO carry paths, so they stay in the
+    // volume, and post-create.sh rewrites their paths. See the SINGLE-FILE note
+    // below.
     "source=${localEnv:HOME}/.claude/plugins/marketplaces,target=/home/node/.claude/plugins/marketplaces,type=bind",
     "source=${localEnv:HOME}/.claude/plugins/cache,target=/home/node/.claude/plugins/cache,type=bind",
     "source=${localEnv:HOME}/.claude/skills,target=/home/node/.claude/skills,type=bind",
@@ -138,37 +151,40 @@
     "source=${localEnv:HOME}/.claude/memory,target=/home/node/.claude/memory,type=bind",
     "source=${localEnv:HOME}/.claude/commands,target=/home/node/.claude/commands,type=bind",
     //
-    // Codex: bind the WHOLE plugins/ dir (parent of cache/). `codex plugin
-    // add` stages installs INSIDE plugins/cache/<marketplace>/ and renames
-    // intra-dir (verified by strace), so under a single 9p bind of plugins/
-    // the rename stays intra-9p — no EXDEV. Unlike Claude, Codex has NO
-    // path-bearing registry file under plugins/ (enablement lives in
-    // config.toml at the .codex root as git URLs, not FS paths), so no
-    // translation is needed and the whole dir can be bound. `.tmp/` (the
-    // ext4 marketplace-clone staging area) is deliberately NOT bound — it
-    // must stay on the volume as the cross-fs source side.
+    // Codex: bind the WHOLE plugins/ folder (the parent of cache/). `codex
+    // plugin add` stages installs INSIDE plugins/cache/<marketplace>/ and
+    // renames within that folder (confirmed with strace). So under a single
+    // bind of plugins/, the rename stays on the same filesystem and never hits
+    // the EXDEV cross-filesystem error. Unlike Claude, Codex has NO path-
+    // bearing registry file under plugins/. Enablement lives in config.toml at
+    // the .codex root, as git URLs, not filesystem paths. So nothing needs
+    // rewriting and the whole folder can be bound. `.tmp/` is the ext4 staging
+    // area for marketplace clones, and it is deliberately NOT bound. It must
+    // stay on the volume as the source side of the cross-filesystem copy.
     "source=${localEnv:HOME}/.codex/plugins,target=/home/node/.codex/plugins,type=bind",
     "source=${localEnv:HOME}/.codex/prompts,target=/home/node/.codex/prompts,type=bind",
     "source=${localEnv:HOME}/.codex/memories,target=/home/node/.codex/memories,type=bind",
     "source=${localEnv:HOME}/.codex/skills,target=/home/node/.codex/skills,type=bind",
     //
-    // Cursor: cursor-agent (CLI, not just the IDE) shares the Cursor 2.5
-    // plugin/rules/commands/agents/skills surface on disk. Bind the SOURCE
-    // dirs (path-independent). plugins/installed_plugins.json carries
-    // absolute Windows paths like Claude's registry, so it stays in the
-    // volume and is translated by post-create.sh — that's why plugins/
-    // sub-dirs are bound individually rather than the whole plugins/ dir.
-    // mcp.json + hooks.json are single files (EXDEV-unsafe as binds) and are
-    // handled as copy-on-create. hooks.json is additionally NOT synced at
-    // all: Cursor hooks run shell commands on a timer/event with no user
-    // action, so a poisoned host hooks.json would auto-execute in the
-    // container. NOTE this is a partial mitigation, not a clean boundary —
-    // the RW-bound commands/agents/skills/rules dirs (here and for Claude)
-    // are also instruction/shell-executing surfaces a compromised dep can
-    // write through to host. The hooks.json exclusion just removes the one
-    // surface that fires WITHOUT an agent deciding to invoke it; the broader
-    // write-through trade-off is accepted + documented in README § Trust
-    // boundary. To fully close it, switch these dirs to copy-on-create too.
+    // Cursor: cursor-agent (the CLI, not just the IDE) shares the Cursor 2.5
+    // plugin/rules/commands/agents/skills files on disk. Bind the SOURCE
+    // folders, which don't depend on absolute paths.
+    // plugins/installed_plugins.json carries absolute Windows paths, like
+    // Claude's registry, so it stays in the volume and post-create.sh rewrites
+    // it. That is why the plugins/ sub-folders are bound one by one instead of
+    // binding the whole plugins/ folder. mcp.json and hooks.json are single
+    // files, which are unsafe to bind (the EXDEV error), so they are copied on
+    // create instead. hooks.json is also NOT synced at all. Cursor hooks run
+    // shell commands on a timer or event, with no user action, so a poisoned
+    // host hooks.json would run by itself in the container. NOTE this is a
+    // partial fix, not a clean boundary. The read-write bound
+    // commands/agents/skills/rules folders (here and for Claude) are also
+    // surfaces that hold instructions or run shell commands, and a compromised
+    // dependency can write through them to the host. Skipping hooks.json just
+    // removes the one surface that fires WITHOUT an agent choosing to run it.
+    // The wider write-through trade-off is accepted and documented in README
+    // § Trust boundary. To fully close it, switch these folders to copy-on-
+    // create too.
     "source=${localEnv:HOME}/.cursor/plugins/marketplaces,target=/home/node/.cursor/plugins/marketplaces,type=bind",
     "source=${localEnv:HOME}/.cursor/plugins/local,target=/home/node/.cursor/plugins/local,type=bind",
     "source=${localEnv:HOME}/.cursor/rules,target=/home/node/.cursor/rules,type=bind",
@@ -176,28 +192,29 @@
     "source=${localEnv:HOME}/.cursor/agents,target=/home/node/.cursor/agents,type=bind",
     "source=${localEnv:HOME}/.cursor/skills,target=/home/node/.cursor/skills,type=bind",
     //
-    // SINGLE-FILE binds for settings.json / .claude.json / config.toml
-    // are deliberately ABSENT. On Docker Desktop Windows the named-volume
-    // is ext4 (/dev/sdd) and a single-file bind from host is 9p drvfs —
-    // different filesystems. Atomic config writes (write `foo.tmp` ->
-    // rename onto `foo`) trip EXDEV and fail with `Device or resource
-    // busy` / `inter-device move failed`. Codex's TUI hits this as
-    // "config/batchWrite failed in TUI"; Claude silently loses writes
-    // through the same mechanism. Instead: host stage at /host/.claude
-    // (RO) + post-create.sh copies these files into the named volume on
-    // every container-create. Host changes propagate on rebuild;
-    // container changes stay container-local until rebuild.
+    // SINGLE-FILE binds for settings.json, .claude.json, and config.toml are
+    // deliberately ABSENT. On Docker Desktop Windows the named volume sits on
+    // one filesystem (ext4, /dev/sdd) and a single-file bind from the host sits
+    // on another (the 9p drvfs share). Apps save a config by writing `foo.tmp`
+    // and renaming it over `foo`. That rename can't cross filesystems: it hits
+    // the EXDEV error and fails with `Device or resource busy` or `inter-device
+    // move failed`. Codex's TUI shows this as "config/batchWrite failed in
+    // TUI"; Claude just silently loses the write the same way. Instead, we use
+    // a read-only host stage at /host/.claude, and post-create.sh copies these
+    // files into the named volume on every container-create. Host changes show
+    // up on the next rebuild. Container changes stay inside the container until
+    // a rebuild.
     "source=${localEnv:HOME}/.claude.json,target=/host/.claude.json,type=bind,readonly",
     "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,readonly",
     "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly",
-    // gh + docker are READ-ONLY. The container reads your EXISTING host login
-    // (the common case), but a compromised in-container dependency can't
+    // gh and docker are READ-ONLY. The container reads your EXISTING host login,
+    // which is the common case. But a compromised in-container dependency can't
     // rewrite ~/.config/gh/hosts.yml (your GitHub token) or
-    // ~/.docker/config.json (registry credHelper -> arbitrary binary). The
-    // trade-off: `gh auth login` / `docker login` run INSIDE the container
-    // won't persist back to the host — re-run them on the host, or drop
-    // `,readonly` on the next two lines if you want in-container logins to
-    // stick. See README § Trust boundary.
+    // ~/.docker/config.json (the registry credHelper, which points at a
+    // binary). The trade-off: `gh auth login` or `docker login` run INSIDE the
+    // container won't persist back to the host. Re-run them on the host, or
+    // remove `,readonly` from the next two lines if you want in-container logins
+    // to stick. See README § Trust boundary.
     "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,readonly",
     "source=${localEnv:HOME}/.docker,target=/home/node/.docker,type=bind,readonly",
     "source=${localEnv:HOME}/.aws,target=/home/node/.aws,type=bind,readonly",
@@ -210,48 +227,47 @@
     "source=${localWorkspaceFolderBasename}-gitnexus-shared-node-modules-${devcontainerId},target=/workspace/gitnexus-shared/node_modules,type=volume"
   ],
 
-  // Interactive login is the default auth path for all three CLIs.
-  // Credentials live in the per-container named volumes (claude-config /
-  // codex-config / cursor-config), NOT in the host bind mounts — they are
-  // copied from the read-only /host/.<cli> stage into the volume on
-  // container-create (single-file binds would trip EXDEV on Docker Desktop
-  // Windows). Only shareable content (plugins, skills, agents, memory,
-  // commands) is RW-bound to the host ~/.claude / ~/.codex / ~/.cursor
-  // dirs declared in the mounts block above.
-  // API keys (ANTHROPIC_API_KEY / OPENAI_API_KEY / CURSOR_API_KEY) are NOT
-  // injected via containerEnv — `${localEnv:VAR}` resolves an unset host var
-  // to an empty string, and Cursor in particular treats `CURSOR_API_KEY=""`
-  // as "use this empty key" rather than "fall back to stored login", which
-  // would silently break `cursor-agent login`. Users who need API key auth
-  // should `export` the var in their container shell or carry it via their
-  // VS Code dotfiles repo (see .devcontainer/README.md).
-  // CLAUDE_CONFIG_DIR is intentionally NOT set. The Claude default is
+  // Interactive login is the default way to authenticate for all three CLIs.
+  // Credentials live in the per-container named volumes (claude-config,
+  // codex-config, cursor-config), NOT in the host bind mounts. They are copied
+  // from the read-only /host/.<cli> stage into the volume on container-create.
+  // Single-file binds would break on Docker Desktop Windows (the EXDEV error).
+  // Only shareable content (plugins, skills, agents, memory, commands) is
+  // bound read-write to the host ~/.claude, ~/.codex, and ~/.cursor folders
+  // declared in the mounts block above.
+  // API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, CURSOR_API_KEY) are NOT
+  // injected via containerEnv. `${localEnv:VAR}` turns an unset host var into
+  // an empty string. Cursor in particular treats `CURSOR_API_KEY=""` as "use
+  // this empty key" instead of "fall back to the stored login", which would
+  // silently break `cursor-agent login`. If you need API-key auth, `export`
+  // the var in your container shell, or carry it in your VS Code dotfiles repo
+  // (see .devcontainer/README.md).
+  // CLAUDE_CONFIG_DIR is left unset on purpose. The Claude default is
   // `$HOME/.claude` (= `/home/node/.claude`), which is exactly where the
-  // claude-config named volume mounts — setting the env var explicitly
-  // changes which file Claude reads `hasCompletedOnboarding` from: with
-  // the var set, Claude reads `$CLAUDE_CONFIG_DIR/.claude.json` (the
-  // small identity file); without it, Claude reads `$HOME/.claude.json`
-  // (the big onboarding-state file that actually carries
-  // `hasCompletedOnboarding`, MCP user-scope config, and per-project
-  // trust). Leaving the var unset matches host behavior and lets
-  // post-create.sh's host-sync of `$HOME/.claude.json` skip the wizard
+  // claude-config named volume mounts. Setting the env var would change which
+  // file Claude reads `hasCompletedOnboarding` from. With the var set, Claude
+  // reads `$CLAUDE_CONFIG_DIR/.claude.json`, the small identity file. Without
+  // it, Claude reads `$HOME/.claude.json`, the big onboarding-state file that
+  // actually holds `hasCompletedOnboarding`, the user-scope MCP config, and
+  // per-project trust. Leaving the var unset matches host behavior. It also
+  // lets post-create.sh's sync of `$HOME/.claude.json` skip the setup wizard
   // on every container-create.
   //
-  // CODEX_HOME is kept (even though it matches the Codex default) as a
-  // canary: if we ever move the Codex named volume target, the env var
-  // makes the dependency explicit instead of silently following the
-  // default.
+  // CODEX_HOME is kept even though it matches the Codex default, as a canary.
+  // If we ever move the Codex named volume target, this env var makes the
+  // dependency explicit instead of silently following the default.
   "containerEnv": {
     "CODEX_HOME": "/home/node/.codex",
     "DISABLE_AUTOUPDATER": "1",
-    // post-create.sh strips `installMethod` from the seeded ~/.claude.json so
-    // the npm-global binary auto-detects its own install method. This is
-    // belt-and-suspenders for Claude Code issue #17289: the install-checks
-    // routine probes ~/.local/bin/claude purely because the directory EXISTS
-    // (it does here — Cursor drops agent/cursor-agent symlinks there) even
-    // when installMethod is non-native, surfacing a false "claude command not
-    // found at ~/.local/bin/claude". DISABLE_AUTOUPDATER does NOT gate that
-    // routine — DISABLE_INSTALLATION_CHECKS is its dedicated kill switch.
+    // post-create.sh removes `installMethod` from the seeded ~/.claude.json so
+    // the npm-global binary detects its own install method. This is a backup
+    // safeguard for Claude Code issue #17289. The install-checks routine probes
+    // ~/.local/bin/claude just because that directory EXISTS. It does exist
+    // here, because Cursor drops agent and cursor-agent symlinks there. So even
+    // when installMethod is non-native, the routine reports a false "claude
+    // command not found at ~/.local/bin/claude". DISABLE_AUTOUPDATER does NOT
+    // turn that routine off. DISABLE_INSTALLATION_CHECKS is its dedicated kill
+    // switch.
     "DISABLE_INSTALLATION_CHECKS": "1",
     "HISTFILE": "/commandhistory/.zsh_history"
   },
@@ -280,8 +296,8 @@
     }
   },
 
-  // 4747 (gitnexus serve) must not be remapped: gitnexus-web hardcodes
-  // http://localhost:4747 as the default backend URL.
+  // Do not remap port 4747 (gitnexus serve). gitnexus-web hardcodes
+  // http://localhost:4747 as its default backend URL.
   "forwardPorts": [5173, 4747, 4173],
   "portsAttributes": {
     "5173": {
@@ -299,17 +315,15 @@
     }
   },
 
-  // Lifecycle split (per Dev Container spec):
-  // - `updateContentCommand` runs on container-create AND whenever
-  //   workspace content changes (e.g. lockfile updates). It owns
-  //   workspace dependency installation — re-installing on every
-  //   container-create wastes time when nothing changed, but it must
-  //   re-run when deps shift.
-  // - `postCreateCommand` runs once on container-create. It owns AI CLI
-  //   credential + identity sync from the host — work that should
-  //   happen exactly once per container instance, not on every content
-  //   update.
-  // Run both via explicit `bash` so they don't depend on the script's
+  // Lifecycle split (from the Dev Container spec):
+  // - `updateContentCommand` runs on container-create AND whenever the
+  //   workspace content changes, such as a lockfile update. It owns installing
+  //   the workspace dependencies. Re-installing on every container-create
+  //   wastes time when nothing changed, but it must re-run when deps change.
+  // - `postCreateCommand` runs once on container-create. It owns syncing the
+  //   AI CLI credentials and identity from the host. That work should happen
+  //   exactly once per container instance, not on every content update.
+  // Run both with an explicit `bash` so they don't depend on the script's
   // executable bit surviving the workspace bind mount.
   "updateContentCommand": "bash .devcontainer/install-deps.sh",
   "postCreateCommand": "bash .devcontainer/post-create.sh"

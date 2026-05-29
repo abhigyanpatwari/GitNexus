@@ -1,33 +1,39 @@
-// Translates Claude + Cursor plugin-registry JSON files from host absolute
-// paths to the container's Linux paths, then writes them into the named
-// volume. Both CLIs bake absolute OS-native install paths into their registry
-// JSONs — `C:\Users\X\.claude\plugins\...` on Windows, `/Users/X/.cursor/...`
-// on macOS — so the host versions can't be bind-mounted into the Linux
-// container (the CLI fails with `cache-miss` resolving a Windows path under
-// Linux). For each CLI we read the host registry, rewrite every absolute path
-// ending in `/.<cli>/plugins/<rest>` to `/home/node/.<cli>/plugins/<rest>`,
-// and write the result into the named volume. (Codex needs no translation —
-// its enablement registry is config.toml with git URLs, not filesystem paths,
-// so its whole plugins/ dir is bind-mounted instead.)
+// Rewrites the host paths inside Claude and Cursor plugin-registry JSON files
+// so they point at the container's Linux paths, then writes the results into
+// the named volume.
 //
-// Extracted from a post-create.sh heredoc so the regex + deep rewrite are
-// unit-tested and prettier-checked (the regex has had path-handling bugs before).
+// Why: both CLIs store absolute, OS-native install paths in their registry
+// JSONs. On Windows that looks like `C:\Users\X\.claude\plugins\...`; on macOS
+// like `/Users/X/.cursor/...`. The Linux container can't use those paths. If we
+// just bind-mounted the host files in, the CLI would try to resolve a Windows
+// path under Linux and fail with `cache-miss`. So for each CLI we read the host
+// registry, rewrite every absolute path ending in `/.<cli>/plugins/<rest>` to
+// `/home/node/.<cli>/plugins/<rest>`, and write the result into the named volume.
+//
+// Codex is left alone. Its registry is config.toml and holds git URLs, not
+// filesystem paths, so there's nothing to translate — its whole plugins/ dir is
+// bind-mounted instead.
+//
+// This code lived inside a post-create.sh heredoc. We pulled it out so the regex
+// and the deep rewrite can be unit-tested and prettier-checked. The regex has
+// had path-handling bugs before.
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 
-// Match an absolute path that contains `<sep>.<cli><sep>plugins<sep><rest>`
-// where <sep> is `/` or `\`. Anchored at start; the lazy `.*?` consumes the
-// home prefix up to the FIRST `.<cli>/plugins` segment.
+// Build a regex that matches an absolute path containing
+// `<sep>.<cli><sep>plugins<sep><rest>`, where <sep> is `/` or `\`. It's anchored
+// at the start of the string. The lazy `.*?` eats the home prefix up to the
+// FIRST `.<cli>/plugins` segment.
 function buildRe(cliName) {
   return new RegExp(`^(?:[A-Za-z]:)?[\\\\/].*?[\\\\/]\\.${cliName}[\\\\/]plugins[\\\\/](.*)$`);
 }
 
-// Recursively rewrite every string value in `obj` that matches `re`,
-// remapping it under `ctr` (the container plugins dir) and normalizing
-// Windows backslashes to forward slashes.
+// Walk `obj` and rewrite every string value that matches `re`. A match is
+// remapped under `ctr`, the container's plugins dir. Windows backslashes in the
+// matched part are switched to forward slashes.
 function rewriteDeep(obj, re, ctr) {
   if (Array.isArray(obj)) return obj.map((v) => rewriteDeep(v, re, ctr));
   if (obj && typeof obj === 'object') {
@@ -73,7 +79,7 @@ function translate(registries) {
       try {
         data = JSON.parse(fs.readFileSync(src, 'utf8'));
       } catch {
-        continue; // skip a malformed host registry rather than abort
+        continue; // Skip a malformed host registry instead of aborting.
       }
       try {
         fs.writeFileSync(dst, JSON.stringify(rewriteDeep(data, re, reg.ctr), null, 2));

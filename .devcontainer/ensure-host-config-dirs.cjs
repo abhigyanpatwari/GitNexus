@@ -1,23 +1,24 @@
-// Runs on the HOST (not inside the container) before the dev container is
-// created, via devcontainer.json `initializeCommand`. Guarantees the bind
-// mount sources declared in devcontainer.json exist on the host so Docker
-// doesn't reject the mount when a CLI has never been used.
+// This runs on the HOST, not inside the container, before the dev container is
+// created. devcontainer.json calls it via `initializeCommand`. Its job is to
+// make sure the bind-mount source folders listed in devcontainer.json already
+// exist on the host. Docker rejects a bind mount when its source is missing,
+// which happens if a CLI has never been used.
 //
-// Cross-platform via Node's `os.homedir()` (which reads $HOME on POSIX and
-// %USERPROFILE% on Windows) and `fs.mkdirSync({recursive: true})`. Idempotent
-// — each path is skipped if it already exists. `~/.gitconfig` is intentionally
-// not handled here: VS Code's Dev Containers extension auto-copies the host
-// gitconfig into the container at attach time, so a bind mount conflicts with
-// that mechanism and was removed.
+// It works on every platform. `os.homedir()` returns the home folder ($HOME on
+// Mac/Linux, %USERPROFILE% on Windows). `fs.mkdirSync({recursive: true})`
+// creates folders. It is safe to run repeatedly: a path that already exists is
+// left alone. We deliberately do NOT handle `~/.gitconfig` here. VS Code's Dev
+// Containers extension copies the host gitconfig into the container when you
+// attach, and a bind mount fights with that, so it was removed.
 //
-// The pure path-ensuring logic is exported (ensurePaths/DIRS/FILES) and the
-// Windows HOME side effect only runs when this file is executed directly as
-// the initializeCommand — so it can be unit-tested against a temp dir without
-// touching the real home or invoking `setx`.
+// The path-creating logic is exported (ensurePaths/DIRS/FILES) so tests can use
+// it. The Windows HOME side effect only runs when this file is run directly as
+// the initializeCommand. That keeps tests able to drive it against a temp dir
+// without touching the real home or calling `setx`.
 //
-// Host prerequisite: Node.js on PATH. This is the only documented host
-// requirement beyond Docker Desktop and the VS Code Dev Containers
-// extension — everything else runs inside the container.
+// Host prerequisite: Node.js must be on PATH. That is the only host requirement
+// beyond Docker Desktop and the VS Code Dev Containers extension. Everything
+// else runs inside the container.
 
 'use strict';
 
@@ -25,39 +26,39 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// Directory bind-mount sources. devcontainer.json declares RW binds for
-// shareable subdirs (plugins/skills/agents/memory/commands for Claude;
-// memories/skills for Codex) so reads/writes go directly host<->container.
-// Docker rejects bind mounts whose source doesn't exist — mkdir -p each
-// one. Per-CLI directories themselves (~/.claude, ~/.codex, ~/.cursor)
-// are also created for the /host/.<cli> read-only stage mounts that
-// post-create.sh reads credentials from.
+// Folders that are bind-mount sources. devcontainer.json declares read-write
+// binds for the shareable subfolders (plugins/skills/agents/memory/commands for
+// Claude; memories/skills for Codex) so reads and writes pass straight between
+// host and container. Docker rejects a bind mount whose source is missing, so
+// we create each one. We also create the top per-CLI folders themselves
+// (~/.claude, ~/.codex, ~/.cursor). Those back the /host/.<cli> read-only stage
+// mounts that post-create.sh reads credentials from.
 const DIRS = [
   '.claude',
   path.join('.claude', 'plugins'),
-  // Claude plugin SOURCE dirs — content is path-independent so these get
-  // RW bind-mounted bidirectionally. The path-DEPENDENT registry JSONs
-  // (known_marketplaces.json, installed_plugins.json,
-  // plugin-catalog-cache.json) stay in the container's named volume,
-  // translated by post-create.sh.
+  // Claude plugin source folders. Their content does not depend on absolute
+  // paths, so they get a two-way read-write bind mount. The registry JSON files
+  // that DO contain paths (known_marketplaces.json, installed_plugins.json,
+  // plugin-catalog-cache.json) stay in the container's named volume instead,
+  // where post-create.sh rewrites their paths.
   path.join('.claude', 'plugins', 'marketplaces'),
   path.join('.claude', 'plugins', 'cache'),
   path.join('.claude', 'skills'),
   path.join('.claude', 'agents'),
   path.join('.claude', 'memory'),
   path.join('.claude', 'commands'),
-  // Codex shareable surface. The whole plugins/ dir is bound (no
-  // path-bearing registry inside it — enablement is in config.toml at the
-  // root), plus prompts/ (saved prompt library), memories/, skills/.
+  // Codex shareable folders. The whole plugins/ folder is bound, because it has
+  // no path-bearing registry inside it (enablement lives in config.toml at the
+  // root). Plus prompts/ (the saved prompt library), memories/, and skills/.
   '.codex',
   path.join('.codex', 'plugins'),
   path.join('.codex', 'prompts'),
   path.join('.codex', 'memories'),
   path.join('.codex', 'skills'),
-  // Cursor shareable surface (cursor-agent CLI shares the Cursor 2.5
-  // plugin/rules/commands/agents/skills dirs). plugins/ sub-dirs are
-  // bound individually because plugins/installed_plugins.json carries
-  // absolute paths and is translated (not bound) by post-create.sh.
+  // Cursor shareable folders. The cursor-agent CLI shares the Cursor 2.5
+  // plugin/rules/commands/agents/skills folders. The plugins/ subfolders are
+  // bound one by one. That is because plugins/installed_plugins.json holds
+  // absolute paths, so post-create.sh rewrites it instead of binding it.
   '.cursor',
   path.join('.cursor', 'plugins', 'marketplaces'),
   path.join('.cursor', 'plugins', 'local'),
@@ -73,19 +74,20 @@ const DIRS = [
   path.join('.config', 'git'),
 ];
 
-// Single-file sources. Only `~/.claude.json` is pre-created: it is the one
-// SINGLE-FILE bind (read-only at /host/.claude.json), and Docker would create
-// a DIRECTORY in its place if the source were absent — so it must exist as a
-// file. `~/.claude/settings.json` and `~/.codex/config.toml` are NOT
-// single-file binds; post-create.sh copies them out of the /host/.<cli>
-// read-only DIR stage and `sync_from_host` no-ops gracefully when they're
-// absent (the `[ -f ]` guard). Pre-creating them would be gratuitous host
-// mutation on a machine that never ran that CLI, so we don't.
+// Files to pre-create. Only `~/.claude.json` is created here. It is the one
+// source that is bound as a single file (read-only at /host/.claude.json). If
+// that source is missing, Docker would create a FOLDER in its place, so it has
+// to exist as a file first. `~/.claude/settings.json` and
+// `~/.codex/config.toml` are NOT single-file binds. post-create.sh copies them
+// out of the /host/.<cli> read-only folder stage, and `sync_from_host` simply
+// does nothing when they are absent (the `[ -f ]` guard). Creating them here
+// would needlessly write to the host of someone who never ran that CLI, so we
+// don't.
 const FILES = ['.claude.json'];
 
-// Create every dir and touch every file under `home`. Idempotent — an
-// existing path is left untouched. Parameterized on the filesystem root so
-// tests can drive it against a temp dir.
+// Create every folder and touch every file under `home`. Safe to run again:
+// an existing path is left untouched. The root is a parameter so tests can run
+// it against a temp dir.
 function ensurePaths(home, dirs = DIRS, files = FILES) {
   for (const dir of dirs) {
     const full = path.join(home, dir);
@@ -104,21 +106,21 @@ function ensurePaths(home, dirs = DIRS, files = FILES) {
 module.exports = { ensurePaths, DIRS, FILES };
 
 if (require.main === module) {
-  // Windows-native auto-setup. VS Code resolves the bind-mount sources via
-  // `${localEnv:HOME}` reading its own process env, and Windows doesn't set
-  // `HOME` by default (it uses `USERPROFILE`). Without `HOME`, the bind
-  // sources collapse to filesystem-root paths (`/.claude`, `/.codex`, ...)
+  // One-time setup for native Windows. VS Code fills in the bind-mount sources
+  // using `${localEnv:HOME}`, which reads its own process environment. Windows
+  // does not set `HOME` by default; it uses `USERPROFILE`. With no `HOME`, the
+  // bind sources shrink to filesystem-root paths (`/.claude`, `/.codex`, ...)
   // and Docker rejects them with `bind source path does not exist`.
   //
-  // Fix: persist `HOME=%USERPROFILE%` to the user's environment via `setx`.
-  // `setx` writes to `HKCU\Environment` and the new value is inherited by
-  // every process the user launches after — including VS Code after a
-  // restart. The current VS Code process can't see the update (its env was
-  // fixed at launch), so we instruct the user to restart VS Code once.
+  // The fix is to save `HOME=%USERPROFILE%` into the user's environment with
+  // `setx`. `setx` writes to `HKCU\Environment`. Every process the user starts
+  // after that inherits the new value, including VS Code once it restarts. The
+  // current VS Code process can't see the change, because its environment was
+  // set when it launched. So we tell the user to restart VS Code once.
   //
-  // Subsequent runs detect `HOME` is set, skip this block, and proceed
-  // normally. Mac/Linux/WSL hosts have `HOME` set by the shell, so this
-  // block is a no-op on those platforms.
+  // Later runs see that `HOME` is set, skip this block, and continue normally.
+  // Mac, Linux, and WSL hosts already have `HOME` set by the shell, so this
+  // block does nothing on those platforms.
   if (process.platform === 'win32' && !process.env.HOME) {
     const userprofile = process.env.USERPROFILE;
     if (userprofile) {

@@ -1,46 +1,50 @@
 #!/usr/bin/env bash
-# Devcontainer postCreate driver. Runs once after the container is created
-# (per devcontainer.json `postCreateCommand`). Workspace dependency
-# installation lives in install-deps.sh (`updateContentCommand`) which
-# runs BEFORE this script — see the spec lifecycle. This script only
-# handles AI CLI credential + identity sync from the host.
+# Devcontainer postCreate script. It runs once, right after the container is
+# created. devcontainer.json wires it up via `postCreateCommand`. Workspace
+# dependencies are installed elsewhere, in install-deps.sh (`updateContentCommand`).
+# That script runs BEFORE this one — that is the order the devcontainer spec
+# defines. This script does one job: sync the AI CLI credentials and identity
+# from the host.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[post-create] 1/2: chown AI CLI named-volume mount points"
-# The named volumes (~/.claude, ~/.codex, ~/.cursor, /commandhistory)
-# inherit ownership from the image's pre-realignment UID at first mount.
-# After `updateRemoteUserUID: true` shifts the `node` user, they end up
-# owned by the stale UID — writes inside the volume fail. (~/.local is an
-# image directory, not a volume, but is chowned defensively alongside.)
-# install-deps.sh handles the workspace-side chown; this script handles
-# the AI CLI side so each lifecycle hook owns its own concern.
+# Fix ownership on the named volumes (~/.claude, ~/.codex, ~/.cursor,
+# /commandhistory). When they first mount, they take the user ID baked into the
+# image, before any realignment. Then `updateRemoteUserUID: true` shifts the
+# `node` user to a new ID. Now the volumes are owned by the old, stale ID, and
+# writes into them fail. (~/.local is a directory in the image, not a volume.
+# We chown it too, just to be safe.) install-deps.sh fixes the workspace side.
+# This script fixes the AI CLI side, so each lifecycle hook handles its own part.
 #
-# Two distinct guards. `-xdev` bounds find's DESCENT to the volume filesystem
-# so it won't recurse into the RW host bind mounts overlaid at sub-paths
-# (plugins/marketplaces, plugins/cache, skills, agents, memory, commands,
-# codex/plugins, cursor/*). Those binds are a DIFFERENT filesystem
-# (9p/virtiofs/bind); recursing into them would rewrite host file ownership on
-# a non-UID-aligned Linux host and, worse, an EPERM there would abort
-# provisioning before credentials sync. `-h` makes chown act on a symlink
-# ITSELF, never dereferencing it onto a cross-fs target and never aborting on a
-# dangling link under `set -e` (it's a no-op for regular files/dirs).
+# There are two separate guards here, and they do different things. `-xdev`
+# keeps find from descending into other filesystems. It stops at the volume's
+# own filesystem and won't walk into the read-write host bind mounts layered at
+# sub-paths (plugins/marketplaces, plugins/cache, skills, agents, memory,
+# commands, codex/plugins, cursor/*). Those bind mounts live on a DIFFERENT
+# filesystem (9p, virtiofs, or bind). Walking into them would rewrite the
+# ownership of the host's own files on a Linux host whose user IDs don't line
+# up. Worse, a permission error there would kill provisioning before
+# credentials ever sync. `-h` tells chown to act on a symlink ITSELF instead of
+# following it. So it never lands on a target across a filesystem boundary, and
+# it never aborts on a broken symlink under `set -e`. For regular files and
+# directories `-h` does nothing extra.
 for d in /home/node/.claude /home/node/.codex /home/node/.cursor \
          /home/node/.local /commandhistory; do
     sudo find "$d" -xdev -exec chown -h node:node {} +
 done
 
 echo "[post-create] 2/2: sync AI CLI credentials + identity from host"
-# Defensive cleanup for users upgrading from an earlier devcontainer
-# design (Option B) where these paths were symlinks into the read-only
-# host stage (e.g. /home/node/.claude/plugins -> /host/.claude/plugins).
-# The current RW-bind topology overlays sub-paths but not the parent
-# symlink itself, so writes to e.g. /home/node/.claude/plugins/known_marketplaces.json
-# would resolve through the stale symlink to a read-only host file and
-# EROFS. Drop the symlinks; mkdir -p below recreates them as real
-# directories in the named volume.
+# Clean up after an older devcontainer design (Option B). Back then these paths
+# were symlinks pointing into the read-only host stage
+# (e.g. /home/node/.claude/plugins -> /host/.claude/plugins). The current setup
+# bind-mounts sub-paths read-write, but it does not replace the parent symlink
+# itself. So a write to, say, /home/node/.claude/plugins/known_marketplaces.json
+# would follow the old symlink to a read-only host file and fail with a
+# read-only-filesystem error. Delete those symlinks here. The mkdir -p below
+# then recreates them as real directories in the named volume.
 for p in plugins skills agents memory commands; do
     [ -L "/home/node/.claude/$p" ] && rm "/home/node/.claude/$p"
 done
@@ -52,29 +56,30 @@ for p in plugins rules commands agents skills; do
 done
 mkdir -p /home/node/.claude/plugins /home/node/.cursor/plugins
 
-# Shareable content is RW bind-mounted directly from host in
-# devcontainer.json — reads/writes go bidirectionally, nothing for this
-# script to do for those:
+# Shareable content is bind-mounted read-write straight from the host in
+# devcontainer.json. Changes flow both ways, so this script does nothing for it:
 #   - Claude: plugins/{marketplaces,cache}, skills, agents, memory, commands
 #   - Codex:  plugins (whole dir), prompts, memories, skills
 #   - Cursor: plugins/{marketplaces,local}, rules, commands, agents, skills
 #
-# What stays per-container (in the named volume) and gets SYNCED from
-# host on container-create:
+# The rest stays per-container, in the named volume, and is COPIED from the host
+# once when the container is created:
 #   - .credentials.json (Claude OAuth tokens)
-#   - .claude/.claude.json (Claude identity: userID, oauthAccount,
-#     migration tracking — different file from $HOME/.claude.json)
-#   - settings.json (Claude), config.toml (Codex), mcp.json (Cursor) —
-#     single config files that can't be bind-mounted (EXDEV on Windows)
-#   - auth.json (Codex), cli-config.json (Cursor — conflates auth+settings)
-#   - plugins registry JSONs with absolute paths (Claude + Cursor) —
-#     translated below
+#   - .claude/.claude.json (Claude identity: userID, oauthAccount, and
+#     migration tracking — a different file from $HOME/.claude.json)
+#   - settings.json (Claude), config.toml (Codex), mcp.json (Cursor). These are
+#     single config files, and single files can't be bind-mounted on Windows
+#     (the EXDEV error explained below).
+#   - auth.json (Codex), cli-config.json (Cursor — which mixes auth and settings)
+#   - the plugin registry JSONs that contain absolute paths (Claude + Cursor).
+#     Those are translated below.
 #
-# Sync semantics: ALWAYS overwrite from host on container-create, so a
-# fresh container starts logged in as host's user (if host had creds).
-# Container manages its own refresh from there until next rebuild.
-# Logging out in container doesn't affect host. Per-container login is
-# the design goal; bind-mounting these would make logout shared.
+# How the sync behaves: it ALWAYS overwrites from the host when the container is
+# created. A fresh container then starts logged in as the host's user, if the
+# host had credentials. From that point the container manages its own login,
+# until the next rebuild copies the host files again. Logging out inside the
+# container does NOT log out the host. Per-container login is the goal, and
+# bind-mounting these files would instead make a logout shared between both.
 
 sync_from_host() {
     local src=$1
@@ -92,52 +97,59 @@ sync_from_host \
 sync_from_host \
     /host/.claude/.claude.json /home/node/.claude/.claude.json 644
 
-# State files that USED to be single-file bind mounts but couldn't be: on
-# Docker Desktop Windows the named volume (ext4) and the host bind-mount
-# (9p drvfs) are different filesystems, so atomic config writes
-# (`tmp -> rename onto target`) trip EXDEV / Device-or-resource-busy.
-# Copy host's version into the named volume on container-create; container
-# can rewrite freely from there until next rebuild resyncs.
+# These config files are COPIED from the host, not bind-mounted. We tried
+# bind-mounting them as single files and it didn't work. On Docker Desktop for
+# Windows the named volume (ext4) and the host bind mount (9p drvfs) are
+# different filesystems. Apps save a config by writing a temp file and renaming
+# it over the real one, and that rename fails across filesystems (the "EXDEV" or
+# "Device or resource busy" error). So copy the host's version into the named
+# volume when the container is created. The container can then rewrite it freely
+# until the next rebuild copies the host version again.
 sync_from_host /host/.claude/settings.json /home/node/.claude/settings.json 644
 sync_from_host /host/.codex/config.toml   /home/node/.codex/config.toml   644
 
-# Seed $HOME/.claude.json from the host — but NOT verbatim. It mixes portable
-# ACCOUNT/ONBOARDING state (hasCompletedOnboarding, oauthAccount, userID,
-# projects, tipsHistory — keep) with HOST BINARY-MANAGEMENT state that is
-# never valid here: this image installs Claude via `npm install -g`, but the
-# host's `installMethod` (e.g. "native") makes Claude probe ~/.local/bin/claude
-# and fail "claude command not found at /home/node/.local/bin/claude". The
-# transform (strip machine fields + force hasCompletedOnboarding, guarding a
-# non-object host file) lives in seed-claude-config.cjs so it is unit-tested
-# and prettier-checked (translate-plugin-registries.test.cjs).
+# Seed $HOME/.claude.json from the host, but NOT as a straight copy. That file
+# mixes two kinds of state. Some is portable account and onboarding state we
+# want to keep: hasCompletedOnboarding, oauthAccount, userID, projects,
+# tipsHistory. The rest describes how Claude is installed on the host, and that
+# part is never valid here. This image installs Claude with `npm install -g`,
+# but the host's `installMethod` (for example "native") makes Claude look for
+# ~/.local/bin/claude and fail with
+# "claude command not found at /home/node/.local/bin/claude". The fix strips the
+# machine-specific fields and forces hasCompletedOnboarding, while handling a
+# host file that isn't a JSON object. That logic lives in seed-claude-config.cjs
+# so it can be unit-tested and prettier-checked
+# (translate-plugin-registries.test.cjs).
 node "$SCRIPT_DIR/seed-claude-config.cjs"
 
-# Plugin registry path translation (Claude + Cursor). Both bake absolute
+# Translate the plugin registry paths (Claude + Cursor). Both write absolute,
 # OS-native install paths into their plugin registry JSONs —
 # `C:\Users\X\.claude\plugins\...` on Windows, `/Users/X/.cursor/plugins/...`
-# on macOS — so the host versions can't be bind-mounted into the Linux
-# container (the CLI fails with `cache-miss` resolving a Windows path under
-# Linux). The translation (regex + deep rewrite + the REGISTRIES table) lives
-# in translate-plugin-registries.cjs so it is unit-tested and prettier-checked. Codex
-# needs no translation — its enablement registry is config.toml with git URLs,
-# not filesystem paths, so its whole plugins/ dir is bind-mounted instead.
+# on macOS. That means the host versions can't be bind-mounted into the Linux
+# container, because the CLI can't resolve a Windows path under Linux and fails
+# with `cache-miss`. The translation rewrites those paths. It uses a regex, a
+# deep rewrite, and the REGISTRIES table, all in translate-plugin-registries.cjs
+# so it can be unit-tested and prettier-checked. Codex needs no translation. Its
+# enablement registry is config.toml, and that holds git URLs rather than
+# filesystem paths, so its whole plugins/ dir is bind-mounted instead.
 node "$SCRIPT_DIR/translate-plugin-registries.cjs"
 
-# Codex auth. Hosts using OS keyring storage
-# (`cli_auth_credentials_store = "keyring"`, default on macOS) have no
-# auth.json on disk — the copy silently no-ops and
-# `codex login --device-auth` inside the container is the path.
+# Codex auth. Some hosts store credentials in the OS keyring instead of on disk
+# (`cli_auth_credentials_store = "keyring"`, the default on macOS). Those hosts
+# have no auth.json file, so the copy below quietly does nothing. In that case,
+# log in inside the container with `codex login --device-auth`.
 sync_from_host \
     /host/.codex/auth.json /home/node/.codex/auth.json
 
-# Cursor CLI — cli-config.json conflates auth + settings. Cursor has known
-# upstream issues authenticating inside Docker even with correctly-copied
-# config; if `cursor-agent` reports auth errors after copy, re-run
-# `cursor-agent login` inside the container. mcp.json (Cursor's MCP server
-# config) is a single file too — copy-on-create, not bind (EXDEV).
-# hooks.json is deliberately NOT synced: Cursor hooks run shell commands,
-# so sharing them would widen the supply-chain attack surface into the
-# container. Add it yourself if you want host hooks inside the container.
+# Cursor CLI. Its cli-config.json holds both auth and settings in one file.
+# Cursor has known upstream problems authenticating inside Docker, even when the
+# config is copied correctly. If `cursor-agent` reports auth errors after the
+# copy, run `cursor-agent login` again inside the container. mcp.json (Cursor's
+# MCP server config) is also a single file, so it is copied on create rather
+# than bind-mounted, for the same EXDEV reason as above. hooks.json is left out
+# on purpose. Cursor hooks run shell commands, and sharing the host's hooks
+# would widen the supply-chain attack surface inside the container. Copy it in
+# yourself if you want the host's hooks in the container.
 sync_from_host \
     /host/.cursor/cli-config.json /home/node/.cursor/cli-config.json
 sync_from_host \
