@@ -166,6 +166,8 @@ const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
 // RestTemplate.put → PUT
 // RestTemplate.delete → DELETE
 // RestTemplate.patchForObject → PATCH
+// Source-scan only: receiver must be named exactly `restTemplate`.
+// Fields, `this.restTemplate`, aliases, and other injection names are deferred.
 const REST_TEMPLATE_TO_HTTP: Record<string, string> = {
   getForObject: 'GET',
   getForEntity: 'GET',
@@ -215,27 +217,6 @@ const REST_TEMPLATE_EXCHANGE_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<RestTemplateMeta>);
-
-// ─── Consumer: Spring WebClient — webClient.method(HttpMethod.X, "path") ─
-const WEB_CLIENT_PATTERNS = compilePatterns({
-  name: 'java-web-client',
-  language: Java,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (method_invocation
-          object: (identifier) @obj (#eq? @obj "webClient")
-          name: (identifier) @method (#eq? @method "method")
-          arguments: (argument_list
-            (field_access
-              object: (identifier) @httpMethodCls (#eq? @httpMethodCls "HttpMethod")
-              field: (identifier) @http_method)
-            (string_literal) @path))
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
 
 const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
   get: 'GET',
@@ -304,7 +285,7 @@ const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
                 object: (identifier) @uriCls (#eq? @uriCls "URI")
                 name: (identifier) @create (#eq? @create "create")
                 arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
+          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE)$"))
       `,
     },
   ],
@@ -471,24 +452,10 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    // ─── Consumers: WebClient.method(HttpMethod.X, "path") ──────────
-    for (const match of runCompiledPatterns(WEB_CLIENT_PATTERNS, tree)) {
-      const httpMethodNode = match.captures.http_method;
-      const pathNode = match.captures.path;
-      if (!httpMethodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
-      if (path === null) continue;
-      out.push({
-        role: 'consumer',
-        framework: 'spring-web-client',
-        method: httpMethodNode.text.toUpperCase(),
-        path,
-        name: null,
-        confidence: 0.7,
-      });
-    }
-
     // ─── Consumers: WebClient.get().uri("path") short form ─────────
+    // Source-scan only: receiver must be named exactly `webClient`.
+    // The real long-form chain `webClient.method(HttpMethod.X).uri("/x")`
+    // needs multi-hop chain analysis and is intentionally deferred.
     for (const match of runCompiledPatterns(WEB_CLIENT_SHORT_FORM_PATTERNS, tree)) {
       const verbNode = match.captures.verb;
       const pathNode = match.captures.path;
@@ -524,6 +491,8 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: Java HttpClient request builder ─────────────────
+    // Java's builder exposes GET/POST/PUT/DELETE helpers. PATCH uses
+    // `.method("PATCH", body)`, which is intentionally deferred.
     for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_PATTERNS, tree)) {
       const httpMethodNode = match.captures.http_method;
       const pathNode = match.captures.path;

@@ -1379,7 +1379,6 @@ class ApiClient {
   void run(RestTemplate restTemplate, WebClient webClient) {
     restTemplate.getForObject("/api/users/{id}", String.class, 42);
     restTemplate.exchange("/api/users/{id}/details", HttpMethod.GET, null, String.class);
-    webClient.method(HttpMethod.PATCH, "/api/users/42");
     webClient.post().uri("/api/users");
     new Request.Builder().url("/api/orders/42").build();
   }
@@ -1394,10 +1393,6 @@ class ApiClient {
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}/details'),
       ).toBeDefined();
-      expect(
-        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
-      ).toBeDefined();
-      expect(consumers.find((c) => c.contractId === 'http::POST::/api/users')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
       ).toBeDefined();
@@ -1417,6 +1412,31 @@ class ApiClient {
             c.confidence === 0.7,
         ),
       ).toBeDefined();
+    });
+
+    it('does NOT match Java WebClient long-form method(HttpMethod).uri(...) yet', async () => {
+      const dir = path.join(tmpDir, 'java-web-client-long-form');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'LongFormClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class LongFormClient {
+  void run(WebClient webClient) {
+    webClient.method(HttpMethod.PATCH).uri("/api/users/42").retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+      ).toBeUndefined();
     });
 
     it('extracts OpenFeign clients as consumers, not providers', async () => {
@@ -1526,6 +1546,32 @@ interface InventoryClient {
       ).toBeDefined();
     });
 
+    it('prefers @FeignClient(path=...) over @RequestMapping prefixes on OpenFeign clients', async () => {
+      const dir = path.join(tmpDir, 'java-openfeign-prefix-precedence');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'PrecedenceClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@FeignClient(name = "order-service", path = "/feign-path")
+@RequestMapping("/rm-path")
+interface PrecedenceClient {
+  @GetMapping("/orders")
+  OrderDto getOrders();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/feign-path/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/rm-path/orders')).toBeUndefined();
+    });
+
     it('extracts Java and Apache HttpClient literal request construction', async () => {
       const dir = path.join(tmpDir, 'java-http-client-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -1539,6 +1585,7 @@ import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpPatch;
 
 class HttpClients {
   void run(HttpClient client) throws Exception {
@@ -1555,6 +1602,7 @@ class HttpClients {
     new HttpPost("/api/orders");
     new HttpPut("/api/orders/3");
     new HttpDelete("/api/orders/4");
+    new HttpPatch("/api/orders/5");
   }
 }
 `,
@@ -1588,6 +1636,9 @@ class HttpClients {
       ).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/orders/{param}'),
       ).toBeDefined();
     });
 
