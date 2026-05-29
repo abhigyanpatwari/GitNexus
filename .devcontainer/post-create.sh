@@ -47,6 +47,7 @@ DIRS=(
     /home/node/.cursor
     /home/node/.cursor/chats
     /home/node/.cursor/projects
+    /home/node/.config/gh
     /home/node/.local
     /commandhistory
 )
@@ -171,6 +172,16 @@ sync_from_host \
     /host/.cursor/cli-config.json /home/node/.cursor/cli-config.json
 sync_from_host \
     /host/.cursor/mcp.json /home/node/.cursor/mcp.json 644
+
+# gh CLI auth + settings. Same copy-into-volume model as the credentials above:
+# hosts.yml holds the GitHub token (mode 600), config.yml holds settings (644).
+# Copied from the read-only /host/.config/gh stage into the gh-config named
+# volume on create. Because the volume is writable, an in-container
+# `gh auth login` / `gh auth refresh` persists across rebuilds; because the
+# stage is read-only, nothing flows back to the host. If the host had no login,
+# both copies quietly no-op and whatever the container wrote is kept.
+sync_from_host /host/.config/gh/hosts.yml  /home/node/.config/gh/hosts.yml
+sync_from_host /host/.config/gh/config.yml /home/node/.config/gh/config.yml 644
 
 echo "[post-create] 3/4: seed shareable config dirs from host (first create only)"
 # The shareable dirs (Claude skills/agents/memory/commands/plugins; Codex

@@ -133,6 +133,15 @@
     "source=codex-config-${devcontainerId},target=/home/node/.codex,type=volume",
     "source=cursor-config-${devcontainerId},target=/home/node/.cursor,type=volume",
 
+    // gh CLI config as a per-container named volume, same model as the AI CLI
+    // configs above: post-create.sh COPIES hosts.yml/config.yml out of the
+    // read-only /host/.config/gh stage into this volume on container-create.
+    // The container then owns a WRITABLE copy, so `gh auth login` /
+    // `gh auth refresh` run INSIDE the container persist across rebuilds — and
+    // still never write back to the host (the stage is read-only). If the host
+    // is logged in, that login seeds in; if not, an in-container login sticks.
+    "source=gh-config-${devcontainerId},target=/home/node/.config/gh,type=volume",
+
     // claude-mem store. UNLIKE the shareable dirs below (skills/agents/memory),
     // this is NOT a host bind. $HOME/.claude-mem is a large, multi-GB SQLite +
     // Chroma vector store (claude-mem.db + -wal/-shm, chroma/chroma.sqlite3, HNSW
@@ -261,15 +270,18 @@
     "source=${localEnv:HOME}/.claude.json,target=/host/.claude.json,type=bind,readonly",
     "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,readonly",
     "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly",
-    // gh and docker are READ-ONLY. The container reads your EXISTING host login,
-    // which is the common case. But a compromised in-container dependency can't
-    // rewrite ~/.config/gh/hosts.yml (your GitHub token) or
-    // ~/.docker/config.json (the registry credHelper, which points at a
-    // binary). The trade-off: `gh auth login` or `docker login` run INSIDE the
-    // container won't persist back to the host. Re-run them on the host, or
-    // remove `,readonly` from the next two lines if you want in-container logins
-    // to stick. See README § Trust boundary.
-    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,readonly",
+    // gh uses the COPY-INTO-VOLUME model (read-only host stage at
+    // /host/.config/gh + the gh-config named volume above). post-create.sh seeds
+    // hosts.yml/config.yml from this stage into the volume on create, so the
+    // container has a writable copy: an in-container `gh auth login` persists
+    // across rebuilds, and nothing is ever written back to the host because this
+    // stage is read-only. docker stays a direct READ-ONLY bind: the container
+    // reads your EXISTING host login (the common case), and a compromised
+    // in-container dependency can't rewrite ~/.docker/config.json (the registry
+    // credHelper, which points at a binary). A `docker login` run inside the
+    // container won't persist back to the host — re-run it on the host, or give
+    // docker the same copy-into-volume treatment as gh. See README § Trust boundary.
+    "source=${localEnv:HOME}/.config/gh,target=/host/.config/gh,type=bind,readonly",
     "source=${localEnv:HOME}/.docker,target=/home/node/.docker,type=bind,readonly",
     "source=${localEnv:HOME}/.aws,target=/home/node/.aws,type=bind,readonly",
     "source=${localEnv:HOME}/.azure,target=/home/node/.azure,type=bind,readonly",
