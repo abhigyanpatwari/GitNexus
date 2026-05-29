@@ -40,6 +40,16 @@ export interface HttpDetection {
   confidence: number;
 }
 
+export interface HttpScanInput {
+  filePath: string;
+  tree: Parser.Tree;
+}
+
+export interface HttpFileDetections {
+  filePath: string;
+  detections: HttpDetection[];
+}
+
 /**
  * One language-scoped HTTP plugin. The plugin owns the tree-sitter
  * grammar and the `scan` function that translates a parsed tree into
@@ -95,4 +105,10 @@ export interface HttpLanguagePlugin {
    * single-file plugins can keep their unary `scan(tree)` shape.
    */
   scan(tree: Parser.Tree, repoContext?: RepoContext, fileRel?: string): HttpDetection[];
+  /**
+   * Optional project-level scan hook for language rules that require
+   * multiple files, such as Java controllers inheriting Spring mappings
+   * from annotated interfaces.
+   */
+  scanProject?(files: readonly HttpScanInput[]): HttpFileDetections[];
 }

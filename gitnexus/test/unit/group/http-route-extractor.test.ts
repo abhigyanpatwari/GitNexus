@@ -41,6 +41,8 @@ describe('HttpRouteExtractor', () => {
     });
   });
 
+  const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+
   describe('provider extraction — graph-first (Strategy A)', () => {
     it('extracts routes from Route/HANDLES_ROUTE graph + source scan for method', async () => {
       const dir = path.join(tmpDir, 'graph-first');
@@ -832,6 +834,181 @@ class UserController {
       },
     );
 
+    it('does not emit annotated Java interfaces as concrete Spring provider routes', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-only');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/DepartmentApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/departments")
+public interface DepartmentApi {
+    @GetMapping("")
+    Object list();
+
+    @GetMapping("/{name}")
+    Object getByName(@PathVariable String name);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers).toHaveLength(0);
+    });
+
+    it('inherits Spring interface route mappings when controller methods omit annotations', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-inherited-methods');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/StatusApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/status")
+public interface StatusApi {
+    @GetMapping("")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/StatusController.java'),
+        `
+package com.example.controller;
+import com.example.rest.StatusApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class StatusController implements StatusApi {
+    @Override
+    public Object getStatus() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const statusRoute = providers.find((c) => c.contractId === 'http::GET::/status');
+      expect(statusRoute).toBeDefined();
+      expect(toPosixPath(statusRoute!.symbolRef.filePath)).toBe(
+        'src/controller/StatusController.java',
+      );
+      expect(statusRoute!.symbolName).toBe('getStatus');
+      expect(providers.filter((c) => c.symbolRef.filePath.includes('StatusApi.java'))).toHaveLength(
+        0,
+      );
+    });
+
+    it('combines controller class mapping with inherited interface method mapping', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-controller-prefix');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/UserApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+public interface UserApi {
+    @GetMapping("/users")
+    Object listUsers();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example.controller;
+import com.example.rest.UserApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class UserController implements UserApi {
+    @Override
+    public Object listUsers() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const usersRoute = providers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(usersRoute).toBeDefined();
+      expect(toPosixPath(usersRoute!.symbolRef.filePath)).toBe(
+        'src/controller/UserController.java',
+      );
+    });
+
+    it('skips ambiguous inherited routes when interfaces share a simple name', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-simple-name-collision');
+      fs.mkdirSync(path.join(dir, 'src/a'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/b'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/a/StatusApi.java'),
+        `
+package com.example.a;
+import org.springframework.web.bind.annotation.*;
+
+public interface StatusApi {
+    @GetMapping("/a/status")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/b/StatusApi.java'),
+        `
+package com.example.b;
+import org.springframework.web.bind.annotation.*;
+
+public interface StatusApi {
+    @GetMapping("/b/status")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/StatusController.java'),
+        `
+package com.example.controller;
+import com.example.a.StatusApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class StatusController implements StatusApi {
+    @Override
+    public Object getStatus() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/b/status')).toBeUndefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/a/status')).toBeUndefined();
+      expect(
+        providers.filter((c) => c.symbolRef.filePath.includes('StatusController.java')),
+      ).toHaveLength(0);
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
@@ -1537,7 +1714,7 @@ interface NotFeignClient {
       const providers = contracts.filter((c) => c.role === 'provider');
 
       expect(consumers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeUndefined();
-      expect(providers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeUndefined();
     });
 
     it('extracts OpenFeign clients with @RequestMapping interface prefixes', async () => {
