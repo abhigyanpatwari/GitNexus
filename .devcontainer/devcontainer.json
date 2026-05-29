@@ -24,6 +24,13 @@
       "CURSOR_VERSION": "2026.05.28-a70ca7c",
       "CURSOR_SHA256_X64": "7f8b6a09393e0b84b288cc6952b292fc98d15775f644cc01b0b9aa4f04b268df",
       "CURSOR_SHA256_ARM64": "05a0ab361e038729aba25fe7f407531b3e8432912e499d0bffdf1dda0e7833e9",
+      // Bun: pinned by version. Installed by the official bun.sh/install
+      // script, which accepts the release tag as its first positional arg
+      // (`bash -s bun-vX.Y.Z`). UNLIKE Cursor, the install path runs an
+      // unverified remote script — chosen at request time for simplicity.
+      // To bump: pick a tag from github.com/oven-sh/bun/releases and update
+      // this value.
+      "BUN_VERSION": "1.3.14",
       "TZ": "${localEnv:TZ:UTC}"
     }
   },

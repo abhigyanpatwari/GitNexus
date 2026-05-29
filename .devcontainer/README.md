@@ -1,6 +1,6 @@
 # GitNexus Devcontainer
 
-A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, and Cursor CLI alongside the GitNexus native build chain. Supported hosts: **macOS, Linux, Windows 11 (native), and Windows 11 via WSL2.** Windows-native needs a **one-time `HOME` env var setup** — handled automatically by the `initializeCommand` on first run (see [Windows 11 setup](#windows-11-setup)).
+A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, Cursor CLI, and Bun alongside the GitNexus native build chain. Supported hosts: **macOS, Linux, Windows 11 (native), and Windows 11 via WSL2.** Windows-native needs a **one-time `HOME` env var setup** — handled automatically by the `initializeCommand` on first run (see [Windows 11 setup](#windows-11-setup)).
 
 > ### ⚠️ Read this before using it on a work machine
 >

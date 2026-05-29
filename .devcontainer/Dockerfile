@@ -36,6 +36,13 @@ ARG CODEX_VERSION
 ARG CURSOR_VERSION
 ARG CURSOR_SHA256_X64
 ARG CURSOR_SHA256_ARM64
+# Bun is installed via the official remote script (bun.sh/install), pinned by
+# version. UNLIKE Cursor and the npm packages, this install path runs an
+# UNVERIFIED remote script — there is no tarball-hash check. Chosen explicitly
+# at request time over the pin-by-sha256 alternative for install-script
+# simplicity. To harden later, switch to a pinned tarball + per-arch sha256 in
+# the Cursor style (release artifacts at github.com/oven-sh/bun/releases).
+ARG BUN_VERSION
 ARG TZ=UTC
 ARG USERNAME=node
 
@@ -46,6 +53,8 @@ ARG USERNAME=node
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION} \
     CODEX_VERSION=${CODEX_VERSION} \
     CURSOR_VERSION=${CURSOR_VERSION} \
+    BUN_VERSION=${BUN_VERSION} \
+    BUN_INSTALL=/home/${USERNAME}/.bun \
     TZ=${TZ} \
     DEVCONTAINER=true \
     NODE_OPTIONS=--max-old-space-size=4096 \
@@ -58,7 +67,7 @@ ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION} \
 # gitnexus/Dockerfile.test images.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 make g++ git curl ca-certificates bash \
+        python3 make g++ git curl ca-certificates bash unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Create and chown the named-volume mount points (~/.npm, ~/.local,
@@ -123,6 +132,22 @@ RUN set -eux; \
     ln -sf "$dir/cursor-agent" "/home/${USERNAME}/.local/bin/cursor-agent"; \
     rm -f /tmp/cursor.tgz
 
-# Put ~/.local/bin on PATH for interactive shells and lifecycle scripts. That is
-# where Cursor's installer drops the `agent` and `cursor-agent` symlinks.
-ENV PATH=/home/${USERNAME}/.local/bin:${PATH}
+# Install Bun via the official remote installer, pinned by version. The first
+# positional arg to `bash` is the release tag (`bun-vX.Y.Z`), so a specific
+# version is fetched even though the install script itself is downloaded fresh
+# on every build. NOTE: this is the ONE remote script we run unverified in
+# this image — Cursor and the base image are pinned by sha256/digest. Hardening
+# path: switch to a pinned tarball + per-arch sha256 in the Cursor style
+# (artifacts at github.com/oven-sh/bun/releases). `BUN_INSTALL` is set in ENV
+# above so the binary lands at a known path regardless of any rc-file edits
+# the installer makes (which we ignore — we own the shell rc files).
+RUN set -eux; \
+    curl -fsSL --retry 3 --max-time 120 https://bun.sh/install \
+        | bash -s "bun-v${BUN_VERSION}"; \
+    test -x "${BUN_INSTALL}/bin/bun"
+
+# Put ~/.local/bin and Bun's bin dir on PATH for interactive shells and
+# lifecycle scripts. ~/.local/bin is where Cursor's installer drops the `agent`
+# and `cursor-agent` symlinks; ${BUN_INSTALL}/bin is where the Bun installer
+# drops `bun` / `bunx`.
+ENV PATH=/home/${USERNAME}/.local/bin:${BUN_INSTALL}/bin:${PATH}
