@@ -19,10 +19,7 @@ import {
   type CsharpResolveContext,
 } from './index.js';
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
-import {
-  loadCsharpResolutionConfig,
-  type CsharpResolutionConfig,
-} from './resolution-config.js';
+import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resolution-config.js';
 import { unwrapCsharpCollectionAccessor } from './accessor-unwrap.js';
 
 const csharpScopeResolver: ScopeResolver = {

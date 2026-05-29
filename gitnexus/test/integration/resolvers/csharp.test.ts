@@ -2613,18 +2613,14 @@ describe('C# spurious import edges (#1881)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'csharp-spurious-edges'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-spurious-edges'), () => {});
   }, 60000);
 
   it('does not emit IMPORTS from System.Threading.Tasks to a local Tasks.cs', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const spurious = imports.find(
       (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' &&
-        e.targetFilePath === 'Legacy/Tasks.cs',
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Legacy/Tasks.cs',
     );
     expect(spurious).toBeUndefined();
   });
@@ -2636,8 +2632,7 @@ describe('C# spurious import edges (#1881)', () => {
     expect(imports.length).toBeGreaterThan(0);
     const legit = imports.find(
       (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' &&
-        e.targetFilePath === 'Models/User.cs',
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Models/User.cs',
     );
     expect(legit).toBeDefined();
   });
@@ -2666,8 +2661,7 @@ describe('C# spurious import edges — legacy DAG leg (#1881, #8)', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const spurious = imports.find(
       (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' &&
-        e.targetFilePath === 'Legacy/Tasks.cs',
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Legacy/Tasks.cs',
     );
     expect(spurious).toBeUndefined();
   });
@@ -2676,8 +2670,7 @@ describe('C# spurious import edges — legacy DAG leg (#1881, #8)', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const legit = imports.find(
       (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' &&
-        e.targetFilePath === 'Models/User.cs',
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Models/User.cs',
     );
     expect(legit).toBeDefined();
   });
