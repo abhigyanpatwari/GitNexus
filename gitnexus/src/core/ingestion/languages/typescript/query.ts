@@ -250,20 +250,22 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; that promotes the binding to the parent scope (where \`const X\`
 ;; lives).
 ;;
-;; Trade-off — chained array-method form: \`const x = arr.find((y) => p(y))\`
-;; has the same syntactic shape and would also match, naming the
-;; \`.find\` callback as \`x\`. The resulting \`Function:x\` is mostly
-;; harmless: \`x\` is consumed as a value (\`if (x) { ... }\`), never
-;; invoked as a function, so it gets zero incoming \`CALLS\` edges. The
-;; one outgoing edge \`Function:x → p\` is a minor mis-attribution that
-;; could in principle be fixed by adding a \`function: [(identifier)
-;; (member_expression)]\` predicate that excludes property-identifiers
-;; matching a known array-method blocklist (\`map\` / \`filter\` / \`find\`
-;; / \`reduce\` / \`forEach\` / \`some\` / \`every\`). We don't do that here
-;; because (a) the false-positive cost is negligible, (b) the blocklist
-;; would need maintenance, and (c) any user-defined fluent-API method
-;; with a callback argument would still false-positive — there's no
-;; clean syntactic line.
+;; #1876 — chained array-method form: \`const x = arr.find((y) => p(y))\`
+;; has the same syntactic shape and matches here too, naming the
+;; \`.find\` callback as \`x\`. Because \`x\` holds a value (the method
+;; result), not a callable, the spurious \`Function:x\` def is dropped
+;; emit-side in captures.ts: \`isArrayMethodCallbackArrow\` skips any
+;; \`@declaration.function\` whose enclosing call has a member-expression
+;; callee with a known Array-method property (\`ARRAY_CALLBACK_METHODS\`:
+;; \`map\` / \`filter\` / \`find\` / \`reduce\` / \`forEach\` / \`some\` /
+;; \`every\` / …). Only the \`@declaration.variable\` survives, so the
+;; binding is a single value def and calls inside the callback attribute
+;; to the enclosing scope rather than \`Function:x\`.
+;;
+;; Residual (intentional): a user-defined fluent-API method with a
+;; callback (\`qb.where(x => …)\`) is NOT in the blocklist and still
+;; classifies as \`Function\` — there's no clean syntactic line beyond
+;; the well-known Array surface, so the set is closed and easy to extend.
 ;;
 ;; Trade-off — multi-arrow arguments: \`const x = call(arrow1, arrow2)\`
 ;; would emit TWO matches with the same name \`x\`. tree-sitter-query
