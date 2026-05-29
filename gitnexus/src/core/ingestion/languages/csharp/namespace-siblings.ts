@@ -28,17 +28,19 @@
  * aliased `using static X = Y.Z;`, attributed namespace declarations,
  * and preprocessor-guarded declarations correctly because the
  * tree-sitter grammar parses them as real nodes (not textual
- * coincidences).
+ * coincidences). When the orchestrator's `treeCache` has no Tree for a
+ * file — the worker path, where native Trees can't cross MessageChannels
+ * — `extractFileStructure` falls back to a line scanner rather than
+ * re-parsing every file from scratch (that re-parse dominated worker-mode
+ * scope-resolution time). See `extractCsharpStructureViaScanner`.
  */
 
 import type { SyntaxNode } from 'tree-sitter';
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
-import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
-interface CsharpFileStructure {
+export interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means
    *  the file has no `namespace X;` / `namespace X { }` declaration
    *  and sits in the default (global) namespace. */
@@ -48,18 +50,57 @@ interface CsharpFileStructure {
   readonly usingStaticPaths: readonly string[];
 }
 
-/** Build a structural view of a C# file by walking the tree-sitter
- *  AST. Prefers `cachedTree` (handed in via `treeCache`) so we don't
- *  re-parse files the orchestrator already parsed for `extractParsedFile`;
- *  falls back to a fresh parse on cache miss. Parser singleton is
- *  shared across calls. */
+// Line-anchored scanners for the worker-path fallback (see
+// `extractCsharpStructureViaScanner`). Anchored at line start (after
+// indentation) so `// namespace X` comments and string literals don't
+// match — the same false-positive trade-off PHP's scanner accepts.
+const CS_NAMESPACE_RE = /^[ \t]*namespace[ \t]+([A-Za-z_@][A-Za-z0-9_.]*)/;
+// `global using static`, plain `using static`, and the aliased
+// `using static Alias = NS.Type;` form (the AST keeps the RHS path, so
+// the optional `Alias =` is skipped and only the dotted path captured).
+const CS_USING_STATIC_RE =
+  /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+(?:[A-Za-z_@][A-Za-z0-9_]*[ \t]*=[ \t]*)?([A-Za-z_@][A-Za-z0-9_.]*)/;
+
+/** Line-scanner used when no cached tree is available (worker-parsed
+ *  files can't transfer native tree-sitter Trees across MessageChannels,
+ *  so `treeCache` is empty for them). Re-parsing every C# file here with
+ *  tree-sitter was the dominant scope-resolution cost on large worker-mode
+ *  runs — for a multi-thousand-file solution this loop alone re-parsed the
+ *  whole repo a second time. The scanner extracts the same `namespaces` /
+ *  `usingStaticPaths` the AST walk produces for the common (line-anchored)
+ *  declarations, trading exact handling of the rare cases (declarations
+ *  split across lines, namespace keywords inside block comments/strings)
+ *  for eliminating those re-parses. Mirrors PHP's `extractNamespaceViaScanner`
+ *  (issue #1741). */
+export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
+  const namespaces: string[] = [];
+  const usingStaticPaths: string[] = [];
+  for (const line of content.split('\n')) {
+    const ns = CS_NAMESPACE_RE.exec(line);
+    if (ns !== null) {
+      namespaces.push(ns[1]!);
+      continue;
+    }
+    const us = CS_USING_STATIC_RE.exec(line);
+    if (us !== null) usingStaticPaths.push(us[1]!);
+  }
+  return { namespaces, usingStaticPaths };
+}
+
+/** Build a structural view of a C# file. Prefers `cachedTree` (handed in
+ *  via `treeCache`) and walks the tree-sitter AST — the authoritative
+ *  path that sees `global using static`, aliased `using static X = Y.Z;`,
+ *  attributed namespace declarations, and preprocessor-guarded nodes
+ *  correctly. On cache miss (worker-parsed files, whose native Trees
+ *  can't cross MessageChannels) it falls back to the line scanner instead
+ *  of a fresh tree-sitter parse — the parse here dominated worker-mode
+ *  scope-resolution time. Parser singleton is shared across calls. */
 function extractFileStructure(content: string, cachedTree: unknown): CsharpFileStructure {
+  if (!cachedTree) {
+    return extractCsharpStructureViaScanner(content);
+  }
   type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
-  const tree =
-    (cachedTree as CsharpTree | undefined) ??
-    parseSourceSafe(getCsharpParser(), content, undefined, {
-      bufferSize: getTreeSitterBufferSize(content),
-    });
+  const tree = cachedTree as CsharpTree;
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
 
