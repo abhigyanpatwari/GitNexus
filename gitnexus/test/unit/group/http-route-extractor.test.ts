@@ -1515,6 +1515,31 @@ interface HealthClient {
       ).toBeUndefined();
     });
 
+    it('does not treat @FeignClient text in an interface body as a Feign annotation', async () => {
+      const dir = path.join(tmpDir, 'java-non-feign-interface-text');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'NotFeignClient.java'),
+        `
+import org.springframework.web.bind.annotation.GetMapping;
+
+interface NotFeignClient {
+  String MARKER = "@FeignClient";
+
+  @GetMapping("/not-feign")
+  String call();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeUndefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeDefined();
+    });
+
     it('extracts OpenFeign clients with @RequestMapping interface prefixes', async () => {
       const dir = path.join(tmpDir, 'java-openfeign-request-mapping-prefix');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });

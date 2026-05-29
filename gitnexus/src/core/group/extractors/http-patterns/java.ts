@@ -338,7 +338,17 @@ function findEnclosingInterface(node: Parser.SyntaxNode): Parser.SyntaxNode | nu
 }
 
 function hasAnnotation(node: Parser.SyntaxNode, annotationName: string): boolean {
-  return new RegExp(`@\\s*${annotationName}\\b`).test(node.text);
+  for (const child of node.namedChildren) {
+    if (child.type !== 'modifiers') continue;
+    for (const modifier of child.namedChildren) {
+      if (modifier.type !== 'annotation') continue;
+      const nameNode = modifier.childForFieldName('name');
+      if (!nameNode) continue;
+      const simpleName = nameNode.text.split('.').pop();
+      if (nameNode.text === annotationName || simpleName === annotationName) return true;
+    }
+  }
+  return false;
 }
 
 /**
