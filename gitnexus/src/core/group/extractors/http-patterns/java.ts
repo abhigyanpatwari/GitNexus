@@ -12,7 +12,7 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  * Java HTTP plugin. Handles:
  *   - Spring `@RequestMapping` class prefixes + `@(Get|Post|...)Mapping` method annotations
  *   - Spring `RestTemplate.getForObject/...`, `exchange(...)`
- *   - Spring `WebClient.method(HttpMethod.X, ...)`, `WebClient.get().uri(...)`
+ *   - Spring `WebClient.get().uri(...)`, `WebClient.method(HttpMethod.X).uri(...)`
  *   - OkHttp `new Request.Builder().url("...")`
  *   - OpenFeign interfaces with Spring MVC method annotations
  *   - Java / Apache HttpClient literal request construction
@@ -315,7 +315,7 @@ const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
                 object: (identifier) @uriCls (#eq? @uriCls "URI")
                 name: (identifier) @create (#eq? @create "create")
                 arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE)$"))
+          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|HEAD)$"))
       `,
     },
   ],
@@ -473,7 +473,7 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null
   const name = methodInvocationName(node);
   const objectNode = methodInvocationObject(node);
   if (
-    (name === 'fromPath' || name === 'fromUriString') &&
+    (name === 'fromPath' || name === 'fromUriString' || name === 'fromHttpUrl') &&
     objectNode?.text === 'UriComponentsBuilder'
   )
     return firstLiteralArgument(node);
@@ -492,7 +492,18 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null
     if (segments.length !== methodInvocationArguments(node).length) return null;
     return segments.reduce((acc, segment) => appendPath(acc, segment), base);
   }
-  if (name === 'build' || name === 'toUriString' || name === 'toUri' || name === 'encode')
+  if (
+    name === 'build' ||
+    name === 'toUriString' ||
+    name === 'toUri' ||
+    name === 'encode' ||
+    name === 'query' ||
+    name === 'queryParam' ||
+    name === 'queryParams' ||
+    name === 'replaceQuery' ||
+    name === 'replaceQueryParam' ||
+    name === 'replaceQueryParams'
+  )
     return extractUriComponentsBuilderPath(objectNode);
   return null;
 }
@@ -507,7 +518,8 @@ function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string {
   let parent = cur.parent;
   while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
     const name = methodInvocationName(parent);
-    if (name && ['get', 'post', 'put', 'delete', 'patch'].includes(name)) return name.toUpperCase();
+    if (name && ['get', 'head', 'post', 'put', 'delete', 'patch'].includes(name))
+      return name.toUpperCase();
     if (name === 'method') {
       const method = firstLiteralArgument(parent);
       return method?.toUpperCase() ?? 'GET';
@@ -707,8 +719,8 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: Java HttpClient request builder ─────────────────
-    // Java's builder exposes GET/POST/PUT/DELETE helpers. PATCH uses
-    // `.method("PATCH", body)`, which is intentionally deferred.
+    // Java's standard builder exposes GET/POST/PUT/DELETE/HEAD helpers.
+    // Other verbs, including PATCH, use `.method("PATCH", body)`.
     for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_PATTERNS, tree)) {
       const httpMethodNode = match.captures.http_method;
       const pathNode = match.captures.path;

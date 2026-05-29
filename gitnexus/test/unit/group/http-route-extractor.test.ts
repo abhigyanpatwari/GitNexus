@@ -1379,12 +1379,20 @@ import okhttp3.Request;
 
 class ApiClient {
   void run(RestTemplate restTemplate, WebClient webClient) {
+    String dynamicPath = "/api/dynamic-users/99";
     restTemplate.getForObject("/api/users/{id}", String.class, 42);
     restTemplate.exchange("/api/users/{id}/details", HttpMethod.GET, null, String.class);
+    restTemplate.getForObject(dynamicPath, String.class);
     restTemplate.getForEntity(URI.create("/api/uri-users/42"), String.class);
     restTemplate.exchange(URI.create("/api/uri-users/42/details"), HttpMethod.POST, null, String.class);
     restTemplate.getForObject(
         UriComponentsBuilder.fromPath("/api").path("/builder-users").pathSegment("42").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromUriString("/base").path("/sub").queryParam("page", "1").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromHttpUrl("https://example.com/api").path("/external-users").query("page=1").build().toUriString(),
         String.class);
     webClient.post().uri("/api/users");
     new Request.Builder().url("/api/orders/42").build();
@@ -1420,6 +1428,13 @@ class ApiClient {
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/builder-users/{param}'),
       ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/base/sub')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/external-users'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/dynamic-users/{param}'),
+      ).toBeUndefined();
       expect(
         consumers.find(
           (c) =>
@@ -1503,12 +1518,9 @@ class QualifiedController {
       fs.writeFileSync(
         path.join(dir, 'src', 'UsersApi.java'),
         `
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-
-@RequestMapping("/api")
+@org.springframework.web.bind.annotation.RequestMapping("/api")
 interface UsersApi {
-  @GetMapping("/users/{id}")
+  @org.springframework.web.bind.annotation.GetMapping("/users/{id}")
   UserDto getUser(String id);
 }
 `,
@@ -1669,14 +1681,10 @@ interface InventoryClient {
       fs.writeFileSync(
         path.join(dir, 'src', 'PrecedenceClient.java'),
         `
-import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-
-@FeignClient(name = "order-service", path = "/feign-path")
-@RequestMapping("/rm-path")
+@org.springframework.cloud.openfeign.FeignClient(name = "order-service", path = "/feign-path")
+@org.springframework.web.bind.annotation.RequestMapping("/rm-path")
 interface PrecedenceClient {
-  @GetMapping("/orders")
+  @org.springframework.web.bind.annotation.GetMapping("/orders")
   OrderDto getOrders();
 }
 `,
@@ -1714,6 +1722,10 @@ class HttpClients {
         .uri(URI.create("/api/users"))
         .POST(HttpRequest.BodyPublishers.ofString("{}"))
         .build();
+    HttpRequest head = HttpRequest.newBuilder()
+        .uri(URI.create("/api/users/head"))
+        .HEAD()
+        .build();
     HttpRequest patch = HttpRequest.newBuilder()
         .uri(URI.create("/api/users/2"))
         .method("PATCH", HttpRequest.BodyPublishers.ofString("{}"))
@@ -1748,6 +1760,14 @@ class HttpClients {
         consumers.find(
           (c) =>
             c.contractId === 'http::PATCH::/api/users/{param}' &&
+            c.meta.framework === 'java-http-client' &&
+            c.confidence === 0.65,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::HEAD::/api/users/head' &&
             c.meta.framework === 'java-http-client' &&
             c.confidence === 0.65,
         ),
@@ -1792,9 +1812,12 @@ import okhttp3.RequestBody;
 
 class OkHttpVerbs {
   void run(RequestBody body) {
+    new Request.Builder().url("/api/orders/0").get().build();
+    new Request.Builder().url("/api/orders/head").head().build();
     new Request.Builder().url("/api/orders").post(body).build();
     new Request.Builder().url("/api/orders/1").put(body).build();
     new Request.Builder().url("/api/orders/2").delete().build();
+    new Request.Builder().url("/api/orders/3").method("GET", null).build();
     new Request.Builder().url("/api/orders/3").method("PATCH", body).build();
   }
 }
@@ -1812,6 +1835,10 @@ class OkHttpVerbs {
             c.confidence === 0.7,
         ),
       ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::HEAD::/api/orders/head')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::PUT::/api/orders/{param}'),
       ).toBeDefined();
