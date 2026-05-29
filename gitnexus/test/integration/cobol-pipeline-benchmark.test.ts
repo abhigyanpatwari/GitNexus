@@ -11,6 +11,16 @@
  * cobolPhase runs in both modes. Under =1, scope-resolution is skipped for
  * COBOL (standalone guard at phase.ts:164), so node/edge counts come entirely
  * from the legacy cobolPhase.
+ *
+ * IMPORTANT — this benchmark measures scaling in FILE COUNT, so per-file work
+ * must stay constant as fileCount grows. Each program therefore COPYs a fixed
+ * number of shared copybooks (COPYBOOKS_PER_PROGRAM), independent of fileCount.
+ * Do NOT make every program COPY all copybooks: copybookCount grows as
+ * floor(fileCount/5), so copy-all makes emitted data-item nodes — and thus
+ * total work — O(fileCount²), which measures copybook fan-out rather than
+ * file-count scaling. The pipeline itself is O(fileCount) (verified: with
+ * constant fan-out, node count and wall-clock scale exactly linearly); the
+ * node-ratio assertion below guards against reintroducing the O(n²) pattern.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -92,13 +102,30 @@ function generateCobolFixture(
       );
     }
 
+    // Each program COPYs a CONSTANT number of shared copybooks (independent of
+    // fileCount) so per-file work stays O(1) and the benchmark measures true
+    // file-count scaling. Copybooks are chosen by program index so they remain
+    // shared across programs (fan-in), still exercising cross-program copybook
+    // reuse and multi-COPY-per-program expansion. (Copying ALL copybooks here
+    // would make per-file work — and emitted data-item nodes — grow with
+    // fileCount, i.e. O(fileCount²); see the file header.)
+    const COPYBOOKS_PER_PROGRAM = 3;
+    const wsCopybooks = [
+      ...new Set(
+        Array.from(
+          { length: COPYBOOKS_PER_PROGRAM },
+          (_, k) => copybookNames[(f + k) % copybookCount],
+        ),
+      ),
+    ];
+
     const content = [
       `       IDENTIFICATION DIVISION.`,
       `       PROGRAM-ID. ${programName}.`,
       `       ENVIRONMENT DIVISION.`,
       `       DATA DIVISION.`,
       `       WORKING-STORAGE SECTION.`,
-      ...copybookNames.map((n) => `           COPY ${n}.`),
+      ...wsCopybooks.map((n) => `           COPY ${n}.`),
       `       PROCEDURE DIVISION.`,
       ...paragraphs,
       `       STOP RUN.`,
@@ -209,7 +236,17 @@ describe.skipIf(!BENCH_ENABLED)('COBOL pipeline benchmark', () => {
     for (let i = 1; i < results.length; i++) {
       const fileRatio = results[i].fileCount / results[i - 1].fileCount;
       const timeRatio = results[i].elapsedMs / results[i - 1].elapsedMs;
+      // Wall-clock is noisy (GC/CI load); keep a coarse upper bound here.
       expect(timeRatio / fileRatio).toBeLessThan(4);
+
+      // Deterministic regression guard: with constant per-program copybook
+      // fan-out the emitted node count is exactly linear in fileCount
+      // (ratio ≈ 1.0). If someone reintroduces O(fileCount²) work — e.g. by
+      // making every program COPY all copybooks — node growth jumps to ~2x
+      // per file-doubling and this fails. Node count is deterministic, so
+      // this is a non-flaky guard unlike the wall-clock check above.
+      const nodeRatio = results[i].nodeCount / results[i - 1].nodeCount;
+      expect(nodeRatio / fileRatio).toBeLessThan(1.3);
     }
   }, 600_000);
 });
