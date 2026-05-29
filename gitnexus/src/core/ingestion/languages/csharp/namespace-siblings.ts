@@ -50,10 +50,11 @@ export interface CsharpFileStructure {
   readonly usingStaticPaths: readonly string[];
 }
 
-// Line-anchored scanners for the worker-path fallback (see
+// Line-anchored matchers for the worker-path fallback (see
 // `extractCsharpStructureViaScanner`). Anchored at line start (after
-// indentation) so `// namespace X` comments and string literals don't
-// match — the same false-positive trade-off PHP's scanner accepts.
+// indentation); the scanner additionally tracks block-comment / string
+// state across lines so a keyword at the start of a line inside one of
+// those regions is skipped.
 const CS_NAMESPACE_RE = /^[ \t]*namespace[ \t]+([A-Za-z_@][A-Za-z0-9_.]*)/;
 // `global using static`, plain `using static`, and the aliased
 // `using static Alias = NS.Type;` form (the AST keeps the RHS path, so
@@ -61,28 +62,144 @@ const CS_NAMESPACE_RE = /^[ \t]*namespace[ \t]+([A-Za-z_@][A-Za-z0-9_.]*)/;
 const CS_USING_STATIC_RE =
   /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+(?:[A-Za-z_@][A-Za-z0-9_]*[ \t]*=[ \t]*)?([A-Za-z_@][A-Za-z0-9_.]*)/;
 
-/** Line-scanner used when no cached tree is available (worker-parsed
- *  files can't transfer native tree-sitter Trees across MessageChannels,
- *  so `treeCache` is empty for them). Re-parsing every C# file here with
+/** Multi-line lexical state carried line-to-line by the scanner. */
+type CsScanState = 'code' | 'block' | 'verbatim' | 'raw';
+
+/** Advance the scanner's lexical state across one line, consuming block
+ *  comments (slash-star), line comments (`//`), single-line regular /
+ *  interpolated strings, verbatim strings (`@"…"`), and raw string literals
+ *  (`"""…"""`, fence length tracked in `rawFence`). Returns the state and
+ *  raw-fence length in effect at the START of the next line. Single-line
+ *  strings and `//` comments resolve back to `code` before end of line; only
+ *  block comments and multi-line strings carry state forward. */
+function advanceCsScanState(
+  line: string,
+  state: CsScanState,
+  rawFence: number,
+): [CsScanState, number] {
+  const n = line.length;
+  let i = 0;
+  while (i < n) {
+    if (state === 'block') {
+      const end = line.indexOf('*/', i);
+      if (end === -1) return ['block', rawFence];
+      i = end + 2;
+      state = 'code';
+    } else if (state === 'verbatim') {
+      // Ends at a `"` that is not doubled (`""` is an escaped quote).
+      while (i < n) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') {
+            i += 2;
+            continue;
+          }
+          break;
+        }
+        i++;
+      }
+      if (i >= n) return ['verbatim', rawFence];
+      i += 1;
+      state = 'code';
+    } else if (state === 'raw') {
+      // Ends at a run of `"` at least `rawFence` long.
+      let closed = false;
+      while (i < n) {
+        if (line[i] === '"') {
+          let k = i;
+          while (k < n && line[k] === '"') k++;
+          if (k - i >= rawFence) {
+            i = k;
+            state = 'code';
+            rawFence = 0;
+            closed = true;
+            break;
+          }
+          i = k;
+        } else {
+          i++;
+        }
+      }
+      if (!closed) return ['raw', rawFence];
+    } else {
+      const c = line[i];
+      const next = line[i + 1];
+      if (c === '/' && next === '/') return ['code', rawFence]; // line comment to EOL
+      if (c === '/' && next === '*') {
+        state = 'block';
+        i += 2;
+      } else if (c === '@' && next === '"') {
+        state = 'verbatim';
+        i += 2;
+      } else if ((c === '$' && next === '@') || (c === '@' && next === '$')) {
+        if (line[i + 2] === '"') {
+          state = 'verbatim'; // interpolated verbatim ($@"…" / @$"…")
+          i += 3;
+        } else {
+          i++;
+        }
+      } else if (c === '"') {
+        let k = i;
+        while (k < n && line[k] === '"') k++;
+        const run = k - i;
+        if (run >= 3) {
+          state = 'raw';
+          rawFence = run;
+          i = k;
+        } else if (run === 2) {
+          i = k; // "" — empty string
+        } else {
+          // single-line regular / interpolated string; consume to closer
+          let j = i + 1;
+          while (j < n) {
+            if (line[j] === '\\') {
+              j += 2;
+              continue;
+            }
+            if (line[j] === '"') break;
+            j++;
+          }
+          i = j >= n ? n : j + 1;
+        }
+      } else {
+        i++;
+      }
+    }
+  }
+  return [state, rawFence];
+}
+
+/** Line-scanner used when no cached tree is available (worker-parsed files
+ *  can't transfer native tree-sitter Trees across MessageChannels, so
+ *  `treeCache` is empty for them). Re-parsing every C# file here with
  *  tree-sitter was the dominant scope-resolution cost on large worker-mode
  *  runs — for a multi-thousand-file solution this loop alone re-parsed the
  *  whole repo a second time. The scanner extracts the same `namespaces` /
- *  `usingStaticPaths` the AST walk produces for the common (line-anchored)
- *  declarations, trading exact handling of the rare cases (declarations
- *  split across lines, namespace keywords inside block comments/strings)
- *  for eliminating those re-parses. Mirrors PHP's `extractNamespaceViaScanner`
- *  (issue #1741). */
+ *  `usingStaticPaths` the AST walk produces for line-anchored declarations,
+ *  while tracking block-comment and string state across lines (via
+ *  `advanceCsScanState`) so a `namespace` / `using static` keyword at the
+ *  start of a line inside a block comment, verbatim string, or raw string
+ *  literal is NOT mistaken for a declaration. The remaining trade-off vs the
+ *  AST is a declaration whose keyword is not at the start of a code line
+ *  (split across lines, or sharing a line with a comment/string closer).
+ *  Mirrors PHP's `extractNamespaceViaScanner` (issue #1741). */
 export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
+  let state: CsScanState = 'code';
+  let rawFence = 0;
   for (const line of content.split('\n')) {
-    const ns = CS_NAMESPACE_RE.exec(line);
-    if (ns !== null) {
-      namespaces.push(ns[1]!);
-      continue;
+    // Only match when the line START is real code — keywords reached while
+    // inside a block comment / multi-line string are skipped.
+    if (state === 'code') {
+      const ns = CS_NAMESPACE_RE.exec(line);
+      if (ns !== null) {
+        namespaces.push(ns[1]!);
+      } else {
+        const us = CS_USING_STATIC_RE.exec(line);
+        if (us !== null) usingStaticPaths.push(us[1]!);
+      }
     }
-    const us = CS_USING_STATIC_RE.exec(line);
-    if (us !== null) usingStaticPaths.push(us[1]!);
+    [state, rawFence] = advanceCsScanState(line, state, rawFence);
   }
   return { namespaces, usingStaticPaths };
 }
@@ -396,8 +513,12 @@ export function populateCsharpNamespaceSiblings(
 
   // Workspace-level binding channel for global-namespace types (see the
   // global fast-path below). `lookupBindingsAt` consults this as a third
-  // source after finalized + per-scope augmented bindings.
-  const fqnMap = indexes.workspaceFqnBindings as Map<string, BindingRef[]>;
+  // source after finalized + per-scope augmented bindings. Its inner arrays
+  // are mutable by contract (append-only, like `bindingAugmentations` — see
+  // the ScopeResolutionIndexes doc + validateBindingsImmutability), so the
+  // ReadonlyMap→Map cast is localized to this one line and all writes go
+  // through `getWorkspaceBucket`.
+  const workspace = indexes.workspaceFqnBindings as Map<string, BindingRef[]>;
 
   for (const [nsName, bucket] of buckets) {
     // Group sibling defs by simple name. Append in place — the previous
@@ -433,20 +554,13 @@ export function populateCsharpNamespaceSiblings(
     // partial-class / duplicate declarations from double-emitting.
     if (nsName === '') {
       for (const [name, defs] of defsByName) {
-        let arr = fqnMap.get(name);
-        let seen: Set<string> | null = null;
+        const bucket = getWorkspaceBucket(workspace, name);
+        const seen = new Set<string>();
+        for (const b of bucket) seen.add(b.def.nodeId);
         for (const def of defs) {
-          if (arr === undefined) {
-            arr = [];
-            fqnMap.set(name, arr);
-          }
-          if (seen === null) {
-            seen = new Set<string>();
-            for (const b of arr) seen.add(b.def.nodeId);
-          }
-          if (seen.has(def.nodeId)) continue;
+          if (seen.has(def.nodeId)) continue; // dedup by nodeId (keeps partials, drops re-emits)
           seen.add(def.nodeId);
-          arr.push({ def, origin: 'namespace' });
+          bucket.push({ def, origin: 'namespace' });
         }
       }
       continue;
@@ -517,6 +631,22 @@ function getAugmentationBucket(
   if (bucketArr === undefined) {
     bucketArr = [];
     scopeBindings.set(name, bucketArr);
+  }
+  return bucketArr;
+}
+
+/** Get-or-create a mutable inner bucket inside the `workspaceFqnBindings`
+ *  channel (the scope-independent third channel; see
+ *  `ScopeResolutionIndexes.workspaceFqnBindings`). Like
+ *  `getAugmentationBucket`, the inner arrays are mutable by contract —
+ *  callers `push` directly. Keeping the get-or-create here means the one
+ *  ReadonlyMap→Map cast at the call site is the only place the mutable
+ *  view is taken. */
+function getWorkspaceBucket(workspace: Map<string, BindingRef[]>, name: string): BindingRef[] {
+  let bucketArr = workspace.get(name);
+  if (bucketArr === undefined) {
+    bucketArr = [];
+    workspace.set(name, bucketArr);
   }
   return bucketArr;
 }

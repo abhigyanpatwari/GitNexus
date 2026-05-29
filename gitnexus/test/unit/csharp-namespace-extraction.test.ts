@@ -68,4 +68,32 @@ describe('extractCsharpStructureViaScanner', () => {
     expect(out.namespaces).toEqual([]);
     expect(out.usingStaticPaths).toEqual([]);
   });
+
+  // Cross-line comment/string state: a keyword at the start of a line inside
+  // a block comment or multi-line string must NOT be read as a declaration
+  // (the worker path would otherwise mis-bucket the file vs the AST).
+  it('skips a `namespace` line inside a block comment', () => {
+    const src = `/*\nnamespace Fake.InComment;\n*/\nnamespace App.Real;`;
+    expect(extractCsharpStructureViaScanner(src).namespaces).toEqual(['App.Real']);
+  });
+
+  it('skips a `using static` line inside a block comment', () => {
+    const src = `/*\nusing static Fake.Helpers;\n*/\nusing static App.Real.Helpers;`;
+    expect(extractCsharpStructureViaScanner(src).usingStaticPaths).toEqual(['App.Real.Helpers']);
+  });
+
+  it('skips a `namespace` line inside a raw string literal', () => {
+    const src = `var sql = """\nnamespace Fake.InRaw;\n""";\nnamespace App.Real;`;
+    expect(extractCsharpStructureViaScanner(src).namespaces).toEqual(['App.Real']);
+  });
+
+  it('skips a `namespace` line inside a verbatim string literal', () => {
+    const src = `var s = @"\nnamespace Fake.InVerbatim;\n";\nnamespace App.Real;`;
+    expect(extractCsharpStructureViaScanner(src).namespaces).toEqual(['App.Real']);
+  });
+
+  it('still reads a real declaration after a closed same-line block comment', () => {
+    const src = `/* header */ class C {}\nnamespace App.Real;`;
+    expect(extractCsharpStructureViaScanner(src).namespaces).toEqual(['App.Real']);
+  });
 });
