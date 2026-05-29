@@ -73,7 +73,7 @@ interface SpringTypeInfo {
 }
 
 // ─── Provider: Spring class/interface-level @RequestMapping prefix ───
-const SPRING_TYPE_PREFIX_PATTERNS = compilePatterns({
+const TYPE_PREFIX_PATTERNS = compilePatterns({
   name: 'java-spring-type-prefix',
   language: Java,
   patterns: [
@@ -155,7 +155,7 @@ const SPRING_TYPE_DECLARATION_PATTERNS = compilePatterns({
 //   @line   → the literal `@RequestLine`
 //   @value  → the request-line string literal (e.g. `"GET /users/{id}"`)
 //   @method → the enclosing method node, used for enclosing-interface lookup
-const FEIGN_REQUEST_LINE_PATTERNS = compilePatterns({
+const REQUEST_LINE_PATTERNS = compilePatterns({
   name: 'java-feign-request-line',
   language: Java,
   patterns: [
@@ -212,7 +212,7 @@ function parseRequestLine(raw: string): { method: string; path: string } | null 
 // Feign's `name`/`value` attributes identify a service, not an HTTP path,
 // so only `path` is used as a URL prefix. `@RequestMapping` on a Feign
 // interface is also common and does carry a path prefix.
-const FEIGN_INTERFACE_PREFIX_PATTERNS = compilePatterns({
+const INTERFACE_PREFIX_PATTERNS = compilePatterns({
   name: 'java-feign-interface-prefix',
   language: Java,
   patterns: [
@@ -260,7 +260,7 @@ const FEIGN_INTERFACE_PREFIX_PATTERNS = compilePatterns({
 // pattern restricts the annotation member name to `path`/`value` to
 // avoid capturing unrelated string-valued attributes
 // (`produces`, `consumes`, `headers`, `name`, `params`, ...).
-const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
+const METHOD_ROUTE_PATTERNS = compilePatterns({
   name: 'java-spring-method-route',
   language: Java,
   patterns: [
@@ -508,7 +508,7 @@ function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[
 
 function collectTypePrefixes(tree: Parser.Tree): Map<number, string> {
   const prefixByTypeId = new Map<number, string>();
-  for (const match of runCompiledPatterns(SPRING_TYPE_PREFIX_PATTERNS, tree)) {
+  for (const match of runCompiledPatterns(TYPE_PREFIX_PATTERNS, tree)) {
     const prefixNode = match.captures.prefix;
     const typeNode = match.captures.type;
     if (!prefixNode || !typeNode) continue;
@@ -520,7 +520,7 @@ function collectTypePrefixes(tree: Parser.Tree): Map<number, string> {
 
 function collectMethodRoutes(tree: Parser.Tree): Map<number, SpringRouteBinding[]> {
   const routesByMethodId = new Map<number, SpringRouteBinding[]>();
-  for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
+  for (const match of runCompiledPatterns(METHOD_ROUTE_PATTERNS, tree)) {
     const annNode = match.captures.ann;
     const pathNode = match.captures.path;
     const methodNode = match.captures.method;
@@ -670,7 +670,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     const prefixByTypeId = collectTypePrefixes(tree);
 
     const feignPrefixByInterfaceId = new Map<number, string>();
-    for (const match of runCompiledPatterns(FEIGN_INTERFACE_PREFIX_PATTERNS, tree)) {
+    for (const match of runCompiledPatterns(INTERFACE_PREFIX_PATTERNS, tree)) {
       const prefixNode = match.captures.prefix;
       const interfaceNode = match.captures.interface;
       if (!prefixNode || !interfaceNode) continue;
@@ -679,7 +679,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         feignPrefixByInterfaceId.set(interfaceNode.id, prefix);
     }
 
-    for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
+    for (const match of runCompiledPatterns(METHOD_ROUTE_PATTERNS, tree)) {
       const annNode = match.captures.ann;
       const pathNode = match.captures.path;
       const nameNode = match.captures.method_name;
@@ -722,7 +722,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // interface MUST carry `@FeignClient`, otherwise the pattern is
     // a false positive (the same annotation name exists in non-Feign
     // libraries and could appear in non-client code).
-    for (const match of runCompiledPatterns(FEIGN_REQUEST_LINE_PATTERNS, tree)) {
+    for (const match of runCompiledPatterns(REQUEST_LINE_PATTERNS, tree)) {
       const valueNode = match.captures.value;
       const nameNode = match.captures.method_name;
       const methodNode = match.captures.method;
