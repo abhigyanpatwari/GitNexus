@@ -26,46 +26,33 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// Folders that are bind-mount sources. devcontainer.json declares read-write
-// binds for the shareable subfolders (plugins/skills/agents/memory/commands for
-// Claude; memories/skills for Codex) so reads and writes pass straight between
-// host and container. Docker rejects a bind mount whose source is missing, so
-// we create each one. We also create the top per-CLI folders themselves
-// (~/.claude, ~/.codex, ~/.cursor). Those back the /host/.<cli> read-only stage
-// mounts that post-create.sh reads credentials from.
+// Folders that are bind-mount sources in devcontainer.json. Docker rejects a
+// bind mount whose source is missing, so we create each one.
+//
+// We create the TOP per-CLI folders (~/.claude, ~/.codex, ~/.cursor) and
+// ~/.claude-mem. These back the /host/.<cli> and /host/.claude-mem read-only
+// STAGE mounts that post-create.sh copies from on container-create. We do NOT
+// create the shareable subfolders (skills/agents/plugins/memory/commands/...)
+// here anymore: they used to be read-write bind sources, but they are now
+// copied once out of the read-only stage into the per-container volume, so they
+// are no longer bind sources and pre-creating empty ones would needlessly write
+// into the host of someone who never used that CLI. post-create.sh's seed step
+// simply skips any subfolder the host doesn't have. The read-only stage bind is
+// the whole ~/.<cli> dir, so whatever shareable subfolders DO exist are visible
+// to the seed without being listed here.
 const DIRS = [
   '.claude',
-  path.join('.claude', 'plugins'),
-  // Claude plugin source folders. Their content does not depend on absolute
-  // paths, so they get a two-way read-write bind mount. The registry JSON files
-  // that DO contain paths (known_marketplaces.json, installed_plugins.json,
-  // plugin-catalog-cache.json) stay in the container's named volume instead,
-  // where post-create.sh rewrites their paths.
-  path.join('.claude', 'plugins', 'marketplaces'),
-  path.join('.claude', 'plugins', 'cache'),
-  path.join('.claude', 'skills'),
-  path.join('.claude', 'agents'),
-  path.join('.claude', 'memory'),
-  path.join('.claude', 'commands'),
-  // Codex shareable folders. The whole plugins/ folder is bound, because it has
-  // no path-bearing registry inside it (enablement lives in config.toml at the
-  // root). Plus prompts/ (the saved prompt library), memories/, and skills/.
+  // claude-mem store ($HOME/.claude-mem). A SEPARATE top-level folder from
+  // ~/.claude, holding claude-mem's SQLite DB + Chroma vector store. It is NOT
+  // bind-mounted (a multi-GB SQLite/WAL store is unsafe over a 9p bind on Docker
+  // Desktop Windows). post-create.sh SEEDS it once into a per-container named
+  // volume from the /host/.claude-mem read-only stage. We create the source here
+  // so that stage bind resolves even for a host that never ran claude-mem
+  // (Docker rejects a missing bind source); the seed then finds no DB to copy
+  // and the container starts with empty memory.
+  '.claude-mem',
   '.codex',
-  path.join('.codex', 'plugins'),
-  path.join('.codex', 'prompts'),
-  path.join('.codex', 'memories'),
-  path.join('.codex', 'skills'),
-  // Cursor shareable folders. The cursor-agent CLI shares the Cursor 2.5
-  // plugin/rules/commands/agents/skills folders. The plugins/ subfolders are
-  // bound one by one. That is because plugins/installed_plugins.json holds
-  // absolute paths, so post-create.sh rewrites it instead of binding it.
   '.cursor',
-  path.join('.cursor', 'plugins', 'marketplaces'),
-  path.join('.cursor', 'plugins', 'local'),
-  path.join('.cursor', 'rules'),
-  path.join('.cursor', 'commands'),
-  path.join('.cursor', 'agents'),
-  path.join('.cursor', 'skills'),
   '.ssh',
   '.docker',
   '.aws',

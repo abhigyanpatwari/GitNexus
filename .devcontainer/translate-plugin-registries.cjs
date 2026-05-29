@@ -12,7 +12,7 @@
 //
 // Codex is left alone. Its registry is config.toml and holds git URLs, not
 // filesystem paths, so there's nothing to translate — its whole plugins/ dir is
-// bind-mounted instead.
+// copied as-is into the container volume instead (seeded once by post-create.sh).
 //
 // This code lived inside a post-create.sh heredoc. We pulled it out so the regex
 // and the deep rewrite can be unit-tested and prettier-checked. The regex has
@@ -91,8 +91,17 @@ function translate(registries) {
   }
 }
 
-module.exports = { buildRe, rewriteDeep, REGISTRIES, translate };
+// Filter the registry table by CLI name. post-create.sh passes the CLIs it is
+// seeding this run (e.g. `claude`), so a registry is only (re)generated on the
+// FIRST container-create for that CLI — never on a rebuild, where it would
+// clobber a plugin the user installed inside the container. An empty filter
+// (no args) means "translate every registry" — the original behavior.
+function selectRegistries(registries, only) {
+  return only && only.length ? registries.filter((r) => only.includes(r.cli)) : registries;
+}
+
+module.exports = { buildRe, rewriteDeep, REGISTRIES, translate, selectRegistries };
 
 if (require.main === module) {
-  translate(REGISTRIES);
+  translate(selectRegistries(REGISTRIES, process.argv.slice(2)));
 }

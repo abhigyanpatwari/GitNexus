@@ -27,7 +27,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { buildRe, rewriteDeep, translate } = require('./translate-plugin-registries.cjs');
+const {
+  buildRe,
+  rewriteDeep,
+  translate,
+  selectRegistries,
+} = require('./translate-plugin-registries.cjs');
 const { sanitizeClaudeConfig, readHostConfig } = require('./seed-claude-config.cjs');
 const { ensurePaths, DIRS, FILES } = require('./ensure-host-config-dirs.cjs');
 
@@ -266,6 +271,31 @@ test('translate: empty and missing host registries are skipped without error', (
   }
 });
 
+// --- selectRegistries: the per-CLI filter post-create.sh drives translate with
+
+test('selectRegistries: no filter -> all registries (original behavior)', () => {
+  const regs = [{ cli: 'claude' }, { cli: 'cursor' }];
+  assert.deepEqual(selectRegistries(regs, []), regs);
+  assert.deepEqual(selectRegistries(regs, undefined), regs);
+});
+
+test('selectRegistries: filter keeps only the named CLIs', () => {
+  const regs = [{ cli: 'claude' }, { cli: 'cursor' }];
+  assert.deepEqual(selectRegistries(regs, ['claude']), [{ cli: 'claude' }]);
+  assert.deepEqual(selectRegistries(regs, ['cursor']), [{ cli: 'cursor' }]);
+  assert.deepEqual(selectRegistries(regs, ['claude', 'cursor']), regs);
+});
+
+test('selectRegistries: an unknown CLI name selects nothing', () => {
+  const regs = [{ cli: 'claude' }, { cli: 'cursor' }];
+  assert.deepEqual(selectRegistries(regs, ['codex']), []);
+});
+
+test('selectRegistries: empty registry table stays empty under any filter', () => {
+  assert.deepEqual(selectRegistries([], ['claude']), []);
+  assert.deepEqual(selectRegistries([], []), []);
+});
+
 // --- seed-claude-config main(): end-to-end, through the real CLI entry point
 
 const SEED_SCRIPT = path.join(__dirname, 'seed-claude-config.cjs');
@@ -364,6 +394,42 @@ test('ensurePaths: does NOT pre-create settings.json / config.toml (no gratuitou
     ensurePaths(home);
     assert.equal(fs.existsSync(path.join(home, '.claude', 'settings.json')), false);
     assert.equal(fs.existsSync(path.join(home, '.codex', 'config.toml')), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('ensurePaths: does NOT pre-create the shareable subdirs (now copied, not bound)', () => {
+  // The shareable dirs are seeded into the per-container volume from the
+  // read-only /host stage, so they are no longer bind-mount sources. Pre-creating
+  // empty ones would needlessly write into the host of someone who never used a
+  // CLI. This pins the DIRS trim: re-adding any of these would fail the test.
+  const home = tmp();
+  const mustNotExist = [
+    path.join('.claude', 'skills'),
+    path.join('.claude', 'agents'),
+    path.join('.claude', 'memory'),
+    path.join('.claude', 'commands'),
+    path.join('.claude', 'plugins'),
+    path.join('.codex', 'plugins'),
+    path.join('.codex', 'prompts'),
+    path.join('.codex', 'memories'),
+    path.join('.codex', 'skills'),
+    path.join('.cursor', 'rules'),
+    path.join('.cursor', 'commands'),
+    path.join('.cursor', 'agents'),
+    path.join('.cursor', 'skills'),
+    path.join('.cursor', 'plugins'),
+  ];
+  try {
+    ensurePaths(home);
+    for (const sub of mustNotExist) {
+      assert.equal(fs.existsSync(path.join(home, sub)), false, `should not pre-create: ${sub}`);
+    }
+    // The top-level stage roots that ARE still bind sources must exist.
+    for (const top of ['.claude', '.codex', '.cursor', '.claude-mem']) {
+      assert.equal(fs.statSync(path.join(home, top)).isDirectory(), true, `missing root: ${top}`);
+    }
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
