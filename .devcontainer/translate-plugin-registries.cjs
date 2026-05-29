@@ -11,7 +11,7 @@
 // so its whole plugins/ dir is bind-mounted instead.)
 //
 // Extracted from a post-create.sh heredoc so the regex + deep rewrite are
-// lintable and unit-tested (the regex has had path-handling bugs before).
+// unit-tested and prettier-checked (the regex has had path-handling bugs before).
 
 'use strict';
 

@@ -19,17 +19,20 @@ echo "[install-deps] 1/4: chown workspace node_modules + npm cache mount points"
 # owned by the stale UID — npm install can't write. Re-chown
 # post-realignment; idempotent on subsequent runs.
 #
-# `find -xdev -exec chown` (same idiom as post-create.sh) rather than a bare
-# `chown -R`: -xdev keeps each chown ON its own volume filesystem, and `find`
-# does not follow symlinks during traversal — so a symlink committed in the
-# workspace tree (or dropped by a dependency postinstall on a rerun) can't
-# redirect the chown onto a host path outside the volume.
+# `find -xdev -exec chown -h` (same idiom as post-create.sh) rather than a bare
+# `chown -R`. Two distinct guards: `-xdev` bounds find's DESCENT to each
+# volume's own filesystem (it won't recurse into a sub-mounted host bind), and
+# `-h` makes chown act on a symlink ITSELF rather than dereferencing it. Without
+# `-h`, a symlink inside the tree (a dep postinstall dropping one, or a dangling
+# node_modules/.bin link) would either redirect the chown onto its cross-fs
+# target or abort provisioning under `set -e` with a dereference error. `-h` is
+# a no-op for regular files/dirs, so the intended ownership fix is unchanged.
 for d in /workspace/node_modules \
          /workspace/gitnexus/node_modules \
          /workspace/gitnexus-web/node_modules \
          /workspace/gitnexus-shared/node_modules \
          /home/node/.npm; do
-    sudo find "$d" -xdev -exec chown node:node {} +
+    sudo find "$d" -xdev -exec chown -h node:node {} +
 done
 
 echo "[install-deps] 2/4: clear stale .husky/_ runtime cache"

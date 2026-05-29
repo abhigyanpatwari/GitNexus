@@ -305,6 +305,30 @@ test('seed main: missing host file still writes a valid onboarding-bearing file'
   }
 });
 
+test('seed main: chmodSync widens a pre-existing restrictive dst to 0o644', () => {
+  // POSIX mode bits only. Under the CI default umask (022) a plain writeFileSync
+  // already yields 0o644, so asserting 0o644 after a fresh write does NOT prove
+  // the explicit chmodSync did anything. Pre-create dst at 0o600 first: a 'w'
+  // write truncates content but PRESERVES an existing file's mode, so the file
+  // can only reach 0o644 via seed-claude-config.cjs's chmodSync. This isolates
+  // the chmod from the umask-default path (delete the chmodSync line and this
+  // test fails, where the other seed test would still pass).
+  if (process.platform === 'win32') return;
+  const dir = tmp();
+  try {
+    const src = path.join(dir, 'host.claude.json');
+    const dst = path.join(dir, 'out.claude.json');
+    fs.writeFileSync(src, JSON.stringify({ userID: 'u' }));
+    fs.writeFileSync(dst, '{}');
+    fs.chmodSync(dst, 0o600);
+    execFileSync(process.execPath, [SEED_SCRIPT, src, dst]);
+    assert.equal(fs.statSync(dst).mode & 0o777, 0o644);
+    assert.equal(JSON.parse(fs.readFileSync(dst, 'utf8')).userID, 'u');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- ensurePaths: host bind-source bootstrap --------------------------------
 
 test('ensurePaths: creates every DIR and FILE under a temp home, idempotently', () => {

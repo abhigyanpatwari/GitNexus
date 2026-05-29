@@ -18,15 +18,18 @@ echo "[post-create] 1/2: chown AI CLI named-volume mount points"
 # install-deps.sh handles the workspace-side chown; this script handles
 # the AI CLI side so each lifecycle hook owns its own concern.
 #
-# `-xdev` keeps chown ON THE VOLUME filesystem and stops it descending into
-# the RW host bind mounts overlaid at sub-paths (plugins/marketplaces,
-# plugins/cache, skills, agents, memory, commands, codex/plugins, cursor/*).
-# Those binds are a DIFFERENT filesystem (9p/virtiofs/bind); recursing into
-# them would rewrite host file ownership on a non-UID-aligned Linux host and,
-# worse, an EPERM there would abort provisioning before credentials sync.
+# Two distinct guards. `-xdev` bounds find's DESCENT to the volume filesystem
+# so it won't recurse into the RW host bind mounts overlaid at sub-paths
+# (plugins/marketplaces, plugins/cache, skills, agents, memory, commands,
+# codex/plugins, cursor/*). Those binds are a DIFFERENT filesystem
+# (9p/virtiofs/bind); recursing into them would rewrite host file ownership on
+# a non-UID-aligned Linux host and, worse, an EPERM there would abort
+# provisioning before credentials sync. `-h` makes chown act on a symlink
+# ITSELF, never dereferencing it onto a cross-fs target and never aborting on a
+# dangling link under `set -e` (it's a no-op for regular files/dirs).
 for d in /home/node/.claude /home/node/.codex /home/node/.cursor \
          /home/node/.local /commandhistory; do
-    sudo find "$d" -xdev -exec chown node:node {} +
+    sudo find "$d" -xdev -exec chown -h node:node {} +
 done
 
 echo "[post-create] 2/2: sync AI CLI credentials + identity from host"
@@ -105,8 +108,8 @@ sync_from_host /host/.codex/config.toml   /home/node/.codex/config.toml   644
 # host's `installMethod` (e.g. "native") makes Claude probe ~/.local/bin/claude
 # and fail "claude command not found at /home/node/.local/bin/claude". The
 # transform (strip machine fields + force hasCompletedOnboarding, guarding a
-# non-object host file) lives in seed-claude-config.cjs so it is lintable and
-# unit-tested (translate-plugin-registries.test.cjs).
+# non-object host file) lives in seed-claude-config.cjs so it is unit-tested
+# and prettier-checked (translate-plugin-registries.test.cjs).
 node "$SCRIPT_DIR/seed-claude-config.cjs"
 
 # Plugin registry path translation (Claude + Cursor). Both bake absolute
@@ -115,7 +118,7 @@ node "$SCRIPT_DIR/seed-claude-config.cjs"
 # on macOS — so the host versions can't be bind-mounted into the Linux
 # container (the CLI fails with `cache-miss` resolving a Windows path under
 # Linux). The translation (regex + deep rewrite + the REGISTRIES table) lives
-# in translate-plugin-registries.cjs so it is lintable and unit-tested. Codex
+# in translate-plugin-registries.cjs so it is unit-tested and prettier-checked. Codex
 # needs no translation — its enablement registry is config.toml with git URLs,
 # not filesystem paths, so its whole plugins/ dir is bind-mounted instead.
 node "$SCRIPT_DIR/translate-plugin-registries.cjs"

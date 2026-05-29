@@ -174,7 +174,7 @@ That means:
 - **`gh` auth is shared.** `gh pr create`, `gh pr checks`, `gh issue create` work inside the container without re-authenticating.
 - **No per-workspace duplication.** All your devcontainers across all your projects see the same host CLI state, just like all your host shells do.
 
-The bind mount source directories are guaranteed to exist by the `initializeCommand` (`mkdir -p $HOME/.claude $HOME/.codex $HOME/.cursor $HOME/.config/gh`), which runs on the host shell before container create.
+The bind mount source directories are guaranteed to exist by the `initializeCommand` (`node .devcontainer/ensure-host-config-dirs.cjs`), which runs on the host before container create. It's a Node script (not a shell one-liner) so the same command works on Windows `cmd.exe` and POSIX shells, and it creates the full set of bind-mount source dirs — all the `~/.claude`, `~/.codex`, `~/.cursor` shareable subdirs plus `~/.ssh`, `~/.docker`, `~/.aws`, `~/.azure`, `~/.config/{gh,git}` — not just the top-level CLI dirs.
 
 ### Trust boundary, concretely
 

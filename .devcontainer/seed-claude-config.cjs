@@ -9,8 +9,8 @@
 // its own method, and force hasCompletedOnboarding so the wizard is skipped
 // even on a first-time host.
 //
-// Extracted from a post-create.sh heredoc so the pure transform is lintable
-// and unit-tested (see seed-claude-config.test via translate-plugin-registries
+// Extracted from a post-create.sh heredoc so the pure transform is unit-tested
+// and prettier-checked (see seed-claude-config.test via translate-plugin-registries
 // test harness). DISABLE_AUTOUPDATER=1 (containerEnv) already neutralizes
 // runtime updates; this purely silences the doctor mismatch + native probe.
 

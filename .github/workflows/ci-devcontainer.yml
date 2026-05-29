@@ -65,6 +65,15 @@ jobs:
       # This is the smoke that catches Dockerfile regressions + drift from the
       # canonical version pins. Lifecycle hooks (post-create.sh) are not run
       # here — they need the host config mounts, which CI has none of.
+      #
+      # ARCH COVERAGE: this runs on an x64 runner with no --platform/QEMU, so it
+      # exercises the amd64 Cursor branch (CURSOR_SHA256_X64) only. The arm64
+      # branch (CURSOR_SHA256_ARM64 + the arm64 tarball URL) is pinned by sha256
+      # verified against the published artifact, but is not BUILT here. Cursor's
+      # extract+symlink step is arch-independent, so the residual gap is a stale
+      # arm64 URL/hash; add a linux/arm64 matrix leg (docker/setup-qemu-action +
+      # `--platform`) if that becomes a concern.
+      #
       # Version-pinned: bare `npx --yes @devcontainers/cli` resolves @latest at
       # run time, so a breaking or malicious publish could change CI behavior
       # (or how devcontainer.json is interpreted) with no diff. Bump
