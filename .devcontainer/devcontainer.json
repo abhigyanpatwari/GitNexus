@@ -14,7 +14,7 @@
     "dockerfile": "Dockerfile",
     "context": ".",
     "args": {
-      "CLAUDE_CODE_VERSION": "2.1.153",
+      "CLAUDE_CODE_VERSION": "2.1.156",
       "CODEX_VERSION": "0.134.0",
       // Cursor: a pinned version plus one sha256 hash per CPU arch. The
       // Dockerfile checks the tarball against the hash at build time, so it
