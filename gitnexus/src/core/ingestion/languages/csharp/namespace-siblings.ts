@@ -472,21 +472,25 @@ export function populateCsharpNamespaceSiblings(
         const local = localScope?.bindings.get(name);
         if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
 
-        let bucketArr: BindingRef[] | null = null;
-        let seen: Set<string> | null = null;
+        // Bind the augmentation bucket and its seeded de-dup set together
+        // under one nullable lifecycle, so neither needs a non-null
+        // assertion (they are always set or unset as a pair). Stays lazy:
+        // nothing is allocated for a name with no cross-file defs.
+        let inject: { bucket: BindingRef[]; seen: Set<string> } | null = null;
         for (const def of defs) {
           if (def.filePath === filePath) continue; // don't self-reference
-          if (bucketArr === null) {
-            bucketArr = getAugmentationBucket(augmentations, scopeId, name);
+          if (inject === null) {
+            const bucket = getAugmentationBucket(augmentations, scopeId, name);
             // Seed the de-dup set from any entries an earlier pass
             // (using-static / cross-namespace imports) already added,
             // replacing the per-def O(A) `.some` scan.
-            seen = new Set<string>();
-            for (const b of bucketArr) seen.add(b.def.nodeId);
+            const seen = new Set<string>();
+            for (const b of bucket) seen.add(b.def.nodeId);
+            inject = { bucket, seen };
           }
-          if (seen!.has(def.nodeId)) continue;
-          seen!.add(def.nodeId);
-          bucketArr.push({ def, origin: 'namespace' });
+          if (inject.seen.has(def.nodeId)) continue;
+          inject.seen.add(def.nodeId);
+          inject.bucket.push({ def, origin: 'namespace' });
         }
       }
     }

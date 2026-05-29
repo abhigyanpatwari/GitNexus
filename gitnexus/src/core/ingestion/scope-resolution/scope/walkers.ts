@@ -99,6 +99,14 @@ const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
  * Fast paths (zero allocation) when at most one channel is populated:
  * returns the underlying `Map.keys()` iterator directly. Only when both
  * channels carry names do we materialize a `Set` for deduplication.
+ *
+ * Scope: enumerates only the per-scope `bindings` and `bindingAugmentations`
+ * channels. It deliberately EXCLUDES the scope-independent
+ * `workspaceFqnBindings` channel (PHP FQN keys, C# global-namespace simple
+ * names). `lookupBindingsAt` consults that third channel when resolving a
+ * specific name, but name *enumeration* here does not — those names apply at
+ * every scope and would flood per-scope callers. Callers that need
+ * workspace-level names must read `workspaceFqnBindings` directly.
  */
 export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): Iterable<string> {
   const finalized = scopes.bindings.get(scopeId);

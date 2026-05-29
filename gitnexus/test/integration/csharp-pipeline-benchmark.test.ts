@@ -147,17 +147,18 @@ async function runBenchmark(
     if (heap > peakHeapMB) peakHeapMB = heap;
   }, 50);
 
+  let budgetTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const start = Date.now();
     const result = await Promise.race([
       runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
+      new Promise<never>((_, reject) => {
+        budgetTimer = setTimeout(
           () =>
             reject(new Error(`Pipeline exceeded ${budgetMs}ms at ${fileCount} files (${shape})`)),
           budgetMs,
-        ),
-      ),
+        );
+      }),
     ]);
     const elapsedMs = Date.now() - start;
 
@@ -172,6 +173,7 @@ async function runBenchmark(
     };
   } finally {
     clearInterval(heapSampler);
+    clearTimeout(budgetTimer);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -2447,9 +2447,12 @@ describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch
 // cross-namespace `using` and a colliding local class. Pins both fixes in
 // the resolver dataset:
 //
-//   1. emitCsharpScopeCaptures + extractFileStructure must use the adaptive
-//      `getTreeSitterBufferSize` on cache miss, otherwise UserService.cs
-//      fails to reparse with "Invalid argument" and CreateUser is dropped.
+//   1. emitCsharpScopeCaptures must use the adaptive `getTreeSitterBufferSize`
+//      on cache miss, otherwise UserService.cs fails to reparse with "Invalid
+//      argument" and CreateUser is dropped. (extractFileStructure no longer
+//      re-parses on cache miss — it uses the line scanner,
+//      extractCsharpStructureViaScanner — so this fixture's line-anchored
+//      namespaces are read identically by either branch.)
 //   2. populateCsharpNamespaceSiblings must append to bindingAugmentations
 //      instead of mutating frozen finalize-produced BindingRef[] arrays;
 //      otherwise the cross-namespace inject loop throws "Cannot add property

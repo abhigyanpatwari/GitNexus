@@ -79,13 +79,13 @@ export interface ScopeResolutionIndexes {
   readonly bindingAugmentations: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
   /** Workspace-level binding lookup, shared instead of per-scope
    *  duplication. Consulted by `lookupBindingsAt` as a third source after
-   *  finalized and per-scope augmented bindings. Two languages populate it
-   *  with disjoint key formats that never collide:
-   *    - PHP namespace-siblings (Step 3b): backslash-separated FQNs
-   *      (e.g. `App\Models\User`).
-   *    - C# namespace-siblings: simple names for global-(default-)namespace
-   *      types (e.g. `User`), which are visible from every file — one entry
-   *      per simple name instead of O(scopes × defs) per-scope augmentation. */
+   *  finalized and per-scope augmented bindings. Language-specific
+   *  namespace-sibling hooks populate it with disjoint key formats that
+   *  never collide — e.g. backslash-separated FQNs (`App\Models\User`) for
+   *  backslash-namespace languages, and bare simple names (`User`) for
+   *  global-/default-namespace types that are visible from every file. The
+   *  shared map gives those workspace-wide names one entry each instead of
+   *  O(scopes × defs) per-scope augmentation. */
   readonly workspaceFqnBindings: ReadonlyMap<string, readonly BindingRef[]>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];
