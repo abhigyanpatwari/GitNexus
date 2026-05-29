@@ -1087,6 +1087,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
   '@declaration.parameter-type-classes',
+  '@declaration.return-type',
   '@declaration.template-constraints',
   '@declaration.is-explicit',
 ]);
