@@ -153,7 +153,8 @@ async function runBenchmark(
       runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true }),
       new Promise<never>((_, reject) =>
         setTimeout(
-          () => reject(new Error(`Pipeline exceeded ${budgetMs}ms at ${fileCount} files (${shape})`)),
+          () =>
+            reject(new Error(`Pipeline exceeded ${budgetMs}ms at ${fileCount} files (${shape})`)),
           budgetMs,
         ),
       ),
