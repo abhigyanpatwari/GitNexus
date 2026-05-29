@@ -44,6 +44,18 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 - **Cursor:** `.cursor/index.mdc` (always-on); `.cursor/rules/*.mdc` (glob-scoped). Legacy `.cursorrules` deprecated.
 - **GitNexus:** skills in `.claude/skills/gitnexus/`; MCP rules in `gitnexus:start` block below.
 
+## PR Swarm Review (cross-CLI)
+
+To run a production-readiness review of a GitNexus pull request from **any** AI CLI, follow
+the canonical, CLI-neutral spec **[`pr-swarm-review/orchestration.md`](pr-swarm-review/orchestration.md)**
+(seven read-only review personas under `pr-swarm-review/personas/`). It defines two
+execution modes with the same output contract: **Swarm mode** (parallel subagents, e.g.
+Claude Code) and **Solo mode** (one agent runs all lanes sequentially — Codex, Gemini,
+Cursor, Copilot, or any agent reading this file). Per-CLI entrypoints are thin wrappers
+listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review logic only
+in the canonical files, never in the wrappers. The review is read-only — it never edits,
+commits, or posts.
+
 ## Changelog
 
 | Date | Version | Change |
