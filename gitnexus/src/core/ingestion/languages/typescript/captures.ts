@@ -37,6 +37,7 @@ import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './quer
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
+import { isArrayMethodCallbackArrow } from './array-callback.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
@@ -248,6 +249,25 @@ export function emitTsScopeCaptures(
         findSelfOrAncestorOfType(groupedNodes['@reference.read.member'], 'member_expression') ??
         findNodeAtRange(tree.rootNode, anchor.range, 'member_expression');
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
+        continue;
+      }
+    }
+
+    // #1876: drop @declaration.function for array higher-order-method
+    // callbacks (`const x = arr.map(a => …)`). The HOC-wrapped-arrow
+    // pattern matches them, but the binding holds a value, not a callable.
+    // The binding keeps its separate @declaration.const / .variable match,
+    // and the arrow's own @scope.function match (a different pattern) is
+    // untouched, so inner-call attribution falls through to the enclosing
+    // scope instead of a phantom Function.
+    const fnDeclAnchor = grouped['@declaration.function'];
+    if (fnDeclAnchor !== undefined) {
+      const arrowNode = findFunctionNode(
+        tree.rootNode,
+        fnDeclAnchor.range,
+        groupedNodes['@declaration.function'],
+      );
+      if (arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
         continue;
       }
     }
