@@ -1475,6 +1475,61 @@ class LongFormClient {
       ).toBeDefined();
     });
 
+    it('does not double-emit Java WebClient long-form calls', async () => {
+      const dir = path.join(tmpDir, 'java-web-client-long-form-no-double');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'NoDoubleClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class NoDoubleClient {
+  void run(WebClient webClient) {
+    webClient.method(HttpMethod.GET).uri("/api/single").retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const fromThisFile = consumers.filter((c) =>
+        c.symbolRef.filePath.endsWith('NoDoubleClient.java'),
+      );
+
+      expect(fromThisFile).toHaveLength(1);
+      expect(fromThisFile[0].contractId).toBe('http::GET::/api/single');
+    });
+
+    it('does not guess Java WebClient long-form variable-bound or unsupported verbs', async () => {
+      const dir = path.join(tmpDir, 'java-web-client-long-form-boundary');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'BoundaryClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class BoundaryClient {
+  void run(WebClient webClient) {
+    HttpMethod verb = HttpMethod.PATCH;
+    webClient.method(verb).uri("/api/dynamic").retrieve();
+    webClient.method(HttpMethod.HEAD).uri("/api/head").retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const fromThisFile = consumers.filter((c) =>
+        c.symbolRef.filePath.endsWith('BoundaryClient.java'),
+      );
+
+      expect(fromThisFile).toHaveLength(0);
+    });
+
     it('extracts fully-qualified Java Spring annotations', async () => {
       const dir = path.join(tmpDir, 'java-fully-qualified-spring-annotations');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });

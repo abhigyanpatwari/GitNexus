@@ -233,6 +233,8 @@ const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
   patch: 'PATCH',
 };
 
+const WEB_CLIENT_LONG_METHODS = new Set(Object.values(WEB_CLIENT_SHORT_TO_HTTP));
+
 const WEB_CLIENT_SHORT_FORM_PATTERNS = compilePatterns({
   name: 'java-web-client-short-form',
   language: Java,
@@ -689,12 +691,14 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const httpMethodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       if (!httpMethodNode || !pathNode) continue;
+      const httpMethod = httpMethodNode.text.toUpperCase();
+      if (!WEB_CLIENT_LONG_METHODS.has(httpMethod)) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       out.push({
         role: 'consumer',
         framework: 'spring-web-client',
-        method: httpMethodNode.text.toUpperCase(),
+        method: httpMethod,
         path,
         name: null,
         confidence: 0.7,
