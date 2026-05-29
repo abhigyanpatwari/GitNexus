@@ -188,6 +188,16 @@ function makeContract(
 
 export interface ProtoServiceInfo {
   package: string;
+  /**
+   * Optional. Value of `option java_package = "..."` declared in the
+   * same `.proto` file, when present and different from `package`.
+   * Empty string when the option is absent or equals `package`. Used by
+   * `detectionToContract()` to translate a Java import path back to the
+   * proto package whenever the proto explicitly publishes its generated
+   * Java code under a different namespace (a common pattern in
+   * Google-style protobuf projects).
+   */
+  javaPackage: string;
   serviceName: string;
   methods: string[];
   protoPath: string;
@@ -205,6 +215,19 @@ function extractProtoImports(content: string): string[] {
     imports.push(match[1]);
   }
   return imports;
+}
+
+/**
+ * Extract `option java_package = "..."` from a `.proto` file, if any.
+ * The Java code generator places generated `XxxGrpc.java` classes under
+ * this package (instead of the proto `package` declaration) when the
+ * option is set. Real-world projects (Google Cloud Java APIs, internal
+ * shaded SDKs) routinely use this to publish their Java artifacts under
+ * a corporate namespace different from the wire-protocol package.
+ */
+function extractJavaPackageOption(content: string): string {
+  const m = content.match(/^\s*option\s+java_package\s*=\s*"([\w.]+)"\s*;/m);
+  return m?.[1] ?? '';
 }
 
 function longestSharedSegmentRun(aPath: string, bPath: string): number {
@@ -228,8 +251,18 @@ function longestSharedSegmentRun(aPath: string, bPath: string): number {
 async function buildProtoContext(repoPath: string): Promise<{
   packagesByProto: Map<string, string>;
   servicesByName: Map<string, ProtoServiceInfo[]>;
+  /**
+   * Reverse index: `option java_package` value → ProtoServiceInfo[]
+   * declared in `.proto` files that ship under that Java namespace.
+   * Only populated when `java_package` is set AND differs from
+   * `package`. Lets `detectionToContract()` translate an import-derived
+   * Java package back to its source proto package whenever the proto
+   * is in the same repository.
+   */
+  servicesByJavaPackage: Map<string, ProtoServiceInfo[]>;
 }> {
   const servicesByName = new Map<string, ProtoServiceInfo[]>();
+  const servicesByJavaPackage = new Map<string, ProtoServiceInfo[]>();
   // `.gitnexusignore` / `.gitignore` honoured via the shared IgnoreService —
   // see `filesystem-walker.ts` for the canonical pattern. Replaces a
   // hardcoded `[node_modules, .git, vendor]` array; those names plus the
@@ -292,6 +325,13 @@ async function buildProtoContext(repoPath: string): Promise<{
     const content = contents.get(normalizedRel);
     if (!content) continue;
     const pkg = resolvePackage(normalizedRel);
+    const javaPkgOption = extractJavaPackageOption(content);
+    // Only retain `javaPackage` when it actively diverges from `pkg`.
+    // When equal (or absent), the import-derived path produces the
+    // same FQN as the proto-derived path, so no translation is needed
+    // and we keep the field empty to avoid populating the reverse
+    // index with redundant entries.
+    const javaPackage = javaPkgOption && javaPkgOption !== pkg ? javaPkgOption : '';
 
     const serviceBlocks = extractServiceBlocks(content);
     for (const block of serviceBlocks) {
@@ -303,6 +343,7 @@ async function buildProtoContext(repoPath: string): Promise<{
       }
       const info: ProtoServiceInfo = {
         package: pkg,
+        javaPackage,
         serviceName: block.name,
         methods,
         protoPath: normalizedRel,
@@ -310,10 +351,16 @@ async function buildProtoContext(repoPath: string): Promise<{
       const existing = servicesByName.get(block.name) ?? [];
       existing.push(info);
       servicesByName.set(block.name, existing);
+
+      if (javaPackage) {
+        const byJava = servicesByJavaPackage.get(javaPackage) ?? [];
+        byJava.push(info);
+        servicesByJavaPackage.set(javaPackage, byJava);
+      }
     }
   }
 
-  return { packagesByProto, servicesByName };
+  return { packagesByProto, servicesByName, servicesByJavaPackage };
 }
 
 export async function buildProtoMap(repoPath: string): Promise<Map<string, ProtoServiceInfo[]>> {
@@ -377,6 +424,7 @@ export class GrpcExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     const protoContext = await buildProtoContext(repoPath);
     const protoMap = protoContext.servicesByName;
+    const javaPackageMap = protoContext.servicesByJavaPackage;
 
     // ─── Proto files — definitive provider source ─────────────────
     // When tree-sitter-proto is available, .proto files are handled by
@@ -435,7 +483,7 @@ export class GrpcExtractor implements ContractExtractor {
         continue;
       }
       for (const d of detections) {
-        const contract = this.detectionToContract(d, rel, protoMap);
+        const contract = this.detectionToContract(d, rel, protoMap, javaPackageMap);
         if (contract) out.push(contract);
       }
     }
@@ -449,12 +497,163 @@ export class GrpcExtractor implements ContractExtractor {
    * either a service-level (`grpc::pkg.Svc/*`) or method-level
    * (`grpc::pkg.Svc/Method`) contract id, and selecting confidence
    * based on whether the proto map had an entry.
+   *
+   * Resolution order for the package prefix:
+   *
+   *   1. **Java-package translation** (when detection
+   *      supplied a `protoPackage` from a Java import).
+   *      A `.proto` in the SAME repo may set `option
+   *      java_package = "..."` to publish its generated
+   *      Java classes under a namespace different from
+   *      the proto `package`. Real-world projects (e.g.
+   *      Google Cloud Java APIs) routinely do this.
+   *      When the import-derived package matches that
+   *      `java_package` value, translate back to the
+   *      proto `package` so the resulting contract id
+   *      is wire-correct rather than Java-namespace.
+   *
+   *   2. **Per-repo proto map check** (when the same
+   *      service name has `.proto` candidates in this
+   *      repo). The proto file is the authoritative
+   *      source. If the proto's `package` agrees with
+   *      the import's `protoPackage`, both paths produce
+   *      the same FQN — emit it. If they DISAGREE (e.g.
+   *      a typo'd Java import, or a mismatched
+   *      java_package the reverse index didn't catch),
+   *      trust the proto map and warn — the import
+   *      MUST NOT silently overwrite an authoritative
+   *      proto package.
+   *
+   *   3. **Import-derived FQN fallback** (when neither
+   *      a `java_package` translation nor a proto map
+   *      candidate exists in this repo). Typical for the
+   *      "client-jar" pattern, where a consumer repo
+   *      depends on a published stub jar and never
+   *      carries the originating `.proto`. Use the
+   *      import path verbatim as the proto package. Note
+   *      the known limitation: when the published proto
+   *      sets `option java_package` differing from
+   *      `package`, the resulting FQN reflects the Java
+   *      namespace rather than the proto namespace and
+   *      will not match a provider repo's contract id —
+   *      we cannot translate without sight of the proto.
+   *
+   *   4. **Per-repo proto map (no import)** — the legacy
+   *      path. Used when the plugin didn't supply
+   *      `protoPackage` (no import statement, wildcard
+   *      import only, or non-Java languages that haven't
+   *      been retrofitted yet).
+   *
+   *   5. **Short-name fallback** — when none of the
+   *      above resolves a package, emit a service-only
+   *      short-name contract id (`grpc::Svc/*`),
+   *      preserving the pre-fix behaviour.
    */
   private detectionToContract(
     d: GrpcDetection,
     filePath: string,
     protoMap: Map<string, ProtoServiceInfo[]>,
+    javaPackageMap: Map<string, ProtoServiceInfo[]>,
   ): ExtractedContract | null {
+    if (d.protoPackage) {
+      // Step 1: java_package translation. The import-derived package
+      // may be the `option java_package` value of a `.proto` in the
+      // SAME repo. Look it up and, if found for the same service name,
+      // use the underlying proto `package` to build a wire-correct
+      // contract id.
+      const javaCandidates = javaPackageMap.get(d.protoPackage) ?? [];
+      const javaTranslated = javaCandidates.find((p) => p.serviceName === d.serviceName);
+      if (javaTranslated) {
+        const cid = d.methodName
+          ? contractId(javaTranslated.package, d.serviceName, d.methodName)
+          : serviceContractId(javaTranslated.package, d.serviceName);
+        const meta: Record<string, unknown> = {
+          service: d.serviceName,
+          source: d.source,
+          package: javaTranslated.package,
+          protoPackageSource: 'import-translated',
+        };
+        if (d.methodName) meta.method = d.methodName;
+        return makeContract(cid, d.role, filePath, d.symbolName, d.confidenceWithProto, meta);
+      }
+
+      // Step 2: proto map cross-check. When this repo also carries a
+      // `.proto` defining the same short service name, the proto is
+      // authoritative and decides the package. The import is only used
+      // to disambiguate among same-short-name candidates when the
+      // resolution heuristic can't pick a unique winner on path alone.
+      const candidates = protoMap.get(d.serviceName) ?? [];
+      if (candidates.length > 0) {
+        const proto = resolveProtoConflict(d.serviceName, filePath, candidates);
+        if (proto === null) {
+          // Ambiguous proto resolution; resolveProtoConflict already warned.
+          return null;
+        }
+        const protoPkg = proto.package;
+        if (protoPkg === d.protoPackage) {
+          // Both paths agree.
+          const cid = d.methodName
+            ? contractId(protoPkg, d.serviceName, d.methodName)
+            : serviceContractId(protoPkg, d.serviceName);
+          const meta: Record<string, unknown> = {
+            service: d.serviceName,
+            source: d.source,
+            package: protoPkg,
+            protoPackageSource: 'import',
+          };
+          if (d.methodName) meta.method = d.methodName;
+          return makeContract(cid, d.role, filePath, d.symbolName, d.confidenceWithProto, meta);
+        }
+        // Disagreement. Trust the proto file and emit a warning so
+        // operators can investigate the import. This protects against
+        // the symmetric Finding 2 case: a stale or typo'd Java import
+        // silently corrupting the contract id of a service whose
+        // `.proto` lives in the same repo.
+        logger.warn(
+          `[grpc-extractor] Java import package "${d.protoPackage}" for service ` +
+            `"${d.serviceName}" disagrees with local proto package "${protoPkg}" at ` +
+            `${filePath}; using proto package as authoritative source`,
+        );
+        const cid = d.methodName
+          ? contractId(protoPkg, d.serviceName, d.methodName)
+          : serviceContractId(protoPkg, d.serviceName);
+        const meta: Record<string, unknown> = {
+          service: d.serviceName,
+          source: d.source,
+          package: protoPkg,
+          protoPackageSource: 'proto-override',
+          importPackage: d.protoPackage,
+        };
+        if (d.methodName) meta.method = d.methodName;
+        return makeContract(cid, d.role, filePath, d.symbolName, d.confidenceWithProto, meta);
+      }
+
+      // Step 3: import-derived fallback. No `.proto` in this repo
+      // names the service, and no `java_package` reverse-lookup
+      // matched. Emit the FQN with the import-derived package. This
+      // is the typical client-jar consumer path.
+      //
+      // Known limitation: when the published proto sets
+      // `option java_package` to a value that differs from
+      // `package`, this path produces a contract id that reflects
+      // the Java namespace, not the proto namespace, and will not
+      // match a provider repo. Resolving that case requires
+      // group-level proto knowledge, which is intentionally out of
+      // scope for this fix.
+      const cid = d.methodName
+        ? contractId(d.protoPackage, d.serviceName, d.methodName)
+        : serviceContractId(d.protoPackage, d.serviceName);
+      const meta: Record<string, unknown> = {
+        service: d.serviceName,
+        source: d.source,
+        package: d.protoPackage,
+        protoPackageSource: 'import',
+      };
+      if (d.methodName) meta.method = d.methodName;
+      return makeContract(cid, d.role, filePath, d.symbolName, d.confidenceWithProto, meta);
+    }
+
+    // Steps 4 + 5: legacy per-repo proto map resolution (no import).
     const candidates = protoMap.get(d.serviceName) ?? [];
     const proto = resolveProtoConflict(d.serviceName, filePath, candidates);
     // If there were proto candidates but resolution was ambiguous, skip

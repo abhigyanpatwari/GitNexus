@@ -78,6 +78,33 @@ const STUB_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+// `import <pkg>.<XxxGrpc>;` — captures the proto package of the
+// imported gRPC class (e.g. `cn.unipus.ucf.admin.proto.client.service`
+// for `import cn.unipus.ucf.admin.proto.client.service.ContentRpcServiceGrpc`).
+// Used by `scan` to build a per-file `XxxGrpc → fullPackage` map so
+// consumer-side detections can carry a fully-qualified contract id
+// even when the consumer repo does not contain any `.proto` files.
+//
+// `import static …` is excluded by tree-sitter shape: the `name:`
+// field is only present on the non-static form. `import w.x.*;` is
+// also excluded for the same reason — wildcard imports have an
+// `asterisk` child instead of a named identifier.
+const GRPC_CLASS_IMPORT_PATTERNS = compilePatterns({
+  name: 'java-grpc-class-import',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (import_declaration
+          (scoped_identifier
+            scope: (_) @import_pkg
+            name: (identifier) @import_name (#match? @import_name "Grpc$")))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 /**
  * Check whether a `class_declaration` node has a `@GrpcService`
  * annotation in its modifiers list. In tree-sitter-java, class-level
@@ -118,6 +145,39 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
     const out: GrpcDetection[] = [];
     const emittedClassIds = new Set<number>();
 
+    // ─── Build per-file gRPC class import map ───────────────────────
+    // Maps `XxxGrpc` (short class name) → fully-qualified proto package
+    // (e.g. `cn.unipus.ucf.admin.proto.client.service`). Used below to
+    // tag both provider and consumer detections with a `protoPackage`
+    // so the orchestrator can build a fully-qualified contract id
+    // without depending on the current repo carrying any `.proto`
+    // files. This is the key fix for client-jar consumer repos.
+    //
+    // Same-short-name disambiguation: when two distinct `import` lines
+    // bring different `XxxGrpc` classes from different packages into
+    // the same file (rare for grpc — the second import would be a
+    // compile error in Java), the last one wins. Java's compiler
+    // forbids that case so we don't bother modelling it.
+    const grpcClassImports = new Map<string, string>();
+    for (const match of runCompiledPatterns(GRPC_CLASS_IMPORT_PATTERNS, tree)) {
+      const pkgNode = match.captures.import_pkg;
+      const nameNode = match.captures.import_name;
+      if (!pkgNode || !nameNode) continue;
+      grpcClassImports.set(nameNode.text, pkgNode.text);
+    }
+
+    /**
+     * Resolve the fully-qualified proto package for a short service
+     * name in this file. Looks up `<serviceName>Grpc` in the import
+     * map; returns `undefined` when the class is referenced via a
+     * fully-qualified name on every call site (no import line) or
+     * when only a wildcard import is present. The orchestrator falls
+     * back to the per-repo proto map in that case, preserving the
+     * pre-fix behaviour.
+     */
+    const protoPackageFor = (serviceName: string): string | undefined =>
+      grpcClassImports.get(`${serviceName}Grpc`);
+
     // ─── Providers: scoped form (`...Grpc.XxxImplBase`) ─────────────
     for (const match of runCompiledPatterns(SCOPED_IMPL_BASE_PATTERNS, tree)) {
       const classNode = match.captures.class;
@@ -127,6 +187,7 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
       if (!serviceName) continue;
       emittedClassIds.add(classNode.id);
       const annotated = hasGrpcServiceAnnotation(classNode);
+      const protoPackage = protoPackageFor(serviceName);
       out.push({
         role: 'provider',
         serviceName,
@@ -134,6 +195,7 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
         source: annotated ? 'java_grpc_service' : 'java_impl_base',
         confidenceWithProto: 0.8,
         confidenceWithoutProto: 0.65,
+        ...(protoPackage ? { protoPackage } : {}),
       });
     }
 
@@ -147,6 +209,7 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
       if (!serviceName) continue;
       emittedClassIds.add(classNode.id);
       const annotated = hasGrpcServiceAnnotation(classNode);
+      const protoPackage = protoPackageFor(serviceName);
       out.push({
         role: 'provider',
         serviceName,
@@ -154,6 +217,7 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
         source: annotated ? 'java_grpc_service' : 'java_impl_base',
         confidenceWithProto: 0.8,
         confidenceWithoutProto: 0.65,
+        ...(protoPackage ? { protoPackage } : {}),
       });
     }
 
@@ -164,6 +228,7 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
       const grpcMatch = GRPC_SUFFIX_RE.exec(grpcClsNode.text);
       if (!grpcMatch) continue;
       const serviceName = grpcMatch[1];
+      const protoPackage = protoPackageFor(serviceName);
       out.push({
         role: 'consumer',
         serviceName,
@@ -171,6 +236,7 @@ export const JAVA_GRPC_PLUGIN: GrpcLanguagePlugin = {
         source: 'java_stub',
         confidenceWithProto: 0.75,
         confidenceWithoutProto: 0.55,
+        ...(protoPackage ? { protoPackage } : {}),
       });
     }
 

@@ -812,9 +812,34 @@ const processBatch = (
   for (const [language, langFiles] of byLanguage) {
     const provider = getProvider(language);
     const queryString = provider.treeSitterQueries;
-    if (!queryString) continue;
-
-    // Track if we need to handle tsx separately
+    if (!queryString) {
+      // Standalone providers (regex-based, no tree-sitter) that implement
+      // emitScopeCaptures feed into the scope-resolution pipeline via
+      // extractParsedFile directly — no tree-sitter involved.
+      if (provider.emitScopeCaptures) {
+        for (const file of langFiles) {
+          const parsedFile = extractParsedFile(
+            provider,
+            file.content,
+            file.path,
+            (message) => {
+              if (parentPort) {
+                parentPort.postMessage({ type: 'warning', message });
+              } else {
+                logger.warn(message);
+              }
+            },
+            undefined, // no cachedTree for standalone providers
+          );
+          if (parsedFile !== undefined) {
+            result.parsedFiles.push(parsedFile);
+            result.fileCount++;
+            onFileProcessed?.();
+          }
+        }
+      }
+      continue;
+    }
     const tsxFiles: ParseWorkerInput[] = [];
     const regularFiles: ParseWorkerInput[] = [];
 
