@@ -685,6 +685,10 @@ definitions:
     filePath: src/types/auth.ts
 ```
 
+Options: `task_context`, `goal`, `limit` (max processes, default 5), `max_symbols` (per process, default 10), `include_content` (full symbol source), `includeTests` (include test files; excluded by default, matching `impact`), `repo`, `service`
+
+Test files are excluded from `query` results by default so production code is not outranked by tests that name the same concept. Pass `--include-tests` (CLI) or `includeTests: true` (MCP) to include them, the same opt-in `impact` uses.
+
 ### Context (360-degree Symbol View)
 
 ```
