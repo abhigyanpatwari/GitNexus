@@ -16,8 +16,13 @@ import type {
   ReferenceKind,
   Scope,
   ScopeKind,
+  SymbolDefinition,
 } from 'gitnexus-shared';
-import { extract, type ScopeExtractorHooks } from '../../../src/core/ingestion/scope-extractor.js';
+import {
+  extract,
+  selectNodeBearingDef,
+  type ScopeExtractorHooks,
+} from '../../../src/core/ingestion/scope-extractor.js';
 
 // ─── Synthetic-capture helpers ──────────────────────────────────────────────
 
@@ -548,5 +553,56 @@ describe('end-to-end fixture (all 5 passes together)', () => {
     // Module scope id matches the ParsedFile header.
     const mod = result.scopes.find((s) => s.kind === 'Module')!;
     expect(result.moduleScope).toBe(mod.id);
+  });
+});
+
+describe('selectNodeBearingDef — #1876 one-node-per-binding collapse rule', () => {
+  const def = (type: SymbolDefinition['type'], name = 'x'): SymbolDefinition => ({
+    nodeId: `def:test.ts#1:0:${type}:${name}`,
+    filePath: 'test.ts',
+    type,
+    qualifiedName: name,
+  });
+
+  it('returns undefined for an empty group', () => {
+    expect(selectNodeBearingDef([])).toBeUndefined();
+  });
+
+  it('returns the only def for a single-element group', () => {
+    const only = def('Variable');
+    expect(selectNodeBearingDef([only])).toBe(only);
+  });
+
+  it('prefers a Function over a co-bound Variable (direct arrow / HOC)', () => {
+    const fn = def('Function');
+    const variable = def('Variable');
+    // Order-independent: function-like wins regardless of position.
+    expect(selectNodeBearingDef([variable, fn])).toBe(fn);
+    expect(selectNodeBearingDef([fn, variable])).toBe(fn);
+  });
+
+  it('prefers a Method over a co-bound value def', () => {
+    const method = def('Method');
+    const variable = def('Variable');
+    expect(selectNodeBearingDef([variable, method])).toBe(method);
+  });
+
+  it('returns the value def when no function-like def is present (array-method result)', () => {
+    const constDef = def('Const');
+    expect(selectNodeBearingDef([constDef])).toBe(constDef);
+    const variable = def('Variable');
+    expect(selectNodeBearingDef([variable])).toBe(variable);
+  });
+
+  it('prefers a value def even when an unranked label appears first', () => {
+    const cls = def('Class');
+    const variable = def('Variable');
+    expect(selectNodeBearingDef([cls, variable])).toBe(variable);
+  });
+
+  it('falls back to the first def for label sets the rule does not rank', () => {
+    const cls = def('Class');
+    const iface = def('Interface');
+    expect(selectNodeBearingDef([cls, iface])).toBe(cls);
   });
 });

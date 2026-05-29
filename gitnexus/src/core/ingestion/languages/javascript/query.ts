@@ -148,6 +148,12 @@ const JAVASCRIPT_SCOPE_QUERY = `
 ;; HOC-wrapped variable declarations: const X = HOC((args) => { ... }).
 ;; Covers React.forwardRef, memo, useCallback, useMemo, observer,
 ;; debounce, and any user-defined HOC factory.
+;;
+;; #1876: this shape also matches array higher-order-method callbacks
+;; (const x = arr.map(a => ...)), where x is a value, not a function.
+;; Those are filtered out emit-side in captures.ts via
+;; isArrayMethodCallbackArrow (member-expression callee whose property
+;; is a known Array method), so only the @declaration.const survives.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name

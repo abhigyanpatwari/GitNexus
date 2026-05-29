@@ -24,8 +24,10 @@ import {
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
   queryImporters,
+  loadFTSExtension,
 } from './lbug/lbug-adapter.js';
 import { createSearchFTSIndexes, verifySearchFTSIndexes } from './search/fts-indexes.js';
+import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
   type WalCheckpointDriver,
@@ -144,7 +146,25 @@ export interface AnalyzeResult {
   pipelineResult?: any;
   /** True when analyze only repaired FTS indexes and skipped pipeline re-analysis. */
   ftsRepairedOnly?: boolean;
+  /**
+   * True when the FTS extension was unavailable so search-index creation was
+   * skipped (offline-first degradation). The graph is fully queryable; only
+   * full-text/BM25 search is disabled. Lets callers (CLI summary, server) and
+   * the persisted meta surface the degraded state instead of reporting healthy.
+   */
+  ftsSkipped?: boolean;
 }
+
+/**
+ * Logged when the optional FTS extension cannot be loaded or installed during
+ * a full analyze. Kept as a named constant so the env-var/command guidance
+ * stays in one place (mirrors the VECTOR message in embedding-pipeline.ts).
+ */
+const FTS_UNAVAILABLE_MESSAGE =
+  'FTS extension unavailable; skipping search-index creation. ' +
+  'Full-text/BM25 search will be disabled until the LadybugDB FTS extension is ' +
+  'installed once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) or ' +
+  'pre-installed for offline use. Run `gitnexus doctor` for details.';
 
 // Re-export the pure flag-derivation helper so external callers (and tests)
 // keep importing from this module's stable surface.
@@ -684,23 +704,41 @@ export async function runFullAnalysis(
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
+    // The analyze (write) path owns building the search indexes, so it uses
+    // the `auto` install policy (LOAD-first, then one bounded INSTALL) —
+    // symmetric with the VECTOR/embeddings path below and consistent with the
+    // #726 contract. The global `load-only` default (PR #1161) governs the
+    // serve/query read paths, not this one. When the extension still cannot be
+    // loaded (genuinely offline + not pre-installed, or policy forced to
+    // load-only/never), degrade gracefully — exactly like the VECTOR path — so
+    // analyze still produces a fully queryable graph; only full-text/BM25
+    // search falls back. `--repair-fts` (whose sole job is FTS) still fails
+    // loudly on its own path above.
     progress('fts', 85, 'Creating search indexes...');
-    await createSearchFTSIndexes({
-      onIndexStart: options.verbose
-        ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
-        : undefined,
-      onIndexReady: options.verbose
-        ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
-        : undefined,
+    const ftsAvailable = await loadFTSExtension(undefined, {
+      policy: resolveAnalyzeInstallPolicy(),
     });
-    const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
-    if (missingIndexNames.length > 0) {
-      throw new Error(
-        `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
-          'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
-      );
+    if (ftsAvailable) {
+      await createSearchFTSIndexes({
+        onIndexStart: options.verbose
+          ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
+          : undefined,
+        onIndexReady: options.verbose
+          ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
+          : undefined,
+      });
+      const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
+      if (missingIndexNames.length > 0) {
+        throw new Error(
+          `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
+            'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
+        );
+      }
+      progress('fts', 90, 'Search indexes ready');
+    } else {
+      log(FTS_UNAVAILABLE_MESSAGE);
+      progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
-    progress('fts', 90, 'Search indexes ready');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
@@ -889,7 +927,14 @@ export async function runFullAnalysis(
       },
       capabilities: {
         graph: { provider: 'ladybugdb', status: runtimeCapabilities.graph },
-        fts: { provider: 'ladybugdb-fts', status: runtimeCapabilities.fts },
+        // Reflect what this analyze run actually produced: when the FTS
+        // extension was unavailable the indexes were skipped, so record
+        // 'unavailable' rather than the static runtime default. Keeps
+        // meta.json / `gitnexus doctor` honest about degraded search.
+        fts: {
+          provider: 'ladybugdb-fts',
+          status: ftsAvailable ? runtimeCapabilities.fts : 'unavailable',
+        },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
           status: embeddingCount > 0 ? effectiveSemanticMode : 'unavailable',
@@ -989,6 +1034,7 @@ export async function runFullAnalysis(
       repoPath,
       stats: meta.stats,
       pipelineResult,
+      ftsSkipped: !ftsAvailable,
     };
   } catch (err) {
     // Ensure LadybugDB is closed even on error. Stop the driver first
