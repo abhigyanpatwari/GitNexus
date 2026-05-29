@@ -47,6 +47,13 @@ import { findEnclosingClassDef } from '../../scope-resolution/scope/walkers.js';
 const dependentBasesByFile = new Map<string, Map<string, Map<string, Set<string>>>>();
 
 /**
+ * Class templates with pack-expanded bases (`struct Mix : Bases...`) have
+ * an unknown set of base classes. Unqualified member lookup inside the class
+ * cannot safely bind to class-owned methods outside the current class.
+ */
+const dependentPackBaseClassesByFile = new Map<string, Set<string>>();
+
+/**
  * Post-`populateOwners` resolution: per-class-nodeId, the set of
  * dependent-base-class nodeIds. Built by `populateCppDependentBases`
  * from `dependentBasesByFile` + the workspace registry.
@@ -88,9 +95,19 @@ export function markCppDependentBase(
   quals.add(qualifier);
 }
 
+export function markCppDependentPackBase(filePath: string, className: string): void {
+  let perFile = dependentPackBaseClassesByFile.get(filePath);
+  if (perFile === undefined) {
+    perFile = new Set();
+    dependentPackBaseClassesByFile.set(filePath, perFile);
+  }
+  perFile.add(className);
+}
+
 /** Clear two-phase-lookup state. Called from `clearFileLocalNames`. */
 export function clearCppDependentBases(): void {
   dependentBasesByFile.clear();
+  dependentPackBaseClassesByFile.clear();
   dependentBaseNodeIds.clear();
 }
 
@@ -162,6 +179,16 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
       if (simple === '') continue;
       const nsPrefix = lastDot >= 0 ? qn.slice(0, lastDot) : '';
       localClassByName.set(simple, { nodeId: def.nodeId, nsPrefix });
+    }
+
+    const packBaseClasses = dependentPackBaseClassesByFile.get(filePath);
+    if (packBaseClasses !== undefined) {
+      for (const className of packBaseClasses) {
+        const classEntry = localClassByName.get(className);
+        if (classEntry !== undefined) {
+          dependentBaseNodeIds.set(classEntry.nodeId, new Set(['*pack-expansion*']));
+        }
+      }
     }
 
     // V3: qualifier-based exact targeting. When the base specifier carries
@@ -270,10 +297,16 @@ export function isCppDependentBaseMember(
   candidateDef: SymbolDefinition,
   scopes: ScopeResolutionIndexes,
 ): boolean {
-  if (candidateDef.ownerId === undefined) return false;
   const enclosing = findEnclosingClassDef(callerScopeId, scopes);
   if (enclosing === undefined) return false;
   const bases = dependentBaseNodeIds.get(enclosing.nodeId);
   if (bases === undefined) return false;
+  if (bases.has('*pack-expansion*')) {
+    if (candidateDef.ownerId !== undefined) return candidateDef.ownerId !== enclosing.nodeId;
+    const ownerName = candidateDef.qualifiedName?.split('.').slice(-2, -1)[0];
+    const enclosingName = enclosing.qualifiedName?.split('.').pop();
+    return ownerName !== undefined && ownerName !== enclosingName;
+  }
+  if (candidateDef.ownerId === undefined) return false;
   return bases.has(candidateDef.ownerId);
 }

@@ -15,7 +15,7 @@ import {
   computeCppCallArity,
 } from './arity-metadata.js';
 import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
-import { markCppDependentBase } from './two-phase-lookup.js';
+import { markCppDependentBase, markCppDependentPackBase } from './two-phase-lookup.js';
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
@@ -332,6 +332,13 @@ export function emitCppScopeCaptures(
         'call_expression',
       );
       if (freeCallNode !== null) {
+        const callName = grouped['@reference.name']?.text;
+        if (
+          callName !== undefined &&
+          isUnqualifiedCallSuppressedByPackBase(freeCallNode, callName)
+        ) {
+          continue;
+        }
         const adlAnchorRange = grouped['@reference.call.free']!.range;
         if (isParenthesizedFunctionCall(freeCallNode)) {
           markCppAdlSiteNoAdl(filePath, adlAnchorRange.startLine, adlAnchorRange.startCol);
@@ -410,7 +417,7 @@ export function emitCppScopeCaptures(
   // captures consumed by the registry-primary graph bridge. The lookup name
   // is normalized to the bare class name so `Base<T>` / `outer::v1::Base<T>`
   // resolve through V1's simple-name `findClassBindingInScope('Base')`.
-  emitCppInheritanceCaptures(tree.rootNode, out);
+  emitCppInheritanceCaptures(tree.rootNode, out, filePath);
 
   // ── Detect dependent-base relationships for two-phase template lookup ──
   // Walk the tree once, finding every `template_declaration` whose
@@ -423,6 +430,59 @@ export function emitCppScopeCaptures(
   detectCppDependentBases(tree.rootNode, filePath);
 
   return out;
+}
+
+function isUnqualifiedCallSuppressedByPackBase(callNode: SyntaxNode, callName: string): boolean {
+  const classNode = findEnclosingClassLike(callNode);
+  if (classNode === null) return false;
+  const baseClause = findChildOfType(classNode, ['base_class_clause']);
+  if (baseClause === null) return false;
+  const hasPackBase = [...iterBaseClasses(baseClause)].some((base) => base.isPackExpansion);
+  if (!hasPackBase) return false;
+  return !classDeclaresMemberNamed(classNode, callName);
+}
+
+function findEnclosingClassLike(node: SyntaxNode): SyntaxNode | null {
+  let cur = node.parent;
+  while (cur !== null) {
+    if (cur.type === 'class_specifier' || cur.type === 'struct_specifier') return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+function classDeclaresMemberNamed(classNode: SyntaxNode, memberName: string): boolean {
+  const body = findChildOfType(classNode, ['field_declaration_list']);
+  if (body === null) return false;
+  const stack: SyntaxNode[] = [body];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (
+      (node.type === 'function_declarator' || node.type === 'field_declaration') &&
+      getFunctionDeclaratorName(node) === memberName
+    ) {
+      return true;
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+  return false;
+}
+
+function getFunctionDeclaratorName(node: SyntaxNode): string {
+  const nameNode = node.childForFieldName('declarator') ?? node.childForFieldName('name');
+  if (nameNode?.type === 'field_identifier' || nameNode?.type === 'identifier') {
+    return nameNode.text;
+  }
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child === null) continue;
+    const nested = getFunctionDeclaratorName(child);
+    if (nested !== '') return nested;
+  }
+  return '';
 }
 
 function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined {
@@ -459,7 +519,7 @@ function isCppUnsupportedReturnTypeDeclarator(funcDeclarator: SyntaxNode): boole
  * here instead of introducing a C++-only name-resolution lane in shared
  * ingestion infrastructure.
  */
-function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[]): void {
+function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[], filePath: string): void {
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -467,11 +527,16 @@ function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[]): void
       const baseClause = findChildOfType(node, ['base_class_clause']);
       if (baseClause !== null) {
         for (const base of iterBaseClasses(baseClause)) {
-          const baseName = extractBaseLookupName(base);
+          if (base.isPackExpansion) {
+            const className = getTypeIdentifierName(node);
+            if (className !== '') markCppDependentPackBase(filePath, className);
+            continue;
+          }
+          const baseName = extractBaseLookupName(base.node);
           if (baseName.length === 0) continue;
           out.push({
-            '@reference.inherits': nodeToCapture('@reference.inherits', base),
-            '@reference.name': syntheticCapture('@reference.name', base, baseName),
+            '@reference.inherits': nodeToCapture('@reference.inherits', base.node),
+            '@reference.name': syntheticCapture('@reference.name', base.node, baseName),
           });
         }
       }
@@ -512,9 +577,12 @@ function detectCppDependentBases(root: SyntaxNode, filePath: string): void {
           const baseClause = findChildOfType(classNode, ['base_class_clause']);
           if (baseClause !== null) {
             for (const base of iterBaseClasses(baseClause)) {
-              if (isBaseDependent(base, params)) {
-                const baseName = extractBaseLookupName(base);
-                const baseQualifier = extractBaseLookupQualifier(base);
+              if (base.isPackExpansion || isBaseDependent(base.node, params)) {
+                if (base.isPackExpansion) {
+                  markCppDependentPackBase(filePath, className);
+                }
+                const baseName = extractBaseLookupName(base.node);
+                const baseQualifier = extractBaseLookupQualifier(base.node);
                 if (baseName !== '') {
                   markCppDependentBase(filePath, className, baseName, baseQualifier);
                 }
@@ -563,8 +631,13 @@ function collectTemplateParameterNames(templateDecl: SyntaxNode): Set<string> {
   return names;
 }
 
+interface CppBaseClassEntry {
+  readonly node: SyntaxNode;
+  readonly isPackExpansion: boolean;
+}
+
 /** Yield each base-class entry from a `base_class_clause`. */
-function* iterBaseClasses(baseClause: SyntaxNode): IterableIterator<SyntaxNode> {
+function* iterBaseClasses(baseClause: SyntaxNode): IterableIterator<CppBaseClassEntry> {
   for (let i = 0; i < baseClause.childCount; i++) {
     const child = baseClause.child(i);
     if (child === null) continue;
@@ -575,9 +648,20 @@ function* iterBaseClasses(baseClause: SyntaxNode): IterableIterator<SyntaxNode> 
       child.type === 'template_type' ||
       child.type === 'qualified_identifier'
     ) {
-      yield child;
+      yield { node: child, isPackExpansion: isFollowedByPackExpansion(baseClause, i) };
     }
   }
+}
+
+function isFollowedByPackExpansion(baseClause: SyntaxNode, childIndex: number): boolean {
+  for (let i = childIndex + 1; i < baseClause.childCount; i++) {
+    const sibling = baseClause.child(i);
+    if (sibling === null) continue;
+    if (sibling.type === '...' || (!sibling.isNamed && sibling.text === '...')) return true;
+    if (sibling.type === ',' || sibling.type === 'access_specifier') return false;
+    if (sibling.isNamed) return false;
+  }
+  return false;
 }
 
 /**
