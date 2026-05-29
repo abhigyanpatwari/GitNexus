@@ -15,6 +15,13 @@
     "args": {
       "CLAUDE_CODE_VERSION": "2.1.153",
       "CODEX_VERSION": "0.134.0",
+      // Cursor: pinned version + per-arch tarball sha256, verified at build
+      // time in the Dockerfile (no remote install script is executed). Bump
+      // all three together; re-hash each arch with:
+      //   curl -fSL https://downloads.cursor.com/lab/<ver>/linux/<x64|arm64>/agent-cli-package.tar.gz | sha256sum
+      "CURSOR_VERSION": "2026.05.28-a70ca7c",
+      "CURSOR_SHA256_X64": "7f8b6a09393e0b84b288cc6952b292fc98d15775f644cc01b0b9aa4f04b268df",
+      "CURSOR_SHA256_ARM64": "05a0ab361e038729aba25fe7f407531b3e8432912e499d0bffdf1dda0e7833e9",
       "TZ": "${localEnv:TZ:UTC}"
     }
   },
@@ -66,10 +73,12 @@
   //    history, caches, IDE locks) stays isolated per devcontainer, so two
   //    GitNexus checkouts on the same host don't corrupt each other.
   //
-  // 3. Other host config — read-write or read-only bind mounts for things
-  //    that don't have the perm-flattening / onboarding-state complexity
-  //    Claude Code does. `~/.gitconfig` is handled separately by VS Code's
-  //    auto-copy mechanism (not mounted).
+  // 3. Other host config — READ-ONLY bind mounts for credential/identity
+  //    dirs that don't have the perm-flattening / onboarding-state complexity
+  //    Claude Code does (ssh, aws, azure, git config, and gh + docker — the
+  //    latter two RO so a compromised dep can't rewrite the GitHub token or
+  //    Docker credHelper; see the inline note at those mounts). `~/.gitconfig`
+  //    is handled separately by VS Code's auto-copy mechanism (not mounted).
   //
   // 4. Per-instance state — `${devcontainerId}`-scoped: shell history,
   //    npm cache. Survive rebuilds, isolated between sibling instances.
@@ -181,8 +190,16 @@
     "source=${localEnv:HOME}/.claude.json,target=/host/.claude.json,type=bind,readonly",
     "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,readonly",
     "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly",
-    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind",
-    "source=${localEnv:HOME}/.docker,target=/home/node/.docker,type=bind",
+    // gh + docker are READ-ONLY. The container reads your EXISTING host login
+    // (the common case), but a compromised in-container dependency can't
+    // rewrite ~/.config/gh/hosts.yml (your GitHub token) or
+    // ~/.docker/config.json (registry credHelper -> arbitrary binary). The
+    // trade-off: `gh auth login` / `docker login` run INSIDE the container
+    // won't persist back to the host — re-run them on the host, or drop
+    // `,readonly` on the next two lines if you want in-container logins to
+    // stick. See README § Trust boundary.
+    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,readonly",
+    "source=${localEnv:HOME}/.docker,target=/home/node/.docker,type=bind,readonly",
     "source=${localEnv:HOME}/.aws,target=/home/node/.aws,type=bind,readonly",
     "source=${localEnv:HOME}/.azure,target=/home/node/.azure,type=bind,readonly",
     "source=commandhistory-${devcontainerId},target=/commandhistory,type=volume",

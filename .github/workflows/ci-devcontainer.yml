@@ -65,5 +65,9 @@ jobs:
       # This is the smoke that catches Dockerfile regressions + drift from the
       # canonical version pins. Lifecycle hooks (post-create.sh) are not run
       # here — they need the host config mounts, which CI has none of.
+      # Version-pinned: bare `npx --yes @devcontainers/cli` resolves @latest at
+      # run time, so a breaking or malicious publish could change CI behavior
+      # (or how devcontainer.json is interpreted) with no diff. Bump
+      # deliberately alongside the Dockerfile/devcontainer.json pins.
       - name: Build devcontainer via @devcontainers/cli
-        run: npx --yes @devcontainers/cli build --workspace-folder .
+        run: npx --yes @devcontainers/cli@0.87.0 build --workspace-folder .

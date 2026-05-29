@@ -3,7 +3,20 @@
 # Base image: Microsoft's TypeScript+Node devcontainer image. Multi-arch
 # (linux/amd64, linux/arm64), monthly security patching, ships the non-root
 # `node` user (UID 1000), zsh + Oh My Zsh, eslint global, `gh` CLI.
-FROM mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm
+#
+# Digest-pinned (matches the Dockerfile.cli / gitnexus/Dockerfile.test
+# convention and issue #1451) so a silent upstream retag can't change the
+# build under us. Pinned as bare `name@digest` (NO `:tag` prefix) on purpose:
+# unlike the production Dockerfiles (built with plain `docker build`), this one
+# is built by `@devcontainers/cli` / the VS Code Dev Containers resolver, whose
+# image-name parser rejects the combined `name:tag@sha256:...` form. The digest
+# below corresponds to the `1-22-bookworm` tag and is the multi-arch
+# manifest-list digest, so it still resolves the right platform. Refresh when
+# bumping the readable tag:
+#   docker buildx imagetools inspect \
+#     mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm \
+#     --format '{{json .Manifest.Digest}}'
+FROM mcr.microsoft.com/devcontainers/typescript-node@sha256:7c2e711a4f7b02f32d2da16192d5e05aa7c95279be4ce889cff5df316f251c1d
 
 # Build args. Version defaults are NOT set here — devcontainer.json
 # `build.args` is the single source of truth. Standalone `docker build
@@ -12,13 +25,14 @@ FROM mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm
 # devcontainer-canonical pin.
 ARG CLAUDE_CODE_VERSION
 ARG CODEX_VERSION
+# Cursor is pinned by version + per-arch tarball sha256 (verified in the
+# install step below); all three live in devcontainer.json build.args, same
+# single-source-of-truth / fail-loud-without-default rule as the others.
+ARG CURSOR_VERSION
+ARG CURSOR_SHA256_X64
+ARG CURSOR_SHA256_ARM64
 ARG TZ=UTC
 ARG USERNAME=node
-# NOTE: there is intentionally no CURSOR_VERSION ARG. The cursor.com/install
-# script does not honour a version pin, so an ARG would be dead config that
-# implies a guarantee the installer can't keep. Cursor is currently installed
-# unpinned (see the install step below); pinning is tracked as a follow-up in
-# README § "What's not included (yet)".
 
 # Promote build-only ARGs into runtime ENV so shells and lifecycle scripts
 # can read them. CLAUDE_CONFIG_DIR is intentionally NOT set here — the
@@ -26,6 +40,7 @@ ARG USERNAME=node
 # of truth; runtime-time wins anyway).
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION} \
     CODEX_VERSION=${CODEX_VERSION} \
+    CURSOR_VERSION=${CURSOR_VERSION} \
     TZ=${TZ} \
     DEVCONTAINER=true \
     NODE_OPTIONS=--max-old-space-size=4096 \
@@ -65,23 +80,39 @@ RUN npm install -g \
         @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         @openai/codex@${CODEX_VERSION}
 
-# Cursor CLI install. The official cursor.com/install script does not
-# expose version pinning or a checksum, so we download to a temp file,
-# log the sha256 to build output (so drift across rebuilds shows up in
-# CI logs), then execute. Trust assumption: cursor.com's TLS chain is
-# reliable. Long-term hardening (tracked as a follow-up): pin a specific
-# downloads.cursor.com/lab/<version>/<arch>/agent-cli-package.tar.gz URL
-# with a hard sha256 verification and skip the install script entirely.
+# Cursor CLI install — pinned and hash-verified, no remote script executed.
+# cursor.com/install merely detects os/arch and downloads a versioned tarball
+# from downloads.cursor.com/lab/<version>/<os>/<arch>/agent-cli-package.tar.gz,
+# then extracts it and symlinks `agent`/`cursor-agent` into ~/.local/bin. We
+# replicate that directly against a PINNED version + per-arch sha256, so the
+# build runs no unverified remote code (matches the base-image / npm digest-pin
+# convention; issue #1451). The download is fail-closed: a sha mismatch aborts.
 #
-# `timeout 300` wraps the installer because the script makes its OWN network
-# requests (it downloads the actual Cursor binary) that `curl --max-time`
-# above does NOT cover — without it a slow/hung Cursor CDN would block the
-# Docker build indefinitely with no watchdog.
-RUN curl -fsS --retry 3 --max-time 60 -o /tmp/cursor-install.sh https://cursor.com/install \
-    && echo "Cursor installer sha256:" \
-    && sha256sum /tmp/cursor-install.sh \
-    && timeout 300 bash /tmp/cursor-install.sh \
-    && rm -f /tmp/cursor-install.sh
+# Bump: set CURSOR_VERSION + both CURSOR_SHA256_* in devcontainer.json
+# build.args. Re-hash each arch with:
+#   curl -fSL https://downloads.cursor.com/lab/<ver>/linux/<x64|arm64>/agent-cli-package.tar.gz | sha256sum
+#
+# TARGETARCH is BuildKit's automatic per-platform build arg; it must be
+# (re)declared in this stage to be in scope. Fall back to `dpkg
+# --print-architecture` for a non-BuildKit `docker build`.
+ARG TARGETARCH
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in \
+        amd64) cursor_arch=x64;   cursor_sha="${CURSOR_SHA256_X64}";; \
+        arm64) cursor_arch=arm64; cursor_sha="${CURSOR_SHA256_ARM64}";; \
+        *) echo "unsupported architecture for Cursor: $arch" >&2; exit 1;; \
+    esac; \
+    url="https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz"; \
+    curl -fSL --retry 3 --max-time 120 -o /tmp/cursor.tgz "$url"; \
+    echo "${cursor_sha}  /tmp/cursor.tgz" | sha256sum -c -; \
+    dir="/home/${USERNAME}/.local/share/cursor-agent/versions/${CURSOR_VERSION}"; \
+    install -d "$dir" "/home/${USERNAME}/.local/bin"; \
+    tar --strip-components=1 -xzf /tmp/cursor.tgz -C "$dir"; \
+    test -x "$dir/cursor-agent"; \
+    ln -sf "$dir/cursor-agent" "/home/${USERNAME}/.local/bin/agent"; \
+    ln -sf "$dir/cursor-agent" "/home/${USERNAME}/.local/bin/cursor-agent"; \
+    rm -f /tmp/cursor.tgz
 
 # ~/.local/bin (where Cursor's installer drops `agent` and `cursor-agent`
 # symlinks) on PATH for interactive shells and lifecycle scripts.

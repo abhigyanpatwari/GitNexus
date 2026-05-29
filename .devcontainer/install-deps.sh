@@ -18,12 +18,19 @@ echo "[install-deps] 1/4: chown workspace node_modules + npm cache mount points"
 # `updateRemoteUserUID: true` shifts the `node` user, the volumes end up
 # owned by the stale UID — npm install can't write. Re-chown
 # post-realignment; idempotent on subsequent runs.
-sudo chown -R node:node \
-    /workspace/node_modules \
-    /workspace/gitnexus/node_modules \
-    /workspace/gitnexus-web/node_modules \
-    /workspace/gitnexus-shared/node_modules \
-    /home/node/.npm
+#
+# `find -xdev -exec chown` (same idiom as post-create.sh) rather than a bare
+# `chown -R`: -xdev keeps each chown ON its own volume filesystem, and `find`
+# does not follow symlinks during traversal — so a symlink committed in the
+# workspace tree (or dropped by a dependency postinstall on a rerun) can't
+# redirect the chown onto a host path outside the volume.
+for d in /workspace/node_modules \
+         /workspace/gitnexus/node_modules \
+         /workspace/gitnexus-web/node_modules \
+         /workspace/gitnexus-shared/node_modules \
+         /home/node/.npm; do
+    sudo find "$d" -xdev -exec chown node:node {} +
+done
 
 echo "[install-deps] 2/4: clear stale .husky/_ runtime cache"
 # Docker Desktop's Windows bind-mount permission translation refuses to
