@@ -114,6 +114,16 @@ const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
 };
 
 /**
+ * Allowed HTTP verbs for the WebClient long-form path
+ * `webClient.method(HttpMethod.X).uri("/y")`. Compiled once at module
+ * load (instead of inside the scan loop) per maintainer feedback on
+ * PR #1884. Mirrors the keys of `WEB_CLIENT_SHORT_TO_HTTP` above —
+ * keeping HEAD/OPTIONS/TRACE intentionally excluded for symmetry
+ * with the short form and the Java plugin.
+ */
+const WEB_CLIENT_LONG_VERB_RE = /^(GET|POST|PUT|DELETE|PATCH)$/;
+
+/**
  * Build the plugin only if the Kotlin grammar is available. Compiling
  * the queries against a null grammar would throw at module load time
  * and abort the whole http-route-extractor module.
@@ -505,9 +515,11 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         // POST, PUT, DELETE, PATCH, HEAD, OPTIONS, TRACE — we only
         // emit for the five verbs we already handle elsewhere, so
         // exotic ones are silently skipped (consistent with the
-        // short form's WEB_CLIENT_SHORT_TO_HTTP guard).
+        // short form's WEB_CLIENT_SHORT_TO_HTTP guard). The accepted
+        // verb regex is hoisted to module scope (see
+        // `WEB_CLIENT_LONG_VERB_RE` near the top of this file).
         const verbText = verbNode.text;
-        if (!/^(GET|POST|PUT|DELETE|PATCH)$/.test(verbText)) continue;
+        if (!WEB_CLIENT_LONG_VERB_RE.test(verbText)) continue;
         const path = unquoteLiteral(pathNode.text);
         if (path === null) continue;
         out.push({
