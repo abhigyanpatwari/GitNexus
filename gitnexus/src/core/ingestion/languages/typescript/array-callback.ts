@@ -37,6 +37,18 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
  * (`qb.where(x => …)`) still classifies as `Function`. There is no clean
  * syntactic line beyond the well-known Array surface, so the set is
  * intentionally closed and easy to extend.
+ *
+ * Receiver-blind, by design: the match keys on the method NAME only, never
+ * the receiver type (tree-sitter has no type information here). So an in-set
+ * name on a NON-array receiver — `Map`/`Set` `.forEach`, an RxJS
+ * `observable.map(…)`, a query builder `.sort(…)`, a lodash chain
+ * `.filter(…)` — is ALSO treated as a callback and has its
+ * `@declaration.function` dropped. This is an accepted limitation, not a
+ * regression: those bindings hold the call's *result value*, not a callable,
+ * so a value def is the correct classification anyway. The only genuine loss
+ * is a bespoke DSL whose in-set-named method returns something callable —
+ * rare enough to accept rather than guard with type inference. Pinned by the
+ * "in-set method on a non-array receiver" case in `*-captures.test.ts`.
  */
 export const ARRAY_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   'map',

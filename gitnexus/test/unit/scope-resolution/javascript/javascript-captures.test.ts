@@ -37,14 +37,25 @@ describe('emitJsScopeCaptures — #1876 array-method-callback narrowing', () => 
     expect(countTag(src, '@declaration.function')).toBe(0);
   });
 
-  it.each(['filter', 'find', 'findIndex', 'reduce', 'forEach', 'some', 'every', 'flatMap', 'sort'])(
-    'suppresses the Function def for array method .%s()',
-    (method) => {
-      const src = `const x = arr.${method}((a) => a);`;
-      expect(hasDecl(src, '@declaration.function', 'x')).toBe(false);
-      expect(hasDecl(src, '@declaration.const', 'x')).toBe(true);
-    },
-  );
+  // Every method in ARRAY_CALLBACK_METHODS except `map` (covered above).
+  it.each([
+    'filter',
+    'find',
+    'findIndex',
+    'findLast',
+    'findLastIndex',
+    'reduce',
+    'reduceRight',
+    'forEach',
+    'some',
+    'every',
+    'flatMap',
+    'sort',
+  ])('suppresses the Function def for array method .%s()', (method) => {
+    const src = `const x = arr.${method}((a) => a);`;
+    expect(hasDecl(src, '@declaration.function', 'x')).toBe(false);
+    expect(hasDecl(src, '@declaration.const', 'x')).toBe(true);
+  });
 
   it('keeps @declaration.function for an identifier-callee HOC (forwardRef)', () => {
     const src = 'const Button = forwardRef((props, ref) => null);';
@@ -65,6 +76,17 @@ describe('emitJsScopeCaptures — #1876 array-method-callback narrowing', () => 
   it('keeps @declaration.function for a non-array fluent-API member call (accepted limitation)', () => {
     const src = 'const q = qb.where((row) => row.ok);';
     expect(hasDecl(src, '@declaration.function', 'q')).toBe(true);
+  });
+
+  it('suppresses an in-set method name on a NON-array receiver (accepted receiver-blind limitation)', () => {
+    // The predicate keys on the method NAME only, never the receiver type —
+    // tree-sitter has no type info. So `.map` on an RxJS observable (or
+    // Map/Set `.forEach`, a query builder `.sort`, a lodash chain `.filter`)
+    // is also treated as a callback and loses its Function def. Accepted: the
+    // binding holds the call's result value, so a value def is correct anyway.
+    const src = 'const stream = source$.map((event) => handle(event));';
+    expect(hasDecl(src, '@declaration.function', 'stream')).toBe(false);
+    expect(hasDecl(src, '@declaration.const', 'stream')).toBe(true);
   });
 
   it('suppresses the outer .map() callback in a chained array call', () => {

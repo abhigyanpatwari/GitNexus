@@ -789,8 +789,10 @@ const NODE_BEARING_VALUE_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set
  * start position, so containment is uncomputable here; the caller forms the
  * group (e.g. from a scope's `ownedDefs` keyed by name) before calling.
  *
- * Pure. No production call site yet — this is the executable contract the
- * migration PR will consume, pinned by the scope-extractor unit test.
+ * Pure. No production call site yet — this dead export is intentional and
+ * tracked by #1876 (the deferred node-creation migration); it is the
+ * executable contract that follow-up will consume, pinned today by the
+ * scope-extractor unit test.
  */
 export function selectNodeBearingDef(
   group: readonly SymbolDefinition[],

@@ -579,14 +579,25 @@ describe('emitTsScopeCaptures — #1876 array-method-callback narrowing', () => 
     expect(declWithName(src, '@declaration.function', 'exportData')).toBe(false);
   });
 
-  it.each(['filter', 'find', 'findIndex', 'reduce', 'forEach', 'some', 'every', 'flatMap', 'sort'])(
-    'suppresses the Function def for array method .%s()',
-    (method) => {
-      const src = `const x = arr.${method}((a) => a);`;
-      expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
-      expect(declWithName(src, '@declaration.variable', 'x')).toBe(true);
-    },
-  );
+  // Every method in ARRAY_CALLBACK_METHODS except `map` (covered above).
+  it.each([
+    'filter',
+    'find',
+    'findIndex',
+    'findLast',
+    'findLastIndex',
+    'reduce',
+    'reduceRight',
+    'forEach',
+    'some',
+    'every',
+    'flatMap',
+    'sort',
+  ])('suppresses the Function def for array method .%s()', (method) => {
+    const src = `const x = arr.${method}((a) => a);`;
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'x')).toBe(true);
+  });
 
   it('keeps @declaration.function for an identifier-callee HOC (forwardRef)', () => {
     const src = 'const Button = forwardRef((props, ref) => null);';
@@ -607,6 +618,15 @@ describe('emitTsScopeCaptures — #1876 array-method-callback narrowing', () => 
   it('keeps @declaration.function for a non-array fluent-API member call (accepted limitation)', () => {
     const src = 'const q = qb.where((row) => row.ok);';
     expect(declWithName(src, '@declaration.function', 'q')).toBe(true);
+  });
+
+  it('suppresses an in-set method name on a NON-array receiver (accepted receiver-blind limitation)', () => {
+    // Receiver-blind by design — see array-callback.ts. An in-set method name
+    // on a non-array receiver (RxJS observable, Map/Set, query builder) also
+    // loses its Function def. Accepted: the binding holds a value, not a callable.
+    const src = 'const stream = source$.map((event) => handle(event));';
+    expect(declWithName(src, '@declaration.function', 'stream')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'stream')).toBe(true);
   });
 
   it('suppresses the outer .map() callback in a chained array call', () => {

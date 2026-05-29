@@ -59,9 +59,9 @@ describe.skipIf(isLegacyResolverParityRun('javascript'))(
       ).toEqual([]);
       const fromFile = calls.filter((c) => c.sourceLabel === 'File');
       expect(
-        fromFile.length,
-        'the .map callback call to transform must source from the File node',
-      ).toBeGreaterThan(0);
+        fromFile,
+        'the .map callback call to transform must source from the File node (exactly once)',
+      ).toHaveLength(1);
     });
 
     it('call inside .find callback attributes to File, not a phantom Function:firstActive', () => {
@@ -73,9 +73,9 @@ describe.skipIf(isLegacyResolverParityRun('javascript'))(
       ).toEqual([]);
       const fromFile = calls.filter((c) => c.sourceLabel === 'File');
       expect(
-        fromFile.length,
-        'the .find callback call to predicate must source from the File node',
-      ).toBeGreaterThan(0);
+        fromFile,
+        'the .find callback call to predicate must source from the File node (exactly once)',
+      ).toHaveLength(1);
     });
   },
 );
