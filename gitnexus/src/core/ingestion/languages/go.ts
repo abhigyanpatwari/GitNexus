@@ -56,6 +56,9 @@ const GO_BUILT_INS: ReadonlySet<string> = new Set([
   'complex',
   'real',
   'imag',
+  'clear',
+  'min',
+  'max',
   // built-in types
   'error',
   'bool',
@@ -77,10 +80,13 @@ const GO_BUILT_INS: ReadonlySet<string> = new Set([
   'complex128',
   'byte',
   'rune',
+  'any',
+  'comparable',
   // built-in values
   'true',
   'false',
   'nil',
+  'iota',
 ]);
 
 export const goProvider = defineLanguage({
