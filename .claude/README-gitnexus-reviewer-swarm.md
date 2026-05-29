@@ -1,43 +1,43 @@
-# GitNexus PR Reviewer Swarm
+# GitNexus PR Reviewer Swarm — Claude Code adapter
 
-A coordinated, read-only Claude Code reviewer swarm for GitNexus pull requests. Seven specialized subagents produce a structured, evidence-grounded production-readiness review.
+This is the **Claude Code** entrypoint for the cross-CLI GitNexus PR reviewer swarm. The
+review logic itself is CLI-neutral and lives in **[`pr-swarm-review/`](../pr-swarm-review/README.md)**
+— that README is the canonical guide and covers every CLI (Claude Code, Gemini, Copilot,
+Cursor, Codex, and any AGENTS.md-aware agent).
 
-## Invocation
+## Invocation (Claude Code)
 
 ```
 /gitnexus-pr-swarm-review <PR URL or PR number>
 ```
 
-Examples:
+Runs in **Swarm mode**: the coordinator skill dispatches the seven `gitnexus-*` subagents in
+parallel (lanes 1–2 first, 3–6 in parallel, lane 7 last as a hard gate).
 
-```
-/gitnexus-pr-swarm-review 1234
-/gitnexus-pr-swarm-review https://github.com/abhigyanpatwari/GitNexus/pull/1234
-```
+## Files in this adapter
 
-## Agents
+| File | Role |
+|------|------|
+| `.claude/skills/gitnexus-pr-swarm-review/SKILL.md` | Coordinator — runs Swarm mode per `pr-swarm-review/orchestration.md` |
+| `.claude/agents/gitnexus-*.md` | Seven thin subagent wrappers; each reads its canonical persona in `pr-swarm-review/personas/` |
 
-| Agent | Purpose |
-|-------|---------|
-| `gitnexus-pr-facts-historian` | Gathers PR identity, visible GitHub state, changed files, commits, linked issues, repo history, and visibility gaps |
-| `gitnexus-branch-hygiene-reviewer` | Classifies merge state and branch hygiene using exact enumerated values |
-| `gitnexus-risk-architect` | Identifies production failure modes using risk-model-first reasoning |
-| `gitnexus-test-ci-verifier` | Verifies test coverage, CI wiring, and validation gaps |
-| `gitnexus-security-boundary-reviewer` | Reviews auth, secrets, injection, hidden Unicode, and trust boundaries |
-| `gitnexus-docs-dod-reviewer` | Builds a PR-specific Definition of Done from repo guidance docs |
-| `gitnexus-synthesis-critic` | Critiques the final review for evidence grounding and verdict-rule compliance |
+Each subagent keeps valid Claude Code frontmatter (model, tools, etc.); the mechanical
+verifier lanes (`test-ci-verifier`, `branch-hygiene-reviewer`) run on Haiku, the analytical
+lanes on Sonnet.
 
-## Key Properties
+## Key properties
 
-- **Read-only.** All agents use only Read, Grep, Glob, and Bash tools. No agent can edit files.
-- **Evidence-grounded.** Every finding must cite files, line ranges, checks, issue/PR references, or commands.
-- **Missing visibility becomes verification work.** If GitHub state cannot be determined, the review treats missing items as mandatory verification points rather than inventing facts.
-- **Manually invoked.** No hooks or automatic triggers. Use the `/gitnexus-pr-swarm-review` slash command to start a review.
+- **Read-only.** Tools limited to Read/Grep/Glob/Bash, and every persona enforces an
+  explicit permitted/prohibited Bash list. No agent edits files, commits, or posts.
+- **Evidence-grounded**; **missing visibility becomes verification work**; **manually invoked.**
 
-## Relationship to Existing PR Review
+## Editing
 
-This swarm coexists with the existing `/gitnexus-pr-review` skill. The existing skill is a single-agent linear checklist using GitNexus MCP tools. The swarm is a multi-agent deep review with focused responsibilities per domain.
+Edit review behavior in the canonical files under `pr-swarm-review/` (orchestration +
+personas), **not** in these wrappers. After adding or editing files in `.claude/agents/`,
+restart Claude Code so it reloads the agent definitions.
 
-## After Adding or Editing Agent Files
+## Relationship to `/gitnexus-pr-review`
 
-Claude Code loads agent files at startup. If you directly add or edit files in `.claude/agents/`, restart Claude Code for the changes to take effect.
+Coexists with the single-agent `/gitnexus-pr-review` skill (a linear checklist using GitNexus
+MCP tools). This swarm is the multi-persona deep production-readiness review.
