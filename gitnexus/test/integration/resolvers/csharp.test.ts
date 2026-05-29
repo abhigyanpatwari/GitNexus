@@ -1,7 +1,7 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -2601,5 +2601,84 @@ describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
     );
     expect(edge).toBeDefined();
     expect(edge!.rel.reason).toBe('csharp-scope: using');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spurious IMPORTS: BCL usings must not match coincidentally-named local files
+// (#1881)
+// ---------------------------------------------------------------------------
+
+describe('C# spurious import edges (#1881)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-spurious-edges'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not emit IMPORTS from System.Threading.Tasks to a local Tasks.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const spurious = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' &&
+        e.targetFilePath === 'Legacy/Tasks.cs',
+    );
+    expect(spurious).toBeUndefined();
+  });
+
+  it('still emits the legitimate in-repo edge OrderService.cs -> Models/User.cs', () => {
+    // Guards against the negative above passing vacuously: the fixture's
+    // `using MyApp.Models;` must resolve to a real IMPORTS edge.
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBeGreaterThan(0);
+    const legit = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' &&
+        e.targetFilePath === 'Models/User.cs',
+    );
+    expect(legit).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1881 on the LEGACY DAG leg, forced in-process so it runs under `npm test`
+// (not only the CI parity matrix). `isRegistryPrimary` reads `process.env`
+// per call with no caching, so stubbing the flag before the pipeline run
+// routes C# import resolution through `csharpNamespaceStrategy` (#8).
+// ---------------------------------------------------------------------------
+
+describe('C# spurious import edges — legacy DAG leg (#1881, #8)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    vi.stubEnv('REGISTRY_PRIMARY_CSHARP', '0');
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-spurious-edges'), () => {});
+  }, 60000);
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('does not emit IMPORTS from System.Threading.Tasks to a local Tasks.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const spurious = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' &&
+        e.targetFilePath === 'Legacy/Tasks.cs',
+    );
+    expect(spurious).toBeUndefined();
+  });
+
+  it('still emits the legitimate in-repo edge OrderService.cs -> Models/User.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const legit = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' &&
+        e.targetFilePath === 'Models/User.cs',
+    );
+    expect(legit).toBeDefined();
   });
 });
