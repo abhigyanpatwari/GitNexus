@@ -449,12 +449,55 @@ export class GrpcExtractor implements ContractExtractor {
    * either a service-level (`grpc::pkg.Svc/*`) or method-level
    * (`grpc::pkg.Svc/Method`) contract id, and selecting confidence
    * based on whether the proto map had an entry.
+   *
+   * Resolution order for the package prefix:
+   *
+   *   1. **Detection-supplied `protoPackage`** — emitted by plugins
+   *      that read import statements directly from the consumer
+   *      file (e.g. java reads `import <pkg>.<XxxGrpc>;`). This is
+   *      the path that lets client-jar consumers — which carry zero
+   *      `.proto` files in their own repo — still emit a
+   *      fully-qualified contract id that matches the provider's
+   *      contract id verbatim. Confidence stays at the
+   *      "with proto" level because the import statement is at
+   *      least as authoritative as a per-repo proto map: it's
+   *      derived from real source code in the consumer, not a path
+   *      heuristic.
+   *
+   *   2. **Per-repo proto map** — the legacy path. Used when (a) the
+   *      plugin didn't supply `protoPackage` (no import statement,
+   *      wildcard import only, or non-Java languages that haven't
+   *      been retrofitted yet), or (b) the consumer repo happens
+   *      to carry the originating `.proto` file.
+   *
+   *   3. **Short-name fallback** — when neither of the above
+   *      resolves a package, emit a service-only short-name contract
+   *      id (`grpc::Svc/*`), preserving the pre-fix behaviour.
    */
   private detectionToContract(
     d: GrpcDetection,
     filePath: string,
     protoMap: Map<string, ProtoServiceInfo[]>,
   ): ExtractedContract | null {
+    // Step 1: import-derived package wins. Skip the proto map entirely
+    // — it can only blur things (e.g. an unrelated same-name service in
+    // the consumer repo would otherwise win the path heuristic and
+    // produce the wrong FQN).
+    if (d.protoPackage) {
+      const cid = d.methodName
+        ? contractId(d.protoPackage, d.serviceName, d.methodName)
+        : serviceContractId(d.protoPackage, d.serviceName);
+      const meta: Record<string, unknown> = {
+        service: d.serviceName,
+        source: d.source,
+        package: d.protoPackage,
+        protoPackageSource: 'import',
+      };
+      if (d.methodName) meta.method = d.methodName;
+      return makeContract(cid, d.role, filePath, d.symbolName, d.confidenceWithProto, meta);
+    }
+
+    // Step 2 + 3: legacy per-repo proto map resolution.
     const candidates = protoMap.get(d.serviceName) ?? [];
     const proto = resolveProtoConflict(d.serviceName, filePath, candidates);
     // If there were proto candidates but resolution was ambiguous, skip

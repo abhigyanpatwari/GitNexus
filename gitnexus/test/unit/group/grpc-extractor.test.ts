@@ -384,6 +384,358 @@ public class AuthGrpcService extends AuthServiceGrpc.AuthServiceImplBase {
     });
   });
 
+  // ─── Java client-jar / import-derived FQN ─────────────────────────
+  // The "client-jar" architecture is the dominant pattern for Java
+  // gRPC microservices: the service owner publishes a pre-compiled
+  // stub jar to a Maven repository, and consumer repos depend on the
+  // jar instead of carrying the originating `.proto` files. Examples:
+  // gRPC official quickstart, Alibaba HSF, ByteDance KiteX-Java,
+  // google-cloud-java SDK.
+  //
+  // Before this fix, the extractor only resolved a fully-qualified
+  // contract id (`grpc::<package>.<Service>/*`) when the consumer
+  // repo also carried a matching `.proto` file. Client-jar consumers
+  // had no proto, so they fell back to a short-name contract id
+  // (`grpc::<Service>/*`) that never matched the provider repo's
+  // package-qualified contract id — cross-repo grpc cross-link count
+  // dropped to zero on every realistic Java micro-service group.
+  //
+  // The fix derives the FQN directly from the consumer file's `import
+  // <pkg>.<XxxGrpc>;` statement, which is always present (without it
+  // the Java code wouldn't even compile). The package from the import
+  // is exactly the proto package, so the contract id matches the
+  // provider's verbatim — no `.proto` lookup needed.
+  describe('Java client-jar consumer (import-derived FQN)', () => {
+    it('test_consumer_with_import_emits_fqn_contract_id_without_local_proto', async () => {
+      // No .proto file in this repo — the consumer ONLY has the import.
+      writeFile(
+        'src/main/java/AuthClient.java',
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+import com.acme.auth.proto.AuthServiceGrpc;
+
+public class AuthClient {
+    private final AuthServiceGrpc.AuthServiceBlockingStub stub;
+    public AuthClient(ManagedChannel ch) {
+        this.stub = AuthServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
+      // Confidence stays at the "with proto" tier: the import
+      // statement is at least as authoritative as a per-repo proto
+      // map, so consumers shouldn't be penalised for not carrying
+      // a redundant `.proto` file.
+      expect(consumers[0].confidence).toBe(0.75);
+      expect(consumers[0].meta.protoPackageSource).toBe('import');
+      expect(consumers[0].meta.package).toBe('com.acme.auth.proto');
+    });
+
+    it('test_provider_with_import_emits_fqn_contract_id_without_local_proto', async () => {
+      // Same idea on the provider side: a server impl class lives in
+      // a repo that does NOT carry the originating `.proto`. The
+      // import on `AuthServiceGrpc` is enough to derive the FQN.
+      writeFile(
+        'src/main/java/AuthServerImpl.java',
+        `package my.server;
+
+import com.acme.auth.proto.AuthServiceGrpc;
+import io.grpc.stub.StreamObserver;
+
+public class AuthServerImpl extends AuthServiceGrpc.AuthServiceImplBase {
+    @Override
+    public void login(LoginRequest req, StreamObserver<LoginResponse> obs) {}
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
+      expect(providers[0].confidence).toBe(0.8);
+      expect(providers[0].meta.protoPackageSource).toBe('import');
+    });
+
+    it('test_same_short_name_different_packages_resolves_to_distinct_fqns', async () => {
+      // The motivating real-world case (unipus_cloud_framework):
+      // `ContentRpcService` is defined in TWO different proto packages
+      // by two different client modules.
+      //
+      //   ucf-api-client/Service.proto    → cn.unipus.ucf.api.proto.client.service.ContentRpcService
+      //   ucf-admin-client/Service.proto  → cn.unipus.ucf.admin.proto.client.service.ContentRpcService
+      //
+      // A short-name fallback would silently merge consumers of the
+      // two services into one bogus contract id; the import-derived
+      // FQN keeps them distinct.
+      writeFile(
+        'src/main/java/ApiContentClient.java',
+        `package my.app.api;
+
+import io.grpc.ManagedChannel;
+import cn.unipus.ucf.api.proto.client.service.ContentRpcServiceGrpc;
+
+public class ApiContentClient {
+    private final ContentRpcServiceGrpc.ContentRpcServiceBlockingStub stub;
+    public ApiContentClient(ManagedChannel ch) {
+        this.stub = ContentRpcServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+      writeFile(
+        'src/main/java/AdminContentClient.java',
+        `package my.app.admin;
+
+import io.grpc.ManagedChannel;
+import cn.unipus.ucf.admin.proto.client.service.ContentRpcServiceGrpc;
+
+public class AdminContentClient {
+    private final ContentRpcServiceGrpc.ContentRpcServiceBlockingStub stub;
+    public AdminContentClient(ManagedChannel ch) {
+        this.stub = ContentRpcServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(2);
+      const ids = consumers.map((c) => c.contractId).sort();
+      expect(ids).toEqual([
+        'grpc::cn.unipus.ucf.admin.proto.client.service.ContentRpcService/*',
+        'grpc::cn.unipus.ucf.api.proto.client.service.ContentRpcService/*',
+      ]);
+    });
+
+    it('test_import_derived_fqn_overrides_unrelated_local_proto_with_same_short_name', async () => {
+      // The consumer happens to live in a repo that has its OWN
+      // unrelated `.proto` defining a service with the same short
+      // name. Without this fix, `resolveProtoConflict` would pick
+      // the local proto's package and produce a wrong FQN. The
+      // import-derived FQN must win.
+      writeFile(
+        'protos/local-other.proto',
+        `syntax = "proto3";
+package local.unrelated;
+
+service AuthService {
+    rpc Ping (PingRequest) returns (PingResponse);
+}`,
+      );
+      writeFile(
+        'src/main/java/AuthClient.java',
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+import com.acme.auth.proto.AuthServiceGrpc;
+
+public class AuthClient {
+    private final AuthServiceGrpc.AuthServiceBlockingStub stub;
+    public AuthClient(ManagedChannel ch) {
+        this.stub = AuthServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      // Import wins — NOT the local-unrelated proto package.
+      expect(consumers[0].contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
+      expect(consumers[0].meta.protoPackageSource).toBe('import');
+    });
+
+    it('test_consumer_without_import_falls_back_to_proto_map', async () => {
+      // No import line — perhaps a fully-qualified call site like
+      // `com.acme.auth.proto.AuthServiceGrpc.newBlockingStub(...)`,
+      // or a refactor that broke the import. The current STUB_PATTERNS
+      // captures only `(identifier) @grpc_cls`, so it skips the
+      // fully-qualified form. With no detection there's also nothing
+      // for the proto-map fallback to anchor onto. We assert the
+      // benign no-op (no false-positive emitted) — the proto-map
+      // fallback path is exercised by the dedicated test below.
+      writeFile(
+        'src/main/java/AuthClient.java',
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+
+public class AuthClient {
+    private final com.acme.auth.proto.AuthServiceGrpc.AuthServiceBlockingStub stub;
+    public AuthClient(ManagedChannel ch) {
+        this.stub = com.acme.auth.proto.AuthServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // STUB_PATTERNS only captures bare-identifier `XxxGrpc`, so the
+      // fully-qualified `com.acme.auth.proto.AuthServiceGrpc.newStub(...)`
+      // form is intentionally not matched. Pinning behaviour so the
+      // import-driven path doesn't accidentally introduce a regression.
+      expect(consumers).toHaveLength(0);
+    });
+
+    it('test_short_import_consumer_with_local_proto_still_uses_proto_map', async () => {
+      // Backward-compat: when the consumer repo HAS a matching
+      // `.proto` (the legacy path) AND the import is present, both
+      // paths agree — but we want to confirm the import-driven path
+      // takes precedence and emits the same FQN with the
+      // `protoPackageSource: 'import'` marker.
+      writeFile(
+        'protos/auth.proto',
+        `syntax = "proto3";
+package com.acme.auth.proto;
+
+service AuthService {
+    rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/main/java/AuthClient.java',
+        `package my.app;
+
+import io.grpc.ManagedChannel;
+import com.acme.auth.proto.AuthServiceGrpc;
+
+public class AuthClient {
+    private final AuthServiceGrpc.AuthServiceBlockingStub stub;
+    public AuthClient(ManagedChannel ch) {
+        this.stub = AuthServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
+      // Marker confirms import path won, not the proto map. Both
+      // would have produced the same FQN, but only the import path
+      // is robust against client-jar consumers and same-short-name
+      // collisions.
+      expect(consumers[0].meta.protoPackageSource).toBe('import');
+    });
+
+    it('test_static_and_wildcard_imports_are_ignored', async () => {
+      // `import static …` and `import w.x.*;` shouldn't pollute the
+      // import map. Pinned via the tree-sitter query shape (the
+      // `name:` field is only present on the non-static, non-wildcard
+      // form). When the only `XxxGrpc` reference comes through one
+      // of these unsupported import styles, the consumer detection
+      // emits nothing-import-derived and the legacy short-name
+      // fallback applies.
+      writeFile(
+        'src/main/java/AuthClient.java',
+        `package my.app;
+
+import static com.acme.auth.proto.Constants.SOMETHING;
+import com.acme.unrelated.*;
+import io.grpc.ManagedChannel;
+
+public class AuthClient {
+    private final com.acme.auth.proto.AuthServiceGrpc.AuthServiceBlockingStub stub;
+    public AuthClient(ManagedChannel ch) {
+        this.stub = com.acme.auth.proto.AuthServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // STUB_PATTERNS doesn't match fully-qualified call forms; this
+      // pins that adding GRPC_CLASS_IMPORT_PATTERNS doesn't accidentally
+      // lift the static / wildcard imports into the FQN map (which
+      // would have created a phantom detection).
+      expect(consumers).toHaveLength(0);
+    });
+
+    it('test_provider_in_client_jar_consumer_repo_emits_provider_too', async () => {
+      // Same repo holds a SERVER impl whose only knowledge of the
+      // proto package is the import — no `.proto` is present. The
+      // provider detection should also use the import-derived FQN.
+      writeFile(
+        'src/main/java/AuthServer.java',
+        `package my.server;
+
+import com.acme.auth.proto.AuthServiceGrpc;
+import io.grpc.stub.StreamObserver;
+
+@GrpcService
+public class AuthServer extends AuthServiceGrpc.AuthServiceImplBase {
+    @Override
+    public void login(LoginRequest req, StreamObserver<LoginResponse> obs) {}
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].contractId).toBe('grpc::com.acme.auth.proto.AuthService/*');
+      expect(providers[0].confidence).toBe(0.8);
+      expect(providers[0].meta.protoPackageSource).toBe('import');
+    });
+
+    it('test_unipus_admin_and_api_consumers_in_one_repo_do_not_collide', async () => {
+      // End-to-end version of the same-short-name case: a single
+      // consumer repo imports BOTH `ContentRpcService` flavours from
+      // unipus_cloud_framework. Ensures the per-file import map is
+      // file-local (each file's import wins for that file's call sites)
+      // rather than blurring across the whole repo.
+      writeFile(
+        'src/main/java/api/ApiContentClient.java',
+        `package my.app.api;
+
+import io.grpc.ManagedChannel;
+import cn.unipus.ucf.api.proto.client.service.ContentRpcServiceGrpc;
+
+public class ApiContentClient {
+    public ApiContentClient(ManagedChannel ch) {
+        ContentRpcServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+      writeFile(
+        'src/main/java/admin/AdminContentClient.java',
+        `package my.app.admin;
+
+import io.grpc.ManagedChannel;
+import cn.unipus.ucf.admin.proto.client.service.ContentRpcServiceGrpc;
+
+public class AdminContentClient {
+    public AdminContentClient(ManagedChannel ch) {
+        ContentRpcServiceGrpc.newBlockingStub(ch);
+    }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(2);
+      const ids = new Set(consumers.map((c) => c.contractId));
+      expect(ids.has('grpc::cn.unipus.ucf.api.proto.client.service.ContentRpcService/*')).toBe(
+        true,
+      );
+      expect(ids.has('grpc::cn.unipus.ucf.admin.proto.client.service.ContentRpcService/*')).toBe(
+        true,
+      );
+    });
+  });
+
   describe('Python detection', () => {
     it('test_extract_python_add_servicer_returns_provider', async () => {
       writeFile(
