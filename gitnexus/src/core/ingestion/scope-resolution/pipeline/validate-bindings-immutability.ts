@@ -1,6 +1,6 @@
 /**
- * Dev-mode runtime validator for the two-channel binding lifecycle
- * (Contract Invariant I8 in `contract/scope-resolver.ts`).
+ * Dev-mode runtime validator for the post-finalize binding-channel
+ * lifecycle (Contract Invariant I8 in `contract/scope-resolver.ts`).
  *
  * The two channels:
  *   - `indexes.bindings` — finalize-output channel. After
@@ -71,6 +71,22 @@ export function validateBindingsImmutability(
         );
         violations++;
       }
+    }
+  }
+
+  // Third channel: `workspaceFqnBindings` (scope-independent, shared map
+  // populated by language namespace-sibling hooks — PHP FQN keys, C#
+  // global-namespace simple names). Like bindingAugmentations its inner
+  // arrays are mutable by contract (hooks `push()` directly), so freezing
+  // one is the same defect as freezing an augmentation bucket.
+  for (const [name, bucket] of indexes.workspaceFqnBindings) {
+    if (Object.isFrozen(bucket)) {
+      onWarn(
+        `binding-immutability: indexes.workspaceFqnBindings[${name}] is FROZEN — ` +
+          `the workspace channel is mutable by contract; freezing it defeats the ` +
+          `append-only purpose. See ScopeResolver Invariant I8.`,
+      );
+      violations++;
     }
   }
 

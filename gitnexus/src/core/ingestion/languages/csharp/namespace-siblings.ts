@@ -28,17 +28,19 @@
  * aliased `using static X = Y.Z;`, attributed namespace declarations,
  * and preprocessor-guarded declarations correctly because the
  * tree-sitter grammar parses them as real nodes (not textual
- * coincidences).
+ * coincidences). When the orchestrator's `treeCache` has no Tree for a
+ * file — the worker path, where native Trees can't cross MessageChannels
+ * — `extractFileStructure` falls back to a line scanner rather than
+ * re-parsing every file from scratch (that re-parse dominated worker-mode
+ * scope-resolution time). See `extractCsharpStructureViaScanner`.
  */
 
 import type { SyntaxNode } from 'tree-sitter';
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
-import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
-interface CsharpFileStructure {
+export interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means
    *  the file has no `namespace X;` / `namespace X { }` declaration
    *  and sits in the default (global) namespace. */
@@ -48,18 +50,174 @@ interface CsharpFileStructure {
   readonly usingStaticPaths: readonly string[];
 }
 
-/** Build a structural view of a C# file by walking the tree-sitter
- *  AST. Prefers `cachedTree` (handed in via `treeCache`) so we don't
- *  re-parse files the orchestrator already parsed for `extractParsedFile`;
- *  falls back to a fresh parse on cache miss. Parser singleton is
- *  shared across calls. */
+// Line-anchored matchers for the worker-path fallback (see
+// `extractCsharpStructureViaScanner`). Anchored at line start (after
+// indentation); the scanner additionally tracks block-comment / string
+// state across lines so a keyword at the start of a line inside one of
+// those regions is skipped.
+const CS_NAMESPACE_RE = /^[ \t]*namespace[ \t]+([A-Za-z_@][A-Za-z0-9_.]*)/;
+// `global using static`, plain `using static`, and the aliased
+// `using static Alias = NS.Type;` form (the AST keeps the RHS path, so
+// the optional `Alias =` is skipped and only the dotted path captured).
+const CS_USING_STATIC_RE =
+  /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+(?:[A-Za-z_@][A-Za-z0-9_]*[ \t]*=[ \t]*)?([A-Za-z_@][A-Za-z0-9_.]*)/;
+
+/** Multi-line lexical state carried line-to-line by the scanner. */
+type CsScanState = 'code' | 'block' | 'verbatim' | 'raw';
+
+/** Advance the scanner's lexical state across one line, consuming block
+ *  comments (slash-star), line comments (`//`), single-line regular /
+ *  interpolated strings, verbatim strings (`@"…"`), and raw string literals
+ *  (`"""…"""`, fence length tracked in `rawFence`). Returns the state and
+ *  raw-fence length in effect at the START of the next line. Single-line
+ *  strings and `//` comments resolve back to `code` before end of line; only
+ *  block comments and multi-line strings carry state forward. */
+function advanceCsScanState(
+  line: string,
+  state: CsScanState,
+  rawFence: number,
+): [CsScanState, number] {
+  const n = line.length;
+  let i = 0;
+  while (i < n) {
+    if (state === 'block') {
+      const end = line.indexOf('*/', i);
+      if (end === -1) return ['block', rawFence];
+      i = end + 2;
+      state = 'code';
+    } else if (state === 'verbatim') {
+      // Ends at a `"` that is not doubled (`""` is an escaped quote).
+      while (i < n) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') {
+            i += 2;
+            continue;
+          }
+          break;
+        }
+        i++;
+      }
+      if (i >= n) return ['verbatim', rawFence];
+      i += 1;
+      state = 'code';
+    } else if (state === 'raw') {
+      // Ends at a run of `"` at least `rawFence` long.
+      let closed = false;
+      while (i < n) {
+        if (line[i] === '"') {
+          let k = i;
+          while (k < n && line[k] === '"') k++;
+          if (k - i >= rawFence) {
+            i = k;
+            state = 'code';
+            rawFence = 0;
+            closed = true;
+            break;
+          }
+          i = k;
+        } else {
+          i++;
+        }
+      }
+      if (!closed) return ['raw', rawFence];
+    } else {
+      const c = line[i];
+      const next = line[i + 1];
+      if (c === '/' && next === '/') return ['code', rawFence]; // line comment to EOL
+      if (c === '/' && next === '*') {
+        state = 'block';
+        i += 2;
+      } else if (c === '@' && next === '"') {
+        state = 'verbatim';
+        i += 2;
+      } else if ((c === '$' && next === '@') || (c === '@' && next === '$')) {
+        if (line[i + 2] === '"') {
+          state = 'verbatim'; // interpolated verbatim ($@"…" / @$"…")
+          i += 3;
+        } else {
+          i++;
+        }
+      } else if (c === '"') {
+        let k = i;
+        while (k < n && line[k] === '"') k++;
+        const run = k - i;
+        if (run >= 3) {
+          state = 'raw';
+          rawFence = run;
+          i = k;
+        } else if (run === 2) {
+          i = k; // "" — empty string
+        } else {
+          // single-line regular / interpolated string; consume to closer
+          let j = i + 1;
+          while (j < n) {
+            if (line[j] === '\\') {
+              j += 2;
+              continue;
+            }
+            if (line[j] === '"') break;
+            j++;
+          }
+          i = j >= n ? n : j + 1;
+        }
+      } else {
+        i++;
+      }
+    }
+  }
+  return [state, rawFence];
+}
+
+/** Line-scanner used when no cached tree is available (worker-parsed files
+ *  can't transfer native tree-sitter Trees across MessageChannels, so
+ *  `treeCache` is empty for them). Re-parsing every C# file here with
+ *  tree-sitter was the dominant scope-resolution cost on large worker-mode
+ *  runs — for a multi-thousand-file solution this loop alone re-parsed the
+ *  whole repo a second time. The scanner extracts the same `namespaces` /
+ *  `usingStaticPaths` the AST walk produces for line-anchored declarations,
+ *  while tracking block-comment and string state across lines (via
+ *  `advanceCsScanState`) so a `namespace` / `using static` keyword at the
+ *  start of a line inside a block comment, verbatim string, or raw string
+ *  literal is NOT mistaken for a declaration. The remaining trade-off vs the
+ *  AST is a declaration whose keyword is not at the start of a code line
+ *  (split across lines, or sharing a line with a comment/string closer).
+ *  Mirrors PHP's `extractNamespaceViaScanner` (issue #1741). */
+export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
+  const namespaces: string[] = [];
+  const usingStaticPaths: string[] = [];
+  let state: CsScanState = 'code';
+  let rawFence = 0;
+  for (const line of content.split('\n')) {
+    // Only match when the line START is real code — keywords reached while
+    // inside a block comment / multi-line string are skipped.
+    if (state === 'code') {
+      const ns = CS_NAMESPACE_RE.exec(line);
+      if (ns !== null) {
+        namespaces.push(ns[1]!);
+      } else {
+        const us = CS_USING_STATIC_RE.exec(line);
+        if (us !== null) usingStaticPaths.push(us[1]!);
+      }
+    }
+    [state, rawFence] = advanceCsScanState(line, state, rawFence);
+  }
+  return { namespaces, usingStaticPaths };
+}
+
+/** Build a structural view of a C# file. Prefers `cachedTree` (handed in
+ *  via `treeCache`) and walks the tree-sitter AST — the authoritative
+ *  path that sees `global using static`, aliased `using static X = Y.Z;`,
+ *  attributed namespace declarations, and preprocessor-guarded nodes
+ *  correctly. On cache miss (worker-parsed files, whose native Trees
+ *  can't cross MessageChannels) it falls back to the line scanner instead
+ *  of a fresh tree-sitter parse — the parse here dominated worker-mode
+ *  scope-resolution time. Parser singleton is shared across calls. */
 function extractFileStructure(content: string, cachedTree: unknown): CsharpFileStructure {
+  if (!cachedTree) {
+    return extractCsharpStructureViaScanner(content);
+  }
   type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
-  const tree =
-    (cachedTree as CsharpTree | undefined) ??
-    parseSourceSafe(getCsharpParser(), content, undefined, {
-      bufferSize: getTreeSitterBufferSize(content),
-    });
+  const tree = cachedTree as CsharpTree;
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
 
@@ -277,11 +435,17 @@ export function populateCsharpNamespaceSiblings(
   // scope, so `Record(...)` (without `Logger.` qualifier) resolves
   // to `Logger.Record`. AST walk above captured these (including
   // `global using static` and aliased forms).
+  // Pre-index files by path once: the member-injection lookup below would
+  // otherwise be an O(files) scan per `using static` import.
+  const fileByPath = new Map<string, ParsedFile>(parsedFiles.map((p) => [p.filePath, p]));
   for (const parsed of parsedFiles) {
     const struct = structureByFile.get(parsed.filePath);
     if (struct === undefined) continue;
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
+    // Per-file de-dup sets keyed by simple name, seeded lazily from the
+    // augmentation bucket — replaces the per-member O(A) `.some` scan below.
+    const seenByName = new Map<string, Set<string>>();
 
     for (const fullPath of struct.usingStaticPaths) {
       const lastDot = fullPath.lastIndexOf('.');
@@ -302,7 +466,7 @@ export function populateCsharpNamespaceSiblings(
       // Inject the class's member methods into the importer's module
       // scope. `memberByOwner` wasn't built yet here, so we walk the
       // file's localDefs to find members with `ownerId === targetDef.nodeId`.
-      const targetFile = parsedFiles.find((p) => p.filePath === targetDef.filePath);
+      const targetFile = fileByPath.get(targetDef.filePath);
       if (targetFile === undefined) continue;
       for (const memberDef of targetFile.localDefs) {
         if ((memberDef as { ownerId?: string }).ownerId !== targetDef.nodeId) continue;
@@ -316,7 +480,14 @@ export function populateCsharpNamespaceSiblings(
         // `lookupBindingsAt`, which fans out across `bindings` +
         // `bindingAugmentations`.
         const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
-        if (bucketArr.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
+        let seen = seenByName.get(simpleName);
+        if (seen === undefined) {
+          seen = new Set<string>();
+          for (const b of bucketArr) seen.add(b.def.nodeId);
+          seenByName.set(simpleName, seen);
+        }
+        if (seen.has(memberDef.nodeId)) continue;
+        seen.add(memberDef.nodeId);
         bucketArr.push({ def: memberDef, origin: 'import' });
       }
     }
@@ -332,6 +503,9 @@ export function populateCsharpNamespaceSiblings(
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
+    // Per-file de-dup sets keyed by simple name, seeded lazily from the
+    // augmentation bucket — replaces the per-def O(A) `.some` scan below.
+    const seenByName = new Map<string, Set<string>>();
     for (const imp of parsed.parsedImports) {
       if (imp.kind !== 'namespace') continue;
       const targetNs = imp.targetRaw;
@@ -344,41 +518,113 @@ export function populateCsharpNamespaceSiblings(
         const simpleName = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
         if (simpleName === '') continue;
         const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
-        if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+        let seen = seenByName.get(simpleName);
+        if (seen === undefined) {
+          seen = new Set<string>();
+          for (const b of bucketArr) seen.add(b.def.nodeId);
+          seenByName.set(simpleName, seen);
+        }
+        if (seen.has(def.nodeId)) continue;
+        seen.add(def.nodeId);
         bucketArr.push({ def, origin: 'namespace' });
       }
     }
   }
 
-  for (const [, bucket] of buckets) {
-    // De-dup by (nodeId, filePath) across multiple declarations (e.g.
-    // partial classes declaring the same name in two files — we take
-    // both and leave de-dup to downstream consumers of bindings).
+  // Workspace-level binding channel for global-namespace types (see the
+  // global fast-path below). `lookupBindingsAt` consults this as a third
+  // source after finalized + per-scope augmented bindings. Its inner arrays
+  // are mutable by contract (append-only, like `bindingAugmentations` — see
+  // the ScopeResolutionIndexes doc + validateBindingsImmutability), so the
+  // ReadonlyMap→Map cast is localized to this one line and all writes go
+  // through `getWorkspaceBucket`.
+  const workspace = indexes.workspaceFqnBindings as Map<string, BindingRef[]>;
+
+  for (const [nsName, bucket] of buckets) {
+    // Group sibling defs by simple name. Append in place — the previous
+    // `[...prev, def]` copy made this O(D²) per bucket, which on the
+    // global (`''`) namespace bucket of a large Unity solution (tens of
+    // thousands of type defs) was a primary slowness/OOM source. We keep
+    // every declaration (e.g. partial classes across files) and leave
+    // de-dup to downstream consumers.
     const defsByName = new Map<string, SymbolDefinition[]>();
     for (const def of bucket.classDefs) {
       // Simple name = last segment of qualifiedName (e.g. `App.User` → `User`).
       const q = def.qualifiedName ?? '';
       const key = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
       if (key === '') continue;
-      const arr = [...(defsByName.get(key) ?? [])];
+      let arr = defsByName.get(key);
+      if (arr === undefined) {
+        arr = [];
+        defsByName.set(key, arr);
+      }
       arr.push(def);
-      defsByName.set(key, arr);
+    }
+
+    // Global-namespace fast path (Unity OOM guard). Types declared in the
+    // default (global) namespace are visible from EVERY file in C# — the
+    // global namespace is always implicitly in scope — so one workspace-
+    // level entry per simple name is both semantically correct and O(D)
+    // instead of the O(S·D) per-scope augmentation that materialized
+    // billions of BindingRefs on large Unity solutions (tens of thousands
+    // of global types × tens of thousands of scopes). `walkScopeChain`
+    // checks local `scope.bindings` first, so local declarations still
+    // shadow these workspace entries; a file resolving its own global type
+    // hits the local binding before this map. Dedup by `def.nodeId` keeps
+    // partial-class / duplicate declarations from double-emitting.
+    if (nsName === '') {
+      for (const [name, defs] of defsByName) {
+        const bucket = getWorkspaceBucket(workspace, name);
+        const seen = new Set<string>();
+        for (const b of bucket) seen.add(b.def.nodeId);
+        for (const def of defs) {
+          if (seen.has(def.nodeId)) continue; // dedup by nodeId (keeps partials, drops re-emits)
+          seen.add(def.nodeId);
+          bucket.push({ def, origin: 'namespace' });
+        }
+      }
+      continue;
+    }
+
+    // Pre-index the first scope per file once (O(S)) instead of an
+    // O(S) `.find` re-run for every (scope, name) pair, which made the
+    // injection loop O(S²·D) and was the dominant cost on large buckets.
+    // Multiple scopes share a filePath (Module + Namespace); the local
+    // shadow check only needs that file's lexical `Scope.bindings`, which
+    // is identical regardless of which of those scopes we read.
+    const firstScopeByFile = new Map<string, Scope>();
+    for (const s of bucket.scopes) {
+      if (!firstScopeByFile.has(s.filePath)) firstScopeByFile.set(s.filePath, s.scope);
     }
 
     for (const { scopeId, filePath } of bucket.scopes) {
+      const localScope = firstScopeByFile.get(filePath);
       for (const [name, defs] of defsByName) {
         // Skip names already present locally — `origin: 'local'` in
         // scope.bindings would naturally shadow the cross-file
         // namespace entry, but we also keep this index lean.
-        const local = bucket.scopes.find((s) => s.filePath === filePath)?.scope.bindings.get(name);
+        const local = localScope?.bindings.get(name);
         if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
 
-        let bucketArr: BindingRef[] | null = null;
+        // Bind the augmentation bucket and its seeded de-dup set together
+        // under one nullable lifecycle, so neither needs a non-null
+        // assertion (they are always set or unset as a pair). Stays lazy:
+        // nothing is allocated for a name with no cross-file defs.
+        let inject: { bucket: BindingRef[]; seen: Set<string> } | null = null;
         for (const def of defs) {
           if (def.filePath === filePath) continue; // don't self-reference
-          if (bucketArr === null) bucketArr = getAugmentationBucket(augmentations, scopeId, name);
-          if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
-          bucketArr.push({ def, origin: 'namespace' });
+          if (inject === null) {
+            const bucket = getAugmentationBucket(augmentations, scopeId, name);
+            // Seed the de-dup set from any entries an earlier pass
+            // (using-static / cross-namespace imports) already added,
+            // replacing the per-def O(A) `.some` scan.
+            const seen = new Set<string>();
+            for (const b of bucket) seen.add(b.def.nodeId);
+            inject = { bucket, seen };
+          }
+          if (inject.seen.has(def.nodeId)) continue;
+          inject.seen.add(def.nodeId);
+          inject.bucket.push({ def, origin: 'namespace' });
         }
       }
     }
@@ -405,6 +651,22 @@ function getAugmentationBucket(
   if (bucketArr === undefined) {
     bucketArr = [];
     scopeBindings.set(name, bucketArr);
+  }
+  return bucketArr;
+}
+
+/** Get-or-create a mutable inner bucket inside the `workspaceFqnBindings`
+ *  channel (the scope-independent third channel; see
+ *  `ScopeResolutionIndexes.workspaceFqnBindings`). Like
+ *  `getAugmentationBucket`, the inner arrays are mutable by contract —
+ *  callers `push` directly. Keeping the get-or-create here means the one
+ *  ReadonlyMap→Map cast at the call site is the only place the mutable
+ *  view is taken. */
+function getWorkspaceBucket(workspace: Map<string, BindingRef[]>, name: string): BindingRef[] {
+  let bucketArr = workspace.get(name);
+  if (bucketArr === undefined) {
+    bucketArr = [];
+    workspace.set(name, bucketArr);
   }
   return bucketArr;
 }

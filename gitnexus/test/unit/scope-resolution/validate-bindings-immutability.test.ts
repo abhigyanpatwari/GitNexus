@@ -22,10 +22,12 @@ const mkRef = (nodeId: string): BindingRef =>
 const mkIndexes = (
   bindings: Map<ScopeId, Map<string, readonly BindingRef[]>>,
   augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+  workspace: Map<string, readonly BindingRef[]> = new Map(),
 ): ScopeResolutionIndexes =>
   ({
     bindings,
     bindingAugmentations: augmentations,
+    workspaceFqnBindings: workspace,
   }) as unknown as ScopeResolutionIndexes;
 
 describe('validateBindingsImmutability', () => {
@@ -85,6 +87,24 @@ describe('validateBindingsImmutability', () => {
     expect(onWarn).toHaveBeenCalledTimes(1);
     expect(onWarn.mock.calls[0][0]).toMatch(/binding-immutability/);
     expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.bindingAugmentations/);
+    expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
+  });
+
+  it('warns when a bucket in indexes.workspaceFqnBindings IS frozen', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const workspace = new Map<string, readonly BindingRef[]>([
+      ['User', Object.freeze([mkRef('def:User')]) as BindingRef[]],
+    ]);
+    const onWarn = vi.fn();
+
+    const violations = validateBindingsImmutability(
+      mkIndexes(new Map(), new Map(), workspace),
+      onWarn,
+    );
+
+    expect(violations).toBe(1);
+    expect(onWarn).toHaveBeenCalledTimes(1);
+    expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.workspaceFqnBindings/);
     expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
   });
 
