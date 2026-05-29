@@ -2,6 +2,7 @@ import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
 import { checkLbugNative } from '../core/lbug/native-check.js';
+import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
 
 function isCombiningMark(codePoint: number): boolean {
@@ -74,6 +75,17 @@ export const doctorCommand = async () => {
   console.log(`  ${label('doctor.labels.fullTextSearch', 18)}${capabilities.fts}`);
   console.log(`  ${label('doctor.labels.vectorIndex', 18)}${capabilities.vector}`);
   console.log(`  ${label('doctor.labels.semanticMode', 18)}${capabilities.semanticMode}`);
+  // Surface the optional-extension install policy so offline users can see
+  // whether analyze/query will reach the network (extension.ladybugdb.com).
+  // Literal label (like the 'native' line) to avoid adding i18n keys.
+  const installPolicy = getExtensionInstallPolicy();
+  const policyHint =
+    installPolicy === 'load-only'
+      ? ' (offline; load only, no network install)'
+      : installPolicy === 'never'
+        ? ' (optional extensions disabled)'
+        : ' (installs missing extensions over network)';
+  console.log(`  ${padDisplayEnd('Ext install:', 18)}${installPolicy}${policyHint}`);
   console.log(
     `  ${label('doctor.labels.exactScanLimit', 18)}${t('doctor.chunks', { count: capabilities.exactScanLimit })}`,
   );
