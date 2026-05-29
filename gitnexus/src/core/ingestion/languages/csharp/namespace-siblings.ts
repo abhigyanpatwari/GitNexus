@@ -318,6 +318,9 @@ export function populateCsharpNamespaceSiblings(
   // scope, so `Record(...)` (without `Logger.` qualifier) resolves
   // to `Logger.Record`. AST walk above captured these (including
   // `global using static` and aliased forms).
+  // Pre-index files by path once: the member-injection lookup below would
+  // otherwise be an O(files) scan per `using static` import.
+  const fileByPath = new Map<string, ParsedFile>(parsedFiles.map((p) => [p.filePath, p]));
   for (const parsed of parsedFiles) {
     const struct = structureByFile.get(parsed.filePath);
     if (struct === undefined) continue;
@@ -343,7 +346,7 @@ export function populateCsharpNamespaceSiblings(
       // Inject the class's member methods into the importer's module
       // scope. `memberByOwner` wasn't built yet here, so we walk the
       // file's localDefs to find members with `ownerId === targetDef.nodeId`.
-      const targetFile = parsedFiles.find((p) => p.filePath === targetDef.filePath);
+      const targetFile = fileByPath.get(targetDef.filePath);
       if (targetFile === undefined) continue;
       for (const memberDef of targetFile.localDefs) {
         if ((memberDef as { ownerId?: string }).ownerId !== targetDef.nodeId) continue;

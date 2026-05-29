@@ -322,6 +322,68 @@ describe('populateCsharpNamespaceSiblings', () => {
 
     expect(bindingAugmentations.get(moduleA.id)?.get('B')?.[0]?.def.nodeId).toBe('def:b.B');
   });
+
+  it('routes global-namespace types to workspaceFqnBindings, not per-scope augmentations (#1871 OOM guard)', () => {
+    // Types declared with NO `namespace` (the global/default namespace) are
+    // visible from every C# file, so the hook writes ONE workspace-level entry
+    // per simple name instead of O(scopes x defs) per-scope augmentations —
+    // the fix for the #1871 Unity-scale OOM. This pins both halves of that
+    // contract: global types are reachable via `workspaceFqnBindings`, and the
+    // per-scope augmentation channel stays empty for them.
+    //
+    // Note: the mock MUST supply `workspaceFqnBindings` — the global fast path
+    // reads `indexes.workspaceFqnBindings` directly, so omitting it (as the
+    // other tests in this suite do) would throw.
+    const defA = classDef('def:a.A', 'a.cs', 'A'); // simple name => global namespace
+    const defB = classDef('def:b.B', 'b.cs', 'B');
+    const moduleA = scope('scope:a:module', 'Module', 'a.cs');
+    const classA = scope('scope:a:class', 'Class', 'a.cs', moduleA.id, [defA]);
+    const moduleB = scope('scope:b:module', 'Module', 'b.cs');
+    const classB = scope('scope:b:class', 'Class', 'b.cs', moduleB.id, [defB]);
+    const parsedFiles: ParsedFile[] = [
+      {
+        filePath: 'a.cs',
+        moduleScope: moduleA.id,
+        scopes: Object.freeze([moduleA, classA]),
+        parsedImports: Object.freeze([]),
+        localDefs: Object.freeze([defA]),
+        referenceSites: Object.freeze([]),
+      } as ParsedFile,
+      {
+        filePath: 'b.cs',
+        moduleScope: moduleB.id,
+        scopes: Object.freeze([moduleB, classB]),
+        parsedImports: Object.freeze([]),
+        localDefs: Object.freeze([defB]),
+        referenceSites: Object.freeze([]),
+      } as ParsedFile,
+    ];
+    const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const workspaceFqnBindings = new Map<string, readonly BindingRef[]>();
+
+    populateCsharpNamespaceSiblings(
+      parsedFiles,
+      {
+        bindings: new Map(),
+        bindingAugmentations,
+        workspaceFqnBindings,
+      } as unknown as ScopeResolutionIndexes,
+      {
+        fileContents: new Map([
+          ['a.cs', 'class A { }\n'], // no `namespace` => global
+          ['b.cs', 'class B { }\n'],
+        ]),
+      },
+    );
+
+    // Global types are reachable workspace-wide via simple-name keys.
+    expect(workspaceFqnBindings.get('A')?.map((b) => b.def.nodeId)).toEqual(['def:a.A']);
+    expect(workspaceFqnBindings.get('B')?.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
+    // O(D) invariant: one entry per unique simple name, never scopes x defs.
+    expect(workspaceFqnBindings.size).toBe(2);
+    // The whole point of the fast path: no per-scope augmentation explosion.
+    expect(bindingAugmentations.size).toBe(0);
+  });
 });
 
 describe('csharpReceiverBinding', () => {
