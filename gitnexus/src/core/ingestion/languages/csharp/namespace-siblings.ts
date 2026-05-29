@@ -350,34 +350,98 @@ export function populateCsharpNamespaceSiblings(
     }
   }
 
-  for (const [, bucket] of buckets) {
-    // De-dup by (nodeId, filePath) across multiple declarations (e.g.
-    // partial classes declaring the same name in two files — we take
-    // both and leave de-dup to downstream consumers of bindings).
+  // Workspace-level binding channel for global-namespace types (see the
+  // global fast-path below). `lookupBindingsAt` consults this as a third
+  // source after finalized + per-scope augmented bindings.
+  const fqnMap = indexes.workspaceFqnBindings as Map<string, BindingRef[]>;
+
+  for (const [nsName, bucket] of buckets) {
+    // Group sibling defs by simple name. Append in place — the previous
+    // `[...prev, def]` copy made this O(D²) per bucket, which on the
+    // global (`''`) namespace bucket of a large Unity solution (tens of
+    // thousands of type defs) was a primary slowness/OOM source. We keep
+    // every declaration (e.g. partial classes across files) and leave
+    // de-dup to downstream consumers.
     const defsByName = new Map<string, SymbolDefinition[]>();
     for (const def of bucket.classDefs) {
       // Simple name = last segment of qualifiedName (e.g. `App.User` → `User`).
       const q = def.qualifiedName ?? '';
       const key = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
       if (key === '') continue;
-      const arr = [...(defsByName.get(key) ?? [])];
+      let arr = defsByName.get(key);
+      if (arr === undefined) {
+        arr = [];
+        defsByName.set(key, arr);
+      }
       arr.push(def);
-      defsByName.set(key, arr);
+    }
+
+    // Global-namespace fast path (Unity OOM guard). Types declared in the
+    // default (global) namespace are visible from EVERY file in C# — the
+    // global namespace is always implicitly in scope — so one workspace-
+    // level entry per simple name is both semantically correct and O(D)
+    // instead of the O(S·D) per-scope augmentation that materialized
+    // billions of BindingRefs on large Unity solutions (tens of thousands
+    // of global types × tens of thousands of scopes). `walkScopeChain`
+    // checks local `scope.bindings` first, so local declarations still
+    // shadow these workspace entries; a file resolving its own global type
+    // hits the local binding before this map. Dedup by `def.nodeId` keeps
+    // partial-class / duplicate declarations from double-emitting.
+    if (nsName === '') {
+      for (const [name, defs] of defsByName) {
+        let arr = fqnMap.get(name);
+        let seen: Set<string> | null = null;
+        for (const def of defs) {
+          if (arr === undefined) {
+            arr = [];
+            fqnMap.set(name, arr);
+          }
+          if (seen === null) {
+            seen = new Set<string>();
+            for (const b of arr) seen.add(b.def.nodeId);
+          }
+          if (seen.has(def.nodeId)) continue;
+          seen.add(def.nodeId);
+          arr.push({ def, origin: 'namespace' });
+        }
+      }
+      continue;
+    }
+
+    // Pre-index the first scope per file once (O(S)) instead of an
+    // O(S) `.find` re-run for every (scope, name) pair, which made the
+    // injection loop O(S²·D) and was the dominant cost on large buckets.
+    // Multiple scopes share a filePath (Module + Namespace); the local
+    // shadow check only needs that file's lexical `Scope.bindings`, which
+    // is identical regardless of which of those scopes we read.
+    const firstScopeByFile = new Map<string, Scope>();
+    for (const s of bucket.scopes) {
+      if (!firstScopeByFile.has(s.filePath)) firstScopeByFile.set(s.filePath, s.scope);
     }
 
     for (const { scopeId, filePath } of bucket.scopes) {
+      const localScope = firstScopeByFile.get(filePath);
       for (const [name, defs] of defsByName) {
         // Skip names already present locally — `origin: 'local'` in
         // scope.bindings would naturally shadow the cross-file
         // namespace entry, but we also keep this index lean.
-        const local = bucket.scopes.find((s) => s.filePath === filePath)?.scope.bindings.get(name);
+        const local = localScope?.bindings.get(name);
         if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
 
         let bucketArr: BindingRef[] | null = null;
+        let seen: Set<string> | null = null;
         for (const def of defs) {
           if (def.filePath === filePath) continue; // don't self-reference
-          if (bucketArr === null) bucketArr = getAugmentationBucket(augmentations, scopeId, name);
-          if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+          if (bucketArr === null) {
+            bucketArr = getAugmentationBucket(augmentations, scopeId, name);
+            // Seed the de-dup set from any entries an earlier pass
+            // (using-static / cross-namespace imports) already added,
+            // replacing the per-def O(A) `.some` scan.
+            seen = new Set<string>();
+            for (const b of bucketArr) seen.add(b.def.nodeId);
+          }
+          if (seen!.has(def.nodeId)) continue;
+          seen!.add(def.nodeId);
           bucketArr.push({ def, origin: 'namespace' });
         }
       }
