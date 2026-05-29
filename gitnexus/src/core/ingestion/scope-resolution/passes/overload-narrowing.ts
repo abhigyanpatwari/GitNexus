@@ -216,7 +216,7 @@ export function narrowOverloadCandidates(
       argTypes,
       hookCtx?.argumentTypeClasses,
     );
-    if (partiallyOrdered.length > 0) result = partiallyOrdered;
+    if (partiallyOrdered !== undefined) result = partiallyOrdered;
   }
 
   return result;
@@ -351,17 +351,18 @@ function pairwiseCompare(a: readonly number[], b: readonly number[]): -1 | 0 | 1
  * keeps this graph-safe by recognizing only syntactic placeholder shapes
  * that the C++ parameter sidecar already preserves:
  *   - `T*` is more specialized than `T` for pointer arguments.
- *   - `const T&` / `T&` are more specialized than `T` for non-pointer args.
  *
  * Anything with unknown argument shape, non-template parameter spelling, or
- * incomparable specialized shapes stays ambiguous so callers suppress.
+ * incomparable specialized shapes stays ambiguous so callers suppress. The
+ * placeholder detector is intentionally narrow: lowercase template parameters
+ * are left ambiguous rather than guessed.
  */
 function rankByTemplatePartialOrdering(
   candidates: readonly SymbolDefinition[],
   argTypes: readonly string[],
   argTypeClasses?: readonly ParameterTypeClass[],
-): readonly SymbolDefinition[] {
-  if (argTypeClasses === undefined) return [];
+): readonly SymbolDefinition[] | undefined {
+  if (argTypeClasses === undefined) return undefined;
 
   const viable: Array<{ def: SymbolDefinition; ranks: number[] }> = [];
   for (const def of candidates) {
@@ -391,6 +392,8 @@ function rankByTemplatePartialOrdering(
     }
     if (ok && sawTemplateSlot) viable.push({ def, ranks });
   }
+  if (viable.length === 0) return undefined;
+  if (viable.length !== candidates.length) return [];
   if (viable.length <= 1) return viable.map((v) => v.def);
 
   const dominated = new Set<number>();
@@ -418,19 +421,12 @@ function templatePartialOrderSlotRank(
   if (isPointerShape(paramClass)) {
     return isPointerShape(argClass) ? 3 : undefined;
   }
-  if (isReferenceShape(paramClass)) {
-    return isPointerShape(argClass) ? undefined : 2;
-  }
   if (paramClass.indirection === 'value') return 1;
   return undefined;
 }
 
 function isTemplatePlaceholder(typeName: string): boolean {
   return /^[A-Z]\w*$/.test(typeName);
-}
-
-function isReferenceShape(typeClass: ParameterTypeClass): boolean {
-  return typeClass.indirection === 'lvalue-ref' || typeClass.indirection === 'rvalue-ref';
 }
 
 /**

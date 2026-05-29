@@ -117,7 +117,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       const shapeTag = parameterShapeIdTag(pTypes, pClasses);
       if (shapeTag !== '' && (node.label === 'Function' || node.label === 'Method')) {
         const shapeKey = qualifiedKey(props.filePath, node.label, `${keyQualified}${shapeTag}`);
-        lookup.set(shapeKey, node.id);
+        if (!lookup.has(shapeKey)) lookup.set(shapeKey, node.id);
       }
       // SFINAE / `requires`-clause disambiguation (issue #1579) — register
       // a constraint-fingerprinted key so resolveDefGraphId can locate the

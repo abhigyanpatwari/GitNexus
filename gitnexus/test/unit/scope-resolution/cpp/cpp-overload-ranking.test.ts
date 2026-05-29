@@ -163,7 +163,7 @@ describe('narrowOverloadCandidates with C++ template partial ordering (#1635)', 
     expect(result.map((d) => d.nodeId)).toEqual(['pick:T*']);
   });
 
-  it('selects const T& over T for value arguments', () => {
+  it('keeps const T& versus T ambiguous for value arguments', () => {
     const byValue = mkDef('pick:T', ['T'], [value('T')]);
     const byReference = mkDef('pick:const-T-ref', ['T'], [constRef('T')]);
 
@@ -171,7 +171,43 @@ describe('narrowOverloadCandidates with C++ template partial ordering (#1635)', 
       argumentTypeClasses: [value('int')],
     });
 
-    expect(result.map((d) => d.nodeId)).toEqual(['pick:const-T-ref']);
+    expect(result.map((d) => d.nodeId)).toEqual([]);
+  });
+
+  it('suppresses when any surviving candidate cannot participate in ordering', () => {
+    const concreteSlot = mkDef('pick:T-int', ['T', 'int'], [value('T'), value('int')]);
+    const pointerSlot = mkDef('pick:T-T*', ['T', 'T'], [value('T'), pointer('T')]);
+
+    const result = narrowOverloadCandidates([concreteSlot, pointerSlot], 2, ['int', 'int'], {
+      argumentTypeClasses: [pointer('int'), pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual([]);
+  });
+
+  it('suppresses when a surviving candidate lacks parameter sidecars', () => {
+    const withoutSidecar: SymbolDefinition = {
+      ...mkDef('pick:no-sidecar', ['T'], [value('T')]),
+      parameterTypeClasses: undefined,
+    };
+    const byPointer = mkDef('pick:T*', ['T'], [pointer('T')]);
+
+    const result = narrowOverloadCandidates([withoutSidecar, byPointer], 1, ['int'], {
+      argumentTypeClasses: [pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual([]);
+  });
+
+  it('leaves lowercase template placeholders ambiguous rather than guessing', () => {
+    const byValue = mkDef('pick:t', ['t'], [value('t')]);
+    const byPointer = mkDef('pick:t*', ['t'], [pointer('t')]);
+
+    const result = narrowOverloadCandidates([byValue, byPointer], 1, ['int'], {
+      argumentTypeClasses: [pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual(['pick:t', 'pick:t*']);
   });
 
   it('keeps crossed template shapes ambiguous', () => {
