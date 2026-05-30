@@ -12,7 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # persist-credentials: false — this job runs tests and uploads a
+      # test-reports artifact (if: always()). The default-persisted token in
+      # .git/config must not be capturable through that upload (zizmor
+      # credential-persistence / artipacked audit). The job never pushes.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -72,7 +78,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # persist-credentials: false — runs tests only, never pushes (zizmor
+      # credential-persistence / artipacked audit).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -203,7 +213,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # persist-credentials: false — this job only runs npm + vitest benchmarks
+      # and never pushes; the default-persisted token in .git/config would be at
+      # risk of leaking through an artifact upload (zizmor credential-persistence
+      # / artipacked audit). Mirrors the packaged-install-smoke job below.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
