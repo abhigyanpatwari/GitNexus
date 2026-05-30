@@ -701,4 +701,44 @@ describe('loadCsharpResolutionConfig — one-pass namespace scan (#1881)', () =>
       await fsp.rm(root, { recursive: true, force: true });
     }
   });
+
+  it('collects a Unicode namespace through the streamed scan, not truncated (Codex F3)', async () => {
+    // The scanner is now Unicode-aware, so a non-ASCII namespace is captured
+    // end-to-end instead of being dropped (which would over-block its imports).
+    const root = await makeTempRepo({
+      'App.csproj':
+        '<Project><PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup></Project>',
+      'Models/Café.cs': 'namespace Café.App;\npublic class Modèle {}',
+    });
+    try {
+      const config = await loadCsharpResolutionConfig(root);
+      const ns = config.namespaces!;
+      expect(ns.truncated).toBe(false);
+      expect(ns.declaredNamespaces!.has('Café.App')).toBe(true);
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks the scan truncated when a file has an uncaptured namespace form, failing the gate OPEN (Codex F3)', async () => {
+    // A namespace split across lines is not captured by the line scanner; the
+    // scan must flag truncated so the dropped namespace fails the #1881 gate
+    // OPEN rather than over-block an import declared in that file.
+    const root = await makeTempRepo({
+      'App.csproj':
+        '<Project><PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup></Project>',
+      'Weird.cs': 'namespace\n   MyApp.Weird;\npublic class W {}',
+    });
+    try {
+      const config = await loadCsharpResolutionConfig(root);
+      const ns = config.namespaces!;
+      expect(ns.truncated).toBe(true);
+      // A local-looking import under the dropped namespace fails open (and U1's
+      // external-root denylist still keeps BCL roots blocked under truncation).
+      expect(csharpSuffixFallbackAllowed('MyApp.Weird.Thing', ns)).toBe(true);
+      expect(csharpSuffixFallbackAllowed('System.Threading.Tasks', ns)).toBe(false);
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -398,12 +398,17 @@ async function collectDeclaredNamespaces(
   } catch {
     return 'truncated'; // unreadable source → signal truncation (fail open)
   }
-  for (const ns of scanner.result().namespaces) {
+  const structure = scanner.result();
+  for (const ns of structure.namespaces) {
     declaredNamespaces.add(ns);
     const dot = ns.indexOf('.');
     rootNamespaces.add(dot === -1 ? ns : ns.slice(0, dot));
   }
-  return 'ok';
+  // A declaration the scanner could not fully capture (Codex F3) means the
+  // collected namespaces are an incomplete picture of this file — treat it like
+  // a truncated read so the #1881 gate fails OPEN rather than over-block an
+  // import whose namespace was dropped.
+  return structure.incomplete ? 'truncated' : 'ok';
 }
 
 export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
