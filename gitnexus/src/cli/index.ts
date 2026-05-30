@@ -225,7 +225,10 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
-  .option('--kind <kind>', 'Kind filter to disambiguate common names (e.g. Function, Class, Method)')
+  .option(
+    '--kind <kind>',
+    'Kind filter to disambiguate common names (e.g. Function, Class, Method)',
+  )
   .option('--depth <n>', 'Max relationship depth (default: 3)')
   .option('--include-tests', 'Include test files in results')
   .option('--limit <n>', 'Max symbols per depth level (default: 100)')
