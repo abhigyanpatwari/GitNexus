@@ -313,6 +313,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
     "h(1, 'a') resolves to h(int, double), not h(int, ...)",
     'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
+    // Pack-expanded dependent bases (`struct Mix : B...`) are suppressed
+    // at C++ scope-capture time in the registry-primary path. The legacy
+    // DAG still sees same-file class-owned methods by simple name and
+    // over-emits `Mix::run -> B::inherited`.
+    'does not bind unqualified member lookup through a pack-expanded dependent base',
     // User-defined conversion ranking (#1631) builds on the C++
     // conversion-rank hook and the registry-primary C++ owner sidecars.
     // Legacy DAG has no user-defined-conversion sidecar or ranking path.
