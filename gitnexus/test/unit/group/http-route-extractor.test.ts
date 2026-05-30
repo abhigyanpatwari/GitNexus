@@ -1873,17 +1873,28 @@ interface SearchClient {
       ).toBeUndefined();
     });
 
-    it('ignores @RequestLine on interfaces without @FeignClient', async () => {
+    it('extracts native @RequestLine on a plain interface without @FeignClient (Feign.builder())', async () => {
+      // The canonical core-Feign usage: a plain interface with `@RequestLine`,
+      // wired up via `Feign.builder()`. There is NO `@FeignClient` annotation
+      // (that is the Spring Cloud variant, which uses Spring MVC annotations and
+      // is mutually exclusive with `@RequestLine`). This is the shape used by
+      // real client-jar consumers, so it must be recognized.
       const dir = path.join(tmpDir, 'java-request-line-no-feign');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
-        path.join(dir, 'src', 'PlainInterface.java'),
+        path.join(dir, 'src', 'BigModelClient.java'),
         `
+import feign.Headers;
 import feign.RequestLine;
+import feign.Response;
 
-interface PlainInterface {
-  @RequestLine("GET /not-a-feign-client")
-  String shouldNotBeExtracted();
+public interface BigModelClient {
+  @RequestLine("POST /ai/summarization")
+  @Headers("Content-Type: application/json")
+  Response summarize();
+
+  @RequestLine("GET /ai/concurrent")
+  Response concurrent();
 }
 `,
       );
@@ -1892,8 +1903,18 @@ interface PlainInterface {
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
       expect(
-        consumers.find((c) => c.contractId === 'http::GET::/not-a-feign-client'),
-      ).toBeUndefined();
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/ai/summarization' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) => c.contractId === 'http::GET::/ai/concurrent' && c.meta.framework === 'openfeign',
+        ),
+      ).toBeDefined();
     });
 
     it('mixes @RequestLine and @GetMapping methods on the same @FeignClient interface', async () => {
