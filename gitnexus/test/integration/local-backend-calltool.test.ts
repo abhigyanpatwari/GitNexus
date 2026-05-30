@@ -302,6 +302,116 @@ withTestLbugDB(
         }
       });
     });
+
+    // ─── impact disambiguation + label-scoped resolution (#1907) ─────────
+    // Covers the disambiguation surface the CLI --uid/--file/--kind flags
+    // wire through to, and guards the label-scoped resolver against the
+    // binder failure that motivated the fix.
+    describe('impact disambiguation (#1907)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(async () => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) {
+          throw new Error(
+            'LocalBackend not initialized — afterSetup did not attach _backend to handle',
+          );
+        }
+        backend = ext._backend;
+      });
+
+      it('reports an ambiguous target with disambiguation guidance', async () => {
+        // Two Methods named 'authenticate' (AuthService + BaseService).
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        expect(result.message).toMatch(/disambiguate/i);
+        const uids = (result.candidates ?? []).map((c: any) => c.uid);
+        expect(uids).toContain('method:AuthService.authenticate');
+        expect(uids).toContain('method:BaseService.authenticate');
+      });
+
+      it('resolves the ambiguous target via target_uid (the --uid flag path)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          target_uid: 'method:BaseService.authenticate',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).not.toBe('ambiguous');
+        // target_uid selects the exact symbol, bypassing the name ranker.
+        expect(result.target?.id).toBe('method:BaseService.authenticate');
+        expect(result.target?.filePath).toBe('src/base.ts');
+      });
+
+      it('resolves the ambiguous target via file_path (the --file flag path)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          file_path: 'src/base.ts',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).not.toBe('ambiguous');
+        expect(result.target?.id).toBe('method:BaseService.authenticate');
+      });
+
+      it('does not crash when a name collides across symbol and non-symbol labels', async () => {
+        // 'alpha' exists as both a Function and a Tool sharing src/tools.py.
+        // The Tool node table has no startLine/endLine columns, so the
+        // resolver's `RETURN n.startLine` projection only binds because the
+        // candidate set also contains a label that *does* have those columns
+        // (lenient multi-table binding). This guards that the disambiguation
+        // path keeps tolerating non-symbol node types — and would catch a
+        // future naive label-scoping that reintroduces the #1907 binder error
+        // ("Cannot find property … for n") by matching property-poor tables
+        // in isolation.
+        const result = await backend.callTool('impact', {
+          target: 'alpha',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        const uids = (result.candidates ?? []).map((c: any) => c.uid);
+        expect(uids).toContain('func:alpha');
+        expect(uids).toContain('Tool:alpha');
+      });
+
+      it('context resolves the same cross-label collision without crashing', async () => {
+        const result = await backend.callTool('context', { name: 'alpha' });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        const uids = (result.candidates ?? []).map((c: any) => c.uid);
+        expect(uids).toContain('func:alpha');
+        // Assert the non-symbol Tool node stays in the candidate set, not just
+        // that nothing crashed — a regression that silently dropped Tool from
+        // the lenient-binding match would otherwise pass the non-crash check.
+        expect(uids).toContain('Tool:alpha');
+      });
+
+      it('ranks the kind-matching candidate first when kind is supplied (the --kind flag path)', async () => {
+        // 'alpha' is both a Function (func:alpha) and a Tool (Tool:alpha).
+        // kind only adds +0.20 in scoreCandidate, so 0.50 + 0.20 = 0.70 stays
+        // below the 0.95 confident-resolution threshold — the response is still
+        // ambiguous. What kind buys is ranking: the Function is promoted above
+        // the non-matching Tool. This exercises the scoreCandidate kind branch
+        // against a real DB rather than only through the mocked CLI unit test.
+        const result = await backend.callTool('impact', {
+          target: 'alpha',
+          kind: 'Function',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        const candidates = result.candidates ?? [];
+        expect(candidates[0]?.uid).toBe('func:alpha');
+        expect(candidates[0]?.kind).toBe('Function');
+        const tool = candidates.find((c: any) => c.uid === 'Tool:alpha');
+        expect(candidates[0]?.score).toBeGreaterThan(tool?.score);
+      });
+    });
   },
   {
     seed: LOCAL_BACKEND_SEED_DATA,
@@ -323,6 +433,71 @@ withTestLbugDB(
       const backend = new LocalBackend();
       await backend.init();
       // Stash backend on handle so tests can access it
+      (handle as any)._backend = backend;
+    },
+  },
+);
+
+// ─── impact BFS bound parameters (#1907 review F5) ───────────────────────
+// Isolated DB (not the shared seed) with a frontier node whose id contains a
+// single quote. Under the old string-interpolated query this id had to be
+// hand-escaped; the parameterized query (executeParameterized with bound
+// $frontierIds/$relTypes) carries it as data. Guards that a quote-bearing id
+// traverses without a Prepare/parser error, and that a no-caller symbol
+// returns an empty result rather than erroring.
+withTestLbugDB(
+  'local-backend-impact-param',
+  (handle) => {
+    describe('impact BFS bound parameters (#1907 F5)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) {
+          throw new Error('LocalBackend not initialized — afterSetup did not attach _backend');
+        }
+        backend = ext._backend;
+      });
+
+      it('traverses a caller whose id contains a single quote without a query error', async () => {
+        const result = await backend.callTool('impact', { target: 'sink', direction: 'upstream' });
+        expect(result).not.toHaveProperty('error');
+        const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+        const callerIds = d1.map((d: any) => d.uid ?? d.id);
+        expect(callerIds).toContain("func:o'd");
+      });
+
+      it('returns an empty result (not an error) for a symbol with no callers', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'sink',
+          direction: 'downstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.impactedCount).toBe(0);
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (a:Function {id: "func:o'd", name: 'odd', filePath: 'src/q.ts', startLine: 1, endLine: 3, isExported: true, content: 'function odd() {}', description: 'caller with a quote in its id'})`,
+      `CREATE (b:Function {id: 'func:sink', name: 'sink', filePath: 'src/q.ts', startLine: 5, endLine: 8, isExported: true, content: 'function sink() {}', description: 'callee'})`,
+      `MATCH (a:Function), (b:Function) WHERE a.id = "func:o'd" AND b.id = 'func:sink'
+       CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'param-repo',
+          path: '/param/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 1, nodes: 2, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
       (handle as any)._backend = backend;
     },
   },

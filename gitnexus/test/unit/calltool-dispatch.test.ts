@@ -649,19 +649,26 @@ describe('LocalBackend.callTool', () => {
 
   it('impact byDepth items include a processes field (default empty when no processes)', async () => {
     // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
-    (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-    ]);
-    (executeQuery as any).mockResolvedValue([
-      {
-        id: 'func:caller',
-        name: 'caller',
-        type: 'Function',
-        filePath: 'src/uses-main.ts',
-        relType: 'CALLS',
-        confidence: 0.9,
-      },
-    ]);
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/uses-main.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
+      // Symbol resolution.
+      return Promise.resolve([
+        { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      ]);
+    });
+    (executeQuery as any).mockResolvedValue([]);
 
     const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
     const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
@@ -674,6 +681,19 @@ describe('LocalBackend.callTool', () => {
 
   it('impact populates byDepth processes when STEP_IN_PROCESS rows exist', async () => {
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/uses-main.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
       // Symbol resolver name-lookup
       if (cypher.includes('WHERE n.name =')) {
         return Promise.resolve([
@@ -739,6 +759,20 @@ describe('LocalBackend.callTool', () => {
   it('impact summaryOnly:true skips the per-symbol STEP_IN_PROCESS enrichment pass', async () => {
     // Resolver returns target; BFS returns one caller; aggregation returns one process row.
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3) — return a caller so
+      // the per-symbol-skip assertion below is meaningful (not vacuous).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/a.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
       if (cypher.includes('WHERE n.name =')) {
         return Promise.resolve([
           { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
@@ -811,6 +845,19 @@ describe('LocalBackend.callTool', () => {
     await backend.init();
 
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/uses-main.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
       // UID resolver
       if (cypher.includes('WHERE n.id = $uid')) {
         return Promise.resolve([

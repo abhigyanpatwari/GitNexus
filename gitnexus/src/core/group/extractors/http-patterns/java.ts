@@ -721,12 +721,19 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    // Native OpenFeign `@RequestLine("METHOD /path")`. Method-level only; the
-    // enclosing interface MUST carry `@FeignClient`, otherwise the same
-    // annotation name in unrelated libraries would be a false positive.
+    // Native OpenFeign `@RequestLine("METHOD /path")`. Method-level only and
+    // always declared on an interface (Feign builds a proxy from the interface).
+    // We do NOT require an enclosing `@FeignClient`: `@RequestLine` is a core
+    // `feign.*` annotation used with `Feign.builder()`, whereas `@FeignClient`
+    // is the Spring Cloud variant that uses Spring MVC annotations instead — the
+    // two are effectively mutually exclusive, so requiring `@FeignClient` here
+    // would miss the annotation's primary use. The `RequestLine` name is itself
+    // a strong, framework-specific signal, so a structural interface check is
+    // enough to keep false positives away. A `@FeignClient(path=...)` prefix is
+    // still applied when present (rare, but harmless).
     for (const requestLine of requestLines) {
       const enclosingInterface = findEnclosingInterface(requestLine.methodNode);
-      if (!enclosingInterface || !hasAnnotation(enclosingInterface, 'FeignClient')) continue;
+      if (!enclosingInterface) continue;
       const prefix = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? '';
       out.push({
         role: 'consumer',

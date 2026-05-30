@@ -1873,17 +1873,28 @@ interface SearchClient {
       ).toBeUndefined();
     });
 
-    it('ignores @RequestLine on interfaces without @FeignClient', async () => {
+    it('extracts native @RequestLine on a plain interface without @FeignClient (Feign.builder())', async () => {
+      // The canonical core-Feign usage: a plain interface with `@RequestLine`,
+      // wired up via `Feign.builder()`. There is NO `@FeignClient` annotation
+      // (that is the Spring Cloud variant, which uses Spring MVC annotations and
+      // is mutually exclusive with `@RequestLine`). This is the shape used by
+      // real client-jar consumers, so it must be recognized.
       const dir = path.join(tmpDir, 'java-request-line-no-feign');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
-        path.join(dir, 'src', 'PlainInterface.java'),
+        path.join(dir, 'src', 'BigModelClient.java'),
         `
+import feign.Headers;
 import feign.RequestLine;
+import feign.Response;
 
-interface PlainInterface {
-  @RequestLine("GET /not-a-feign-client")
-  String shouldNotBeExtracted();
+public interface BigModelClient {
+  @RequestLine("POST /ai/summarization")
+  @Headers("Content-Type: application/json")
+  Response summarize();
+
+  @RequestLine("GET /ai/concurrent")
+  Response concurrent();
 }
 `,
       );
@@ -1892,8 +1903,18 @@ interface PlainInterface {
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
       expect(
-        consumers.find((c) => c.contractId === 'http::GET::/not-a-feign-client'),
-      ).toBeUndefined();
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/ai/summarization' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) => c.contractId === 'http::GET::/ai/concurrent' && c.meta.framework === 'openfeign',
+        ),
+      ).toBeDefined();
     });
 
     it('mixes @RequestLine and @GetMapping methods on the same @FeignClient interface', async () => {
@@ -1981,6 +2002,67 @@ import feign.RequestLine;
 interface WrongKeyClient {
   @RequestLine(name = "GET /should-not-extract")
   String shouldNotBeExtracted();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/should-not-extract'),
+      ).toBeUndefined();
+    });
+
+    it('ignores @RequestLine values that are not a "VERB /path" line', async () => {
+      // `parseRequestLine` only accepts a recognized HTTP verb followed by a
+      // path starting with `/`. Malformed values (no verb, no leading-slash
+      // path, or unknown verb) must be dropped — this guards the relaxed
+      // (no-@FeignClient) matcher from turning arbitrary `@RequestLine` string
+      // literals into bogus contracts.
+      const dir = path.join(tmpDir, 'java-request-line-malformed');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'MalformedClient.java'),
+        `
+import feign.RequestLine;
+
+interface MalformedClient {
+  @RequestLine("not a request line at all")
+  String noVerb();
+
+  @RequestLine("GET relative/no/leading/slash")
+  String noLeadingSlash();
+
+  @RequestLine("FETCH /unknown-verb")
+  String unknownVerb();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // None of the three malformed values should yield a contract.
+      expect(
+        consumers.filter((c) => c.symbolRef.filePath.endsWith('MalformedClient.java')),
+      ).toHaveLength(0);
+    });
+
+    it('ignores @RequestLine on a class method (Feign proxies are interfaces only)', async () => {
+      // The relaxed matcher still requires an enclosing interface: Feign builds
+      // its proxy from an interface, so a `@RequestLine` on a concrete class
+      // method is not a Feign call and must not be emitted as a consumer.
+      const dir = path.join(tmpDir, 'java-request-line-on-class');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'NotAProxy.java'),
+        `
+import feign.RequestLine;
+
+class NotAProxy {
+  @RequestLine("GET /should-not-extract")
+  String call() { return null; }
 }
 `,
       );
