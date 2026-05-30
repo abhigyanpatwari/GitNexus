@@ -113,16 +113,29 @@ jobs:
         env:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
+          # ABI gate (#1922) runs as a job inside the `tests` reusable
+          # workflow and is surfaced via its `abi_assert` output. Gating on
+          # the parent `tests.result` alone would already block (a failed
+          # job fails the reusable workflow), but we assert it explicitly so
+          # a future refactor that decouples the job can't silently un-gate it.
+          ABI_ASSERT: ${{ needs.tests.outputs.abi_assert }}
           E2E: ${{ needs.e2e.result }}
           SCOPE_PARITY: ${{ needs.scope-parity.result }}
         run: |
           echo "Quality:        $QUALITY"
           echo "Tests:          $TESTS"
+          echo "ABI assert:     $ABI_ASSERT"
           echo "E2E:            $E2E"
           echo "Scope parity:   $SCOPE_PARITY"
           if [[ "$QUALITY" != "success" ]] ||
              [[ "$TESTS" != "success" ]]; then
             echo "::error::Quality or test jobs failed"
+            exit 1
+          fi
+          # Explicit ABI-gate clause: adding a job to `needs` alone does not
+          # block; this comparison is what fails the gate on an ABI mismatch.
+          if [[ "$ABI_ASSERT" != "success" ]]; then
+            echo "::error::tree-sitter ABI gate failed (#1922)"
             exit 1
           fi
           if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then

@@ -1,7 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
-import { parseSourceSafe } from '../../src/core/tree-sitter/safe-parse.js';
+import {
+  parseSourceSafe,
+  parseHadErrors,
+  ParseTimeoutError,
+  _resetDegradedParseCounter,
+} from '../../src/core/tree-sitter/safe-parse.js';
 
 const makeParser = (): Parser => {
   const p = new Parser();
@@ -70,5 +75,68 @@ describe('parseSourceSafe', () => {
     const tree = parseSourceSafe(makeParser(), large);
     expect(tree.rootNode.hasError).toBe(false);
     expect(tree.rootNode.endIndex).toBe(large.length);
+  });
+});
+
+describe('parseSourceSafe — runaway-parse timeout (#1922)', () => {
+  const ORIGINAL_BUDGET = process.env.GITNEXUS_PARSE_TIMEOUT_MS;
+
+  afterEach(() => {
+    if (ORIGINAL_BUDGET === undefined) {
+      delete process.env.GITNEXUS_PARSE_TIMEOUT_MS;
+    } else {
+      process.env.GITNEXUS_PARSE_TIMEOUT_MS = ORIGINAL_BUDGET;
+    }
+  });
+
+  // A large source paired with a sub-millisecond budget reliably trips the
+  // tree-sitter timeout (it returns null mid-parse). 1ms · 1000 = 1000 micros.
+  const pathological = (): string => buildSource(4 * 1024 * 1024);
+
+  it('throws ParseTimeoutError when the parse exceeds its budget', () => {
+    process.env.GITNEXUS_PARSE_TIMEOUT_MS = '1';
+    const parser = makeParser();
+    expect(() => parseSourceSafe(parser, pathological())).toThrow(ParseTimeoutError);
+  });
+
+  it('reset()s the parser on timeout so the SAME parser parses cleanly next', () => {
+    process.env.GITNEXUS_PARSE_TIMEOUT_MS = '1';
+    const parser = makeParser();
+    expect(() => parseSourceSafe(parser, pathological())).toThrow(ParseTimeoutError);
+
+    // Without reset() tree-sitter resumes the interrupted parse and would
+    // either return null again or a corrupt tree. With a cleared budget +
+    // reset(), a trivial follow-up parse on the SAME parser must succeed.
+    process.env.GITNEXUS_PARSE_TIMEOUT_MS = '0';
+    const tree = parseSourceSafe(parser, 'x = 1\n');
+    expect(tree.rootNode.type).toBe('module');
+    expect(tree.rootNode.hasError).toBe(false);
+  });
+
+  it('does not throw and returns a tree when the budget is disabled (0)', () => {
+    process.env.GITNEXUS_PARSE_TIMEOUT_MS = '0';
+    const tree = parseSourceSafe(makeParser(), 'x = 1\n');
+    expect(tree.rootNode.type).toBe('module');
+  });
+});
+
+describe('parseSourceSafe — intrinsic error detection (#1922)', () => {
+  afterEach(() => {
+    _resetDegradedParseCounter();
+  });
+
+  it('returns the (degraded) tree for malformed input — never drops it', () => {
+    // Unbalanced parens / dangling def → tree-sitter recovers into ERROR nodes
+    // rather than throwing or returning null.
+    const malformed = 'def broken(:\n    return (1 + \n';
+    const tree = parseSourceSafe(makeParser(), malformed, undefined, undefined, 'broken.py');
+    expect(tree).toBeDefined();
+    expect(tree.rootNode.hasError).toBe(true);
+    expect(parseHadErrors(tree)).toBe(true);
+  });
+
+  it('reports parseHadErrors=false for clean input', () => {
+    const tree = parseSourceSafe(makeParser(), 'def ok():\n    return 1\n');
+    expect(parseHadErrors(tree)).toBe(false);
   });
 });
