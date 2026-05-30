@@ -5,6 +5,13 @@ struct B {
 void sink(int value);
 void ambiguous(int value);
 void ambiguous(double value);
+void helper();
+
+namespace tools {
+void namespaceHelper();
+}
+
+using tools::namespaceHelper;
 
 template <class... Ts>
 void logMany(int, Ts... xs) {
@@ -20,6 +27,8 @@ template <class... B>
 struct Mix : B... {
   void run() {
     inherited();
+    helper();
+    namespaceHelper();
   }
 };
 

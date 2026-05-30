@@ -127,7 +127,7 @@ export function clearCppDependentBases(): void {
  *     found (conservative: avoids false associations).
  */
 export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): void {
-  if (dependentBasesByFile.size === 0) return;
+  if (dependentBasesByFile.size === 0 && dependentPackBaseClassesByFile.size === 0) return;
 
   // Build workspace-wide index: simpleName → {nodeId, nsPrefix}[]
   // nsPrefix is the dot-joined namespace path (qualifiedName without the
@@ -303,10 +303,25 @@ export function isCppDependentBaseMember(
   if (bases === undefined) return false;
   if (bases.has('*pack-expansion*')) {
     if (candidateDef.ownerId !== undefined) return candidateDef.ownerId !== enclosing.nodeId;
-    const ownerName = candidateDef.qualifiedName?.split('.').slice(-2, -1)[0];
-    const enclosingName = enclosing.qualifiedName?.split('.').pop();
+    if (candidateDef.type !== 'Method' && candidateDef.type !== 'Constructor') return false;
+    const ownerName = getQualifiedParentName(candidateDef.qualifiedName);
+    const enclosingName = getQualifiedSimpleName(enclosing.qualifiedName);
     return ownerName !== undefined && ownerName !== enclosingName;
   }
   if (candidateDef.ownerId === undefined) return false;
   return bases.has(candidateDef.ownerId);
+}
+
+function getQualifiedParentName(qualifiedName: string | undefined): string | undefined {
+  if (qualifiedName === undefined) return undefined;
+  const lastDot = qualifiedName.lastIndexOf('.');
+  if (lastDot < 0) return undefined;
+  const parent = qualifiedName.slice(0, lastDot);
+  return getQualifiedSimpleName(parent);
+}
+
+function getQualifiedSimpleName(qualifiedName: string | undefined): string | undefined {
+  if (qualifiedName === undefined) return undefined;
+  const lastDot = qualifiedName.lastIndexOf('.');
+  return lastDot >= 0 ? qualifiedName.slice(lastDot + 1) : qualifiedName;
 }

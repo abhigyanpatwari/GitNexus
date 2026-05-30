@@ -332,13 +332,6 @@ export function emitCppScopeCaptures(
         'call_expression',
       );
       if (freeCallNode !== null) {
-        const callName = grouped['@reference.name']?.text;
-        if (
-          callName !== undefined &&
-          isUnqualifiedCallSuppressedByPackBase(freeCallNode, callName)
-        ) {
-          continue;
-        }
         const adlAnchorRange = grouped['@reference.call.free']!.range;
         if (isParenthesizedFunctionCall(freeCallNode)) {
           markCppAdlSiteNoAdl(filePath, adlAnchorRange.startLine, adlAnchorRange.startCol);
@@ -432,59 +425,6 @@ export function emitCppScopeCaptures(
   return out;
 }
 
-function isUnqualifiedCallSuppressedByPackBase(callNode: SyntaxNode, callName: string): boolean {
-  const classNode = findEnclosingClassLike(callNode);
-  if (classNode === null) return false;
-  const baseClause = findChildOfType(classNode, ['base_class_clause']);
-  if (baseClause === null) return false;
-  const hasPackBase = [...iterBaseClasses(baseClause)].some((base) => base.isPackExpansion);
-  if (!hasPackBase) return false;
-  return !classDeclaresMemberNamed(classNode, callName);
-}
-
-function findEnclosingClassLike(node: SyntaxNode): SyntaxNode | null {
-  let cur = node.parent;
-  while (cur !== null) {
-    if (cur.type === 'class_specifier' || cur.type === 'struct_specifier') return cur;
-    cur = cur.parent;
-  }
-  return null;
-}
-
-function classDeclaresMemberNamed(classNode: SyntaxNode, memberName: string): boolean {
-  const body = findChildOfType(classNode, ['field_declaration_list']);
-  if (body === null) return false;
-  const stack: SyntaxNode[] = [body];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if (
-      (node.type === 'function_declarator' || node.type === 'field_declaration') &&
-      getFunctionDeclaratorName(node) === memberName
-    ) {
-      return true;
-    }
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (child !== null) stack.push(child);
-    }
-  }
-  return false;
-}
-
-function getFunctionDeclaratorName(node: SyntaxNode): string {
-  const nameNode = node.childForFieldName('declarator') ?? node.childForFieldName('name');
-  if (nameNode?.type === 'field_identifier' || nameNode?.type === 'identifier') {
-    return nameNode.text;
-  }
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child === null) continue;
-    const nested = getFunctionDeclaratorName(child);
-    if (nested !== '') return nested;
-  }
-  return '';
-}
-
 function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined {
   const typeNode = fnNode.childForFieldName('type');
   if (typeNode === null) return undefined;
@@ -528,8 +468,7 @@ function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[], fileP
       if (baseClause !== null) {
         for (const base of iterBaseClasses(baseClause)) {
           if (base.isPackExpansion) {
-            const className = getTypeIdentifierName(node);
-            if (className !== '') markCppDependentPackBase(filePath, className);
+            markClassWithPackExpandedBase(filePath, node);
             continue;
           }
           const baseName = extractBaseLookupName(base.node);
@@ -579,7 +518,7 @@ function detectCppDependentBases(root: SyntaxNode, filePath: string): void {
             for (const base of iterBaseClasses(baseClause)) {
               if (base.isPackExpansion || isBaseDependent(base.node, params)) {
                 if (base.isPackExpansion) {
-                  markCppDependentPackBase(filePath, className);
+                  markClassWithPackExpandedBase(filePath, classNode);
                 }
                 const baseName = extractBaseLookupName(base.node);
                 const baseQualifier = extractBaseLookupQualifier(base.node);
@@ -629,6 +568,11 @@ function collectTemplateParameterNames(templateDecl: SyntaxNode): Set<string> {
     }
   }
   return names;
+}
+
+function markClassWithPackExpandedBase(filePath: string, classNode: SyntaxNode): void {
+  const className = getTypeIdentifierName(classNode);
+  if (className !== '') markCppDependentPackBase(filePath, className);
 }
 
 interface CppBaseClassEntry {

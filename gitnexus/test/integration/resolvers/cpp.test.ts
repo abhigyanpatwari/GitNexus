@@ -400,6 +400,22 @@ describe('C++ variadic packs and dependent-name resolution (#1894)', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('preserves free helper calls inside a class with a pack-expanded dependent base', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'helper',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('preserves using-declaration namespace helper calls inside a pack-base class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'namespaceHelper',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
   it('resolves current-instantiation unqualified member calls', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (c) => c.source === 'run' && c.target === 'own',
