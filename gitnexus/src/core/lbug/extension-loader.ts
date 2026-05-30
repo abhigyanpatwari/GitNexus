@@ -53,6 +53,28 @@ const alreadyAvailable = (message: string): boolean =>
 const resolvePolicyFromEnv = (): ExtensionInstallPolicy => {
   const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
   if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
+  return 'load-only';
+};
+
+export const getExtensionInstallPolicy = (): ExtensionInstallPolicy => resolvePolicyFromEnv();
+
+/**
+ * Install policy for the **analyze (write) path**.
+ *
+ * The global default (`resolvePolicyFromEnv`) is `load-only` so serve/query
+ * read paths never require outbound network access (PR #1161, offline-first).
+ * The analyze path is different: it owns building the search indexes, so it
+ * defaults to `auto` — LOAD the extension if present, otherwise attempt one
+ * bounded out-of-process INSTALL. This keeps FTS symmetric with the
+ * VECTOR/embeddings path (which already defaults to `auto`) and matches the
+ * #726 contract. An explicit `GITNEXUS_LBUG_EXTENSION_INSTALL` value still
+ * wins, so operators can force `load-only`/`never` for fully offline analyze;
+ * `auto` LOADs-first, so offline machines still degrade gracefully when the
+ * INSTALL cannot reach the network.
+ */
+export const resolveAnalyzeInstallPolicy = (): ExtensionInstallPolicy => {
+  const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+  if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
   return 'auto';
 };
 
@@ -148,7 +170,7 @@ export const installDuckDbExtensionOutOfProcess = async (
  * subsequent analyze or query calls.
  *
  * Policy precedence (most specific wins):
- *   per-call `opts.policy` → constructor `options.policy` → env → `auto`
+ *   per-call `opts.policy` → constructor `options.policy` → env → `load-only`
  */
 export class ExtensionManager {
   private readonly capabilities = new Map<string, ExtensionCapability>();

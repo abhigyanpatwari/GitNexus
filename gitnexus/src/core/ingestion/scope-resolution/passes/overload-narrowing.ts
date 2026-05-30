@@ -35,6 +35,11 @@
  *       candidates whose template constraints provably fail at the
  *       call site. Three-valued; `'unknown'` keeps the candidate
  *       (monotonicity).
+ *   4d. Conservative C++ template partial-order approximation. When
+ *       template-placeholder overloads remain tied, prefer a candidate
+ *       whose parameter shape is more specialized for the observed
+ *       argument shape (`T*` over `T`, `const T&` over `T`). Unknown or
+ *       incomparable shapes are left ambiguous.
  *   5. Empty input returns empty output.
  */
 
@@ -205,6 +210,15 @@ export function narrowOverloadCandidates(
     });
   }
 
+  if (result.length > 1 && argTypes !== undefined && argTypes.length > 0) {
+    const partiallyOrdered = rankByTemplatePartialOrdering(
+      result,
+      argTypes,
+      hookCtx?.argumentTypeClasses,
+    );
+    if (partiallyOrdered !== undefined) result = partiallyOrdered;
+  }
+
   return result;
 }
 
@@ -324,6 +338,109 @@ function pairwiseCompare(a: readonly number[], b: readonly number[]): -1 | 0 | 1
     if (a[i] < b[i]) aBetter = true;
     else if (b[i] < a[i]) bBetter = true;
     if (aBetter && bBetter) return 0; // incomparable — early exit
+  }
+  if (aBetter && !bBetter) return -1;
+  if (bBetter && !aBetter) return 1;
+  return 0;
+}
+
+/**
+ * Closed-table approximation of C++ function-template partial ordering.
+ *
+ * Full `[temp.func.order]` requires template argument deduction. GitNexus
+ * keeps this graph-safe by recognizing only syntactic placeholder shapes
+ * that the C++ parameter sidecar already preserves:
+ *   - `T*` is more specialized than `T` for pointer arguments.
+ *
+ * Anything with unknown argument shape, non-template parameter spelling, or
+ * incomparable specialized shapes stays ambiguous so callers suppress. The
+ * placeholder detector is intentionally narrow: lowercase template parameters
+ * are left ambiguous rather than guessed.
+ */
+function rankByTemplatePartialOrdering(
+  candidates: readonly SymbolDefinition[],
+  argTypes: readonly string[],
+  argTypeClasses?: readonly ParameterTypeClass[],
+): readonly SymbolDefinition[] | undefined {
+  if (argTypeClasses === undefined) return undefined;
+
+  const viable: Array<{ def: SymbolDefinition; ranks: number[] }> = [];
+  for (const def of candidates) {
+    const params = def.parameterTypes;
+    const paramClasses = def.parameterTypeClasses;
+    if (params === undefined || paramClasses === undefined) continue;
+
+    const ranks: number[] = [];
+    let sawTemplateSlot = false;
+    let ok = true;
+    for (let i = 0; i < argTypes.length; i++) {
+      const paramType = parameterTypeAt(params, i);
+      const paramClass = parameterTypeClassAt(paramClasses, i);
+      const argClass = argTypeClasses[i];
+      if (paramType === undefined || paramClass === undefined || argClass === undefined) {
+        ok = false;
+        break;
+      }
+
+      const rank = templatePartialOrderSlotRank(paramType, paramClass, argClass);
+      if (rank === undefined) {
+        ok = false;
+        break;
+      }
+      sawTemplateSlot ||= isTemplatePlaceholder(paramType);
+      ranks.push(rank);
+    }
+    if (ok && sawTemplateSlot) viable.push({ def, ranks });
+  }
+  if (viable.length === 0) return undefined;
+  if (viable.length !== candidates.length) return [];
+  if (viable.length <= 1) return viable.map((v) => v.def);
+
+  const dominated = new Set<number>();
+  for (let i = 0; i < viable.length; i++) {
+    if (dominated.has(i)) continue;
+    for (let j = i + 1; j < viable.length; j++) {
+      if (dominated.has(j)) continue;
+      const cmp = compareSpecializationRanks(viable[i].ranks, viable[j].ranks);
+      if (cmp < 0) dominated.add(j);
+      else if (cmp > 0) dominated.add(i);
+    }
+  }
+  return viable.filter((_, idx) => !dominated.has(idx)).map((v) => v.def);
+}
+
+function templatePartialOrderSlotRank(
+  paramType: string,
+  paramClass: ParameterTypeClass,
+  argClass: ParameterTypeClass,
+): number | undefined {
+  if (!isTemplatePlaceholder(paramType)) return undefined;
+  if (argClass.indirection === 'unknown' || paramClass.indirection === 'unknown') {
+    return undefined;
+  }
+  if (isPointerShape(paramClass)) {
+    return isPointerShape(argClass) ? 3 : undefined;
+  }
+  if (paramClass.indirection === 'value') return 1;
+  return undefined;
+}
+
+function isTemplatePlaceholder(typeName: string): boolean {
+  return /^[A-Z]\w*$/.test(typeName);
+}
+
+/**
+ * Higher specialization rank is better. Returns -1 when `a` dominates `b`,
+ * +1 when `b` dominates `a`, and 0 for ties / incomparable vectors.
+ */
+function compareSpecializationRanks(a: readonly number[], b: readonly number[]): -1 | 0 | 1 {
+  let aBetter = false;
+  let bBetter = false;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] > b[i]) aBetter = true;
+    else if (b[i] > a[i]) bBetter = true;
+    if (aBetter && bBetter) return 0;
   }
   if (aBetter && !bBetter) return -1;
   if (bBetter && !aBetter) return 1;

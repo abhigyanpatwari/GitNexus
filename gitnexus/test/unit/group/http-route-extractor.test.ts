@@ -41,6 +41,8 @@ describe('HttpRouteExtractor', () => {
     });
   });
 
+  const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+
   describe('provider extraction — graph-first (Strategy A)', () => {
     it('extracts routes from Route/HANDLES_ROUTE graph + source scan for method', async () => {
       const dir = path.join(tmpDir, 'graph-first');
@@ -832,6 +834,181 @@ class UserController {
       },
     );
 
+    it('does not emit annotated Java interfaces as concrete Spring provider routes', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-only');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/DepartmentApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/departments")
+public interface DepartmentApi {
+    @GetMapping("")
+    Object list();
+
+    @GetMapping("/{name}")
+    Object getByName(@PathVariable String name);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers).toHaveLength(0);
+    });
+
+    it('inherits Spring interface route mappings when controller methods omit annotations', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-inherited-methods');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/StatusApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/status")
+public interface StatusApi {
+    @GetMapping("")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/StatusController.java'),
+        `
+package com.example.controller;
+import com.example.rest.StatusApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class StatusController implements StatusApi {
+    @Override
+    public Object getStatus() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const statusRoute = providers.find((c) => c.contractId === 'http::GET::/status');
+      expect(statusRoute).toBeDefined();
+      expect(toPosixPath(statusRoute!.symbolRef.filePath)).toBe(
+        'src/controller/StatusController.java',
+      );
+      expect(statusRoute!.symbolName).toBe('getStatus');
+      expect(providers.filter((c) => c.symbolRef.filePath.includes('StatusApi.java'))).toHaveLength(
+        0,
+      );
+    });
+
+    it('combines controller class mapping with inherited interface method mapping', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-controller-prefix');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/UserApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+public interface UserApi {
+    @GetMapping("/users")
+    Object listUsers();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example.controller;
+import com.example.rest.UserApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class UserController implements UserApi {
+    @Override
+    public Object listUsers() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const usersRoute = providers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(usersRoute).toBeDefined();
+      expect(toPosixPath(usersRoute!.symbolRef.filePath)).toBe(
+        'src/controller/UserController.java',
+      );
+    });
+
+    it('skips ambiguous inherited routes when interfaces share a simple name', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-simple-name-collision');
+      fs.mkdirSync(path.join(dir, 'src/a'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/b'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/a/StatusApi.java'),
+        `
+package com.example.a;
+import org.springframework.web.bind.annotation.*;
+
+public interface StatusApi {
+    @GetMapping("/a/status")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/b/StatusApi.java'),
+        `
+package com.example.b;
+import org.springframework.web.bind.annotation.*;
+
+public interface StatusApi {
+    @GetMapping("/b/status")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/StatusController.java'),
+        `
+package com.example.controller;
+import com.example.a.StatusApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class StatusController implements StatusApi {
+    @Override
+    public Object getStatus() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/b/status')).toBeUndefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/a/status')).toBeUndefined();
+      expect(
+        providers.filter((c) => c.symbolRef.filePath.includes('StatusController.java')),
+      ).toHaveLength(0);
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
@@ -1364,7 +1541,7 @@ shadowed_module_client.get("/module-level-rebind-fp")
       ).toBeUndefined();
     });
 
-    it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {
+    it('extracts Java Spring RestTemplate, WebClient and OkHttp literal calls', async () => {
       const dir = path.join(tmpDir, 'java-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
@@ -1378,7 +1555,8 @@ import okhttp3.Request;
 class ApiClient {
   void run(RestTemplate restTemplate, WebClient webClient) {
     restTemplate.getForObject("/api/users/{id}", String.class, 42);
-    webClient.method(HttpMethod.PATCH, "/api/users/42");
+    restTemplate.exchange("/api/users/{id}/details", HttpMethod.GET, null, String.class);
+    webClient.post().uri("/api/users");
     new Request.Builder().url("/api/orders/42").build();
   }
 }
@@ -1390,19 +1568,289 @@ class ApiClient {
 
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}')).toBeDefined();
       expect(
-        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+        consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}/details'),
       ).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
       ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/users/{param}/details' &&
+            c.meta.framework === 'spring-rest-template' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/api/users' &&
+            c.meta.framework === 'spring-web-client' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
     });
 
-    // ─── Kotlin consumers (RestTemplate / WebClient short / OkHttp) ──
+    it('does NOT match Java WebClient long-form method(HttpMethod).uri(...) yet', async () => {
+      const dir = path.join(tmpDir, 'java-web-client-long-form');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'LongFormClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class LongFormClient {
+  void run(WebClient webClient) {
+    webClient.method(HttpMethod.PATCH).uri("/api/users/42").retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+      ).toBeUndefined();
+    });
+
+    it('extracts OpenFeign clients as consumers, not providers', async () => {
+      const dir = path.join(tmpDir, 'java-openfeign-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OrderClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+
+@FeignClient(name = "order-service", url = "\${order.service.url}", path = "/api")
+interface OrderClient {
+  @GetMapping("/orders/{id}")
+  OrderDto getOrder(@PathVariable("id") String id);
+
+  @PostMapping(path = "/orders")
+  OrderDto createOrder(OrderDto body);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/api/orders' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+      expect(
+        providers.find((c) => c.symbolRef.filePath.endsWith('OrderClient.java')),
+      ).toBeUndefined();
+    });
+
+    it('extracts OpenFeign clients without an interface path prefix', async () => {
+      const dir = path.join(tmpDir, 'java-openfeign-no-prefix');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'HealthClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@FeignClient(name = "health-service")
+interface HealthClient {
+  @GetMapping("/health")
+  String health();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/health' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+      expect(
+        providers.find((c) => c.symbolRef.filePath.endsWith('HealthClient.java')),
+      ).toBeUndefined();
+    });
+
+    it('does not treat @FeignClient text in an interface body as a Feign annotation', async () => {
+      const dir = path.join(tmpDir, 'java-non-feign-interface-text');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'NotFeignClient.java'),
+        `
+import org.springframework.web.bind.annotation.GetMapping;
+
+interface NotFeignClient {
+  String MARKER = "@FeignClient";
+
+  @GetMapping("/not-feign")
+  String call();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeUndefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/not-feign')).toBeUndefined();
+    });
+
+    it('extracts OpenFeign clients with @RequestMapping interface prefixes', async () => {
+      const dir = path.join(tmpDir, 'java-openfeign-request-mapping-prefix');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'InventoryClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@FeignClient(name = "inventory-service")
+@RequestMapping(path = "/api")
+interface InventoryClient {
+  @GetMapping("/inventory/{id}")
+  InventoryDto getInventory(String id);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/inventory/{param}' &&
+            c.meta.framework === 'openfeign',
+        ),
+      ).toBeDefined();
+    });
+
+    it('prefers @FeignClient(path=...) over @RequestMapping prefixes on OpenFeign clients', async () => {
+      const dir = path.join(tmpDir, 'java-openfeign-prefix-precedence');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'PrecedenceClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@FeignClient(name = "order-service", path = "/feign-path")
+@RequestMapping("/rm-path")
+interface PrecedenceClient {
+  @GetMapping("/orders")
+  OrderDto getOrders();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/feign-path/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/rm-path/orders')).toBeUndefined();
+    });
+
+    it('extracts Java and Apache HttpClient literal request construction', async () => {
+      const dir = path.join(tmpDir, 'java-http-client-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'HttpClients.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpPatch;
+
+class HttpClients {
+  void run(HttpClient client) throws Exception {
+    HttpRequest get = HttpRequest.newBuilder()
+        .uri(URI.create("/api/users/1"))
+        .GET()
+        .build();
+    HttpRequest post = HttpRequest.newBuilder()
+        .uri(URI.create("/api/users"))
+        .POST(HttpRequest.BodyPublishers.ofString("{}"))
+        .build();
+
+    new HttpGet("/api/orders/2");
+    new HttpPost("/api/orders");
+    new HttpPut("/api/orders/3");
+    new HttpDelete("/api/orders/4");
+    new HttpPatch("/api/orders/5");
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}')).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/api/users' &&
+            c.meta.framework === 'java-http-client' &&
+            c.confidence === 0.65,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/api/orders' &&
+            c.meta.framework === 'apache-http-client' &&
+            c.confidence === 0.65,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
     // Same shape as the Java consumer test above, but parsed by the
-    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Three
-    // consumer flavors covered here (long-form WebClient
-    // `webClient.method(HttpMethod.X).uri(...)` is intentionally
-    // deferred to a follow-up — see kotlin.ts file header).
+    // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Four
+    // consumer flavors covered here: RestTemplate (#1855), WebClient
+    // short form (#1855), OkHttp (#1855), and WebClient long form
+    // (`webClient.method(HttpMethod.X).uri(...)`, this PR / #1884) —
+    // see kotlin.ts file header for the full list.
     //
     // tree-sitter-kotlin is an optionalDependency. If the binding is
     // unavailable, `getPluginForFile` returns undefined for `.kt` and
@@ -1581,28 +2029,104 @@ class OkPostClient(private val client: OkHttpClient, private val body: RequestBo
       },
     );
 
+    itKotlinConsumer('extracts Kotlin WebClient long form GET', async () => {
+      const dir = path.join(tmpDir, 'kotlin-web-client-long-get');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'LongGetClient.kt'),
+        `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+
+class LongGetClient(private val webClient: WebClient) {
+  suspend fun run() {
+    val r = webClient.method(HttpMethod.GET).uri("/api/users").retrieve().awaitBody<User>()
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const route = consumers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(route).toBeDefined();
+      expect(route!.meta.framework).toBe('spring-web-client');
+    });
+
+    itKotlinConsumer('extracts Kotlin WebClient long form POST/PUT/DELETE/PATCH', async () => {
+      const dir = path.join(tmpDir, 'kotlin-web-client-long-verbs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'LongVerbClient.kt'),
+        `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+import org.springframework.web.reactive.function.client.awaitBodilessEntity
+
+class LongVerbClient(private val webClient: WebClient) {
+  suspend fun run() {
+    webClient.method(HttpMethod.POST).uri("/api/orders").retrieve().awaitBody<Order>()
+    webClient.method(HttpMethod.PUT).uri("/api/orders/1").retrieve().awaitBody<Order>()
+    webClient.method(HttpMethod.DELETE).uri("/api/orders/2").retrieve().awaitBodilessEntity()
+    webClient.method(HttpMethod.PATCH).uri("/api/orders/3").retrieve().awaitBody<Order>()
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/orders/{param}'),
+      ).toBeDefined();
+
+      // All four should be tagged as `spring-web-client` so polyglot
+      // repos coalesce on the same framework key as the short form.
+      // The fixture is fully deterministic — exactly 4 long-form calls,
+      // no short-form / RestTemplate / OkHttp calls mixed in — so an
+      // exact count is meaningful (DoD §2.7). If a future change
+      // accidentally emits a 5th consumer (e.g. duplicate query firing,
+      // or a regressed receiver constraint matching unrelated calls),
+      // this assertion catches it.
+      const wcConsumers = consumers.filter((c) => c.meta.framework === 'spring-web-client');
+      expect(wcConsumers).toHaveLength(4);
+    });
+
     itKotlinConsumer(
-      'does NOT match Kotlin WebClient long form (deferred to follow-up)',
+      'short-form query does NOT also fire on Kotlin WebClient long form (no double-emit)',
       async () => {
-        // Anti-overreach: confirm the short-form query does NOT
-        // accidentally fire on the long-form chain
-        // `webClient.method(HttpMethod.GET).uri(...)`. The long form
-        // is intentionally unsupported in this PR; if a future change
-        // to the short-form query starts capturing it we want a loud
-        // signal here. Long-form support will arrive in a follow-up
-        // with a dedicated query + verb walk-up helper.
-        const dir = path.join(tmpDir, 'kotlin-web-client-long');
+        // The long-form query handles `webClient.method(HttpMethod.X).uri(...)`,
+        // and the short-form query handles `webClient.get().uri(...)`. Both
+        // queries carry sibling `(navigation_suffix (simple_identifier) @verb)`
+        // constraints — short form requires the verb name itself
+        // (`get`/`post`/...), long form requires the literal name
+        // `method`. The two are disjoint.
+        //
+        // This test pins that disjointness: a single `.method(HttpMethod.GET)`
+        // call must emit ONE consumer, not two (one from each query).
+        const dir = path.join(tmpDir, 'kotlin-web-client-long-no-double');
         fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
         fs.writeFileSync(
-          path.join(dir, 'src', 'LegacyClient.kt'),
+          path.join(dir, 'src', 'NoDoubleClient.kt'),
           `package com.example
 import org.springframework.http.HttpMethod
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.awaitBody
 
-class LegacyClient(private val webClient: WebClient) {
+class NoDoubleClient(private val webClient: WebClient) {
   suspend fun run() {
-    val r = webClient.method(HttpMethod.GET).uri("/api/legacy").retrieve().awaitBody<String>()
+    webClient.method(HttpMethod.GET).uri("/api/single").retrieve().awaitBody<String>()
   }
 }
 `,
@@ -1611,12 +2135,49 @@ class LegacyClient(private val webClient: WebClient) {
         const contracts = await extractor.extract(null, dir, makeRepo(dir));
         const consumers = contracts.filter((c) => c.role === 'consumer');
 
-        // No consumer should be emitted from this file by the
-        // current short-form query. Documented as a known limitation.
-        const fromLegacy = consumers.filter((c) =>
-          c.symbolRef.filePath.endsWith('LegacyClient.kt'),
+        const fromThisFile = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('NoDoubleClient.kt'),
         );
-        expect(fromLegacy).toHaveLength(0);
+        expect(fromThisFile).toHaveLength(1);
+        expect(fromThisFile[0].contractId).toBe('http::GET::/api/single');
+      },
+    );
+
+    itKotlinConsumer(
+      'does NOT match Kotlin WebClient long form with variable-bound verb',
+      async () => {
+        // Anti-overreach: source-scan can't follow `val verb = HttpMethod.X`
+        // back to the literal — that's a graph-aware concern. The long-form
+        // query requires `(navigation_expression HttpMethod . verb)` as the
+        // `value_argument` shape, so a bare `simple_identifier` (the
+        // variable name) fails to match. Pin this so a future relaxation
+        // of the value_argument shape cannot silently start guessing the
+        // verb from arbitrary identifiers.
+        const dir = path.join(tmpDir, 'kotlin-web-client-long-var-verb');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'VariableVerbClient.kt'),
+          `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+
+class VariableVerbClient(private val webClient: WebClient) {
+  suspend fun run() {
+    val verb = HttpMethod.PATCH
+    val r = webClient.method(verb).uri("/api/dynamic").retrieve().awaitBody<String>()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        const fromThisFile = consumers.filter((c) =>
+          c.symbolRef.filePath.endsWith('VariableVerbClient.kt'),
+        );
+        expect(fromThisFile).toHaveLength(0);
       },
     );
 
@@ -1810,6 +2371,84 @@ async def create_user(user: UserCreate):
       expect(providers.length).toBeGreaterThanOrEqual(2);
       expect(providers.find((c) => c.contractId === 'http::GET::/users')).toBeDefined();
       expect(providers.find((c) => c.contractId === 'http::POST::/users')).toBeDefined();
+    });
+
+    it('joins FastAPI @router.<verb> path with include_router(prefix=...) from main.py (attribute shape)', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-attr');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+from api import assistant
+app = FastAPI()
+app.include_router(assistant.router, prefix='/ai', tags=['ai'])
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'api/assistant.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.post("/assistant")
+async def assistant(req):
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::POST::/ai/assistant')).toBeDefined();
+      // bare unprefixed form should not be emitted when a prefix mapping exists
+      expect(providers.find((c) => c.contractId === 'http::POST::/assistant')).toBeUndefined();
+    });
+
+    it('joins FastAPI @router.<verb> path with include_router(prefix=...) (named-import shape)', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-named');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+from api.predict import router as predict_router
+app = FastAPI()
+app.include_router(predict_router, prefix='/ai')
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'api/predict.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/concurrent")
+async def concurrent():
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/ai/concurrent')).toBeDefined();
+    });
+
+    it('emits @router.<verb> path unmodified when no include_router prefix is configured', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-no-prefix');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'api/loose.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/standalone")
+async def standalone():
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+      expect(providers.find((c) => c.contractId === 'http::GET::/standalone')).toBeDefined();
     });
   });
 

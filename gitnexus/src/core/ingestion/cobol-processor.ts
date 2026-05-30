@@ -150,9 +150,24 @@ export const processCobol = (
     const entry = copybookMap.get(name.toUpperCase());
     return entry ? entry.path : null;
   };
+  // Memoize preprocessed copybook content for the duration of this
+  // processCobol call. A single copybook is COPYed by many programs (and at
+  // many COPY sites within a program); without this cache
+  // preprocessCobolSource would re-run once per COPY site —
+  // O(programs × copybooks) preprocessing passes over the same content.
+  // Keyed by the resolved copybook path. REPLACING is applied later by the
+  // expander on the returned (pre-REPLACING) content (see
+  // cobol-copy-expander.ts readFile→applyReplacing), so caching the
+  // pre-REPLACING preprocessed text here is safe and per-call-scoped.
+  const preprocessedCopyCache = new Map<string, string>();
   const readCopy = (copyPath: string): string | null => {
+    const cached = preprocessedCopyCache.get(copyPath);
+    if (cached !== undefined) return cached;
     const content = copybookByPath.get(copyPath);
-    return content ? preprocessCobolSource(content) : null;
+    if (!content) return null; // preserves original falsy→null (missing/empty)
+    const preprocessed = preprocessCobolSource(content);
+    preprocessedCopyCache.set(copyPath, preprocessed);
+    return preprocessed;
   };
 
   // Track module names for cross-program CALL resolution

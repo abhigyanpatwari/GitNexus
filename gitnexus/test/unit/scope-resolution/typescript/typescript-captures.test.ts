@@ -565,3 +565,100 @@ describe('emitTsScopeCaptures — edge cases', () => {
     expect(() => emitTsScopeCaptures('', 'test.ts')).not.toThrow();
   });
 });
+
+describe('emitTsScopeCaptures — #1876 array-method-callback narrowing', () => {
+  // True when some match carries `tag` and its @declaration.name is `name`.
+  const declWithName = (src: string, tag: string, name: string): boolean =>
+    emitTsScopeCaptures(src, 'test.ts').some(
+      (m) => m[tag] !== undefined && m['@declaration.name']?.text === name,
+    );
+
+  it('does not emit @declaration.function for `const x = arr.map(a => …)`', () => {
+    const src = 'const exportData = accountsList.map((account) => ({ id: account.id }));';
+    expect(declWithName(src, '@declaration.variable', 'exportData')).toBe(true);
+    expect(declWithName(src, '@declaration.function', 'exportData')).toBe(false);
+  });
+
+  // Every method in ARRAY_CALLBACK_METHODS except `map` (covered above).
+  it.each([
+    'filter',
+    'find',
+    'findIndex',
+    'findLast',
+    'findLastIndex',
+    'reduce',
+    'reduceRight',
+    'forEach',
+    'some',
+    'every',
+    'flatMap',
+    'sort',
+  ])('suppresses the Function def for array method .%s()', (method) => {
+    const src = `const x = arr.${method}((a) => a);`;
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'x')).toBe(true);
+  });
+
+  it('keeps @declaration.function for an identifier-callee HOC (forwardRef)', () => {
+    const src = 'const Button = forwardRef((props, ref) => null);';
+    expect(declWithName(src, '@declaration.function', 'Button')).toBe(true);
+  });
+
+  it('keeps @declaration.function for useCallback (identifier callee, unchanged this round)', () => {
+    const src = 'const cb = useCallback(() => doThing(), []);';
+    expect(declWithName(src, '@declaration.function', 'cb')).toBe(true);
+  });
+
+  it('keeps dual classification for a direct arrow `const fn = () => {}`', () => {
+    const src = 'const fn = () => { doThing(); };';
+    expect(declWithName(src, '@declaration.function', 'fn')).toBe(true);
+    expect(declWithName(src, '@declaration.variable', 'fn')).toBe(true);
+  });
+
+  it('keeps @declaration.function for a non-array fluent-API member call (accepted limitation)', () => {
+    const src = 'const q = qb.where((row) => row.ok);';
+    expect(declWithName(src, '@declaration.function', 'q')).toBe(true);
+  });
+
+  it('suppresses an in-set method name on a NON-array receiver (accepted receiver-blind limitation)', () => {
+    // Receiver-blind by design — see array-callback.ts. An in-set method name
+    // on a non-array receiver (RxJS observable, Map/Set, query builder) also
+    // loses its Function def. Accepted: the binding holds a value, not a callable.
+    const src = 'const stream = source$.map((event) => handle(event));';
+    expect(declWithName(src, '@declaration.function', 'stream')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'stream')).toBe(true);
+  });
+
+  it('suppresses the outer .map() callback in a chained array call', () => {
+    const src = 'const x = arr.filter((a) => a).map((b) => b);';
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'x')).toBe(true);
+  });
+
+  it('suppresses through an export_statement wrapper', () => {
+    const src = 'export const x = arr.map((a) => a);';
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'x')).toBe(true);
+  });
+
+  it('suppresses a function_expression callback', () => {
+    const src = 'const x = arr.map(function (a) { return a; });';
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'x')).toBe(true);
+  });
+
+  it('suppresses an optional-chained array call `arr?.map(...)`', () => {
+    const src = 'const x = arr?.map((a) => a);';
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(false);
+  });
+
+  it('does NOT suppress a parenthesized callee `(arr.map)(cb)` (intentional gap)', () => {
+    const src = 'const x = (arr.map)((a) => a);';
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(true);
+  });
+
+  it('does NOT suppress a computed callee `arr["map"](cb)` (intentional gap)', () => {
+    const src = 'const x = arr["map"]((a) => a);';
+    expect(declWithName(src, '@declaration.function', 'x')).toBe(true);
+  });
+});

@@ -19,6 +19,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
     vi.resetModules();
     vi.clearAllMocks();
   });
@@ -211,6 +212,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      // FTS extension loads → analyze proceeds to create + verify indexes.
+      loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => undefined),
@@ -236,6 +239,68 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
           },
         ),
       ).rejects.toThrow(/FTS verification failed - missing indexes after analyze/i);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('full analyze degrades gracefully (no throw, warns, skips index creation) when FTS extension is unavailable', async () => {
+    // Offline-first degradation: when loadFTSExtension() returns false, the
+    // analyze path must NOT call createSearchFTSIndexes / verifySearchFTSIndexes
+    // and must NOT throw — it logs a warning and completes (#1161).
+    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const verifySearchFTSIndexes = vi.fn(async () => []);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      // FTS extension cannot load (offline + not pre-installed, or policy forced).
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes,
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: { forEachNode: () => undefined },
+      })),
+    }));
+    // Avoid touching the global registry / repo .gitnexusignore from a unit test.
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'degraded-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fts-degrade-');
+    try {
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: (msg: string) => logs.push(msg) },
+      );
+
+      expect(result.ftsSkipped).toBe(true);
+      expect(createSearchFTSIndexes).not.toHaveBeenCalled();
+      expect(verifySearchFTSIndexes).not.toHaveBeenCalled();
+      expect(logs.join('\n')).toMatch(/FTS extension unavailable; skipping search-index creation/i);
+
+      // The degraded state is persisted so meta.json / doctor stay honest.
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8'));
+      expect(meta.capabilities.fts.status).toBe('unavailable');
     } finally {
       await tmpRepo.cleanup();
     }

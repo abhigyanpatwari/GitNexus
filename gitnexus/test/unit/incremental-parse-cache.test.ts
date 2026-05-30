@@ -25,6 +25,8 @@ const minimalResult = (overrides: Partial<ParseWorkerResult> = {}): ParseWorkerR
   fetchCalls: [],
   fetchWrapperDefs: [],
   decoratorRoutes: [],
+  routerIncludes: [],
+  routerImports: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
