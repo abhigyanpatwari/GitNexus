@@ -92,6 +92,24 @@ describe('resolvePythonImportTarget — index parity', () => {
     expect(resolvePythonImportTarget(mkImport('pkg.ghost'), ctx)).toBeNull();
   });
 
+  it('resolves a nested package via the parent-keyed __init__ bucket (PR #1918 P2b)', () => {
+    // `mypkg` is a candidate (root package), but the real target is nested under
+    // vendor/. `noise/sub/__init__.py` shares the parent-bucket key (`sub`) yet
+    // is filtered out by the full-suffix confirm — proving the parent bucket is
+    // a candidate set, not the answer, and that the result matches the old scan.
+    const files = ['mypkg/__init__.py', 'vendor/mypkg/sub/__init__.py', 'noise/sub/__init__.py'];
+    expect(resolve('app/main.py', files, 'mypkg.sub')).toBe('vendor/mypkg/sub/__init__.py');
+  });
+
+  it('resolves an explicit pkg.__init__ import via the module lookup', () => {
+    // `from pkg.__init__ import x` targets the package init module directly;
+    // it must still resolve (it goes through the `<lastSeg>.py` = `__init__.py`
+    // bucket, not the parent-keyed package bucket).
+    expect(resolve('app/main.py', ['pkg/__init__.py', 'pkg/widget.py'], 'pkg.__init__')).toBe(
+      'pkg/__init__.py',
+    );
+  });
+
   it('ignores non-.py files in a polyglot file set (PR #1918 P3b)', () => {
     // The index is .py-only; sibling .ts/.go files of the same basename must not
     // affect resolution. `pkg.models` resolves to the .py, never the .ts/.go.

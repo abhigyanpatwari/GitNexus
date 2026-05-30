@@ -160,7 +160,11 @@ function resolveAbsoluteFromFiles(
   for (const cand of index.byBasename.get(`${lastSeg}.py`) ?? []) {
     if (cand.norm.endsWith(suffixFile)) matches.push(cand);
   }
-  for (const cand of index.byBasename.get('__init__.py') ?? []) {
+  // Package form: only `__init__.py` files whose parent dir is named `<lastSeg>`
+  // can match `…/<lastSeg>/__init__.py` — look them up by parent key (P2b) and
+  // confirm the full suffix. Same final candidate set as the old `__init__.py`
+  // scan, just without iterating unrelated packages.
+  for (const cand of index.byInitParent.get(`${lastSeg}/__init__.py`) ?? []) {
     if (cand.norm.endsWith(suffixPkg)) matches.push(cand);
   }
   if (matches.length === 0) return null;
@@ -243,12 +247,21 @@ function hasRepoCandidate(
  *  - `byBasename`: last path component (e.g. `models.py`, `__init__.py`) ->
  *    all `{ raw, norm }` candidates, so suffix matches can be gathered from the
  *    relevant bucket and the exact tie-break applied across ALL of them.
+ *  - `byInitParent`: `__init__.py` files keyed by their last TWO components
+ *    (`<parentDir>/__init__.py`). The package suffix lookup (`pkg.sub` ->
+ *    `…/sub/__init__.py`) targets only same-named package dirs via this map
+ *    instead of scanning every `__init__.py` in the repo — the common
+ *    multi-segment import path no longer scales with package count
+ *    (PR #1918 review P2b). `__init__.py` files stay in `byBasename` too, for
+ *    the rarer explicit `pkg.__init__` import that resolves via the module
+ *    (`…<lastSeg>.py`) lookup.
  *  - `dirPrefixes`: every directory prefix of a `.py` file, trailing-slashed
  *    (`a/b/c.py` -> `a/`, `a/b/`), for "is there a .py file under `<dir>/`".
  */
 interface PythonFileIndex {
   readonly normSet: Set<string>;
   readonly byBasename: Map<string, { raw: string; norm: string }[]>;
+  readonly byInitParent: Map<string, { raw: string; norm: string }[]>;
   readonly dirPrefixes: Set<string>;
 }
 
@@ -263,6 +276,7 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
 
   const normSet = new Set<string>();
   const byBasename = new Map<string, { raw: string; norm: string }[]>();
+  const byInitParent = new Map<string, { raw: string; norm: string }[]>();
   const dirPrefixes = new Set<string>();
 
   for (const raw of allFilePaths) {
@@ -285,6 +299,23 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
     }
     bucket.push({ raw, norm });
 
+    // Package files also get a parent-keyed bucket so a `pkg.sub` lookup hits
+    // only `…/sub/__init__.py` candidates, not every `__init__.py` (P2b).
+    if (base === '__init__.py' && lastSlash >= 0) {
+      const dir = norm.slice(0, lastSlash);
+      const parentSlash = dir.lastIndexOf('/');
+      const parentName = parentSlash >= 0 ? dir.slice(parentSlash + 1) : dir;
+      if (parentName) {
+        const initKey = `${parentName}/__init__.py`;
+        let ib = byInitParent.get(initKey);
+        if (ib === undefined) {
+          ib = [];
+          byInitParent.set(initKey, ib);
+        }
+        ib.push({ raw, norm });
+      }
+    }
+
     // Directory prefixes (every file reaching here is already `.py`).
     if (lastSlash >= 0) {
       let acc = '';
@@ -296,7 +327,7 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
     }
   }
 
-  const index: PythonFileIndex = { normSet, byBasename, dirPrefixes };
+  const index: PythonFileIndex = { normSet, byBasename, byInitParent, dirPrefixes };
   PYTHON_FILE_INDEX_CACHE.set(allFilePaths, index);
   return index;
 }
