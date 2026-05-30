@@ -228,6 +228,49 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
     expect(result).toBe(null);
   });
 
+  it('does not map a BCL using to a coincidentally PATH-ALIGNED local file via direct-match (#1881, Codex F2)', () => {
+    // The no-csproj direct-match must be gated too: `Legacy/System/Threading/
+    // Tasks.cs` path-aligns with `using System.Threading.Tasks;` and would
+    // satisfy resolveDirectMatch's nested-suffix match — but System.* is not a
+    // declared in-repo namespace, so the gate (now run FIRST) blocks it.
+    const parsed: ParsedImport = {
+      kind: 'namespace',
+      localName: 'Tasks',
+      importedName: 'System.Threading.Tasks',
+      targetRaw: 'System.Threading.Tasks',
+    };
+    const result = resolveCsharpImportTarget(
+      parsed,
+      ctx(
+        'Services/OrderService.cs',
+        ['Services/OrderService.cs', 'Legacy/System/Threading/Tasks.cs', 'Models/User.cs'],
+        new Set(['MyApp.Services', 'MyApp.Legacy', 'MyApp.Models']),
+      ),
+    );
+    expect(result).toBe(null);
+  });
+
+  it('still resolves a legitimate in-repo using via direct-match when evidence is present (Codex F2 guard)', () => {
+    // Gating the direct-match must NOT over-block a legitimate aligned import:
+    // `using MyApp.Services;` aligns (exact declared) so the gate passes and the
+    // namespace-dir direct-child match still resolves.
+    const parsed: ParsedImport = {
+      kind: 'namespace',
+      localName: 'Services',
+      importedName: 'MyApp.Services',
+      targetRaw: 'MyApp.Services',
+    };
+    const result = resolveCsharpImportTarget(
+      parsed,
+      ctx(
+        'MyApp/Program.cs',
+        ['MyApp/Program.cs', 'MyApp/Services/UserService.cs'],
+        new Set(['MyApp.Services']),
+      ),
+    );
+    expect(result).toBe('MyApp/Services/UserService.cs');
+  });
+
   it('still resolves in-repo namespace imports via progressive stripping', () => {
     const parsed: ParsedImport = {
       kind: 'namespace',
