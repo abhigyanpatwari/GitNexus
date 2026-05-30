@@ -110,6 +110,32 @@ describe('resolvePythonImportTarget — index parity', () => {
     );
   });
 
+  it('reproduces old startsWith gating for absolute paths (PR #1918 P3a)', () => {
+    // Absolute file set. hasRepoCandidate must NOT gate-pass `pkg` off
+    // `/repo/pkg/__init__.py` the way the first #1918 index did (its prefix set
+    // dropped the leading slash). The old full-scan gate did
+    // `"/repo/pkg/__init__.py".startsWith("repo/pkg/")` === false → blocked, so
+    // the suffix-only file `/repo/vendor/pkg/thing.py` stays unresolved.
+    expect(
+      resolve(
+        '/repo/app/main.py',
+        ['/repo/pkg/__init__.py', '/repo/vendor/pkg/thing.py'],
+        'pkg.thing',
+      ),
+    ).toBeNull();
+
+    // Control: the SAME shape with repo-relative paths (what production emits)
+    // gates through and resolves — proving the fix only blocks the absolute-path
+    // false positive, not the real relative case.
+    expect(
+      resolve(
+        'repo/app/main.py',
+        ['repo/pkg/__init__.py', 'repo/vendor/pkg/thing.py'],
+        'pkg.thing',
+      ),
+    ).toBe('repo/vendor/pkg/thing.py');
+  });
+
   it('ignores non-.py files in a polyglot file set (PR #1918 P3b)', () => {
     // The index is .py-only; sibling .ts/.go files of the same basename must not
     // affect resolution. `pkg.models` resolves to the .py, never the .ts/.go.

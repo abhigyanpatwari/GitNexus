@@ -316,14 +316,17 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
       }
     }
 
-    // Directory prefixes (every file reaching here is already `.py`).
-    if (lastSlash >= 0) {
-      let acc = '';
-      for (const part of norm.slice(0, lastSlash).split('/')) {
-        if (part === '') continue;
-        acc += `${part}/`;
-        dirPrefixes.add(acc);
-      }
+    // Directory prefixes: every slash-terminated prefix of the path (every
+    // index just past a '/', up to and including the file's own directory).
+    // Scanning the FULL normalized path — including any leading '/' for
+    // absolute paths — makes `dirPrefixes.has(X)` match exactly when the old
+    // gate's `f.startsWith(X)` (X always ends in '/') matched. The previous
+    // split+`filter(Boolean)` dropped the leading empty component, so an
+    // absolute file `/repo/svc/x.py` yielded `repo/svc/` (no leading slash) and
+    // gate-passed where `"/repo/svc/x.py".startsWith("repo/svc/")` is false
+    // (PR #1918 review P3a). For relative paths the set is identical.
+    for (let i = 0; i <= lastSlash; i++) {
+      if (norm[i] === '/') dirPrefixes.add(norm.slice(0, i + 1));
     }
   }
 

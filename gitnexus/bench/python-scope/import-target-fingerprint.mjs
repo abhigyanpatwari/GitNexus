@@ -131,6 +131,45 @@ for (let repo = 0; repo < 400; repo++) {
   }
 }
 
+// ---- 3. Absolute-path coverage (PR #1918 review P3a) --------------------
+// Production paths are repo-relative, but the index's prefix gating must
+// reproduce the old `f.startsWith(prefix)` semantics for absolute paths too.
+// The reviewer's exact case + a fuzz over leading-`/` file sets and absolute
+// importer paths lock the absolute-path behavior end to end.
+
+// The flagged case: an absolute file under the importer's own root.
+record('/repo/app/main.py', ['/repo/svc/x.py'], 'svc.x');
+record('/repo/app/main.py', ['/repo/svc/__init__.py', '/repo/svc/x.py'], 'svc.x');
+// Absolute file NOT under the importer root — gate must not pass it.
+record('/repo/app/main.py', ['/other/svc/x.py'], 'svc.x');
+// Absolute vendored layout reachable only by suffix.
+record('/repo/app/main.py', ['/repo/pkg/__init__.py', '/repo/vendor/pkg/thing.py'], 'pkg.thing');
+// Absolute tie-break.
+record(
+  '/repo/app/main.py',
+  ['/repo/pkg/__init__.py', '/a/pkg/models.py', '/b/c/pkg/models.py'],
+  'pkg.models',
+);
+// Mixed absolute/relative file set.
+record('/repo/app/main.py', ['/repo/pkg/__init__.py', 'pkg/models.py'], 'pkg.models');
+
+function randAbsPath() {
+  // Reuse the relative generator under one of a few absolute roots.
+  const root = pick(['/repo', '/srv/app', '/']);
+  const rel = randPath();
+  return root === '/' ? `/${rel}` : `${root}/${rel}`;
+}
+
+for (let repo = 0; repo < 200; repo++) {
+  const fileCount = 3 + Math.floor(rnd() * 12);
+  const files = [];
+  for (let i = 0; i < fileCount; i++) files.push(randAbsPath());
+  const fromFile = randAbsPath();
+  for (let imp = 0; imp < 20; imp++) {
+    record(fromFile, files, randDotted());
+  }
+}
+
 const fingerprint = crypto
   .createHash('sha256')
   .update([...lines].sort().join('\n'))
