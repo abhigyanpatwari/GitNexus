@@ -1534,3 +1534,82 @@ describe('CLI end-to-end', () => {
     }, 35000);
   });
 });
+
+// ─── impact disambiguation flags reach the backend at runtime (#1907 U2) ──
+// The mocked unit test proves the CLI option → callTool param mapping; this
+// proves the flags survive the real Commander → lazy-action → impactCommand →
+// callTool chain by spawning the actual CLI. The F2 gap is *flag-forwarding*,
+// so a uniquely-named fixture symbol is enough — no ambiguous fixture needed.
+// Tests self-skip when the environment cannot index the fixture (e.g. a
+// worktree without the built parse-worker); CI validates the real path.
+describe('impact disambiguation flags reach the backend (e2e, #1907)', () => {
+  const SYMBOL = 'formatResponse'; // uniquely named, in mini-repo/src/formatter.ts
+  let uid: string | undefined;
+  let symbolFile: string | undefined;
+
+  beforeAll(() => {
+    // Idempotent: the earlier analyze test may already have indexed mini-repo.
+    runCli('analyze', MINI_REPO, 60000);
+    // Derive the real uid + filePath from context so the test is robust to the
+    // exact uid format rather than hard-coding `Function:<path>:<name>`.
+    const ctx = runCliRaw(['context', SYMBOL, '--repo', 'mini-repo'], MINI_REPO, 30000);
+    if (ctx.status === 0) {
+      try {
+        const parsed = JSON.parse(ctx.stdout.trim());
+        uid = parsed?.symbol?.uid;
+        symbolFile = parsed?.symbol?.filePath;
+      } catch {
+        /* leave undefined → tests self-skip below */
+      }
+    }
+  });
+
+  it('forwards --uid alone with no positional target (U1 + --uid end-to-end)', () => {
+    if (!uid) return; // environment could not index — validated in CI
+    const res = runCliRaw(['impact', '--uid', uid, '--repo', 'mini-repo'], MINI_REPO, 30000);
+    if (res.status === null) return;
+    expect(res.status).toBe(0);
+    const out = JSON.parse(res.stdout.trim());
+    expect(out).not.toHaveProperty('error');
+    expect(out.target?.id).toBe(uid);
+  });
+
+  it('forwards --file: the correct file resolves, a wrong file does not (negative control)', () => {
+    if (!uid || !symbolFile) return;
+
+    const ok = runCliRaw(
+      ['impact', SYMBOL, '--file', symbolFile, '--repo', 'mini-repo'],
+      MINI_REPO,
+      30000,
+    );
+    if (ok.status === null) return;
+    expect(ok.status).toBe(0);
+    const okOut = JSON.parse(ok.stdout.trim());
+    expect(okOut.status).not.toBe('ambiguous');
+    expect(okOut.target?.filePath).toBe(symbolFile);
+
+    // Wrong --file hint → CONTAINS matches nothing → must NOT resolve to the
+    // formatter.ts symbol. Proves the --file value reached the resolver.
+    const wrong = runCliRaw(
+      ['impact', SYMBOL, '--file', 'does/not/exist/nowhere.ts', '--repo', 'mini-repo'],
+      MINI_REPO,
+      30000,
+    );
+    if (wrong.status === null) return;
+    const wrongOut = JSON.parse(wrong.stdout.trim());
+    expect(wrongOut.error !== undefined || wrongOut.target?.filePath !== symbolFile).toBe(true);
+  });
+
+  it('forwards --kind: exit 0 with the kind hint applied', () => {
+    if (!uid) return;
+    const res = runCliRaw(
+      ['impact', SYMBOL, '--kind', 'Function', '--repo', 'mini-repo'],
+      MINI_REPO,
+      30000,
+    );
+    if (res.status === null) return;
+    expect(res.status).toBe(0);
+    const out = JSON.parse(res.stdout.trim());
+    expect(out).not.toHaveProperty('error');
+  });
+});

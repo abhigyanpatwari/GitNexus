@@ -196,13 +196,18 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--file <path>');
   });
 
-  it('impact help keeps repo and include-tests flags', () => {
+  it('impact help keeps repo, include-tests, and disambiguation flags', () => {
     const result = runHelp('impact');
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--depth <n>');
     expect(result.stdout).toContain('--include-tests');
     expect(result.stdout).toContain('--repo <name>');
+    // Disambiguation flags (#1907) — mirror the context help test so a
+    // missing-flag regression on impact is caught here too.
+    expect(result.stdout).toContain('--uid <uid>');
+    expect(result.stdout).toContain('--file <path>');
+    expect(result.stdout).toContain('--kind <kind>');
   });
 
   it('detect-changes help exposes compare scope and base-ref flags', () => {
