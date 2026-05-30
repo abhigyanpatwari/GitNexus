@@ -324,6 +324,19 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
   return { configs, declaredNamespaces, rootNamespaces, truncated };
 }
 
+/** Read up to `maxBytes` of a UTF-8 text file via a length-capped stream. Bounds
+ *  the read on untrusted input WITHOUT a stat-then-read filesystem race — a
+ *  `.cs` is streamed the same way (see `collectDeclaredNamespaces`). A file
+ *  smaller than the cap is read in full; a larger one is read only up to it. */
+async function readFileTextCapped(filePath: string, maxBytes: number): Promise<string> {
+  const parts: string[] = [];
+  const stream = createReadStream(filePath, { encoding: 'utf-8', end: maxBytes });
+  for await (const part of stream) {
+    parts.push(part as string);
+  }
+  return parts.join('');
+}
+
 async function readCsprojConfig(
   csprojPath: string,
   fileName: string,
@@ -332,9 +345,9 @@ async function readCsprojConfig(
   maxFileSizeBytes: number,
 ): Promise<CSharpProjectConfig | null> {
   try {
-    const stat = await fs.stat(csprojPath);
-    if (stat.size > maxFileSizeBytes) return null; // oversized .csproj → skip unread
-    const content = await fs.readFile(csprojPath, 'utf-8');
+    // `<RootNamespace>` sits in the first PropertyGroup near the top, so a
+    // capped read captures any real .csproj while bounding pathological input.
+    const content = await readFileTextCapped(csprojPath, maxFileSizeBytes);
     const nsMatch = content.match(CSHARP_ROOT_NAMESPACE_RE);
     const rootNamespace = nsMatch ? nsMatch[1].trim() : fileName.replace(/\.csproj$/, '');
     const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
