@@ -18,9 +18,10 @@
  * format that downstream consumers (queries, edges, MCP) expect.
  */
 
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
+import { parameterShapeIdTag } from '../../utils/method-props.js';
 
 export type GraphNodeLookup = ReadonlyMap<string, string>;
 
@@ -40,6 +41,10 @@ function parseQualifiedFromId(id: string, label: NodeLabel, filePath: string): s
   if (suffix.length === 0) return undefined;
   const hash = suffix.indexOf('#');
   return hash === -1 ? suffix : suffix.slice(0, hash);
+}
+
+function stripCallableDisambiguatorTags(qualifiedName: string): string {
+  return qualifiedName.replace(/~shape:.*$/, '').replace(/~c:[a-z0-9]+$/, '');
 }
 
 /**
@@ -84,7 +89,8 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     const qualified =
       props.qualifiedName ?? parseQualifiedFromId(node.id, node.label, props.filePath);
     if (qualified !== undefined && qualified.length > 0) {
-      const qKey = qualifiedKey(props.filePath, node.label, qualified);
+      const keyQualified = stripCallableDisambiguatorTags(qualified);
+      const qKey = qualifiedKey(props.filePath, node.label, keyQualified);
       if (!lookup.has(qKey)) lookup.set(qKey, node.id);
       // Overload-disambiguating key: include parameter types so two
       // same-arity overloads (e.g. `Lookup(int)` vs `Lookup(string)`)
@@ -93,10 +99,25 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       // a parameter-types-suffixed key so resolveDefGraphId can find
       // the right overload by matching its def's parameterTypes.
       const pTypes = (props as { parameterTypes?: readonly string[] }).parameterTypes;
-      if (pTypes !== undefined && pTypes.length > 0 && node.label === 'Method') {
-        const pKey = qualifiedKey(props.filePath, node.label, `${qualified}~${pTypes.join(',')}`);
+      if (
+        pTypes !== undefined &&
+        pTypes.length > 0 &&
+        (node.label === 'Function' || node.label === 'Method')
+      ) {
+        const pKey = qualifiedKey(
+          props.filePath,
+          node.label,
+          `${keyQualified}~${pTypes.join(',')}`,
+        );
         // Each overload is unique — set unconditionally.
-        lookup.set(pKey, node.id);
+        if (!lookup.has(pKey)) lookup.set(pKey, node.id);
+      }
+      const pClasses = (props as { parameterTypeClasses?: readonly ParameterTypeClass[] })
+        .parameterTypeClasses;
+      const shapeTag = parameterShapeIdTag(pTypes, pClasses);
+      if (shapeTag !== '' && (node.label === 'Function' || node.label === 'Method')) {
+        const shapeKey = qualifiedKey(props.filePath, node.label, `${keyQualified}${shapeTag}`);
+        if (!lookup.has(shapeKey)) lookup.set(shapeKey, node.id);
       }
       // SFINAE / `requires`-clause disambiguation (issue #1579) — register
       // a constraint-fingerprinted key so resolveDefGraphId can locate the
@@ -109,7 +130,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
         const cKey = qualifiedKey(
           props.filePath,
           node.label,
-          `${qualified}${templateConstraintsIdTag(tConstraints)}`,
+          `${keyQualified}${templateConstraintsIdTag(tConstraints)}`,
         );
         lookup.set(cKey, node.id);
       }
@@ -125,7 +146,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
         const tKey = qualifiedKey(
           props.filePath,
           node.label,
-          `${qualified}~${props.templateArguments.join(',')}`,
+          `${keyQualified}~${props.templateArguments.join(',')}`,
         );
         if (!lookup.has(tKey)) lookup.set(tKey, node.id);
       }

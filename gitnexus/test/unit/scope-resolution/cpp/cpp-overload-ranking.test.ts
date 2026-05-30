@@ -21,6 +21,13 @@ const pointer = (base: string): ParameterTypeClass => ({
   pointerDepth: 1,
 });
 
+const constRef = (base: string): ParameterTypeClass => ({
+  base,
+  cv: 'const',
+  indirection: 'lvalue-ref',
+  pointerDepth: 0,
+});
+
 const ellipsis = (): ParameterTypeClass => ({
   base: '...',
   cv: 'unknown',
@@ -141,5 +148,81 @@ describe('narrowOverloadCandidates with C++ pointer-rank sidecars (#1637)', () =
     });
 
     expect(result.map((d) => d.nodeId)).toEqual(['log:ellipsis']);
+  });
+});
+
+describe('narrowOverloadCandidates with C++ template partial ordering (#1635)', () => {
+  it('selects T* over T for pointer arguments', () => {
+    const byValue = mkDef('pick:T', ['T'], [value('T')]);
+    const byPointer = mkDef('pick:T*', ['T'], [pointer('T')]);
+
+    const result = narrowOverloadCandidates([byValue, byPointer], 1, ['int'], {
+      argumentTypeClasses: [pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual(['pick:T*']);
+  });
+
+  it('keeps const T& versus T ambiguous for value arguments', () => {
+    const byValue = mkDef('pick:T', ['T'], [value('T')]);
+    const byReference = mkDef('pick:const-T-ref', ['T'], [constRef('T')]);
+
+    const result = narrowOverloadCandidates([byValue, byReference], 1, ['int'], {
+      argumentTypeClasses: [value('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual([]);
+  });
+
+  it('suppresses when any surviving candidate cannot participate in ordering', () => {
+    const concreteSlot = mkDef('pick:T-int', ['T', 'int'], [value('T'), value('int')]);
+    const pointerSlot = mkDef('pick:T-T*', ['T', 'T'], [value('T'), pointer('T')]);
+
+    const result = narrowOverloadCandidates([concreteSlot, pointerSlot], 2, ['int', 'int'], {
+      argumentTypeClasses: [pointer('int'), pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual([]);
+  });
+
+  it('suppresses when a surviving candidate lacks parameter sidecars', () => {
+    const withoutSidecar: SymbolDefinition = {
+      ...mkDef('pick:no-sidecar', ['T'], [value('T')]),
+      parameterTypeClasses: undefined,
+    };
+    const byPointer = mkDef('pick:T*', ['T'], [pointer('T')]);
+
+    const result = narrowOverloadCandidates([withoutSidecar, byPointer], 1, ['int'], {
+      argumentTypeClasses: [pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual([]);
+  });
+
+  it('leaves lowercase template placeholders ambiguous rather than guessing', () => {
+    const byValue = mkDef('pick:t', ['t'], [value('t')]);
+    const byPointer = mkDef('pick:t*', ['t'], [pointer('t')]);
+
+    const result = narrowOverloadCandidates([byValue, byPointer], 1, ['int'], {
+      argumentTypeClasses: [pointer('int')],
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual(['pick:t', 'pick:t*']);
+  });
+
+  it('keeps crossed template shapes ambiguous', () => {
+    const pointerThenValue = mkDef('pick:T*-T', ['T', 'T'], [pointer('T'), value('T')]);
+    const valueThenPointer = mkDef('pick:T-T*', ['T', 'T'], [value('T'), pointer('T')]);
+
+    const result = narrowOverloadCandidates(
+      [pointerThenValue, valueThenPointer],
+      2,
+      ['int', 'int'],
+      {
+        argumentTypeClasses: [pointer('int'), pointer('int')],
+      },
+    );
+
+    expect(result.map((d) => d.nodeId)).toEqual(['pick:T*-T', 'pick:T-T*']);
   });
 });

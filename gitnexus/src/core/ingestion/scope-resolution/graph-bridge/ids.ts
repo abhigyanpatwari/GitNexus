@@ -17,11 +17,12 @@
  * migrate.
  */
 
-import type { NodeLabel, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
 import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
+import { parameterShapeIdTag } from '../../utils/method-props.js';
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
@@ -76,6 +77,7 @@ export function resolveDefGraphId(
     qualifiedName?: string;
     type?: NodeLabel;
     parameterTypes?: readonly string[];
+    parameterTypeClasses?: readonly ParameterTypeClass[];
     templateArguments?: readonly string[];
     templateConstraints?: unknown;
   },
@@ -102,11 +104,23 @@ export function resolveDefGraphId(
       const cHit = nodeLookup.get(cKey);
       if (cHit !== undefined) return cHit;
     }
+    if (
+      (def.type === 'Function' || def.type === 'Method') &&
+      def.parameterTypes !== undefined &&
+      def.parameterTypeClasses !== undefined
+    ) {
+      const shapeTag = parameterShapeIdTag(def.parameterTypes, def.parameterTypeClasses);
+      if (shapeTag !== '') {
+        const shapeKey = qualifiedKey(filePath, def.type, `${qn}${shapeTag}`);
+        const shapeHit = nodeLookup.get(shapeKey);
+        if (shapeHit !== undefined) return shapeHit;
+      }
+    }
     // Overload disambiguation: when the def carries parameter types,
     // try the parameter-typed key first so same-name same-arity
     // overloads route to their distinct graph nodes.
     if (
-      def.type === 'Method' &&
+      (def.type === 'Function' || def.type === 'Method') &&
       def.parameterTypes !== undefined &&
       def.parameterTypes.length > 0
     ) {

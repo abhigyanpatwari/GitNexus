@@ -384,6 +384,10 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // PR #1634: deep-nesting suppression. The scope-resolver enforces a
     // one-level cap on namespace walking. The legacy DAG picks arbitrarily.
     'Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced',
+    // Template partial ordering (#1635) relies on C++ parameter type-class
+    // sidecars and scope-resolver overload narrowing. The legacy DAG does not
+    // rank function-template shapes, so it leaves the call unresolved.
+    'pick(T*) wins over pick(T) for pointer arguments',
   ]),
 };
 

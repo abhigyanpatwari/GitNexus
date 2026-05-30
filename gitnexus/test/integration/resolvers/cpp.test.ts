@@ -1473,6 +1473,34 @@ describe('C++ template overload disambiguation (vector<int> vs vector<string>)',
   });
 });
 
+describe('C++ template partial ordering (#1635)', () => {
+  it('pick(T*) wins over pick(T) for pointer arguments', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-template-partial-order-pointer'),
+      () => {},
+    );
+
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+    expect(calls.length).toBe(1);
+    const target = result.graph.getNode(calls[0].rel.targetId);
+    expect(target?.properties.startLine).toBe(5);
+  });
+
+  it('pick(T*, T) vs pick(T, T*) emits zero CALLS edges when partial ordering is incomparable', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-template-partial-order-tied'),
+      () => {},
+    );
+
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+    expect(calls.length).toBe(0);
+  });
+});
+
 // ── Phase P: C++ template overload cross-file + chain resolution ──────────
 
 describe('C++ template overload cross-file and chain resolution', () => {
