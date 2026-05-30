@@ -350,6 +350,89 @@ describe('C++ variadic call resolution', () => {
   });
 });
 
+describe('C++ variadic packs and dependent-name resolution (#1894)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-variadic-dependent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('keeps parameter-pack functions viable when call arity exceeds the fixed prefix', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'callVariadic' && c.target === 'logMany',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('emits one fold-expression edge when the folded callee is unambiguous', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'logMany' && c.target === 'sink',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('emits zero fold-expression edges when overload resolution remains ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'foldAmbiguous' && c.target === 'ambiguous',
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not emit a concrete EXTENDS edge for a pack-expanded base', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS').filter(
+      (e) => e.source === 'Mix' && e.target === 'B',
+    );
+
+    expect(extendsEdges).toHaveLength(0);
+  });
+
+  it('does not bind unqualified member lookup through a pack-expanded dependent base', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'inherited',
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('preserves free helper calls inside a class with a pack-expanded dependent base', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'helper',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('preserves using-declaration namespace helper calls inside a pack-base class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'namespaceHelper',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('resolves current-instantiation unqualified member calls', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'own',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps unknown-specialization member types unresolved', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'use',
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Local shadow: same-file definition takes priority over imported name
 // ---------------------------------------------------------------------------

@@ -116,11 +116,13 @@ export function emitFreeCallFallback(
       // enclosing class. When the workspace has multiple methods of
       // the same name in a single class, choose the best match by
       // arity + argument types.
+      let fnDefFromImplicitThis = false;
       if (fnDef === undefined) {
         fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model, {
           conversionRankFn: options.conversionRankFn,
           constraintCompatibility: options.constraintCompatibility,
         });
+        fnDefFromImplicitThis = fnDef !== undefined;
       }
       // Scope-chain callable lookup. First-match preserves scope-chain
       // precedence (local shadows import). When a conversion-rank function
@@ -336,6 +338,19 @@ export function emitFreeCallFallback(
         );
       }
       if (fnDef === undefined) continue;
+      if (
+        (fnDefFromImplicitThis || fnDef.type === 'Method' || fnDef.type === 'Constructor') &&
+        options.isCallableVisibleFromCaller !== undefined &&
+        !options.isCallableVisibleFromCaller({
+          callerParsed: parsed,
+          candidate: fnDef,
+          callerScope: site.inScope,
+          scopes,
+        })
+      ) {
+        handledSites.add(siteKey(parsed.filePath, site));
+        continue;
+      }
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
       if (callerGraphId === undefined) continue;
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
