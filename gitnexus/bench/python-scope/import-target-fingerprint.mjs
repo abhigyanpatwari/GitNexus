@@ -17,6 +17,9 @@
  * The fingerprint before and after the H2 change MUST be identical.
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
 
 function mkImport(targetRaw) {
@@ -174,6 +177,26 @@ const fingerprint = crypto
   .createHash('sha256')
   .update([...lines].sort().join('\n'))
   .digest('hex');
-process.stdout.write(
-  JSON.stringify({ fingerprint, cases: lines.length, non_null: nonNull }) + '\n',
-);
+const result = { fingerprint, cases: lines.length, non_null: nonNull };
+
+if (!process.argv.includes('--check')) {
+  process.stdout.write(JSON.stringify(result) + '\n');
+} else {
+  // CI gate: resolver output unchanged (fingerprint == committed baseline).
+  // Re-baseline a legitimate resolution change by running without --check and
+  // committing the new baseline-import-target-fingerprint.txt deliberately.
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const baseline = fs
+    .readFileSync(path.resolve(__dirname, 'baseline-import-target-fingerprint.txt'), 'utf8')
+    .trim();
+  process.stdout.write(JSON.stringify(result) + '\n');
+  if (result.fingerprint !== baseline) {
+    process.stderr.write(
+      `[import-target-fingerprint --check] FAIL: resolver fingerprint drift: got ` +
+        `${result.fingerprint}, expected ${baseline} (resolvePythonImportTarget output changed — ` +
+        `re-baseline intentionally if expected)\n`,
+    );
+    process.exit(1);
+  }
+  process.stderr.write('[import-target-fingerprint --check] PASS (resolver fingerprint)\n');
+}

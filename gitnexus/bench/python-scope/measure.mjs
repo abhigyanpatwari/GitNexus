@@ -157,21 +157,53 @@ function computeFingerprint() {
   return { fingerprint, groups, fixtureCount: perFixtureDigests.length };
 }
 
-const REPS = 3;
+// Higher rep count keeps the median stable on noisy shared CI runners.
+const REPS = 7;
+const SCALING_BUDGET = 1.5; // ~3.2 (quadratic) vs ~1.0 (linear); 1.5 has headroom.
+const CHECK = process.argv.includes('--check');
+
 const fp = computeFingerprint();
 const small = measureSize(250, REPS);
 const large = measureSize(800, REPS);
 const scalingRatio = small.ms > 0 ? large.ms / small.ms / (800 / 250) : 0;
 
-process.stdout.write(
-  JSON.stringify({
-    elapsed_ms_250: Number(small.ms.toFixed(2)),
-    elapsed_ms_800: Number(large.ms.toFixed(2)),
-    scaling_ratio: Number(scalingRatio.toFixed(3)),
-    capture_groups_250: small.count,
-    capture_groups_800: large.count,
-    fingerprint: fp.fingerprint,
-    capture_groups_fp: fp.groups,
-    fixture_count: fp.fixtureCount,
-  }) + '\n',
-);
+const result = {
+  elapsed_ms_250: Number(small.ms.toFixed(2)),
+  elapsed_ms_800: Number(large.ms.toFixed(2)),
+  scaling_ratio: Number(scalingRatio.toFixed(3)),
+  capture_groups_250: small.count,
+  capture_groups_800: large.count,
+  fingerprint: fp.fingerprint,
+  capture_groups_fp: fp.groups,
+  fixture_count: fp.fixtureCount,
+};
+
+if (!CHECK) {
+  process.stdout.write(JSON.stringify(result) + '\n');
+} else {
+  // CI gate: capture output unchanged (fingerprint == committed baseline) AND
+  // the path is still linear (scaling ratio under budget). Re-baseline a
+  // legitimate capture change with `node --import tsx measure.mjs` (no --check)
+  // and commit the new baseline-fingerprint.txt deliberately.
+  const baselinePath = path.resolve(__dirname, 'baseline-fingerprint.txt');
+  const baseline = fs.readFileSync(baselinePath, 'utf8').trim();
+  const failures = [];
+  if (result.fingerprint !== baseline) {
+    failures.push(
+      `capture fingerprint drift: got ${result.fingerprint}, expected ${baseline} ` +
+        `(emitPythonScopeCaptures output changed — re-baseline intentionally if expected)`,
+    );
+  }
+  if (result.scaling_ratio >= SCALING_BUDGET) {
+    failures.push(
+      `capture scaling ratio ${result.scaling_ratio} >= ${SCALING_BUDGET} ` +
+        `(possible O(n^2) regression; 250->800ms ${result.elapsed_ms_250}->${result.elapsed_ms_800})`,
+    );
+  }
+  process.stdout.write(JSON.stringify(result) + '\n');
+  if (failures.length > 0) {
+    for (const f of failures) process.stderr.write(`[measure --check] FAIL: ${f}\n`);
+    process.exit(1);
+  }
+  process.stderr.write('[measure --check] PASS (capture fingerprint + scaling)\n');
+}
