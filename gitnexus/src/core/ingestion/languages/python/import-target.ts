@@ -145,12 +145,23 @@ function resolveAbsoluteFromFiles(
   // multi-directory collision repos.
   const suffixFile = `/${directFile}`;
   const suffixPkg = `/${directPkg}`;
+  // Indexed suffix gather. A file matching `…/<pathLike>.py` has basename
+  // `<lastSeg>.py`; one matching `…/<pathLike>/__init__.py` has basename
+  // `__init__.py`. Look up only those basename buckets and confirm the full
+  // suffix, instead of scanning every file (the O(imports x files) hotpath).
+  // The candidate SET is identical to the old full scan, and the tie-break
+  // sort below fully determines the result, so output is unchanged. The
+  // shared buildSuffixIndex is deliberately NOT used: it keeps only one
+  // path per suffix (longest wins) and so cannot reproduce this exact
+  // fewest-segments-then-lexicographic tie-break across all candidates.
+  const index = getPythonFileIndex(allFilePaths);
+  const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
   const matches: { raw: string; norm: string }[] = [];
-  for (const raw of allFilePaths) {
-    const norm = raw.replace(/\\/g, '/');
-    if (norm.endsWith(suffixFile) || norm.endsWith(suffixPkg)) {
-      matches.push({ raw, norm });
-    }
+  for (const cand of index.byBasename.get(`${lastSeg}.py`) ?? []) {
+    if (cand.norm.endsWith(suffixFile)) matches.push(cand);
+  }
+  for (const cand of index.byBasename.get('__init__.py') ?? []) {
+    if (cand.norm.endsWith(suffixPkg)) matches.push(cand);
   }
   if (matches.length === 0) return null;
   if (matches.length === 1) return matches[0].raw;
@@ -205,15 +216,78 @@ function hasRepoCandidate(
     ancestorPrefixes.push(`${dirParts.slice(0, i).join('/')}/${leadingSegment}/`);
   }
 
+  // Indexed equivalents of the old O(files) scan:
+  //  (1) `f === rootFile || f === initFile`  -> normalized-path membership.
+  //  (2) `f.startsWith(`${seg}/`) && f.endsWith('.py')` -> some .py file lives
+  //      under directory `${seg}/`, i.e. `${seg}/` is a known .py dir prefix.
+  //  (3) ancestor namespace case -> `${ancestor}/${seg}/` is a known .py dir
+  //      prefix.
+  const index = getPythonFileIndex(allFilePaths);
+  if (index.normSet.has(rootFile) || index.normSet.has(initFile)) return true;
+  if (index.dirPrefixes.has(prefix)) return true;
+  for (const ap of ancestorPrefixes) {
+    if (index.dirPrefixes.has(ap)) return true;
+  }
+  return false;
+}
+
+/**
+ * Per-file-set index for Python import resolution, memoized on the
+ * `allFilePaths` Set object (the same Set is passed for every import in a run,
+ * so the index is built once and reused). Replaces the per-import O(files)
+ * scans in `resolveAbsoluteFromFiles` (suffix match) and `hasRepoCandidate`
+ * (package-existence gate) with O(1)/O(bucket) lookups.
+ *
+ *  - `normSet`: every file path, normalized to forward slashes (for the exact
+ *    `f === rootFile|initFile` membership checks).
+ *  - `byBasename`: last path component (e.g. `models.py`, `__init__.py`) ->
+ *    all `{ raw, norm }` candidates, so suffix matches can be gathered from the
+ *    relevant bucket and the exact tie-break applied across ALL of them.
+ *  - `dirPrefixes`: every directory prefix of a `.py` file, trailing-slashed
+ *    (`a/b/c.py` -> `a/`, `a/b/`), for "is there a .py file under `<dir>/`".
+ */
+interface PythonFileIndex {
+  readonly normSet: Set<string>;
+  readonly byBasename: Map<string, { raw: string; norm: string }[]>;
+  readonly dirPrefixes: Set<string>;
+}
+
+const PYTHON_FILE_INDEX_CACHE = new WeakMap<Set<string>, PythonFileIndex>();
+
+function getPythonFileIndex(allFilePaths: Set<string>): PythonFileIndex {
+  const cached = PYTHON_FILE_INDEX_CACHE.get(allFilePaths);
+  if (cached !== undefined) return cached;
+
+  const normSet = new Set<string>();
+  const byBasename = new Map<string, { raw: string; norm: string }[]>();
+  const dirPrefixes = new Set<string>();
+
   for (const raw of allFilePaths) {
-    const f = raw.replace(/\\/g, '/');
-    if (f === rootFile || f === initFile) return true;
-    if (f.startsWith(prefix) && f.endsWith('.py')) return true;
-    if (f.endsWith('.py')) {
-      for (const ap of ancestorPrefixes) {
-        if (f.startsWith(ap)) return true;
+    const norm = raw.replace(/\\/g, '/');
+    normSet.add(norm);
+
+    const lastSlash = norm.lastIndexOf('/');
+    const base = lastSlash >= 0 ? norm.slice(lastSlash + 1) : norm;
+    let bucket = byBasename.get(base);
+    if (bucket === undefined) {
+      bucket = [];
+      byBasename.set(base, bucket);
+    }
+    bucket.push({ raw, norm });
+
+    // Directory prefixes — only for `.py` files, matching the old scans'
+    // `f.endsWith('.py')` guard on the prefix/ancestor checks.
+    if (lastSlash >= 0 && norm.endsWith('.py')) {
+      let acc = '';
+      for (const part of norm.slice(0, lastSlash).split('/')) {
+        if (part === '') continue;
+        acc += `${part}/`;
+        dirPrefixes.add(acc);
       }
     }
   }
-  return false;
+
+  const index: PythonFileIndex = { normSet, byBasename, dirPrefixes };
+  PYTHON_FILE_INDEX_CACHE.set(allFilePaths, index);
+  return index;
 }
