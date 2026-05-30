@@ -1,0 +1,27 @@
+{
+  "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. All six languages now thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp this PR).",
+  "go": {
+    "fingerprint": "faca3555c61ed6980d2b739bf6b1cac7f4ad4644968a27e4687532d9835cd4c7",
+    "scaling_budget": 1.5
+  },
+  "cobol": {
+    "fingerprint": "575016f329c0be29eb90db974f750d02a21b4a12515f7029bda312df713b27b0",
+    "scaling_budget": 1.5
+  },
+  "csharp": {
+    "fingerprint": "bdc7803046011876b2d21ae38e9cb8c97ca1e01769f93ca8affe9317585427bf",
+    "scaling_budget": 1.5
+  },
+  "rust": {
+    "fingerprint": "025f5b6d4cf1d8cc42033f1f6b592f8d5428e571939c7f61df4d34b4bbe14be3",
+    "scaling_budget": 1.5
+  },
+  "php": {
+    "fingerprint": "00fe6e83cebd67c5f346fedb4234ebedf192995f9f171a424551cb792a0b91a9",
+    "scaling_budget": 1.5
+  },
+  "ruby": {
+    "fingerprint": "0f44b0d153b4534866589db93c582928651238b319cb606f2c6396362770cc18",
+    "scaling_budget": 1.5
+  }
+}

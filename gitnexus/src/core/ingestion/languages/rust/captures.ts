@@ -1,6 +1,6 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
@@ -32,17 +32,23 @@ export function emitRustScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map: the query hands us each matched
+    // node as c.node, so anchors resolve via a type-guarded lookup (nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose use declarations into individual import captures
     if (grouped['@import.statement'] !== undefined) {
-      const anchor = grouped['@import.statement']!;
-      const useNode = findNodeAtRange(tree.rootNode, anchor.range, 'use_declaration');
+      const useNode = nodeIfType(nodeMap['@import.statement'], 'use_declaration');
       if (useNode !== null) {
         out.push(...splitRustUseDeclaration(useNode));
         continue;
@@ -52,8 +58,7 @@ export function emitRustScopeCaptures(
     // Synthesize self receiver bindings for methods inside impl blocks
     let cachedImplLookup: { fnNode: SyntaxNode; implNode: SyntaxNode | null } | undefined;
     if (grouped['@scope.function'] !== undefined) {
-      const scopeCap = grouped['@scope.function']!;
-      const fnNode = findNodeAtRange(tree.rootNode, scopeCap.range, 'function_item');
+      const fnNode = nodeIfType(nodeMap['@scope.function'], 'function_item');
       if (fnNode !== null) {
         const implNode = findEnclosingImpl(fnNode);
         cachedImplLookup = { fnNode, implNode };
@@ -65,7 +70,7 @@ export function emitRustScopeCaptures(
     // Attach declaration arity for functions/methods
     const declAnchor = grouped['@declaration.function'];
     if (declAnchor !== undefined) {
-      const fnNode = findNodeAtRange(tree.rootNode, declAnchor.range, 'function_item');
+      const fnNode = nodeIfType(nodeMap['@declaration.function'], 'function_item');
       if (fnNode !== null) {
         const implNode =
           cachedImplLookup?.fnNode === fnNode
@@ -115,7 +120,7 @@ export function emitRustScopeCaptures(
       grouped['@type-binding.name'] !== undefined
     ) {
       const tbReturnAnchor = grouped['@type-binding.return']!;
-      const fnNode = findNodeAtRange(tree.rootNode, tbReturnAnchor.range, 'function_item');
+      const fnNode = nodeIfType(nodeMap['@type-binding.return'], 'function_item');
       if (fnNode !== null) {
         const implNode = findEnclosingImpl(fnNode);
         if (implNode !== null) {
@@ -141,14 +146,12 @@ export function emitRustScopeCaptures(
     }
 
     // Attach call arity for call expressions
-    const callAnchor =
-      grouped['@reference.call.free'] ??
-      grouped['@reference.call.member'] ??
-      grouped['@reference.call.constructor'];
-    if (callAnchor !== undefined) {
-      const callNode =
-        findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
-        findNodeAtRange(tree.rootNode, callAnchor.range, 'struct_expression');
+    const callAnchorNode =
+      nodeMap['@reference.call.free'] ??
+      nodeMap['@reference.call.member'] ??
+      nodeMap['@reference.call.constructor'];
+    if (callAnchorNode !== undefined) {
+      const callNode = nodeIfType(callAnchorNode, 'call_expression', 'struct_expression');
       if (callNode !== null) {
         const arity = computeRustCallArity(callNode);
         grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
