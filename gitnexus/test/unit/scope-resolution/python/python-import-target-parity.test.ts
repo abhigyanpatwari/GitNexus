@@ -91,4 +91,19 @@ describe('resolvePythonImportTarget — index parity', () => {
     expect(resolvePythonImportTarget(mkImport('pkg.thing'), ctx)).toBe('vendor/pkg/thing.py');
     expect(resolvePythonImportTarget(mkImport('pkg.ghost'), ctx)).toBeNull();
   });
+
+  it('ignores non-.py files in a polyglot file set (PR #1918 P3b)', () => {
+    // The index is .py-only; sibling .ts/.go files of the same basename must not
+    // affect resolution. `pkg.models` resolves to the .py, never the .ts/.go.
+    const files = [
+      'pkg/__init__.py',
+      'a/pkg/models.py',
+      'a/pkg/models.ts',
+      'b/pkg/models.go',
+      'a/pkg/helper.ts',
+    ];
+    expect(resolve('app/main.py', files, 'pkg.models')).toBe('a/pkg/models.py');
+    // A package whose only file is non-.py is not a repo candidate → null.
+    expect(resolve('app/main.py', [...files, 'tsonly/widget.ts'], 'tsonly.widget')).toBeNull();
+  });
 });

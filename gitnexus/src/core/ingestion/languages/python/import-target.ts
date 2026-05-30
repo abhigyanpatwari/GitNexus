@@ -267,6 +267,13 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
 
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
+    // Python import resolution only ever queries `.py` paths: module `<seg>.py`
+    // and package `<seg>/__init__.py` membership (normSet), `<lastSeg>.py` /
+    // `__init__.py` basename buckets (byBasename), and `.py` directory prefixes
+    // (dirPrefixes). Non-`.py` files can never match any of those, so skip them
+    // — they were dead weight in every structure on polyglot monorepos
+    // (PR #1918 review P3b; dirPrefixes was already `.py`-gated).
+    if (!norm.endsWith('.py')) continue;
     normSet.add(norm);
 
     const lastSlash = norm.lastIndexOf('/');
@@ -278,9 +285,8 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
     }
     bucket.push({ raw, norm });
 
-    // Directory prefixes — only for `.py` files, matching the old scans'
-    // `f.endsWith('.py')` guard on the prefix/ancestor checks.
-    if (lastSlash >= 0 && norm.endsWith('.py')) {
+    // Directory prefixes (every file reaching here is already `.py`).
+    if (lastSlash >= 0) {
       let acc = '';
       for (const part of norm.slice(0, lastSlash).split('/')) {
         if (part === '') continue;
