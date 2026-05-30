@@ -1135,6 +1135,37 @@ export const authClient = new authProto.auth.v1.AuthService(
       expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
     });
 
+    it('test_extract_ts_qualified_ctor_without_loadPackageDefinition_is_ignored', async () => {
+      // Regression: an unrelated `obj.method(...)` member call must not trip the
+      // loadPackageDefinition gate. With no loadPackageDefinition call present, a
+      // qualified `new pkg...Service(...)` constructor must NOT become a consumer.
+      // Pre-fix, the gate's shared-capture `function: [...]` alternation matched
+      // every member call, so this spuriously emitted an AuthService consumer.
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import * as grpc from '@grpc/grpc-js';
+
+logger.info('starting up');
+export const authClient = new authProto.auth.v1.AuthService(
+  'localhost:50051',
+  grpc.credentials.createInsecure(),
+);`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(0);
+    });
+
     it('test_extract_ts_duplicate_consumer_patterns_in_one_file_dedupes_deterministically', async () => {
       writeFile(
         'proto/auth.proto',
