@@ -1,7 +1,9 @@
 import fs from 'fs/promises';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
 import path from 'path';
 import type { ImportConfigs } from './import-resolvers/types.js';
-import type { CsharpFileStructure } from './languages/csharp/namespace-siblings.js';
+import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
 import { getMaxFileSizeBytes } from './utils/max-file-size.js';
@@ -203,14 +205,14 @@ const CSHARP_ROOT_NAMESPACE_RE = /<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/
 // with phantom namespaces. Imported lazily (and memoized) so the always-on
 // `loadImportConfigs` path — every repo, every language — doesn't eagerly
 // pull tree-sitter-c-sharp in via `namespace-siblings.ts` → `query.ts`.
-let csharpScannerPromise: Promise<(content: string) => CsharpFileStructure> | undefined;
-function getCsharpStructureScanner(): Promise<(content: string) => CsharpFileStructure> {
-  if (csharpScannerPromise === undefined) {
-    csharpScannerPromise = import('./languages/csharp/namespace-siblings.js').then(
-      (mod) => mod.extractCsharpStructureViaScanner,
+let csharpScannerFactoryPromise: Promise<() => CsharpStructureLineScanner> | undefined;
+function getCsharpStructureScannerFactory(): Promise<() => CsharpStructureLineScanner> {
+  if (csharpScannerFactoryPromise === undefined) {
+    csharpScannerFactoryPromise = import('./languages/csharp/namespace-siblings.js').then(
+      (mod) => mod.createCsharpStructureScanner,
     );
   }
-  return csharpScannerPromise;
+  return csharpScannerFactoryPromise;
 }
 
 /**
@@ -298,29 +300,25 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
       const batch = csNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
       const settled = await Promise.allSettled(
         batch.map((name) =>
-          collectDeclaredNamespaces(
-            path.join(dir, name),
-            declaredNamespaces,
-            rootNamespaces,
-            maxFileSizeBytes,
-          ),
+          collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
         ),
       );
-      // A `.cs` that was skipped (oversized), unreadable, or whose read/scan
-      // unexpectedly rejected leaves its namespaces uncollected → mark truncated
-      // to fail the #1881 gate OPEN rather than wrongly suppress an import.
+      // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
+      // leaves its namespaces uncollected → mark truncated to fail the #1881
+      // gate OPEN rather than wrongly suppress an import. The scan streams each
+      // file, so file size no longer trips truncation.
       for (const r of settled) {
-        if (r.status !== 'fulfilled' || r.value) truncated = true;
+        if (r.status !== 'fulfilled' || r.value === 'truncated') truncated = true;
       }
     }
   }
 
   if (truncated) {
-    // Surface the fail-open so a too-small cap (or an unreadable subtree)
-    // silently disabling the #1881 gate repo-wide is observable (#4) rather
-    // than a mystery edge regression.
+    // Surface the fail-open so an incomplete scan (dir/depth cap, or an
+    // unreadable directory or `.cs` file) silently disabling the #1881 gate
+    // repo-wide is observable (#4) rather than a mystery edge regression.
     logger.warn(
-      `[csharp] namespace scan of ${repoRoot} truncated (dir cap ${CSHARP_SCAN_MAX_DIRS}, depth cap ${CSHARP_SCAN_MAX_DEPTH}, or an unreadable directory); the #1881 suffix-fallback gate fails open for unmatched usings`,
+      `[csharp] namespace scan of ${repoRoot} truncated (dir cap ${CSHARP_SCAN_MAX_DIRS}, depth cap ${CSHARP_SCAN_MAX_DEPTH}, an unreadable directory, or an unreadable .cs file); the #1881 suffix-fallback gate fails open for unmatched usings`,
     );
   }
   return { configs, declaredNamespaces, rootNamespaces, truncated };
@@ -352,36 +350,47 @@ async function readCsprojConfig(
 }
 
 /**
- * Collect declared `namespace` names from one `.cs` file into the shared Sets.
+ * Stream one `.cs` file line-by-line and collect its declared `namespace` names
+ * into the shared Sets.
  *
- * Returns `true` when the file was skipped (oversized) or could not be read, so
- * the caller can mark the scan truncated — its namespaces are missing, and the
- * #1881 gate must fail OPEN rather than wrongly suppress an import declared in
- * the unread file. Returns `false` on a successful read.
+ * Streaming (rather than reading the whole file into a string) keeps memory
+ * constant regardless of file size, so a large generated `.cs` (`*.g.cs`, EF /
+ * gRPC output) is fully scanned instead of skipped by a per-file size cap —
+ * which would otherwise trip `truncated` and disable the #1881 gate repo-wide.
+ * Only the cheap line scan streams here; the tree-sitter PARSE path keeps its
+ * own size cap.
+ *
+ * Returns `'truncated'` when the file could not be read, so the caller marks the
+ * scan truncated and the #1881 gate fails OPEN rather than wrongly suppress an
+ * import declared in the unread file. Returns `'ok'` on a complete read.
  */
 async function collectDeclaredNamespaces(
   filePath: string,
   declaredNamespaces: Set<string>,
   rootNamespaces: Set<string>,
-  maxFileSizeBytes: number,
-): Promise<boolean> {
-  let content: string;
+): Promise<'ok' | 'truncated'> {
+  const createScanner = await getCsharpStructureScannerFactory();
+  const scanner = createScanner();
   try {
-    const stat = await fs.stat(filePath);
-    if (stat.size > maxFileSizeBytes) {
-      return true; // oversized source → skip unread, signal truncation
+    // `crlfDelay: Infinity` treats every `\r\n` as a single break; the line
+    // scanner is terminator-agnostic, so a streamed scan yields the same
+    // namespaces as scanning the whole file content at once.
+    const lines = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+    for await (const line of lines) {
+      scanner.pushLine(line);
     }
-    content = await fs.readFile(filePath, 'utf-8');
   } catch {
-    return true; // unreadable source → signal truncation (was a silent skip)
+    return 'truncated'; // unreadable source → signal truncation (fail open)
   }
-  const scan = await getCsharpStructureScanner();
-  for (const ns of scan(content).namespaces) {
+  for (const ns of scanner.result().namespaces) {
     declaredNamespaces.add(ns);
     const dot = ns.indexOf('.');
     rootNamespaces.add(dot === -1 ? ns : ns.slice(0, dot));
   }
-  return false;
+  return 'ok';
 }
 
 export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {

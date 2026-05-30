@@ -609,24 +609,27 @@ describe('loadCsharpResolutionConfig — one-pass namespace scan (#1881)', () =>
     }
   });
 
-  it('skips an oversized .cs file and fails open via truncation (#1881)', async () => {
-    // A .cs file larger than the per-file size cap is skipped unread so the
-    // always-on scan can't pull an unbounded buffer into memory. Its namespace
-    // is then missing, so `truncated` trips and the gate fails OPEN rather than
-    // wrongly suppress an import declared there. Sized to the real cap — do NOT
-    // lower the production cap for the test.
+  it('streams a large .cs file end-to-end, collecting namespaces past the old size cap (#1881)', async () => {
+    // The namespace scan streams each file, so a `.cs` far larger than the old
+    // per-file size cap is read end-to-end in constant memory instead of being
+    // skipped. A namespace at the START and one at the very END (well past the
+    // old cap boundary) must BOTH be collected, and `truncated` must stay false
+    // — a big generated file no longer disables the #1881 gate repo-wide.
     const cap = getMaxFileSizeBytes();
-    const oversized = `namespace Deep.Ns;\n${'// pad\n'.repeat(Math.ceil(cap / 7) + 1)}`;
+    const padLine = '// pad pad pad pad pad pad\n';
+    const padding = padLine.repeat(Math.ceil((cap * 3) / padLine.length));
+    const huge = `namespace Generated.Head;\n${padding}namespace Generated.Tail { }\n`;
     const root = await makeTempRepo({
-      'Shallow.cs': 'namespace Shallow.Ns;',
-      'Huge.cs': oversized,
+      'Hand.cs': 'namespace Hand.Written;',
+      'Generated.cs': huge,
     });
     try {
       const config = await loadCsharpResolutionConfig(root);
       const ns = config.namespaces!;
-      expect(ns.truncated).toBe(true);
-      expect(ns.declaredNamespaces!.has('Shallow.Ns')).toBe(true);
-      expect(ns.declaredNamespaces!.has('Deep.Ns')).toBe(false);
+      expect(ns.truncated).toBe(false);
+      expect(ns.declaredNamespaces!.has('Hand.Written')).toBe(true);
+      expect(ns.declaredNamespaces!.has('Generated.Head')).toBe(true);
+      expect(ns.declaredNamespaces!.has('Generated.Tail')).toBe(true);
     } finally {
       await fsp.rm(root, { recursive: true, force: true });
     }

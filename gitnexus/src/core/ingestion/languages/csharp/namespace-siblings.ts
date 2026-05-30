@@ -182,26 +182,51 @@ function advanceCsScanState(
  *  AST is a declaration whose keyword is not at the start of a code line
  *  (split across lines, or sharing a line with a comment/string closer).
  *  Mirrors PHP's `extractNamespaceViaScanner` (issue #1741). */
-export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
+/** Incremental form of {@link extractCsharpStructureViaScanner}: feed lines one
+ *  at a time via `pushLine` (in source order), then read the accumulated
+ *  structure with `result()`. Lets a caller stream a file off disk
+ *  (`createReadStream` + `readline`) and scan it for `namespace` / `using
+ *  static` declarations in CONSTANT memory rather than buffering the whole file
+ *  into a string — the line splitting and per-line matching are identical, so a
+ *  streamed scan yields the same result as scanning the full content. The line
+ *  terminator must be stripped (as `readline` does, or `String.split('\n')`); a
+ *  trailing `\r` on a CRLF line is inert to both the matchers and the lexer. */
+export interface CsharpStructureLineScanner {
+  pushLine(line: string): void;
+  result(): CsharpFileStructure;
+}
+
+/** Create a fresh stateful line scanner — see {@link CsharpStructureLineScanner}. */
+export function createCsharpStructureScanner(): CsharpStructureLineScanner {
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
   let state: CsScanState = 'code';
   let rawFence = 0;
-  for (const line of content.split('\n')) {
-    // Only match when the line START is real code — keywords reached while
-    // inside a block comment / multi-line string are skipped.
-    if (state === 'code') {
-      const ns = CS_NAMESPACE_RE.exec(line);
-      if (ns !== null) {
-        namespaces.push(ns[1]!);
-      } else {
-        const us = CS_USING_STATIC_RE.exec(line);
-        if (us !== null) usingStaticPaths.push(us[1]!);
+  return {
+    pushLine(line: string): void {
+      // Only match when the line START is real code — keywords reached while
+      // inside a block comment / multi-line string are skipped.
+      if (state === 'code') {
+        const ns = CS_NAMESPACE_RE.exec(line);
+        if (ns !== null) {
+          namespaces.push(ns[1]!);
+        } else {
+          const us = CS_USING_STATIC_RE.exec(line);
+          if (us !== null) usingStaticPaths.push(us[1]!);
+        }
       }
-    }
-    [state, rawFence] = advanceCsScanState(line, state, rawFence);
-  }
-  return { namespaces, usingStaticPaths };
+      [state, rawFence] = advanceCsScanState(line, state, rawFence);
+    },
+    result(): CsharpFileStructure {
+      return { namespaces, usingStaticPaths };
+    },
+  };
+}
+
+export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
+  const scanner = createCsharpStructureScanner();
+  for (const line of content.split('\n')) scanner.pushLine(line);
+  return scanner.result();
 }
 
 /** Build a structural view of a C# file. Prefers `cachedTree` (handed in
