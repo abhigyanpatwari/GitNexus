@@ -8,6 +8,7 @@ import type {
   TsconfigPaths,
   GoModuleConfig,
   CSharpProjectConfig,
+  CSharpNamespaceEvidence,
   ComposerConfig,
 } from '../language-config.js';
 import type { SwiftPackageConfig } from '../language-config.js';
@@ -32,6 +33,8 @@ export interface ImportConfigs {
   composerConfig: ComposerConfig | null;
   swiftPackageConfig: SwiftPackageConfig | null;
   csharpConfigs: CSharpProjectConfig[];
+  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
+  csharpNamespaces?: CSharpNamespaceEvidence;
 }
 
 /** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */

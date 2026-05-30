@@ -96,4 +96,84 @@ describe('extractCsharpStructureViaScanner', () => {
     const src = `/* header */ class C {}\nnamespace App.Real;`;
     expect(extractCsharpStructureViaScanner(src).namespaces).toEqual(['App.Real']);
   });
+
+  // --- Unicode / @-verbatim identifiers (Codex F3): these must be CAPTURED, not
+  // truncated/dropped, so the #1881 gate doesn't over-block legitimate imports.
+  it('captures a Unicode namespace identifier', () => {
+    const out = extractCsharpStructureViaScanner('namespace Café.Modèles;');
+    expect(out.namespaces).toEqual(['Café.Modèles']);
+    expect(out.incomplete).toBeFalsy();
+  });
+
+  it('captures a non-Latin (Greek) namespace identifier', () => {
+    expect(extractCsharpStructureViaScanner('namespace Ωμέγα.Models;').namespaces).toEqual([
+      'Ωμέγα.Models',
+    ]);
+  });
+
+  it('strips a leading @ from a verbatim namespace identifier to match the AST', () => {
+    expect(extractCsharpStructureViaScanner('namespace @namespace.Models;').namespaces).toEqual([
+      'namespace.Models',
+    ]);
+  });
+
+  it('strips a mid-path @ from a verbatim namespace segment', () => {
+    expect(extractCsharpStructureViaScanner('namespace App.@class.Models;').namespaces).toEqual([
+      'App.class.Models',
+    ]);
+  });
+
+  // --- Forms the line scanner cannot capture must flag `incomplete` so the
+  // caller fails the #1881 gate OPEN (Codex F3) instead of dropping the namespace.
+  it('flags `incomplete` for a namespace declaration split across lines', () => {
+    const out = extractCsharpStructureViaScanner('namespace\n  App.Models;');
+    expect(out.namespaces).toEqual([]);
+    expect(out.incomplete).toBe(true);
+  });
+
+  it('flags `incomplete` for a namespace keyword not at line start', () => {
+    const out = extractCsharpStructureViaScanner('class C {} namespace App.Models;');
+    expect(out.incomplete).toBe(true);
+  });
+
+  it('flags `incomplete` for an attributed same-line namespace', () => {
+    const out = extractCsharpStructureViaScanner('[Obsolete] namespace App.Legacy;');
+    expect(out.incomplete).toBe(true);
+  });
+
+  // --- Guards: ordinary / handled forms must NEVER set `incomplete`, or one
+  // exotic line would wrongly disable the gate repo-wide.
+  it('does NOT flag `incomplete` for ordinary handled forms', () => {
+    for (const src of [
+      'namespace App.Models;',
+      'namespace App.Services\n{\n}',
+      'namespace A.One {}\nnamespace A.Two {}',
+      'using static System.Math;\nnamespace App;',
+      'global using static App.Utils.Logger;',
+      'using static M = App.Utils.MathUtils;',
+      'using System.Collections.Generic;\nusing App.Models;',
+      '\t\tnamespace App.Indented;',
+      'public class Global {}',
+      '',
+    ]) {
+      expect(extractCsharpStructureViaScanner(src).incomplete).toBeFalsy();
+    }
+  });
+
+  it('does NOT flag `incomplete` for a `// namespace` line comment or a namespace mentioned after `//`', () => {
+    expect(
+      extractCsharpStructureViaScanner('// namespace Fake.Comment;\nnamespace App.Real;')
+        .incomplete,
+    ).toBeFalsy();
+    expect(
+      extractCsharpStructureViaScanner('public class C {} // namespace Foo').incomplete,
+    ).toBeFalsy();
+  });
+
+  it('does NOT flag `incomplete` for an identifier that merely starts with "namespace"', () => {
+    // `namespaceManager` is an ordinary identifier, not the keyword.
+    expect(
+      extractCsharpStructureViaScanner('var namespaceManager = Get();').incomplete,
+    ).toBeFalsy();
+  });
 });
