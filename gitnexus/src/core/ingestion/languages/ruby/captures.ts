@@ -1,6 +1,6 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
@@ -49,17 +49,24 @@ export function emitRubyScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The query already hands us each
+    // matched node as c.node, so anchors are used directly (via nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose require/require_relative/load into import captures
     if (grouped['@import.statement'] !== undefined) {
       const anchor = grouped['@import.statement']!;
-      const callNode = findNodeAtRange(tree.rootNode, anchor.range, 'call');
+      const callNode = nodeIfType(nodeMap['@import.statement'], 'call');
       if (callNode !== null) {
         const decomposed = decomposeRubyImport(callNode, anchor);
         if (decomposed !== null) {
@@ -73,8 +80,7 @@ export function emitRubyScopeCaptures(
 
     // Synthesize self receiver bindings for methods inside class/module
     if (grouped['@scope.function'] !== undefined) {
-      const scopeCap = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, scopeCap.range);
+      const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const enclosingNode = findEnclosingClassOrModule(fnNode);
         const receiver = synthesizeRubyReceiverBinding(fnNode, enclosingNode);
@@ -86,8 +92,7 @@ export function emitRubyScopeCaptures(
 
     // Reclassify declaration.function as declaration.method + attach arity
     if (grouped['@declaration.function'] !== undefined) {
-      const anchorCap = grouped['@declaration.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchorCap.range);
+      const fnNode = nodeIfType(nodeMap['@declaration.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const enclosingNode = findEnclosingClassOrModule(fnNode);
         if (enclosingNode !== null) {
@@ -135,11 +140,7 @@ export function emitRubyScopeCaptures(
     if (grouped['@reference.call.free'] !== undefined && grouped['@reference.name'] !== undefined) {
       const callName = grouped['@reference.name']!.text;
       if (HERITAGE_CALL_NAMES.has(callName)) {
-        const callNode = findNodeAtRange(
-          tree.rootNode,
-          grouped['@reference.call.free']!.range,
-          'call',
-        );
+        const callNode = nodeIfType(nodeMap['@reference.call.free'], 'call');
         if (callNode !== null) {
           const enclosing = findEnclosingClassOrModule(callNode);
           const ownerName = enclosing?.childForFieldName('name')?.text;
@@ -173,11 +174,7 @@ export function emitRubyScopeCaptures(
       // localDefs and gets reconciled into model.fields, enabling write-access
       // resolution via receiver-bound-calls (Case 4 → findOwnedMember).
       if (ATTR_CALL_NAMES.has(callName)) {
-        const callNode = findNodeAtRange(
-          tree.rootNode,
-          grouped['@reference.call.free']!.range,
-          'call',
-        );
+        const callNode = nodeIfType(nodeMap['@reference.call.free'], 'call');
         if (callNode !== null) {
           const enclosing = findEnclosingClassOrModule(callNode);
           const ownerName = enclosing?.childForFieldName('name')?.text;
@@ -222,8 +219,7 @@ export function emitRubyScopeCaptures(
       (t) => grouped[t] !== undefined,
     );
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode = findNodeAtRange(tree.rootNode, anchor.range, 'call');
+      const callNode = nodeIfType(nodeMap[callTag], 'call');
       if (callNode !== null) {
         const arity = computeRubyCallArity(callNode);
         grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
@@ -373,21 +369,37 @@ export function emitRubyScopeCaptures(
   // return-type binding `methodName → ClassName` on the method node.
   // This enables cross-file return-type propagation for factory methods
   // like `def self.get_user; User.new; end` → `get_user → User`.
+  // Keys of methods that already got a return binding from the YARD pass above,
+  // precomputed once. The previous `out.some(...)` per method was
+  // O(methods x out.length) ~ O(n^2); this makes the dedup O(1) per method.
+  // Key = `<name>:<return-binding startLine>`, matching the old AND condition.
+  //
+  // Snapshot-vs-live note (PR #1918 tri-review P3): the old `out.some` was
+  // evaluated LIVE, so it also saw constructor-return bindings this very loop
+  // pushed in earlier iterations. That made the old code suppress the 2nd of
+  // two same-named methods one source row apart whose bodies both end in
+  // `Const.new` (the 1st's pushed binding startLine == the 2nd's row via the
+  // 1-based/0-based offset below). The snapshot is built from the YARD pass
+  // only, so it no longer cross-suppresses — both bindings are emitted, which
+  // is the intended behavior (the cross-suppression was unintended). This
+  // corner is absent from fixtures, so the capture fingerprint is unchanged;
+  // ruby-captures-golden.test.ts pins it explicitly.
+  const yardReturnKeys = new Set<string>();
+  for (const m of out) {
+    const ret = m['@type-binding.return'];
+    const name = m['@type-binding.name'];
+    if (ret !== undefined && name !== undefined) {
+      yardReturnKeys.add(`${name.text}:${ret.range.startLine}`);
+    }
+  }
   for (const methodNode of [
     ...tree.rootNode.descendantsOfType('method'),
     ...tree.rootNode.descendantsOfType('singleton_method'),
   ]) {
     const methodName = methodNode.childForFieldName('name')?.text;
     if (methodName === undefined) continue;
-    // Skip if a YARD @return already created a return binding for this method
-    if (
-      out.some(
-        (m) =>
-          m['@type-binding.return'] !== undefined &&
-          m['@type-binding.name']?.text === methodName &&
-          m['@type-binding.return']?.range.startLine === methodNode.startPosition.row,
-      )
-    ) {
+    // Skip if a YARD @return already created a return binding for this method.
+    if (yardReturnKeys.has(`${methodName}:${methodNode.startPosition.row}`)) {
       continue;
     }
     const body = methodNode.childForFieldName('body');
@@ -527,14 +539,6 @@ function computeRubyCallArity(callNode: SyntaxNode): number {
     if (child !== null && child.type !== 'block') count++;
   }
   return count;
-}
-
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n;
-  }
-  return null;
 }
 
 function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {

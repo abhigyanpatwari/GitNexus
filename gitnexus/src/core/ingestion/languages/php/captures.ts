@@ -32,7 +32,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import { nodeIfType, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import { computePhpArityMetadata } from './arity-metadata.js';
 import { synthesizePhpReceiverBinding } from './receiver-binding.js';
@@ -102,9 +102,16 @@ export function emitPhpScopeCaptures(
     // Group captures by their tag name. Tree-sitter strips the leading
     // `@`; we put it back so the central extractor's prefix lookups work.
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map: the query hands us each matched
+    // node as c.node, so anchors resolve via a type-guarded lookup (nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -175,12 +182,7 @@ export function emitPhpScopeCaptures(
     // Decompose each `namespace_use_declaration` so `interpretPhpImport`
     // sees the kind/source/name/alias markers it consumes.
     if (grouped['@import.statement'] !== undefined) {
-      const stmtCapture = grouped['@import.statement'];
-      const stmtNode = findNodeAtRange(
-        tree.rootNode,
-        stmtCapture.range,
-        'namespace_use_declaration',
-      );
+      const stmtNode = nodeIfType(nodeMap['@import.statement'], 'namespace_use_declaration');
       if (stmtNode !== null) {
         const decomposed = splitNamespaceUseDeclaration(stmtNode);
         if (decomposed.length > 0) {
@@ -197,8 +199,7 @@ export function emitPhpScopeCaptures(
     // non-static method-like. Mirrors C#'s `this` / `base` synthesis.
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const anchor = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         for (const synth of synthesizePhpReceiverBinding(fnNode)) {
           out.push(synth);
@@ -219,8 +220,7 @@ export function emitPhpScopeCaptures(
     // registry can narrow overloads.
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
-      const anchor = grouped[declTag]!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const arity = computePhpArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -255,13 +255,14 @@ export function emitPhpScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'function_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'member_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'nullsafe_member_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'scoped_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
+      const callNode = nodeIfType(
+        nodeMap[callTag],
+        'function_call_expression',
+        'member_call_expression',
+        'nullsafe_member_call_expression',
+        'scoped_call_expression',
+        'object_creation_expression',
+      );
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
         const args: SyntaxNode[] = [];
@@ -291,15 +292,6 @@ export function emitPhpScopeCaptures(
   }
 
   return out;
-}
-
-/** Find the first PHP function-like node at the given range. */
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n as SyntaxNode;
-  }
-  return null;
 }
 
 // ─── PHP receiver normalization ──────────────────────────────────────────────
