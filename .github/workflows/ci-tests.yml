@@ -230,6 +230,13 @@ jobs:
           node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
         working-directory: gitnexus
 
+      - name: Cross-language scope-capture fingerprint + scaling guards
+        # Build-free: asserts emit<Lang>ScopeCaptures output is unchanged
+        # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
+        # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
+        run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         env:
           GITNEXUS_BENCH: '1'
