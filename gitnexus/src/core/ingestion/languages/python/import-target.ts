@@ -12,14 +12,14 @@
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
+import { recordPythonFileIndexBuild } from './index-stats.js';
 
 export interface PythonResolveContext {
   readonly fromFile: string;
-  /** Mutable `Set` because the legacy `resolvePythonImportInternal`
-   *  chain downstream is typed to accept `Set<string>`. Callers that
-   *  only hold a `ReadonlySet` should copy via `new Set(...)` at the
-   *  adapter boundary. */
-  readonly allFilePaths: Set<string>;
+  /** `ReadonlySet` so the orchestrator's stable run-level set flows straight
+   *  through to `getPythonFileIndex`'s `WeakMap` key (built once per run, not
+   *  copied per import). The whole resolver chain only reads the set. */
+  readonly allFilePaths: ReadonlySet<string>;
 }
 
 export function resolvePythonImportTarget(
@@ -103,7 +103,7 @@ export function resolvePythonImportTarget(
  */
 function resolveAbsoluteFromFiles(
   pathLike: string,
-  allFilePaths: Set<string>,
+  allFilePaths: ReadonlySet<string>,
   fromFile: string,
 ): string | null {
   const directFile = `${pathLike}.py`;
@@ -199,7 +199,7 @@ function resolveAbsoluteFromFiles(
  */
 function hasRepoCandidate(
   leadingSegment: string,
-  allFilePaths: Set<string>,
+  allFilePaths: ReadonlySet<string>,
   fromFile: string,
 ): boolean {
   const prefix = `${leadingSegment}/`;
@@ -252,11 +252,14 @@ interface PythonFileIndex {
   readonly dirPrefixes: Set<string>;
 }
 
-const PYTHON_FILE_INDEX_CACHE = new WeakMap<Set<string>, PythonFileIndex>();
+const PYTHON_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, PythonFileIndex>();
 
-function getPythonFileIndex(allFilePaths: Set<string>): PythonFileIndex {
+function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex {
   const cached = PYTHON_FILE_INDEX_CACHE.get(allFilePaths);
   if (cached !== undefined) return cached;
+  // Cache miss: materialize a fresh index. Counted so a test can assert this
+  // happens once per run, not once per import (PR #1918 review P1 guard).
+  recordPythonFileIndexBuild();
 
   const normSet = new Set<string>();
   const byBasename = new Map<string, { raw: string; norm: string }[]>();
