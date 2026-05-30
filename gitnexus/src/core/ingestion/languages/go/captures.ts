@@ -1,10 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import {
-  findNodeAtRange,
-  nodeToCapture,
-  syntheticCapture,
-  type SyntaxNode,
-} from '../../utils/ast-helpers.js';
+import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getGoParser, getGoScopeQuery } from './query.js';
 import { recordGoCacheHit, recordGoCacheMiss } from './cache-stats.js';
 import { computeGoCallArity, computeGoDeclarationArity } from './arity-metadata.js';
@@ -34,18 +29,29 @@ export function emitGoScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
+    // hands us the matched node as `c.node`; keeping it here lets us derive the
+    // anchor/relative node by walking LOCALLY (parent chain / own subtree)
+    // instead of re-walking from tree.rootNode (the O(matches x rootChildren)
+    // hotpath that made #1848's 250-struct DAO file take ~10s). The captured
+    // node either IS the node the old findNodeAtRange re-derived, or is a close
+    // relative reachable by a bounded local walk.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue; // skip anonymous captures
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
     if (grouped['@import.statement'] !== undefined) {
-      const anchor = grouped['@import.statement']!;
-      const importNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'import_declaration') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'import_spec');
+      // The captured node is the `import_spec`; the original code preferred its
+      // enclosing `import_declaration` ONLY when that ancestor shares the exact
+      // same range (which never happens — the declaration always includes the
+      // `import` keyword prefix — so it falls back to the import_spec itself).
+      // Replicate that exactly via a local ancestor walk, never from root.
+      const importNode = resolveImportNode(nodeMap['@import.statement']!);
       if (importNode !== null) {
         out.push(...splitGoImportStatement(importNode));
         continue;
@@ -53,23 +59,33 @@ export function emitGoScopeCaptures(
     }
 
     if (grouped['@scope.function'] !== undefined) {
-      const scopeCap = grouped['@scope.function']!;
+      // @scope.function captures function_declaration | method_declaration |
+      // func_literal. The original looked for a function_declaration or
+      // method_declaration at the captured range; the captured node IS that
+      // node for the first two, and a func_literal never coincides in range
+      // with either, so the lookup yields null for func_literal.
+      const scopeNode = nodeMap['@scope.function']!;
       const fnNode =
-        findNodeAtRange(tree.rootNode, scopeCap.range, 'function_declaration') ??
-        findNodeAtRange(tree.rootNode, scopeCap.range, 'method_declaration');
+        scopeNode.type === 'function_declaration' || scopeNode.type === 'method_declaration'
+          ? scopeNode
+          : null;
       if (fnNode !== null) {
         const receiver = synthesizeGoReceiverBinding(fnNode);
         if (receiver !== null) out.push(receiver);
       }
     }
 
-    if (isRawMultiAssignTypeBinding(tree.rootNode, grouped)) continue;
+    if (isRawMultiAssignTypeBinding(nodeMap)) continue;
 
-    const declAnchor = grouped['@declaration.function'] ?? grouped['@declaration.method'];
-    if (declAnchor !== undefined) {
+    const declAnchorNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'];
+    if (declAnchorNode !== undefined) {
+      // @declaration.function / @declaration.method are captured directly on
+      // the function_declaration / method_declaration node.
       const fnNode =
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'function_declaration') ??
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'method_declaration');
+        declAnchorNode.type === 'function_declaration' ||
+        declAnchorNode.type === 'method_declaration'
+          ? declAnchorNode
+          : null;
       if (fnNode !== null) {
         const arity = computeGoDeclarationArity(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -98,15 +114,15 @@ export function emitGoScopeCaptures(
       continue;
     }
 
-    const callAnchor =
-      grouped['@reference.call.free'] ??
-      grouped['@reference.call.member'] ??
-      grouped['@reference.call.constructor'];
-    if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode =
-        findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
-        findNodeAtRange(tree.rootNode, callAnchor.range, 'composite_literal');
-      if (callNode !== null) {
+    // @reference.call.free / .member are captured on the call_expression;
+    // @reference.call.constructor on the composite_literal. The captured node
+    // IS the node the old findNodeAtRange re-derived for each, so use it.
+    const callNode =
+      nodeMap['@reference.call.free'] ??
+      nodeMap['@reference.call.member'] ??
+      nodeMap['@reference.call.constructor'];
+    if (callNode !== undefined && grouped['@reference.arity'] === undefined) {
+      if (callNode.type === 'call_expression' || callNode.type === 'composite_literal') {
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
           callNode,
@@ -146,18 +162,56 @@ export function emitGoScopeCaptures(
   return out;
 }
 
-function isRawMultiAssignTypeBinding(
-  rootNode: SyntaxNode,
-  grouped: Record<string, Capture>,
-): boolean {
+/**
+ * Resolve the node passed to `splitGoImportStatement` for an @import.statement
+ * match. The capture is on the `import_spec`; the original preferred an
+ * `import_declaration` at the SAME range, else the import_spec. An
+ * import_declaration always includes the `import` keyword and so never shares
+ * the spec's exact range — the only candidate is an ancestor, and it can only
+ * match when ranges coincide. Walk the parent chain (bounded, local) for an
+ * import_declaration whose range equals the spec's; otherwise return the spec.
+ */
+function resolveImportNode(importSpec: SyntaxNode): SyntaxNode {
+  let current: SyntaxNode | null = importSpec.parent;
+  while (current !== null) {
+    if (current.type === 'import_declaration') {
+      if (nodeRangeEquals(current, importSpec)) return current;
+      break;
+    }
+    // import_spec is nested at most under import_declaration ->
+    // import_spec_list -> import_spec; stop once we leave the import subtree.
+    if (current.type !== 'import_spec_list') break;
+    current = current.parent;
+  }
+  return importSpec;
+}
+
+/** True iff two nodes occupy the exact same source range. */
+function nodeRangeEquals(a: SyntaxNode, b: SyntaxNode): boolean {
+  return (
+    a.startPosition.row === b.startPosition.row &&
+    a.startPosition.column === b.startPosition.column &&
+    a.endPosition.row === b.endPosition.row &&
+    a.endPosition.column === b.endPosition.column
+  );
+}
+
+function isRawMultiAssignTypeBinding(nodeMap: Record<string, SyntaxNode>): boolean {
   const anchor =
-    grouped['@type-binding.constructor'] ??
-    grouped['@type-binding.call-return'] ??
-    grouped['@type-binding.assertion'];
+    nodeMap['@type-binding.constructor'] ??
+    nodeMap['@type-binding.call-return'] ??
+    nodeMap['@type-binding.assertion'];
   if (anchor === undefined) return false;
 
-  const node = findNodeAtRange(rootNode, anchor.range, 'short_var_declaration');
-  if (node === null) return false;
+  // These tags are captured directly ON the short_var_declaration, so the
+  // captured node IS what the original findNodeAtRange(root, range,
+  // 'short_var_declaration') re-derived. The var_declaration (var-form)
+  // variants — @type-binding.assertion (`var x = e.(T)`) and
+  // @type-binding.call-return (`var x = Func()`) — anchor on a var_declaration
+  // instead; the old range+type lookup found no short_var_declaration at that
+  // range and returned null -> false, which this type guard reproduces exactly.
+  if (anchor.type !== 'short_var_declaration') return false;
+  const node = anchor;
   const lhs = node.childForFieldName('left');
   const rhs = node.childForFieldName('right');
   if (lhs === null) return false;

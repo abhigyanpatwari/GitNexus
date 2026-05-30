@@ -170,6 +170,13 @@ gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
 
+# Direct graph queries — the same tools the MCP server exposes, no MCP daemon needed
+gitnexus query "<concept>"                                    # Process-grouped hybrid search
+gitnexus context <symbol> [--uid <uid> | --file <path>]       # 360° symbol view; flags disambiguate a shared name
+gitnexus impact <symbol> [--uid <uid> | --file <path> | --kind <kind>]  # Blast radius; flags disambiguate a shared name
+gitnexus detect-changes          # Map the working-tree diff to affected symbols and execution flows
+gitnexus cypher "<query>"        # Run a raw Cypher query against the knowledge graph
+
 # Repository groups (multi-repo / monorepo service tracking)
 gitnexus group create <name>                                   # Create a repository group
 gitnexus group add <group> <groupPath> <registryName>          # Add a repo to a group. <groupPath> is a hierarchy path (e.g. hr/hiring/backend); <registryName> is the repo's name from the registry (see `gitnexus list`)

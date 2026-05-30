@@ -2920,8 +2920,14 @@ export class LocalBackend {
       typeof opts.offset === 'number' && Number.isFinite(opts.offset) ? opts.offset : 0;
     const paginationOffset = Math.max(0, Math.trunc(rawOffset));
     const summaryOnly = opts.summaryOnly ?? false;
-    const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
-    const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
+    // Bind the BFS frontier query's filters as parameters (#1907 review F5):
+    // node ids and relation types as bound lists, the confidence floor as a
+    // bound number — no string interpolation reaches the query text. Preserve
+    // the original "no confidence clause when minConfidence <= 0" behavior: an
+    // unconditional `>= 0` would wrongly exclude NULL-confidence edges that the
+    // unfiltered query includes.
+    const safeMinConfidence = Number.isFinite(minConfidence) ? minConfidence : 0;
+    const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
 
@@ -3009,15 +3015,19 @@ export class LocalBackend {
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
 
-      // Batch frontier nodes into a single Cypher query per depth level
-      const idList = frontier.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
+      // Batch frontier nodes into a single Cypher query per depth level.
+      // ids/types/confidence are bound parameters (see above) — no interpolation.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
 
       try {
-        const related = await executeQuery(repo.id, query);
+        const related = await executeParameterized(repo.id, query, {
+          frontierIds: frontier,
+          relTypes: relationTypes,
+          ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
+        });
 
         for (const rel of related) {
           const relId = rel.id || rel[1];

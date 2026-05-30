@@ -68,30 +68,9 @@ describe('impact: batching and grouping', () => {
     const chunkSizes: number[] = [];
     let chunkCallIndex = 0;
 
-    executeQueryMock.mockImplementation(async (...args: any[]) => {
-      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      // Depth traversal query (find related nodes) -- return 250 impacted ids
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
-        const res: any[] = [];
-        for (let i = 0; i < 250; i++) {
-          res.push({
-            id: `node-${i}`,
-            name: `n${i}`,
-            filePath: `file-${i}.js`,
-            relType: 'CALLS',
-            confidence: null,
-          });
-        }
-        return res;
-      }
-
-      // NOTE: process-chunk enrichment previously used executeQuery; our
-      // implementation now calls executeParameterized for those chunks. We
-      // still keep this branch to support any legacy calls, but primary
-      // chunk tracking will be handled via executeParameterizedMock below.
-
-      return [];
-    });
+    // BFS frontier query is now parameterized (#1907 U3) — handled in
+    // executeParameterizedMock below; executeQuery is unused by the impact path.
+    executeQueryMock.mockImplementation(async () => []);
 
     // Handle parameterized calls (including chunked STEP_IN_PROCESS queries)
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
@@ -116,6 +95,20 @@ describe('impact: batching and grouping', () => {
             minStep: 1,
           },
         ];
+      }
+      // BFS frontier query (parameterized #1907 U3): return the 250 impacted ids.
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        const res: any[] = [];
+        for (let i = 0; i < 250; i++) {
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
+        }
+        return res;
       }
       // Default target resolution
       return [{ id: 'sym1', name: 'Target', filePath: 'f' }];
@@ -151,6 +144,19 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      // BFS frontier query (parameterized #1907 U3): return 6 impacted nodes.
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        const res: any[] = [];
+        for (let i = 0; i < 6; i++)
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
+        return res;
+      }
       if (!query.includes('STEP_IN_PROCESS'))
         return [{ id: 'symA', name: 'TargetA', filePath: 'f' }];
       // For STEP_IN_PROCESS in this test, return grouping rows
@@ -190,25 +196,9 @@ describe('impact: batching and grouping', () => {
       ];
     });
 
-    // Prepare impacted nodes: smaller set for clarity (6 nodes -> chunk size default 100 so single chunk)
-    executeQueryMock.mockImplementation(async (...args: any[]) => {
-      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
-        // return 6 nodes
-        const res: any[] = [];
-        for (let i = 0; i < 6; i++)
-          res.push({
-            id: `node-${i}`,
-            name: `n${i}`,
-            filePath: `file-${i}.js`,
-            relType: 'CALLS',
-            confidence: null,
-          });
-        return res;
-      }
-
-      return [];
-    });
+    // BFS frontier query is now parameterized (#1907 U3) — handled in
+    // executeParameterizedMock above; executeQuery is unused by the impact path.
+    executeQueryMock.mockImplementation(async () => []);
 
     const params = { target: 'TargetA', direction: 'downstream', maxDepth: 1 } as any;
     const res = await (backend as any)._impactImpl(repoHandle, params);
@@ -243,23 +233,9 @@ describe('impact: batching and grouping', () => {
     (backend as any).repos.set(repoHandle.id, repoHandle);
     (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
 
-    // Depth traversal returns 500 impacted nodes
-    executeQueryMock.mockImplementation(async (...args: any[]) => {
-      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
-        const res: any[] = [];
-        for (let i = 0; i < 500; i++)
-          res.push({
-            id: `node-${i}`,
-            name: `n${i}`,
-            filePath: `file-${i}.js`,
-            relType: 'CALLS',
-            confidence: null,
-          });
-        return res;
-      }
-      return [];
-    });
+    // BFS frontier query is now parameterized (#1907 U3) — handled in
+    // executeParameterizedMock below; executeQuery is unused by the impact path.
+    executeQueryMock.mockImplementation(async () => []);
 
     const chunkSizes: number[] = [];
 
@@ -294,6 +270,19 @@ describe('impact: batching and grouping', () => {
         return [{ name: 'ModuleA' }];
       }
 
+      // BFS frontier query (parameterized #1907 U3): return 500 impacted nodes.
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        const res: any[] = [];
+        for (let i = 0; i < 500; i++)
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
+        return res;
+      }
       // Default: target resolution
       return [{ id: 'symX', name: 'TargetX', filePath: 'f' }];
     });
