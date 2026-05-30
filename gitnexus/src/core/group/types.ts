@@ -30,6 +30,15 @@ export interface DetectConfig {
   embedding_fallback: boolean;
   includes: boolean;
   workspace_deps: boolean;
+  /**
+   * Extra HTTP client identifiers (besides each language plugin's
+   * built-in defaults, e.g. `axios`) recognized for member-style consumer
+   * calls like `client.get(url)`. Lets projects that wrap their HTTP
+   * client behind a helper — e.g. uni-app / luch-request style
+   * `import request from "@/utils/request"; request.get("/x")` — opt the
+   * wrapper name in. Default: [].
+   */
+  http_client_aliases: string[];
 }
 
 export interface MatchingConfig {

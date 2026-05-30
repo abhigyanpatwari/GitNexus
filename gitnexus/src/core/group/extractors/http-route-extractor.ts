@@ -153,6 +153,15 @@ function pickSymbolUid(
 export class HttpRouteExtractor implements ContractExtractor {
   type = 'http' as const;
 
+  /**
+   * @param httpClientAliases extra HTTP client identifiers (besides each
+   *   language plugin's built-in defaults) opted in via
+   *   `detect.http_client_aliases` in group.yaml. Threaded into each
+   *   plugin's `prepareRepo` so wrapped clients (e.g. a `request` helper)
+   *   are recognized as consumers.
+   */
+  constructor(private readonly httpClientAliases: readonly string[] = []) {}
+
   async canExtract(_repo: RepoHandle): Promise<boolean> {
     return true;
   }
@@ -192,6 +201,7 @@ export class HttpRouteExtractor implements ContractExtractor {
           parser,
           readFile: (rel) => readSafe(repoPath, rel),
           parseSource: (p, src) => parseSourceSafe(p, src),
+          httpClientAliases: this.httpClientAliases,
         });
         repoContextByPlugin.set(plugin.name, ctx);
         return ctx;

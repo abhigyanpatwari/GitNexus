@@ -131,6 +131,59 @@ detect:
     });
   });
 
+  describe('detect.http_client_aliases', () => {
+    it('defaults to an empty array when omitted', () => {
+      const config = parseGroupConfig(`
+version: 1
+name: test
+repos:
+  app: my-app
+`);
+      expect(config.detect.http_client_aliases).toEqual([]);
+    });
+
+    it('parses an explicit list of client aliases', () => {
+      const config = parseGroupConfig(`
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  http_client_aliases:
+    - request
+    - http
+`);
+      expect(config.detect.http_client_aliases).toEqual(['request', 'http']);
+    });
+
+    it('throws when http_client_aliases is not an array', () => {
+      expect(() =>
+        parseGroupConfig(`
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  http_client_aliases: request
+`),
+      ).toThrow(/http_client_aliases.*array/i);
+    });
+
+    it('throws when an alias entry is not a string', () => {
+      expect(() =>
+        parseGroupConfig(`
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  http_client_aliases:
+    - 123
+`),
+      ).toThrow(/http_client_aliases\[0\].*string/i);
+    });
+  });
+
   it('parses thrift manifest links', () => {
     const yaml = `
 version: 1

@@ -101,7 +101,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       registryEntries = await readRegistry();
       const entries = registryEntries;
       const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
-      const httpEx = new HttpRouteExtractor();
+      const httpEx = new HttpRouteExtractor(config.detect.http_client_aliases);
       const grpcEx = new GrpcExtractor();
       const thriftEx = new ThriftExtractor();
       const topicEx = new TopicExtractor();

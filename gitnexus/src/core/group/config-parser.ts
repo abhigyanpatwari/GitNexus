@@ -33,6 +33,10 @@ const DEFAULT_DETECT = {
   embedding_fallback: true,
   includes: false,
   workspace_deps: false,
+  // Extra HTTP client identifiers (besides built-in defaults like `axios`)
+  // recognized for member-style consumer calls (`client.get(url)`).
+  // Opt-in per group via `detect.http_client_aliases: [request, http]`.
+  http_client_aliases: [] as string[],
 };
 
 const DEFAULT_MATCHING = {
@@ -96,6 +100,15 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
   });
 
   const detect = { ...DEFAULT_DETECT, ...((raw.detect as object) || {}) };
+  if (!Array.isArray(detect.http_client_aliases)) {
+    throw new Error('detect.http_client_aliases must be an array of strings');
+  }
+  detect.http_client_aliases = detect.http_client_aliases.map((a, i) => {
+    if (typeof a !== 'string') {
+      throw new Error(`detect.http_client_aliases[${i}] must be a string`);
+    }
+    return a;
+  });
   const matching = { ...DEFAULT_MATCHING, ...((raw.matching as object) || {}) };
   const packages = (raw.packages as Record<string, Record<string, string>>) || {};
 
