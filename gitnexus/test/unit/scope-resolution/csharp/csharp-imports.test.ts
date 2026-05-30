@@ -741,4 +741,50 @@ describe('loadCsharpResolutionConfig — one-pass namespace scan (#1881)', () =>
       await fsp.rm(root, { recursive: true, force: true });
     }
   });
+
+  it('recovers <RootNamespace> past the old read cap via streaming (Codex F4)', async () => {
+    // A big leading <ItemGroup> pushes <RootNamespace> past the old 512KB read
+    // cap; the streamed scan reads on until it finds the tag, so the correct
+    // root is recovered (pre-fix the capped read synthesized the filename 'App').
+    const cap = getMaxFileSizeBytes();
+    const itemLine = '    <Compile Include="src/Generated/F.cs" />\n';
+    const bigItemGroup =
+      '  <ItemGroup>\n' +
+      itemLine.repeat(Math.ceil((cap * 2) / itemLine.length)) +
+      '  </ItemGroup>\n';
+    const csproj =
+      '<Project Sdk="Microsoft.NET.Sdk">\n' +
+      bigItemGroup +
+      '  <PropertyGroup><RootNamespace>MyApp</RootNamespace></PropertyGroup>\n' +
+      '</Project>\n';
+    const root = await makeTempRepo({
+      'App.csproj': csproj,
+      'Models/User.cs': 'namespace MyApp.Models;\npublic class User {}',
+    });
+    try {
+      const config = await loadCsharpResolutionConfig(root);
+      expect(config.csharpConfigs).toHaveLength(1);
+      expect(config.csharpConfigs[0]!.rootNamespace).toBe('MyApp');
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the filename root only when <RootNamespace> is genuinely absent (Codex F4 control)', async () => {
+    // A genuine read-to-EOF absence still synthesizes the filename root, so a
+    // .csproj without RootNamespace is unchanged — the fix only avoids guessing
+    // when the tag was unreachable.
+    const root = await makeTempRepo({
+      'App.csproj':
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>',
+      'Models/User.cs': 'namespace App.Models;\npublic class User {}',
+    });
+    try {
+      const config = await loadCsharpResolutionConfig(root);
+      expect(config.csharpConfigs).toHaveLength(1);
+      expect(config.csharpConfigs[0]!.rootNamespace).toBe('App');
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });

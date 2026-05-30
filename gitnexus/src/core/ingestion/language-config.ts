@@ -6,7 +6,6 @@ import type { ImportConfigs } from './import-resolvers/types.js';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
-import { getMaxFileSizeBytes } from './utils/max-file-size.js';
 
 import { logger } from '../logger.js';
 // ============================================================================
@@ -234,10 +233,6 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   let dirsScanned = 0;
   let truncated = false;
-  // Per-file read cap (shared with the Phase-1 walker). A `.cs`/`.csproj` larger
-  // than this is skipped unread so a single huge generated file can't pull an
-  // unbounded buffer into memory during the always-on scan.
-  const maxFileSizeBytes = getMaxFileSizeBytes();
 
   while (scanQueue.length > 0) {
     if (dirsScanned >= CSHARP_SCAN_MAX_DIRS) {
@@ -284,9 +279,7 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
     for (let i = 0; i < csprojNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
       const batch = csprojNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
       const settled = await Promise.allSettled(
-        batch.map((name) =>
-          readCsprojConfig(path.join(dir, name), name, repoRoot, dir, maxFileSizeBytes),
-        ),
+        batch.map((name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir)),
       );
       for (const r of settled) {
         const config = r.status === 'fulfilled' ? r.value : null;
@@ -324,17 +317,51 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
   return { configs, declaredNamespaces, rootNamespaces, truncated };
 }
 
-/** Read up to `maxBytes` of a UTF-8 text file via a length-capped stream. Bounds
- *  the read on untrusted input WITHOUT a stat-then-read filesystem race — a
- *  `.cs` is streamed the same way (see `collectDeclaredNamespaces`). A file
- *  smaller than the cap is read in full; a larger one is read only up to it. */
-async function readFileTextCapped(filePath: string, maxBytes: number): Promise<string> {
-  const parts: string[] = [];
-  const stream = createReadStream(filePath, { encoding: 'utf-8', end: maxBytes });
-  for await (const part of stream) {
-    parts.push(part as string);
+// Generous soft budget for locating `<RootNamespace>`: a real .csproj declares
+// it in the first PropertyGroup near the top, so this is only reached by a
+// pathological project file with a huge leading ItemGroup and no early
+// RootNamespace. On hit we OMIT the config rather than guess a root (Codex F4).
+const CSPROJ_ROOT_SCAN_MAX_BYTES = 4 * 1024 * 1024;
+// Overlap kept across stream chunks so a `<RootNamespace>` tag straddling a
+// chunk boundary is still matched (the tag + a short namespace value fit well
+// within this window).
+const CSPROJ_TAG_OVERLAP = 512;
+
+/**
+ * Stream a `.csproj` just far enough to find `<RootNamespace>`, in constant
+ * memory and without a stat-then-read filesystem race. Returns the namespace
+ * when found; otherwise `rootNamespace: null` with `capHit` distinguishing a
+ * genuine read-to-EOF absence (`false`) from "not found within the soft budget"
+ * (`true`) — so the caller never synthesizes a wrong filename root for a late
+ * tag (Codex F4).
+ */
+async function findCsprojRootNamespace(
+  csprojPath: string,
+): Promise<{ rootNamespace: string | null; capHit: boolean }> {
+  const stream = createReadStream(csprojPath, { encoding: 'utf-8' });
+  let window = '';
+  let bytesRead = 0;
+  try {
+    for await (const chunk of stream) {
+      const text = chunk as string;
+      bytesRead += text.length;
+      window =
+        (window.length > CSPROJ_TAG_OVERLAP ? window.slice(-CSPROJ_TAG_OVERLAP) : window) + text;
+      const match = window.match(CSHARP_ROOT_NAMESPACE_RE);
+      if (match) {
+        stream.destroy();
+        return { rootNamespace: match[1]!.trim(), capHit: false };
+      }
+      if (bytesRead >= CSPROJ_ROOT_SCAN_MAX_BYTES) {
+        stream.destroy();
+        return { rootNamespace: null, capHit: true };
+      }
+    }
+  } catch {
+    // Unreadable .csproj: don't guess a filename root either — omit the config.
+    return { rootNamespace: null, capHit: true };
   }
-  return parts.join('');
+  return { rootNamespace: null, capHit: false }; // read to EOF, tag genuinely absent
 }
 
 async function readCsprojConfig(
@@ -342,24 +369,22 @@ async function readCsprojConfig(
   fileName: string,
   repoRoot: string,
   dir: string,
-  maxFileSizeBytes: number,
 ): Promise<CSharpProjectConfig | null> {
-  try {
-    // `<RootNamespace>` sits in the first PropertyGroup near the top, so a
-    // capped read captures any real .csproj while bounding pathological input.
-    const content = await readFileTextCapped(csprojPath, maxFileSizeBytes);
-    const nsMatch = content.match(CSHARP_ROOT_NAMESPACE_RE);
-    const rootNamespace = nsMatch ? nsMatch[1].trim() : fileName.replace(/\.csproj$/, '');
-    const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
-    if (isDev) {
-      logger.info(
-        `📦 Loaded C# project: ${fileName} (namespace: ${rootNamespace}, dir: ${projectDir})`,
-      );
-    }
-    return { rootNamespace, projectDir };
-  } catch {
-    return null; // can't read .csproj
+  const { rootNamespace: found, capHit } = await findCsprojRootNamespace(csprojPath);
+  // A late `<RootNamespace>` we couldn't reach (capHit) or an unreadable file
+  // must NOT synthesize a filename root — a wrong authoritative root would make
+  // imports under the real root resolve to nothing and suppress the fallback
+  // (Codex F4). Omit the config so the no-csproj fallback stays available. Only
+  // fall back to the filename on a genuine read-to-EOF absence of the tag.
+  if (capHit) return null;
+  const rootNamespace = found ?? fileName.replace(/\.csproj$/, '');
+  const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
+  if (isDev) {
+    logger.info(
+      `📦 Loaded C# project: ${fileName} (namespace: ${rootNamespace}, dir: ${projectDir})`,
+    );
   }
+  return { rootNamespace, projectDir };
 }
 
 /**
