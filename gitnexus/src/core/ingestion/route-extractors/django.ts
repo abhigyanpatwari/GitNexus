@@ -11,6 +11,7 @@ interface WalkFrame {
   node: SyntaxNode;
   routeCtx: DjangoRouteContext;
   currentFilePath: string;
+  depth: number;
 }
 
 const DJANGO_ROUTE_FUNCTIONS = new Set(['path', 're_path', 'url']);
@@ -254,18 +255,23 @@ export function extractDjangoRoutes(
   const walkStack: WalkFrame[] = [];
 
   for (const listNode of listNodes) {
-    walkStack.push({ node: listNode, routeCtx: { prefix: null }, currentFilePath: filePath });
+    walkStack.push({
+      node: listNode,
+      routeCtx: { prefix: null },
+      currentFilePath: filePath,
+      depth: 0,
+    });
   }
 
   while (walkStack.length > 0) {
-    const { node, routeCtx, currentFilePath } = walkStack.pop()!;
+    const { node, routeCtx, currentFilePath, depth } = walkStack.pop()!;
 
     if (node.type === 'list') {
       const children = node.children ?? [];
       for (let i = children.length - 1; i >= 0; i--) {
         const child = children[i];
         if (child.type === '[' || child.type === ']' || child.type === ',') continue;
-        walkStack.push({ node: child, routeCtx, currentFilePath });
+        walkStack.push({ node: child, routeCtx, currentFilePath, depth });
       }
       continue;
     }
@@ -276,7 +282,7 @@ export function extractDjangoRoutes(
       if (!funcName) {
         for (const child of node.children ?? []) {
           if (child.type === 'call' || child.type === 'list') {
-            walkStack.push({ node: child, routeCtx, currentFilePath });
+            walkStack.push({ node: child, routeCtx, currentFilePath, depth });
           }
         }
         continue;
@@ -291,7 +297,7 @@ export function extractDjangoRoutes(
             if (child.type === 'call' && getCallFuncName(child) === DJANGO_INCLUDE_FUNCTION) {
               hasIncludeChild = true;
               const modulePath = getIncludeModulePath(child);
-              if (modulePath && readFile && _djangoParser) {
+              if (modulePath && readFile && _djangoParser && depth < MAX_INCLUDE_DEPTH) {
                 const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
                 if (resolved && !routeSet.has(resolved.filePath)) {
                   routeSet.add(resolved.filePath);
@@ -308,6 +314,7 @@ export function extractDjangoRoutes(
                       node: childList,
                       routeCtx: { prefix: childPrefix },
                       currentFilePath: resolved.filePath,
+                      depth: depth + 1,
                     });
                   }
                 }
@@ -322,7 +329,12 @@ export function extractDjangoRoutes(
         continue;
       }
 
-      if (funcName === DJANGO_INCLUDE_FUNCTION && readFile && _djangoParser) {
+      if (
+        funcName === DJANGO_INCLUDE_FUNCTION &&
+        readFile &&
+        _djangoParser &&
+        depth < MAX_INCLUDE_DEPTH
+      ) {
         const modulePath = getIncludeModulePath(node);
         if (modulePath) {
           const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
@@ -340,6 +352,7 @@ export function extractDjangoRoutes(
                 node: childList,
                 routeCtx,
                 currentFilePath: resolved.filePath,
+                depth: depth + 1,
               });
             }
           }
@@ -349,7 +362,7 @@ export function extractDjangoRoutes(
 
       for (const child of node.children ?? []) {
         if (child.type === 'call' || child.type === 'list') {
-          walkStack.push({ node: child, routeCtx, currentFilePath });
+          walkStack.push({ node: child, routeCtx, currentFilePath, depth });
         }
       }
       continue;
@@ -358,7 +371,7 @@ export function extractDjangoRoutes(
     for (const child of node.children ?? []) {
       if (child.type === '(' || child.type === ')' || child.type === ',') continue;
       if (child.type === 'call' || child.type === 'list') {
-        walkStack.push({ node: child, routeCtx, currentFilePath });
+        walkStack.push({ node: child, routeCtx, currentFilePath, depth });
       }
     }
   }

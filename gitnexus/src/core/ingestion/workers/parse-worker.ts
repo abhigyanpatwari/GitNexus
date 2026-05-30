@@ -87,13 +87,7 @@ import { extractTemplateArguments, templateArgumentsIdTag } from '../utils/templ
 import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../scope-extractor-bridge.js';
-import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
-import {
-  extractDjangoRoutes,
-  setDjangoParser,
-  type DjangoFileReader,
-} from '../route-extractors/django.js';
-import { discoverDjangoRootUrl } from '../route-extractors/django-root-discovery.js';
+import type { ExtractedRoute } from '../route-extractors/laravel.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -986,12 +980,11 @@ const processFileGroup = (
   const fileContentMap = new Map<string, string>();
   for (const f of files) fileContentMap.set(f.path, f.content);
 
-  // For Python, discover the Django root URL file so we only extract
-  // routes from it (includes cover the rest), avoiding duplicate entries.
-  let djangoRootUrlFile: string | null = null;
-  if (language === SupportedLanguages.Python) {
-    djangoRootUrlFile = discoverDjangoRootUrl(files, fileContentMap);
-  }
+  // Discover root route file if the language provider has discovery logic
+  const provider = getProvider(language);
+  const rootRouteFile = provider.discoverRootRouteFile
+    ? provider.discoverRootRouteFile(files, fileContentMap)
+    : null;
 
   let query: Parser.Query;
   try {
@@ -2005,16 +1998,10 @@ const processFileGroup = (
 
     // Extract framework routes via provider detection (e.g., Laravel routes.php)
     const isRouteFile = provider.isRouteFile?.(file.path) ?? false;
-    if (isRouteFile) {
-      if (language === SupportedLanguages.Python) {
-        // Only extract from the discovered Django root URL file; includes
-        // resolve the rest.  Fall back to isRouteFile if discovery fails.
-        const isDjangoRoot =
-          djangoRootUrlFile !== null ? file.path === djangoRootUrlFile : isRouteFile;
-        if (!isDjangoRoot) continue;
-
-        setDjangoParser(parser);
-        const djangoReader: DjangoFileReader = (relativePath: string) => {
+    if (isRouteFile && provider.extractRoutes) {
+      const isRootRoute = rootRouteFile !== null ? file.path === rootRouteFile : isRouteFile;
+      if (isRootRoute) {
+        const reader = (relativePath: string) => {
           const cached = fileContentMap.get(relativePath);
           if (cached != null) return cached;
           try {
@@ -2023,10 +2010,7 @@ const processFileGroup = (
             return null;
           }
         };
-        const extractedRoutes = extractDjangoRoutes(tree, file.path, djangoReader);
-        for (const r of extractedRoutes) result.routes.push(r);
-      } else {
-        const extractedRoutes = extractLaravelRoutes(tree, file.path);
+        const extractedRoutes = provider.extractRoutes(tree, file.path, reader, parser);
         for (const r of extractedRoutes) result.routes.push(r);
       }
     }

@@ -45,6 +45,8 @@ import {
   pythonReceiverBinding,
   resolvePythonImportTarget,
 } from './python/index.js';
+import { extractDjangoRoutes, setDjangoParser } from '../route-extractors/django.js';
+import { discoverDjangoRootUrl } from '../route-extractors/django-root-discovery.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -148,6 +150,13 @@ export const pythonProvider = defineLanguage({
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
   isRouteFile: isDjangoRouteFile,
+  discoverRootRouteFile: (files, contentMap) => discoverDjangoRootUrl(files, contentMap),
+  extractRoutes: (tree, filePath, reader, parser) => {
+    if (parser) {
+      setDjangoParser(parser);
+    }
+    return extractDjangoRoutes(tree, filePath, reader);
+  },
   labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

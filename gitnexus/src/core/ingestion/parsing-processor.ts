@@ -60,13 +60,6 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
-import {
-  extractDjangoRoutes,
-  setDjangoParser,
-  type DjangoFileReader,
-} from './route-extractors/django.js';
-import { discoverDjangoRootUrl } from './route-extractors/django-root-discovery.js';
-import { extractLaravelRoutes } from './route-extractors/laravel.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -385,10 +378,22 @@ const processParsingSequential = async (
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
-  // Pre-compute file content map and discover Django root URL for route extraction
+  // Pre-compute file content map and discover root route files across all languages in this batch
   const fileContentMap = new Map<string, string>();
   for (const f of files) fileContentMap.set(f.path, f.content);
-  const djangoRootUrlFile = discoverDjangoRootUrl(files, fileContentMap);
+
+  const rootRouteFiles = new Map<SupportedLanguages, string | null>();
+  const languagesInBatch = new Set<SupportedLanguages>();
+  for (const f of files) {
+    const lang = getLanguageFromFilename(f.path);
+    if (lang) languagesInBatch.add(lang);
+  }
+  for (const lang of languagesInBatch) {
+    const provider = getProvider(lang);
+    if (provider.discoverRootRouteFile) {
+      rootRouteFiles.set(lang, provider.discoverRootRouteFile(files, fileContentMap));
+    }
+  }
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -847,16 +852,14 @@ const processParsingSequential = async (
       }
     });
 
-    // ── Route extraction (Django / Laravel) ──
+    // ── Route extraction (Django / Laravel / generic) ──
     // Replicates the per-file route extraction from parse-worker.ts processFileGroup.
     const isRouteFile = provider.isRouteFile?.(file.path) ?? false;
-    if (isRouteFile) {
-      if (language === SupportedLanguages.Python) {
-        const isDjangoRoot =
-          djangoRootUrlFile !== null ? file.path === djangoRootUrlFile : isRouteFile;
-        if (!isDjangoRoot) continue;
-        setDjangoParser(parser);
-        const djangoReader: DjangoFileReader = (relativePath: string) => {
+    if (isRouteFile && provider.extractRoutes) {
+      const rootRouteFile = rootRouteFiles.get(language) ?? null;
+      const isRootRoute = rootRouteFile !== null ? file.path === rootRouteFile : isRouteFile;
+      if (isRootRoute) {
+        const reader = (relativePath: string) => {
           const cached = fileContentMap.get(relativePath);
           if (cached != null) return cached;
           try {
@@ -865,10 +868,7 @@ const processParsingSequential = async (
             return null;
           }
         };
-        const extractedRoutes = extractDjangoRoutes(tree, file.path, djangoReader);
-        for (const r of extractedRoutes) outRoutes?.push(r);
-      } else {
-        const extractedRoutes = extractLaravelRoutes(tree, file.path);
+        const extractedRoutes = provider.extractRoutes(tree, file.path, reader, parser);
         for (const r of extractedRoutes) outRoutes?.push(r);
       }
     }

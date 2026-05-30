@@ -43,6 +43,8 @@ import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
+import type { ExtractedRoute } from './route-extractors/laravel.js';
+import type Parser from 'tree-sitter';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -301,6 +303,20 @@ interface LanguageProviderConfig {
    *  When true, the worker extracts routes via the language's route extraction logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
+  /** Discover the root route file (e.g. Django root urls.py).
+   *  If not provided, we extract from all route files matching `isRouteFile`. */
+  readonly discoverRootRouteFile?: (
+    files: Array<{ path: string; content: string }>,
+    contentMap?: Map<string, string>,
+  ) => string | null;
+  /** Extract routes from a framework route file.
+   *  Default: undefined (no route extraction). */
+  readonly extractRoutes?: (
+    tree: Parser.Tree,
+    filePath: string,
+    reader: (relativePath: string) => string | null,
+    parser?: Parser | null,
+  ) => ExtractedRoute[];
 
   // ── Call-resolution DAG hooks ─────────────────────────────────────
   /**

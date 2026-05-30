@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 /**
  * Given a `manage.py` file content, extract the Django settings module.
  * e.g. `os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cmrMngt.settings')`
@@ -138,8 +136,10 @@ export function discoverDjangoRootUrl(
       const basePaths: string[] = [];
       if (baseModule.startsWith('.')) {
         const resolved = resolveRelativeImport(resolvedSettingsPath!, baseModule);
-        if (resolved) basePaths.push(`${resolved.replace(/\./g, '/')}.py`);
-        basePaths.push(`${resolved.replace(/\./g, '/')}/__init__.py`);
+        if (resolved) {
+          basePaths.push(`${resolved.replace(/\./g, '/')}.py`);
+          basePaths.push(`${resolved.replace(/\./g, '/')}/__init__.py`);
+        }
       } else {
         basePaths.push(`${baseModule.replace(/\./g, '/')}.py`);
         basePaths.push(`${baseModule.replace(/\./g, '/')}/__init__.py`);

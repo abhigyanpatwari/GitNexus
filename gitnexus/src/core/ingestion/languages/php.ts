@@ -38,6 +38,7 @@ import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { phpCallConfig } from '../call-extractors/configs/php.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { extractLaravelRoutes } from '../route-extractors/laravel.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -298,6 +299,7 @@ export const phpProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.PHP),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
+  extractRoutes: (tree, filePath) => extractLaravelRoutes(tree, filePath),
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────────────────
   emitScopeCaptures: emitPhpScopeCaptures,
