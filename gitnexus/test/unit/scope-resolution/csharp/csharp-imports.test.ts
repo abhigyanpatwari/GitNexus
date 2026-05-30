@@ -467,14 +467,38 @@ describe('csharpSuffixFallbackAllowed — fail-open safety valves (#1881)', () =
     expect(csharpSuffixFallbackAllowed('System.Threading.Tasks', undefined)).toBe(true);
   });
 
-  it('fails OPEN (allows) when the namespace scan was truncated (#6)', () => {
-    // Same non-aligned import again: an incomplete (capped/unreadable) scan
-    // must not silently drop a legitimate edge, so truncation re-opens the
-    // fallback for every import.
+  it('keeps a clearly-external BCL root BLOCKED even when the scan was truncated (#1881, Codex F1)', () => {
+    // A single truncation must NOT silently re-enable BCL→local suffix matches
+    // repo-wide: System.* stays gated through truncation when the repo does not
+    // declare it. (This reverses the prior blanket-fail-open for external roots.)
     expect(
       csharpSuffixFallbackAllowed('System.Threading.Tasks', {
         declaredNamespaces: declared,
         rootNamespaces: roots,
+        truncated: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('fails OPEN for a genuinely local-looking import when the scan was truncated (#6)', () => {
+    // Non-external roots still fail open under truncation so an incomplete
+    // (capped/unreadable) scan does not silently drop a legitimate in-repo edge.
+    expect(
+      csharpSuffixFallbackAllowed('MyApp.Internal.Widget', {
+        declaredNamespaces: declared,
+        rootNamespaces: roots,
+        truncated: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('lets an external root fail OPEN through truncation when the repo declares it (escape hatch)', () => {
+    // If the repo actually declares the (normally-external) root, the alignment
+    // escape hatch allows the import even under truncation.
+    expect(
+      csharpSuffixFallbackAllowed('System.Threading.Tasks', {
+        declaredNamespaces: new Set(['System.Threading']),
+        rootNamespaces: new Set(['System']),
         truncated: true,
       }),
     ).toBe(true);

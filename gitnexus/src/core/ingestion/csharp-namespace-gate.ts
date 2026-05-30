@@ -12,19 +12,79 @@
 import type { CSharpNamespaceEvidence } from './language-config.js';
 
 /**
+ * Top-level namespace segments that clearly belong to the BCL / runtime / a
+ * ubiquitous third-party package — i.e. roots a normal repo does NOT declare.
+ * These stay gated even when the namespace scan is truncated, so a single
+ * unreadable file / capped subtree can't silently re-enable BCL→local suffix
+ * matches repo-wide (#1881). A repo that legitimately declares one of these
+ * roots is still allowed via the alignment escape hatch below.
+ */
+const CSHARP_EXTERNAL_ROOTS: ReadonlySet<string> = new Set([
+  // .NET BCL / runtime
+  'System',
+  'Microsoft',
+  'Windows',
+  'Mono',
+  // ubiquitous third-party NuGet roots
+  'Newtonsoft',
+  'Serilog',
+  'AutoMapper',
+  'MediatR',
+  'Polly',
+  'FluentValidation',
+  'Grpc',
+  'Google',
+  'Azure',
+  'Amazon',
+  'AWSSDK',
+  // common test frameworks
+  'Xunit',
+  'NUnit',
+  'Moq',
+  'FluentAssertions',
+  'NSubstitute',
+  'Shouldly',
+]);
+
+/** Whether `targetRaw`'s top-level segment is a clearly-external root. */
+function isExternalRoot(targetRaw: string): boolean {
+  const dot = targetRaw.indexOf('.');
+  const top = dot === -1 ? targetRaw : targetRaw.slice(0, dot);
+  return CSHARP_EXTERNAL_ROOTS.has(top);
+}
+
+/**
  * Whether the unanchored suffix fallback may run for `targetRaw`.
  *
  * Fails OPEN when the namespace scan was truncated (large repos must not
  * silently lose legitimate edges, #1881 #11) and when no evidence was
- * threaded at all (preserves legacy permissive behavior). Otherwise defers
- * to {@link importAlignsWithDeclaredNamespaces}.
+ * threaded at all (preserves legacy permissive behavior). The truncation
+ * fail-open is carved out for clearly-external roots (BCL / well-known
+ * packages) that the repo does not declare, so one incomplete scan can't
+ * re-open the #1881 hole repo-wide. Otherwise defers to
+ * {@link importAlignsWithDeclaredNamespaces}.
  */
 export function csharpSuffixFallbackAllowed(
   targetRaw: string,
   evidence: CSharpNamespaceEvidence | undefined,
 ): boolean {
   if (evidence === undefined) return true;
-  if (evidence.truncated) return true;
+  if (evidence.truncated) {
+    // Keep clearly-external roots blocked through truncation UNLESS the repo
+    // actually declares an aligning namespace (the alignment check is the
+    // escape hatch — a repo that declares `namespace System;` still resolves).
+    if (
+      isExternalRoot(targetRaw) &&
+      !importAlignsWithDeclaredNamespaces(
+        targetRaw,
+        evidence.declaredNamespaces,
+        evidence.rootNamespaces,
+      )
+    ) {
+      return false;
+    }
+    return true;
+  }
   return importAlignsWithDeclaredNamespaces(
     targetRaw,
     evidence.declaredNamespaces,
