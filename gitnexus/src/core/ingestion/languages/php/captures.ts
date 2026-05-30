@@ -32,7 +32,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import { nodeIfType, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import { computePhpArityMetadata } from './arity-metadata.js';
 import { synthesizePhpReceiverBinding } from './receiver-binding.js';
@@ -292,15 +292,6 @@ export function emitPhpScopeCaptures(
   }
 
   return out;
-}
-
-/**
- * Return the captured node if its type is one of `types`, else null — the
- * threaded-node equivalent of `findNodeAtRange(root, capture.range, type)`
- * (the captured node IS the node at that range, so a type match is exact).
- */
-function nodeIfType(node: SyntaxNode | undefined, ...types: readonly string[]): SyntaxNode | null {
-  return node !== undefined && types.includes(node.type) ? node : null;
 }
 
 // ─── PHP receiver normalization ──────────────────────────────────────────────

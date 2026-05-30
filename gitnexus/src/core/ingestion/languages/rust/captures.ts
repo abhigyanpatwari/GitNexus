@@ -1,5 +1,10 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeIfType,
+  nodeToCapture,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { getRustParser, getRustScopeQuery } from './query.js';
 import { recordRustCacheHit, recordRustCacheMiss } from './cache-stats.js';
 import { splitRustUseDeclaration } from './import-decomposer.js';
@@ -157,15 +162,6 @@ export function emitRustScopeCaptures(
   }
 
   return out;
-}
-
-/**
- * Return the captured node if its type is one of `types`, else null — the
- * threaded-node equivalent of `findNodeAtRange(root, capture.range, type)`
- * (the captured node IS the node at that range, so a type match is exact).
- */
-function nodeIfType(node: SyntaxNode | undefined, ...types: readonly string[]): SyntaxNode | null {
-  return node !== undefined && types.includes(node.type) ? node : null;
 }
 
 function findEnclosingImpl(node: SyntaxNode): SyntaxNode | null {

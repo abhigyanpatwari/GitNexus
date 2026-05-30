@@ -1,5 +1,10 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeIfType,
+  nodeToCapture,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { getRubyParser, getRubyScopeQuery } from './query.js';
 import { recordRubyCacheHit, recordRubyCacheMiss } from './cache-stats.js';
 import { synthesizeRubyReceiverBinding, findEnclosingClassOrModule } from './receiver-binding.js';
@@ -368,6 +373,17 @@ export function emitRubyScopeCaptures(
   // precomputed once. The previous `out.some(...)` per method was
   // O(methods x out.length) ~ O(n^2); this makes the dedup O(1) per method.
   // Key = `<name>:<return-binding startLine>`, matching the old AND condition.
+  //
+  // Snapshot-vs-live note (PR #1918 tri-review P3): the old `out.some` was
+  // evaluated LIVE, so it also saw constructor-return bindings this very loop
+  // pushed in earlier iterations. That made the old code suppress the 2nd of
+  // two same-named methods one source row apart whose bodies both end in
+  // `Const.new` (the 1st's pushed binding startLine == the 2nd's row via the
+  // 1-based/0-based offset below). The snapshot is built from the YARD pass
+  // only, so it no longer cross-suppresses — both bindings are emitted, which
+  // is the intended behavior (the cross-suppression was unintended). This
+  // corner is absent from fixtures, so the capture fingerprint is unchanged;
+  // ruby-captures-golden.test.ts pins it explicitly.
   const yardReturnKeys = new Set<string>();
   for (const m of out) {
     const ret = m['@type-binding.return'];
@@ -523,15 +539,6 @@ function computeRubyCallArity(callNode: SyntaxNode): number {
     if (child !== null && child.type !== 'block') count++;
   }
   return count;
-}
-
-/**
- * Return the captured node if its type is one of `types`, else null — the
- * threaded-node equivalent of `findNodeAtRange(root, capture.range, type)`
- * (the captured node IS the node at that range, so a type match is exact).
- */
-function nodeIfType(node: SyntaxNode | undefined, ...types: readonly string[]): SyntaxNode | null {
-  return node !== undefined && types.includes(node.type) ? node : null;
 }
 
 function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {

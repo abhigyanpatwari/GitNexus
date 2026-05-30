@@ -2,6 +2,13 @@
  * Build-free measurement harness for `emitPythonScopeCaptures`
  * (ce-optimize: python-scope-capture).
  *
+ * This is Python's counterpart to `bench/scope-capture/measure.mjs` (which
+ * covers go/csharp/rust/php/ruby/cobol). Python lives here, NOT in that unified
+ * harness, because this one ALSO covers import resolution
+ * (`import-target-fingerprint.mjs`). Python's capture-scaling guard therefore
+ * runs via `python-scope/measure.mjs --check`, not the unified harness — don't
+ * remove either thinking the other covers Python.
+ *
  * Mirrors the Go scope-capture harness (#1848). Imports the `.ts` hotpath
  * directly through tsx (`node --import tsx bench/python-scope/measure.mjs`):
  * a static `.ts` import works; a top-level `await import()` breaks tsx's lexer.

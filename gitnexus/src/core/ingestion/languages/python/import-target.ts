@@ -31,10 +31,17 @@ export function resolvePythonImportTarget(
   // PythonResolveContext-shaped object; narrow structurally rather
   // than via a cast chain so unexpected shapes return null cleanly.
   const ctx = workspaceIndex as PythonResolveContext | undefined;
+  // Duck-type the set rather than `instanceof Set`: `allFilePaths` is typed
+  // `ReadonlySet<string>` and the chain only ever calls `.has()` + iterates, so
+  // any set-like is valid. An `instanceof Set` check would reject a legitimate
+  // non-`Set` `ReadonlySet` implementation and silently return null for every
+  // import (PR #1918 tri-review P2).
+  const allFilePaths = (ctx as { allFilePaths?: unknown } | undefined)?.allFilePaths;
   if (
     ctx === undefined ||
     typeof (ctx as { fromFile?: unknown }).fromFile !== 'string' ||
-    !((ctx as { allFilePaths?: unknown }).allFilePaths instanceof Set)
+    typeof (allFilePaths as { has?: unknown } | undefined)?.has !== 'function' ||
+    typeof (allFilePaths as Iterable<string> | undefined)?.[Symbol.iterator] !== 'function'
   ) {
     return null;
   }
