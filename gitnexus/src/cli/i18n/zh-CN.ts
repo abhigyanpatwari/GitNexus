@@ -50,6 +50,8 @@ export const zhCN = {
   'tool.usage.impact':
     '用法：gitnexus impact <符号名> [--uid <uid>] [--file <路径>] [--kind <类型>] [--direction upstream|downstream]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
+  'tool.warn.unknownKind':
+    "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',

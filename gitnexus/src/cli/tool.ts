@@ -16,8 +16,8 @@
  */
 
 import { writeSync } from 'node:fs';
-import { LocalBackend } from '../mcp/local/local-backend.js';
-import { cliErrorKey } from './cli-message.js';
+import { LocalBackend, VALID_NODE_LABELS } from '../mcp/local/local-backend.js';
+import { cliErrorKey, cliWarnKey } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
 
 let _backend: LocalBackend | null = null;
@@ -142,6 +142,12 @@ export async function impactCommand(
   if (!target?.trim() && !options?.uid) {
     cliErrorKey('tool.usage.impact');
     process.exit(1);
+  }
+  // Soft-validate --kind: an unknown kind is a no-op hint (the backend scores
+  // it but it matches nothing), so warn and proceed rather than rejecting —
+  // parity with the lenient MCP surface and forward-compatible with new labels.
+  if (options?.kind && !VALID_NODE_LABELS.has(options.kind)) {
+    cliWarnKey('tool.warn.unknownKind', { kind: options.kind });
   }
 
   try {

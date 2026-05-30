@@ -23,6 +23,8 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
     init = init;
     callTool = callTool;
   },
+  // U4: impactCommand imports VALID_NODE_LABELS to soft-validate --kind.
+  VALID_NODE_LABELS: new Set(['Function', 'Class', 'Interface', 'Method', 'Constructor']),
 }));
 
 // impactCommand prints its result via fs.writeSync(fd 1, …). Silence that so
@@ -108,5 +110,31 @@ describe('CLI impact disambiguation flags (#1907)', () => {
     expect(callTool).not.toHaveBeenCalled();
 
     exitSpy.mockRestore();
+  });
+
+  // U4 (#1914 review F3): an unknown --kind warns to stderr but still resolves.
+  it('warns on an unknown --kind but still forwards the request', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await impactCommand('login', { kind: 'Funktion', direction: 'upstream' });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    const stderr = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(stderr).toContain('Funktion');
+    expect(stderr).toContain('not a known symbol kind');
+
+    stderrSpy.mockRestore();
+  });
+
+  it('does not warn for a known --kind', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await impactCommand('login', { kind: 'Function', direction: 'upstream' });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    const stderr = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(stderr).not.toContain('not a known symbol kind');
+
+    stderrSpy.mockRestore();
   });
 });
