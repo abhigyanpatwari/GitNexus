@@ -47,8 +47,11 @@ export const zhCN = {
   'tool.noIndexed': 'GitNexus：未找到已索引仓库。请运行：gitnexus analyze',
   'tool.usage.query': '用法：gitnexus query <搜索词>',
   'tool.usage.context': '用法：gitnexus context <符号名> [--uid <uid>] [--file <路径>]',
-  'tool.usage.impact': '用法：gitnexus impact <符号名> [--direction upstream|downstream]',
+  'tool.usage.impact':
+    '用法：gitnexus impact <符号名> [--uid <uid>] [--file <路径>] [--kind <类型>] [--direction upstream|downstream]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
+  'tool.warn.unknownKind':
+    "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
@@ -199,6 +202,7 @@ export const zhCN = {
   'help.option.repo.target': '目标仓库',
   'help.option.context.uid': '直接符号 UID（零歧义查找）',
   'help.option.context.file': '用于消除常见名称歧义的文件路径',
+  'help.option.impact.kind': '用于消除常见名称歧义的类型过滤（如 Function、Class、Method）',
   'help.option.impact.direction': 'upstream（依赖它的项）或 downstream（它依赖的项）',
   'help.option.impact.depth': '最大关系遍历深度（默认：3）',
   'help.option.impact.includeTests': '在结果中包含测试文件',
