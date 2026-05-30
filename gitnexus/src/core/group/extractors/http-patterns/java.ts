@@ -72,30 +72,29 @@ interface SpringTypeInfo {
   methods: SpringMethodInfo[];
 }
 
-// ─── Consolidated route-defining annotations (one query, one pass) ────
-// Every Java route-mapper annotation is matched by this SINGLE query so the
-// scan walks the tree exactly once per file. `scanRouteAnnotations` branches
-// on which captures each match carries to build the prefix maps and the
-// per-method route / request-line lists.
+// ─── Route-defining annotations (one generic query, one pass) ─────────
+// Every Java route-mapper annotation shares one shape: an annotation carrying a
+// single string argument — positional `"..."` or named `key = "..."` — on a
+// class, interface, or method. This SINGLE query matches that shape generically;
+// `scanRouteAnnotations` then reads the annotation NAME (`@ann`) and declaration
+// kind (`@node.type`) in its for-loop to decide what each match means. Adding a
+// new framework annotation is a change to that loop (and the lookup maps), not
+// to this query.
 //
-// Variants (each in both positional `"..."` and named `path = "..."` shapes):
-//   • Spring class/interface `@RequestMapping(...)` prefix → @reqmap_type / @reqmap_prefix / @reqmap_key
-//   • OpenFeign `@FeignClient(path = "...")` prefix        → @feign_interface / @feign_prefix
-//   • Spring `@(Get|Post|Put|Delete|Patch)Mapping(...)`    → @method / @method_name / @mapping_ann / @mapping_path / @mapping_key
-//   • OpenFeign native `@RequestLine("METHOD /path")`      → @method / @method_name / @line_value
+// Captures (shared across all branches; intentionally framework-agnostic):
+//   @ann    → the annotation name identifier (RequestMapping, GetMapping, RequestLine, …)
+//   @node   → the enclosing declaration (class_declaration | interface_declaration | method_declaration)
+//   @value  → the string-literal argument
+//   @key    → the named-argument member key (absent for the positional shape)
+//   @member → the method name (method_declaration branches only)
 //
-// tree-sitter 0.21.x binding constraint (verified empirically): a top-level
-// `[ ... ]` alternation compiles to ONE pattern whose text predicates share a
-// single bucket and are applied to every match, keyed by capture name. Two
-// behaviours follow and shape this query:
-//   1. `#eq?` against a capture absent from the matched branch is vacuously
-//      true, so fixed annotation names are safely pinned with branch-local
-//      `#eq?` captures (`@reqmap_ann`, `@feign_ann`, `@line_ann`).
-//   2. `#match?` against an absent capture is FALSE — a single `#match?` in the
-//      alternation would silently drop every sibling-branch match. So the
-//      variable discriminators (the HTTP verb annotation name and the
-//      `path`/`value` member key) carry NO in-query predicate and are filtered
-//      in JS (`METHOD_ANNOTATION_TO_HTTP`, `isRouteMemberKey`).
+// The query carries NO `#eq?` / `#match?` predicates. Under the pinned
+// tree-sitter 0.21.x binding a top-level `[ ... ]` alternation compiles to one
+// pattern whose text predicates share a single bucket keyed by capture name, and
+// a `#match?` against a capture absent from the matched branch evaluates FALSE —
+// silently dropping sibling-branch matches. Keeping the query predicate-free
+// sidesteps that hazard entirely; all name/key discrimination lives in the
+// for-loop, where it reads as straight-line code.
 const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
   name: 'java-route-annotation',
   language: Java,
@@ -107,70 +106,44 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (class_declaration
             (modifiers
               (annotation
-                name: (identifier) @reqmap_ann (#eq? @reqmap_ann "RequestMapping")
-                arguments: (annotation_argument_list (string_literal) @reqmap_prefix)))) @reqmap_type
+                name: (identifier) @ann
+                arguments: (annotation_argument_list (string_literal) @value)))) @node
           (interface_declaration
             (modifiers
               (annotation
-                name: (identifier) @reqmap_ann (#eq? @reqmap_ann "RequestMapping")
-                arguments: (annotation_argument_list (string_literal) @reqmap_prefix)))) @reqmap_type
+                name: (identifier) @ann
+                arguments: (annotation_argument_list (string_literal) @value)))) @node
           (class_declaration
             (modifiers
               (annotation
-                name: (identifier) @reqmap_ann (#eq? @reqmap_ann "RequestMapping")
+                name: (identifier) @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
-                    key: (identifier) @reqmap_key
-                    value: (string_literal) @reqmap_prefix))))) @reqmap_type
+                    key: (identifier) @key
+                    value: (string_literal) @value))))) @node
           (interface_declaration
             (modifiers
               (annotation
-                name: (identifier) @reqmap_ann (#eq? @reqmap_ann "RequestMapping")
+                name: (identifier) @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
-                    key: (identifier) @reqmap_key
-                    value: (string_literal) @reqmap_prefix))))) @reqmap_type
-
-          (interface_declaration
-            (modifiers
-              (annotation
-                name: (identifier) @feign_ann (#eq? @feign_ann "FeignClient")
-                arguments: (annotation_argument_list
-                  (element_value_pair
-                    key: (identifier) @feign_key (#eq? @feign_key "path")
-                    value: (string_literal) @feign_prefix))))) @feign_interface
-
+                    key: (identifier) @key
+                    value: (string_literal) @value))))) @node
           (method_declaration
             (modifiers
               (annotation
-                name: (identifier) @mapping_ann
-                arguments: (annotation_argument_list (string_literal) @mapping_path)))
-            name: (identifier) @method_name) @method
+                name: (identifier) @ann
+                arguments: (annotation_argument_list (string_literal) @value)))
+            name: (identifier) @member) @node
           (method_declaration
             (modifiers
               (annotation
-                name: (identifier) @mapping_ann
+                name: (identifier) @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
-                    key: (identifier) @mapping_key
-                    value: (string_literal) @mapping_path))))
-            name: (identifier) @method_name) @method
-
-          (method_declaration
-            (modifiers
-              (annotation
-                name: (identifier) @line_ann (#eq? @line_ann "RequestLine")
-                arguments: (annotation_argument_list (string_literal) @line_value)))
-            name: (identifier) @method_name) @method
-          (method_declaration
-            (modifiers
-              (annotation
-                name: (identifier) @line_ann (#eq? @line_ann "RequestLine")
-                arguments: (annotation_argument_list
-                  (element_value_pair
-                    key: (identifier) @line_key (#eq? @line_key "value")
-                    value: (string_literal) @line_value))))
-            name: (identifier) @method_name) @method
+                    key: (identifier) @key
+                    value: (string_literal) @value))))
+            name: (identifier) @member) @node
         ]
       `,
     },
@@ -482,11 +455,12 @@ interface RouteAnnotationScan {
 /**
  * Resolve every Java route-defining annotation in a single tree-sitter pass.
  *
- * All variants come from the one `JAVA_ROUTE_ANNOTATION_PATTERNS` query; this
- * function branches on which captures a match carries to build the prefix maps
- * and the per-method route / request-line lists. The HTTP verb annotation name
- * and the `path`/`value` member key are filtered here (see the query header for
- * why that discrimination cannot live in the alternation predicates).
+ * The generic `JAVA_ROUTE_ANNOTATION_PATTERNS` query yields one match per
+ * annotation-carrying-a-string-argument on any class / interface / method. This
+ * loop reads the annotation name and declaration kind to decide what each match
+ * means, ignoring annotations it does not recognise. The HTTP verb map
+ * (`METHOD_ANNOTATION_TO_HTTP`) and the `path`/`value` key filter
+ * (`isRouteMemberKey`) live here rather than in the query (see its header).
  */
 function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   const matches = runCompiledPatterns(JAVA_ROUTE_ANNOTATION_PATTERNS, tree);
@@ -500,55 +474,60 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   const interfaceRequestMappingPrefixes: Array<{ id: number; prefix: string }> = [];
 
   for (const { captures } of matches) {
-    // Spring `@RequestMapping` class/interface prefix.
-    const reqmapType = captures.reqmap_type;
-    const reqmapPrefix = captures.reqmap_prefix;
-    if (reqmapType && reqmapPrefix && isRouteMemberKey(captures.reqmap_key)) {
-      const prefix = unquoteLiteral(reqmapPrefix.text);
-      if (prefix !== null) {
-        prefixByTypeId.set(reqmapType.id, prefix);
-        if (reqmapType.type === 'interface_declaration') {
-          interfaceRequestMappingPrefixes.push({ id: reqmapType.id, prefix });
+    const annNode = captures.ann;
+    const node = captures.node;
+    const valueNode = captures.value;
+    if (!annNode || !node || !valueNode) continue;
+    const ann = annNode.text;
+    const keyNode = captures.key; // undefined for the positional shape
+
+    if (node.type === 'method_declaration') {
+      // Method-level: a Spring `@(Get|...)Mapping` route, or native `@RequestLine`.
+      const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
+      if (httpMethod) {
+        if (!isRouteMemberKey(keyNode)) continue;
+        const rawPath = unquoteLiteral(valueNode.text);
+        if (rawPath !== null) {
+          methodRoutes.push({
+            methodNode: node,
+            methodName: captures.member?.text ?? null,
+            httpMethod,
+            rawPath,
+          });
+        }
+      } else if (ann === 'RequestLine') {
+        // Feign packs verb + path in one literal; its only named argument is `value`.
+        if (keyNode && keyNode.text !== 'value') continue;
+        const raw = unquoteLiteral(valueNode.text);
+        const parsed = raw !== null ? parseRequestLine(raw) : null;
+        if (parsed) {
+          requestLines.push({
+            methodNode: node,
+            methodName: captures.member?.text ?? null,
+            parsed,
+          });
         }
       }
+      continue;
     }
 
-    // OpenFeign `@FeignClient(path = "...")` interface prefix (highest precedence, first wins).
-    const feignInterface = captures.feign_interface;
-    const feignPrefix = captures.feign_prefix;
-    if (feignInterface && feignPrefix && !feignPrefixByInterfaceId.has(feignInterface.id)) {
-      const prefix = unquoteLiteral(feignPrefix.text);
-      if (prefix !== null) feignPrefixByInterfaceId.set(feignInterface.id, prefix);
-    }
-
-    // Spring `@(Get|Post|Put|Delete|Patch)Mapping` method route.
-    const methodNode = captures.method;
-    const mappingAnn = captures.mapping_ann;
-    const mappingPath = captures.mapping_path;
-    if (methodNode && mappingAnn && mappingPath && isRouteMemberKey(captures.mapping_key)) {
-      const httpMethod = METHOD_ANNOTATION_TO_HTTP[mappingAnn.text];
-      const rawPath = httpMethod ? unquoteLiteral(mappingPath.text) : null;
-      if (httpMethod && rawPath !== null) {
-        methodRoutes.push({
-          methodNode,
-          methodName: captures.method_name?.text ?? null,
-          httpMethod,
-          rawPath,
-        });
+    // Type-level (class or interface): a Spring `@RequestMapping` URL prefix, or
+    // — on an interface — an OpenFeign `@FeignClient(path = "...")` prefix.
+    if (ann === 'RequestMapping') {
+      if (!isRouteMemberKey(keyNode)) continue;
+      const prefix = unquoteLiteral(valueNode.text);
+      if (prefix !== null) {
+        prefixByTypeId.set(node.id, prefix);
+        if (node.type === 'interface_declaration') {
+          interfaceRequestMappingPrefixes.push({ id: node.id, prefix });
+        }
       }
-    }
-
-    // OpenFeign native `@RequestLine("METHOD /path")`.
-    const lineValue = captures.line_value;
-    if (methodNode && lineValue) {
-      const raw = unquoteLiteral(lineValue.text);
-      const parsed = raw !== null ? parseRequestLine(raw) : null;
-      if (parsed) {
-        requestLines.push({
-          methodNode,
-          methodName: captures.method_name?.text ?? null,
-          parsed,
-        });
+    } else if (ann === 'FeignClient' && node.type === 'interface_declaration') {
+      // Feign's `name`/`value` identify a service, not a path — only `path` is a prefix.
+      if (!keyNode || keyNode.text !== 'path') continue;
+      const prefix = unquoteLiteral(valueNode.text);
+      if (prefix !== null && !feignPrefixByInterfaceId.has(node.id)) {
+        feignPrefixByInterfaceId.set(node.id, prefix);
       }
     }
   }
