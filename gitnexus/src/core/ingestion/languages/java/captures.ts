@@ -165,10 +165,7 @@ export function emitJavaScopeCaptures(
         findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
-        const args =
-          argList === null
-            ? []
-            : argList.namedChildren.filter((c) => c !== null && c.type !== 'comment');
+        const args = argList === null ? [] : argList.namedChildren.filter((c) => c !== null);
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
           callNode,

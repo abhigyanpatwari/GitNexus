@@ -277,16 +277,6 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
       return { kind: 'callResult', lhs, callee: funcNode.text };
     }
   }
-  // method_call_expression RHS → methodCallResult (receiver.method())
-  if (unwrapped.type === 'method_call_expression') {
-    const obj = unwrapped.firstNamedChild;
-    if (obj?.type === 'identifier') {
-      const methodNode = unwrapped.childForFieldName('name') ?? unwrapped.namedChild(1);
-      if (methodNode?.type === 'field_identifier') {
-        return { kind: 'methodCallResult', lhs, receiver: obj.text, method: methodNode.text };
-      }
-    }
-  }
   return undefined;
 };
 
@@ -407,11 +397,6 @@ const extractRustElementTypeFromTypeNode = (
   }
   // array_type: [User; N] — element is the first child
   if (typeNode.type === 'array_type') {
-    const elemNode = typeNode.firstNamedChild;
-    if (elemNode) return extractSimpleTypeName(elemNode);
-  }
-  // slice_type: [User] — element is the first child
-  if (typeNode.type === 'slice_type') {
     const elemNode = typeNode.firstNamedChild;
     if (elemNode) return extractSimpleTypeName(elemNode);
   }

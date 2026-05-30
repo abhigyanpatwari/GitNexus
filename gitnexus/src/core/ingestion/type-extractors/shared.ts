@@ -257,11 +257,7 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
 
   // Generic types: extract the base type (e.g., List<User> → List)
   // For nullable wrappers (Optional<User>, Option<User>), unwrap to inner type.
-  if (
-    typeNode.type === 'generic_type' ||
-    typeNode.type === 'parameterized_type' ||
-    typeNode.type === 'generic_name'
-  ) {
+  if (typeNode.type === 'generic_type' || typeNode.type === 'generic_name') {
     const base =
       typeNode.childForFieldName('name') ??
       typeNode.childForFieldName('type') ??
@@ -431,11 +427,7 @@ export const extractGenericTypeArgs = (typeNode: SyntaxNode, depth = 0): string[
   }
 
   // Only process generic/parameterized type nodes (includes C#'s generic_name)
-  if (
-    typeNode.type !== 'generic_type' &&
-    typeNode.type !== 'parameterized_type' &&
-    typeNode.type !== 'generic_name'
-  ) {
+  if (typeNode.type !== 'generic_type' && typeNode.type !== 'generic_name') {
     return [];
   }
 

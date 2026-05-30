@@ -1360,7 +1360,7 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo | null {
         inner = next;
         continue;
       }
-      if (inner.type === 'reference_declarator' || inner.type === 'rvalue_reference_declarator') {
+      if (inner.type === 'reference_declarator') {
         // reference_declarator has a single child (the inner declarator).
         let next: SyntaxNode | null = null;
         for (let j = 0; j < inner.namedChildCount; j++) {
