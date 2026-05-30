@@ -17,7 +17,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
@@ -66,21 +66,30 @@ export function emitPythonScopeCaptures(
     // `@`; we put it back so the central extractor's prefix lookups
     // (`@scope.`, `@declaration.`, …) work.
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
+    // hands us each matched node as `c.node`, so anchor nodes can be used
+    // directly (or via a bounded LOCAL walk) instead of re-deriving them with
+    // `findNodeAtRange(tree.rootNode, ...)`, which scanned all of root's named
+    // children on every match -> O(matches x rootChildren). That was the #1848
+    // hotpath in Go (fixed in eaf0a305); the same shape lived here in Python.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
     if (grouped['@import.statement'] !== undefined) {
-      // Decompose multi-name imports. Both `import_statement` and
-      // `import_from_statement` share the matched range, so we try the
-      // `from` form first and fall back to plain.
-      const stmtCapture = grouped['@import.statement'];
-      const stmtNode =
-        findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_from_statement') ??
-        findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_statement');
-      if (stmtNode !== null) {
+      // `@import.statement` is captured directly ON the `import_statement` /
+      // `import_from_statement` node (query: `(import_statement) @import.statement`
+      // and `(import_from_statement) @import.statement`), so the captured node IS
+      // the one the old findNodeAtRange re-derived. `splitImportStatement`
+      // dispatches on those two types; a captured node of any other type would
+      // have made the old range+type lookup return null -> the defensive raw
+      // fallback, which the type guard below reproduces exactly.
+      const stmtNode = nodeMap['@import.statement']!;
+      if (stmtNode.type === 'import_from_statement' || stmtNode.type === 'import_statement') {
         for (const piece of splitImportStatement(stmtNode)) out.push(piece);
       } else {
         // Defensive fallback: emit the raw match.
@@ -91,11 +100,11 @@ export function emitPythonScopeCaptures(
 
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const fnNode = findNodeAtRange(
-        tree.rootNode,
-        grouped['@scope.function']!.range,
-        'function_definition',
-      );
+      // `@scope.function` is captured directly on the `function_definition`
+      // node (query: `(function_definition) @scope.function`), so it IS the
+      // node the old findNodeAtRange re-derived at that range.
+      const scopeNode = nodeMap['@scope.function']!;
+      const fnNode = scopeNode.type === 'function_definition' ? scopeNode : null;
       if (fnNode !== null) {
         const synth = synthesizeReceiverTypeBinding(fnNode);
         if (synth !== null) out.push(synth);
@@ -110,7 +119,11 @@ export function emitPythonScopeCaptures(
       // The anchor range is the function_definition itself — we resolve
       // the node and pipe it through the arity helper.
       const anchorCap = grouped['@declaration.function']!;
-      const fnNode = findNodeAtRange(tree.rootNode, anchorCap.range, 'function_definition');
+      // `@declaration.function` is captured directly on the `function_definition`
+      // node (query: `(function_definition name: (identifier) @declaration.name)
+      // @declaration.function`), so use the captured node, not a root re-walk.
+      const anchorNode = nodeMap['@declaration.function']!;
+      const fnNode = anchorNode.type === 'function_definition' ? anchorNode : null;
       if (fnNode !== null) {
         if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
           delete grouped['@declaration.function'];
