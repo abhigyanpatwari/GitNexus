@@ -181,3 +181,41 @@ jobs:
           else
             "$PREFIX/bin/gitnexus" --version
           fi
+
+  # ── Dedicated benchmark gate ─────────────────────────────────────
+  # The cross-language `*-pipeline-benchmark.test.ts` suites are gated behind
+  # GITNEXUS_BENCH (they generate synthetic codebases at scale), so the main
+  # coverage job above SKIPS them — their O(n^2) scaling guards never ran in CI.
+  # Run them here with GITNEXUS_BENCH=1, alongside the Python scope-capture and
+  # import-resolution fingerprint + scaling guards (PR #1918 P2a).
+  #
+  # `--no-file-parallelism` is REQUIRED: these suites measure wall-clock and peak
+  # heap, so parallel forks both skew the timings and OOM the worker pool — they
+  # must run one file at a time.
+  benchmarks:
+    name: benchmarks (GITNEXUS_BENCH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Python scope-capture + import-resolution fingerprint / scaling guards
+        run: |
+          node --import tsx bench/python-scope/measure.mjs --check
+          node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
+        working-directory: gitnexus
+
+      - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        env:
+          GITNEXUS_BENCH: '1'
+        run: >-
+          npx vitest run --no-file-parallelism
+          test/integration/cobol-pipeline-benchmark.test.ts
+          test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/rust-pipeline-benchmark.test.ts
+          test/integration/php-pipeline-benchmark.test.ts
+          test/integration/ruby-pipeline-benchmark.test.ts
+        working-directory: gitnexus
