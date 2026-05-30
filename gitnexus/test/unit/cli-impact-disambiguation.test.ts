@@ -72,4 +72,41 @@ describe('CLI impact disambiguation flags (#1907)', () => {
     expect(params.file_path).toBeUndefined();
     expect(params.kind).toBeUndefined();
   });
+
+  // U1 (#1914 review F1): impact's positional target is now optional, so a uid
+  // alone resolves — parity with `context [name]`.
+  it('resolves uid-only with no positional target (parity with context)', async () => {
+    await impactCommand(undefined, {
+      direction: 'upstream',
+      uid: 'Function:src/auth.ts:login',
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    const params = callTool.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.target_uid).toBe('Function:src/auth.ts:login');
+    expect(params.target).toBeUndefined();
+  });
+
+  it('errors when neither a target nor a uid is provided', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+
+    await expect(impactCommand(undefined, {})).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('rejects a --prefixed uid value (a flag swallowed by Commander) without forwarding it', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+
+    await expect(impactCommand(undefined, { uid: '--file' })).rejects.toThrow('process.exit');
+    expect(callTool).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
 });

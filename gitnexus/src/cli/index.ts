@@ -219,7 +219,7 @@ program
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program
-  .command('impact <target>')
+  .command('impact [target]')
   .description('Blast radius analysis: what breaks if you change a symbol')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
   .option('-r, --repo <name>', 'Target repository')
