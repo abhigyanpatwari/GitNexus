@@ -302,6 +302,91 @@ withTestLbugDB(
         }
       });
     });
+
+    // ─── impact disambiguation + label-scoped resolution (#1907) ─────────
+    // Covers the disambiguation surface the CLI --uid/--file/--kind flags
+    // wire through to, and guards the label-scoped resolver against the
+    // binder failure that motivated the fix.
+    describe('impact disambiguation (#1907)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(async () => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) {
+          throw new Error(
+            'LocalBackend not initialized — afterSetup did not attach _backend to handle',
+          );
+        }
+        backend = ext._backend;
+      });
+
+      it('reports an ambiguous target with disambiguation guidance', async () => {
+        // Two Methods named 'authenticate' (AuthService + BaseService).
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        expect(result.message).toMatch(/disambiguate/i);
+        const uids = (result.candidates ?? []).map((c: any) => c.uid);
+        expect(uids).toContain('method:AuthService.authenticate');
+        expect(uids).toContain('method:BaseService.authenticate');
+      });
+
+      it('resolves the ambiguous target via target_uid (the --uid flag path)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          target_uid: 'method:BaseService.authenticate',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).not.toBe('ambiguous');
+        // target_uid selects the exact symbol, bypassing the name ranker.
+        expect(result.target?.id).toBe('method:BaseService.authenticate');
+        expect(result.target?.filePath).toBe('src/base.ts');
+      });
+
+      it('resolves the ambiguous target via file_path (the --file flag path)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          file_path: 'src/base.ts',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).not.toBe('ambiguous');
+        expect(result.target?.id).toBe('method:BaseService.authenticate');
+      });
+
+      it('does not crash when a name collides across symbol and non-symbol labels', async () => {
+        // 'alpha' exists as both a Function and a Tool sharing src/tools.py.
+        // The Tool node table has no startLine/endLine columns, so the
+        // resolver's `RETURN n.startLine` projection only binds because the
+        // candidate set also contains a label that *does* have those columns
+        // (lenient multi-table binding). This guards that the disambiguation
+        // path keeps tolerating non-symbol node types — and would catch a
+        // future naive label-scoping that reintroduces the #1907 binder error
+        // ("Cannot find property … for n") by matching property-poor tables
+        // in isolation.
+        const result = await backend.callTool('impact', {
+          target: 'alpha',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        const uids = (result.candidates ?? []).map((c: any) => c.uid);
+        expect(uids).toContain('func:alpha');
+        expect(uids).toContain('Tool:alpha');
+      });
+
+      it('context resolves the same cross-label collision without crashing', async () => {
+        const result = await backend.callTool('context', { name: 'alpha' });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        const uids = (result.candidates ?? []).map((c: any) => c.uid);
+        expect(uids).toContain('func:alpha');
+      });
+    });
   },
   {
     seed: LOCAL_BACKEND_SEED_DATA,

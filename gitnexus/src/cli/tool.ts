@@ -115,6 +115,9 @@ export async function impactCommand(
   options?: {
     direction?: string;
     repo?: string;
+    uid?: string;
+    file?: string;
+    kind?: string;
     depth?: string;
     includeTests?: boolean;
     limit?: string;
@@ -135,6 +138,9 @@ export async function impactCommand(
     const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
     const result = await backend.callTool('impact', {
       target,
+      target_uid: options?.uid,
+      file_path: options?.file,
+      kind: options?.kind,
       direction: options?.direction || 'upstream',
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,

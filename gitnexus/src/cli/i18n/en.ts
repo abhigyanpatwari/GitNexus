@@ -43,7 +43,8 @@ export const en = {
   'tool.noIndexed': 'GitNexus: No indexed repositories found. Run: gitnexus analyze',
   'tool.usage.query': 'Usage: gitnexus query <search_query>',
   'tool.usage.context': 'Usage: gitnexus context <symbol_name> [--uid <uid>] [--file <path>]',
-  'tool.usage.impact': 'Usage: gitnexus impact <symbol_name> [--direction upstream|downstream]',
+  'tool.usage.impact':
+    'Usage: gitnexus impact <symbol_name> [--uid <uid>] [--file <path>] [--kind <kind>] [--direction upstream|downstream]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
   'tool.detectChanges.noChanges': 'No changes detected.',
   'tool.detectChanges.changesSummary': 'Changes: {{files}} files, {{symbols}} symbols',
@@ -213,6 +214,8 @@ export const en = {
   'help.option.repo.target': 'Target repository',
   'help.option.context.uid': 'Direct symbol UID (zero-ambiguity lookup)',
   'help.option.context.file': 'File path to disambiguate common names',
+  'help.option.impact.kind':
+    'Kind filter to disambiguate common names (e.g. Function, Class, Method)',
   'help.option.impact.direction': 'upstream (dependants) or downstream (dependencies)',
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
