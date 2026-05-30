@@ -1,7 +1,20 @@
 // gitnexus/src/core/ingestion/heritage-extractors/configs/go.ts
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { HeritageExtractionConfig } from '../../heritage-types.js';
+import type { HeritageExtractionConfig, SupertypeShapeDescriptor } from '../../heritage-types.js';
+
+/**
+ * Go embed supertype shapes.
+ *
+ * Struct embedding (anonymous `field_declaration` type) and interface-in-
+ * interface embedding (`interface_type → type_elem`) can both name a bare
+ * `type_identifier`, a `qualified_type` (`pkg.Base`), or a `generic_type`
+ * (`Gen[T]`). Named struct fields also match the field pattern and are
+ * filtered out at runtime by {@link goHeritageConfig.shouldSkipExtends}.
+ */
+export const goHeritageShapes: SupertypeShapeDescriptor = {
+  shapes: ['type_identifier', 'qualified_type', 'generic_type'],
+};
 
 /**
  * Go heritage extraction config.
