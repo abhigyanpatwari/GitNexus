@@ -437,3 +437,68 @@ withTestLbugDB(
     },
   },
 );
+
+// ─── impact BFS bound parameters (#1907 review F5) ───────────────────────
+// Isolated DB (not the shared seed) with a frontier node whose id contains a
+// single quote. Under the old string-interpolated query this id had to be
+// hand-escaped; the parameterized query (executeParameterized with bound
+// $frontierIds/$relTypes) carries it as data. Guards that a quote-bearing id
+// traverses without a Prepare/parser error, and that a no-caller symbol
+// returns an empty result rather than erroring.
+withTestLbugDB(
+  'local-backend-impact-param',
+  (handle) => {
+    describe('impact BFS bound parameters (#1907 F5)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) {
+          throw new Error('LocalBackend not initialized — afterSetup did not attach _backend');
+        }
+        backend = ext._backend;
+      });
+
+      it('traverses a caller whose id contains a single quote without a query error', async () => {
+        const result = await backend.callTool('impact', { target: 'sink', direction: 'upstream' });
+        expect(result).not.toHaveProperty('error');
+        const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+        const callerIds = d1.map((d: any) => d.uid ?? d.id);
+        expect(callerIds).toContain("func:o'd");
+      });
+
+      it('returns an empty result (not an error) for a symbol with no callers', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'sink',
+          direction: 'downstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.impactedCount).toBe(0);
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (a:Function {id: "func:o'd", name: 'odd', filePath: 'src/q.ts', startLine: 1, endLine: 3, isExported: true, content: 'function odd() {}', description: 'caller with a quote in its id'})`,
+      `CREATE (b:Function {id: 'func:sink', name: 'sink', filePath: 'src/q.ts', startLine: 5, endLine: 8, isExported: true, content: 'function sink() {}', description: 'callee'})`,
+      `MATCH (a:Function), (b:Function) WHERE a.id = "func:o'd" AND b.id = 'func:sink'
+       CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'param-repo',
+          path: '/param/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 1, nodes: 2, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
