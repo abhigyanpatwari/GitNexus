@@ -660,6 +660,14 @@ UPSTREAM (what depends on this):
 
 Options: `maxDepth`, `minConfidence`, `relationTypes` (`CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`), `includeTests`, `limit` (max symbols per depth, default 100), `offset` (pagination start per depth), `summaryOnly` (counts and risk only, omits symbol list)
 
+**Disambiguation** — when several symbols share the target name, `impact` returns a ranked `ambiguous` candidate list instead of guessing. Narrow it with `target_uid` (exact, zero-ambiguity), `file_path`, or `kind` (`Function`, `Class`, `Method`, …). From the CLI these are `--uid`, `--file`, and `--kind`, matching `gitnexus context`:
+
+```bash
+gitnexus impact get_embeddings                       # → ambiguous: lists ranked candidates
+gitnexus impact get_embeddings --file src/embed.py   # → resolves to the one in that file
+gitnexus impact get_embeddings --uid "Function:src/embed.py:get_embeddings"  # exact
+```
+
 ### Process-Grouped Search
 
 ```

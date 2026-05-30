@@ -725,3 +725,23 @@ export function findNodeAtRange(
   }
   return null;
 }
+
+/**
+ * Return the captured node if its type is one of `types`, else null.
+ *
+ * The threaded-node equivalent of `findNodeAtRange(root, capture.range, type)`
+ * for the common case where a tree-sitter query already hands you the matched
+ * node (`c.node`): the captured node IS the node at that range, so a type check
+ * is exact and there is no need to re-walk from the tree root (the
+ * O(matches × rootChildren) hot path #1848 hit). Unlike `findNodeAtRange`, this
+ * does NOT traverse — the caller must already hold the node; for a multi-type
+ * call the node must literally be one of `types` (no fallback search).
+ *
+ * Used by every language's scope-capture path (go/python/ruby/php/rust/csharp).
+ */
+export function nodeIfType<T extends SyntaxNode>(
+  node: T | undefined,
+  ...types: readonly string[]
+): T | null {
+  return node !== undefined && types.includes(node.type) ? node : null;
+}

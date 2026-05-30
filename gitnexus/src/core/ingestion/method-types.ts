@@ -1,6 +1,6 @@
 // gitnexus/src/core/ingestion/method-types.ts
 
-import type { SupportedLanguages } from 'gitnexus-shared';
+import type { ParameterTypeClass, SupportedLanguages } from 'gitnexus-shared';
 import type { FieldVisibility } from './field-types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
@@ -14,6 +14,7 @@ export interface ParameterInfo {
    *  Used by typeTagForId for overload disambiguation where generic args matter.
    *  Falls back to `type` when not set. */
   rawType?: string | null;
+  typeClass?: ParameterTypeClass;
   isOptional: boolean;
   isVariadic: boolean;
 }

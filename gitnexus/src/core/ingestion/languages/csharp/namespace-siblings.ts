@@ -48,19 +48,62 @@ export interface CsharpFileStructure {
   /** Dotted paths from `using static X.Y.Z;` (including
    *  `global using static` and aliased `using static A = X.Y.Z;`). */
   readonly usingStaticPaths: readonly string[];
+  /** True when the scanner saw a `namespace` / `using static` declaration it
+   *  could not fully capture (keyword not at line start, split across lines, or
+   *  an unparseable identifier form). Callers feeding the #1881 gate must treat
+   *  this like a truncated scan and fail OPEN, since a dropped namespace would
+   *  otherwise over-block a legitimate import (Codex F3). Absent/false on a
+   *  cleanly-scanned file. */
+  readonly incomplete?: boolean;
 }
+
+// A dotted C# namespace identifier: each segment is an optional verbatim `@`
+// followed by a Unicode letter/`_` and Unicode letters/digits/`_`. The `u` flag
+// makes the classes Unicode-aware so `namespace Café.Models;` is captured (the
+// old ASCII `[A-Za-z…]` truncated it). The `@` markers are stripped from the
+// capture so it matches the tree-sitter AST's `name` text.
+const CS_NS_IDENT = String.raw`@?[\p{L}_][\p{L}\p{N}_]*(?:\.@?[\p{L}_][\p{L}\p{N}_]*)*`;
 
 // Line-anchored matchers for the worker-path fallback (see
 // `extractCsharpStructureViaScanner`). Anchored at line start (after
 // indentation); the scanner additionally tracks block-comment / string
 // state across lines so a keyword at the start of a line inside one of
 // those regions is skipped.
-const CS_NAMESPACE_RE = /^[ \t]*namespace[ \t]+([A-Za-z_@][A-Za-z0-9_.]*)/;
+const CS_NAMESPACE_RE = new RegExp(String.raw`^[ \t]*namespace[ \t]+(${CS_NS_IDENT})`, 'u');
 // `global using static`, plain `using static`, and the aliased
 // `using static Alias = NS.Type;` form (the AST keeps the RHS path, so
 // the optional `Alias =` is skipped and only the dotted path captured).
-const CS_USING_STATIC_RE =
-  /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+(?:[A-Za-z_@][A-Za-z0-9_]*[ \t]*=[ \t]*)?([A-Za-z_@][A-Za-z0-9_.]*)/;
+const CS_USING_STATIC_RE = new RegExp(
+  String.raw`^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+(?:@?[\p{L}_][\p{L}\p{N}_]*[ \t]*=[ \t]*)?(${CS_NS_IDENT})`,
+  'u',
+);
+
+// Incompleteness detectors — used ONLY when the precise matchers above failed,
+// to flag a declaration the scanner could not capture (so the file fails the
+// #1881 gate OPEN instead of silently dropping the namespace). Kept
+// high-precision so ordinary files never trip them (which would wrongly disable
+// the gate repo-wide):
+//   - `…_BARE`: the keyword alone on a line (the name is on the next line).
+//   - `…_AT_START`: a line-start declaration the precise matcher couldn't parse.
+//   - `CS_NAMESPACE_AFTER_CODE`: a `namespace` keyword right after a `}`/`;`/`{`/`]`
+//     (real code, NOT a `//` comment), i.e. not at line start.
+const CS_NAMESPACE_BARE = /^[ \t]*namespace[ \t]*\r?$/;
+const CS_USING_STATIC_BARE = /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]*\r?$/;
+const CS_NAMESPACE_AT_START = /^[ \t]*namespace[ \t]+\S/;
+const CS_USING_STATIC_AT_START = /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+\S/;
+const CS_NAMESPACE_AFTER_CODE = /[}\];{][ \t]*namespace[ \t]+@?[\p{L}_]/u;
+
+/** Whether a `code`-state line declares a namespace / using-static the precise
+ *  matchers could not capture — see the detectors above. */
+function looksLikeUncapturedDeclaration(line: string): boolean {
+  return (
+    CS_NAMESPACE_BARE.test(line) ||
+    CS_USING_STATIC_BARE.test(line) ||
+    CS_NAMESPACE_AT_START.test(line) ||
+    CS_USING_STATIC_AT_START.test(line) ||
+    CS_NAMESPACE_AFTER_CODE.test(line)
+  );
+}
 
 /** Multi-line lexical state carried line-to-line by the scanner. */
 type CsScanState = 'code' | 'block' | 'verbatim' | 'raw';
@@ -182,26 +225,60 @@ function advanceCsScanState(
  *  AST is a declaration whose keyword is not at the start of a code line
  *  (split across lines, or sharing a line with a comment/string closer).
  *  Mirrors PHP's `extractNamespaceViaScanner` (issue #1741). */
-export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
+/** Incremental form of {@link extractCsharpStructureViaScanner}: feed lines one
+ *  at a time via `pushLine` (in source order), then read the accumulated
+ *  structure with `result()`. Lets a caller stream a file off disk
+ *  (`createReadStream` + `readline`) and scan it for `namespace` / `using
+ *  static` declarations in CONSTANT memory rather than buffering the whole file
+ *  into a string — the line splitting and per-line matching are identical, so a
+ *  streamed scan yields the same result as scanning the full content. The line
+ *  terminator must be stripped (as `readline` does, or `String.split('\n')`); a
+ *  trailing `\r` on a CRLF line is inert to both the matchers and the lexer. */
+export interface CsharpStructureLineScanner {
+  pushLine(line: string): void;
+  result(): CsharpFileStructure;
+}
+
+/** Create a fresh stateful line scanner — see {@link CsharpStructureLineScanner}. */
+export function createCsharpStructureScanner(): CsharpStructureLineScanner {
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
+  let incomplete = false;
   let state: CsScanState = 'code';
   let rawFence = 0;
-  for (const line of content.split('\n')) {
-    // Only match when the line START is real code — keywords reached while
-    // inside a block comment / multi-line string are skipped.
-    if (state === 'code') {
-      const ns = CS_NAMESPACE_RE.exec(line);
-      if (ns !== null) {
-        namespaces.push(ns[1]!);
-      } else {
-        const us = CS_USING_STATIC_RE.exec(line);
-        if (us !== null) usingStaticPaths.push(us[1]!);
+  return {
+    pushLine(line: string): void {
+      // Only match when the line START is real code — keywords reached while
+      // inside a block comment / multi-line string are skipped.
+      if (state === 'code') {
+        const ns = CS_NAMESPACE_RE.exec(line);
+        if (ns !== null) {
+          namespaces.push(ns[1]!.replace(/@/g, ''));
+        } else {
+          const us = CS_USING_STATIC_RE.exec(line);
+          if (us !== null) {
+            usingStaticPaths.push(us[1]!.replace(/@/g, ''));
+          } else if (looksLikeUncapturedDeclaration(line)) {
+            // A declaration the precise matchers couldn't capture → mark the
+            // file incomplete so the #1881 gate fails OPEN (Codex F3).
+            incomplete = true;
+          }
+        }
       }
-    }
-    [state, rawFence] = advanceCsScanState(line, state, rawFence);
-  }
-  return { namespaces, usingStaticPaths };
+      [state, rawFence] = advanceCsScanState(line, state, rawFence);
+    },
+    result(): CsharpFileStructure {
+      return incomplete
+        ? { namespaces, usingStaticPaths, incomplete }
+        : { namespaces, usingStaticPaths };
+    },
+  };
+}
+
+export function extractCsharpStructureViaScanner(content: string): CsharpFileStructure {
+  const scanner = createCsharpStructureScanner();
+  for (const line of content.split('\n')) scanner.pushLine(line);
+  return scanner.result();
 }
 
 /** Build a structural view of a C# file. Prefers `cachedTree` (handed in

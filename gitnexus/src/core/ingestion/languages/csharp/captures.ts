@@ -17,7 +17,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import { nodeIfType, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
 import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
@@ -103,9 +103,16 @@ export function emitCsharpScopeCaptures(
     // `@`; we put it back so the central extractor's prefix lookups
     // (`@scope.`, `@declaration.`, …) work.
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map: the query hands us each matched
+    // node as c.node, so anchors resolve via a type-guarded lookup (nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -113,8 +120,7 @@ export function emitCsharpScopeCaptures(
     // the kind/source/name/alias markers it consumes. Raw query match
     // only carries the @import.statement anchor.
     if (grouped['@import.statement'] !== undefined) {
-      const stmtCapture = grouped['@import.statement'];
-      const stmtNode = findNodeAtRange(tree.rootNode, stmtCapture.range, 'using_directive');
+      const stmtNode = nodeIfType(nodeMap['@import.statement'], 'using_directive');
       if (stmtNode !== null) {
         const decomposed = splitUsingDirective(stmtNode);
         if (decomposed !== null) {
@@ -129,8 +135,7 @@ export function emitCsharpScopeCaptures(
     }
 
     if (grouped['@reference.read.member'] !== undefined) {
-      const anchor = grouped['@reference.read.member'];
-      const memberNode = findNodeAtRange(tree.rootNode, anchor.range, 'member_access_expression');
+      const memberNode = nodeIfType(nodeMap['@reference.read.member'], 'member_access_expression');
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
         continue;
       }
@@ -144,8 +149,7 @@ export function emitCsharpScopeCaptures(
     // `@scope.function` matches.
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const anchor = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         for (const synth of synthesizeCsharpReceiverBinding(fnNode)) {
           out.push(synth);
@@ -160,8 +164,7 @@ export function emitCsharpScopeCaptures(
     // the first tag that matches.
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
-      const anchor = grouped[declTag]!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const arity = computeCsharpArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -198,10 +201,11 @@ export function emitCsharpScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'invocation_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
+      const callNode = nodeIfType(
+        nodeMap[callTag],
+        'invocation_expression',
+        'object_creation_expression',
+      );
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
         const args =
@@ -240,10 +244,11 @@ export function emitCsharpScopeCaptures(
       grouped['@declaration.class'] !== undefined ||
       grouped['@declaration.record'] !== undefined
     ) {
-      const anchor = grouped['@declaration.class'] ?? grouped['@declaration.record']!;
-      const typeNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'class_declaration') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'record_declaration');
+      const typeNode = nodeIfType(
+        nodeMap['@declaration.class'] ?? nodeMap['@declaration.record'],
+        'class_declaration',
+        'record_declaration',
+      );
       if (typeNode !== null) {
         const synth = synthesizePrimaryConstructor(typeNode);
         if (synth !== null) out.push(synth);
@@ -390,15 +395,4 @@ function inferArgType(argNode: SyntaxNode): string {
     default:
       return '';
   }
-}
-
-/** Find the first C# function-like node at the given range. The
- *  declaration anchor range covers the whole method/constructor/etc.
- *  node, but the tag alone doesn't tell us which node type. */
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n as SyntaxNode;
-  }
-  return null;
 }
