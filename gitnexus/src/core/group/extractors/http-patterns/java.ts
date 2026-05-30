@@ -78,8 +78,11 @@ interface SpringTypeInfo {
 // class, interface, or method. This SINGLE query matches that shape generically;
 // `scanRouteAnnotations` then reads the annotation NAME (`@ann`) and declaration
 // kind (`@node.type`) in its for-loop to decide what each match means. Adding a
-// new framework annotation is a change to that loop (and the lookup maps), not
-// to this query.
+// new framework annotation that follows this single-string-argument shape is a
+// change to that loop (and the lookup maps), not to this query. Annotations with
+// a different argument shape — e.g. an array value `@RequestMapping({"/a","/b"})`
+// — are out of scope here (as they were for the prior queries) and would need a
+// new branch.
 //
 // Captures (shared across all branches; intentionally framework-agnostic):
 //   @ann    → the annotation name identifier (RequestMapping, GetMapping, RequestLine, …)
@@ -465,6 +468,11 @@ interface RouteAnnotationScan {
 function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   const matches = runCompiledPatterns(JAVA_ROUTE_ANNOTATION_PATTERNS, tree);
 
+  // The two prefix maps intentionally diverge for the same interface node:
+  // `prefixByTypeId` feeds the Spring *provider* path (class prefix +
+  // collectSpringTypes cross-file inheritance), while `feignPrefixByInterfaceId`
+  // feeds the OpenFeign *consumer* path in scan(). An interface carrying both
+  // `@RequestMapping` and `@FeignClient(path)` lands a different value in each.
   const prefixByTypeId = new Map<number, string>();
   const feignPrefixByInterfaceId = new Map<number, string>();
   const methodRoutes: MethodRouteAnnotation[] = [];

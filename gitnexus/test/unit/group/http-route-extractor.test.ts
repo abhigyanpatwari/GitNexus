@@ -1966,6 +1966,62 @@ interface NamedArgClient {
       ).toBeDefined();
     });
 
+    it('ignores @RequestLine whose named argument is not "value"', async () => {
+      // The consolidated query matches every named annotation argument; the
+      // scanRouteAnnotations loop drops a @RequestLine whose key is not `value`.
+      const dir = path.join(tmpDir, 'java-feign-request-line-wrong-key');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'WrongKeyClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import feign.RequestLine;
+
+@FeignClient(name = "wrong-key-service")
+interface WrongKeyClient {
+  @RequestLine(name = "GET /should-not-extract")
+  String shouldNotBeExtracted();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/should-not-extract'),
+      ).toBeUndefined();
+    });
+
+    it('prefers @FeignClient(path=...) over @RequestMapping when @RequestMapping appears first', async () => {
+      // Reverse-order companion to the precedence test above: @FeignClient(path)
+      // must win even when @RequestMapping is the first annotation in source,
+      // exercising the deferred interfaceRequestMappingPrefixes apply.
+      const dir = path.join(tmpDir, 'java-openfeign-prefix-precedence-reversed');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ReversedPrecedenceClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/rm-path")
+@FeignClient(name = "order-service", path = "/feign-path")
+interface ReversedPrecedenceClient {
+  @GetMapping("/orders")
+  OrderDto getOrders();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/feign-path/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/rm-path/orders')).toBeUndefined();
+    });
+
     it('extracts Java and Apache HttpClient literal request construction', async () => {
       const dir = path.join(tmpDir, 'java-http-client-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
