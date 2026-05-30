@@ -385,6 +385,31 @@ withTestLbugDB(
         expect(result.status).toBe('ambiguous');
         const uids = (result.candidates ?? []).map((c: any) => c.uid);
         expect(uids).toContain('func:alpha');
+        // Assert the non-symbol Tool node stays in the candidate set, not just
+        // that nothing crashed — a regression that silently dropped Tool from
+        // the lenient-binding match would otherwise pass the non-crash check.
+        expect(uids).toContain('Tool:alpha');
+      });
+
+      it('ranks the kind-matching candidate first when kind is supplied (the --kind flag path)', async () => {
+        // 'alpha' is both a Function (func:alpha) and a Tool (Tool:alpha).
+        // kind only adds +0.20 in scoreCandidate, so 0.50 + 0.20 = 0.70 stays
+        // below the 0.95 confident-resolution threshold — the response is still
+        // ambiguous. What kind buys is ranking: the Function is promoted above
+        // the non-matching Tool. This exercises the scoreCandidate kind branch
+        // against a real DB rather than only through the mocked CLI unit test.
+        const result = await backend.callTool('impact', {
+          target: 'alpha',
+          kind: 'Function',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('ambiguous');
+        const candidates = result.candidates ?? [];
+        expect(candidates[0]?.uid).toBe('func:alpha');
+        expect(candidates[0]?.kind).toBe('Function');
+        const tool = candidates.find((c: any) => c.uid === 'Tool:alpha');
+        expect(candidates[0]?.score).toBeGreaterThan(tool?.score);
       });
     });
   },

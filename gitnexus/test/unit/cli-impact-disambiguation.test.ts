@@ -25,6 +25,14 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
   },
 }));
 
+// impactCommand prints its result via fs.writeSync(fd 1, …). Silence that so
+// the assertion-only test does not write JSON to the runner's stdout. tool.ts
+// uses only writeSync from node:fs, so a full mock is safe here (matches the
+// pattern in tool-direct-cli.test.ts).
+vi.mock('node:fs', () => ({
+  writeSync: vi.fn(),
+}));
+
 import { impactCommand } from '../../src/cli/tool.js';
 
 describe('CLI impact disambiguation flags (#1907)', () => {
