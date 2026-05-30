@@ -2014,6 +2014,67 @@ interface WrongKeyClient {
       ).toBeUndefined();
     });
 
+    it('ignores @RequestLine values that are not a "VERB /path" line', async () => {
+      // `parseRequestLine` only accepts a recognized HTTP verb followed by a
+      // path starting with `/`. Malformed values (no verb, no leading-slash
+      // path, or unknown verb) must be dropped — this guards the relaxed
+      // (no-@FeignClient) matcher from turning arbitrary `@RequestLine` string
+      // literals into bogus contracts.
+      const dir = path.join(tmpDir, 'java-request-line-malformed');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'MalformedClient.java'),
+        `
+import feign.RequestLine;
+
+interface MalformedClient {
+  @RequestLine("not a request line at all")
+  String noVerb();
+
+  @RequestLine("GET relative/no/leading/slash")
+  String noLeadingSlash();
+
+  @RequestLine("FETCH /unknown-verb")
+  String unknownVerb();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // None of the three malformed values should yield a contract.
+      expect(
+        consumers.filter((c) => c.symbolRef.filePath.endsWith('MalformedClient.java')),
+      ).toHaveLength(0);
+    });
+
+    it('ignores @RequestLine on a class method (Feign proxies are interfaces only)', async () => {
+      // The relaxed matcher still requires an enclosing interface: Feign builds
+      // its proxy from an interface, so a `@RequestLine` on a concrete class
+      // method is not a Feign call and must not be emitted as a consumer.
+      const dir = path.join(tmpDir, 'java-request-line-on-class');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'NotAProxy.java'),
+        `
+import feign.RequestLine;
+
+class NotAProxy {
+  @RequestLine("GET /should-not-extract")
+  String call() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/should-not-extract'),
+      ).toBeUndefined();
+    });
+
     it('prefers @FeignClient(path=...) over @RequestMapping when @RequestMapping appears first', async () => {
       // Reverse-order companion to the precedence test above: @FeignClient(path)
       // must win even when @RequestMapping is the first annotation in source,
