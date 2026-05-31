@@ -405,7 +405,12 @@ describe('setupClaudeCode', () => {
       await fs.readFile(path.join(tempHome, '.claude', 'settings.json'), 'utf-8'),
     );
     const cmd: string = settings.hooks.PreToolUse[0].hooks[0].command;
-    const hookPath = path.join(tempHome, '.claude', 'hooks', 'gitnexus', 'gitnexus-hook.cjs');
+    // setup.ts forward-slash-normalizes the hook path (`.replace(/\\/g, '/')`)
+    // before quoting, so normalize the expected path the same way — otherwise
+    // path.join emits backslashes on the Windows runner and this mismatches.
+    const hookPath = path
+      .join(tempHome, '.claude', 'hooks', 'gitnexus', 'gitnexus-hook.cjs')
+      .replace(/\\/g, '/');
     // Single-quoted, not double-quoted, and the path is the literal inside quotes.
     expect(cmd).toBe(`node '${hookPath}'`);
     expect(cmd.startsWith("node '")).toBe(true);
