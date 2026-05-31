@@ -19,6 +19,12 @@ const { execFileSync } = require('child_process');
 
 const NPX_REF = 'gitnexus@latest';
 
+// PATH-probe timeout, kept well under Claude Code's 10s hook budget. The
+// stale-index hook may run `git rev-parse` (~3s) plus up to two probes
+// (gitnexus, then pnpm), so a low cap bounds the worst case while a healthy
+// `which`/`where` returns in well under a second.
+const PROBE_TIMEOUT_MS = 2000;
+
 /**
  * Pick the best match from `where`/`which` output. A global `gitnexus` may be a
  * `.cmd`/`.bat` (npm), a `.exe`, or an extensionless shim (Volta, scoop), so on
@@ -43,7 +49,7 @@ function resolveOnPath(command, gitnexusWrapper = false) {
   try {
     const output = execFileSync(isWin ? 'where' : 'which', [command], {
       encoding: 'utf-8',
-      timeout: 5000,
+      timeout: PROBE_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
