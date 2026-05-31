@@ -11,7 +11,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
 import { logger } from '../core/logger.js';
-import { formatAnalyzeCommand } from './resolve-invocation.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -128,7 +127,10 @@ function generateGitNexusContent(
 |------|---------------------|
 ${tableBody}`
     : '';
-  const analyzeCmd = formatAnalyzeCommand();
+  // Committed AGENTS.md/CLAUDE.md must carry a fixed, install-free, crash-free
+  // command — not a per-machine resolved one (churn, #1706) and not `npx` (the
+  // npm-11 install-crash path this work steers away from, #1939).
+  const analyzeCmd = 'pnpm dlx gitnexus@latest analyze';
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
