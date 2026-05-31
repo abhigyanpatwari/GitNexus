@@ -61,6 +61,8 @@ import {
   type SwiftResolveContext,
 } from './index.js';
 
+const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
+
 const swiftScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Swift,
   languageProvider: swiftProvider,
@@ -127,8 +129,6 @@ const swiftScopeResolver: ScopeResolver = {
 };
 
 export { swiftScopeResolver };
-
-const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
 /**
  * Swift MRO — `defaultLinearize` (EXTENDS-only superclass chain) extended

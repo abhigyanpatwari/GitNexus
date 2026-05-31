@@ -14,12 +14,14 @@
  * context). Lookup per import is then O(1).
  *
  * Behavior is preserved bit-for-bit: a file is attributed to a target
- * iff its **lowercased** path starts with `<targetDir>/` (original
- * case), matching the old `normalizedFileList[i].startsWith(targetDir + '/')`
- * comparison; the returned paths are the original-case `allFileList`
- * entries; and the per-target file ORDER follows `allFileList`, so the
- * emitted `{ kind: 'files', files }` set and ordering are identical to
- * the old scan.
+ * iff its **forward-slash (backslash-normalized), case-sensitive** path
+ * starts with `<targetDir>/`, matching the old
+ * `normalizedFileList[i].startsWith(targetDir + '/')` comparison
+ * (`normalizedFileList` is only backslash→forward-slash normalized — NOT
+ * lowercased — so the match is case-sensitive); the returned paths are
+ * the original-case `allFileList` entries; and the per-target file ORDER
+ * follows `allFileList`, so the emitted `{ kind: 'files', files }` set and
+ * ordering are identical to the old scan.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -49,8 +51,8 @@ function getSwiftTargetIndex(
   if (cached !== undefined) return cached;
 
   // Pre-compute each target's directory prefix once (original case, to
-  // match the legacy comparison against the lowercased file list — see
-  // module docstring).
+  // match the legacy comparison against the forward-slash-normalized,
+  // case-sensitive file list — see module docstring).
   const targetPrefixes: { name: string; prefix: string }[] = [];
   const byTarget = new Map<string, string[]>();
   for (const [name, dir] of targets) {
@@ -58,11 +60,12 @@ function getSwiftTargetIndex(
     byTarget.set(name, []);
   }
 
-  // Single pass over the file list. `normalizedFileList` is lowercased and
-  // index-aligned with `allFileList`; attribute the original-case path to
-  // every target whose prefix the lowercased path starts with (a file under
-  // a nested target dir can legitimately belong to multiple configured
-  // targets — the legacy per-import scan would have returned it for each).
+  // Single pass over the file list. `normalizedFileList` is forward-slash
+  // (backslash-normalized), case-sensitive, and index-aligned with
+  // `allFileList`; attribute the original-case path to every target whose
+  // prefix the normalized path starts with (a file under a nested target
+  // dir can legitimately belong to multiple configured targets — the
+  // legacy per-import scan would have returned it for each).
   for (let i = 0; i < ctx.allFileList.length; i++) {
     const norm = ctx.normalizedFileList[i];
     if (!norm.endsWith('.swift')) continue;
