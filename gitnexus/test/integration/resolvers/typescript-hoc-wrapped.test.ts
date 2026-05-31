@@ -43,6 +43,7 @@ import {
   getRelationships,
   edgeSet,
   getNodesByLabel,
+  getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -309,24 +310,35 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
   //
   // `export default defineEventHandler(async (e) => { ... })` has no
   // variable_declarator ancestor, so the old patterns were invisible.
-  // The new export_statement patterns derive the name from the callee
-  // identifier. The function is registered as Function:defineEventHandler
-  // and its inner calls attribute to that name.
+  // The new export_statement patterns register it as a function named
+  // from the file/module, not from the wrapper helper.
   // ─────────────────────────────────────────────────────────────────
 
-  it('export default HOC: defineEventHandler calls attribute to defineEventHandler', () => {
+  it('export default HOC: calls attribute to the file-derived function name', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/export-default-hoc.ts' && c.source === 'export-default-hoc',
+    );
+    const targets = new Set(calls.map((c) => c.target));
+    expect(targets, 'export-default-hoc must call doStuff').toContain('doStuff');
+    expect(targets, 'export-default-hoc must call helper').toContain('helper');
+  });
+
+  it('export default HOC: the file-derived symbol is registered in the source file', () => {
+    const functions = getNodesByLabelFull(result, 'Function').filter(
+      (node) => node.properties.filePath === 'src/export-default-hoc.ts',
+    );
+    expect(
+      functions.map((node) => node.name),
+      'export-default-hoc must be the graph-visible Function name for the wrapped default export',
+    ).toContain('export-default-hoc');
+  });
+
+  it('export default HOC: inner calls do not attribute to the wrapper helper name', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (c) => c.sourceFilePath === 'src/export-default-hoc.ts' && c.source === 'defineEventHandler',
     );
-    const targets = new Set(calls.map((c) => c.target));
-    expect(targets, 'defineEventHandler must call doStuff').toContain('doStuff');
-    expect(targets, 'defineEventHandler must call helper').toContain('helper');
-  });
-
-  it('export default HOC: defineEventHandler is registered as a Function node', () => {
-    const functions = new Set(getNodesByLabel(result, 'Function'));
-    expect(functions, 'defineEventHandler (export default HOC) must be a Function node').toContain(
-      'defineEventHandler',
+    expect(calls, 'wrapped default-export calls must not collapse onto defineEventHandler').toEqual(
+      [],
     );
   });
 

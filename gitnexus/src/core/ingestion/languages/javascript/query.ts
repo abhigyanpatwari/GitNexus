@@ -48,6 +48,10 @@
 
 import Parser from 'tree-sitter';
 import JS from 'tree-sitter-javascript';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from '../../ts-js-hoc-utils.js';
 
 const JS_GRAMMAR = JS as Parameters<Parser['setLanguage']>[0];
 
@@ -180,7 +184,7 @@ const JAVASCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (lexical_declaration
   (variable_declarator
@@ -190,7 +194,7 @@ const JAVASCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (export_statement
   declaration: (lexical_declaration
@@ -219,7 +223,7 @@ const JAVASCRIPT_SCOPE_QUERY = `
           property: (property_identifier) @callee)
         arguments: (arguments
           (arrow_function) @declaration.function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (export_statement
   declaration: (lexical_declaration
@@ -230,7 +234,7 @@ const JAVASCRIPT_SCOPE_QUERY = `
           property: (property_identifier) @callee)
         arguments: (arguments
           (function_expression) @declaration.function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
@@ -256,7 +260,7 @@ const JAVASCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
@@ -266,36 +270,41 @@ const JAVASCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped default exports (JS parity with TS patterns in
-;; languages/typescript/query.ts). The callee identifier provides
-;; @declaration.name since there is no variable_declarator.
-(export_statement
-  (call_expression
-    function: (identifier) @declaration.name
+;; languages/typescript/query.ts). The emit phase rewrites
+;; @declaration.name to a file-derived name so wrapper helpers do not
+;; become the graph-visible symbol name.
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
-(export_statement
-  (call_expression
-    function: (identifier) @declaration.name
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
-(export_statement
-  (call_expression
+((export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @declaration.name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
-(export_statement
-  (call_expression
+((export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @declaration.name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Variable / constant declarations (non-function values).
 (lexical_declaration

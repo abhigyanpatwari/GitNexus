@@ -61,6 +61,7 @@ export interface MethodExtractor {
    *  Return null to fall through to the generic extractor. */
   extractFunctionName?(
     node: SyntaxNode,
+    filePath?: string,
   ): { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
 }
 
@@ -98,5 +99,6 @@ export interface MethodExtractionConfig {
    *  Passed through to the MethodExtractor by createMethodExtractor. */
   extractFunctionName?: (
     node: SyntaxNode,
+    filePath?: string,
   ) => { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
 }

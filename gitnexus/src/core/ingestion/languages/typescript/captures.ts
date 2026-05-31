@@ -40,6 +40,11 @@ import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import {
+  deriveDefaultExportHocName,
+  isBlockedDefaultExportHoc,
+  isDefaultExportHocFunctionNode,
+} from '../../ts-js-hoc-utils.js';
 
 /** tree-sitter-typescript node types for function-like scopes that may
  *  carry a synthesized `this` binding. Kept in sync with the
@@ -269,6 +274,24 @@ export function emitTsScopeCaptures(
       );
       if (arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
         continue;
+      }
+      if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
+        continue;
+      }
+    }
+
+    if (fnDeclAnchor !== undefined) {
+      const fnNode = findFunctionNode(
+        tree.rootNode,
+        fnDeclAnchor.range,
+        groupedNodes['@declaration.function'],
+      );
+      if (fnNode !== null && isDefaultExportHocFunctionNode(fnNode)) {
+        grouped['@declaration.name'] = syntheticCapture(
+          '@declaration.name',
+          fnNode,
+          deriveDefaultExportHocName(filePath),
+        );
       }
     }
 

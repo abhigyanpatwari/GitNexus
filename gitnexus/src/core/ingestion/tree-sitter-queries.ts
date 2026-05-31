@@ -6,6 +6,8 @@
  * compatible with the standard tree-sitter grammars.
  */
 
+import { ARRAY_METHOD_NOT_ANY_OF_PREDICATE } from './ts-js-hoc-utils.js';
+
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
 (class_declaration
@@ -125,7 +127,7 @@ export const TYPESCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (lexical_declaration
   (variable_declarator
@@ -135,7 +137,7 @@ export const TYPESCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
@@ -164,7 +166,7 @@ export const TYPESCRIPT_QUERIES = `
           property: (property_identifier) @callee)
         arguments: (arguments
           (arrow_function)))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
@@ -175,7 +177,7 @@ export const TYPESCRIPT_QUERIES = `
           property: (property_identifier) @callee)
         arguments: (arguments
           (function_expression)))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; \`var X = HOC(...)\` parity with registry-primary. Legacy code (and any
 ; transpiler output that downlevels \`const\` to \`var\`) hits this shape.
@@ -204,7 +206,7 @@ export const TYPESCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (variable_declaration
   (variable_declarator
@@ -214,38 +216,35 @@ export const TYPESCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
-; The callee identifier (e.g. \`defineEventHandler\`) provides the @name since
-; there is no variable_declarator. Mirrors the registry-primary patterns in
-; \`languages/typescript/query.ts\`. Covers Nuxt/h3 defineEventHandler,
-; Next.js API route handlers, Express middleware factories, and any
-; user-defined HOC used as a default export. The callee name is taken as
-; the function name — see \`tsExtractFunctionName\` for the matching logic.
-(export_statement
-  (call_expression
-    function: (identifier) @name
+; The worker rewrites the wrapper-derived @name to a file-derived symbol name
+; so helpers like \`defineEventHandler\` / \`React.memo\` do not collapse
+; unrelated modules onto the same Function name.
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (arrow_function)))) @definition.function
 
-(export_statement
-  (call_expression
-    function: (identifier) @name
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (function_expression)))) @definition.function
 
-(export_statement
-  (call_expression
+ (export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (arrow_function)))) @definition.function
 
-(export_statement
-  (call_expression
+ (export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (function_expression)))) @definition.function
 
@@ -462,7 +461,7 @@ export const JAVASCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (lexical_declaration
   (variable_declarator
@@ -472,7 +471,7 @@ export const JAVASCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
@@ -501,7 +500,7 @@ export const JAVASCRIPT_QUERIES = `
           property: (property_identifier) @callee)
         arguments: (arguments
           (arrow_function)))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
@@ -512,7 +511,7 @@ export const JAVASCRIPT_QUERIES = `
           property: (property_identifier) @callee)
         arguments: (arguments
           (function_expression)))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; \`var X = HOC(...)\` parity with registry-primary.
 ; Same array-method exclusions as const/let patterns.
@@ -553,29 +552,29 @@ export const JAVASCRIPT_QUERIES = `
   (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
 
 ; HOC-wrapped default exports (JS parity with TS patterns above).
-(export_statement
-  (call_expression
-    function: (identifier) @name
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (arrow_function)))) @definition.function
 
-(export_statement
-  (call_expression
-    function: (identifier) @name
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (function_expression)))) @definition.function
 
-(export_statement
-  (call_expression
+ (export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (arrow_function)))) @definition.function
 
-(export_statement
-  (call_expression
+ (export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (function_expression)))) @definition.function
 

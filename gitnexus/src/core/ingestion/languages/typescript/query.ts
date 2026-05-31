@@ -53,6 +53,10 @@
 
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from '../../ts-js-hoc-utils.js';
 
 // tree-sitter-typescript exports both `typescript` and `tsx` grammars on
 // the default export. The package's `.d.ts` types the default export
@@ -306,7 +310,7 @@ const TYPESCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (lexical_declaration
   (variable_declarator
@@ -316,7 +320,7 @@ const TYPESCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
@@ -342,7 +346,7 @@ const TYPESCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (arrow_function) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
@@ -352,38 +356,41 @@ const TYPESCRIPT_SCOPE_QUERY = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression) @declaration.function)))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with"))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
-;; The callee identifier provides @declaration.name since there is no
-;; variable_declarator. Covers Nuxt/h3 defineEventHandler, Next.js API
-;; route handlers, and any HOC used as a default export. Member-expression
-;; callees (e.g. \`React.memo\`) use the property as the name.
-(export_statement
-  (call_expression
-    function: (identifier) @declaration.name
+;; The emit phase rewrites @declaration.name to a file-derived name so
+;; wrappers like \`defineEventHandler\` / \`React.memo\` do not collapse
+;; unrelated modules onto the same symbol name.
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
-(export_statement
-  (call_expression
-    function: (identifier) @declaration.name
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
-(export_statement
-  (call_expression
+((export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @declaration.name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
-(export_statement
-  (call_expression
+((export_statement
+  value: (call_expression
     function: (member_expression
-      property: (property_identifier) @declaration.name)
+      property: (property_identifier) @callee)
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Method definitions — regular + private (#field) methods.
 (method_definition

@@ -46,6 +46,11 @@ import {
 } from '../call-extractors/configs/typescript-javascript.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from '../ts-js-hoc-utils.js';
+import {
   emitTsScopeCaptures,
   interpretTsImport,
   interpretTsTypeBinding,
@@ -66,46 +71,6 @@ import {
   jsMergeBindings,
   jsArityCompatibility,
 } from './javascript/index.js';
-
-// Array prototype methods that must never be treated as HOC wrappers.
-// Mirrors the #not-any-of? blocklist in the tree-sitter query files.
-// Defined at module level to avoid re-allocating on every parse node.
-const ARRAY_METHODS: ReadonlySet<string> = new Set([
-  'map',
-  'filter',
-  'reduce',
-  'forEach',
-  'find',
-  'findIndex',
-  'some',
-  'every',
-  'flatMap',
-  'sort',
-  'splice',
-  'slice',
-  'concat',
-  'fill',
-  'copyWithin',
-  'join',
-  'flat',
-  'at',
-  'entries',
-  'keys',
-  'values',
-  'indexOf',
-  'lastIndexOf',
-  'includes',
-  'pop',
-  'push',
-  'shift',
-  'unshift',
-  'reverse',
-  'reduceRight',
-  'toSorted',
-  'toReversed',
-  'toSpliced',
-  'with',
-]);
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
@@ -135,6 +100,7 @@ const ARRAY_METHODS: ReadonlySet<string> = new Set([
  */
 const tsExtractFunctionName = (
   node: SyntaxNode,
+  filePath?: string,
 ): { funcName: string | null; label: NodeLabel } | null => {
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
 
@@ -196,7 +162,10 @@ const tsExtractFunctionName = (
     const callee = callExpr.childForFieldName?.('function');
     if (callee?.type === 'member_expression') {
       const property = callee.childForFieldName?.('property');
-      if (property?.type === 'property_identifier' && ARRAY_METHODS.has(property.text)) {
+      if (
+        property?.type === 'property_identifier' &&
+        ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+      ) {
         return { funcName: null, label: 'Function' };
       }
     }
@@ -212,18 +181,26 @@ const tsExtractFunctionName = (
       return { funcName: null, label: 'Function' };
     }
 
-    // NEW: export default HOC(arrow) — derive name from callee.
-    // Covers Nuxt/h3 defineEventHandler, Next.js API route handlers, etc.
+    // export default HOC(arrow) — name it from the file, not the wrapper.
+    // This keeps route handlers and wrapped defaults navigable without
+    // collapsing every file onto names like `memo` or `defineEventHandler`.
     if (declarator?.type === 'export_statement') {
       if (callee?.type === 'identifier') {
-        return { funcName: callee.text, label: 'Function' };
-      }
-      // Member-expression callees like React.memo: use the property name
-      if (callee?.type === 'member_expression') {
-        const property = callee.childForFieldName?.('property');
-        if (property) {
-          return { funcName: property.text, label: 'Function' };
+        if (DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)) {
+          return { funcName: null, label: 'Function' };
         }
+        return {
+          funcName: filePath ? deriveDefaultExportHocName(filePath) : null,
+          label: 'Function',
+        };
+      }
+      // Member-expression callees like React.memo keep the same file-derived
+      // name, with array-like helpers excluded above.
+      if (callee?.type === 'member_expression') {
+        return {
+          funcName: filePath ? deriveDefaultExportHocName(filePath) : null,
+          label: 'Function',
+        };
       }
       return { funcName: null, label: 'Function' };
     }
