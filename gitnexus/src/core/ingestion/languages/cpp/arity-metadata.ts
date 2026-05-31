@@ -33,7 +33,6 @@ export function computeCppDeclarationArity(node: SyntaxNode): CppArityInfo {
     if (
       child.type === 'parameter_declaration' ||
       child.type === 'optional_parameter_declaration' ||
-      child.type === 'variadic_parameter' ||
       child.type === 'variadic_parameter_declaration'
     ) {
       params.push(child);
@@ -60,11 +59,7 @@ export function computeCppDeclarationArity(node: SyntaxNode): CppArityInfo {
   // token in tree-sitter-cpp, detected via `hasEllipsis` above.
   // C++ parameter packs: `template<typename... Ts> void foo(Ts... args)` —
   // detected as `variadic_parameter_declaration`.
-  const isVariadic =
-    hasEllipsis ||
-    params.some(
-      (p) => p.type === 'variadic_parameter' || p.type === 'variadic_parameter_declaration',
-    );
+  const isVariadic = hasEllipsis || params.some((p) => p.type === 'variadic_parameter_declaration');
   const optionalCount = params.filter((p) => p.type === 'optional_parameter_declaration').length;
   const requiredCount = params.filter(
     (p) =>
@@ -77,10 +72,7 @@ export function computeCppDeclarationArity(node: SyntaxNode): CppArityInfo {
   const types: string[] = [];
   const typeClasses: ParameterTypeClass[] = [];
   for (const p of params) {
-    if (p.type === 'variadic_parameter') {
-      types.push('...');
-      typeClasses.push(unknownTypeClass('...'));
-    } else if (p.type === 'variadic_parameter_declaration') {
+    if (p.type === 'variadic_parameter_declaration') {
       // Parameter pack: treated as variadic
       types.push('...');
       typeClasses.push(unknownTypeClass('...'));

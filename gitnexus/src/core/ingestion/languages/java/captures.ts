@@ -165,10 +165,15 @@ export function emitJavaScopeCaptures(
         findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
+        // Exclude interleaved comments — tree-sitter-java emits `block_comment` /
+        // `line_comment` as named children of argument_list, which would inflate
+        // arity (and arity feeds call-processor symbol-ID generation). #1920
         const args =
           argList === null
             ? []
-            : argList.namedChildren.filter((c) => c !== null && c.type !== 'comment');
+            : argList.namedChildren.filter(
+                (c) => c !== null && c.type !== 'block_comment' && c.type !== 'line_comment',
+              );
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
           callNode,
