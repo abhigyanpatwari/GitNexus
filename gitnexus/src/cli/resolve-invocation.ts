@@ -48,11 +48,16 @@ if (
 
 export { NPX_REF };
 
+// Re-implemented here (rather than reusing the cjs export) so vitest's
+// `vi.mock('node:child_process')` intercepts it — the cjs uses bare
+// `require('child_process')`, which the mock cannot reach. Timeout matches the
+// cjs PROBE_TIMEOUT_MS (1s) so this CLI probe shares the same hook-budget cap;
+// `npm --version` is a sub-second local call.
 export function getNpmMajorVersion(): number | null {
   try {
     const output = execFileSync('npm', ['--version'], {
       encoding: 'utf-8',
-      timeout: 5000,
+      timeout: 1000,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });

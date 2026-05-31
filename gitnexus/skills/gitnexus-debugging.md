@@ -22,7 +22,7 @@ description: "Use when the user is debugging a bug, tracing an error, or asking 
 4. gitnexus_cypher({query: "MATCH path..."})                 → Custom traces if needed
 ```
 
-> If "Index is stale" → run `pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze` in terminal.
+> If "Index is stale" → run `pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze` in terminal.
 
 ## Checklist
 

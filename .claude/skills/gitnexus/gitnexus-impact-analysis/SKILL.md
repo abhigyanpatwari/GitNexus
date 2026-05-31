@@ -23,7 +23,7 @@ description: "Use when the user wants to know what will break if they change som
 4. Assess risk and report to user
 ```
 
-> If "Index is stale" → run `pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze` in terminal.
+> If "Index is stale" → run `pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze` in terminal.
 
 ## Checklist
 

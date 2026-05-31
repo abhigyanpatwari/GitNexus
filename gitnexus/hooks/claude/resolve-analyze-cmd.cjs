@@ -3,11 +3,16 @@
  *
  * Automatically selects a working invocation path:
  * 1. Global `gitnexus` on PATH (best — no install step)
- * 2. npm 11+ with pnpm on PATH → `pnpm dlx --allow-build=…` (avoids the npx
+ * 2. npm 11+ with pnpm on PATH → `pnpm --allow-build=… dlx` (avoids the npx
  *    arborist crash *and* pnpm 10+ ignored-build-script failures, #1939)
  * 3. npm < 11 with npm on PATH → `npx` (works; simpler than pnpm dlx)
- * 4. pnpm-only → `pnpm dlx --allow-build=…`
+ * 4. pnpm-only → `pnpm --allow-build=… dlx`
  * 5. Last resort → `npx` (warned on npm 11+ from analyze.ts)
+ *
+ * The `--allow-build` flags MUST precede the `dlx` token. pnpm < 10.14 keeps
+ * `dlx` in its argv escape list, so flags placed *after* `dlx` are parsed as
+ * package specs (ERR_PNPM_SPEC_NOT_SUPPORTED). The pre-`dlx` position parses
+ * into dlx's allow-build option and has been honored since pnpm 10.2.0 (#1939).
  *
  * This stays self-contained CJS because the Claude/Antigravity hooks run as
  * standalone files copied into the user's hook dir, where no package import is
@@ -26,11 +31,12 @@ const NPX_REF = 'gitnexus@latest';
 const PNPM_ALLOW_BUILD_BASE = ['@ladybugdb/core', 'gitnexus', 'tree-sitter'];
 const PNPM_ALLOW_BUILD_EMBEDDINGS = ['onnxruntime-node'];
 
-// PATH-probe timeout, kept well under Claude Code's 10s hook budget. In a
-// linked worktree the stale-index hook runs `git rev-parse --git-common-dir`
-// (~2s) and `git rev-parse HEAD` (~3s) before up to two probes (gitnexus, then
-// pnpm), so a 1s cap holds the worst case near ~7s with comfortable headroom; a
-// healthy `which`/`where` returns in well under a second.
+// Probe timeout, kept under Claude Code's 10s hook budget. In a linked worktree
+// the stale-index hook first runs `git rev-parse --git-common-dir` (~2s) and
+// `git rev-parse HEAD` (~3s); the pnpm path then adds up to four 1s probes
+// (which gitnexus, npm --version, which pnpm, pnpm --version), so the worst case
+// is ~9s — within budget but tight. A healthy `which`/`where`/`--version`
+// returns in well under a second, so the realistic cost is far lower.
 const PROBE_TIMEOUT_MS = 1000;
 
 /**
@@ -67,8 +73,10 @@ function resolveOnPath(command, gitnexusWrapper = false) {
   }
 }
 
-function parseMajorVersion(command, deps = {}) {
-  if (deps[command] !== undefined) return deps[command];
+// One spawn of `<command> --version` → { major, minor } (each null when
+// unreadable). Version injection happens at the resolver seam (getNpmMajorVersion
+// / formatPnpmAllowBuildArgs), so this stays a pure real-process probe.
+function probeVersion(command) {
   try {
     const output = execFileSync(command, ['--version'], {
       encoding: 'utf-8',
@@ -76,40 +84,52 @@ function parseMajorVersion(command, deps = {}) {
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    const major = parseInt(output.trim().split('.')[0] ?? '', 10);
-    return Number.isFinite(major) ? major : null;
+    const [rawMajor, rawMinor] = output.trim().split('.');
+    const major = parseInt(rawMajor ?? '', 10);
+    const minor = parseInt(rawMinor ?? '', 10);
+    return {
+      major: Number.isFinite(major) ? major : null,
+      minor: Number.isFinite(minor) ? minor : null,
+    };
   } catch {
-    return null;
+    return { major: null, minor: null };
   }
 }
 
+// `deps` is the single injection seam: an explicitly provided key — including a
+// `null` value, detected via `in` — is honored as-is so tests can simulate an
+// absent tool without spawning; an absent key falls through to the real probe.
 function getNpmMajorVersion(deps = {}) {
-  return parseMajorVersion('npm', deps);
-}
-
-function getPnpmMajorVersion(deps = {}) {
-  return parseMajorVersion('pnpm', deps);
+  return 'npmMajor' in deps ? deps.npmMajor : probeVersion('npm').major;
 }
 
 /**
- * `--allow-build` flags for pnpm 10+ (ignored for pnpm < 10 where scripts run
- * by default). `alwaysAllowBuild` forces flags for committed documentation.
+ * `--allow-build` flags for the pre-`dlx` position. Emitted for pnpm >= 10.2
+ * (where the flag exists, and pnpm 10+ blocks build scripts by default). Omitted
+ * below 10.2: pnpm < 10 runs build scripts anyway, and pnpm 10.0/10.1 lack the
+ * flag (it would be rejected as an unknown option). `alwaysAllowBuild` forces the
+ * flags for committed documentation, which cannot probe the reader's pnpm.
  */
 function formatPnpmAllowBuildArgs(options = {}, deps = {}) {
-  const pnpmMajor = deps.pnpmMajor ?? getPnpmMajorVersion(deps);
-  if (!options.alwaysAllowBuild && pnpmMajor !== null && pnpmMajor < 10) {
-    return [];
+  if (!options.alwaysAllowBuild) {
+    const { major, minor } =
+      'pnpmMajor' in deps
+        ? { major: deps.pnpmMajor, minor: 'pnpmMinor' in deps ? deps.pnpmMinor : null }
+        : probeVersion('pnpm');
+    const lacksAllowBuild =
+      major !== null && (major < 10 || (major === 10 && minor !== null && minor < 2));
+    if (lacksAllowBuild) return [];
   }
   const pkgs = [...PNPM_ALLOW_BUILD_BASE];
   if (options.embeddings) pkgs.push(...PNPM_ALLOW_BUILD_EMBEDDINGS);
   return pkgs.map((p) => `--allow-build=${p}`);
 }
 
-/** Fixed install-free command for committed AGENTS.md / SKILL.md (pnpm 10+ safe). */
+/** Fixed install-free command for committed AGENTS.md / SKILL.md (pnpm >= 10.2). */
 function formatDocumentationDlxCommand(gitnexusArgs, options = {}) {
   const flags = formatPnpmAllowBuildArgs({ ...options, alwaysAllowBuild: true }).join(' ');
   const prefix = flags ? `${flags} ` : '';
-  return `pnpm dlx ${prefix}${NPX_REF} ${gitnexusArgs}`;
+  return `pnpm ${prefix}dlx ${NPX_REF} ${gitnexusArgs}`;
 }
 
 /**
@@ -126,7 +146,7 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
   }
   if (pathProbe('gitnexus', true)) return 'gitnexus';
 
-  const npmMajor = deps.npmMajor ?? getNpmMajorVersion(deps);
+  const npmMajor = getNpmMajorVersion(deps);
   const hasPnpm = Boolean(pathProbe('pnpm'));
 
   // npm 11+ npx install crash (#1939) — prefer pnpm dlx when available.
@@ -142,7 +162,7 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
 function formatPnpmDlxCommand(gitnexusArgs, options = {}, deps = {}) {
   const flags = formatPnpmAllowBuildArgs(options, deps).join(' ');
   const prefix = flags ? `${flags} ` : '';
-  return `pnpm dlx ${prefix}${NPX_REF} ${gitnexusArgs}`;
+  return `pnpm ${prefix}dlx ${NPX_REF} ${gitnexusArgs}`;
 }
 
 function formatAnalyzeCommand(options = {}, deps = {}) {
@@ -161,7 +181,6 @@ module.exports = {
   resolveInvocationMode,
   pickPathMatch,
   getNpmMajorVersion,
-  getPnpmMajorVersion,
   NPX_REF,
   PNPM_ALLOW_BUILD_BASE,
 };

@@ -58,7 +58,7 @@ See the `<!-- gitnexus:start --> … <!-- gitnexus:end -->` block in **[AGENTS.m
 
 This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run `pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze` in terminal first.
+> If any GitNexus tool warns the index is stale, run `pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze` in terminal first.
 
 ## Always Do
 

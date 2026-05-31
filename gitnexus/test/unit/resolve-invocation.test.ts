@@ -38,12 +38,12 @@ const PLUGIN_CJS = path.resolve(
 interface CjsModule {
   formatAnalyzeCommand: (
     o?: { embeddings?: boolean },
-    deps?: { npmMajor?: number | null; pnpmMajor?: number | null },
+    deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmMinor?: number | null },
   ) => string;
   formatDocumentationDlxCommand: (args: string, o?: { embeddings?: boolean }) => string;
   formatPnpmAllowBuildArgs: (
     o?: { embeddings?: boolean; alwaysAllowBuild?: boolean },
-    deps?: { pnpmMajor?: number | null },
+    deps?: { pnpmMajor?: number | null; pnpmMinor?: number | null },
   ) => string[];
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
@@ -83,8 +83,8 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
       ['gitnexus', 'gitnexus analyze', 'gitnexus analyze --embeddings'],
       [
         'pnpm',
-        `pnpm dlx ${allow} ${cjs.NPX_REF} analyze`,
-        `pnpm dlx ${allowEmb} ${cjs.NPX_REF} analyze --embeddings`,
+        `pnpm ${allow} dlx ${cjs.NPX_REF} analyze`,
+        `pnpm ${allowEmb} dlx ${cjs.NPX_REF} analyze --embeddings`,
       ],
       ['npx', `npx ${cjs.NPX_REF} analyze`, `npx ${cjs.NPX_REF} analyze --embeddings`],
     ] as const;
@@ -111,9 +111,15 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     expect(cjs.resolveInvocationMode(probe, { npmMajor: 10 })).toBe('npx');
   });
 
-  it('auto-selects pnpm when npm is absent but pnpm is on PATH', () => {
+  it('auto-selects pnpm when npm is absent (null injected) but pnpm is on PATH', () => {
+    // npmMajor:null means "npm absent" and must be honored via the `in` seam —
+    // not fall through to the host's real npm (npm 10.x on CI → would route npx).
     const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
     expect(cjs.resolveInvocationMode(probe, { npmMajor: null })).toBe('pnpm');
+  });
+
+  it('falls back to npx when npm is null-absent and pnpm is also absent', () => {
+    expect(cjs.resolveInvocationMode(() => null, { npmMajor: null })).toBe('npx');
   });
 
   it('falls back to npx when neither global gitnexus nor pnpm is available', () => {
@@ -125,6 +131,29 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 9 })).toBe(
       `pnpm dlx ${cjs.NPX_REF} analyze`,
     );
+  });
+
+  it('includes --allow-build (pre-dlx) on pnpm 10 — first major that blocks build scripts', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    const allow = '--allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter';
+    expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 10 })).toBe(
+      `pnpm ${allow} dlx ${cjs.NPX_REF} analyze`,
+    );
+  });
+
+  it('omits --allow-build on pnpm 10.1 (the flag was added in 10.2)', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 10, pnpmMinor: 1 })).toBe(
+      `pnpm dlx ${cjs.NPX_REF} analyze`,
+    );
+  });
+
+  it('emits --allow-build when the pnpm major is null-injected (absent/unknown)', () => {
+    expect(cjs.formatPnpmAllowBuildArgs({}, { pnpmMajor: null })).toEqual([
+      '--allow-build=@ladybugdb/core',
+      '--allow-build=gitnexus',
+      '--allow-build=tree-sitter',
+    ]);
   });
 
   it('formatDocumentationDlxCommand always includes allow-build for committed docs', () => {

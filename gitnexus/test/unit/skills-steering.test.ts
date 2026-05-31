@@ -4,8 +4,9 @@ import path from 'node:path';
 
 // Regression guard (#1939): the committed skill files an agent loads alongside
 // the generated freshness line must not steer users to `npx gitnexus analyze`
-// (the npm-11 arborist install-crash path). They should match the generated
-// freshness command includes pnpm dlx --allow-build=… for pnpm 10+ safety.
+// (the npm-11 arborist install-crash path). The freshness command uses the pnpm
+// pre-`dlx` `--allow-build` form, honored since pnpm 10.2 — the post-`dlx`
+// position is rejected as a package spec on pnpm 10.2–10.13.x.
 //
 // Pure file reads resolved via path.resolve — deterministic, no host-PATH or
 // glob-CWD dependence, so this needs no cross-platform-tests.ts registration.
@@ -63,5 +64,21 @@ describe('skill-file steering (#1939)', () => {
       /npx\s+gitnexus\s+analyze/.test(readFileSync(f, 'utf-8')),
     );
     expect(offenders.map((f) => path.relative(REPO_ROOT, f))).toEqual([]);
+  });
+
+  it('uses the pnpm pre-`dlx` --allow-build form, never the broken post-`dlx` position', () => {
+    // `pnpm dlx --allow-build=…` (flags after `dlx`) is parsed as a package spec
+    // and rejected on pnpm 10.2–10.13.x; the flags must precede `dlx` (#1939).
+    const postDlxOffenders = files.filter((f) =>
+      /pnpm dlx --allow-build/.test(readFileSync(f, 'utf-8')),
+    );
+    expect(postDlxOffenders.map((f) => path.relative(REPO_ROOT, f))).toEqual([]);
+
+    // …and the canonical pre-`dlx` freshness command is actually present (guard
+    // is not vacuous: at least the cli/guide/exploring skills carry it).
+    const PRE_DLX =
+      'pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze';
+    const withFreshness = files.filter((f) => readFileSync(f, 'utf-8').includes(PRE_DLX));
+    expect(withFreshness.length).toBeGreaterThan(0);
   });
 });
