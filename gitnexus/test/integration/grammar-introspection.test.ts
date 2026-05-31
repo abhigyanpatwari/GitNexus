@@ -93,7 +93,9 @@ describe('grammar-introspection helper', () => {
       // validateNodeType, by contrast, still probes the LIVE grammar when the model
       // is null, so for an installed language a bogus node type is 'dead'.
       if (isLanguageAvailable(SupportedLanguages.Python)) {
-        expect(validateNodeType(SupportedLanguages.Python, null, 'definitely_not_xyz')).toBe('dead');
+        expect(validateNodeType(SupportedLanguages.Python, null, 'definitely_not_xyz')).toBe(
+          'dead',
+        );
       }
     });
   });
@@ -146,7 +148,9 @@ describe('grammar-introspection helper', () => {
       // (parameter pattern: (_)) throws TSQueryErrorStructure
       expect(probeField(SupportedLanguages.CSharp, 'parameter', 'pattern')).toBe('dead');
       // an unknown field name throws TSQueryErrorField
-      expect(probeField(SupportedLanguages.CSharp, 'parameter', 'total_garbage_field')).toBe('dead');
+      expect(probeField(SupportedLanguages.CSharp, 'parameter', 'total_garbage_field')).toBe(
+        'dead',
+      );
       // a real field compiles
       expect(probeField(SupportedLanguages.CSharp, 'parameter', 'type')).toBe('valid');
     });

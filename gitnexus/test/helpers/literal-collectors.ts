@@ -338,7 +338,8 @@ function receiverMutatedIn(recvText: string, scope: ts.Node): boolean {
     }
     if (
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
-      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken ||
+        n.operator === ts.SyntaxKind.MinusMinusToken) &&
       n.operand.getText() === recvText
     ) {
       mutated = true;
@@ -368,9 +369,14 @@ function receiverNodeTypeOf(call: ts.CallExpression, sf: ts.SourceFile): string 
   const recvText = call.expression.expression.getText(sf);
 
   const isRecvDotType = (e: ts.Node): boolean =>
-    ts.isPropertyAccessExpression(e) && e.name.text === 'type' && e.expression.getText(sf) === recvText;
+    ts.isPropertyAccessExpression(e) &&
+    e.name.text === 'type' &&
+    e.expression.getText(sf) === recvText;
   const bareEq = (e: ts.Expression): string | undefined => {
-    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken) {
+    if (
+      ts.isBinaryExpression(e) &&
+      e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+    ) {
       const lit = ts.isStringLiteralLike(e.left)
         ? e.left
         : ts.isStringLiteralLike(e.right)
@@ -398,7 +404,11 @@ function receiverNodeTypeOf(call: ts.CallExpression, sf: ts.SourceFile): string 
       }
     } else if (ts.isCaseClause(p)) {
       const sw = p.parent.parent;
-      if (ts.isSwitchStatement(sw) && isRecvDotType(sw.expression) && ts.isStringLiteralLike(p.expression)) {
+      if (
+        ts.isSwitchStatement(sw) &&
+        isRecvDotType(sw.expression) &&
+        ts.isStringLiteralLike(p.expression)
+      ) {
         found = p.expression.text;
         break;
       }
