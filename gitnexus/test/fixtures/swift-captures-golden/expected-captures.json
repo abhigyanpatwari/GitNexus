@@ -123,6 +123,30 @@
     "captureGroups": 10,
     "digest": "906c1f026eb183306a19eff5fafd888fc8982434e2ab07bc886100b99653359b"
   },
+  "swift-multidir-target/Package.swift": {
+    "captureGroups": 5,
+    "digest": "7c27b1db8b34bf3e81963c29f9f51f1226c1012b7a028c6207209914412b9d5f"
+  },
+  "swift-multidir-target/Sources/Alpha/Core/User.swift": {
+    "captureGroups": 7,
+    "digest": "b5fa3ef978d5bb5322a433761891ffaa86988f805bc9d419cfa1f24e9fcffa39"
+  },
+  "swift-multidir-target/Sources/Alpha/Entry/App.swift": {
+    "captureGroups": 7,
+    "digest": "3f5df4e88a54d05032cb00c999551cb4f41e0782616ec0cdbf353f3b80a4404d"
+  },
+  "swift-multidir-target/Sources/Beta/Core/User.swift": {
+    "captureGroups": 7,
+    "digest": "10c5e3b4724499ce2e43f1838a516e0387f74045450560aec033e3357d99fd62"
+  },
+  "swift-multifolder-nopackage/Models/User.swift": {
+    "captureGroups": 7,
+    "digest": "4a05d8ee43df38acb8c91ee66bd0b9c5f4ede20f1330a2977981cf431c16fb1e"
+  },
+  "swift-multifolder-nopackage/Services/App.swift": {
+    "captureGroups": 7,
+    "digest": "7ed3ccfa724fd58d3c9e10a176101364f2a01f20a7a87f9e3d76b715e4a307d8"
+  },
   "swift-overload-dispatch/App.swift": {
     "captureGroups": 7,
     "digest": "db8515d0d61419e827767ced61b6bb1949e672b8df11c35cc96882d60f007e07"

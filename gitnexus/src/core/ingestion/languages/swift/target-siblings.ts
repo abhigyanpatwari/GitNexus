@@ -8,16 +8,14 @@
  * visibility — `populateGoPackageSiblings` is the template.
  *
  * Module identity: Swift has no in-source `package X` marker. The SPM
- * target is a directory subtree (`Sources/<Target>/…`). The legacy
- * `wireSwiftImplicitImports` (in `languages/swift.ts`) groups files by
- * SPM target when a `Package.swift` config is present, else treats ALL
- * Swift files as one module (`__default__`, single-Xcode-project
- * assumption). The scope-resolution contract does not thread the SPM
- * config here, so we approximate module membership by the file's
- * immediate containing directory — every `.swift` file in the same
- * directory sees its siblings' top-level defs. This matches the common
- * fixture / single-target layout and avoids over-connecting unrelated
- * directories.
+ * target is a directory subtree (`Sources/<Target>/…`). Module membership
+ * is threaded in via the SPM target map (`ctx.resolutionConfig` →
+ * `coerceSwiftTargets`) and grouped by `groupSwiftFilesBySpmTarget`,
+ * replicating legacy `wireSwiftImplicitImports`'s `groupSwiftFilesByTarget`:
+ * files are grouped by SPM target subtree when a package config is present,
+ * else ALL Swift files form one module (`__default__`,
+ * single-Xcode-project assumption). Every `.swift` file in the same target
+ * sees its siblings' top-level defs.
  *
  * Bindings are added through the append-only `bindingAugmentations`
  * channel (Contract Invariant I8) with `origin: 'namespace'`, exactly
@@ -27,25 +25,33 @@
 
 import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
 
 export function populateSwiftTargetSiblings(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
-  _ctx: { readonly fileContents: ReadonlyMap<string, string> },
+  ctx: {
+    readonly fileContents: ReadonlyMap<string, string>;
+    readonly resolutionConfig?: unknown;
+  },
 ): void {
-  // Group files by immediate containing directory (the module proxy).
-  const filesByDir = new Map<string, { filePath: string; defs: SymbolDefinition[] }[]>();
-  for (const parsed of parsedFiles) {
-    const dir = containingDir(parsed.filePath);
-    const list = filesByDir.get(dir) ?? [];
-    list.push({ filePath: parsed.filePath, defs: [...parsed.localDefs] });
-    filesByDir.set(dir, list);
-  }
+  // Group files by SPM target subtree (the module). No-source-dir → all
+  // files in one `__default__` bucket.
+  const targets = coerceSwiftTargets(ctx.resolutionConfig);
+  const filesByTarget = groupSwiftFilesBySpmTarget(
+    parsedFiles,
+    (parsed) => parsed.filePath,
+    targets,
+  );
 
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
-  for (const [, siblings] of filesByDir) {
-    if (siblings.length < 2) continue; // no siblings to share
+  for (const [, group] of filesByTarget) {
+    if (group.length < 2) continue; // no siblings to share
+    const siblings = group.map((parsed) => ({
+      filePath: parsed.filePath,
+      defs: [...parsed.localDefs] as SymbolDefinition[],
+    }));
     for (const target of siblings) {
       for (const receiver of siblings) {
         if (receiver.filePath === target.filePath) continue; // no self-reference
@@ -62,12 +68,6 @@ export function populateSwiftTargetSiblings(
       }
     }
   }
-}
-
-function containingDir(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const idx = normalized.lastIndexOf('/');
-  return idx === -1 ? '' : normalized.slice(0, idx);
 }
 
 function getAugmentationBucket(

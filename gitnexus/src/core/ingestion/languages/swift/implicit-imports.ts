@@ -11,55 +11,56 @@
  * finalized `ImportEdge`s — of which there are none here, because there
  * is no syntactic `import`. This hook emits the missing edges directly.
  *
- * Module identity: Swift has no in-source `package X` marker. We
- * approximate module membership by the file's immediate containing
- * directory — the same directory-grouping proxy `populateSwiftTargetSiblings`
- * (`target-siblings.ts`) uses for sibling binding visibility. Every pair
- * of distinct `.swift` files in the same directory gets a directed
- * IMPORTS edge in both directions (whole-module visibility is symmetric).
+ * Module identity: Swift has no in-source `package X` marker. Module
+ * membership is the SPM target *subtree* (`Sources/<Target>/…`), threaded
+ * in via the SPM target map (`resolutionConfig` → `coerceSwiftTargets`)
+ * and grouped by `groupSwiftFilesBySpmTarget` — replicating legacy
+ * `groupSwiftFilesByTarget`. With no scanned source dir the map is null
+ * and all files form one `__default__` module (single-Xcode-project
+ * assumption). Every pair of distinct `.swift` files in the same module
+ * gets a directed IMPORTS edge in both directions (whole-module
+ * visibility is symmetric).
  *
  * Node identity + edge construction mirror the generic `emitImportEdges`
  * convention (`graph-bridge/imports-to-edges.ts`): `generateId('File', path)`
  * for endpoints and `generateId('IMPORTS', key)` for the relationship id,
- * deduped by `(sourceFile -> targetFile)`.
+ * deduped by `(sourceFile -> targetFile)`. Re-invocation idempotency comes
+ * from `graph.addRelationship` id-dedup (the same `IMPORTS` id is produced
+ * for a given ordered pair), so no local `seen` set is needed.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { generateId } from '../../../../lib/utils.js';
+import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
 
 export function emitSwiftImplicitImportEdges(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],
   _nodeLookup: GraphNodeLookup,
+  resolutionConfig?: unknown,
 ): void {
-  // Group files by immediate containing directory (the module proxy).
-  const filesByDir = new Map<string, string[]>();
-  for (const parsed of parsedFiles) {
-    const dir = containingDir(parsed.filePath);
-    const list = filesByDir.get(dir) ?? [];
-    list.push(parsed.filePath);
-    filesByDir.set(dir, list);
-  }
+  // Group files by SPM target subtree (the module). No-source-dir → all
+  // files in one `__default__` bucket.
+  const targets = coerceSwiftTargets(resolutionConfig);
+  const filesByTarget = groupSwiftFilesBySpmTarget(
+    parsedFiles,
+    (parsed) => parsed.filePath,
+    targets,
+  );
 
-  // Dedup so each ordered (source -> target) pair emits at most once even
-  // if the hook is invoked more than once during re-resolution.
-  const seen = new Set<string>();
-
-  for (const [, files] of filesByDir) {
-    if (files.length < 2) continue; // no siblings to import
-    for (const source of files) {
-      for (const target of files) {
-        if (source === target) continue; // no self-import
-        const dedupKey = `${source}->${target}`;
-        if (seen.has(dedupKey)) continue;
-        seen.add(dedupKey);
+  for (const [, group] of filesByTarget) {
+    if (group.length < 2) continue; // no siblings to import
+    for (const source of group) {
+      for (const target of group) {
+        if (source.filePath === target.filePath) continue; // no self-import
+        const dedupKey = `${source.filePath}->${target.filePath}`;
 
         graph.addRelationship({
           id: generateId('IMPORTS', dedupKey),
-          sourceId: generateId('File', source),
-          targetId: generateId('File', target),
+          sourceId: generateId('File', source.filePath),
+          targetId: generateId('File', target.filePath),
           type: 'IMPORTS',
           confidence: 1.0,
           reason: 'swift-scope: implicit module visibility',
@@ -67,10 +68,4 @@ export function emitSwiftImplicitImportEdges(
       }
     }
   }
-}
-
-function containingDir(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const idx = normalized.lastIndexOf('/');
-  return idx === -1 ? '' : normalized.slice(0, idx);
 }

@@ -318,7 +318,7 @@ export function runScopeResolution(
   // implicit cross-file visibility (no syntactic import statement). The
   // finalized-ImportEdge pipeline (`emitImportEdges`) cannot produce these
   // because there is no `ImportEdge` to materialize. Idempotent.
-  provider.emitImplicitImportEdges?.(graph, parsedFiles, nodeLookup);
+  provider.emitImplicitImportEdges?.(graph, parsedFiles, nodeLookup, resolutionConfig);
   // Rebuild the node lookup after heritage-edge emission. Languages like
   // Ruby create Property graph nodes inside `emitHeritageEdges`; those
   // nodes must be visible to downstream passes (`emitReceiverBoundCalls`
@@ -361,6 +361,7 @@ export function runScopeResolution(
     provider.populateNamespaceSiblings(parsedFiles, indexes, {
       fileContents: getFileContents(),
       treeCache,
+      resolutionConfig,
     });
   }
 
@@ -370,7 +371,7 @@ export function runScopeResolution(
   // propagateImportedReturnTypes so the SCC-ordered pass sees the
   // mirrored bindings.
   if (provider.mirrorNamespaceTypeBindings !== undefined) {
-    provider.mirrorNamespaceTypeBindings(parsedFiles, indexes, workspaceIndex);
+    provider.mirrorNamespaceTypeBindings(parsedFiles, indexes, workspaceIndex, resolutionConfig);
   }
 
   // Cross-file return-type propagation (Contract Invariant I3 timing:

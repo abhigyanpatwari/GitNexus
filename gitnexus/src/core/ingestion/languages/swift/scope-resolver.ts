@@ -20,8 +20,11 @@
  *     type-binding layer.
  *   - **Same-module visibility**: every file in an SPM target sees its
  *     siblings' top-level defs without an `import`. Modeled via
- *     `populateSwiftTargetSiblings` (directory-grouped), mirroring Go's
- *     package siblings.
+ *     `populateSwiftTargetSiblings`, grouped by the SPM target *subtree*
+ *     (`Sources/<Target>/…`) via `groupSwiftFilesBySpmTarget` fed from the
+ *     `loadResolutionConfig` SPM map, mirroring Go's package siblings. With
+ *     no scanned source dir (no `Sources/`/`Package/Sources/`/`src/`) the
+ *     map is null and all files form one `__default__` module.
  *   - **`super`** is the superclass receiver (`super.method()`); plain
  *     `self` is the instance receiver. Both synthesized in
  *     `receiver-binding.ts`.
@@ -33,16 +36,19 @@
  *      Array where Element: Equatable`) are not narrowed — the `Self`
  *      type of a protocol method resolves to the protocol, not the
  *      conforming type.
- *   2. **Cross-module `import` resolution** is directory-segment based
- *      (`import Foo` → files under a `Foo/` dir); no `Package.swift`
- *      manifest parsing. Same-target visibility (the common case) is
- *      handled by sibling augmentation, not imports.
+ *   2. **Cross-module `import` resolution** is still directory-segment
+ *      based (`import Foo` → files under a `Foo/` dir); explicit imports do
+ *      not yet consult the SPM target map (follow-up, tracked under #1935).
+ *      Same-target visibility (the common case) IS SPM-target-subtree
+ *      accurate — handled by sibling augmentation grouped via
+ *      `groupSwiftFilesBySpmTarget`, not by explicit imports.
  *   3. **Operator / subscript overloads** dispatch by name only.
  *   4. **`@_exported import` re-exports** are treated as plain imports.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { loadSwiftPackageConfig } from '../../language-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -67,6 +73,15 @@ const swiftScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Swift,
   languageProvider: swiftProvider,
   importEdgeReason: 'swift-scope: import',
+
+  // Load the SPM target map (Sources/<Target>/ subtree mapping) once per
+  // workspace pass. Threaded through the orchestrator as `resolutionConfig`
+  // and consumed by the three same-module grouping hooks
+  // (`emitImplicitImportEdges`, `populateNamespaceSiblings`,
+  // `mirrorNamespaceTypeBindings`) via `coerceSwiftTargets` so they group by
+  // the SPM target subtree, not the immediate directory. Mirrors
+  // `goScopeResolver`'s `loadGoModulePath`.
+  loadResolutionConfig: (repoPath: string) => loadSwiftPackageConfig(repoPath),
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
     const ws: SwiftResolveContext = { fromFile, allFilePaths };

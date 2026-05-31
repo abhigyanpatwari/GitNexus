@@ -17,6 +17,7 @@
  *   - `arity.ts`             — Swift arity compatibility (count-primary)
  *   - `arity-metadata.ts`    — synthesize arity metadata from declarations
  *   - `import-target.ts`     — `(ParsedImport, WorkspaceIndex) → file path` adapter
+ *   - `target-grouping.ts`   — group same-module files by SPM target subtree
  *   - `target-siblings.ts`   — same-SPM-target implicit cross-file visibility
  *   - `implicit-imports.ts`  — same-SPM-target File→File IMPORTS edges
  *   - `sibling-type-bindings.ts` — mirror sibling return-type typeBindings
@@ -30,6 +31,7 @@ export { interpretSwiftImport, interpretSwiftTypeBinding } from './interpret.js'
 export { swiftMergeBindings } from './merge-bindings.js';
 export { swiftArityCompatibility } from './arity.js';
 export { resolveSwiftImportTarget, type SwiftResolveContext } from './import-target.js';
+export { groupSwiftFilesBySpmTarget, coerceSwiftTargets } from './target-grouping.js';
 export { populateSwiftTargetSiblings } from './target-siblings.js';
 export { emitSwiftImplicitImportEdges } from './implicit-imports.js';
 export { mirrorSwiftSiblingTypeBindings } from './sibling-type-bindings.js';

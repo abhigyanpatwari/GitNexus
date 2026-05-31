@@ -901,3 +901,124 @@ describe.skipIf(!swiftAvailable)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// U3 — SPM-target subtree grouping (issue #1948). A Swift module is an SPM
+// TARGET (a directory SUBTREE `Sources/<Target>/…`), not the immediate
+// containing directory. `swift-multidir-target` has target `Alpha` spread
+// across `Sources/Alpha/Core` + `Sources/Alpha/Entry` plus a colliding
+// same-simple-named `User` in target `Beta` (`Sources/Beta/Core`). Grouping
+// by SPM target (not by immediate dir) keeps Alpha's two subdirs in one
+// module, so `User()` in Alpha/Entry resolves to Alpha/Core/User (NOT
+// Beta/Core/User) and cross-dir IMPORTS within Alpha emit — while Alpha and
+// Beta stay distinct modules with NO IMPORTS between them.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift SPM multi-directory target grouping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-multidir-target'), () => {});
+  }, 60000);
+
+  it('resolves User() in Alpha/Entry to Alpha/Core/User, not Beta/Core/User', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(
+      (c) =>
+        c.target === 'User' &&
+        c.targetLabel === 'Class' &&
+        c.sourceFilePath === 'Sources/Alpha/Entry/App.swift',
+    );
+    expect(ctorCall).toBeDefined();
+    expect(ctorCall!.targetFilePath).toBe('Sources/Alpha/Core/User.swift');
+  });
+
+  it('resolves user.alphaSave() across directories within the Alpha target', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const memberCall = calls.find(
+      (c) => c.target === 'alphaSave' && c.source === 'processEntities',
+    );
+    expect(memberCall).toBeDefined();
+    expect(memberCall!.targetFilePath).toBe('Sources/Alpha/Core/User.swift');
+  });
+
+  it('emits cross-directory IMPORTS edges within the Alpha target (Entry <-> Core)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const entryToCore = imports.find(
+      (c) =>
+        c.sourceFilePath === 'Sources/Alpha/Entry/App.swift' &&
+        c.targetFilePath === 'Sources/Alpha/Core/User.swift',
+    );
+    const coreToEntry = imports.find(
+      (c) =>
+        c.sourceFilePath === 'Sources/Alpha/Core/User.swift' &&
+        c.targetFilePath === 'Sources/Alpha/Entry/App.swift',
+    );
+    expect(entryToCore).toBeDefined();
+    expect(coreToEntry).toBeDefined();
+  });
+
+  it('does NOT emit IMPORTS across distinct targets (no Alpha <-> Beta)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const crossTarget = imports.find(
+      (c) =>
+        (c.sourceFilePath.startsWith('Sources/Alpha/') &&
+          c.targetFilePath.startsWith('Sources/Beta/')) ||
+        (c.sourceFilePath.startsWith('Sources/Beta/') &&
+          c.targetFilePath.startsWith('Sources/Alpha/')),
+    );
+    expect(crossTarget).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U3 — No-package multi-folder fallback (issue #1948). With NO scanned
+// source dir (`Sources/`/`Package/Sources/`/`src/`) `loadSwiftPackageConfig`
+// returns null, so ALL files form one `__default__` module (single-Xcode-
+// project assumption). `swift-multifolder-nopackage` spreads files across
+// `Models/` + `Services/` with no manifest; cross-folder visibility must
+// still resolve and emit IMPORTS because the whole repo is one module.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)(
+  'Swift no-package multi-folder fallback (__default__ module)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'swift-multifolder-nopackage'),
+        () => {},
+      );
+    }, 60000);
+
+    it('resolves User() in Services to Models/User.swift across folders', () => {
+      const calls = getRelationships(result, 'CALLS');
+      const ctorCall = calls.find(
+        (c) =>
+          c.target === 'User' &&
+          c.targetLabel === 'Class' &&
+          c.sourceFilePath === 'Services/App.swift',
+      );
+      expect(ctorCall).toBeDefined();
+      expect(ctorCall!.targetFilePath).toBe('Models/User.swift');
+    });
+
+    it('resolves user.save() across folders to Models/User.swift', () => {
+      const calls = getRelationships(result, 'CALLS');
+      const memberCall = calls.find((c) => c.target === 'save' && c.source === 'processEntities');
+      expect(memberCall).toBeDefined();
+      expect(memberCall!.targetFilePath).toBe('Models/User.swift');
+    });
+
+    it('emits cross-folder IMPORTS edges between Models and Services', () => {
+      const imports = getRelationships(result, 'IMPORTS');
+      const crossFolder = imports.find(
+        (c) =>
+          (c.sourceFilePath === 'Services/App.swift' && c.targetFilePath === 'Models/User.swift') ||
+          (c.sourceFilePath === 'Models/User.swift' && c.targetFilePath === 'Services/App.swift'),
+      );
+      expect(crossFolder).toBeDefined();
+    });
+  },
+);
