@@ -147,7 +147,11 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
   if (pathProbe('gitnexus', true)) return 'gitnexus';
 
   const npmMajor = getNpmMajorVersion(deps);
-  const hasPnpm = Boolean(pathProbe('pnpm'));
+  // pnpm presence: an injected pnpm version (a successful `pnpm --version`
+  // proves presence) short-circuits the separate `which pnpm` probe so the
+  // stale-index hook path spawns pnpm at most once. Falls back to the PATH
+  // probe only when no version was injected/captured.
+  const hasPnpm = 'pnpmMajor' in deps ? deps.pnpmMajor !== null : Boolean(pathProbe('pnpm'));
 
   // npm 11+ npx install crash (#1939) — prefer pnpm dlx when available.
   if (hasPnpm && npmMajor !== null && npmMajor >= 11) return 'pnpm';
@@ -167,9 +171,33 @@ function formatPnpmDlxCommand(gitnexusArgs, options = {}, deps = {}) {
 
 function formatAnalyzeCommand(options = {}, deps = {}) {
   const suffix = options.embeddings ? ' --embeddings' : '';
-  const mode = resolveInvocationMode(undefined, deps);
+  // Keep the stale-index hook budget tight by querying each tool at most once.
+  // A memoized PATH probe is shared with resolveInvocationMode (so `gitnexus`
+  // isn't probed twice), and pnpm's version is captured by a single
+  // `pnpm --version` that proves both presence (for mode resolution) and
+  // version (for the allow-build gate) — replacing the former `which pnpm` +
+  // `pnpm --version` double spawn. Injected deps (tests) and forced/global
+  // modes skip the pnpm probe.
+  const cache = new Map();
+  const probe = (command, gitnexusWrapper) => {
+    const key = `${command}:${gitnexusWrapper ? 1 : 0}`;
+    if (!cache.has(key)) cache.set(key, resolveOnPath(command, gitnexusWrapper));
+    return cache.get(key);
+  };
+  let resolved = deps;
+  if (!('pnpmMajor' in deps)) {
+    const forced = process.env.GITNEXUS_INVOCATION?.trim().toLowerCase();
+    // pnpm is only consulted when no non-pnpm mode is already certain: forced
+    // gitnexus/npx never use pnpm, and a present global gitnexus wins outright.
+    const mightUsePnpm = forced === 'pnpm' || (forced !== 'gitnexus' && forced !== 'npx');
+    if (mightUsePnpm && (forced === 'pnpm' || !probe('gitnexus', true))) {
+      const { major, minor } = probeVersion('pnpm');
+      resolved = { ...deps, pnpmMajor: major, pnpmMinor: minor };
+    }
+  }
+  const mode = resolveInvocationMode(probe, resolved);
   if (mode === 'gitnexus') return `gitnexus analyze${suffix}`;
-  if (mode === 'pnpm') return `${formatPnpmDlxCommand(`analyze${suffix}`, options, deps)}`;
+  if (mode === 'pnpm') return `${formatPnpmDlxCommand(`analyze${suffix}`, options, resolved)}`;
   return `npx ${NPX_REF} analyze${suffix}`;
 }
 

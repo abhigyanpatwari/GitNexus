@@ -133,7 +133,10 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     );
   });
 
-  it('includes --allow-build (pre-dlx) on pnpm 10 — first major that blocks build scripts', () => {
+  it('includes --allow-build (pre-dlx) on pnpm 10.x with unknown minor (conservative)', () => {
+    // No pnpmMinor injected → minor is null → the gate cannot prove < 10.2, so
+    // it conservatively emits the flags. This is the unknown-minor fallback, NOT
+    // real pnpm 10.0 (which reports minor=0 and is covered separately below).
     process.env.GITNEXUS_INVOCATION = 'pnpm';
     const allow = '--allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter';
     expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 10 })).toBe(
@@ -141,10 +144,25 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     );
   });
 
+  it('omits --allow-build on pnpm 10.0 (the flag did not exist until 10.2)', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 10, pnpmMinor: 0 })).toBe(
+      `pnpm dlx ${cjs.NPX_REF} analyze`,
+    );
+  });
+
   it('omits --allow-build on pnpm 10.1 (the flag was added in 10.2)', () => {
     process.env.GITNEXUS_INVOCATION = 'pnpm';
     expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 10, pnpmMinor: 1 })).toBe(
       `pnpm dlx ${cjs.NPX_REF} analyze`,
+    );
+  });
+
+  it('includes --allow-build on pnpm 10.2 (the first minor that accepts the flag)', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    const allow = '--allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter';
+    expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 10, pnpmMinor: 2 })).toBe(
+      `pnpm ${allow} dlx ${cjs.NPX_REF} analyze`,
     );
   });
 
