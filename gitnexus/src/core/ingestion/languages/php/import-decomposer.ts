@@ -116,23 +116,7 @@ function parseUseClause(clause: SyntaxNode, qualifier: PhpImportKind): PhpImport
   const source = qualName.text.trim();
   if (source === '') return null;
 
-  // Strategy 1: explicit alias_clause wrapper (older grammar versions).
-  const aliasClause = findNamedChild(clause, 'alias_clause');
-  if (aliasClause !== null) {
-    // alias_clause: "as" name
-    const aliasName = findNamedChild(aliasClause, 'name') ?? aliasClause.firstNamedChild;
-    const alias = aliasName?.text.trim() ?? '';
-    if (alias === '') return null;
-    return {
-      kind: 'alias',
-      source,
-      name: alias,
-      alias,
-      atNode: clause,
-    };
-  }
-
-  // Strategy 2: bare sibling `name` node after the qualified_name.
+  // Strategy: bare sibling `name` node after the qualified_name.
   // tree-sitter-php (≥ 0.22) emits `use Foo\Bar as Baz` as:
   //   namespace_use_clause
   //     qualified_name "Foo\Bar"
@@ -231,22 +215,7 @@ function parseInnerClause(
 
   const source = prefix !== '' ? `${prefix}\\${innerPath}` : innerPath;
 
-  // Strategy 1: explicit alias_clause wrapper (older grammar versions).
-  const aliasClause = findNamedChild(clause, 'alias_clause');
-  if (aliasClause !== null) {
-    const aliasName = findNamedChild(aliasClause, 'name') ?? aliasClause.firstNamedChild;
-    const alias = aliasName?.text.trim() ?? '';
-    if (alias === '') return null;
-    return {
-      kind: 'alias',
-      source,
-      name: alias,
-      alias,
-      atNode: clause,
-    };
-  }
-
-  // Strategy 2: bare sibling `name` node after the qualified_name (tree-sitter-php ≥ 0.22).
+  // Strategy: bare sibling `name` node after the qualified_name (tree-sitter-php ≥ 0.22).
   if (clause.namedChildCount >= 2) {
     const lastChild = clause.namedChild(clause.namedChildCount - 1);
     if (lastChild !== null && lastChild !== qualName && lastChild.type === 'name') {

@@ -3,7 +3,6 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig } from '../../variable-types.js';
 import type { VariableVisibility } from '../../variable-types.js';
-import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
@@ -47,13 +46,6 @@ function extractDartVarName(node: SyntaxNode): string | undefined {
 }
 
 function extractDartVarType(node: SyntaxNode): string | undefined {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === 'initialized_variable_definition') {
-      const typeNode = child.childForFieldName('type');
-      if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
-    }
-  }
   // Look for type_identifier directly on the node
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);

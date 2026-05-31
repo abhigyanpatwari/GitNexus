@@ -257,11 +257,7 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
 
   // Generic types: extract the base type (e.g., List<User> → List)
   // For nullable wrappers (Optional<User>, Option<User>), unwrap to inner type.
-  if (
-    typeNode.type === 'generic_type' ||
-    typeNode.type === 'parameterized_type' ||
-    typeNode.type === 'generic_name'
-  ) {
+  if (typeNode.type === 'generic_type' || typeNode.type === 'generic_name') {
     const base =
       typeNode.childForFieldName('name') ??
       typeNode.childForFieldName('type') ??
@@ -411,17 +407,20 @@ export const TYPED_PARAMETER_TYPES = new Set([
  * Note: Go slices/maps use slice_type/map_type, not generic_type — those are
  * NOT handled here. Use language-specific extractors for Go container types.
  *
- * @param typeNode A generic_type or parameterized_type AST node (or any node —
- *   returns [] for non-generic types).
+ * @param typeNode A generic_type / generic_name / user_type AST node (or any
+ *   node — returns [] for non-generic types).
  * @returns Array of resolved type argument names. Unresolvable arguments are omitted.
  */
 export const extractGenericTypeArgs = (typeNode: SyntaxNode, depth = 0): string[] => {
   if (depth > 50) return [];
-  // Unwrap wrapper nodes that may sit above the generic_type
+  // Unwrap pure wrapper nodes (which carry no type_arguments of their own) that
+  // may sit above the generic type. `user_type` is intentionally NOT unwrapped
+  // here: a Kotlin `user_type` can itself carry a `type_arguments` child
+  // (`List<User>` → user_type > [type_identifier, type_arguments]), so it is
+  // handled as a generic-bearing node below.
   if (
     typeNode.type === 'type_annotation' ||
     typeNode.type === 'type' ||
-    typeNode.type === 'user_type' ||
     typeNode.type === 'nullable_type' ||
     typeNode.type === 'optional_type'
   ) {
@@ -430,11 +429,15 @@ export const extractGenericTypeArgs = (typeNode: SyntaxNode, depth = 0): string[
     return [];
   }
 
-  // Only process generic/parameterized type nodes (includes C#'s generic_name)
+  // Generic-bearing nodes hold their arguments in a `type_arguments` /
+  // `type_argument_list` child: generic_type (Java/TypeScript/Rust/Go),
+  // generic_name (C#), and Kotlin's user_type. Verified against the installed
+  // grammars by real parse (#1920). A user_type without its own type_arguments
+  // is unwrapped at the argsNode guard below.
   if (
     typeNode.type !== 'generic_type' &&
-    typeNode.type !== 'parameterized_type' &&
-    typeNode.type !== 'generic_name'
+    typeNode.type !== 'generic_name' &&
+    typeNode.type !== 'user_type'
   ) {
     return [];
   }
@@ -448,7 +451,17 @@ export const extractGenericTypeArgs = (typeNode: SyntaxNode, depth = 0): string[
       break;
     }
   }
-  if (!argsNode) return [];
+  if (!argsNode) {
+    // A `user_type` without its own type_arguments wraps an inner type node
+    // (e.g. user_type > generic_type, or a plain user_type > type_identifier with
+    // no generics) — recurse into that child. generic_type / generic_name with no
+    // args simply have no type arguments to report.
+    if (typeNode.type === 'user_type') {
+      const inner = typeNode.firstNamedChild;
+      return inner ? extractGenericTypeArgs(inner, depth + 1) : [];
+    }
+    return [];
+  }
 
   const result: string[] = [];
   for (let i = 0; i < argsNode.namedChildCount; i++) {
