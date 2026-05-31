@@ -714,7 +714,11 @@ export async function runChunkedParseAndResolve(
           if (shouldAccumulate(item.filePath)) deferredWorkerCalls.push(item);
         }
         for (const item of chunkWorkerData.heritage) {
-          if (shouldAccumulate(item.filePath)) deferredWorkerHeritage.push(item);
+          // Heritage (EXTENDS/IMPLEMENTS) is NOT routed through the
+          // registry-primary call-resolution DAG — accumulate unconditionally
+          // so same-file and cross-file inheritance edges are emitted for ALL
+          // languages, including those in MIGRATED_LANGUAGES (e.g. C#, Kotlin).
+          deferredWorkerHeritage.push(item);
         }
         for (const item of chunkWorkerData.constructorBindings) {
           if (shouldAccumulate(item.filePath)) deferredConstructorBindings.push(item);

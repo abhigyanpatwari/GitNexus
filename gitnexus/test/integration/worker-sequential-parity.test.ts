@@ -23,6 +23,13 @@ import {
 } from './resolvers/helpers.js';
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'cross-file-binding', 'ts-simple');
+const HERITAGE_FIXTURE = path.resolve(
+  __dirname,
+  '..',
+  'fixtures',
+  'lang-resolution',
+  'typescript-child-extends-parent',
+);
 
 const runMode = (mode: 'worker' | 'sequential'): Promise<PipelineResult> =>
   runPipelineFromRepo(FIXTURE, () => {}, {
@@ -76,4 +83,50 @@ describe('worker vs sequential parity (#1741 Problem D)', () => {
       expect(getNodesByLabel(worker, label)).toEqual(getNodesByLabel(sequential, label));
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Heritage worker-path regression (#1951): EXTENDS/IMPLEMENTS edges must
+// survive the worker-pool accumulation path for registry-primary languages.
+//
+// Background: `shouldAccumulate` in the worker-path chunk loop used to skip
+// heritage records for registry-primary languages (TypeScript, C#, etc.)
+// because those languages route CALL resolution through the scope-resolution
+// DAG. But EXTENDS/IMPLEMENTS are handled by `processHeritageFromExtracted`,
+// NOT the registry-primary DAG, so they were silently dropped in worker mode
+// while sequential mode produced them correctly.
+// ---------------------------------------------------------------------------
+
+describe('worker vs sequential parity — EXTENDS/IMPLEMENTS heritage (#1951)', () => {
+  let worker: PipelineResult;
+  let sequential: PipelineResult;
+
+  beforeAll(async () => {
+    const runMode = (mode: 'worker' | 'sequential'): Promise<PipelineResult> =>
+      runPipelineFromRepo(HERITAGE_FIXTURE, () => {}, {
+        skipGraphPhases: true,
+        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+        ...(mode === 'worker' ? { workerPoolSize: 2 } : { skipWorkers: true }),
+      });
+
+    [worker, sequential] = await Promise.all([runMode('worker'), runMode('sequential')]);
+  }, 120_000);
+
+  it('worker mode used the pool (guards against silent sequential fallback)', () => {
+    expect(worker.usedWorkerPool).toBe(true);
+    expect(sequential.usedWorkerPool).toBe(false);
+  });
+
+  it.each(['EXTENDS', 'CALLS', 'IMPORTS'])(
+    'produces identical %s edges in worker and sequential mode',
+    (relType) => {
+      const w = edgeSet(getRelationships(worker, relType));
+      const s = edgeSet(getRelationships(sequential, relType));
+      expect(w).toEqual(s);
+    },
+  );
+
+  it('worker mode emits at least 1 EXTENDS edge (regression guard)', () => {
+    expect(edgeSet(getRelationships(worker, 'EXTENDS')).length).toBeGreaterThan(0);
+  });
 });
