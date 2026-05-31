@@ -17,7 +17,6 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 /** Type node types that represent a return type in function/getter/setter signatures. */
 const TYPE_NODE_TYPES = new Set([
   'type_identifier',
-  'generic_type',
   'function_type',
   'nullable_type',
   'void_type',

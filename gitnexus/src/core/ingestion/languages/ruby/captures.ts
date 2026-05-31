@@ -183,7 +183,7 @@ export function emitRubyScopeCaptures(
             if (argList !== null) {
               for (let ai = 0; ai < argList.namedChildCount; ai++) {
                 const arg = argList.namedChild(ai);
-                if (arg !== null && (arg.type === 'simple_symbol' || arg.type === 'symbol')) {
+                if (arg !== null && arg.type === 'simple_symbol') {
                   const propName = arg.text.replace(/^:/, '');
                   out.push({
                     '@import.statement': grouped['@reference.call.free']!,
@@ -327,7 +327,7 @@ export function emitRubyScopeCaptures(
           if (argList !== null) {
             for (let ai = 0; ai < argList.namedChildCount; ai++) {
               const arg = argList.namedChild(ai);
-              if (arg !== null && (arg.type === 'simple_symbol' || arg.type === 'symbol')) {
+              if (arg !== null && arg.type === 'simple_symbol') {
                 const propName = arg.text.replace(/^:/, '');
                 out.push({
                   '@type-binding.return': syntheticCapture('@type-binding.return', attrNode, text),

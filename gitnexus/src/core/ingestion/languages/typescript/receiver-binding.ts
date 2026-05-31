@@ -52,7 +52,6 @@ const TYPE_DECL_NODE_TYPES = new Set([
   'class_declaration',
   'abstract_class_declaration',
   'class',
-  'class_expression',
   'interface_declaration',
 ]);
 

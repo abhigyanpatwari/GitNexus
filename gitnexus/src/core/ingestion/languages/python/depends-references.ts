@@ -32,7 +32,7 @@ export function synthesizeDependsReferences(fnNode: SyntaxNode): readonly Captur
       continue;
     }
 
-    const defaultValue = param.childForFieldName('value') ?? param.childForFieldName('default');
+    const defaultValue = param.childForFieldName('value');
     if (defaultValue === null) continue;
 
     const callNode = defaultValue.type === 'call' ? defaultValue : null;

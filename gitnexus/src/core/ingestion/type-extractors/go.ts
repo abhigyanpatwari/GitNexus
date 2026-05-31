@@ -145,16 +145,8 @@ const extractDeclaration: TypeBindingExtractor = (
 
 /** Go: parameter → name type */
 const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
-  let nameNode: SyntaxNode | null = null;
-  let typeNode: SyntaxNode | null = null;
-
-  if (node.type === 'parameter') {
-    nameNode = node.childForFieldName('name');
-    typeNode = node.childForFieldName('type');
-  } else {
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
-    typeNode = node.childForFieldName('type');
-  }
+  const nameNode = node.childForFieldName('name');
+  const typeNode = node.childForFieldName('type');
 
   if (!nameNode || !typeNode) return;
   const varName = extractVarName(nameNode);

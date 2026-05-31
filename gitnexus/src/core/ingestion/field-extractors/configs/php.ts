@@ -53,8 +53,7 @@ export const phpConfig: FieldExtractionConfig = {
         child.type === 'named_type' ||
         child.type === 'optional_type' ||
         child.type === 'primitive_type' ||
-        child.type === 'intersection_type' ||
-        child.type === 'nullable_type'
+        child.type === 'intersection_type'
       ) {
         return extractSimpleTypeName(child) ?? child.text?.trim();
       }
