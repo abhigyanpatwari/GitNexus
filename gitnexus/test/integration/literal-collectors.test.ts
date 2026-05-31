@@ -59,6 +59,24 @@ describe('literal-collectors', () => {
       expect(nodeTypes.some((n) => n.literal.startsWith('@'))).toBe(false);
     });
 
+    it('captures the receiver node type from a positive type-guard; leaves else-branch fallbacks unscoped', () => {
+      // switch (node.type) { case 'generic_name': node.childForFieldName('name') }
+      const scoped = fields.find(
+        (f) =>
+          f.field === 'name' &&
+          f.receiverNodeType === 'generic_name' &&
+          f.file.includes('csharp/captures'),
+      );
+      expect(scoped).toBeDefined();
+      // else-branch fallback `node.childForFieldName('pattern')` (csharp type-extractor):
+      // narrowed to NOT a single type, so it stays unscoped → sound global check.
+      const elseBranch = fields.find(
+        (f) => f.field === 'pattern' && f.file.endsWith('type-extractors/csharp.ts'),
+      );
+      expect(elseBranch).toBeDefined();
+      expect(elseBranch!.receiverNodeType).toBeUndefined();
+    });
+
     it('does not scan the COBOL or resolution layer', () => {
       expect(nodeTypes.some((n) => n.file.includes('cobol'))).toBe(false);
       // resolution-layer files (where .type is a resolved-symbol kind) are excluded
@@ -79,6 +97,15 @@ describe('literal-collectors', () => {
       // discriminator: resolution-layer literals are grammar nodes (snake_case /
       // anonymous), never resolved-symbol PascalCase kinds like 'Class'/'Struct'.
       expect(nodeTypes.some((n) => /^[A-Z]/.test(n.literal))).toBe(false);
+    });
+
+    it('scans shared resolution files (type-env.ts) tagged with the full language set', () => {
+      const { nodeTypes } = __test.collectResolutionLayerLiterals();
+      const typeEnv = nodeTypes.filter((n) => n.file.endsWith('type-env.ts'));
+      expect(typeEnv.length).toBeGreaterThan(0);
+      // shared (non-languages/<lang>/) file → tagged with the full gated set
+      // (valid-if-any), not a single language.
+      expect(typeEnv.every((n) => n.languages.length > 1)).toBe(true);
     });
   });
 

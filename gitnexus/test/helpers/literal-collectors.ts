@@ -6,24 +6,32 @@
  * compilation — see Mode 3 and query-compilation.test.ts), each tagged with
  * the grammar language(s) it is checked against.
  *
- * THREE modes (plan KTD3):
+ * FOUR modes (plan KTD3):
  *   1. Config reflection — import `*-extractors/configs/*.ts`, read each
  *      config-shaped export's node-type-array keys. Exact `config.language`.
  *   2. AST scan (`typescript` parser, no type-checker) over the EXTRACTION
  *      surface — `*-extractors/**`, every `languages/<lang>/captures.ts`, and
  *      `export-detection.ts`. Collected BY CONSUMPTION SITE: `<n>.type === '..'`,
- *      `childForFieldName('..')`, `findNodeAtRange(.., '..')`, and members of a
- *      `Set`/array consumed via `SET.has(<n>.type)`. This surface is exactly
- *      the AST-walking code where `.type` is a tree-sitter `SyntaxNode`; the
- *      resolution layer (scope-resolver/interpret/type-env/call-processor —
- *      where `.type` is a resolved-symbol KIND like 'Class') is deliberately
- *      NOT scanned, so semantic-type sets (`PRIMITIVE_TYPES`,
- *      `NULLABLE_WRAPPER_TYPES`) are never mistaken for node types. There is
- *      also no `*_TYPES` name heuristic: a `Set`'s members are collected only
- *      when the set is consumed against a node's `.type`.
+ *      `childForFieldName('..')` (capturing the receiver node type when an
+ *      enclosing `recv.type === 'X'` guard / `case 'X':` narrows it — see
+ *      `receiverNodeTypeOf`), `findNodeAtRange(.., '..')`, and members of a
+ *      `Set`/array consumed via `SET.has(<n>.type)`. No `*_TYPES` name heuristic:
+ *      a `Set`'s members are collected only when consumed against a node's `.type`.
  *   3. Registry scope-query probes — invoke each `languages/<lang>/query.ts`
  *      `get*ScopeQuery()` (gated by `isLanguageAvailable`) so the gate compiles
  *      the registry scope queries too (new coverage vs query-compilation.test.ts).
+ *   4. Resolution-layer scan (TypeChecker-gated) — the registry production path
+ *      (`languages/<lang>/{scope-resolver,type-binding,receiver-binding,interpret,
+ *      arity,import-decomposer,…}`) PLUS shared resolution files directly under
+ *      `ingestion/` (e.g. `type-env.ts`). These files MIX SyntaxNode `.type` with
+ *      resolved-symbol `.type` (kinds like 'Class'), so a literal is collected
+ *      ONLY when its `.type` / `childForFieldName` receiver resolves to a
+ *      tree-sitter SyntaxNode (via the TS TypeChecker). Per-`languages/<lang>/`
+ *      files tag to that one grammar; shared (non-`languages/<lang>/`) files tag
+ *      to the full gated set (valid-if-any).
+ *
+ * (In-file section order is 1, 2, 4, 3 for historical reasons; the logical order
+ * is as numbered above.)
  *
  * Test-only file: allowed to name languages.
  */
@@ -49,6 +57,11 @@ export interface CollectedField {
   languages: SupportedLanguages[];
   file: string;
   line: number;
+  /** Receiver node type when statically narrowed by an enclosing positive guard
+   *  (`if (recv.type === 'X')` / `case 'X':`). When set, the gate validates the
+   *  field node-scoped (membership-then-probe); otherwise it uses the sound
+   *  global existence check. See `receiverNodeTypeOf` / KTD2. */
+  receiverNodeType?: string;
 }
 export interface RegistryQueryProbe {
   language: SupportedLanguages;
@@ -259,7 +272,7 @@ function lineOf(sf: ts.SourceFile, node: ts.Node): number {
   return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
 }
 
-interface Mode2Result {
+interface ScanResult {
   nodeTypes: CollectedNodeType[];
   fields: CollectedField[];
 }
@@ -283,7 +296,125 @@ function collectConstMembers(init: ts.Expression): string[] | null {
   return null;
 }
 
-function scanFile(file: string): Mode2Result {
+// ── Receiver-node-type capture (KTD2) ──────────────────────────────────────
+function isFunctionLikeNode(n: ts.Node): boolean {
+  return (
+    ts.isFunctionDeclaration(n) ||
+    ts.isFunctionExpression(n) ||
+    ts.isArrowFunction(n) ||
+    ts.isMethodDeclaration(n) ||
+    ts.isConstructorDeclaration(n) ||
+    ts.isGetAccessorDeclaration(n) ||
+    ts.isSetAccessorDeclaration(n)
+  );
+}
+
+function rangeContains(outer: ts.Node, inner: ts.Node): boolean {
+  return inner.getStart() >= outer.getStart() && inner.getEnd() <= outer.getEnd();
+}
+
+function enclosingFunctionOf(node: ts.Node): ts.Node | undefined {
+  let cur: ts.Node | undefined = node.parent;
+  while (cur) {
+    if (isFunctionLikeNode(cur)) return cur;
+    cur = cur.parent;
+  }
+  return undefined;
+}
+
+/** True if `recvText` is reassigned, mutated (++/--), or re-declared (shadowed) within `scope`. */
+function receiverMutatedIn(recvText: string, scope: ts.Node): boolean {
+  let mutated = false;
+  const walk = (n: ts.Node): void => {
+    if (mutated) return;
+    if (
+      ts.isBinaryExpression(n) &&
+      n.left.getText() === recvText &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    ) {
+      mutated = true;
+      return;
+    }
+    if (
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) &&
+      n.operand.getText() === recvText
+    ) {
+      mutated = true;
+      return;
+    }
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === recvText) {
+      mutated = true; // re-declaration / shadow
+      return;
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(scope);
+  return mutated;
+}
+
+/**
+ * Conservative receiver-node-type capture for `recv.childForFieldName('field')`.
+ * Returns X only when `recv` is unambiguously narrowed by a single enclosing
+ * positive guard — `if (recv.type === 'X') {…}` (then-branch only) or
+ * `switch (recv.type) { case 'X': … }` — and the receiver is not reassigned or
+ * shadowed within the enclosing function. Any uncertainty → undefined, so the
+ * gate falls back to the sound global field check. Fail-safe by design: the
+ * failure mode is a benign false negative, never a false positive (KTD2).
+ */
+function receiverNodeTypeOf(call: ts.CallExpression, sf: ts.SourceFile): string | undefined {
+  if (!ts.isPropertyAccessExpression(call.expression)) return undefined;
+  const recvText = call.expression.expression.getText(sf);
+
+  const isRecvDotType = (e: ts.Node): boolean =>
+    ts.isPropertyAccessExpression(e) && e.name.text === 'type' && e.expression.getText(sf) === recvText;
+  const bareEq = (e: ts.Expression): string | undefined => {
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken) {
+      const lit = ts.isStringLiteralLike(e.left)
+        ? e.left
+        : ts.isStringLiteralLike(e.right)
+          ? e.right
+          : undefined;
+      if (lit && (isRecvDotType(e.left) || isRecvDotType(e.right))) return lit.text;
+    }
+    return undefined;
+  };
+
+  let found: string | undefined;
+  let enclosingFn: ts.Node | undefined;
+  let cur: ts.Node = call;
+  while (cur.parent) {
+    const p: ts.Node = cur.parent;
+    if (
+      ts.isIfStatement(p) &&
+      rangeContains(p.thenStatement, call) &&
+      !(p.elseStatement !== undefined && rangeContains(p.elseStatement, call))
+    ) {
+      const x = bareEq(p.expression);
+      if (x !== undefined) {
+        found = x;
+        break;
+      }
+    } else if (ts.isCaseClause(p)) {
+      const sw = p.parent.parent;
+      if (ts.isSwitchStatement(sw) && isRecvDotType(sw.expression) && ts.isStringLiteralLike(p.expression)) {
+        found = p.expression.text;
+        break;
+      }
+    }
+    if (isFunctionLikeNode(p)) {
+      enclosingFn = p;
+      break;
+    }
+    cur = p;
+  }
+  if (found === undefined) return undefined;
+  const scope = enclosingFn ?? enclosingFunctionOf(call) ?? sf;
+  return receiverMutatedIn(recvText, scope) ? undefined : found;
+}
+
+function scanFile(file: string): ScanResult {
   const relPath = rel(file);
   const langs = fileLanguages(relPath);
   const src = readFileSync(file, 'utf8');
@@ -333,6 +464,7 @@ function scanFile(file: string): Mode2Result {
           languages: langs,
           file: relPath,
           line: lineOf(sf, arg0),
+          receiverNodeType: receiverNodeTypeOf(node, sf),
         });
       }
       // SET.has(<n>.type) / SET.includes(<n>.type) → mark the receiver set
@@ -388,7 +520,7 @@ function scanFile(file: string): Mode2Result {
   return { nodeTypes, fields };
 }
 
-function collectInCodeLiterals(): Mode2Result {
+function collectInCodeLiterals(): ScanResult {
   const nodeTypes: CollectedNodeType[] = [];
   const fields: CollectedField[] = [];
   for (const file of mode2Files()) {
@@ -411,22 +543,36 @@ function collectInCodeLiterals(): Mode2Result {
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RES_SKIP = new Set(['captures.ts', 'query.ts', 'index.ts']);
 const NODE_ARG_FNS = new Set(['findChild', 'findNamedChild', 'findSiblingChild']);
+/**
+ * Shared resolution-layer files directly under ingestion/ (NOT in
+ * `languages/<lang>/`). They mix SyntaxNode `.type` with resolved-symbol `.type`,
+ * so they belong in the TypeChecker-gated Mode 4; being language-agnostic, they
+ * are tagged with the full gated set (valid-if-any). See KTD3.
+ */
+const SHARED_RESOLUTION_FILES = ['type-env.ts'];
 
-function resolutionLayerFiles(): { file: string; lang: SupportedLanguages }[] {
-  const out: { file: string; lang: SupportedLanguages }[] = [];
+function resolutionLayerFiles(): { file: string; langs: SupportedLanguages[] }[] {
+  const out: { file: string; langs: SupportedLanguages[] }[] = [];
   const langsDir = join(INGESTION_DIR, 'languages');
-  if (!existsSync(langsDir)) return out;
-  for (const dir of readdirSync(langsDir)) {
-    if (dir === 'cobol') continue;
-    const lang = DIR_LANG[dir];
-    if (!lang) continue;
-    const d = join(langsDir, dir);
-    if (!statSync(d).isDirectory()) continue;
-    const sub: string[] = [];
-    walkTs(d, sub);
-    for (const f of sub) {
-      if (!RES_SKIP.has(f.split('/').pop() ?? '')) out.push({ file: f, lang });
+  // Per-language registry resolution files → tagged to that one grammar.
+  if (existsSync(langsDir)) {
+    for (const dir of readdirSync(langsDir)) {
+      if (dir === 'cobol') continue;
+      const lang = DIR_LANG[dir];
+      if (!lang) continue;
+      const d = join(langsDir, dir);
+      if (!statSync(d).isDirectory()) continue;
+      const sub: string[] = [];
+      walkTs(d, sub);
+      for (const f of sub) {
+        if (!RES_SKIP.has(f.split('/').pop() ?? '')) out.push({ file: f, langs: [lang] });
+      }
     }
+  }
+  // Shared, language-agnostic resolution files → full gated set via fileLanguages.
+  for (const name of SHARED_RESOLUTION_FILES) {
+    const f = join(INGESTION_DIR, name);
+    if (existsSync(f)) out.push({ file: f, langs: fileLanguages(rel(f)) });
   }
   return out;
 }
@@ -462,7 +608,7 @@ function isSyntaxNodeReceiver(checker: ts.TypeChecker, node: ts.Node): boolean {
 /** Did the build succeed? (false => mode degraded; surfaced so coverage isn't silently lost) */
 export let resolutionLayerProgramOk = true;
 
-function collectResolutionLayerLiterals(): Mode2Result {
+function collectResolutionLayerLiterals(): ScanResult {
   const nodeTypes: CollectedNodeType[] = [];
   const fields: CollectedField[] = [];
   const entries = resolutionLayerFiles();
@@ -473,11 +619,10 @@ function collectResolutionLayerLiterals(): Mode2Result {
   }
   const { program, checker } = built;
 
-  for (const { file, lang } of entries) {
+  for (const { file, langs } of entries) {
     const sf = program.getSourceFile(file);
     if (!sf) continue;
     const relPath = rel(file);
-    const langs = [lang];
     const constMembers = new Map<string, string[]>();
     const consumedSets = new Set<string>();
 
@@ -520,6 +665,7 @@ function collectResolutionLayerLiterals(): Mode2Result {
             languages: langs,
             file: relPath,
             line: lineOf(sf, arg0),
+            receiverNodeType: receiverNodeTypeOf(node, sf),
           });
         }
         // SET.has(<recv>.type) where recv is a SyntaxNode
