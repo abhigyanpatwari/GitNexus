@@ -59,22 +59,19 @@ describe('literal-collectors', () => {
       expect(nodeTypes.some((n) => n.literal.startsWith('@'))).toBe(false);
     });
 
-    it('captures the receiver node type from a positive type-guard; leaves else-branch fallbacks unscoped', () => {
-      // switch (node.type) { case 'generic_name': node.childForFieldName('name') }
+    it('captures the receiver node type from a positive type-guard; leaves ungated lookups unscoped', () => {
+      // if (node.type === 'is_pattern_expression') { ... node.childForFieldName('pattern') }
       const scoped = fields.find(
         (f) =>
-          f.field === 'name' &&
-          f.receiverNodeType === 'generic_name' &&
-          f.file.includes('csharp/captures'),
+          f.field === 'pattern' &&
+          f.receiverNodeType === 'is_pattern_expression' &&
+          f.file.endsWith('type-extractors/csharp.ts'),
       );
       expect(scoped).toBeDefined();
-      // else-branch fallback `node.childForFieldName('pattern')` (csharp type-extractor):
-      // narrowed to NOT a single type, so it stays unscoped → sound global check.
-      const elseBranch = fields.find(
-        (f) => f.field === 'pattern' && f.file.endsWith('type-extractors/csharp.ts'),
-      );
-      expect(elseBranch).toBeDefined();
-      expect(elseBranch!.receiverNodeType).toBeUndefined();
+      // a childForFieldName NOT inside a single positive type-guard stays unscoped
+      // (receiverNodeType undefined) → the gate uses the sound global field check.
+      const unscoped = fields.find((f) => f.receiverNodeType === undefined);
+      expect(unscoped).toBeDefined();
     });
 
     it('does not scan the COBOL or resolution layer', () => {

@@ -7,7 +7,11 @@ import {
   validateField,
   type GrammarModel,
 } from '../helpers/grammar-introspection.js';
-import { collectAllLiterals, type CollectedLiterals } from '../helpers/literal-collectors.js';
+import {
+  collectAllLiterals,
+  resolutionLayerProgramOk,
+  type CollectedLiterals,
+} from '../helpers/literal-collectors.js';
 
 /**
  * Grammar-drift gate (issue #1920): every tree-sitter node-type and field-name
@@ -86,7 +90,7 @@ describe('grammar literal validation gate', () => {
     for (const f of collected.fields) {
       if (knownFailures.has(f.field)) continue;
       const verdict = classify(f.languages, (lang) =>
-        validateField(models.get(lang) ?? null, f.field),
+        validateField(models.get(lang) ?? null, f.field, f.receiverNodeType),
       );
       if (verdict === 'dead') {
         failures.push({
@@ -133,6 +137,16 @@ describe('grammar literal validation gate', () => {
 
     expect(unique, report).toHaveLength(0);
   }, 120_000);
+
+  it('runs non-vacuously: collector populated and the Mode-4 resolution layer built', () => {
+    // A vacuous pass — empty collection, or a degraded TS-program build that
+    // silently zeroes Mode-4 — must FAIL the gate rather than slip through green.
+    // (#1937 tri-review: Mode-4 silent-degrade + gate-vacuity holes.)
+    expect(resolutionLayerProgramOk, 'Mode-4 TypeScript program failed to build').toBe(true);
+    expect(collected.nodeTypes.length, 'collector returned too few node types').toBeGreaterThan(50);
+    expect(collected.fields.length, 'collector returned too few fields').toBeGreaterThan(50);
+    expect(knownFailures.size, 'knownFailures must stay empty per policy').toBe(0);
+  });
 
   it('does not flag capture-tag strings', () => {
     expect(collected.nodeTypes.some((n) => n.literal.startsWith('@'))).toBe(false);
