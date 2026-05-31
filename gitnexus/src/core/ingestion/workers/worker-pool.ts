@@ -380,19 +380,35 @@ function startupBackoffMs(attempt: number): number {
 }
 
 /**
- * Sleep that never wedges shutdown: the timer is `unref`'d so a pending backoff
- * can't keep the event loop alive, and `aborted()` is re-checked on wake so a
- * `terminate()` during startup short-circuits the retry instead of stalling
- * for the backoff duration.
+ * Sleep used between startup self-heal retries. The timer is intentionally NOT
+ * `unref`'d: a pending retry is necessary work, so it must keep the event loop
+ * alive long enough to actually respawn — otherwise a pool whose only live work
+ * is a startup backoff could let the process exit mid-recovery (#1741). To
+ * avoid wedging shutdown, the timer registers a cancel function in `pending`;
+ * `terminate()` invokes those cancels to `clearTimeout` and resolve early, and
+ * a normally-fired timer removes its own cancel. `aborted()` is checked once up
+ * front; the CALLER re-checks after wake (it owns the terminated/deterministic
+ * decision) — this function does not itself re-evaluate abort on wake.
  */
-function abortableSleep(ms: number, aborted: () => boolean): Promise<void> {
+function abortableSleep(
+  ms: number,
+  aborted: () => boolean,
+  pending: Set<() => void>,
+): Promise<void> {
   return new Promise<void>((resolve) => {
     if (ms <= 0 || aborted()) {
       resolve();
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    (timer as { unref?: () => void }).unref?.();
+    // `cancel` is registered so terminate() can clear a pending backoff; it is
+    // also the timer's own callback, so a normally-fired sleep self-deregisters.
+    const cancel = () => {
+      clearTimeout(timer);
+      pending.delete(cancel);
+      resolve();
+    };
+    const timer = setTimeout(cancel, ms);
+    pending.add(cancel);
   });
 }
 
@@ -847,6 +863,12 @@ export const createWorkerPool = (
   const startupSignatures = new Map<string, number>();
   let deterministicStartupDetected = false;
   let anyWorkerReachedReady = false;
+  // Cancel functions for in-flight startup backoffs (see abortableSleep). The
+  // backoff timer is ref'd so a retry actually runs; terminate() invokes these
+  // to clear pending backoffs and resolve their sleeps so the slot loops wake,
+  // see `terminated`, and give up — instead of the process staying pinned for
+  // the backoff cap after terminate (#1741).
+  const pendingStartupTimers = new Set<() => void>();
 
   const bringSlotReady = async (i: number): Promise<void> => {
     for (let attempt = 0; ; attempt++) {
@@ -884,6 +906,7 @@ export const createWorkerPool = (
         await abortableSleep(
           startupBackoffMs(attempt),
           () => terminated || deterministicStartupDetected,
+          pendingStartupTimers,
         );
         if (terminated || deterministicStartupDetected) {
           initialReadinessFailures.push(msg);
@@ -1811,6 +1834,10 @@ export const createWorkerPool = (
 
   const terminate = async (): Promise<void> => {
     terminated = true;
+    // Cancel any in-flight startup backoff so its ref'd timer doesn't keep the
+    // event loop alive after terminate; each cancel resolves the awaiting sleep
+    // and the slot loop then sees `terminated` and gives up (#1741).
+    for (const cancel of [...pendingStartupTimers]) cancel();
     // `.catch(() => undefined)` per-worker matches every other terminate
     // site in this file. Without it, a hung/OOM-killed worker's terminate
     // rejection escapes `Promise.all` and replaces the original pipeline
@@ -1834,6 +1861,7 @@ export const createWorkerPool = (
       quarantined: quarantine.size,
       poolBroken,
       terminated,
+      pendingStartupTimers: pendingStartupTimers.size,
       slotGenerations: slotGenerations.slice(),
     }),
   };

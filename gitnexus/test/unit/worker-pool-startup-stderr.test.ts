@@ -125,6 +125,9 @@ describe('worker pool — startup self-healing (#1741)', () => {
     expect(calls).toBeGreaterThanOrEqual(2); // crashed once, respawned
     expect(pool.getStats().activeSlots).toBe(1); // slot recovered and is live
     expect(pool.getStats().poolBroken).toBe(false);
+    // R1 (clear-on-settle): the ref'd backoff timer self-cleared when it fired,
+    // so no startup timer lingers after the slot's retry loop exited.
+    expect(pool.getStats().pendingStartupTimers).toBe(0);
 
     await pool.terminate().catch(() => undefined);
   });
@@ -152,5 +155,32 @@ describe('worker pool — startup self-healing (#1741)', () => {
     expect(calls).toBeLessThan(9);
 
     await pool.terminate().catch(() => undefined);
+  });
+
+  it('terminate() during startup cancels any pending backoff and spawns nothing after (R2)', async () => {
+    let calls = 0;
+    const pool = createWorkerPool(workerUrl, 1, {
+      // Crashes on every spawn, so the slot is in its bounded retry/backoff loop.
+      workerFactory: () => {
+        calls++;
+        return new CrashingWorker() as unknown as Worker;
+      },
+    });
+
+    // Let the first crash register and the slot enter its (ref'd) backoff.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const callsBeforeTerminate = calls;
+    expect(callsBeforeTerminate).toBeGreaterThanOrEqual(1);
+
+    // terminate() must cancel the pending backoff (not wait it out) and stop the loop.
+    await pool.terminate();
+    expect(pool.getStats().terminated).toBe(true);
+    // No ref'd backoff timer left pinning the loop after terminate.
+    expect(pool.getStats().pendingStartupTimers).toBe(0);
+    expect(pool.getStats().activeSlots).toBe(0);
+
+    // No worker is spawned after terminate — the woken loop sees `terminated` and gives up.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(calls).toBe(callsBeforeTerminate);
   });
 });
