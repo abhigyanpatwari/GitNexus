@@ -69,10 +69,15 @@ export function tryEmitEdge(
   seen: Set<string>,
   confidence = 0.85,
   collapseByCallerTarget = false,
+  edgeTypeOverride?: 'EXTENDS' | 'IMPLEMENTS',
 ): boolean {
   const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
   const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
-  const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
+  // `edgeTypeOverride` lets an inheritance pre-pass emit IMPLEMENTS (not just
+  // the kind-mapped EXTENDS) when the resolved target is an interface, while
+  // still sharing this primitive's caller-resolution, dedup-key shape, and id
+  // keyspace. When unset, the edge type is derived from the reference kind.
+  const edgeType = edgeTypeOverride ?? mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
   if (targetGraphId === undefined) return false;
   if (edgeType === undefined) return false;

@@ -63,9 +63,16 @@ function preEmitInheritanceEdges(
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
+  // Seed the dedup set with both inheritance edge types already in the graph
+  // (e.g. emitted by the legacy heritage path in sequential mode). Keying by
+  // edge type lets us add IMPLEMENTS without colliding with EXTENDS and keeps
+  // this pass a no-op when the legacy path already produced the same edge.
   const existing = new Set<string>();
   for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
-    existing.add(`${rel.sourceId}->${rel.targetId}`);
+    existing.add(`EXTENDS:${rel.sourceId}->${rel.targetId}`);
+  }
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    existing.add(`IMPLEMENTS:${rel.sourceId}->${rel.targetId}`);
   }
 
   for (const site of scopes.referenceSites) {
@@ -94,7 +101,15 @@ function preEmitInheritanceEdges(
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
     if (callerGraphId === undefined || targetGraphId === undefined) continue;
-    const edgeKey = `${callerGraphId}->${targetGraphId}`;
+    // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
+    // conforming to an interface is IMPLEMENTS, deriving from a class-like is
+    // EXTENDS. This mirrors the legacy `resolveExtendsType` semantics so the
+    // registry-primary path matches the legacy DAG. Languages without an
+    // `Interface` symbol kind (e.g. C++) always take the EXTENDS branch, so
+    // their behavior is unchanged.
+    const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
+      targetDef.type === 'Interface' ? 'IMPLEMENTS' : 'EXTENDS';
+    const edgeKey = `${edgeType}:${callerGraphId}->${targetGraphId}`;
     if (existing.has(edgeKey)) continue;
 
     if (
@@ -107,6 +122,8 @@ function preEmitInheritanceEdges(
         'scope-resolution: inherits',
         seen,
         0.85,
+        false,
+        edgeType,
       )
     ) {
       existing.add(edgeKey);

@@ -201,7 +201,78 @@ export function emitJavaScopeCaptures(
     out.push(grouped);
   }
 
-  return resolveVarTypeBindings(out);
+  return [...resolveVarTypeBindings(out), ...synthesizeJavaInheritanceReferences(tree.rootNode)];
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Java class heritage so the
+ * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
+ * (mirrors C++ `emitCppInheritanceCaptures`). Without this, Java inheritance
+ * edges came only from the legacy `@heritage.*` path, which is dropped for
+ * registry-primary languages in the worker pipeline (issue #1951).
+ *
+ * Scope is intentionally limited to `class_declaration` (`superclass` extends +
+ * `interfaces` implements clauses) — matching the legacy Java heritage query —
+ * so interface/enum/record heritage stays unemitted and the registry path
+ * keeps parity with the legacy DAG. The EXTENDS-vs-IMPLEMENTS split is decided
+ * downstream from the resolved target's symbol kind (`preEmitInheritanceEdges`):
+ * a superclass resolves to a class (EXTENDS), an implemented interface resolves
+ * to an interface (IMPLEMENTS). Base names are normalized to their bare simple
+ * identifier (`Box<T>` → `Box`, `java.io.Serializable` → `Serializable`) to
+ * match the V1 simple-name `findClassBindingInScope` contract.
+ */
+function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'class_declaration') {
+      const superclass = node.childForFieldName('superclass');
+      if (superclass !== null) {
+        for (const base of superclass.namedChildren) emitJavaInheritanceBase(out, base);
+      }
+      const interfaces = node.childForFieldName('interfaces');
+      if (interfaces !== null) {
+        for (const typeList of interfaces.namedChildren) {
+          if (typeList === null || typeList.type !== 'type_list') continue;
+          for (const base of typeList.namedChildren) emitJavaInheritanceBase(out, base);
+        }
+      }
+    }
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+  return out;
+}
+
+function emitJavaInheritanceBase(out: CaptureMatch[], base: SyntaxNode | null): void {
+  if (base === null) return;
+  const nameNode = javaBaseLookupNameNode(base);
+  if (nameNode === null) return;
+  out.push({
+    '@reference.inherits': nodeToCapture('@reference.inherits', base),
+    '@reference.name': nodeToCapture('@reference.name', nameNode),
+  });
+}
+
+/** Resolve a Java base-type node to its bare simple-name identifier node. */
+function javaBaseLookupNameNode(node: SyntaxNode): SyntaxNode | null {
+  switch (node.type) {
+    case 'type_identifier':
+      return node;
+    case 'scoped_type_identifier':
+      // `java.io.Serializable` → trailing `type_identifier` (`Serializable`).
+      return node.lastNamedChild;
+    case 'generic_type': {
+      // `Box<String>` → recurse into the base type (`Box`).
+      const first = node.firstNamedChild;
+      return first === null ? null : javaBaseLookupNameNode(first);
+    }
+    default:
+      return null;
+  }
 }
 
 function resolveVarTypeBindings(matches: CaptureMatch[]): CaptureMatch[] {

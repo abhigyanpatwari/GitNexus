@@ -257,7 +257,44 @@ export function emitCsharpScopeCaptures(
   }
 
   out.push(...synthesizeGenericTypeArgumentReferences(tree.rootNode));
+  out.push(...synthesizeCsharpInheritanceReferences(tree.rootNode));
 
+  return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from C# base lists so the
+ * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
+ * (mirrors C++ `emitCppInheritanceCaptures`). Without this, C# inheritance
+ * edges came only from the legacy `@heritage.*` path, which is dropped for
+ * registry-primary languages in the worker pipeline (issue #1951).
+ *
+ * Scope is intentionally limited to `class_declaration` / `interface_declaration`
+ * base lists — matching the legacy C# heritage query — so records/structs
+ * stay edgeless and the registry path keeps parity with the legacy DAG. The
+ * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
+ * symbol kind (`preEmitInheritanceEdges`), so all bases are emitted with the
+ * same `inherits` kind here; the base lookup name is normalized to its bare
+ * simple identifier (`IRepository<T>` → `IRepository`, `A.B.IFace` → `IFace`)
+ * to match the V1 simple-name `findClassBindingInScope` contract.
+ */
+function synthesizeCsharpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visit(root, (node) => {
+    if (node.type !== 'class_declaration' && node.type !== 'interface_declaration') return;
+    const baseList = findNamedChild(node, 'base_list');
+    if (baseList === null) return;
+    for (const base of baseList.namedChildren) {
+      if (base === null) continue;
+      const nameNode = terminalTypeNameNode(base);
+      if (nameNode === null) continue;
+      if (BUILTIN_TYPE_NAMES.has(nameNode.text)) continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', base),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  });
   return out;
 }
 
