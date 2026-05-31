@@ -36,7 +36,14 @@
  */
 
 import type { SyntaxNode } from 'tree-sitter';
-import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  Scope,
+  ScopeId,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
 
@@ -450,21 +457,47 @@ export function populateCsharpNamespaceSiblings(
   // `indexes.bindings`.
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
-  // Cross-namespace type-binding propagation: for each file, mirror
-  // method return-type bindings from same-namespace sibling files and
-  // from files in namespaces the importer `using`s, into the
-  // importer's Module scope typeBindings. This enables
-  // chain-follow from `var u = svc.GetUser()` → `GetUser → User`
-  // even across files — without it the chain stalls at `GetUser`
-  // because the return binding lives in the defining file's Module
-  // scope, which isn't an ancestor of the importer's scope chain.
+  // Global ('') namespace type-binding propagation (#1871). Types in the C#
+  // unnamed/global namespace form a single declaration space that is
+  // type-visible from EVERY file — including files inside named namespaces
+  // (C# spec: "any identifier in the global namespace is available for use in
+  // a named namespace"). Route their module-scope return-type bindings through
+  // the scope-independent `workspaceTypeBindings` channel ONCE, rather than
+  // copying every global file's bindings into every other file's
+  // `Scope.typeBindings`. That per-file copy was O(files × distinct-names) in
+  // both time and memory and OOM'd large no-namespace solutions (tens of
+  // thousands of files in the global bucket → billions of Map entries). This
+  // mirrors how Roslyn resolves against a single `Compilation.GlobalNamespace`
+  // symbol instead of per-file copies, and is the typeBindings analogue of the
+  // `workspaceFqnBindings` fast-path (#1905). `findReceiverTypeBinding` /
+  // `followChainPostFinalize` consult this channel as a final fallback.
+  const workspaceTypeBindings = indexes.workspaceTypeBindings as Map<string, TypeRef>;
+  const globalBucket = buckets.get('');
+  if (globalBucket !== undefined) {
+    for (const scopeInfo of globalBucket.scopes) {
+      if (scopeInfo.scope.kind !== 'Module') continue;
+      for (const [boundName, typeRef] of scopeInfo.scope.typeBindings) {
+        // First-wins, matching the old per-importer `has(boundName)` skip:
+        // same-name collisions across global files are inherently ambiguous.
+        if (!workspaceTypeBindings.has(boundName)) {
+          workspaceTypeBindings.set(boundName, typeRef);
+        }
+      }
+    }
+  }
+
+  // Named-namespace type-binding propagation: for each file, mirror method
+  // return-type bindings from same-namespace sibling files and from files in
+  // namespaces the importer `using`s, into the importer's Module scope
+  // typeBindings. This enables chain-follow from `var u = svc.GetUser()` →
+  // `GetUser → User` even across files. The global ('') bucket is handled by
+  // the workspace channel above and skipped here — it is the only bucket that
+  // grows to every-file size, so the per-file copy below stays bounded by
+  // real (small) named-namespace buckets.
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
-    const moduleTypeBindings = moduleScope.typeBindings as Map<
-      string,
-      import('gitnexus-shared').TypeRef
-    >;
+    const moduleTypeBindings = moduleScope.typeBindings as Map<string, TypeRef>;
 
     // Accessible namespaces = this file's own namespaces + every
     // `using namespace X;` target. Source of truth is the cached AST
@@ -494,6 +527,7 @@ export function populateCsharpNamespaceSiblings(
     }
 
     for (const nsName of expandedNamespaces) {
+      if (nsName === '') continue; // global bucket → workspaceTypeBindings (above)
       const bucket = buckets.get(nsName);
       if (bucket === undefined) continue;
       for (const scopeInfo of bucket.scopes) {

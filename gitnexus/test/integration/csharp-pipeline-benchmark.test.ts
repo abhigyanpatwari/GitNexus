@@ -92,7 +92,14 @@ function generateCsharpFixture(
       '        return this.id;',
       '    }',
       '',
-      `    public ${siblingClass} Process()`,
+      // Unique method name per file. Each method's return-type binding is
+      // hoisted to the file's MODULE scope keyed by the method name, so unique
+      // names give the global ('') namespace a DISTINCT module-typeBinding key
+      // per file. A shared name (e.g. plain `Process`) collapses every file's
+      // key to one, which made the per-file typeBindings propagation skip all
+      // copies and HID the O(files²) #1871 blow-up. Unique names exercise the
+      // real concentrated-global path that OOM'd large no-namespace solutions.
+      `    public ${siblingClass} Process${f}()`,
       '    {',
       `        var sibling = new ${siblingClass}();`,
       '        return sibling;',
@@ -231,7 +238,12 @@ describe.skipIf(!BENCH_ENABLED)('C# pipeline benchmark', () => {
     // bucket holds every type def, so naive per-scope binding
     // materialisation is O(files²). Time must stay sub-quadratic and the
     // run must not OOM.
-    const scales = [100, 250, 500];
+    //
+    // Scales reach 2000 deliberately: with the #1871 regression present
+    // (per-file global typeBindings copy), the 1000→2000 step measured ~3.06×
+    // for a 2× file increase — failing the <3 sub-quadratic assertion below.
+    // The workspaceTypeBindings fast-path keeps it ~linear (~1.2×).
+    const scales = [500, 1000, 2000];
     const results: BenchResult[] = [];
 
     for (const fileCount of scales) {

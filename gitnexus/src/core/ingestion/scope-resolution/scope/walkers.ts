@@ -162,7 +162,11 @@ export function findReceiverTypeBinding(
     if (typeRef !== undefined) return typeRef;
     currentId = scope.parent;
   }
-  return undefined;
+  // Scope-independent fallback: C# global/default-namespace type bindings are
+  // visible from every file (see `workspaceTypeBindings` doc). Routed through a
+  // single shared channel instead of copied into each Scope.typeBindings to
+  // avoid the O(files × names) blow-up on large no-namespace solutions (#1871).
+  return scopes.workspaceTypeBindings?.get(receiverName);
 }
 
 /**

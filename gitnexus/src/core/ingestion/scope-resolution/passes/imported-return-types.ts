@@ -78,6 +78,13 @@ export function followChainPostFinalize(
       next = undefined;
       scopeId = scope.parent;
     }
+    // Scope-independent fallback: C# global-namespace type bindings live in the
+    // shared `workspaceTypeBindings` channel rather than each Scope.typeBindings
+    // (#1871), so consult it before giving up on the chain.
+    if (next === undefined) {
+      const ws = scopes.workspaceTypeBindings?.get(current.rawName);
+      if (ws !== undefined && ws !== current) next = ws;
+    }
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
     visited.add(next.rawName);

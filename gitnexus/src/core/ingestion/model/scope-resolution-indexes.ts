@@ -52,6 +52,7 @@ import type {
   ReferenceSite,
   ScopeId,
   ScopeTree,
+  TypeRef,
 } from 'gitnexus-shared';
 
 export interface ScopeResolutionIndexes {
@@ -87,6 +88,21 @@ export interface ScopeResolutionIndexes {
    *  shared map gives those workspace-wide names one entry each instead of
    *  O(scopes × defs) per-scope augmentation. */
   readonly workspaceFqnBindings: ReadonlyMap<string, readonly BindingRef[]>;
+  /** Workspace-level *type* binding lookup — the typeBindings analogue of
+   *  `workspaceFqnBindings`. Holds names that are type-visible from every file
+   *  (e.g. C# global/default-namespace method return-type bindings, keyed by
+   *  the bound name). The C# language spec makes the unnamed global namespace a
+   *  single declaration space whose members are available from inside named
+   *  namespaces too — so this channel is consulted scope-independently by the
+   *  typeBindings chain-walkers (`findReceiverTypeBinding`,
+   *  `followChainPostFinalize`) as a final fallback after the per-scope chain.
+   *  Routing global types here gives them one shared entry instead of the
+   *  O(scopes × defs) per-file `Scope.typeBindings` copy that OOM'd large
+   *  no-namespace solutions (#1871) — mirroring how Roslyn resolves against a
+   *  single `Compilation.GlobalNamespace` symbol rather than per-file copies.
+   *  Populated post-finalize by `populateCsharpNamespaceSiblings`; most
+   *  languages leave it empty. */
+  readonly workspaceTypeBindings: ReadonlyMap<string, TypeRef>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];
   /** SCC condensation of the file-level import graph — callers that want
