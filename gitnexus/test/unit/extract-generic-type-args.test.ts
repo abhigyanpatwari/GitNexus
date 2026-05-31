@@ -193,6 +193,22 @@ describe('extractGenericTypeArgs', () => {
         typeText: 'Map<String, User>',
         expected: ['String', 'User'],
       },
+      {
+        // Kotlin multi-arg through user_type > type_arguments > type_projection.
+        lang: SupportedLanguages.Kotlin,
+        file: 'C.kt',
+        code: 'class C { val f: Map<String, User> = x }',
+        typeText: 'Map<String, User>',
+        expected: ['String', 'User'],
+      },
+      {
+        // C# multi-arg through generic_name > type_argument_list.
+        lang: SupportedLanguages.CSharp,
+        file: 'C.cs',
+        code: 'class C { Dictionary<string, User> f; }',
+        typeText: 'Dictionary<string, User>',
+        expected: ['string', 'User'],
+      },
     ];
 
     for (const { lang, file, code, typeText, expected } of cases) {

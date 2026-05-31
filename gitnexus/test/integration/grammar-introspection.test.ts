@@ -75,11 +75,25 @@ describe('grammar-introspection helper', () => {
       expect(validateNodeType(SupportedLanguages.Python, model, 'expression')).toBe('valid');
     });
 
-    it('returns unavailable (not throw) when a grammar cannot load', () => {
-      // Drive through validateNodeType with a null model for an unavailable lang.
-      // For installed langs this still must not throw.
+    it('classifies a bogus node type as dead for installed grammars (never just not-throw)', () => {
       for (const lang of GATED_LANGUAGES) {
-        expect(() => probeNodeType(lang, 'definitely_not_a_node_type_xyz')).not.toThrow();
+        const verdict = probeNodeType(lang, 'definitely_not_a_node_type_xyz');
+        // installed → an absent node type is 'dead'; uninstalled optional grammar → 'unavailable'.
+        if (isLanguageAvailable(lang)) {
+          expect(verdict, `${lang} should classify a bogus node type as dead`).toBe('dead');
+        } else {
+          expect(verdict).toBe('unavailable');
+        }
+      }
+    });
+
+    it('distinguishes the null-model paths: validateField unavailable vs validateNodeType still probes', () => {
+      // validateField short-circuits to unavailable with no model (no grammar set).
+      expect(validateField(null, 'anything', 'some_node')).toBe('unavailable');
+      // validateNodeType, by contrast, still probes the LIVE grammar when the model
+      // is null, so for an installed language a bogus node type is 'dead'.
+      if (isLanguageAvailable(SupportedLanguages.Python)) {
+        expect(validateNodeType(SupportedLanguages.Python, null, 'definitely_not_xyz')).toBe('dead');
       }
     });
   });
