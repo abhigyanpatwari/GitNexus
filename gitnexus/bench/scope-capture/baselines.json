@@ -9,7 +9,8 @@
     "scaling_budget": 1.5
   },
   "csharp": {
-    "fingerprint": "bdc7803046011876b2d21ae38e9cb8c97ca1e01769f93ca8affe9317585427bf",
+    "_rebaselined": "#1951: C# now synthesizes @reference.inherits captures from class/interface base lists (+ csharp-primary-ctor-heritage fixture); legitimate capture-output change, scaling stays linear (~1.06).",
+    "fingerprint": "b872903a5ae3891b1b79ced6044b4d949c51e363f52e8bc30d4673719c5732ec",
     "scaling_budget": 1.5
   },
   "rust": {
