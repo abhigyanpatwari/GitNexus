@@ -1,7 +1,7 @@
 /**
  * Unified build-free scope-capture measurement harness for every currently
  * benchmarked language (the ones with a `*-pipeline-benchmark.test.ts`):
- * go, csharp, rust, php, ruby, cobol — plus python lives in its own
+ * go, csharp, rust, php, ruby, cobol, swift — plus python lives in its own
  * `bench/python-scope/` harness (richer: it also covers import resolution).
  *
  * For each language it:
@@ -33,6 +33,7 @@ import { emitRustScopeCaptures } from '../../src/core/ingestion/languages/rust/i
 import { emitPhpScopeCaptures } from '../../src/core/ingestion/languages/php/index.ts';
 import { emitRubyScopeCaptures } from '../../src/core/ingestion/languages/ruby/index.ts';
 import { emitCobolScopeCaptures } from '../../src/core/ingestion/languages/cobol/index.ts';
+import { emitSwiftScopeCaptures } from '../../src/core/ingestion/languages/swift/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'lang-resolution');
@@ -160,6 +161,19 @@ const LANGS = [
       '       PROGRAM-ID. BENCH.\n' +
       '       PROCEDURE DIVISION.\n',
     unit: (n) => `       PARA-${String(n).padStart(5, '0')}.\n           DISPLAY "P${n}".\n`,
+  },
+  {
+    name: 'swift',
+    emit: emitSwiftScopeCaptures,
+    fixturePrefix: 'swift',
+    exts: ['.swift'],
+    file: 'bench.swift',
+    header: '',
+    unit: (n) =>
+      `class Entity${n} {\n` +
+      `  var id: Int64 = 0\n  var name: String = ""\n` +
+      `  func getId() -> Int64 { return self.id }\n` +
+      `  func setName(_ v: String) { self.name = v }\n}\n\n`,
   },
 ];
 
