@@ -48,6 +48,12 @@ const CPP_SCOPE_QUERY = `
     (template_argument_list) @declaration.template-arguments)
   body: (field_declaration_list)) @declaration.struct
 
+;; Declarations — struct (typedef struct { ... } Name)
+(type_definition
+  type: (struct_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @declaration.name) @declaration.struct
+
 ;; ─── Declarations — class / struct inside template_declaration ───────
 (template_declaration
   (class_specifier
@@ -76,6 +82,12 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Declarations — enum ─────────────────────────────────────────────
 (enum_specifier
   name: (type_identifier) @declaration.name) @declaration.enum
+
+;; ─── Declarations — enum (typedef enum { ... } Name) ─────────────────
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @declaration.name) @declaration.enum
 
 ;; ─── Declarations — enum constants ───────────────────────────────────
 (enumerator

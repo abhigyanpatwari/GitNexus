@@ -27,9 +27,9 @@ export function emitCScopeCaptures(
   const rawMatches = getCScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
-  // Track ranges where typedef-struct/union was captured as @declaration.struct/union
-  // so we can suppress the duplicate @declaration.typedef match at the same range.
-  const structTypedefRanges = new Set<string>();
+  // Track ranges where typedef-struct/union/enum was captured as its concrete
+  // type so we can suppress the duplicate @declaration.typedef match.
+  const concreteTypedefRanges = new Set<string>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -53,19 +53,22 @@ export function emitCScopeCaptures(
       }
     }
 
-    // Track typedef-struct ranges to suppress duplicate typedef declarations
-    const structAnchor = grouped['@declaration.struct'] ?? grouped['@declaration.union'];
-    if (structAnchor !== undefined) {
-      const r = structAnchor.range;
-      structTypedefRanges.add(`${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`);
+    // Track typedef struct/union/enum ranges to suppress duplicate typedef declarations
+    const concreteTypeAnchor =
+      grouped['@declaration.struct'] ??
+      grouped['@declaration.union'] ??
+      grouped['@declaration.enum'];
+    if (concreteTypeAnchor !== undefined) {
+      const r = concreteTypeAnchor.range;
+      concreteTypedefRanges.add(`${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`);
     }
 
-    // Suppress @declaration.typedef if the same range was already captured as struct/union
+    // Suppress @declaration.typedef if the same range was already captured as a concrete type.
     const typedefAnchor = grouped['@declaration.typedef'];
     if (typedefAnchor !== undefined) {
       const r = typedefAnchor.range;
       const key = `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
-      if (structTypedefRanges.has(key)) continue;
+      if (concreteTypedefRanges.has(key)) continue;
     }
 
     // Enrich function declarations with arity metadata and detect static linkage
