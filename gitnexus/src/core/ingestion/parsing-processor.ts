@@ -12,10 +12,12 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
+  buildConcreteTypedefDefinitionRanges,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
+  isSuppressedConcreteTypedefDuplicate,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
   type EnclosingClassInfo,
@@ -481,6 +483,7 @@ const processParsingSequential = async (
       logger.warn({ queryError }, `Query error for ${file.path}:`);
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor).
     //
@@ -503,6 +506,8 @@ const processParsingSequential = async (
       match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
+
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) return;
 
       const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
