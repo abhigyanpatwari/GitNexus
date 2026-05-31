@@ -112,13 +112,37 @@ describe('emitJsScopeCaptures — #1876 array-method-callback narrowing', () => 
     expect(hasDecl(src, '@declaration.function', 'x')).toBe(false);
   });
 
-  it('does NOT suppress a parenthesized callee `(arr.map)(cb)` (intentional gap)', () => {
+  it('suppresses a parenthesized callee `(arr.map)(cb)`', () => {
     const src = 'const x = (arr.map)((a) => a);';
-    expect(hasDecl(src, '@declaration.function', 'x')).toBe(true);
+    expect(hasDecl(src, '@declaration.function', 'x')).toBe(false);
   });
 
-  it('does NOT suppress a computed callee `arr["map"](cb)` (intentional gap)', () => {
+  it('suppresses a computed callee `arr["map"](cb)`', () => {
     const src = 'const x = arr["map"]((a) => a);';
-    expect(hasDecl(src, '@declaration.function', 'x')).toBe(true);
+    expect(hasDecl(src, '@declaration.function', 'x')).toBe(false);
+  });
+
+  it('suppresses export-default array-method wrappers', () => {
+    const src = 'export default arr.map((a) => a);';
+    expect(countTag(src, '@declaration.function')).toBe(0);
+  });
+
+  it('suppresses obvious built-in callback wrappers in export default', () => {
+    const src = 'export default setTimeout(() => work());';
+    expect(countTag(src, '@declaration.function')).toBe(0);
+  });
+
+  it('rewrites export-default HOC names to the file stem', () => {
+    const matches = emitJsScopeCaptures(
+      'export default React.memo((props) => props);',
+      'routes/health-check.jsx',
+    );
+    expect(
+      matches.some(
+        (m) =>
+          m['@declaration.function'] !== undefined &&
+          m['@declaration.name']?.text === 'health-check',
+      ),
+    ).toBe(true);
   });
 });
