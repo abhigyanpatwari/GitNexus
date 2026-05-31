@@ -422,15 +422,22 @@ function abortableSleep(
  * short-circuit fires, never whether the pool ultimately fails fast. Even a
  * stderr-less crash normalizes its "exited with code N" message to a stable
  * key, so the empty-stderr timing case still groups.
+ *
+ * @internal Exported for unit tests; production callers are in this module.
  */
-function crashSignature(message: string): string {
-  return message
-    .replace(/0x[0-9a-fA-F]+/g, '0xADDR')
-    .replace(/[0-9]+/g, 'N')
-    .replace(/(?:\/[^\s:'"]+)+/g, '/PATH')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300);
+export function crashSignature(message: string): string {
+  return (
+    message
+      .replace(/0x[0-9a-fA-F]+/g, '0xADDR') // 0x-prefixed addresses
+      // Windows backslash paths (optional drive letter), e.g. C:\Users\ci\Temp\w-7f3a.js
+      .replace(/(?:[A-Za-z]:)?(?:\\[^\s\\'"]+)+/g, '\\PATH')
+      .replace(/(?:\/[^\s:'"]+)+/g, '/PATH') // POSIX paths
+      .replace(/\b[0-9a-fA-F]{6,}\b/g, 'HEX') // bare hex runs (ASLR addrs / backtrace tokens)
+      .replace(/[0-9]+/g, 'N') // pids / line numbers / exit codes / timestamps
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 300)
+  );
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -875,7 +882,17 @@ export const createWorkerPool = (
   // Correctness of the deterministic short-circuit rests on the STRUCTURAL
   // signal (zero workers ever ready + budget exhausted), not on signature
   // matching alone: a missed match only costs a few seconds of extra retrying.
-  const startupSignatures = new Map<string, number>();
+  // Deterministic crash-loop detection (#1741). A crash counts toward
+  // "deterministic" ONLY after its signature reproduces across a respawn on the
+  // same slot — so every slot is guaranteed at least one self-heal attempt and
+  // a simultaneous attempt-0 crash storm (e.g. transient `spawn EAGAIN` under
+  // fork pressure) cannot be misclassified as deterministic. We short-circuit
+  // once enough DISTINCT slots have each reproduced: ≥2 normally, or 1 for a
+  // size-1 pool. Until then the structural floor (every slot exhausts its
+  // budget) still bounds the worst case, so a missed match only costs retries.
+  const lastStartupSignature = new Map<number, string>();
+  const reproducedStartupSlots = new Set<number>();
+  const deterministicSlotThreshold = Math.min(DETERMINISTIC_STARTUP_FINGERPRINT_THRESHOLD, size);
   let deterministicStartupDetected = false;
   let anyWorkerReachedReady = false;
   // Cancel functions for in-flight startup backoffs (see abortableSleep). The
@@ -896,9 +913,12 @@ export const createWorkerPool = (
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const sig = crashSignature(msg);
-        const seen = (startupSignatures.get(sig) ?? 0) + 1;
-        startupSignatures.set(sig, seen);
-        if (!anyWorkerReachedReady && seen >= DETERMINISTIC_STARTUP_FINGERPRINT_THRESHOLD) {
+        // Same signature as this slot's previous attempt => it survived a
+        // respawn, so retrying this slot is futile. (First crash has no prior
+        // signature, so attempt 0 never counts — every slot self-heals once.)
+        if (lastStartupSignature.get(i) === sig) reproducedStartupSlots.add(i);
+        lastStartupSignature.set(i, sig);
+        if (!anyWorkerReachedReady && reproducedStartupSlots.size >= deterministicSlotThreshold) {
           deterministicStartupDetected = true;
         }
         await worker.terminate().catch(() => undefined);

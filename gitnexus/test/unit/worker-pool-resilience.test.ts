@@ -10,6 +10,7 @@ import {
   resolveWorkerPoolOptions,
   resolveAutoPoolSize,
   workerPoolDisabledByEnv,
+  crashSignature,
 } from '../../src/core/ingestion/workers/worker-pool.js';
 /**
  * The pool now sends sub-batch dispatches via native `worker.postMessage`
@@ -675,5 +676,31 @@ describe('workerPoolDisabledByEnv (#1741 — env=0 → sequential signal)', () =
   it('is false for an invalid value', () => {
     vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', 'abc');
     expect(workerPoolDisabledByEnv()).toBe(false);
+  });
+});
+
+describe('crashSignature (#1741 — deterministic-loop fingerprint normalization)', () => {
+  it('collapses Windows backslash temp paths that differ only in a random token', () => {
+    const a = crashSignature("Cannot find module 'C:\\Users\\ci\\Temp\\worker-7f3a.js'");
+    const b = crashSignature("Cannot find module 'C:\\Users\\ci\\Temp\\worker-2b9c.js'");
+    expect(a).toBe(b);
+  });
+
+  it('collapses bare (no-0x) hex backtrace tokens', () => {
+    expect(crashSignature('SIGSEGV at 00007f8a2b1c4d')).toBe(
+      crashSignature('SIGSEGV at 00007fcc3d2e5a'),
+    );
+  });
+
+  it('collapses POSIX paths and exit codes (stderr-less crashes still group)', () => {
+    expect(crashSignature('Worker exited with code 1 (/tmp/pool-9/w.js)')).toBe(
+      crashSignature('Worker exited with code 139 (/tmp/pool-4/w.js)'),
+    );
+  });
+
+  it('keeps genuinely different crashes distinct', () => {
+    expect(crashSignature('Error: Cannot find module tree-sitter-c-sharp')).not.toBe(
+      crashSignature('Error: out of memory'),
+    );
   });
 });
