@@ -15,6 +15,7 @@ import {
   NPX_REF,
 } from '../../src/cli/resolve-invocation.js';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const mockedExec = vi.mocked(execFileSync);
@@ -128,26 +129,67 @@ describe('resolve-invocation', () => {
   });
 });
 
+const cjsRequire = createRequire(import.meta.url);
+const IN_REPO_CJS = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'hooks',
+  'claude',
+  'resolve-analyze-cmd.cjs',
+);
+const PLUGIN_CJS = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'gitnexus-claude-plugin',
+  'hooks',
+  'resolve-analyze-cmd.cjs',
+);
+const TS_SOURCE = path.resolve(__dirname, '..', '..', 'src', 'cli', 'resolve-invocation.ts');
+
+// Pull the `lines.find((l) => /…/i.test(l))` Windows-shim regex literal out of a
+// source file so the TS source and CJS mirror can be compared without spawning.
+function extractShimRegex(src: string): string | undefined {
+  return src.match(/lines\.find\(\(l\) => (\/.+?\/i)\.test\(l\)\)/)?.[1];
+}
+
 describe('resolve-analyze-cmd.cjs parity', () => {
+  afterEach(() => {
+    delete process.env.GITNEXUS_INVOCATION;
+    resetInvocationStateForTests();
+  });
+
   it('keeps the two CJS hook copies byte-identical', () => {
-    const inRepo = path.resolve(
-      __dirname,
-      '..',
-      '..',
-      'hooks',
-      'claude',
-      'resolve-analyze-cmd.cjs',
-    );
-    const plugin = path.resolve(
-      __dirname,
-      '..',
-      '..',
-      '..',
-      'gitnexus-claude-plugin',
-      'hooks',
-      'resolve-analyze-cmd.cjs',
-    );
-    expect(readFileSync(inRepo, 'utf-8')).toBe(readFileSync(plugin, 'utf-8'));
+    expect(readFileSync(IN_REPO_CJS, 'utf-8')).toBe(readFileSync(PLUGIN_CJS, 'utf-8'));
+  });
+
+  it('keeps the CJS NPX_REF in parity with the TS source', () => {
+    const cjs = cjsRequire(IN_REPO_CJS) as { NPX_REF: string };
+    expect(cjs.NPX_REF).toBe(NPX_REF);
+    expect(cjs.NPX_REF).toBe('gitnexus@latest');
+  });
+
+  it('emits the same analyze command as the TS source for every forced mode', () => {
+    const cjs = cjsRequire(IN_REPO_CJS) as {
+      formatAnalyzeCommand: (o?: { embeddings?: boolean }) => string;
+    };
+    for (const mode of ['gitnexus', 'pnpm', 'npx'] as const) {
+      for (const embeddings of [false, true]) {
+        process.env.GITNEXUS_INVOCATION = mode;
+        resetInvocationStateForTests();
+        const opts = embeddings ? { embeddings: true } : undefined;
+        expect(cjs.formatAnalyzeCommand(opts)).toBe(formatAnalyzeCommand(opts));
+      }
+    }
+  });
+
+  it('keeps the Windows shim regex in parity with the TS source', () => {
+    const tsRe = extractShimRegex(readFileSync(TS_SOURCE, 'utf-8'));
+    const cjsRe = extractShimRegex(readFileSync(IN_REPO_CJS, 'utf-8'));
+    expect(tsRe).toBeDefined();
+    expect(cjsRe).toBe(tsRe);
   });
 });
 
@@ -204,5 +246,23 @@ describe('resolveGitnexusBin Windows shim detection', () => {
     const bin = resolveGitnexusBin();
     expect(bin).not.toMatch(/\r/);
     expect(bin).toBe('C:\\npm\\gitnexus.cmd');
+  });
+});
+
+describe('CLI module-load posture (R3/R4 regression guard)', () => {
+  const cliDir = path.resolve(__dirname, '..', '..', 'src', 'cli');
+
+  it('does not probe invocation hints at index.ts module load (#207/#1383)', () => {
+    const indexSrc = readFileSync(path.join(cliDir, 'index.ts'), 'utf-8');
+    // Every command — including the `gitnexus mcp` stdio server — pays index.ts
+    // module load. warnIfNpm11NpxRisk()/PATH probing must stay out of module
+    // scope, or it reintroduces the startup-spawn regression (#207, #1383).
+    expect(indexSrc).not.toMatch(/warnIfNpm11NpxRisk/);
+    expect(indexSrc).not.toMatch(/resolve-invocation/);
+  });
+
+  it('wires the npm-11 warning into the analyze command instead', () => {
+    const analyzeSrc = readFileSync(path.join(cliDir, 'analyze.ts'), 'utf-8');
+    expect(analyzeSrc).toMatch(/warnIfNpm11NpxRisk\(\)/);
   });
 });

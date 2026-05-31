@@ -3,6 +3,11 @@
  *
  * Prefers a global `gitnexus` binary, then `pnpm dlx` (avoids npm 11.x npx
  * arborist crashes — #1939), then pinned `npx`.
+ *
+ * Mirrored for the CJS hook runtime in hooks/claude/ and
+ * gitnexus-claude-plugin/hooks/ resolve-analyze-cmd.cjs. resolve-invocation.test.ts
+ * checks NPX_REF, the emitted command per mode, and the Windows shim regex stay in
+ * parity with those copies — edit all three together.
  */
 
 import { execFileSync } from 'node:child_process';
