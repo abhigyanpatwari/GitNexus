@@ -406,8 +406,20 @@ export function resolveWorkerPoolOptions(
  * directly — pass an explicit `poolSize` to `createWorkerPool` or rely
  * on the env / default.
  */
+/**
+ * The pool size explicitly requested via the `GITNEXUS_WORKER_POOL_SIZE`
+ * env var, or `undefined` when unset/invalid. This is the env-channel
+ * equivalent of the `--workers <N>` CLI flag — both express a deliberate
+ * operator-chosen pool size. The fail-fast gate in parse-impl uses it so an
+ * env-sized pool is treated as operator-explicit too; without it, env-channel
+ * users reproduced the #1741 silent degrade-to-sequential on a startup crash.
+ */
+export function envWorkerPoolSize(): number | undefined {
+  return nonNegativeInteger(process.env.GITNEXUS_WORKER_POOL_SIZE);
+}
+
 export function resolveAutoPoolSize(): number {
-  const envOverride = nonNegativeInteger(process.env.GITNEXUS_WORKER_POOL_SIZE);
+  const envOverride = envWorkerPoolSize();
   if (envOverride !== undefined) return envOverride;
   // Prefer os.availableParallelism (Node 18.14+) so cgroup CPU limits
   // (containers, taskset-restricted runtimes, CI runners with explicit
@@ -664,8 +676,7 @@ export const createWorkerPool = (
   // (see captureWorkerStderr) and attach to readiness-failure messages —
   // instead of the generic "did not report ready" that hid the real cause
   // in #1741. Test factories (workerFactory) are used verbatim.
-  const spawnWorker =
-    options?.workerFactory ?? ((url: URL) => new Worker(url, { stderr: true }));
+  const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url, { stderr: true }));
   /** Spawn + wire stderr capture in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
     const worker = spawnWorker(url);

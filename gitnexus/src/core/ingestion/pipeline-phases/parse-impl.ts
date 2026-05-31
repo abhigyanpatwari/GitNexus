@@ -49,7 +49,11 @@ import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared'
 import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { createWorkerPool, WorkerPoolInitializationError } from '../workers/worker-pool.js';
+import {
+  createWorkerPool,
+  envWorkerPoolSize,
+  WorkerPoolInitializationError,
+} from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
@@ -163,8 +167,19 @@ export function handleWorkerStartupFailure(
     readinessFailures.length > 0
       ? ` Underlying worker failure(s): ${readinessFailures.join(' | ')}`
       : '';
+  // The operator "explicitly sized" the pool when they requested a non-zero
+  // size through EITHER channel: the `--workers <N>` CLI flag (threaded into
+  // options.workerPoolSize) or the `GITNEXUS_WORKER_POOL_SIZE` env var
+  // (consumed inside resolveAutoPoolSize and NOT threaded into options). Both
+  // express the same deliberate intent, so both must arm the fail-fast gate —
+  // omitting the env channel reproduced the #1741 silent degrade for env users.
+  const flagPoolSize =
+    options?.workerPoolSize !== undefined && options.workerPoolSize !== 0
+      ? options.workerPoolSize
+      : undefined;
+  const envPoolSize = envWorkerPoolSize();
   const explicitWorkers =
-    options?.workerPoolSize !== undefined && options.workerPoolSize !== 0;
+    flagPoolSize !== undefined || (envPoolSize !== undefined && envPoolSize !== 0);
   const fatal = fatalEligible && explicitWorkers && !options?.allowSequentialFallback;
 
   // Always surface the real crash — never let a startup failure pass silently.
@@ -174,10 +189,15 @@ export function handleWorkerStartupFailure(
   );
 
   if (fatal) {
+    // Name the channel the operator actually used so the remedy is concrete.
+    const sizeSource =
+      flagPoolSize !== undefined
+        ? `--workers ${flagPoolSize}`
+        : `GITNEXUS_WORKER_POOL_SIZE=${envPoolSize}`;
     throw new Error(
       `Worker pool failed to start: every worker crashed during top-of-script ` +
         `initialization, so the pool has no usable workers.${failureDetail}\n\n` +
-        `You passed --workers ${options?.workerPoolSize}, so GitNexus will NOT ` +
+        `You requested an explicit worker pool (${sizeSource}), so GitNexus will NOT ` +
         `silently fall back to the (much slower) sequential parser and hide this ` +
         `crash — that masked a worker-startup regression as a 2-hour "stuck" run ` +
         `in #1741. Options:\n` +

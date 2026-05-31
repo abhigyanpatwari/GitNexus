@@ -87,9 +87,13 @@ describe('processCallsFromExtracted', () => {
     try {
       await processCallsFromExtracted(graph, calls, ctx);
       const messages = cap.records().map((r) => String(r.msg ?? ''));
-      expect(
-        messages.some((m) => m.includes('src/slow.ts') && /took 20\.0s/.test(m)),
-      ).toBe(true);
+      const warn = messages.find((m) => m.includes('src/slow.ts') && /took 20\.0s/.test(m));
+      expect(warn).toBeDefined();
+      // The "Resolved N/M files" denominator must be the real non-skipped total,
+      // not 0 (#1741): resolvedTotal was previously only pre-counted on the
+      // profile path, so this always-on warning printed a bogus "Resolved 1/0".
+      expect(warn).toMatch(/Resolved 1\/1 files so far/);
+      expect(warn).not.toContain('/0 files');
       // Edge must still be created — the watchdog is observation-only.
       expect(graph.relationships.some((r) => r.type === 'CALLS')).toBe(true);
     } finally {

@@ -2952,12 +2952,16 @@ export const processCallsFromExtracted = async (
   // denominator stays stable as the loop iterates. Otherwise `${totalFiles -
   // skippedRegistryPrimaryFiles}` drifts upward — files iterated before later
   // registry-primary skips have been seen carry an inflated denominator, and
-  // the ratio only self-corrects after every file has been classified. Pre-
-  // count runs only on the enabled path so the disabled path stays free of
-  // the extra Map iteration. Defaults to 0 on the disabled path; the live log
-  // gate is also disabled there, so the value is never read.
+  // the ratio only self-corrects after every file has been classified.
+  //
+  // Runs whenever its result will actually be read: on the profile path (the
+  // live deferred-profile log) OR when the always-on slow-file watchdog is
+  // active (#1741) — the watchdog's warning prints `${resolvedFiles}/${resolvedTotal}`
+  // unconditionally, so leaving resolvedTotal at 0 on a plain run produced a
+  // bogus "Resolved N/0 files" denominator on exactly the unprofiled runs the
+  // watchdog exists for. When both gates are off, skip the extra Map pass.
   let resolvedTotal = 0;
-  if (profileCalls) {
+  if (profileCalls || alwaysSlowFileMs > 0) {
     for (const filePath of byFile.keys()) {
       const lang = getLanguageFromFilename(filePath);
       if (!lang || !isRegistryPrimary(lang)) resolvedTotal++;
