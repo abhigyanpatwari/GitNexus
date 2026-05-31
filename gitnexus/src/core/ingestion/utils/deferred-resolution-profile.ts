@@ -21,6 +21,19 @@ const LOG_EVERY_N_VERBOSE = 10;
 const LOG_EVERY_N_PROFILE = 100;
 const DEFAULT_SLOW_MS_VERBOSE = 3_000;
 const DEFAULT_SLOW_MS = 5_000;
+/**
+ * Always-on (NOT gated on verbose/profile) threshold above which a single
+ * file's deferred call resolution earns a `logger.warn`. The verbose
+ * slow-file profile (above) only fires with `-v`/`GITNEXUS_PROFILE_DEFERRED`;
+ * a plain `analyze` run that hangs in "Resolving calls" (the #1741 symptom)
+ * gives the user a frozen progress bar and nothing in the log. This higher
+ * default (15s — never hit by a healthy file) turns that silence into one
+ * actionable line naming the expensive file. Override via
+ * `GITNEXUS_SLOW_FILE_WARN_MS`; the throttle in the caller bounds volume.
+ */
+const DEFAULT_ALWAYS_ON_SLOW_FILE_WARN_MS = 15_000;
+/** Min wall-clock gap between always-on slow-file warnings (throttle). */
+export const ALWAYS_ON_SLOW_FILE_WARN_THROTTLE_MS = 30_000;
 
 /** True when deferred-stage timing / progress logs should emit. */
 export const isDeferredResolutionProfileEnabled = (): boolean =>
@@ -40,6 +53,24 @@ export const deferredCallFileSlowMs = (): number => {
     if (Number.isFinite(n) && n > 0) return n;
   }
   return isVerboseIngestionEnabled() ? DEFAULT_SLOW_MS_VERBOSE : DEFAULT_SLOW_MS;
+};
+
+/**
+ * Always-on per-file slow threshold (ms) for the `logger.warn` watchdog in
+ * `processCallsFromExtracted`. Unlike {@link deferredCallFileSlowMs} this is
+ * NOT gated on verbose/profile — it fires on every run. `0` (or a negative /
+ * non-finite override) disables the watchdog entirely. Override via
+ * `GITNEXUS_SLOW_FILE_WARN_MS`.
+ */
+export const alwaysOnSlowFileWarnMs = (): number => {
+  const raw = process.env.GITNEXUS_SLOW_FILE_WARN_MS;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    // 0 / negative / NaN → disabled. Use Number() not parseInt (see
+    // deferredCallFileSlowMs for the '1e9' prefix-parse hazard).
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  return DEFAULT_ALWAYS_ON_SLOW_FILE_WARN_MS;
 };
 
 export const profileNow = (): bigint => process.hrtime.bigint();

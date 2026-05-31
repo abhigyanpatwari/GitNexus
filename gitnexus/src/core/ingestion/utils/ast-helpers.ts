@@ -51,6 +51,51 @@ export const getDefinitionNodeFromCaptures = (
   return null;
 };
 
+type QueryMatchLike = {
+  captures: Array<{ name: string; node: SyntaxNode }>;
+};
+
+const nodeRangeKey = (node: SyntaxNode): string =>
+  `${node.startPosition.row}:${node.startPosition.column}:${node.endPosition.row}:${node.endPosition.column}`;
+
+const isConcreteTypedefCapture = (captureMap: Record<string, SyntaxNode>): boolean => {
+  const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+  return (
+    definitionNode?.type === 'type_definition' &&
+    (captureMap['definition.struct'] !== undefined || captureMap['definition.enum'] !== undefined)
+  );
+};
+
+export const buildConcreteTypedefDefinitionRanges = (
+  matches: readonly QueryMatchLike[],
+): Set<string> => {
+  const ranges = new Set<string>();
+  for (const match of matches) {
+    const captureMap: Record<string, SyntaxNode> = {};
+    for (const capture of match.captures) {
+      captureMap[capture.name] = capture.node;
+    }
+
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    if (definitionNode && isConcreteTypedefCapture(captureMap)) {
+      ranges.add(nodeRangeKey(definitionNode));
+    }
+  }
+  return ranges;
+};
+
+export const isSuppressedConcreteTypedefDuplicate = (
+  captureMap: Record<string, SyntaxNode>,
+  concreteTypedefRanges: ReadonlySet<string>,
+): boolean => {
+  const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+  return (
+    definitionNode?.type === 'type_definition' &&
+    captureMap['definition.typedef'] !== undefined &&
+    concreteTypedefRanges.has(nodeRangeKey(definitionNode))
+  );
+};
+
 /**
  * Node types that represent function/method definitions across languages.
  * Used by parent-walk in call-processor, parse-worker, and type-env to detect
