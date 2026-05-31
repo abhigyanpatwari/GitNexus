@@ -97,6 +97,11 @@ export function emitFreeCallFallback(
   // per call site. Same name + callable-kind filter that the previous scan
   // applied (see pickUniqueGlobalCallable JSDoc). Cost: O(|defs|) once.
   const globalCallablesBySimpleName = buildGlobalCallableIndex(scopes);
+  // Sibling index for constructor-form class fallback. Built once here so
+  // pickUniqueGlobalClass is O(1)-per-site rather than re-scanning
+  // defs.byId.values() at every constructor call. Same simple-name keying
+  // and class-like kind filter the previous per-site scan applied.
+  const globalClassesBySimpleName = buildGlobalClassIndex(scopes);
 
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
@@ -125,7 +130,7 @@ export function emitFreeCallFallback(
           // a unique workspace-wide Class def by simple name (gated on the
           // same global-fallback opt-in as free calls). Then target the
           // Class or its Constructor per the language's preference.
-          const globalClass = pickUniqueGlobalClass(site.name, scopes);
+          const globalClass = pickUniqueGlobalClass(site.name, globalClassesBySimpleName);
           if (globalClass !== undefined) {
             fnDef =
               options.constructorCallTargetsClass === true
@@ -481,6 +486,46 @@ function buildGlobalCallableIndex(
   return out;
 }
 
+/**
+ * Build a `simpleName -> class-like defs` index from `scopes.defs` once per
+ * pass — the structural sibling of `buildGlobalCallableIndex`, consumed by
+ * `pickUniqueGlobalClass` so constructor-form fallback is O(1)-per-site
+ * instead of O(|defs|).
+ *
+ * **Kind filter (KTD5 — KEEP `'Interface'`):** the set is
+ * `Class | Struct | Interface`, matching the idiomatic class-like set used
+ * elsewhere in the scope-resolution bridge (`graph-bridge/ids.ts`,
+ * `node-lookup.ts`). This is a behavior-PRESERVING perf refactor for all 8
+ * `allowGlobalFreeCallFallback` languages — the previous per-site scan used
+ * exactly this filter. Excluding Swift `protocol` (`Interface`) defs because
+ * protocols aren't instantiable is a *separate* Swift-semantics question with
+ * its own test; dropping `Interface` here would be a deliberate
+ * behavior-changing edit, not part of U5.
+ *
+ * Bucket insertion order follows `defs.byId.values()` iteration order, so the
+ * downstream "keep first" / ambiguity ordering in `pickUniqueGlobalClass` is
+ * byte-identical to the old linear scan (equivalence verified).
+ *
+ * Exported for unit testing — language-agnostic logic, exercised via synthetic
+ * stubs in `pick-unique-global-class.test.ts`.
+ */
+export function buildGlobalClassIndex(
+  scopes: ScopeResolutionIndexes,
+): ReadonlyMap<string, readonly SymbolDefinition[]> {
+  const out = new Map<string, SymbolDefinition[]>();
+  for (const def of scopes.defs.byId.values()) {
+    if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+    const qualified = def.qualifiedName;
+    if (qualified === undefined || qualified.length === 0) continue;
+    const dot = qualified.lastIndexOf('.');
+    const simple = dot === -1 ? qualified : qualified.slice(dot + 1);
+    const bucket = out.get(simple);
+    if (bucket) bucket.push(def);
+    else out.set(simple, [def]);
+  }
+  return out;
+}
+
 function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
@@ -644,19 +689,23 @@ function pickConstructorOrClass(
  *  node. Genuinely distinct types with the same simple name are
  *  ambiguous and leave the call unresolved rather than guessing. Gated
  *  by the caller on `allowGlobalFallback`, mirroring
- *  `pickUniqueGlobalCallable`. */
-function pickUniqueGlobalClass(
+ *  `pickUniqueGlobalCallable`.
+ *
+ *  Consumes the once-built `buildGlobalClassIndex` (`simpleName ->
+ *  class-like defs`) so each call site is O(1) rather than O(|defs|).
+ *  The index's `Class | Struct | Interface` kind filter is intentionally
+ *  KEPT (KTD5) — see `buildGlobalClassIndex` for why dropping `Interface`
+ *  would be a separate, behavior-changing Swift-semantics edit.
+ *
+ *  Exported for unit testing — language-agnostic logic, exercised via
+ *  synthetic stubs in `pick-unique-global-class.test.ts`. The production
+ *  call site is the constructor-form fallback in `emitFreeCallFallback`. */
+export function pickUniqueGlobalClass(
   name: string,
-  scopes: ScopeResolutionIndexes,
+  index: ReadonlyMap<string, readonly SymbolDefinition[]>,
 ): SymbolDefinition | undefined {
   let found: SymbolDefinition | undefined;
-  for (const def of scopes.defs.byId.values()) {
-    if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
-    const qualified = def.qualifiedName;
-    if (qualified === undefined || qualified.length === 0) continue;
-    const dot = qualified.lastIndexOf('.');
-    const simple = dot === -1 ? qualified : qualified.slice(dot + 1);
-    if (simple !== name) continue;
+  for (const def of index.get(name) ?? []) {
     // Same qualified name = same logical type (extension / partial-class
     // fragment); keep the first and don't treat it as ambiguous.
     if (found !== undefined && found.qualifiedName !== def.qualifiedName) return undefined;
