@@ -26,6 +26,7 @@
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
 
 const TYPE_DECL_NODE_TYPES = new Set(['class_declaration', 'protocol_declaration']);
 
@@ -55,7 +56,11 @@ function enclosingTypeName(typeNode: SyntaxNode): string | null {
   if (nameNode === null) return null;
   if (nameNode.type === 'user_type') {
     // extension Foo { } → name is (user_type (type_identifier)).
-    const inner = nameNode.firstNamedChild;
+    // extension Foo.Bar { } → (user_type (type_identifier Foo)
+    // (type_identifier Bar)); the extended type — and therefore `self` —
+    // is the TRAILING identifier `Bar` (lastNamedChild), not `Foo`. For a
+    // single identifier first === last, so this is unchanged.
+    const inner = nameNode.lastNamedChild;
     return inner?.text ?? nameNode.text;
   }
   return nameNode.text;
@@ -93,16 +98,17 @@ function firstInheritedType(typeNode: SyntaxNode): string | null {
   return null;
 }
 
+/** A Swift type method (`static func` OR `class func`) has no `self`
+ *  instance receiver. Delegate to `swiftMethodConfig.isStatic`, which is
+ *  the single source of truth: `static func` emits the modifier under a
+ *  `modifiers > property_modifier` wrapper, but `class func` emits a BARE
+ *  anonymous `class` token directly under `function_declaration` (verified,
+ *  tree-sitter-swift 0.7.1). `swiftMethodConfig.isStatic` covers both via
+ *  `hasKeyword(node, 'static'|'class')` (scans direct children) and
+ *  `hasModifier(...)` — so reusing it avoids re-deriving the same scan and
+ *  fixes the prior `modifiers`-only check that missed `class func`. */
 function isStaticMethod(fnNode: SyntaxNode): boolean {
-  // `static` / `class` (type-method) modifier appears under a `modifiers`
-  // child or as a leading keyword token.
-  for (let i = 0; i < fnNode.namedChildCount; i++) {
-    const child = fnNode.namedChild(i);
-    if (child !== null && child.type === 'modifiers' && /\b(static|class)\b/.test(child.text)) {
-      return true;
-    }
-  }
-  return false;
+  return swiftMethodConfig.isStatic(fnNode);
 }
 
 /**

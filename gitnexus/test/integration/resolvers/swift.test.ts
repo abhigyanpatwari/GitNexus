@@ -1022,3 +1022,247 @@ describe.skipIf(!swiftAvailable)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// U4 — BUG1: member-write read/write classification (issue #1948). A Swift
+// assignment LHS `obj.field = x` is wrapped in `directly_assignable_expression`
+// (verified, tree-sitter-swift 0.7.1), so the old `parent.type === 'assignment'`
+// write guard was dead — member writes leaked as spurious READ ACCESSES and no
+// WRITE edge emitted. The fix re-tags the write-LHS navigation to
+// `@reference.write.member`, so a `write` ACCESSES edge emits (for BOTH a
+// `self.field = x` receiver-bound write AND a non-self `obj.field = x`) and no
+// spurious read appears at the LHS. The genuine standalone field READs
+// (`let y = obj.field`) are a registry-primary-only correctness win — the
+// legacy DAG emits read ACCESSES only for field-access CHAINS feeding a call,
+// not standalone reads — so the read-control assertion is skip-gated.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift member-write ACCESSES (read/write classification)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-member-write-access'), () => {});
+  }, 60000);
+
+  it('emits write ACCESSES for self.field = x (self-receiver) with no spurious read at the LHS', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    // init: `self.balance = start`; deposit: `self.balance = amount`.
+    const balanceWrites = accesses.filter(
+      (e) => e.target === 'balance' && e.targetLabel === 'Property' && e.rel.reason === 'write',
+    );
+    const writeSources = balanceWrites.map((e) => e.source).sort();
+    expect(writeSources).toContain('init');
+    expect(writeSources).toContain('deposit');
+    // No spurious READ at the write LHS (init/deposit only WRITE balance).
+    const balanceReadsFromWriters = accesses.filter(
+      (e) =>
+        e.target === 'balance' &&
+        e.rel.reason === 'read' &&
+        (e.source === 'init' || e.source === 'deposit'),
+    );
+    expect(balanceReadsFromWriters).toHaveLength(0);
+  });
+
+  it('emits write ACCESSES for obj.field = y (non-self receiver) with no spurious read at the LHS', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    // App.swift `transfer`: `acct.owner = "alice"` — non-self receiver,
+    // `acct`'s type (Account) must resolve first, then `owner` resolves.
+    const ownerWrite = accesses.find(
+      (e) =>
+        e.target === 'owner' &&
+        e.targetLabel === 'Property' &&
+        e.source === 'transfer' &&
+        e.rel.reason === 'write',
+    );
+    expect(ownerWrite).toBeDefined();
+    expect(ownerWrite!.targetFilePath).toBe('Models.swift');
+    // No spurious READ at the LHS of the non-self write.
+    const spuriousRead = accesses.find(
+      (e) => e.target === 'owner' && e.source === 'transfer' && e.rel.reason === 'read',
+    );
+    expect(spuriousRead).toBeUndefined();
+  });
+
+  // legacy_skip: registry-primary-only. The legacy DAG emits a read ACCESSES
+  // only for a field-access CHAIN feeding a call (e.g. `user.address.save()`);
+  // a STANDALONE field read (`let current = self.balance`, `let who = acct.owner`)
+  // produces no read ACCESSES under legacy. The scope-resolver emits it via the
+  // reference-site `read` kind. Registered in helpers.ts; backporting the read
+  // edge to legacy is out of scope per the migration policy.
+  it('still emits a read ACCESSES for a genuine standalone field read (not the write LHS)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    // readBalance: `let current = self.balance` (self read).
+    const balanceRead = accesses.find(
+      (e) => e.target === 'balance' && e.source === 'readBalance' && e.rel.reason === 'read',
+    );
+    expect(balanceRead).toBeDefined();
+    expect(balanceRead!.targetLabel).toBe('Property');
+    // inspect: `let who = acct.owner` (non-self read).
+    const ownerRead = accesses.find(
+      (e) => e.target === 'owner' && e.source === 'inspect' && e.rel.reason === 'read',
+    );
+    expect(ownerRead).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U4 — BUG2: `class func` self-binding (issue #1948). A Swift `class func`
+// (type method) emits a BARE anonymous `class` token directly under
+// `function_declaration` (verified, tree-sitter-swift 0.7.1), whereas
+// `static func` emits it under a `modifiers > property_modifier` wrapper. The
+// old `isStaticMethod` scanned only the `modifiers` wrapper, so a `class func`
+// wrongly received a `self: <Type>` INSTANCE binding (it should have none — a
+// type method has no instance receiver). The fix delegates to
+// `swiftMethodConfig.isStatic`, which detects both via `hasKeyword('class')`.
+//
+// Observable signal: an instance `self.label` property read resolves with full
+// self-binding provenance (`reason === 'read'`), but inside a `class func` /
+// `static func` `self.label` has no instance binding, so it resolves only via
+// the weaker lexical name fallback (`reason === 'scope-resolution: read'`).
+// Pre-fix, the `class func` read carried the instance-binding provenance like
+// `instanceCaller`; post-fix it matches `staticCaller`.
+//
+// legacy_skip: registry-primary-only — the legacy DAG cannot resolve these
+// self-property reads at all (it emits no ACCESSES for this fixture), so the
+// provenance-parity assertion is a scope-resolver-only correctness check.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift class func receiver (no instance self-binding)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-class-func-receiver'), () => {});
+  }, 60000);
+
+  it('a class func gets no instance self-binding (parity with static func; instance method differs)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const reasonFor = (src: string): string | undefined =>
+      accesses.find((e) => e.target === 'label' && e.source === src && e.targetLabel === 'Property')
+        ?.rel.reason;
+
+    const instanceReason = reasonFor('instanceCaller');
+    const classFuncReason = reasonFor('classCaller');
+    const staticFuncReason = reasonFor('staticCaller');
+
+    // Instance method has a real `self` receiver: full self-binding provenance.
+    expect(instanceReason).toBe('read');
+    // `class func` must behave EXACTLY like `static func`: no instance
+    // self-binding, so the read resolves only via the lexical name fallback.
+    expect(classFuncReason).toBe('scope-resolution: read');
+    expect(staticFuncReason).toBe('scope-resolution: read');
+    expect(classFuncReason).toBe(staticFuncReason);
+    // And it must NOT carry the instance method's self-binding provenance.
+    expect(classFuncReason).not.toBe(instanceReason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U4 — BUG3: multi-clause `if let` / `guard let` (issue #1948).
+// `if let a = makeA(), let b = makeB()` has a FLAT child list where each clause
+// is `value_binding_pattern · simple_identifier · = · call_expression`
+// (verified, tree-sitter-swift 0.7.1). The old code read only the FIRST clause
+// (`childForFieldName('bound_identifier')` returns just `a`), so the second
+// binding `b: makeB() -> B` was never inferred. The fix walks all clauses and
+// emits one `@type-binding.constructor` per clause.
+//
+// Observable signal: `b.shared()` where B.shared collides with Decoy.shared, so
+// it resolves to B.shared ONLY via the second clause binding — a unique-name
+// global fallback is ambiguous. The first clause `a.m()` (unique name) resolves
+// in both legs; the second clause `b.shared()` is registry-primary-only.
+//
+// legacy_skip: registry-primary-only — legacy cannot infer the second clause's
+// type binding and the ambiguous `shared` defeats its name fallback, so
+// `b.shared()` stays unresolved under legacy.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift multi-clause if-let / guard-let binding', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-multi-if-let'), () => {});
+  }, 60000);
+
+  it('detects A, B and Decoy classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('Decoy');
+  });
+
+  it('resolves b.shared() to B.shared via the SECOND if-let clause binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sharedCall = calls.find(
+      (c) =>
+        c.target === 'shared' &&
+        c.source === 'processIfLet' &&
+        c.rel.targetId === 'Function:Models.swift:B.shared#0',
+    );
+    expect(sharedCall).toBeDefined();
+    // It must NOT resolve to the colliding Decoy.shared.
+    const decoyCall = calls.find(
+      (c) =>
+        c.target === 'shared' &&
+        c.source === 'processIfLet' &&
+        c.rel.targetId === 'Function:Models.swift:Decoy.shared#0',
+    );
+    expect(decoyCall).toBeUndefined();
+  });
+
+  it('resolves b.shared() to B.shared via the SECOND guard-let clause binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sharedCall = calls.find(
+      (c) =>
+        c.target === 'shared' &&
+        c.source === 'processGuardLet' &&
+        c.rel.targetId === 'Function:Models.swift:B.shared#0',
+    );
+    expect(sharedCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U4 — BUG4: nested-type extension re-keying (issue #1948).
+// `extension Foo.Bar` parses to a `(user_type (type_identifier Foo)
+// (type_identifier Bar))` name. The old code took `firstNamedChild` (`Foo`) as
+// the extended type, re-keying the extension's members onto `Foo` and binding
+// `self` to `Foo`. The fix uses `lastNamedChild` (`Bar`, the trailing
+// identifier) in BOTH the captures re-key and `enclosingTypeName`, so members
+// hoist onto Bar and `self == Bar`. Single-identifier `extension Foo` is
+// unchanged (first === last). `base()` is split across files (Types.swift /
+// Extension.swift) with a colliding Decoy.base so resolution depends purely on
+// `self == Bar`.
+//
+// The HAS_METHOD hoisting assertion passes BOTH legs (not skipped). The
+// `self.base() -> Bar.base` resolution is registry-primary-only (the legacy
+// DAG leaves the cross-file extension self-call unresolved), so that exact
+// test is registered in the `swift` skip-set in helpers.ts (verified
+// empirically under REGISTRY_PRIMARY_SWIFT=0).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-nested-extension'), () => {});
+  }, 60000);
+
+  it('hoists added onto Bar (HAS_METHOD Foo.Bar -> added), not Foo', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const addedEdge = hasMethod.find(
+      (e) => e.target === 'added' && e.rel.sourceId === 'Class:Extension.swift:Foo.Bar',
+    );
+    expect(addedEdge).toBeDefined();
+    // Must NOT hoist onto a bare `Foo` owner.
+    const onFoo = hasMethod.find(
+      (e) => e.target === 'added' && e.rel.sourceId === 'Class:Types.swift:Foo',
+    );
+    expect(onFoo).toBeUndefined();
+  });
+
+  it('resolves self.base() inside added() to Bar.base (self == Bar), not Foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseCall = calls.find((c) => c.target === 'base' && c.source === 'added');
+    expect(baseCall).toBeDefined();
+    expect(baseCall!.rel.targetId).toBe('Function:Types.swift:Bar.base#0');
+  });
+});

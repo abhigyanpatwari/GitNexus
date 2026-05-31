@@ -35,6 +35,10 @@
     "captureGroups": 7,
     "digest": "ee1086e1a0cbfc57f381401b81b2e150f422a64cd3b937f083a1fbbd85e5a27e"
   },
+  "swift-class-func-receiver/Service.swift": {
+    "captureGroups": 24,
+    "digest": "04431e0287afed4c37779fb8fbf1d8cbe00ff917d6512fefcec5d7da1db69de8"
+  },
   "swift-constructor-fallback/App.swift": {
     "captureGroups": 7,
     "digest": "782cf85fcfe24b2baea6226f09226d23adc2bab591380bd33600cfe8509dbb83"
@@ -45,11 +49,11 @@
   },
   "swift-constructor-type-inference/Models/Repo.swift": {
     "captureGroups": 14,
-    "digest": "d67814c2f6c6a5c0e98aea4328351ae06faefcbb3daf6ed8f5c115f347a33e4d"
+    "digest": "a1e1b75aa5a637bdf1e47ffd5cea61b2f6b139078db766d4926d0d99086abe34"
   },
   "swift-constructor-type-inference/Models/User.swift": {
     "captureGroups": 14,
-    "digest": "cf523c394b9a30aa3b59d1f47a0afa5ad9dfd37fbddb9b799f355027e55ed16f"
+    "digest": "107563b39540473845aeafc30aae96191eae60ba56bed8d8b13dd98aaef72f0a"
   },
   "swift-constructor-type-inference/Services/App.swift": {
     "captureGroups": 12,
@@ -69,7 +73,7 @@
   },
   "swift-extension-dedup/Product.swift": {
     "captureGroups": 14,
-    "digest": "68417cd9791edae71b515540d229caad1b3d5b2485ec475c6226f283fa301be8"
+    "digest": "86c0c65ace3809f2f13cca1dabe54328c354923cde0e29e526542a9291a66522"
   },
   "swift-extension-dedup/ProductExtensions.swift": {
     "captureGroups": 8,
@@ -109,11 +113,19 @@
   },
   "swift-init-cross-file/User.swift": {
     "captureGroups": 17,
-    "digest": "da1d228a64d3bb0a4c9f6f1be9f13382ecd5c729faa76ceb0da3f27fafe19cfb"
+    "digest": "238af425526a62a088a1c4b3ba75c9249e375ffbeedb991c1b7481fa20e11543"
   },
   "swift-init-cross-file/main.swift": {
     "captureGroups": 8,
     "digest": "3007e4849cf77cc6cb360a1dbf70abec414a408076020f4730d01b8a80c1ddd3"
+  },
+  "swift-member-write-access/App.swift": {
+    "captureGroups": 11,
+    "digest": "43c147d979761375f88bccd980f9db2274a937a3157ecaf93ca337fa54d0ae39"
+  },
+  "swift-member-write-access/Models.swift": {
+    "captureGroups": 23,
+    "digest": "e830e3dca7d6c6260181b78d4af5bc61e031bdce3a451588989f17223a5eac1c"
   },
   "swift-method-enrichment/Sources/Animal.swift": {
     "captureGroups": 22,
@@ -122,6 +134,14 @@
   "swift-method-enrichment/Sources/App.swift": {
     "captureGroups": 10,
     "digest": "906c1f026eb183306a19eff5fafd888fc8982434e2ab07bc886100b99653359b"
+  },
+  "swift-multi-if-let/App.swift": {
+    "captureGroups": 17,
+    "digest": "30faed5011af965b20a9e7e3698a3cdbabbdaf148f4818f031891ec7130b3f7f"
+  },
+  "swift-multi-if-let/Models.swift": {
+    "captureGroups": 24,
+    "digest": "0c072ac3f476a9e563190de555eeaff09a62128d9e7760912655cea9bdefbe6e"
   },
   "swift-multidir-target/Package.swift": {
     "captureGroups": 5,
@@ -146,6 +166,14 @@
   "swift-multifolder-nopackage/Services/App.swift": {
     "captureGroups": 7,
     "digest": "7ed3ccfa724fd58d3c9e10a176101364f2a01f20a7a87f9e3d76b715e4a307d8"
+  },
+  "swift-nested-extension/Extension.swift": {
+    "captureGroups": 7,
+    "digest": "3e6dfc7895f9c257be1524e43f004497faca6f765311474fc4bcc85f1d222940"
+  },
+  "swift-nested-extension/Types.swift": {
+    "captureGroups": 13,
+    "digest": "16d599d9805cba59b1bb22598b09e1d25e3dd80da52a4a2c04c23581a8b65d6e"
   },
   "swift-overload-dispatch/App.swift": {
     "captureGroups": 7,
@@ -177,7 +205,7 @@
   },
   "swift-return-type-inference/Models.swift": {
     "captureGroups": 27,
-    "digest": "c5bedb2b8fa8715cac1450026beb8144a908b1d3a3cbbab2da344095f9577e08"
+    "digest": "3d1a5a4fe1deb91dc2ba74f71e7bc0b42dbe1dde3b374891fbb3fcf8d265f3a8"
   },
   "swift-return-type/App.swift": {
     "captureGroups": 7,
@@ -185,7 +213,7 @@
   },
   "swift-return-type/Models.swift": {
     "captureGroups": 18,
-    "digest": "075863d32f5b64de86300be3c05fc186222a594471cd4159bf63943dc12ab733"
+    "digest": "dcb5562e378f8672c85ade10d2dc38b499af2cc02efeb4c0f80ac8ce83ce7d02"
   },
   "swift-self-this-resolution/Sources/Models/Repo.swift": {
     "captureGroups": 7,
@@ -197,6 +225,6 @@
   },
   "synthetic:dao-20": {
     "captureGroups": 321,
-    "digest": "4db4e22f456ed3dfe5742bad18a387892d6b3c2740aa10ab01c73e312b68066c"
+    "digest": "abd793dd5a0196a9795ff62cee1b1b0905e69ea45092b6efd0decdc9bc84270c"
   }
 }
