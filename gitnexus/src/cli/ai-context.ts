@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
 import { logger } from '../core/logger.js';
+import { formatAnalyzeCommand } from './resolve-invocation.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -127,13 +128,14 @@ function generateGitNexusContent(
 |------|---------------------|
 ${tableBody}`
     : '';
+  const analyzeCmd = formatAnalyzeCommand();
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
+> If any GitNexus tool warns the index is stale, run \`${analyzeCmd}\` in terminal first.
 
 ## Always Do
 

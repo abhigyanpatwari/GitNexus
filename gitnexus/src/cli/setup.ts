@@ -397,6 +397,15 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       // Helper not found in source — skip
     }
 
+    try {
+      await fs.copyFile(
+        path.join(pluginHooksPath, 'resolve-analyze-cmd.cjs'),
+        path.join(destHooksDir, 'resolve-analyze-cmd.cjs'),
+      );
+    } catch {
+      // Helper not found in source — skip
+    }
+
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
     // Escape backslashes FIRST, then quotes (CodeQL js/incomplete-sanitization).
     // The previous shape `replace(/"/g, '\\"')` alone would let `path\with"quote`
@@ -591,7 +600,12 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
     // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
     // server ownership probe silently fails open and the hook may contend
     // with the MCP server on the LadybugDB.
-    for (const helper of ['hook-lock.cjs', 'hook-db-lock-probe.cjs', 'win-rm-list-json.ps1']) {
+    for (const helper of [
+      'hook-lock.cjs',
+      'hook-db-lock-probe.cjs',
+      'win-rm-list-json.ps1',
+      'resolve-analyze-cmd.cjs',
+    ]) {
       try {
         await fs.copyFile(path.join(pluginClaudeDir, helper), path.join(destHooksDir, helper));
       } catch {
