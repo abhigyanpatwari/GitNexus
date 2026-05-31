@@ -1,65 +1,31 @@
 /**
- * Resolve how to invoke gitnexus from docs, hooks, and warnings.
+ * npm 11.x npx-install-crash nudge for the `analyze` command (#1939).
  *
- * Prefers a global `gitnexus` binary, then `pnpm dlx` (avoids npm 11.x npx
- * arborist crashes — #1939), then pinned `npx`.
- *
- * Mirrored for the CJS hook runtime in hooks/claude/ and
- * gitnexus-claude-plugin/hooks/ resolve-analyze-cmd.cjs. resolve-invocation.test.ts
- * checks NPX_REF, the emitted command per mode, and the Windows shim regex stay in
- * parity with those copies — edit all three together.
+ * The gitnexus/pnpm/npx selection itself lives in the canonical hook helper
+ * (hooks/claude/resolve-analyze-cmd.cjs) — self-contained CJS because the copied
+ * hook runtime cannot import from the package. We reuse it here via createRequire
+ * instead of re-implementing it, so there is one source of truth for the
+ * invocation decision. This module adds only the npm-version probe and the
+ * warning, which are CLI-only. The relative path resolves identically from
+ * src/cli/ (tsx, vitest) and dist/cli/ (shipped), since both sit one level under
+ * the package root and `hooks/` is published.
  */
 
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 
-// Invocation hints standardize on `gitnexus@latest`: the safety this delivers
-// is the *method* steered to (global / `pnpm dlx`), not a pinned version, and
-// the in-repo CJS mirror already degrades to `latest` once copied outside the
-// package. The version-pinned MCP-registration ref lives separately in setup.ts.
-export const NPX_REF = 'gitnexus@latest';
+type InvocationMode = 'gitnexus' | 'pnpm' | 'npx';
 
-export type InvocationMode = 'gitnexus' | 'pnpm' | 'npx';
-
-let npm11Warned = false;
-// Cache the PATH-probe-derived mode so repeated callers in one process do not
-// re-spawn `which`/`where`. The (cheap) GITNEXUS_INVOCATION override is always
-// re-read and never cached.
-let cachedAutoMode: InvocationMode | null = null;
-
-function resolveOnPath(command: string, winGitnexusWrapper = false): string | null {
-  const isWin = process.platform === 'win32';
-  const cmd = isWin ? 'where' : 'which';
-  try {
-    const output = execFileSync(cmd, [command], {
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-    const lines = output
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    if (isWin && winGitnexusWrapper) {
-      // A global gitnexus may be a .cmd/.bat (npm), a .exe, or an extensionless
-      // shim (Volta, scoop). Any non-empty `where` hit means it is on PATH; the
-      // emitted hint is `gitnexus analyze` regardless of which shim resolves it.
-      return lines.find((l) => /\.(cmd|bat|exe)$/i.test(l)) || lines[0] || null;
-    }
-    return lines[0] || null;
-  } catch {
-    return null;
-  }
+interface InvocationResolver {
+  resolveInvocationMode: () => InvocationMode;
+  NPX_REF: string;
 }
 
-/** Absolute path to a spawnable global `gitnexus` binary, or null. */
-export function resolveGitnexusBin(): string | null {
-  return resolveOnPath('gitnexus', true);
-}
+const { resolveInvocationMode, NPX_REF } = createRequire(import.meta.url)(
+  '../../hooks/claude/resolve-analyze-cmd.cjs',
+) as InvocationResolver;
 
-export function isPnpmOnPath(): boolean {
-  return resolveOnPath('pnpm') !== null;
-}
+export { NPX_REF };
 
 export function getNpmMajorVersion(): number | null {
   try {
@@ -76,40 +42,15 @@ export function getNpmMajorVersion(): number | null {
   }
 }
 
-/** Test hook: force `gitnexus` | `pnpm` | `npx` invocation hints. */
-export function resolveInvocationMode(): InvocationMode {
-  const forced = process.env.GITNEXUS_INVOCATION?.trim().toLowerCase();
-  if (forced === 'gitnexus' || forced === 'pnpm' || forced === 'npx') {
-    return forced;
-  }
-  if (cachedAutoMode) return cachedAutoMode;
-  if (resolveGitnexusBin()) cachedAutoMode = 'gitnexus';
-  else if (isPnpmOnPath()) cachedAutoMode = 'pnpm';
-  else cachedAutoMode = 'npx';
-  return cachedAutoMode;
-}
-
-/** Test-only: clear the memoized mode and the once-only npm-11 warning flag. */
-export function resetInvocationStateForTests(): void {
-  cachedAutoMode = null;
-  npm11Warned = false;
-}
-
-export function formatAnalyzeCommand(options?: { embeddings?: boolean }): string {
-  const suffix = options?.embeddings ? ' --embeddings' : '';
-  const mode = resolveInvocationMode();
-  if (mode === 'gitnexus') return `gitnexus analyze${suffix}`;
-  if (mode === 'pnpm') return `pnpm dlx ${NPX_REF} analyze${suffix}`;
-  return `npx ${NPX_REF} analyze${suffix}`;
-}
-
-/** One-line stderr warning when npm 11+ users are on the npx install path (#1939). */
+/**
+ * One-line stderr nudge when an npm 11+ user is on the npx install path (#1939).
+ * Skipped when a global `gitnexus` or `pnpm` is already preferred, so it never
+ * nags users who are not exposed to the npx/arborist crash.
+ */
 export function warnIfNpm11NpxRisk(): void {
-  if (npm11Warned) return;
   if (resolveInvocationMode() !== 'npx') return;
   const major = getNpmMajorVersion();
   if (major === null || major < 11) return;
-  npm11Warned = true;
   process.stderr.write(
     `Warning: npm ${major}.x can crash while installing gitnexus via npx ` +
       `(npm/arborist "node.target is null"). Prefer: pnpm dlx ${NPX_REF} analyze ` +

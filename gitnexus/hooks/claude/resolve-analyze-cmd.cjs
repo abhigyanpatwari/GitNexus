@@ -1,50 +1,70 @@
 /**
- * Shared analyze-command hint for Claude/Antigravity hooks (CJS).
+ * Single source of truth for how docs, hooks, and warnings invoke gitnexus.
  *
- * Duplicated byte-for-byte in gitnexus/hooks/claude/ and
- * gitnexus-claude-plugin/hooks/, and mirrors src/cli/resolve-invocation.ts.
- * resolve-invocation.test.ts enforces both: the two CJS copies stay
- * byte-identical, and NPX_REF + the emitted command per mode + the Windows
- * shim regex match the TS source. Edit all three copies together.
+ * Selection order: a global `gitnexus` binary, then `pnpm dlx` (avoids the
+ * npm 11.x npx/arborist "node.target is null" install crash, #1939), then a
+ * pinned `npx`.
+ *
+ * This stays self-contained CJS because the Claude/Antigravity hooks run as
+ * standalone files copied into the user's hook dir, where no package import is
+ * available. The CLI reuses this module from src/cli/resolve-invocation.ts via
+ * createRequire rather than re-implementing it, so the gitnexus/pnpm/npx
+ * decision lives in exactly one place. Shipped in two packages —
+ * gitnexus/hooks/claude/ (the canonical copy the CLI and `gitnexus setup` read)
+ * and gitnexus-claude-plugin/hooks/ — kept byte-identical by
+ * resolve-invocation.test.ts. Edit both together.
  */
 
 const { execFileSync } = require('child_process');
 
 const NPX_REF = 'gitnexus@latest';
 
-function resolveOnPath(command, winGitnexusWrapper = false) {
+/**
+ * Pick the best match from `where`/`which` output. A global `gitnexus` may be a
+ * `.cmd`/`.bat` (npm), a `.exe`, or an extensionless shim (Volta, scoop), so on
+ * Windows we prefer a recognized executable extension but accept any hit — the
+ * emitted hint is `gitnexus analyze` regardless of which shim resolves it. Pure
+ * and exported so the shim-matching can be unit-tested without spawning.
+ */
+function pickPathMatch(output, { isWin, gitnexusWrapper } = {}) {
+  const lines = output
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (isWin && gitnexusWrapper) {
+    return lines.find((l) => /\.(cmd|bat|exe)$/i.test(l)) || lines[0] || null;
+  }
+  return lines[0] || null;
+}
+
+/** Absolute path to `command` on PATH, or null. `gitnexusWrapper` enables the Windows shim match. */
+function resolveOnPath(command, gitnexusWrapper = false) {
   const isWin = process.platform === 'win32';
-  const cmd = isWin ? 'where' : 'which';
   try {
-    const output = execFileSync(cmd, [command], {
+    const output = execFileSync(isWin ? 'where' : 'which', [command], {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    const lines = output
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    if (isWin && winGitnexusWrapper) {
-      // A global gitnexus may be a .cmd/.bat (npm), a .exe, or an extensionless
-      // shim (Volta, scoop). Any non-empty `where` hit means it is on PATH; the
-      // emitted hint is `gitnexus analyze` regardless of which shim resolves it.
-      return lines.find((l) => /\.(cmd|bat|exe)$/i.test(l)) || lines[0] || null;
-    }
-    return lines[0] || null;
+    return pickPathMatch(output, { isWin, gitnexusWrapper });
   } catch {
     return null;
   }
 }
 
-function resolveInvocationMode() {
+/**
+ * Resolve `gitnexus` | `pnpm` | `npx`. `GITNEXUS_INVOCATION` forces a mode
+ * (test/escape hatch). `probe` is injectable so the preference order can be
+ * unit-tested without spawning; it defaults to the real PATH probe.
+ */
+function resolveInvocationMode(probe = resolveOnPath) {
   const forced = process.env.GITNEXUS_INVOCATION?.trim().toLowerCase();
   if (forced === 'gitnexus' || forced === 'pnpm' || forced === 'npx') {
     return forced;
   }
-  if (resolveOnPath('gitnexus', true)) return 'gitnexus';
-  if (resolveOnPath('pnpm')) return 'pnpm';
+  if (probe('gitnexus', true)) return 'gitnexus';
+  if (probe('pnpm')) return 'pnpm';
   return 'npx';
 }
 
@@ -56,4 +76,9 @@ function formatAnalyzeCommand(options = {}) {
   return `npx ${NPX_REF} analyze${suffix}`;
 }
 
-module.exports = { formatAnalyzeCommand, resolveInvocationMode, NPX_REF };
+module.exports = {
+  formatAnalyzeCommand,
+  resolveInvocationMode,
+  pickPathMatch,
+  NPX_REF,
+};

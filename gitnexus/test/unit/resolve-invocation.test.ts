@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
@@ -6,12 +6,8 @@ vi.mock('node:child_process', () => ({
 
 import { execFileSync } from 'node:child_process';
 import {
-  formatAnalyzeCommand,
   getNpmMajorVersion,
-  resolveGitnexusBin,
-  resolveInvocationMode,
   warnIfNpm11NpxRisk,
-  resetInvocationStateForTests,
   NPX_REF,
 } from '../../src/cli/resolve-invocation.js';
 import { readFileSync } from 'node:fs';
@@ -20,117 +16,8 @@ import path from 'node:path';
 
 const mockedExec = vi.mocked(execFileSync);
 
-describe('resolve-invocation', () => {
-  afterEach(() => {
-    vi.clearAllMocks();
-    delete process.env.GITNEXUS_INVOCATION;
-    // Clear the memoized mode + once-only warning flag so neither leaks into
-    // the next test (static top-level imports mean vi.resetModules alone would
-    // not rebind them).
-    resetInvocationStateForTests();
-  });
-
-  it('standardizes the invocation ref on gitnexus@latest', () => {
-    expect(NPX_REF).toBe('gitnexus@latest');
-  });
-
-  it('forces invocation mode via GITNEXUS_INVOCATION', () => {
-    process.env.GITNEXUS_INVOCATION = 'pnpm';
-    expect(resolveInvocationMode()).toBe('pnpm');
-    expect(formatAnalyzeCommand()).toBe(`pnpm dlx ${NPX_REF} analyze`);
-    expect(formatAnalyzeCommand({ embeddings: true })).toBe(
-      `pnpm dlx ${NPX_REF} analyze --embeddings`,
-    );
-  });
-
-  it('prefers global gitnexus binary on PATH', () => {
-    mockedExec.mockReturnValue('/usr/local/bin/gitnexus\n');
-    expect(resolveInvocationMode()).toBe('gitnexus');
-    expect(formatAnalyzeCommand()).toBe('gitnexus analyze');
-  });
-
-  it('falls back to pnpm dlx before npx when pnpm is on PATH', () => {
-    mockedExec.mockImplementation((_cmd, args) => {
-      const bin = args[0];
-      if (bin === 'gitnexus') throw new Error('missing');
-      if (bin === 'pnpm') return '/usr/local/bin/pnpm\n';
-      throw new Error(`unexpected ${bin}`);
-    });
-    expect(resolveInvocationMode()).toBe('pnpm');
-    expect(formatAnalyzeCommand()).toBe(`pnpm dlx ${NPX_REF} analyze`);
-  });
-
-  it('uses pinned npx when neither gitnexus nor pnpm is available', () => {
-    mockedExec.mockImplementation(() => {
-      throw new Error('missing');
-    });
-    expect(resolveInvocationMode()).toBe('npx');
-    expect(formatAnalyzeCommand()).toBe(`npx ${NPX_REF} analyze`);
-  });
-
-  it('parses npm major version', () => {
-    mockedExec.mockReturnValue('11.5.2\n');
-    expect(getNpmMajorVersion()).toBe(11);
-  });
-
-  it('warns once on npm 11+ npx path', () => {
-    process.env.GITNEXUS_INVOCATION = 'npx';
-    mockedExec.mockReturnValue('11.0.0\n');
-    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    warnIfNpm11NpxRisk();
-    warnIfNpm11NpxRisk();
-
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(String(write.mock.calls[0]?.[0])).toContain('node.target is null');
-    expect(String(write.mock.calls[0]?.[0])).toContain('pnpm dlx');
-  });
-
-  it('memoizes PATH probing across repeated resolveInvocationMode calls', () => {
-    mockedExec.mockImplementation((_cmd, args) => {
-      const bin = args[0];
-      if (bin === 'gitnexus') throw new Error('missing');
-      if (bin === 'pnpm') return '/usr/local/bin/pnpm\n';
-      throw new Error(`unexpected ${bin}`);
-    });
-
-    expect(resolveInvocationMode()).toBe('pnpm');
-    const callsAfterFirst = mockedExec.mock.calls.length;
-    expect(resolveInvocationMode()).toBe('pnpm');
-    expect(resolveInvocationMode()).toBe('pnpm');
-    // No additional PATH probes after the first resolution.
-    expect(mockedExec.mock.calls.length).toBe(callsAfterFirst);
-  });
-
-  it('does not warn when the resolved mode is not npx', () => {
-    process.env.GITNEXUS_INVOCATION = 'pnpm';
-    mockedExec.mockReturnValue('11.0.0\n');
-    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    warnIfNpm11NpxRisk();
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it('does not warn when npm is older than 11', () => {
-    process.env.GITNEXUS_INVOCATION = 'npx';
-    mockedExec.mockReturnValue('10.9.0\n');
-    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    warnIfNpm11NpxRisk();
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it('does not warn when npm is absent', () => {
-    process.env.GITNEXUS_INVOCATION = 'npx';
-    mockedExec.mockImplementation(() => {
-      throw new Error('missing');
-    });
-    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    warnIfNpm11NpxRisk();
-    expect(write).not.toHaveBeenCalled();
-  });
-});
-
 const cjsRequire = createRequire(import.meta.url);
-const IN_REPO_CJS = path.resolve(
+const CANONICAL_CJS = path.resolve(
   __dirname,
   '..',
   '..',
@@ -147,105 +34,164 @@ const PLUGIN_CJS = path.resolve(
   'hooks',
   'resolve-analyze-cmd.cjs',
 );
-const TS_SOURCE = path.resolve(__dirname, '..', '..', 'src', 'cli', 'resolve-invocation.ts');
 
-// Pull the `lines.find((l) => /…/i.test(l))` Windows-shim regex literal out of a
-// source file so the TS source and CJS mirror can be compared without spawning.
-function extractShimRegex(src: string): string | undefined {
-  return src.match(/lines\.find\(\(l\) => (\/.+?\/i)\.test\(l\)\)/)?.[1];
+interface CjsModule {
+  formatAnalyzeCommand: (o?: { embeddings?: boolean }) => string;
+  resolveInvocationMode: (
+    probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
+  ) => 'gitnexus' | 'pnpm' | 'npx';
+  pickPathMatch: (
+    output: string,
+    opts?: { isWin?: boolean; gitnexusWrapper?: boolean },
+  ) => string | null;
+  NPX_REF: string;
 }
 
-describe('resolve-analyze-cmd.cjs parity', () => {
+// Require the real shipped artifact — the hook runtime loads this exact file, so
+// the tests exercise production code, not a TypeScript mirror of it.
+//
+// Determinism invariant: createRequire bypasses vitest's node:child_process mock,
+// so this module's resolveOnPath() would spawn a real `which`/`where`. Every test
+// below avoids the live probe — by forcing GITNEXUS_INVOCATION, injecting a fake
+// `probe`, or calling the pure pickPathMatch() — so results never depend on the
+// host PATH. Keep new tests on one of those three paths.
+const cjs = cjsRequire(CANONICAL_CJS) as CjsModule;
+
+describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   afterEach(() => {
     delete process.env.GITNEXUS_INVOCATION;
-    resetInvocationStateForTests();
   });
 
-  it('keeps the two CJS hook copies byte-identical', () => {
-    expect(readFileSync(IN_REPO_CJS, 'utf-8')).toBe(readFileSync(PLUGIN_CJS, 'utf-8'));
-  });
-
-  it('keeps the CJS NPX_REF in parity with the TS source', () => {
-    const cjs = cjsRequire(IN_REPO_CJS) as { NPX_REF: string };
-    expect(cjs.NPX_REF).toBe(NPX_REF);
+  it('standardizes the invocation ref on gitnexus@latest', () => {
     expect(cjs.NPX_REF).toBe('gitnexus@latest');
   });
 
-  it('emits the same analyze command as the TS source for every forced mode', () => {
-    const cjs = cjsRequire(IN_REPO_CJS) as {
-      formatAnalyzeCommand: (o?: { embeddings?: boolean }) => string;
-    };
-    for (const mode of ['gitnexus', 'pnpm', 'npx'] as const) {
-      for (const embeddings of [false, true]) {
-        process.env.GITNEXUS_INVOCATION = mode;
-        resetInvocationStateForTests();
-        const opts = embeddings ? { embeddings: true } : undefined;
-        expect(cjs.formatAnalyzeCommand(opts)).toBe(formatAnalyzeCommand(opts));
-      }
+  it('formats each forced mode, with and without --embeddings', () => {
+    const cases = [
+      ['gitnexus', 'gitnexus analyze', 'gitnexus analyze --embeddings'],
+      ['pnpm', `pnpm dlx ${cjs.NPX_REF} analyze`, `pnpm dlx ${cjs.NPX_REF} analyze --embeddings`],
+      ['npx', `npx ${cjs.NPX_REF} analyze`, `npx ${cjs.NPX_REF} analyze --embeddings`],
+    ] as const;
+    for (const [mode, plain, withEmbeddings] of cases) {
+      process.env.GITNEXUS_INVOCATION = mode;
+      expect(cjs.formatAnalyzeCommand()).toBe(plain);
+      expect(cjs.formatAnalyzeCommand({ embeddings: true })).toBe(withEmbeddings);
     }
   });
 
-  it('keeps the Windows shim regex in parity with the TS source', () => {
-    const tsRe = extractShimRegex(readFileSync(TS_SOURCE, 'utf-8'));
-    const cjsRe = extractShimRegex(readFileSync(IN_REPO_CJS, 'utf-8'));
-    expect(tsRe).toBeDefined();
-    expect(cjsRe).toBe(tsRe);
+  it('prefers gitnexus, then pnpm, then npx (injected probe)', () => {
+    expect(cjs.resolveInvocationMode(() => '/usr/local/bin/gitnexus')).toBe('gitnexus');
+    expect(cjs.resolveInvocationMode((c) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null))).toBe(
+      'pnpm',
+    );
+    expect(cjs.resolveInvocationMode(() => null)).toBe('npx');
+  });
+
+  it('lets GITNEXUS_INVOCATION override the probe without consulting it', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    const probe = vi.fn(() => '/usr/local/bin/gitnexus');
+    expect(cjs.resolveInvocationMode(probe)).toBe('pnpm');
+    expect(probe).not.toHaveBeenCalled();
   });
 });
 
-describe('resolveGitnexusBin Windows shim detection', () => {
-  let platformDescriptor: PropertyDescriptor | undefined;
-
-  beforeEach(() => {
-    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+describe('pickPathMatch — Windows global-shim detection', () => {
+  it('detects a .exe-only shim (Volta/scoop)', () => {
+    expect(
+      cjs.pickPathMatch('C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe\r\n', {
+        isWin: true,
+        gitnexusWrapper: true,
+      }),
+    ).toBe('C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe');
   });
 
-  afterEach(() => {
-    if (platformDescriptor) {
-      Object.defineProperty(process, 'platform', platformDescriptor);
-    }
-    vi.clearAllMocks();
-    delete process.env.GITNEXUS_INVOCATION;
-    resetInvocationStateForTests();
+  it('detects an extensionless shim', () => {
+    expect(
+      cjs.pickPathMatch('C:\\tools\\gitnexus\r\n', { isWin: true, gitnexusWrapper: true }),
+    ).toBe('C:\\tools\\gitnexus');
   });
 
-  it('detects a .exe-only global shim (Volta/scoop) and yields gitnexus analyze', () => {
-    mockedExec.mockImplementation((_cmd, args) => {
-      if (args[0] === 'gitnexus')
-        return 'C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe\r\n';
-      throw new Error('missing');
+  it('prefers a .cmd over an extensionless sibling', () => {
+    expect(
+      cjs.pickPathMatch('C:\\npm\\gitnexus\r\nC:\\npm\\gitnexus.cmd\r\n', {
+        isWin: true,
+        gitnexusWrapper: true,
+      }),
+    ).toBe('C:\\npm\\gitnexus.cmd');
+  });
+
+  it('strips the CRLF carriage return from the chosen path', () => {
+    const bin = cjs.pickPathMatch('C:\\npm\\gitnexus.cmd\r\n', {
+      isWin: true,
+      gitnexusWrapper: true,
     });
-    expect(resolveGitnexusBin()).toBe('C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe');
-    expect(resolveInvocationMode()).toBe('gitnexus');
-    expect(formatAnalyzeCommand()).toBe('gitnexus analyze');
-  });
-
-  it('detects an extensionless global shim', () => {
-    mockedExec.mockImplementation((_cmd, args) => {
-      if (args[0] === 'gitnexus') return 'C:\\tools\\gitnexus\r\n';
-      throw new Error('missing');
-    });
-    expect(resolveGitnexusBin()).toBe('C:\\tools\\gitnexus');
-    expect(resolveInvocationMode()).toBe('gitnexus');
-  });
-
-  it('still detects a .cmd shim and prefers it over an extensionless sibling', () => {
-    mockedExec.mockImplementation((_cmd, args) => {
-      if (args[0] === 'gitnexus') return 'C:\\npm\\gitnexus\r\nC:\\npm\\gitnexus.cmd\r\n';
-      throw new Error('missing');
-    });
-    expect(resolveGitnexusBin()).toBe('C:\\npm\\gitnexus.cmd');
-  });
-
-  it('strips the CRLF carriage return from where output', () => {
-    mockedExec.mockImplementation((_cmd, args) => {
-      if (args[0] === 'gitnexus') return 'C:\\npm\\gitnexus.cmd\r\n';
-      throw new Error('missing');
-    });
-    const bin = resolveGitnexusBin();
     expect(bin).not.toMatch(/\r/);
     expect(bin).toBe('C:\\npm\\gitnexus.cmd');
+  });
+
+  it('returns the first hit on non-Windows / non-wrapper lookups, null on empty', () => {
+    expect(cjs.pickPathMatch('/usr/local/bin/pnpm\n', { isWin: false })).toBe(
+      '/usr/local/bin/pnpm',
+    );
+    expect(cjs.pickPathMatch('', { isWin: true, gitnexusWrapper: true })).toBeNull();
+  });
+});
+
+describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.GITNEXUS_INVOCATION;
+  });
+
+  it('parses the npm major version', () => {
+    mockedExec.mockReturnValue('11.5.2\n');
+    expect(getNpmMajorVersion()).toBe(11);
+  });
+
+  it('warns on the npm 11+ npx path', () => {
+    process.env.GITNEXUS_INVOCATION = 'npx';
+    mockedExec.mockReturnValue('11.0.0\n');
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(String(write.mock.calls[0]?.[0])).toContain('node.target is null');
+    expect(String(write.mock.calls[0]?.[0])).toContain(`pnpm dlx ${NPX_REF}`);
+    write.mockRestore();
+  });
+
+  it('does not warn when a global gitnexus or pnpm is preferred', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    mockedExec.mockReturnValue('11.0.0\n');
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it('does not warn when npm is older than 11', () => {
+    process.env.GITNEXUS_INVOCATION = 'npx';
+    mockedExec.mockReturnValue('10.9.0\n');
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it('does not warn when npm is absent', () => {
+    process.env.GITNEXUS_INVOCATION = 'npx';
+    mockedExec.mockImplementation(() => {
+      throw new Error('missing');
+    });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+});
+
+describe('resolve-analyze-cmd.cjs parity', () => {
+  it('keeps the two CJS hook copies byte-identical', () => {
+    expect(readFileSync(CANONICAL_CJS, 'utf-8')).toBe(readFileSync(PLUGIN_CJS, 'utf-8'));
   });
 });
 
