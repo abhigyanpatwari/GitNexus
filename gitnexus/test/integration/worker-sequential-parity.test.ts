@@ -32,9 +32,9 @@ const runMode = (mode: 'worker' | 'sequential'): Promise<PipelineResult> =>
     workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
     ...(mode === 'worker'
       ? { workerPoolSize: 2 }
-      : // skipWorkers forces the sequential path; pairing it with an explicit
-        // allowSequentialFallback keeps the run from being gated by the #1741
-        // fail-fast (which only applies to a *failed* explicit pool anyway).
+      : // skipWorkers is the explicit "parse sequentially" path (the supported
+        // way to opt out of workers, equivalent to --workers 0). It never
+        // creates a pool, so the #1741 startup fail-fast does not apply.
         { skipWorkers: true }),
   });
 

@@ -584,12 +584,6 @@ export interface AnalyzeOptions {
   walCheckpointThreshold?: string;
   /** Parse worker pool size; 0 disables workers (sequential fallback). */
   workers?: string;
-  /**
-   * Allow degrading to sequential parsing when an explicitly-sized worker
-   * pool (`--workers <N>`) fails to start. Without this, a total worker
-   * startup failure is fatal (see #1741) rather than silently slow.
-   */
-  allowSequentialFallback?: boolean;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
@@ -972,10 +966,6 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
         // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
         // env / auto-formula fallback inside the pipeline.
         workerPoolSize,
-        // When --workers was explicit and the pool fails to start, fail fast
-        // by default instead of silently degrading to sequential (#1741).
-        // --allow-sequential-fallback opts back into the degrade-loudly path.
-        allowSequentialFallback: options?.allowSequentialFallback,
       },
       {
         onProgress: (_phase, percent, message) => {

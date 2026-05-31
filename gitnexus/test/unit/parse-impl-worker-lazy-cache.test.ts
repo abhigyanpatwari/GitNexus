@@ -203,54 +203,7 @@ describe('parse-impl worker pool lazy startup', () => {
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'miss')).toBe(true);
   });
 
-  it('falls back to sequential parsing when initial workers exit before ready (fallback opted in)', async () => {
-    // With --allow-sequential-fallback the degrade path runs even though the
-    // pool was explicitly sized; this exercises the fallback mechanics
-    // (sequential parse + merge + cache behavior). The fail-fast default is
-    // covered by the sibling test below.
-    const rel = 'src/fallback.ts';
-    const content = 'export function fallback() { return 1; }\n';
-    const full = path.join(repoDir, rel);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, content);
-
-    const workerPath = path.join(tempDir, 'exit-before-ready-worker.js');
-    writeExitBeforeReadyWorker(workerPath);
-
-    const parseCache = {
-      version: 'test',
-      entries: new Map<string, ParseWorkerResult[]>(),
-      usedKeys: new Set<string>(),
-    };
-    const chunkHash = computeChunkHash([{ filePath: rel, contentHash: fileContentHash(content) }]);
-
-    const graph = createKnowledgeGraph();
-    const result = await runChunkedParseAndResolve(
-      graph,
-      [{ path: rel, size: fs.statSync(full).size }],
-      [rel],
-      1,
-      repoDir,
-      Date.now(),
-      () => {},
-      {
-        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-        workerUrlForTest: pathToFileURL(workerPath),
-        workerPoolSize: 1,
-        allowSequentialFallback: true,
-        parseCache,
-      },
-    );
-
-    expect(result.usedWorkerPool).toBe(false);
-    expect(parseCache.usedKeys.has(chunkHash)).toBe(true);
-    expect(parseCache.entries.has(chunkHash)).toBe(false);
-    expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'fallback')).toBe(
-      true,
-    );
-  });
-
-  it('fails fast (no silent fallback) when an explicit pool dies and fallback is not allowed (#1741)', async () => {
+  it('fails fast (no silent fallback) when the pool cannot start its workers (#1741)', async () => {
     const rel = 'src/fatal.ts';
     const content = 'export function fatal() { return 1; }\n';
     const full = path.join(repoDir, rel);
@@ -280,11 +233,11 @@ describe('parse-impl worker pool lazy startup', () => {
           workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
           workerUrlForTest: pathToFileURL(workerPath),
           workerPoolSize: 1,
-          // allowSequentialFallback omitted → fail fast
+          // No flag: a total worker-startup failure always fails fast now.
           parseCache,
         },
       ),
-    ).rejects.toThrow(/every worker crashed during top-of-script init/i);
+    ).rejects.toThrow(/Worker pool failed to start/i);
 
     // The fatal path did not silently parse sequentially behind the user's back.
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'fatal')).toBe(false);

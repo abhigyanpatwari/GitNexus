@@ -235,17 +235,33 @@ export class WorkerPoolDispatchError extends Error {
   }
 }
 
+/**
+ * How a total worker-startup failure was classified by the pool's bounded
+ * self-heal (#1741). Lets the caller render an accurate cause without
+ * inspecting any operator flag:
+ *  - 'deterministic-startup': ≥2 fresh workers crashed with the SAME signature
+ *    before any reached ready (e.g. a missing native binding) — retrying is
+ *    futile, so the pool short-circuited fast.
+ *  - 'transient-exhausted': workers crashed variably and exhausted the bounded
+ *    startup retry budget without ever reaching ready.
+ */
+export type StartupCrashClass = 'deterministic-startup' | 'transient-exhausted';
+
 export class WorkerPoolInitializationError extends WorkerPoolDispatchError {
   readonly readinessFailures: readonly string[];
+  /** Pool's automatic classification of the startup crash (#1741). */
+  readonly crashClass: StartupCrashClass;
 
   constructor(
     message: string,
     quarantinedPaths: readonly string[] = [],
     readinessFailures: readonly string[] = [],
+    crashClass: StartupCrashClass = 'transient-exhausted',
   ) {
     super(message, quarantinedPaths);
     this.name = 'WorkerPoolInitializationError';
     this.readinessFailures = readinessFailures;
+    this.crashClass = crashClass;
   }
 }
 
@@ -330,6 +346,76 @@ const WORKER_READY_TIMEOUT_MS = 5_000;
  * `GITNEXUS_WORKER_POOL_SIZE` or `--workers <N>`.
  */
 const DEFAULT_POOL_SIZE_CAP = 16;
+
+// ── Self-healing startup restart policy (#1741) ──────────────────────────────
+// A worker that crashes during top-of-script init (broken native binding, bad
+// import) is retried a BOUNDED number of times with jittered backoff before
+// its slot is dropped, so a transient blip self-heals with no operator
+// intervention. The bound is the whole point of #1741: recovery must never
+// become a silent, unbounded "stuck" run. When the budget is exhausted (or a
+// deterministic crash-loop is detected), the slot is dropped; if every slot is
+// dropped the first dispatch fails fast with the captured cause.
+/** Retries beyond the first attempt, per slot, to bring a startup worker ready. */
+const STARTUP_RESTART_BUDGET = 2;
+const RESTART_BACKOFF_BASE_MS = 250;
+const RESTART_BACKOFF_CAP_MS = 2_000;
+/**
+ * When this many freshly-spawned workers crash with the SAME crash signature
+ * before ANY worker reaches the `{type:'ready'}` handshake, the failure is
+ * deterministic (the #1741 missing-binding case: every worker prints a
+ * byte-identical native-binding stack). The pool stops retrying immediately
+ * instead of burning every slot's budget, and fails fast with the cause.
+ */
+const DETERMINISTIC_STARTUP_FINGERPRINT_THRESHOLD = 2;
+
+/**
+ * Capped exponential backoff with FULL jitter (AWS "Exponential Backoff And
+ * Jitter"): random(0, min(CAP, BASE·2^attempt)). Full jitter de-synchronizes
+ * the N workers that crash near-simultaneously on a shared startup fault so
+ * their respawns don't re-storm in lockstep (Google SRE thundering herd).
+ */
+function startupBackoffMs(attempt: number): number {
+  const ceil = Math.min(RESTART_BACKOFF_CAP_MS, RESTART_BACKOFF_BASE_MS * 2 ** attempt);
+  return Math.floor(Math.random() * (ceil + 1));
+}
+
+/**
+ * Sleep that never wedges shutdown: the timer is `unref`'d so a pending backoff
+ * can't keep the event loop alive, and `aborted()` is re-checked on wake so a
+ * `terminate()` during startup short-circuits the retry instead of stalling
+ * for the backoff duration.
+ */
+function abortableSleep(ms: number, aborted: () => boolean): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (ms <= 0 || aborted()) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+}
+
+/**
+ * Normalize a worker crash message into a stable signature so two instances of
+ * the SAME deterministic crash compare equal while unrelated crashes don't.
+ * Strips hex addresses, digit runs (pids / line numbers / timestamps) and
+ * absolute paths. Best-effort by design: the deterministic classification's
+ * correctness rests on the STRUCTURAL signal (zero workers ever ready + startup
+ * budget exhausted), so an imperfect signature only changes how fast the
+ * short-circuit fires, never whether the pool ultimately fails fast. Even a
+ * stderr-less crash normalizes its "exited with code N" message to a stable
+ * key, so the empty-stderr timing case still groups.
+ */
+function crashSignature(message: string): string {
+  return message
+    .replace(/0x[0-9a-fA-F]+/g, '0xADDR')
+    .replace(/[0-9]+/g, 'N')
+    .replace(/(?:\/[^\s:'"]+)+/g, '/PATH')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+}
 
 function positiveInteger(value: unknown): number | undefined {
   const parsed = typeof value === 'string' ? Number(value) : value;
@@ -718,6 +804,9 @@ export const createWorkerPool = (
   const slotGenerations: number[] = new Array(size).fill(0);
   let poolBroken = false;
   let poolFailure: Error | undefined;
+  // Set by `terminate()` (below). Also read by the self-healing startup loop so
+  // a terminate during startup aborts pending backoff/retries (#1741).
+  let terminated = false;
 
   const terminateTrackedWorkers = async (
     liveWorkers: readonly (Worker | undefined)[],
@@ -735,40 +824,85 @@ export const createWorkerPool = (
     activeSlots.add(i);
   }
 
-  // Symmetrize the readiness gate across initial and replacement spawn
-  // paths. `replaceWorker` already awaits `waitForWorkerReady` per
-  // replacement so an init-crashing worker is dropped before dispatch
-  // sees it. The initial-spawn loop above didn't — a worker whose
-  // top-of-script init crashes (failed tree-sitter native binding,
-  // missing dependency) would only be noticed at the first dispatch's
-  // 30s idle timeout, vs the 5s WORKER_READY_TIMEOUT_MS bound that
-  // replacements enjoy.
+  // ── Self-healing startup readiness (#1741) ────────────────────────────────
+  // Bring every initial slot to readiness with a BOUNDED, jittered retry loop
+  // instead of dropping it on the first crash. This symmetrizes the gate with
+  // the runtime `replaceWorker` path (which already respawns a crashed slot),
+  // and adds genuine self-healing at startup:
   //
-  // The promise below settles every initial slot in parallel and drops
-  // unready slots from `activeSlots` before any dispatch can fire.
-  // `dispatch` awaits it via `initialReadyGate` on first invocation.
-  // Wrapped in a single `Promise.allSettled` so a slow worker doesn't
-  // block ready workers from being usable — first dispatch waits for
-  // all slots' verdicts (good or bad).
-  const initialReadyGate: Promise<void> = Promise.allSettled(
-    workers.map(async (w, i) => {
-      if (!w) return;
+  //  - TRANSIENT crash (a one-off OS hiccup / fork throttle): the slot is
+  //    respawned after jittered backoff and retried, up to STARTUP_RESTART_BUDGET
+  //    — so a blip heals itself with no operator intervention.
+  //  - DETERMINISTIC crash-loop (every worker dies with the SAME signature
+  //    before any reaches ready — the #1741 missing-binding case): detected via
+  //    `crashSignature` and short-circuited immediately, so the pool gives up in
+  //    ~1s rather than burning every slot's budget.
+  //
+  // When the loop exhausts, the slot is dropped from `activeSlots`. If EVERY
+  // slot is dropped, the first dispatch throws WorkerPoolInitializationError
+  // carrying the captured crash cause + classification — never a silent hang.
+  // Correctness of the deterministic short-circuit rests on the STRUCTURAL
+  // signal (zero workers ever ready + budget exhausted), not on signature
+  // matching alone: a missed match only costs a few seconds of extra retrying.
+  const startupSignatures = new Map<string, number>();
+  let deterministicStartupDetected = false;
+  let anyWorkerReachedReady = false;
+
+  const bringSlotReady = async (i: number): Promise<void> => {
+    for (let attempt = 0; ; attempt++) {
+      const worker = workers[i];
+      if (!worker) return; // terminated mid-startup
       try {
-        await waitForWorkerReady(w);
+        await waitForWorkerReady(worker);
+        anyWorkerReachedReady = true;
+        return; // ready — slot stays in activeSlots
       } catch (err) {
-        initialReadinessFailures.push(err instanceof Error ? err.message : String(err));
-        logger.warn(
-          {
-            workerIndex: i,
-            err: err instanceof Error ? err.message : String(err),
-          },
-          `Worker ${i} did not report ready on initial spawn; dropping slot.`,
-        );
-        await w.terminate().catch(() => undefined);
+        const msg = err instanceof Error ? err.message : String(err);
+        const sig = crashSignature(msg);
+        const seen = (startupSignatures.get(sig) ?? 0) + 1;
+        startupSignatures.set(sig, seen);
+        if (!anyWorkerReachedReady && seen >= DETERMINISTIC_STARTUP_FINGERPRINT_THRESHOLD) {
+          deterministicStartupDetected = true;
+        }
+        await worker.terminate().catch(() => undefined);
         workers[i] = undefined;
-        activeSlots.delete(i);
+
+        const giveUp =
+          terminated || deterministicStartupDetected || attempt >= STARTUP_RESTART_BUDGET;
+        if (giveUp) {
+          initialReadinessFailures.push(msg);
+          activeSlots.delete(i);
+          logger.warn(
+            { workerIndex: i, attempt, err: msg, deterministic: deterministicStartupDetected },
+            deterministicStartupDetected
+              ? `Worker ${i} hit a deterministic startup crash-loop; dropping slot without further retries.`
+              : `Worker ${i} did not report ready after ${attempt + 1} attempt(s); dropping slot.`,
+          );
+          return;
+        }
+        // Transient: jittered backoff, then respawn the slot and retry.
+        await abortableSleep(
+          startupBackoffMs(attempt),
+          () => terminated || deterministicStartupDetected,
+        );
+        if (terminated || deterministicStartupDetected) {
+          initialReadinessFailures.push(msg);
+          activeSlots.delete(i);
+          return;
+        }
+        logger.warn(
+          { workerIndex: i, attempt: attempt + 1 },
+          `Worker ${i} crashed during startup; respawning slot (self-heal attempt ${attempt + 1}/${STARTUP_RESTART_BUDGET}).`,
+        );
+        workers[i] = spawnAndCapture(workerUrl);
       }
-    }),
+    }
+  };
+
+  // First dispatch awaits this; it settles every slot's bounded retry loop in
+  // parallel and drops the unrecoverable ones before any dispatch can fire.
+  const initialReadyGate: Promise<void> = Promise.allSettled(
+    workers.map((_, i) => bringSlotReady(i)),
   ).then(() => undefined);
 
   const dispatch = async <TInput, TResult>(
@@ -798,10 +932,17 @@ export const createWorkerPool = (
         initialReadinessFailures.length > 0
           ? ` after initial ready handshake: ${initialReadinessFailures.join('; ')}`
           : '';
+      // The bounded self-heal exhausted (or short-circuited a deterministic
+      // crash-loop). Classify automatically so the caller renders the real
+      // cause without consulting any operator flag (#1741).
+      const crashClass: StartupCrashClass = deterministicStartupDetected
+        ? 'deterministic-startup'
+        : 'transient-exhausted';
       throw new WorkerPoolInitializationError(
         `Worker pool has no active workers${detail}`,
         [],
         initialReadinessFailures,
+        crashClass,
       );
     }
 
@@ -1668,7 +1809,6 @@ export const createWorkerPool = (
     });
   };
 
-  let terminated = false;
   const terminate = async (): Promise<void> => {
     terminated = true;
     // `.catch(() => undefined)` per-worker matches every other terminate

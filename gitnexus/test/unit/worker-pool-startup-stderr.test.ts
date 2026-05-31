@@ -48,6 +48,19 @@ class CrashingWorker extends EventEmitter {
   }
 }
 
+/** Worker double that starts cleanly: reports `{type:'ready'}` and never dies. */
+class ReadyWorker extends EventEmitter {
+  readonly stderr = new EventEmitter();
+  constructor() {
+    super();
+    queueMicrotask(() => this.emit('message', { type: 'ready' }));
+  }
+  postMessage(): void {}
+  async terminate(): Promise<number> {
+    return 0;
+  }
+}
+
 let tempDir: string;
 let workerUrl: URL;
 let stderrSpy: ReturnType<typeof vi.spyOn>;
@@ -88,6 +101,55 @@ describe('worker pool — startup stderr surfacing (#1741)', () => {
     expect(joined).toContain('tree-sitter-c-sharp');
     // And the captured stderr was teed to process.stderr (visibility preserved).
     expect(stderrSpy).toHaveBeenCalled();
+
+    await pool.terminate().catch(() => undefined);
+  });
+});
+
+describe('worker pool — startup self-healing (#1741)', () => {
+  it('self-heals a transient startup crash: respawns the slot and recovers', async () => {
+    let calls = 0;
+    const pool = createWorkerPool(workerUrl, 1, {
+      // First spawn crashes during init; the bounded retry respawns the slot
+      // and the second spawn comes up clean — recovery with no operator action.
+      workerFactory: () => {
+        calls++;
+        return (calls === 1 ? new CrashingWorker() : new ReadyWorker()) as unknown as Worker;
+      },
+    });
+
+    // Empty dispatch forces the initial-ready gate to settle without needing
+    // the full sub-batch protocol.
+    await pool.dispatch([]);
+
+    expect(calls).toBeGreaterThanOrEqual(2); // crashed once, respawned
+    expect(pool.getStats().activeSlots).toBe(1); // slot recovered and is live
+    expect(pool.getStats().poolBroken).toBe(false);
+
+    await pool.terminate().catch(() => undefined);
+  });
+
+  it('fails fast on a deterministic crash-loop without burning every slot budget', async () => {
+    let calls = 0;
+    const pool = createWorkerPool(workerUrl, 3, {
+      // Every worker crashes identically — a deterministic fault (the #1741
+      // missing-binding case). Retrying cannot help.
+      workerFactory: () => {
+        calls++;
+        return new CrashingWorker() as unknown as Worker;
+      },
+    });
+
+    const err = await pool
+      .dispatch([{ path: 'a.ts', content: 'x' }])
+      .catch((e: unknown) => e as WorkerPoolInitializationError);
+
+    expect(err).toBeInstanceOf(WorkerPoolInitializationError);
+    expect(err.crashClass).toBe('deterministic-startup');
+    // No short-circuit would mean 3 slots × (1 + STARTUP_RESTART_BUDGET=2) = 9
+    // spawns; deterministic detection (≥2 identical signatures) gives up well
+    // before that, so the fast-fail never approaches the full budget.
+    expect(calls).toBeLessThan(9);
 
     await pool.terminate().catch(() => undefined);
   });
