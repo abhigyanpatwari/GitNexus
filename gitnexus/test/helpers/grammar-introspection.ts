@@ -176,6 +176,20 @@ export function isNodeTypeError(err: unknown): boolean {
   return err instanceof Error && /TSQueryErrorNodeType/.test(err.message);
 }
 
+/**
+ * True when the thrown object is tree-sitter's "field invalid for this node"
+ * query error. `TSQueryErrorStructure` is thrown when a field exists on other
+ * nodes but not on the queried one (the common dead-field case, e.g.
+ * `(parameter pattern: (_))`); `TSQueryErrorField` is thrown for a field name
+ * unknown to the grammar entirely. Both mean the field is dead on that node.
+ * `TSQueryErrorNodeType` is deliberately NOT a field error — it means the node
+ * type is absent in this grammar, which `probeField` reports as `unavailable`
+ * (abstain), never `dead`.
+ */
+export function isFieldError(err: unknown): boolean {
+  return err instanceof Error && /TSQueryError(Structure|Field)/.test(err.message);
+}
+
 /** Escape a string so it is safe inside a `"..."` anonymous-node query literal. */
 function escapeAnonymous(literal: string): string {
   return literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -232,6 +246,44 @@ export function probeNodeType(
 }
 
 /**
+ * Field-existence oracle — the node-scoped analogue of `probeNodeType`. Compiles
+ * a field-bearing probe query `(<nodeType> <field>: (_)) @_` against the live
+ * grammar(s) for `language`:
+ *   - compiles on ANY grammar → `valid`
+ *   - rejected as a field/structure error on a grammar that HAS the node, and
+ *     never accepted → `dead`
+ *   - the node type is absent in every probed grammar (only `TSQueryErrorNodeType`),
+ *     or no grammar loads → `unavailable` (abstain — never `dead`, so multi-language
+ *     valid-if-any can defer to the grammar that actually emits the node)
+ *
+ * Conservative-toward-valid: supertype-typed fields make some structurally-wrong
+ * field queries compile, so the probe can return `valid` for a semantically wrong
+ * field. That is the sound direction — false negatives only, never a false
+ * positive that would block CI on correct code.
+ */
+export function probeField(
+  language: SupportedLanguages,
+  nodeType: string,
+  field: string,
+): 'valid' | 'dead' | 'unavailable' {
+  const grammars = grammarsFor(language);
+  if (grammars.length === 0) return 'unavailable';
+
+  const form = `(${nodeType} ${field}: (_)) @_`;
+  let sawFieldDead = false;
+  for (const grammar of grammars) {
+    try {
+      new Parser.Query(grammar as ConstructorParameters<typeof Parser.Query>[0], form);
+      return 'valid';
+    } catch (err) {
+      if (isFieldError(err)) sawFieldDead = true;
+      // TSQueryErrorNodeType (node absent here) or any other error → abstain
+    }
+  }
+  return sawFieldDead ? 'dead' : 'unavailable';
+}
+
+/**
  * Combined check used by the gate: fast membership first, authoritative live
  * probe only for literals the static JSON does not list. Returns `valid`,
  * `dead`, or `unavailable`.
@@ -246,9 +298,12 @@ export function validateNodeType(
 }
 
 /**
- * Field-name validation. Node-scoped when the receiver node type is known and
- * present in the model; otherwise a sound global existence check. Returns
- * `unavailable` when the model could not be loaded.
+ * Field-name validation. Node-scoped when `receiverNodeType` is given:
+ * membership hit is authoritative, and a miss falls through to the live
+ * `probeField` rather than declaring `dead` — node-types.json is not a sound
+ * negative oracle for fields (it can under-report). Without a receiver it is a
+ * sound global existence check. Returns `unavailable` when the model could not
+ * be loaded. See KTD1.
  */
 export function validateField(
   model: GrammarModel | null,
@@ -258,7 +313,8 @@ export function validateField(
   if (!model) return 'unavailable';
   if (receiverNodeType) {
     const scoped = model.fieldsByNode.get(receiverNodeType);
-    if (scoped) return scoped.has(field) ? 'valid' : 'dead';
+    if (scoped && scoped.has(field)) return 'valid';
+    return probeField(model.language, receiverNodeType, field);
   }
   return model.allFields.has(field) ? 'valid' : 'dead';
 }

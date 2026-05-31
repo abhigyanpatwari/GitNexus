@@ -9,9 +9,11 @@ import {
   GATED_LANGUAGES,
   loadGrammarModel,
   probeNodeType,
+  probeField,
   validateNodeType,
   validateField,
   isNodeTypeError,
+  isFieldError,
 } from '../helpers/grammar-introspection.js';
 
 describe('grammar-introspection helper', () => {
@@ -109,6 +111,78 @@ describe('grammar-introspection helper', () => {
       const model = loadGrammarModel(SupportedLanguages.Python);
       expect(validateField(model, 'name', 'function_definition')).toBe('valid');
       expect(validateField(model, 'nonexistent_field_xyz', 'function_definition')).toBe('dead');
+    });
+
+    it('rescues a JSON-under-reported / supertype-permissive field via the probe (not a false positive)', () => {
+      // C# `parameter` has no `pattern` field (TSQueryErrorStructure), but
+      // `binary_expression` accepts `pattern` through its supertype-typed slots,
+      // so the probe compiles and validateField must NOT flag it dead. This pins
+      // the conservative-toward-valid direction: a membership miss falls through
+      // to the probe, never straight to dead.
+      if (!isLanguageAvailable(SupportedLanguages.CSharp)) return;
+      const model = loadGrammarModel(SupportedLanguages.CSharp);
+      expect(validateField(model, 'pattern', 'parameter')).toBe('dead'); // structurally impossible
+      expect(validateField(model, 'pattern', 'binary_expression')).toBe('valid'); // probe-rescued
+    });
+  });
+
+  describe('probeField — conservative node-scoped field oracle', () => {
+    it('classifies a structurally-impossible field as dead (C# parameter/pattern)', () => {
+      if (!isLanguageAvailable(SupportedLanguages.CSharp)) return;
+      // (parameter pattern: (_)) throws TSQueryErrorStructure
+      expect(probeField(SupportedLanguages.CSharp, 'parameter', 'pattern')).toBe('dead');
+      // an unknown field name throws TSQueryErrorField
+      expect(probeField(SupportedLanguages.CSharp, 'parameter', 'total_garbage_field')).toBe('dead');
+      // a real field compiles
+      expect(probeField(SupportedLanguages.CSharp, 'parameter', 'type')).toBe('valid');
+    });
+
+    it('returns unavailable (not dead) when the node type is absent in the grammar', () => {
+      if (!isLanguageAvailable(SupportedLanguages.Java)) return;
+      // `parameter` is not a Java node (Java uses `formal_parameter`) → NodeType error
+      // → unavailable, so multi-language ANY-semantics can defer to the right grammar.
+      expect(probeField(SupportedLanguages.Java, 'parameter', 'name')).toBe('unavailable');
+    });
+
+    it('is conservative-toward-valid for supertype-typed fields (never false-positive)', () => {
+      if (!isLanguageAvailable(SupportedLanguages.CSharp)) return;
+      // `binary_expression` has no `pattern` field, but its supertype-typed slots
+      // make the query compile → valid. The probe errs toward valid by design.
+      expect(probeField(SupportedLanguages.CSharp, 'binary_expression', 'pattern')).toBe('valid');
+    });
+
+    it('never throws for any gated language', () => {
+      for (const lang of GATED_LANGUAGES) {
+        expect(() => probeField(lang, 'some_node', 'some_field')).not.toThrow();
+      }
+    });
+  });
+
+  describe('isFieldError — classifier self-test', () => {
+    it('matches TSQueryErrorStructure and TSQueryErrorField but not NodeType', () => {
+      if (!isLanguageAvailable(SupportedLanguages.CSharp)) return;
+      const grammar = getLanguageGrammar(SupportedLanguages.CSharp) as ConstructorParameters<
+        typeof Parser.Query
+      >[0];
+      const grab = (q: string): unknown => {
+        try {
+          new Parser.Query(grammar, q);
+          return undefined;
+        } catch (e) {
+          return e;
+        }
+      };
+      const structureErr = grab('(parameter pattern: (_)) @_'); // TSQueryErrorStructure
+      const fieldErr = grab('(parameter total_garbage_field: (_)) @_'); // TSQueryErrorField
+      const nodeTypeErr = grab('(nonexistent_node_xyz) @_'); // TSQueryErrorNodeType
+      expect(structureErr).toBeDefined();
+      expect(fieldErr).toBeDefined();
+      expect(nodeTypeErr).toBeDefined();
+      expect(isFieldError(structureErr)).toBe(true);
+      expect(isFieldError(fieldErr)).toBe(true);
+      // a node-type error is NOT a field error (it routes to `unavailable`, not `dead`)
+      expect(isFieldError(nodeTypeErr)).toBe(false);
+      expect(isNodeTypeError(nodeTypeErr)).toBe(true);
     });
   });
 });
