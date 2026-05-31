@@ -492,11 +492,38 @@ export function resolveWorkerPoolOptions(
 }
 
 /**
+ * The pool size requested via the `GITNEXUS_WORKER_POOL_SIZE` env var, or
+ * `undefined` when unset, empty/whitespace, or invalid. Module-internal sizing
+ * reader consumed by {@link resolveAutoPoolSize} (the env override) and
+ * {@link workerPoolDisabledByEnv} (the sequential-routing gate). Reads only —
+ * never mutates `process.env`. Empty/whitespace is treated as *unset* (falls
+ * through to the auto formula), not as 0 — an empty assignment (`export
+ * GITNEXUS_WORKER_POOL_SIZE=`) is an accident, not a request for zero workers;
+ * only a literal `0` disables the pool.
+ */
+function envWorkerPoolSize(): number | undefined {
+  const raw = process.env.GITNEXUS_WORKER_POOL_SIZE;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return nonNegativeInteger(raw);
+}
+
+/**
+ * True when the operator explicitly disabled the worker pool via
+ * `GITNEXUS_WORKER_POOL_SIZE=0` — the env-channel equivalent of `--workers 0`.
+ * The parse phase's `shouldUseWorkers` gate consults this (only when no
+ * explicit `--workers <N>` was passed) to route to sequential parsing instead
+ * of constructing a useless size-0 pool that would fail fast on a phantom
+ * crash (#1741). An explicit positive `--workers N` always wins.
+ */
+export function workerPoolDisabledByEnv(): boolean {
+  return envWorkerPoolSize() === 0;
+}
+
+/**
  * Resolve the auto-default worker pool size when no explicit `poolSize`
  * arg is passed to `createWorkerPool`. Precedence:
  *
- * 1. `GITNEXUS_WORKER_POOL_SIZE` env var (operator override; set by
- *    `--workers <N>` on the CLI).
+ * 1. `GITNEXUS_WORKER_POOL_SIZE` env var (operator override).
  * 2. `os.cpus().length - 1`, clamped to `[1, DEFAULT_POOL_SIZE_CAP]`.
  *
  * The cap exists because past ~16 workers the main-thread merge /
@@ -508,18 +535,6 @@ export function resolveWorkerPoolOptions(
  * directly — pass an explicit `poolSize` to `createWorkerPool` or rely
  * on the env / default.
  */
-/**
- * The pool size explicitly requested via the `GITNEXUS_WORKER_POOL_SIZE`
- * env var, or `undefined` when unset/invalid. This is the env-channel
- * equivalent of the `--workers <N>` CLI flag — both express a deliberate
- * operator-chosen pool size. The fail-fast gate in parse-impl uses it so an
- * env-sized pool is treated as operator-explicit too; without it, env-channel
- * users reproduced the #1741 silent degrade-to-sequential on a startup crash.
- */
-export function envWorkerPoolSize(): number | undefined {
-  return nonNegativeInteger(process.env.GITNEXUS_WORKER_POOL_SIZE);
-}
-
 export function resolveAutoPoolSize(): number {
   const envOverride = envWorkerPoolSize();
   if (envOverride !== undefined) return envOverride;

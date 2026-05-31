@@ -49,7 +49,11 @@ import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared'
 import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { createWorkerPool, WorkerPoolInitializationError } from '../workers/worker-pool.js';
+import {
+  createWorkerPool,
+  workerPoolDisabledByEnv,
+  WorkerPoolInitializationError,
+} from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
@@ -331,10 +335,27 @@ export async function runChunkedParseAndResolve(
   // intentionally NOT created before parse-cache lookup: a warm-cache
   // all-hit run should replay cached worker output without loading
   // parse-worker.js or any tree-sitter/N-API native bindings.
+  // `--workers 0` (workerPoolSize === 0) and `GITNEXUS_WORKER_POOL_SIZE=0` both
+  // mean "no pool, parse sequentially". The env channel is consulted ONLY when
+  // no explicit `--workers <N>` was given, so an explicit positive size always
+  // wins over an ambient env=0 (#1741). Without this, env=0 built a size-0 pool
+  // that failed fast with a fabricated "retry budget exhausted" crash.
+  const envDisablesWorkers = options?.workerPoolSize === undefined && workerPoolDisabledByEnv();
+  const meetsWorkerThreshold =
+    totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS;
+  // Log only when env=0 actually skips a pool we'd otherwise have used, so the
+  // undocumented (possibly accidental) env=0 case is observable instead of a
+  // silent degrade — small repos go sequential anyway and need no notice.
+  if (envDisablesWorkers && meetsWorkerThreshold) {
+    logger.warn(
+      'GITNEXUS_WORKER_POOL_SIZE=0 → parsing sequentially; unset it or pass --workers <N> to use the worker pool.',
+    );
+  }
   const shouldUseWorkers =
     !options?.skipWorkers &&
     options?.workerPoolSize !== 0 &&
-    (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS);
+    !envDisablesWorkers &&
+    meetsWorkerThreshold;
   let workerPool: WorkerPool | undefined;
   const getOrCreateWorkerPool = (): WorkerPool | undefined => {
     if (!shouldUseWorkers) return undefined;

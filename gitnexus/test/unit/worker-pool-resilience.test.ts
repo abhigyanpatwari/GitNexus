@@ -9,6 +9,7 @@ import {
   WorkerPoolDispatchError,
   resolveWorkerPoolOptions,
   resolveAutoPoolSize,
+  workerPoolDisabledByEnv,
 } from '../../src/core/ingestion/workers/worker-pool.js';
 /**
  * The pool now sends sub-batch dispatches via native `worker.postMessage`
@@ -184,6 +185,8 @@ describe('worker pool resilience', () => {
       // from a circuit-breaker trip. Fresh pool has not been
       // terminated.
       terminated: false,
+      // #1741: no startup backoff is pending once every slot reached ready.
+      pendingStartupTimers: 0,
       // U12: every slot starts at generation 0; no respawns yet on a
       // fresh pool. Per-slot zeros (not a single scalar) because each
       // slot tracks its own respawn history independently.
@@ -218,6 +221,8 @@ describe('worker pool resilience', () => {
       poolBroken: false,
       // F16: pool is still alive (just lost a slot); terminated=false.
       terminated: false,
+      // #1741: a runtime death is unrelated to startup backoff timers.
+      pendingStartupTimers: 0,
       // U12: slot 0 was dropped before any successful respawn (budget=0),
       // so its generation stays at 0. Slot 1 never died, also 0.
       slotGenerations: [0, 0],
@@ -642,5 +647,33 @@ describe('resolveAutoPoolSize', () => {
 
   it('returns an integer (never a float)', () => {
     expect(Number.isInteger(resolveAutoPoolSize())).toBe(true);
+  });
+});
+
+describe('workerPoolDisabledByEnv (#1741 — env=0 → sequential signal)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is true only for a literal GITNEXUS_WORKER_POOL_SIZE=0', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '0');
+    expect(workerPoolDisabledByEnv()).toBe(true);
+  });
+
+  it('is false for a positive env size (the pool is used)', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '4');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+  });
+
+  it('treats empty/whitespace as unset (not a disable signal — auto formula applies)', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '   ');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+  });
+
+  it('is false for an invalid value', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', 'abc');
+    expect(workerPoolDisabledByEnv()).toBe(false);
   });
 });
