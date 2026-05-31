@@ -36,9 +36,18 @@ const PLUGIN_CJS = path.resolve(
 );
 
 interface CjsModule {
-  formatAnalyzeCommand: (o?: { embeddings?: boolean }) => string;
+  formatAnalyzeCommand: (
+    o?: { embeddings?: boolean },
+    deps?: { npmMajor?: number | null; pnpmMajor?: number | null },
+  ) => string;
+  formatDocumentationDlxCommand: (args: string, o?: { embeddings?: boolean }) => string;
+  formatPnpmAllowBuildArgs: (
+    o?: { embeddings?: boolean; alwaysAllowBuild?: boolean },
+    deps?: { pnpmMajor?: number | null },
+  ) => string[];
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
+    deps?: { npmMajor?: number | null; pnpmMajor?: number | null },
   ) => 'gitnexus' | 'pnpm' | 'npx';
   pickPathMatch: (
     output: string,
@@ -67,24 +76,60 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   });
 
   it('formats each forced mode, with and without --embeddings', () => {
+    const allow = '--allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter';
+    const allowEmb =
+      '--allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter --allow-build=onnxruntime-node';
     const cases = [
       ['gitnexus', 'gitnexus analyze', 'gitnexus analyze --embeddings'],
-      ['pnpm', `pnpm dlx ${cjs.NPX_REF} analyze`, `pnpm dlx ${cjs.NPX_REF} analyze --embeddings`],
+      [
+        'pnpm',
+        `pnpm dlx ${allow} ${cjs.NPX_REF} analyze`,
+        `pnpm dlx ${allowEmb} ${cjs.NPX_REF} analyze --embeddings`,
+      ],
       ['npx', `npx ${cjs.NPX_REF} analyze`, `npx ${cjs.NPX_REF} analyze --embeddings`],
     ] as const;
     for (const [mode, plain, withEmbeddings] of cases) {
       process.env.GITNEXUS_INVOCATION = mode;
-      expect(cjs.formatAnalyzeCommand()).toBe(plain);
-      expect(cjs.formatAnalyzeCommand({ embeddings: true })).toBe(withEmbeddings);
+      expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 11 })).toBe(plain);
+      expect(cjs.formatAnalyzeCommand({ embeddings: true }, { pnpmMajor: 11 })).toBe(
+        withEmbeddings,
+      );
     }
   });
 
-  it('prefers gitnexus, then pnpm, then npx (injected probe)', () => {
+  it('auto-selects global gitnexus first', () => {
     expect(cjs.resolveInvocationMode(() => '/usr/local/bin/gitnexus')).toBe('gitnexus');
-    expect(cjs.resolveInvocationMode((c) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null))).toBe(
-      'pnpm',
+  });
+
+  it('auto-selects pnpm on npm 11+ when pnpm is on PATH', () => {
+    const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11 })).toBe('pnpm');
+  });
+
+  it('auto-selects npx on npm 10 even when pnpm is on PATH', () => {
+    const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 10 })).toBe('npx');
+  });
+
+  it('auto-selects pnpm when npm is absent but pnpm is on PATH', () => {
+    const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null })).toBe('pnpm');
+  });
+
+  it('falls back to npx when neither global gitnexus nor pnpm is available', () => {
+    expect(cjs.resolveInvocationMode(() => null, { npmMajor: 11 })).toBe('npx');
+  });
+
+  it('omits --allow-build on pnpm 9 (scripts run by default)', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    expect(cjs.formatAnalyzeCommand(undefined, { pnpmMajor: 9 })).toBe(
+      `pnpm dlx ${cjs.NPX_REF} analyze`,
     );
-    expect(cjs.resolveInvocationMode(() => null)).toBe('npx');
+  });
+
+  it('formatDocumentationDlxCommand always includes allow-build for committed docs', () => {
+    expect(cjs.formatDocumentationDlxCommand('analyze')).toContain('--allow-build=@ladybugdb/core');
+    expect(cjs.formatDocumentationDlxCommand('analyze')).toContain('gitnexus@latest analyze');
   });
 
   it('lets GITNEXUS_INVOCATION override the probe without consulting it', () => {
@@ -178,7 +223,8 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
     warnIfNpm11NpxRisk();
     expect(write).toHaveBeenCalledTimes(1);
     expect(String(write.mock.calls[0]?.[0])).toContain('node.target is null');
-    expect(String(write.mock.calls[0]?.[0])).toContain(`pnpm dlx ${NPX_REF}`);
+    expect(String(write.mock.calls[0]?.[0])).toContain('--allow-build=@ladybugdb/core');
+    expect(String(write.mock.calls[0]?.[0])).toContain(`gitnexus@latest analyze`);
     write.mockRestore();
   });
 

@@ -107,7 +107,8 @@ describe('generateAIContextFiles', () => {
       await generateAIContextFiles(subDir, subStorage, 'CmdProject', stats);
       for (const f of ['CLAUDE.md', 'AGENTS.md']) {
         const content = await fs.readFile(path.join(subDir, f), 'utf-8');
-        expect(content).toContain('run `pnpm dlx gitnexus@latest analyze` in terminal first');
+        expect(content).toContain('--allow-build=@ladybugdb/core');
+        expect(content).toContain('gitnexus@latest analyze` in terminal first');
         expect(content).not.toContain('run `gitnexus analyze`');
         expect(content).not.toContain('run `npx ');
       }
@@ -128,9 +129,10 @@ describe('generateAIContextFiles', () => {
       ['TeamGroup'],
     );
     expect(content).toContain('## Cross-Repo Groups');
-    expect(content).toContain('pnpm dlx gitnexus@latest group list');
-    expect(content).toContain('pnpm dlx gitnexus@latest group sync');
-    expect(content).toContain('pnpm dlx gitnexus@latest group impact');
+    expect(content).toContain('--allow-build=@ladybugdb/core');
+    expect(content).toContain('gitnexus@latest group list');
+    expect(content).toContain('gitnexus@latest group sync');
+    expect(content).toContain('gitnexus@latest group impact');
     expect(content).not.toMatch(/\bnpx gitnexus\b/);
   });
 

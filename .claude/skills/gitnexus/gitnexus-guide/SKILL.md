@@ -15,7 +15,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 2. **Match your task to a skill below** and **read that skill file**
 3. **Follow the skill's workflow and checklist**
 
-> If step 1 warns the index is stale, run `pnpm dlx gitnexus@latest analyze` in the terminal first.
+> If step 1 warns the index is stale, run `pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze` in the terminal first.
 
 ## Skills
 

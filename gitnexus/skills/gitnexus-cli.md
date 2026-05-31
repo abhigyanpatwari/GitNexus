@@ -12,7 +12,7 @@ All commands work via `npx` — no global install required.
 ### analyze — Build or refresh the index
 
 ```bash
-pnpm dlx gitnexus@latest analyze
+pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze
 ```
 
 Run from the project root. This parses all source files, builds the knowledge graph, writes it to `.gitnexus/`, and generates CLAUDE.md / AGENTS.md context files.

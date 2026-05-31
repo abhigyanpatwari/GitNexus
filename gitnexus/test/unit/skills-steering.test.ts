@@ -5,7 +5,7 @@ import path from 'node:path';
 // Regression guard (#1939): the committed skill files an agent loads alongside
 // the generated freshness line must not steer users to `npx gitnexus analyze`
 // (the npm-11 arborist install-crash path). They should match the generated
-// freshness command, `pnpm dlx gitnexus@latest analyze`.
+// freshness command includes pnpm dlx --allow-build=… for pnpm 10+ safety.
 //
 // Pure file reads resolved via path.resolve — deterministic, no host-PATH or
 // glob-CWD dependence, so this needs no cross-platform-tests.ts registration.

@@ -106,7 +106,8 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('pnpm dlx gitnexus@latest analyze');
+      expect(output!.additionalContext).toContain('--allow-build=@ladybugdb/core');
+      expect(output!.additionalContext).toContain('gitnexus@latest analyze');
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {

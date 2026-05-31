@@ -23,18 +23,26 @@ interface InvocationResolver {
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
   ) => InvocationMode;
+  formatDocumentationDlxCommand: (
+    gitnexusArgs: string,
+    options?: { embeddings?: boolean },
+  ) => string;
   NPX_REF: string;
 }
 
-const { resolveInvocationMode, NPX_REF } = createRequire(import.meta.url)(
-  '../../hooks/claude/resolve-analyze-cmd.cjs',
-) as InvocationResolver;
+const { resolveInvocationMode, formatDocumentationDlxCommand, NPX_REF } = createRequire(
+  import.meta.url,
+)('../../hooks/claude/resolve-analyze-cmd.cjs') as InvocationResolver;
 
 // Fail loud at module load if the canonical cjs export shape drifts (e.g. a
 // renamed export), rather than as a late TypeError inside warnIfNpm11NpxRisk.
-if (typeof resolveInvocationMode !== 'function' || typeof NPX_REF !== 'string') {
+if (
+  typeof resolveInvocationMode !== 'function' ||
+  typeof formatDocumentationDlxCommand !== 'function' ||
+  typeof NPX_REF !== 'string'
+) {
   throw new Error(
-    'resolve-analyze-cmd.cjs must export resolveInvocationMode (function) and NPX_REF (string)',
+    'resolve-analyze-cmd.cjs must export resolveInvocationMode (function), formatDocumentationDlxCommand (function), and NPX_REF (string)',
   );
 }
 
@@ -66,7 +74,7 @@ export function warnIfNpm11NpxRisk(): void {
   if (major === null || major < 11) return;
   process.stderr.write(
     `Warning: npm ${major}.x can crash while installing gitnexus via npx ` +
-      `(npm/arborist "node.target is null"). Prefer: pnpm dlx ${NPX_REF} analyze ` +
+      `(npm/arborist "node.target is null"). Prefer: ${formatDocumentationDlxCommand('analyze')} ` +
       `or npm install -g ${NPX_REF}. See https://github.com/abhigyanpatwari/GitNexus/issues/1939\n`,
   );
 }

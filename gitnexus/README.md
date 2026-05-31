@@ -276,10 +276,12 @@ for the full list; stable `latest` is unaffected.
 This error comes from **npm 11.x's arborist** while installing gitnexus (often via `npx`), before gitnexus code runs. It is triggered by platform-filtered `optionalDependencies` in native packages such as `onnxruntime-node` / `@huggingface/transformers` (used when indexing with `--embeddings`). GitNexus cannot catch it at runtime — use one of these workarounds:
 
 ```bash
-pnpm dlx gitnexus@latest analyze       # recommended when pnpm is available
+pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze       # auto-selected when pnpm + npm 11+
 npm install -g gitnexus@latest         # global install avoids per-run npx reify
 gitnexus analyze                       # if already installed globally
 ```
+
+On **pnpm 10+**, lifecycle scripts are blocked unless explicitly allowed — the resolver adds `--allow-build` for `@ladybugdb/core`, `gitnexus`, and `tree-sitter` automatically when it picks `pnpm dlx`.
 
 If you must stay on npm 11.x without pnpm, downgrade npm toolchain-wide (last resort):
 

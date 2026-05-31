@@ -8,9 +8,16 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
 import { logger } from '../core/logger.js';
+
+const { formatDocumentationDlxCommand } = createRequire(import.meta.url)(
+  '../../hooks/claude/resolve-analyze-cmd.cjs',
+) as {
+  formatDocumentationDlxCommand: (gitnexusArgs: string) => string;
+};
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -128,9 +135,9 @@ export function generateGitNexusContent(
 ${tableBody}`
     : '';
   // Committed AGENTS.md/CLAUDE.md must carry a fixed, install-free, crash-free
-  // command — not a per-machine resolved one (churn, #1706) and not `npx` (the
-  // npm-11 install-crash path this work steers away from, #1939).
-  const analyzeCmd = 'pnpm dlx gitnexus@latest analyze';
+  // command — not a per-machine resolved one (churn, #1706) and not bare `npx`
+  // (npm-11 install crash, #1939) or bare `pnpm dlx` (pnpm 10+ ignored builds).
+  const analyzeCmd = formatDocumentationDlxCommand('analyze');
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
@@ -167,7 +174,7 @@ ${
   groupNames && groupNames.length > 0
     ? `## Cross-Repo Groups
 
-This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the terminal: \`pnpm dlx gitnexus@latest group list\`, \`pnpm dlx gitnexus@latest group sync <name>\`, \`pnpm dlx gitnexus@latest group impact <name> --target <symbol> --repo <group-path>\`.
+This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the terminal: \`${formatDocumentationDlxCommand('group list')}\`, \`${formatDocumentationDlxCommand('group sync <name>')}\`, \`${formatDocumentationDlxCommand('group impact <name> --target <symbol> --repo <group-path>')}\`.
 
 `
     : ''

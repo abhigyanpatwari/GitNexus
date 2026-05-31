@@ -23,7 +23,7 @@ description: "Use when the user asks how code works, wants to understand archite
 5. READ gitnexus://repo/{name}/process/{name}      → Trace full execution flow
 ```
 
-> If step 2 says "Index is stale" → run `pnpm dlx gitnexus@latest analyze` in terminal.
+> If step 2 says "Index is stale" → run `pnpm dlx --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus@latest analyze` in terminal.
 
 ## Checklist
 
