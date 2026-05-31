@@ -58,6 +58,9 @@ export function emitFreeCallFallback(
   workspaceIndex: WorkspaceResolutionIndex,
   options: {
     readonly allowGlobalFallback?: boolean;
+    /** When true, `Type(...)` constructor calls link to the Class def
+     *  itself rather than its explicit Constructor. Swift opts in. */
+    readonly constructorCallTargetsClass?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
     readonly isCallableVisibleFromCaller?: (ctx: {
       readonly callerParsed: ParsedFile;
@@ -108,7 +111,27 @@ export function emitFreeCallFallback(
       if (site.callForm === 'constructor') {
         const classDef = findClassBindingInScope(site.inScope, site.name, scopes);
         if (classDef !== undefined) {
-          fnDef = pickConstructorOrClass(classDef, workspaceIndex, scopes);
+          // Most languages link `Type(...)` to the explicit Constructor def
+          // when one exists (else the Class). Languages that model the call
+          // as a reference to the type itself opt into
+          // `constructorCallTargetsClass` and always link to the Class.
+          fnDef =
+            options.constructorCallTargetsClass === true
+              ? classDef
+              : pickConstructorOrClass(classDef, workspaceIndex, scopes);
+        } else if (options.allowGlobalFallback === true) {
+          // The constructed type may live in a sibling/imported file that is
+          // not in the call-site's lexical scope-chain bindings. Fall back to
+          // a unique workspace-wide Class def by simple name (gated on the
+          // same global-fallback opt-in as free calls). Then target the
+          // Class or its Constructor per the language's preference.
+          const globalClass = pickUniqueGlobalClass(site.name, scopes);
+          if (globalClass !== undefined) {
+            fnDef =
+              options.constructorCallTargetsClass === true
+                ? globalClass
+                : pickConstructorOrClass(globalClass, workspaceIndex, scopes);
+          }
         }
       }
       // Implicit-this overload narrowing: an unqualified call inside
@@ -610,6 +633,36 @@ function pickConstructorOrClass(
     }
   }
   return classDef;
+}
+
+/** Find a unique workspace-wide class-like def by simple name, for a
+ *  constructor-form call `Type(...)` whose type lives outside the call
+ *  site's lexical bindings (a sibling/imported file). Returns the def
+ *  only when all matches share ONE qualified name — i.e. they are
+ *  fragments of a single logical type (partial classes / extensions
+ *  that re-key onto the same type), which resolve to the same graph
+ *  node. Genuinely distinct types with the same simple name are
+ *  ambiguous and leave the call unresolved rather than guessing. Gated
+ *  by the caller on `allowGlobalFallback`, mirroring
+ *  `pickUniqueGlobalCallable`. */
+function pickUniqueGlobalClass(
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  let found: SymbolDefinition | undefined;
+  for (const def of scopes.defs.byId.values()) {
+    if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+    const qualified = def.qualifiedName;
+    if (qualified === undefined || qualified.length === 0) continue;
+    const dot = qualified.lastIndexOf('.');
+    const simple = dot === -1 ? qualified : qualified.slice(dot + 1);
+    if (simple !== name) continue;
+    // Same qualified name = same logical type (extension / partial-class
+    // fragment); keep the first and don't treat it as ambiguous.
+    if (found !== undefined && found.qualifiedName !== def.qualifiedName) return undefined;
+    if (found === undefined) found = def;
+  }
+  return found;
 }
 
 /** Walk up from the call-site scope to the enclosing class scope,
