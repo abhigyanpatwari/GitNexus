@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateAIContextFiles } from '../../src/cli/ai-context.js';
+import { generateAIContextFiles, generateGitNexusContent } from '../../src/cli/ai-context.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -116,6 +116,21 @@ describe('generateAIContextFiles', () => {
       else process.env.GITNEXUS_INVOCATION = prior;
       await fs.rm(subDir, { recursive: true, force: true });
     }
+  });
+
+  it('emits Cross-Repo Groups commands with pnpm dlx, never npx (#1939)', () => {
+    // Exercise the groupNames>0 branch directly — the no-group path cannot
+    // catch a group-command regression because the block is not emitted.
+    const content = generateGitNexusContent(
+      'TestProject',
+      { nodes: 50, edges: 100, processes: 5 },
+      undefined,
+      ['TeamGroup'],
+    );
+    expect(content).toContain('## Cross-Repo Groups');
+    expect(content).toContain('pnpm dlx gitnexus@latest group list');
+    expect(content).toContain('pnpm dlx gitnexus@latest group sync');
+    expect(content).not.toMatch(/\bnpx gitnexus\b/);
   });
 
   it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
