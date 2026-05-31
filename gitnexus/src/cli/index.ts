@@ -84,6 +84,11 @@ program
     '--workers <n>',
     'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
   )
+  .option(
+    '--allow-sequential-fallback',
+    'When --workers is set and every worker crashes at startup, parse sequentially ' +
+      '(much slower) instead of failing fast. Default: fail with the worker crash (#1741).',
+  )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')

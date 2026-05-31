@@ -119,6 +119,26 @@ export interface PipelineOptions {
    * without leaking `process.env` state across invocations.
    */
   chunkByteBudget?: number;
+  /**
+   * Whether the parse phase may silently fall back to sequential parsing
+   * when the worker pool fails to start (all workers crash during
+   * top-of-script init, so the pool reports zero active workers).
+   *
+   * Threaded from the CLI `--allow-sequential-fallback` flag. The default
+   * (undefined / false) makes an *explicitly sized* pool (`workerPoolSize`
+   * set to a non-zero value via `--workers <N>`) a hard requirement: if
+   * every worker fails readiness, parse-impl throws an actionable error
+   * instead of quietly degrading to the ~10× slower sequential path that
+   * masked the real worker crash in #1741 (rc99: 123 min parse).
+   *
+   * When the pool size was auto-resolved (no explicit `--workers`), the
+   * fallback still happens — casual runs should not hard-fail — but it is
+   * always logged loudly and surfaced on the progress stream.
+   *
+   * `workerPoolSize: 0` is unaffected: it never creates a pool, so this
+   * gate never fires for the "user asked for sequential" case.
+   */
+  allowSequentialFallback?: boolean;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

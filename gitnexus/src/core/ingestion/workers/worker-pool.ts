@@ -437,6 +437,55 @@ export function resolveAutoPoolSize(): number {
  * wired the same way: a V8 deserialization failure during startup is
  * treated as worker death and rejects the readiness promise.
  */
+/**
+ * Max characters of a worker's stderr retained for crash diagnostics. A
+ * native-binding load failure or a top-of-script throw prints a stack to
+ * stderr; we keep the tail so `waitForWorkerReady` can attach the real
+ * reason to its rejection instead of the generic "did not report ready".
+ */
+const WORKER_STDERR_TAIL_LIMIT = 4000;
+
+/**
+ * Per-worker captured stderr tail. Populated only for workers spawned with
+ * `{ stderr: true }` (the production factory below). Test-injected workers
+ * via `workerFactory` typically inherit the parent's stderr and have no
+ * `worker.stderr` stream — those are simply skipped (empty tail). A WeakMap
+ * so the buffer is released when the worker is GC'd.
+ */
+const workerStderrTails = new WeakMap<Worker, { text: string }>();
+
+/**
+ * Tee a worker's stderr into a bounded in-memory tail (for surfacing the
+ * real crash on a startup failure) while still mirroring it to the parent
+ * process's stderr — preserving the live-diagnostics behavior workers had
+ * when they inherited stderr, before `{ stderr: true }` redirected it to a
+ * stream. No-op when the worker has no `stderr` stream (test factories).
+ */
+function captureWorkerStderr(worker: Worker): void {
+  const stream = worker.stderr;
+  if (!stream) return;
+  const buf = { text: '' };
+  workerStderrTails.set(worker, buf);
+  stream.on('data', (chunk: Buffer | string) => {
+    const s = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    process.stderr.write(s);
+    buf.text = (buf.text + s).slice(-WORKER_STDERR_TAIL_LIMIT);
+  });
+  // A stderr stream error must never crash the pool.
+  stream.on('error', () => undefined);
+}
+
+/** Captured stderr tail for a worker, trimmed; '' when nothing was captured. */
+function workerStderrTail(worker: Worker): string {
+  return workerStderrTails.get(worker)?.text.trim() ?? '';
+}
+
+/** Append the worker's captured stderr to a readiness-failure message. */
+function withStderr(worker: Worker, message: string): string {
+  const tail = workerStderrTail(worker);
+  return tail ? `${message}. Worker stderr:\n${tail}` : message;
+}
+
 function waitForWorkerReady(worker: Worker): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
@@ -458,16 +507,27 @@ function waitForWorkerReady(worker: Worker): Promise<void> {
     };
     const onError = (err: Error) => {
       cleanup();
-      reject(err);
+      // The 'error' event carries the real top-of-script exception; enrich it
+      // with the worker's stderr tail (native-binding stacks land there).
+      reject(new Error(withStderr(worker, err.message)));
     };
     const onExit = (code: number) => {
       cleanup();
-      reject(new Error(`Replacement worker exited with code ${code} before reporting ready`));
+      reject(
+        new Error(
+          withStderr(worker, `Replacement worker exited with code ${code} before reporting ready`),
+        ),
+      );
     };
     const onMessageError = (err: Error) => {
       cleanup();
       reject(
-        new Error(`Replacement worker emitted messageerror before reporting ready: ${err.message}`),
+        new Error(
+          withStderr(
+            worker,
+            `Replacement worker emitted messageerror before reporting ready: ${err.message}`,
+          ),
+        ),
       );
     };
     // `timer` is declared after `cleanup` so the cleanup closure can reference
@@ -477,7 +537,10 @@ function waitForWorkerReady(worker: Worker): Promise<void> {
       cleanup();
       reject(
         new Error(
-          `Replacement worker did not report ready within ${WORKER_READY_TIMEOUT_MS}ms — likely crashed during top-of-script init`,
+          withStderr(
+            worker,
+            `Replacement worker did not report ready within ${WORKER_READY_TIMEOUT_MS}ms — likely crashed during top-of-script init`,
+          ),
         ),
       );
     }, WORKER_READY_TIMEOUT_MS);
@@ -596,7 +659,19 @@ export const createWorkerPool = (
 
   const size = poolSize ?? resolveAutoPoolSize();
   const poolOptions = resolveWorkerPoolOptions(options, size);
-  const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url));
+  // Production factory spawns with `{ stderr: true }` so a worker's crash
+  // output is redirected to a `worker.stderr` stream we can tee + capture
+  // (see captureWorkerStderr) and attach to readiness-failure messages —
+  // instead of the generic "did not report ready" that hid the real cause
+  // in #1741. Test factories (workerFactory) are used verbatim.
+  const spawnWorker =
+    options?.workerFactory ?? ((url: URL) => new Worker(url, { stderr: true }));
+  /** Spawn + wire stderr capture in one step (used by all spawn sites). */
+  const spawnAndCapture = (url: URL): Worker => {
+    const worker = spawnWorker(url);
+    captureWorkerStderr(worker);
+    return worker;
+  };
   const workers: (Worker | undefined)[] = new Array(size);
   type RetiredWorkerRecord = {
     worker: Worker;
@@ -645,7 +720,7 @@ export const createWorkerPool = (
   };
 
   for (let i = 0; i < size; i++) {
-    workers[i] = spawnWorker(workerUrl);
+    workers[i] = spawnAndCapture(workerUrl);
     activeSlots.add(i);
   }
 
@@ -857,7 +932,7 @@ export const createWorkerPool = (
       ): Promise<boolean> => {
         await removeWorkerFromSlot(workerIndex, mode, reason);
         if (stopped) return false;
-        const replacement = spawnWorker(workerUrl);
+        const replacement = spawnAndCapture(workerUrl);
         try {
           await waitForWorkerReady(replacement);
         } catch (err) {

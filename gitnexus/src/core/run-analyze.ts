@@ -128,6 +128,14 @@ export interface AnalyzeOptions {
    * the count; `undefined` defers to the env / auto-formula fallback.
    */
   workerPoolSize?: number;
+  /**
+   * Allow the parse phase to degrade to sequential parsing when an
+   * explicitly-sized worker pool (`--workers <N>`) fails to start. Threaded
+   * from `--allow-sequential-fallback` to `PipelineOptions.allowSequentialFallback`.
+   * When false/undefined and `--workers` was explicit, a total worker-startup
+   * failure is fatal instead of silently degrading (see #1741).
+   */
+  allowSequentialFallback?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -478,7 +486,11 @@ export async function runFullAnalysis(
         : p.message || phaseLabel;
       progress(p.phase, scaled, message);
     },
-    { parseCache, workerPoolSize: options.workerPoolSize },
+    {
+      parseCache,
+      workerPoolSize: options.workerPoolSize,
+      allowSequentialFallback: options.allowSequentialFallback,
+    },
   );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────

@@ -165,6 +165,9 @@ export const zhCN = {
     'analyze 期间 LadybugDB WAL 自动 checkpoint 阈值（字节，整数 >= -1；默认：67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。',
   'help.option.analyze.workers':
     '解析 worker 池大小。默认：cores-1，最多 16。传 0 禁用 worker（顺序执行）。',
+  'help.option.analyze.allowSequentialFallback':
+    '当设置了 --workers 且所有 worker 启动时崩溃时，回退为顺序解析（慢得多）而非快速失败。' +
+    '默认：直接报告 worker 崩溃并失败（#1741）。',
   'help.option.analyze.embeddingThreads': '限制本地 ONNX 嵌入 CPU 线程数',
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',
