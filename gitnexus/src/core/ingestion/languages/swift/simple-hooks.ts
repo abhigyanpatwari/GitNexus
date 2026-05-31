@@ -75,8 +75,5 @@ export function swiftImportOwningScope(
  *  functions (no enclosing type), and non-Function scopes. */
 export function swiftReceiverBinding(functionScope: Scope): TypeRef | null {
   if (functionScope.kind !== 'Function') return null;
-  return (
-    functionScope.typeBindings.get('self') ?? functionScope.typeBindings.get('super') ?? null
-  );
+  return functionScope.typeBindings.get('self') ?? functionScope.typeBindings.get('super') ?? null;
 }
-

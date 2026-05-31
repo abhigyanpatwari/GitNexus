@@ -52,7 +52,12 @@ export function synthesizeSwiftSignatureBindings(fnNode: SyntaxNode): CaptureMat
   if (NAMED_FUNCTION_NODE_TYPES.has(fnNode.type)) {
     const funcName = swiftMethodConfig.extractName?.(fnNode);
     const returnType = swiftMethodConfig.extractReturnType?.(fnNode);
-    if (funcName !== undefined && funcName !== '' && returnType !== undefined && returnType !== '') {
+    if (
+      funcName !== undefined &&
+      funcName !== '' &&
+      returnType !== undefined &&
+      returnType !== ''
+    ) {
       out.push(buildBindingMatch(fnNode, '@type-binding.return', funcName, returnType));
     }
   }

@@ -120,11 +120,7 @@ export function emitSwiftScopeCaptures(
     // @type-binding.constructor (name → callee); chain-follow resolves
     // the callee to its return type. ─────────────────────────────────
     if (grouped['@optional.binding'] !== undefined) {
-      const stmtNode = nodeIfType(
-        nodeMap['@optional.binding'],
-        'if_statement',
-        'guard_statement',
-      );
+      const stmtNode = nodeIfType(nodeMap['@optional.binding'], 'if_statement', 'guard_statement');
       const synth = stmtNode === null ? null : synthesizeOptionalBinding(stmtNode);
       if (synth !== null) out.push(synth);
       continue;
