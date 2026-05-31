@@ -24,47 +24,7 @@
  */
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-
-/**
- * Array prototype higher-order methods whose result is a value, not a
- * function. A callback passed to one of these is an anonymous callback,
- * never a top-level function definition. Identifier-callee HOCs
- * (`forwardRef(...)`, `useCallback(...)`, custom factories) are
- * deliberately NOT listed — they keep their `Function` classification.
- *
- * Trade-off (unchanged from before #1876): a custom *fluent-API* member
- * call with a callback whose method name is not in this set
- * (`qb.where(x => …)`) still classifies as `Function`. There is no clean
- * syntactic line beyond the well-known Array surface, so the set is
- * intentionally closed and easy to extend.
- *
- * Receiver-blind, by design: the match keys on the method NAME only, never
- * the receiver type (tree-sitter has no type information here). So an in-set
- * name on a NON-array receiver — `Map`/`Set` `.forEach`, an RxJS
- * `observable.map(…)`, a query builder `.sort(…)`, a lodash chain
- * `.filter(…)` — is ALSO treated as a callback and has its
- * `@declaration.function` dropped. This is an accepted limitation, not a
- * regression: those bindings hold the call's *result value*, not a callable,
- * so a value def is the correct classification anyway. The only genuine loss
- * is a bespoke DSL whose in-set-named method returns something callable —
- * rare enough to accept rather than guard with type inference. Pinned by the
- * "in-set method on a non-array receiver" case in `*-captures.test.ts`.
- */
-export const ARRAY_CALLBACK_METHODS: ReadonlySet<string> = new Set([
-  'map',
-  'filter',
-  'find',
-  'findIndex',
-  'findLast',
-  'findLastIndex',
-  'forEach',
-  'reduce',
-  'reduceRight',
-  'some',
-  'every',
-  'flatMap',
-  'sort',
-]);
+import { ARRAY_CALLBACK_METHODS } from '../../ts-js-hoc-utils.js';
 
 /**
  * True when `node` (an `arrow_function` / `function_expression`) is the
@@ -77,9 +37,9 @@ export const ARRAY_CALLBACK_METHODS: ReadonlySet<string> = new Set([
  * (`forwardRef(() => …)` — callee is an `identifier`, not a
  * `member_expression`), so neither is ever suppressed.
  *
- * Intentional non-suppressing gaps (preserve current behavior, no
- * regression): parenthesized callee `(arr.map)(cb)` (`parenthesized_expression`)
- * and computed callee `arr['map'](cb)` (`subscript_expression`).
+ * The helper itself only handles direct `member_expression` callees. Broader
+ * shapes like `(arr.map)(cb)` and `arr['map'](cb)` are now filtered at the
+ * query layer, so this emit-side check stays focused on the direct fallback.
  */
 export function isArrayMethodCallbackArrow(node: SyntaxNode): boolean {
   const args = node.parent;
