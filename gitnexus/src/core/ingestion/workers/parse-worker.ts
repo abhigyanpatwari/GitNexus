@@ -1,4 +1,4 @@
-import { parentPort } from 'node:worker_threads';
+import { parentPort, threadId } from 'node:worker_threads';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -20,6 +20,11 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
+import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
@@ -52,6 +57,7 @@ try {
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
+  buildConcreteTypedefDefinitionRanges,
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
@@ -60,6 +66,7 @@ import {
   getLabelFromCaptures,
   genericFuncName,
   inferFunctionLabel,
+  isSuppressedConcreteTypedefDuplicate,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
@@ -95,6 +102,28 @@ import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/l
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
+
+// ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
+// When GITNEXUS_WORKER_BOOTSTRAP=1 (or --verbose sets GITNEXUS_VERBOSE), each
+// worker reports its startup stage timings to stderr — which the pool tees
+// and captures (worker-pool.ts captureWorkerStderr). This makes a slow or
+// crashing startup diagnosable: you can see whether a worker reached
+// "grammars loaded", "ready sent", or never emitted a line at all (=> it
+// crashed in a native binding load before this code ran). The pool then
+// attaches whatever stderr it captured to its readiness-failure message,
+// so the operator sees the real cause instead of "did not report ready".
+const BOOTSTRAP_LOG =
+  process.env.GITNEXUS_WORKER_BOOTSTRAP === '1' || process.env.GITNEXUS_VERBOSE === '1';
+const bootstrapStart = performance.now();
+const bootstrapLog = (stage: string): void => {
+  if (!BOOTSTRAP_LOG) return;
+  const ms = Math.round(performance.now() - bootstrapStart);
+  process.stderr.write(`[parse-worker bootstrap] thread=${threadId} ${stage} (+${ms}ms)\n`);
+};
+// First line we can emit: every static import above (tree-sitter native
+// bindings, language grammars, helper modules) has already resolved by the
+// time this module-body statement runs.
+bootstrapLog('imports + grammars loaded');
 // ============================================================================
 // Types for serializable results
 // ============================================================================
@@ -588,7 +617,7 @@ const findEnclosingFunctionId = (
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
       if (funcName) {
@@ -1116,6 +1145,7 @@ const processFileGroup = (
       );
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     const provider = getProvider(language);
 
@@ -1174,6 +1204,7 @@ const processFileGroup = (
     // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
     const typeEnv = buildTypeEnv(tree, language, {
+      filePath: file.path,
       parentMap,
       enclosingFunctionFinder: provider?.enclosingFunctionFinder,
       extractFunctionName: provider?.methodExtractor?.extractFunctionName,
@@ -1219,6 +1250,8 @@ const processFileGroup = (
       for (const c of match.captures) {
         captureMap[c.name] = c.node;
       }
+
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) continue;
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
@@ -1717,9 +1750,47 @@ const processFileGroup = (
         processedDefinitionNodes.add(definitionNode.startIndex);
       }
 
+      const exportDefaultCall =
+        nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
+          ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
+          : undefined;
+      const defaultExportHocName = (() => {
+        if (exportDefaultCall === undefined) return null;
+        const argList = exportDefaultCall.childForFieldName?.('arguments');
+        const callback = argList?.namedChildren.find(
+          (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+        );
+        if (callback === undefined) return null;
+
+        const callee = exportDefaultCall.childForFieldName?.('function');
+        if (
+          callee?.type === 'identifier' &&
+          DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
+        )
+          return null;
+        if (callee?.type === 'member_expression') {
+          const property = callee.childForFieldName?.('property');
+          if (
+            property?.type === 'property_identifier' &&
+            ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+          )
+            return null;
+        }
+
+        return deriveDefaultExportHocName(file.path);
+      })();
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) continue;
-      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
+      if (
+        !nameNode &&
+        nodeLabel !== 'Constructor' &&
+        !extractedClassSymbol &&
+        !defaultExportHocName
+      )
+        continue;
+
+      const nodeName =
+        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
       const startLine = definitionNode
         ? definitionNode.startPosition.row + lineOffset
         : nameNode
@@ -2191,6 +2262,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
 // `WORKER_READY_TIMEOUT_MS` (5s), so emitting it AFTER all top-of-script
 // init (imports, native binding loads, type-env setup) completes is the
 // load-bearing signal that this worker is ready for dispatch.
+bootstrapLog('ready sent');
 parentPort!.postMessage({ type: 'ready' });
 
 // Module-scope `TextDecoder` for sub-batch content. The pool sends each
@@ -2221,7 +2293,12 @@ function decodeSubBatchFiles(
   }));
 }
 
+let firstTaskLogged = false;
 parentPort!.on('message', (msg: WorkerIncomingMessage) => {
+  if (!firstTaskLogged) {
+    firstTaskLogged = true;
+    bootstrapLog('first task received');
+  }
   try {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {

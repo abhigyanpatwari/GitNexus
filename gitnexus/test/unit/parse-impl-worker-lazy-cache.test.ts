@@ -203,14 +203,14 @@ describe('parse-impl worker pool lazy startup', () => {
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'miss')).toBe(true);
   });
 
-  it('falls back to sequential parsing when initial workers exit before ready', async () => {
-    const rel = 'src/fallback.ts';
-    const content = 'export function fallback() { return 1; }\n';
+  it('fails fast (no silent fallback) when the pool cannot start its workers (#1741)', async () => {
+    const rel = 'src/fatal.ts';
+    const content = 'export function fatal() { return 1; }\n';
     const full = path.join(repoDir, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, content);
 
-    const workerPath = path.join(tempDir, 'exit-before-ready-worker.js');
+    const workerPath = path.join(tempDir, 'exit-before-ready-fatal-worker.js');
     writeExitBeforeReadyWorker(workerPath);
 
     const parseCache = {
@@ -218,30 +218,108 @@ describe('parse-impl worker pool lazy startup', () => {
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
-    const chunkHash = computeChunkHash([{ filePath: rel, contentHash: fileContentHash(content) }]);
 
     const graph = createKnowledgeGraph();
-    const result = await runChunkedParseAndResolve(
-      graph,
-      [{ path: rel, size: fs.statSync(full).size }],
-      [rel],
-      1,
-      repoDir,
-      Date.now(),
-      () => {},
-      {
-        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-        workerUrlForTest: pathToFileURL(workerPath),
-        workerPoolSize: 1,
-        parseCache,
-      },
-    );
+    await expect(
+      runChunkedParseAndResolve(
+        graph,
+        [{ path: rel, size: fs.statSync(full).size }],
+        [rel],
+        1,
+        repoDir,
+        Date.now(),
+        () => {},
+        {
+          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+          workerUrlForTest: pathToFileURL(workerPath),
+          workerPoolSize: 1,
+          // No flag: a total worker-startup failure always fails fast now.
+          parseCache,
+        },
+      ),
+    ).rejects.toThrow(/Worker pool failed to start/i);
 
-    expect(result.usedWorkerPool).toBe(false);
-    expect(parseCache.usedKeys.has(chunkHash)).toBe(true);
-    expect(parseCache.entries.has(chunkHash)).toBe(false);
-    expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'fallback')).toBe(
-      true,
-    );
+    // The fatal path did not silently parse sequentially behind the user's back.
+    expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'fatal')).toBe(false);
+  });
+
+  it('parses sequentially when GITNEXUS_WORKER_POOL_SIZE=0 and no --workers flag (#1741)', async () => {
+    const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
+    process.env.GITNEXUS_WORKER_POOL_SIZE = '0';
+    try {
+      const rel = 'src/env0.ts';
+      const content = 'export function env0() { return 1; }\n';
+      const full = path.join(repoDir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+
+      // A ready-worker double with a spawn marker — it must NOT be spawned,
+      // because env=0 routes to the sequential path before any pool is built.
+      const markerPath = path.join(tempDir, 'env0-worker.marker');
+      const workerPath = path.join(tempDir, 'env0-ready-worker.js');
+      writeReadyWorker(workerPath, markerPath);
+
+      const graph = createKnowledgeGraph();
+      const result = await runChunkedParseAndResolve(
+        graph,
+        [{ path: rel, size: fs.statSync(full).size }],
+        [rel],
+        1,
+        repoDir,
+        Date.now(),
+        () => {},
+        {
+          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+          workerUrlForTest: pathToFileURL(workerPath),
+          // No workerPoolSize option — the env var is the only sizing signal.
+        },
+      );
+
+      expect(result.usedWorkerPool).toBe(false); // env=0 → sequential, not a size-0 pool fail-fast
+      expect(fs.existsSync(markerPath)).toBe(false); // no worker ever spawned
+      // Sequential parsing still produced a complete graph for the file.
+      expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'env0')).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+      else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;
+    }
+  });
+
+  it('an explicit --workers wins over an ambient GITNEXUS_WORKER_POOL_SIZE=0 (#1741)', async () => {
+    const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
+    process.env.GITNEXUS_WORKER_POOL_SIZE = '0';
+    try {
+      const rel = 'src/precedence.ts';
+      const content = 'export function precedence() { return 1; }\n';
+      const full = path.join(repoDir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+
+      const markerPath = path.join(tempDir, 'precedence-worker.marker');
+      const workerPath = path.join(tempDir, 'precedence-result-worker.js');
+      writeResultWorker(workerPath, markerPath);
+
+      const graph = createKnowledgeGraph();
+      const result = await runChunkedParseAndResolve(
+        graph,
+        [{ path: rel, size: fs.statSync(full).size }],
+        [rel],
+        1,
+        repoDir,
+        Date.now(),
+        () => {},
+        {
+          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+          workerUrlForTest: pathToFileURL(workerPath),
+          workerPoolSize: 1, // explicit --workers 1 must win over ambient env=0
+        },
+      );
+
+      expect(result.usedWorkerPool).toBe(true); // explicit flag wins; env=0 ignored
+      expect(fs.existsSync(markerPath)).toBe(true); // worker was spawned
+    } finally {
+      if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+      else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;
+    }
   });
 });

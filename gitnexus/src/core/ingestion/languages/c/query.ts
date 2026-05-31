@@ -41,6 +41,12 @@ const C_SCOPE_QUERY = `
 (enum_specifier
   name: (type_identifier) @declaration.name) @declaration.enum
 
+;; Declarations — enum (typedef enum { ... } Name)
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @declaration.name) @declaration.enum
+
 ;; Declarations — function definition
 (function_definition
   declarator: (function_declarator

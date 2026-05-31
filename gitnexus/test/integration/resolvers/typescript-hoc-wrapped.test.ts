@@ -43,6 +43,7 @@ import {
   getRelationships,
   edgeSet,
   getNodesByLabel,
+  getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -302,5 +303,69 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
       functionSourced,
       'no Function-sourced CALLS from nested.tsx (all anchors should be File)',
     ).toEqual([]);
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // export default HOC(arrow) — issue #1876
+  //
+  // `export default defineEventHandler(async (e) => { ... })` has no
+  // variable_declarator ancestor, so the old patterns were invisible.
+  // The new export_statement patterns register it as a function named
+  // from the file/module, not from the wrapper helper.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('export default HOC: calls attribute to the file-derived function name', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/export-default-hoc.ts' && c.source === 'export-default-hoc',
+    );
+    const targets = new Set(calls.map((c) => c.target));
+    expect(targets, 'export-default-hoc must call doStuff').toContain('doStuff');
+    expect(targets, 'export-default-hoc must call helper').toContain('helper');
+  });
+
+  it('export default HOC: the file-derived symbol is registered in the source file', () => {
+    const functions = getNodesByLabelFull(result, 'Function').filter(
+      (node) => node.properties.filePath === 'src/export-default-hoc.ts',
+    );
+    expect(
+      functions.map((node) => node.name),
+      'export-default-hoc must be the graph-visible Function name for the wrapped default export',
+    ).toContain('export-default-hoc');
+  });
+
+  it('export default HOC: inner calls do not attribute to the wrapper helper name', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/export-default-hoc.ts' && c.source === 'defineEventHandler',
+    );
+    expect(calls, 'wrapped default-export calls must not collapse onto defineEventHandler').toEqual(
+      [],
+    );
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Negative: array methods must NOT produce Function nodes (issue #1876)
+  //
+  // `const x = arr.map(a => ...)` was incorrectly classified as a Function.
+  // The fix splits HOC patterns into identifier vs member_expression variants
+  // and applies a blocklist for common array methods.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('array method callbacks are not registered as Function nodes', () => {
+    const functions = new Set(getNodesByLabel(result, 'Function'));
+    expect(functions, 'mappedData must NOT be a Function node').not.toContain('mappedData');
+    expect(functions, 'filtered must NOT be a Function node').not.toContain('filtered');
+    expect(functions, 'reduced must NOT be a Function node').not.toContain('reduced');
+  });
+
+  it('array method callback calls do not attribute to the const name', () => {
+    for (const constName of ['mappedData', 'filtered', 'reduced']) {
+      const calls = getRelationships(result, 'CALLS').filter(
+        (c) => c.sourceFilePath === 'src/array-method-fp.ts' && c.source === constName,
+      );
+      expect(
+        calls,
+        `no CALLS should attribute to ${constName} (it is an array, not a function)`,
+      ).toEqual([]);
+    }
   });
 });

@@ -53,6 +53,10 @@
 
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from '../../ts-js-hoc-utils.js';
 
 // tree-sitter-typescript exports both `typescript` and `tsx` grammars on
 // the default export. The package's `.d.ts` types the default export
@@ -277,10 +281,16 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; via \`(filePath, type, qualifiedName)\` — second wins. Acceptable;
 ;; multi-arrow-callback APIs are rare (\`new Promise(executor)\` is the
 ;; main one and takes a single executor).
+;;
+;; NOTE: Split into identifier vs member_expression patterns. Member
+;; expressions are filtered with a blocklist of common array methods
+;; (map, filter, reduce, etc.) to avoid false positives like
+;; \`const x = arr.map(a => ...)\` being classified as Function.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -288,13 +298,35 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -302,8 +334,63 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
+;; The emit phase rewrites @declaration.name to a file-derived name so
+;; wrappers like \`defineEventHandler\` / \`React.memo\` do not collapse
+;; unrelated modules onto the same symbol name.
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Method definitions — regular + private (#field) methods.
 (method_definition

@@ -120,6 +120,19 @@ describe('emitCScopeCaptures — enum declarations', () => {
     expect(names).toContain('GREEN');
     expect(names).toContain('BLUE');
   });
+
+  it('captures typedef anonymous enum with @declaration.enum (not typedef)', () => {
+    const m = findMatch('typedef enum { OFF, ON } SwitchState;', (t) =>
+      t.includes('@declaration.enum'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('SwitchState');
+
+    const typedefs = allMatches('typedef enum { OFF, ON } SwitchState;', (t) =>
+      t.includes('@declaration.typedef'),
+    );
+    expect(typedefs).toHaveLength(0);
+  });
 });
 
 describe('emitCScopeCaptures — function declarations', () => {
