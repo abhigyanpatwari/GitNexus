@@ -341,26 +341,39 @@ const HOOK_HELPERS = [
   'resolve-analyze-cmd.cjs',
 ] as const;
 
+// win-rm-list-json.ps1 is best-effort: it is read (not require()'d) by
+// hook-db-lock-probe.cjs only on Windows, and that probe fails open when the
+// script is absent. Every other helper is top-level require()'d by the adapters,
+// so its absence crashes the installed hook — those are the ones a failed copy
+// must gate hook registration on (see copyHookHelpers' return value).
+const BEST_EFFORT_HOOK_HELPERS = new Set<string>(['win-rm-list-json.ps1']);
+
 /**
- * Copy the shared hook helpers from `srcDir` into `destDir`. Every adapter
- * top-level `require()`s these, so a missing helper makes the installed hook
- * crash with MODULE_NOT_FOUND — a failed copy is recorded as a setup error
- * rather than silently swallowed. Both the Claude and Antigravity install paths
- * copy this same list from hooks/claude/ (the canonical source).
+ * Copy the shared hook helpers from `srcDir` into `destDir`. The adapters
+ * top-level `require()` the `.cjs` helpers, so a missing required helper makes
+ * the installed hook crash with MODULE_NOT_FOUND. A failed copy is recorded as a
+ * setup error, and the names of any failed REQUIRED helpers are returned so the
+ * caller can fail closed (skip hook registration) instead of registering a hook
+ * that crashes at runtime. `win-rm-list-json.ps1` is best-effort — its absence is
+ * recorded but does not gate registration. Both the Claude and Antigravity
+ * install paths copy this same list from hooks/claude/ (the canonical source).
  */
 export async function copyHookHelpers(
   srcDir: string,
   destDir: string,
   label: string,
   result: SetupResult,
-): Promise<void> {
+): Promise<string[]> {
+  const failedRequired: string[] = [];
   for (const helper of HOOK_HELPERS) {
     try {
       await fs.copyFile(path.join(srcDir, helper), path.join(destDir, helper));
     } catch {
       result.errors.push(`${label}: failed to copy ${helper} — hook may crash at runtime`);
+      if (!BEST_EFFORT_HOOK_HELPERS.has(helper)) failedRequired.push(helper);
     }
   }
+  return failedRequired;
 }
 
 /**
@@ -399,7 +412,30 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       // Script not found in source — skip
     }
 
-    await copyHookHelpers(pluginHooksPath, destHooksDir, 'Claude Code hooks', result);
+    // Fail closed: registering the hook without its adapter would crash on every
+    // tool invocation. Mirrors the Antigravity adapter guard below (this path
+    // previously registered regardless of whether the adapter wrote).
+    try {
+      await fs.access(dest);
+    } catch {
+      result.errors.push(
+        'Claude Code hooks: adapter script was not installed — skipping hook registration',
+      );
+      return;
+    }
+
+    const failedRequired = await copyHookHelpers(
+      pluginHooksPath,
+      destHooksDir,
+      'Claude Code hooks',
+      result,
+    );
+    if (failedRequired.length > 0) {
+      result.errors.push(
+        `Claude Code hooks: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
+      );
+      return;
+    }
 
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
     // Escape backslashes FIRST, then quotes (CodeQL js/incomplete-sanitization).
@@ -595,7 +631,18 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
     // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
     // server ownership probe silently fails open and the hook may contend
     // with the MCP server on the LadybugDB.
-    await copyHookHelpers(pluginClaudeDir, destHooksDir, 'Antigravity hooks', result);
+    const failedRequired = await copyHookHelpers(
+      pluginClaudeDir,
+      destHooksDir,
+      'Antigravity hooks',
+      result,
+    );
+    if (failedRequired.length > 0) {
+      result.errors.push(
+        `Antigravity hooks: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
+      );
+      return;
+    }
 
     const hookPath = path.join(destHooksDir, 'gitnexus-antigravity-hook.cjs').replace(/\\/g, '/');
     const escapedHookPath = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');

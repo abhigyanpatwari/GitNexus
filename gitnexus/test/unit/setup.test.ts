@@ -288,19 +288,75 @@ describe('setupClaudeCode', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('records a setup error when a hook helper cannot be copied (not silent)', async () => {
+  it('records errors and returns the failed REQUIRED helpers when copies fail', async () => {
     const { copyHookHelpers } = await import('../../src/cli/setup.js');
     const destDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copy-helpers-'));
     const result = { configured: [] as string[], skipped: [] as string[], errors: [] as string[] };
     try {
       // A non-existent source dir makes every helper copy fail.
-      await copyHookHelpers(path.join(destDir, 'nope'), destDir, 'Claude Code hooks', result);
+      const failedRequired = await copyHookHelpers(
+        path.join(destDir, 'nope'),
+        destDir,
+        'Claude Code hooks',
+        result,
+      );
       expect(result.errors.length).toBe(4);
       expect(result.errors.some((e) => e.includes('resolve-analyze-cmd.cjs'))).toBe(true);
       expect(result.errors.every((e) => e.startsWith('Claude Code hooks:'))).toBe(true);
+      // Only the hard-required .cjs trio gates registration; win-rm is best-effort.
+      expect([...failedRequired].sort()).toEqual([
+        'hook-db-lock-probe.cjs',
+        'hook-lock.cjs',
+        'resolve-analyze-cmd.cjs',
+      ]);
+      expect(failedRequired).not.toContain('win-rm-list-json.ps1');
     } finally {
       await fs.rm(destDir, { recursive: true, force: true });
     }
+  });
+
+  it('treats win-rm-list-json.ps1 as best-effort (no required failure when only it is missing)', async () => {
+    const { copyHookHelpers } = await import('../../src/cli/setup.js');
+    const srcDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-helpers-src-'));
+    const destDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-helpers-dest-'));
+    const result = { configured: [] as string[], skipped: [] as string[], errors: [] as string[] };
+    try {
+      // Provide the three hard-required .cjs helpers; omit win-rm-list-json.ps1.
+      for (const h of ['hook-lock.cjs', 'hook-db-lock-probe.cjs', 'resolve-analyze-cmd.cjs']) {
+        await fs.writeFile(path.join(srcDir, h), '// stub\n', 'utf-8');
+      }
+      const failedRequired = await copyHookHelpers(srcDir, destDir, 'Claude Code hooks', result);
+      expect(failedRequired).toEqual([]);
+      // The best-effort helper still records a (non-gating) error.
+      expect(result.errors.some((e) => e.includes('win-rm-list-json.ps1'))).toBe(true);
+    } finally {
+      await fs.rm(srcDir, { recursive: true, force: true });
+      await fs.rm(destDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not register the Claude hook when a required helper fails to copy (fail closed)', async () => {
+    setPlatform('linux');
+    const realCopyFile = fs.copyFile.bind(fs);
+    vi.spyOn(fs, 'copyFile').mockImplementation(((src: any, dest: any, ...rest: any[]) => {
+      if (String(src).endsWith('resolve-analyze-cmd.cjs')) {
+        return Promise.reject(new Error('simulated copy failure'));
+      }
+      return realCopyFile(src, dest, ...rest);
+    }) as typeof fs.copyFile);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    // Registration must have been skipped — settings.json must not reference the hook.
+    const settingsPath = path.join(tempHome, '.claude', 'settings.json');
+    let registered = false;
+    try {
+      registered = (await fs.readFile(settingsPath, 'utf-8')).includes('gitnexus-hook.cjs');
+    } catch {
+      registered = false;
+    }
+    expect(registered).toBe(false);
   });
 
   it('falls back to npx on Windows when no .cmd/.bat wrapper is found', async () => {
