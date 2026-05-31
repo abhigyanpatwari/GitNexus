@@ -49,7 +49,11 @@ import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared'
 import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { createWorkerPool, WorkerPoolInitializationError } from '../workers/worker-pool.js';
+import {
+  createWorkerPool,
+  workerPoolDisabledByEnv,
+  WorkerPoolInitializationError,
+} from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
@@ -123,6 +127,76 @@ function resolveChunkByteBudget(options?: PipelineOptions): number {
 
 type ScannedFile = { path: string; size: number };
 type ProgressFn = (progress: PipelineProgress) => void;
+
+/**
+ * Handle a worker-pool startup failure by FAILING FAST with the captured cause
+ * (#1741). The pool self-heals *transient* worker crashes on its own — a
+ * bounded, jittered startup restart loop (see worker-pool.ts) — so this is
+ * reached only when that self-heal is EXHAUSTED, or a deterministic crash-loop
+ * was detected, or the pool could not even be constructed. In every such case
+ * the workers genuinely cannot start.
+ *
+ * Rather than silently degrade to the ~10× slower sequential parser — which
+ * masked a worker-startup regression as a 2-hour "stuck" run in #1741 (rc99:
+ * the failure was a dropped `logger.warn` and an unbounded sequential grind) —
+ * GitNexus surfaces the real crash and aborts. An operator who genuinely wants
+ * sequential parsing asks for it explicitly with `--workers 0`.
+ *
+ * The decision is automatic: NO `--allow-sequential-fallback` or pool-sizing
+ * flag participates. The pool's own crash classification (`crashClass` on
+ * WorkerPoolInitializationError) only sharpens the message.
+ *
+ * @throws always — an actionable Error carrying the captured worker crash.
+ * @internal Exported for unit tests; production callers are the parse loop's
+ *           two worker-startup catch sites below.
+ */
+export function handleWorkerStartupFailure(err: Error): never {
+  const isInit = err instanceof WorkerPoolInitializationError;
+  const readinessFailures = isInit ? err.readinessFailures : [];
+  const crashClass = isInit ? err.crashClass : undefined;
+  // Surface the real cause verbatim: readiness failures for an init crash, or
+  // the construction error message (e.g. "Worker script not found: …") when the
+  // pool never got to spawn workers.
+  const failureDetail =
+    readinessFailures.length > 0
+      ? ` Underlying worker failure(s): ${readinessFailures.join(' | ')}`
+      : isInit
+        ? ''
+        : ` Underlying error: ${err.message}`;
+
+  // Always surface the real crash — never let a startup failure pass silently.
+  logger.error(
+    { err: err.message, readinessFailures, crashClass },
+    'Worker pool failed to start — workers could not start (bounded self-heal exhausted).',
+  );
+
+  const cause =
+    crashClass === 'deterministic-startup'
+      ? `every worker crashed identically during startup (a deterministic ` +
+        `crash-loop — retrying cannot help), so the pool has no usable workers.`
+      : isInit
+        ? `workers exhausted the bounded startup retry budget without reporting ` +
+          `ready, so the pool has no usable workers.`
+        : `the worker pool could not be constructed.`;
+
+  // Class-aware fix hint: a missing/broken native binding is the likely cause
+  // when workers crashed during init, but it is the WRONG guess for a pool that
+  // never constructed (commonly a missing build / unresolvable worker path).
+  const fixHint = isInit
+    ? `Fix the worker startup failure shown above (often a missing/broken native ` +
+      `binding or a top-of-script import error in parse-worker).`
+    : `Fix the worker pool construction error shown above (commonly a missing ` +
+      `build, so dist/ has no parse-worker, or an unresolvable worker path).`;
+
+  throw new Error(
+    `Worker pool failed to start: ${cause}${failureDetail}\n\n` +
+      `GitNexus will NOT silently fall back to the (much slower) sequential ` +
+      `parser and hide this crash — that masked a worker-startup regression as ` +
+      `a 2-hour "stuck" run in #1741. Options:\n` +
+      `  • ${fixHint}\n` +
+      `  • Re-run with --workers 0 to parse sequentially without the worker pool.`,
+  );
+}
 
 /**
  * Chunked parse + resolve loop.
@@ -274,14 +348,30 @@ export async function runChunkedParseAndResolve(
   // intentionally NOT created before parse-cache lookup: a warm-cache
   // all-hit run should replay cached worker output without loading
   // parse-worker.js or any tree-sitter/N-API native bindings.
+  // `--workers 0` (workerPoolSize === 0) and `GITNEXUS_WORKER_POOL_SIZE=0` both
+  // mean "no pool, parse sequentially". The env channel is consulted ONLY when
+  // no explicit `--workers <N>` was given, so an explicit positive size always
+  // wins over an ambient env=0 (#1741). Without this, env=0 built a size-0 pool
+  // that failed fast with a fabricated "retry budget exhausted" crash.
+  const envDisablesWorkers = options?.workerPoolSize === undefined && workerPoolDisabledByEnv();
+  const meetsWorkerThreshold =
+    totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS;
+  // Log only when env=0 actually skips a pool we'd otherwise have used, so the
+  // undocumented (possibly accidental) env=0 case is observable instead of a
+  // silent degrade — small repos go sequential anyway and need no notice.
+  if (envDisablesWorkers && meetsWorkerThreshold) {
+    logger.warn(
+      'GITNEXUS_WORKER_POOL_SIZE=0 → parsing sequentially; unset it or pass --workers <N> to use the worker pool.',
+    );
+  }
   const shouldUseWorkers =
     !options?.skipWorkers &&
     options?.workerPoolSize !== 0 &&
-    (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS);
+    !envDisablesWorkers &&
+    meetsWorkerThreshold;
   let workerPool: WorkerPool | undefined;
-  let workerPoolDisabled = false;
   const getOrCreateWorkerPool = (): WorkerPool | undefined => {
-    if (!shouldUseWorkers || workerPoolDisabled) return undefined;
+    if (!shouldUseWorkers) return undefined;
     if (workerPool) return workerPool;
     try {
       // U20.U3 test-only injection: integration tests pass a custom
@@ -315,12 +405,11 @@ export async function runChunkedParseAndResolve(
       workerPool = createWorkerPool(workerUrl, options?.workerPoolSize);
       return workerPool;
     } catch (err) {
-      workerPoolDisabled = true;
-      logger.warn(
-        { err: (err as Error).message },
-        'Worker pool creation failed, using sequential fallback:',
-      );
-      return undefined;
+      // Pool *construction* failed (e.g. the worker script is missing — a
+      // broken install). Fail fast with the cause rather than silently
+      // degrading to the slow sequential parser (#1741); `--workers 0` is the
+      // explicit opt-out for anyone who genuinely wants sequential parsing.
+      handleWorkerStartupFailure(err as Error);
     }
   };
 
@@ -536,28 +625,15 @@ export async function runChunkedParseAndResolve(
           );
         } catch (err) {
           if (!(err instanceof WorkerPoolInitializationError)) throw err;
-          logger.warn(
-            {
-              err: err.message,
-              readinessFailures: err.readinessFailures,
-            },
-            'Worker pool initialization failed, using sequential fallback:',
-          );
+          // Every worker crashed during startup and the pool's bounded
+          // self-heal (jittered restart, deterministic crash-loop detection —
+          // see worker-pool.ts) was exhausted. Fail fast with the captured
+          // cause rather than silently degrading to the ~10× slower sequential
+          // parser, which masked this exact regression as a 2-hour "stuck" run
+          // in #1741. The failed (zero-worker) pool is torn down by the outer
+          // finally. `--workers 0` is the explicit opt-in to sequential.
           rawResults.length = 0;
-          workerPoolDisabled = true;
-          const failedPool = workerPool;
-          workerPool = undefined;
-          await failedPool?.terminate().catch(() => undefined);
-          chunkWorkerData = await processParsing(
-            graph,
-            chunkFiles,
-            symbolTable,
-            astCache,
-            scopeTreeCache,
-            progressForChunk,
-            undefined,
-            undefined,
-          );
+          handleWorkerStartupFailure(err); // always throws
         }
         // Persist the raw results for this chunk hash. Sequential path
         // doesn't populate rawResults (it writes directly to graph), so
