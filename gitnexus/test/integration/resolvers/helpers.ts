@@ -206,6 +206,15 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // (pass under registry-primary, fail under legacy). Currently
     // empty — all 127 tests pass under legacy mode.
   ]),
+  swift: new Set<string>([
+    // Swift scope-resolution currently achieves 77/77 parity.
+    // Tests listed here are scope-resolver-only correctness wins
+    // (pass under registry-primary, fail under legacy). Currently
+    // empty — all 77 tests pass under legacy mode. Later remediation
+    // units (registry-primary-only correctness fixes) register their
+    // test names here; backporting to legacy is out of scope per the
+    // migration policy.
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class

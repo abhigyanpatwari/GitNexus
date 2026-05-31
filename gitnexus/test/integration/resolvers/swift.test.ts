@@ -6,10 +6,11 @@
  * NOTE: Swift is installed as an optional dependency. These tests skip gracefully
  * if a consumer installs without optional dependencies.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -19,6 +20,8 @@ import {
 } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+
+const it = createResolverParityIt('swift');
 
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
 
