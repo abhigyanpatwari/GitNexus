@@ -17,7 +17,12 @@ import { createRequire } from 'node:module';
 type InvocationMode = 'gitnexus' | 'pnpm' | 'npx';
 
 interface InvocationResolver {
-  resolveInvocationMode: () => InvocationMode;
+  // `probe` is injectable in the cjs (defaults to the real PATH probe) so the
+  // preference order is unit-testable without spawning; the CLI calls it with
+  // no argument.
+  resolveInvocationMode: (
+    probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
+  ) => InvocationMode;
   NPX_REF: string;
 }
 

@@ -135,6 +135,12 @@ describe('pickPathMatch — Windows global-shim detection', () => {
     );
     expect(cjs.pickPathMatch('', { isWin: true, gitnexusWrapper: true })).toBeNull();
   });
+
+  it('returns the first hit for a Windows non-wrapper lookup (pnpm probe)', () => {
+    expect(
+      cjs.pickPathMatch('C:\\npm\\pnpm.cmd\r\n', { isWin: true, gitnexusWrapper: false }),
+    ).toBe('C:\\npm\\pnpm.cmd');
+  });
 });
 
 describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
@@ -146,6 +152,15 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
   it('parses the npm major version', () => {
     mockedExec.mockReturnValue('11.5.2\n');
     expect(getNpmMajorVersion()).toBe(11);
+  });
+
+  it('handles edge npm --version output (pre-release / empty / non-numeric)', () => {
+    mockedExec.mockReturnValue('12.0.0-pre\n');
+    expect(getNpmMajorVersion()).toBe(12);
+    mockedExec.mockReturnValue('\n');
+    expect(getNpmMajorVersion()).toBeNull();
+    mockedExec.mockReturnValue('not-a-version\n');
+    expect(getNpmMajorVersion()).toBeNull();
   });
 
   it('warns on the npm 11+ npx path', () => {
@@ -161,6 +176,15 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
 
   it('does not warn when a global gitnexus or pnpm is preferred', () => {
     process.env.GITNEXUS_INVOCATION = 'pnpm';
+    mockedExec.mockReturnValue('11.0.0\n');
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it('does not warn when a global gitnexus is preferred', () => {
+    process.env.GITNEXUS_INVOCATION = 'gitnexus';
     mockedExec.mockReturnValue('11.0.0\n');
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     warnIfNpm11NpxRisk();
