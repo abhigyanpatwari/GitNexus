@@ -334,11 +334,6 @@ async function mergeHooksJsonc(
   return true;
 }
 
-/**
- * Install GitNexus hooks to ~/.claude/settings.json for Claude Code.
- * Merges hook config without overwriting existing hooks, preserving
- * comments and formatting in the JSONC file.
- */
 const HOOK_HELPERS = [
   'hook-lock.cjs',
   'hook-db-lock-probe.cjs',
@@ -368,6 +363,11 @@ export async function copyHookHelpers(
   }
 }
 
+/**
+ * Install GitNexus hooks to ~/.claude/settings.json for Claude Code.
+ * Merges hook config without overwriting existing hooks, preserving
+ * comments and formatting in the JSONC file.
+ */
 async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   const claudeDir = path.join(os.homedir(), '.claude');
   if (!(await dirExists(claudeDir))) return;
