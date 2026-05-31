@@ -117,7 +117,11 @@ describe('pickUniqueGlobalClass — once-built global class index (U5)', () => {
     // KTD5: Interface stays in the filter for the behavior-preserving 8-lang
     // refactor. A future protocol-exclusion change must break THIS test
     // deliberately rather than silently.
-    const proto = mkDef({ nodeId: 'def:Drawable', type: 'Interface', qualifiedName: 'ui.Drawable' });
+    const proto = mkDef({
+      nodeId: 'def:Drawable',
+      type: 'Interface',
+      qualifiedName: 'ui.Drawable',
+    });
     expect(resolve('Drawable', [proto])?.nodeId).toBe('def:Drawable');
   });
 
