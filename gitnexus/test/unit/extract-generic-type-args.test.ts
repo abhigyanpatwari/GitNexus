@@ -151,12 +151,48 @@ describe('extractGenericTypeArgs', () => {
       typeText: string;
       expected: string[];
     }> = [
-      { lang: SupportedLanguages.Java, file: 'C.java', code: 'class C { List<User> f; }', typeText: 'List<User>', expected: ['User'] },
-      { lang: SupportedLanguages.TypeScript, file: 'c.ts', code: 'let f: Array<User>;', typeText: 'Array<User>', expected: ['User'] },
-      { lang: SupportedLanguages.CSharp, file: 'C.cs', code: 'class C { List<User> f; }', typeText: 'List<User>', expected: ['User'] },
-      { lang: SupportedLanguages.Rust, file: 'c.rs', code: 'struct C { f: Vec<User> }', typeText: 'Vec<User>', expected: ['User'] },
-      { lang: SupportedLanguages.Kotlin, file: 'C.kt', code: 'class C { val f: List<User> = x }', typeText: 'List<User>', expected: ['User'] },
-      { lang: SupportedLanguages.Java, file: 'C.java', code: 'class C { Map<String, User> f; }', typeText: 'Map<String, User>', expected: ['String', 'User'] },
+      {
+        lang: SupportedLanguages.Java,
+        file: 'C.java',
+        code: 'class C { List<User> f; }',
+        typeText: 'List<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.TypeScript,
+        file: 'c.ts',
+        code: 'let f: Array<User>;',
+        typeText: 'Array<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.CSharp,
+        file: 'C.cs',
+        code: 'class C { List<User> f; }',
+        typeText: 'List<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.Rust,
+        file: 'c.rs',
+        code: 'struct C { f: Vec<User> }',
+        typeText: 'Vec<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.Kotlin,
+        file: 'C.kt',
+        code: 'class C { val f: List<User> = x }',
+        typeText: 'List<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.Java,
+        file: 'C.java',
+        code: 'class C { Map<String, User> f; }',
+        typeText: 'Map<String, User>',
+        expected: ['String', 'User'],
+      },
     ];
 
     for (const { lang, file, code, typeText, expected } of cases) {
