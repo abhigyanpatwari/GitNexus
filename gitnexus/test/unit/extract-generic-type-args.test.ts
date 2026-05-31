@@ -112,14 +112,13 @@ describe('extractGenericTypeArgs', () => {
     });
   });
 
-  describe('parameterized_type (not emitted by any installed grammar)', () => {
-    // tree-sitter Java emits `generic_type` for `List<User>` and Kotlin emits
-    // `user_type` + `type_projection` — `parameterized_type` is produced by no
-    // installed grammar (verified via real parse, #1920). The shared extractor
-    // therefore does not special-case it; a `parameterized_type` node falls
-    // through to the empty result like any other unrecognized type node. The
-    // real Java/Kotlin paths are covered by the `generic_type` cases above.
-    it('returns [] for a parameterized_type node (grammar emits generic_type instead)', () => {
+  describe('parameterized_type (Java/Kotlin alternate generic node)', () => {
+    // `parameterized_type` is a defensive alternate for the generic node type.
+    // Current tree-sitter-java emits `generic_type` and tree-sitter-kotlin emits
+    // `user_type`+`type_projection` (verified via real parse, #1920), but the
+    // shared extractor keeps a `parameterized_type` branch for grammar
+    // resilience — allowlisted in the node-type validation gate.
+    it('captures the User type argument from a parameterized_type node', () => {
       const baseNode = mockNode('type_identifier', { text: 'List' });
       const argNode = mockNode('type_identifier', { text: 'User' });
       const typeArgsNode = mockNode('type_arguments', {
@@ -129,7 +128,7 @@ describe('extractGenericTypeArgs', () => {
         namedChildren: [baseNode, typeArgsNode],
         fields: { name: baseNode },
       });
-      expect(extractGenericTypeArgs(node)).toEqual([]);
+      expect(extractGenericTypeArgs(node)).toEqual(['User']);
     });
   });
 
