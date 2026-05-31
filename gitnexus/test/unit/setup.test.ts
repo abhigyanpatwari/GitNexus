@@ -391,4 +391,62 @@ describe('setupClaudeCode', () => {
       args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
+
+  // The hook `command` string is shell-evaluated by the editor. On POSIX the
+  // installed path lives under $HOME, which can legitimately contain spaces and
+  // (adversarially) shell metacharacters; the command must neutralize them.
+  it('single-quotes the POSIX hook command so the path cannot word-split or expand', async () => {
+    setPlatform('linux');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const settings = JSON.parse(
+      await fs.readFile(path.join(tempHome, '.claude', 'settings.json'), 'utf-8'),
+    );
+    const cmd: string = settings.hooks.PreToolUse[0].hooks[0].command;
+    const hookPath = path.join(tempHome, '.claude', 'hooks', 'gitnexus', 'gitnexus-hook.cjs');
+    // Single-quoted, not double-quoted, and the path is the literal inside quotes.
+    expect(cmd).toBe(`node '${hookPath}'`);
+    expect(cmd.startsWith("node '")).toBe(true);
+    expect(cmd).not.toMatch(/^node "/);
+  });
+});
+
+describe('formatHookCommand (hook command escaping, #1945)', () => {
+  let mod: typeof import('../../src/cli/setup.js');
+
+  beforeEach(async () => {
+    mod = await import('../../src/cli/setup.js');
+  });
+
+  it('single-quotes an ordinary POSIX path', () => {
+    expect(mod.formatHookCommand('/home/dev/.claude/hooks/gitnexus/gitnexus-hook.cjs', false)).toBe(
+      "node '/home/dev/.claude/hooks/gitnexus/gitnexus-hook.cjs'",
+    );
+  });
+
+  it('neutralizes spaces in a POSIX path (no word-splitting)', () => {
+    expect(mod.formatHookCommand('/home/a b/.claude/gitnexus-hook.cjs', false)).toBe(
+      "node '/home/a b/.claude/gitnexus-hook.cjs'",
+    );
+  });
+
+  it('neutralizes shell metacharacters in a POSIX path ($, backtick, ;)', () => {
+    // Single-quoting means none of these can expand or run as a command.
+    const evil = '/home/u$(id)/`whoami`/a;b/.claude/gitnexus-hook.cjs';
+    expect(mod.formatHookCommand(evil, false)).toBe(`node '${evil}'`);
+  });
+
+  it("escapes a single quote in a POSIX path via the '\\'' idiom", () => {
+    expect(mod.formatHookCommand("/home/o'brien/.claude/gitnexus-hook.cjs", false)).toBe(
+      "node '/home/o'\\''brien/.claude/gitnexus-hook.cjs'",
+    );
+  });
+
+  it('keeps the double-quoted form on Windows (metacharacters are illegal in filenames)', () => {
+    expect(mod.formatHookCommand('C:/Users/dev/.claude/gitnexus-hook.cjs', true)).toBe(
+      'node "C:/Users/dev/.claude/gitnexus-hook.cjs"',
+    );
+  });
 });

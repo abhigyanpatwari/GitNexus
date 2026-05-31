@@ -35,6 +35,40 @@ if (typeof _pkg.version !== 'string' || !_pkg.version) {
 }
 const NPX_REF = `gitnexus@${_pkg.version}`;
 
+/**
+ * Build the `command` string written into an editor's hook settings, which the
+ * editor shell-evaluates. `hookPath` is already forward-slash-normalized.
+ *
+ * On POSIX, single-quote the path: a single-quoted shell string expands nothing,
+ * so spaces and metacharacters ($, backtick, ;, |, &, newline, parens) in the
+ * install path cannot run as commands. The only character needing escaping
+ * inside single quotes is the single quote, via the standard `'\''` idiom
+ * (close, literal-quote, reopen). The previous double-quoted `node "..."` form
+ * left $/backtick live — a code-execution risk for an adversarial $HOME.
+ *
+ * On Windows, filenames cannot contain these POSIX metacharacters and the path
+ * is forward-slashed, so keep the double-quoted form with backslash-then-quote
+ * escaping (CodeQL js/incomplete-sanitization safe ordering).
+ */
+export function formatHookCommand(
+  hookPath: string,
+  isWindows = process.platform === 'win32',
+): string {
+  if (isWindows) {
+    const escaped = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `node "${escaped}"`;
+  }
+  return `node '${hookPath.replace(/'/g, "'\\''")}'`;
+}
+
+// The exact source line each hook adapter ships, rewritten at install time to
+// point cliPath at the installed CLI. Kept as a named constant so the install
+// patch and its drift guard reference one string — if the adapter source ever
+// changes this literal, the guard records an actionable error instead of
+// silently shipping a hook with an unresolved relative cliPath.
+const CLI_PATH_SOURCE_LITERAL =
+  "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');";
+
 interface SetupResult {
   configured: string[];
   skipped: string[];
@@ -403,10 +437,12 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
       const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
       const jsonCli = JSON.stringify(normalizedCli);
-      content = content.replace(
-        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
-        `let cliPath = ${jsonCli};`,
-      );
+      if (!content.includes(CLI_PATH_SOURCE_LITERAL)) {
+        result.errors.push(
+          'Claude Code hooks: gitnexus-hook.cjs no longer contains the cliPath literal to patch — the installed hook may fail to resolve the CLI. Update CLI_PATH_SOURCE_LITERAL in setup.ts.',
+        );
+      }
+      content = content.replace(CLI_PATH_SOURCE_LITERAL, `let cliPath = ${jsonCli};`);
       await fs.writeFile(dest, content, 'utf-8');
     } catch {
       // Script not found in source — skip
@@ -438,12 +474,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     }
 
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
-    // Escape backslashes FIRST, then quotes (CodeQL js/incomplete-sanitization).
-    // The previous shape `replace(/"/g, '\\"')` alone would let `path\with"quote`
-    // become `path\with\"quote`, where the trailing `\` before `"` could
-    // unescape the quote inside the surrounding double-quoted shell context.
-    const escapedHookPath = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const hookCmd = `node "${escapedHookPath}"`;
+    const hookCmd = formatHookCommand(hookPath);
 
     // Check which hook events need entries (idempotent: skip if already registered)
     const parsed = await (async () => {
@@ -606,10 +637,12 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
       const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
       const jsonCli = JSON.stringify(normalizedCli);
-      content = content.replace(
-        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
-        `let cliPath = ${jsonCli};`,
-      );
+      if (!content.includes(CLI_PATH_SOURCE_LITERAL)) {
+        result.errors.push(
+          'Antigravity hooks: gitnexus-antigravity-hook.cjs no longer contains the cliPath literal to patch — the installed hook may fail to resolve the CLI. Update CLI_PATH_SOURCE_LITERAL in setup.ts.',
+        );
+      }
+      content = content.replace(CLI_PATH_SOURCE_LITERAL, `let cliPath = ${jsonCli};`);
       await fs.writeFile(adapterDest, content, 'utf-8');
     } catch {
       // Adapter not found in source — skip
@@ -645,8 +678,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
     }
 
     const hookPath = path.join(destHooksDir, 'gitnexus-antigravity-hook.cjs').replace(/\\/g, '/');
-    const escapedHookPath = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const hookCmd = `node "${escapedHookPath}"`;
+    const hookCmd = formatHookCommand(hookPath);
 
     const parsed = await (async () => {
       try {
