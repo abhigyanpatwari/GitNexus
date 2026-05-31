@@ -242,7 +242,11 @@ export function getLabelFromCaptures(
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
-  if (!captureMap['name'] && !captureMap['definition.constructor']) return null;
+  const hasDefaultExportHocNameSeed =
+    captureMap['definition.function'] !== undefined &&
+    (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
+  if (!captureMap['name'] && !captureMap['definition.constructor'] && !hasDefaultExportHocNameSeed)
+    return null;
 
   if (captureMap['definition.function']) {
     if (provider.labelOverride) {

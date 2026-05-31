@@ -23,5 +23,9 @@
   "ruby": {
     "fingerprint": "0f44b0d153b4534866589db93c582928651238b319cb606f2c6396362770cc18",
     "scaling_budget": 1.5
+  },
+  "swift": {
+    "fingerprint": "e6870c409c1005944c51dffd6e485005bb206f7afcbc2ef078e0c2f781c2b2ad",
+    "scaling_budget": 1.5
   }
 }

@@ -410,7 +410,7 @@ const findEnclosingFunction = (
 
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
 
@@ -925,6 +925,7 @@ export const processCalls = async (
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
     const typeEnv = buildTypeEnv(tree, language, {
+      filePath: file.path,
       model: ctx.model,
       parentMap,
       importedBindings,
@@ -1293,7 +1294,8 @@ export const processCalls = async (
         while (p) {
           if (FUNCTION_NODE_TYPES.has(p.type)) {
             const funcName =
-              provider.methodExtractor?.extractFunctionName?.(p)?.funcName ?? genericFuncName(p);
+              provider.methodExtractor?.extractFunctionName?.(p, file.path)?.funcName ??
+              genericFuncName(p);
             if (funcName) {
               scope = `${funcName}@${p.startIndex}`;
               break;

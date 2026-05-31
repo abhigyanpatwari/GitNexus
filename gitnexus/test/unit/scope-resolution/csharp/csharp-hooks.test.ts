@@ -216,23 +216,20 @@ describe('populateCsharpNamespaceSiblings', () => {
       typeBindings: new Map(),
     }) as unknown as Scope;
 
-  it('writes namespace siblings to the augmentation channel without touching frozen finalized bindings', () => {
-    // Verifies the post-finalize binding-augmentation contract for the
-    // C# namespace-siblings hook (per ScopeResolver I8 + the
-    // `bindingAugmentations` doc on `ScopeResolutionIndexes`):
-    //   * `indexes.bindings` (the finalize output) stays frozen and
-    //     its inner `BindingRef[]` arrays are NEVER mutated by the
-    //     hook — proven here by passing a frozen bucket and asserting
-    //     it survives unchanged.
-    //   * Cross-file siblings are appended to
-    //     `indexes.bindingAugmentations`, the dedicated mutable
-    //     append-only buffer.
-    //   * Walkers downstream (`lookupBindingsAt`) merge the two layers
-    //     transparently — covered by walkers-augmentations.test.ts.
-    // Reproduces the pre-architecture `Cannot add property N, object
-    // is not extensible` crash by carrying a pre-frozen `BindingRef[]`
-    // through `indexes.bindings`. End-to-end coverage is in the
-    // `csharp-large-cache-miss-resolution` fixture.
+  it('routes named-namespace siblings to the per-namespace channel without touching frozen finalized bindings', () => {
+    // Verifies the post-finalize binding contract for the C#
+    // namespace-siblings hook (per ScopeResolver I8 + the channel docs on
+    // `ScopeResolutionIndexes`):
+    //   * `indexes.bindings` (the finalize output) stays frozen and its inner
+    //     `BindingRef[]` arrays are NEVER mutated by the hook — proven here by
+    //     passing a frozen bucket and asserting it survives unchanged.
+    //   * Named-namespace cross-file siblings are routed ONCE into
+    //     `indexes.namespaceFqnBindings[ns]` (the per-namespace channel,
+    //     #1871), NOT copied per-scope into `bindingAugmentations`. The file's
+    //     accessible namespaces are recorded in `accessibleNamespacesByScope`.
+    //   * Walkers downstream (`lookupBindingsAt`) merge the layers
+    //     transparently, gated by accessibility — covered by
+    //     walkers-augmentations.test.ts.
     const existing = classDef('def:external.B', 'external.cs', 'Other.B');
     const sibling = classDef('def:b.B', 'b.cs', 'Demo.B');
     const moduleA = scope('scope:a:module', 'Module', 'a.cs');
@@ -261,10 +258,20 @@ describe('populateCsharpNamespaceSiblings', () => {
       [moduleA.id, new Map<string, readonly BindingRef[]>([['B', frozenBucket]])],
     ]);
     const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const namespaceFqnBindings = new Map<string, Map<string, BindingRef[]>>();
+    const accessibleNamespacesByScope = new Map<ScopeId, string[]>();
 
     populateCsharpNamespaceSiblings(
       parsedFiles,
-      { bindings, bindingAugmentations } as unknown as ScopeResolutionIndexes,
+      {
+        bindings,
+        bindingAugmentations,
+        workspaceFqnBindings: new Map(),
+        workspaceTypeBindings: new Map(),
+        namespaceFqnBindings,
+        namespaceTypeBindings: new Map(),
+        accessibleNamespacesByScope,
+      } as unknown as ScopeResolutionIndexes,
       {
         fileContents: new Map([
           ['a.cs', 'namespace Demo;\nclass A { }\n'],
@@ -273,14 +280,23 @@ describe('populateCsharpNamespaceSiblings', () => {
       },
     );
 
+    // Finalized channel untouched and still frozen.
     const finalized = bindings.get(moduleA.id)?.get('B') ?? [];
     expect(finalized).toBe(frozenBucket);
     expect(finalized.map((b) => b.def.nodeId)).toEqual(['def:external.B']);
     expect(Object.isFrozen(finalized)).toBe(true);
 
-    const augmented = bindingAugmentations.get(moduleA.id)?.get('B') ?? [];
-    expect(augmented.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
-    expect(Object.isFrozen(augmented)).toBe(false);
+    // Sibling B routed into the per-namespace channel once (not per-scope).
+    const nsBucket = namespaceFqnBindings.get('Demo')?.get('B') ?? [];
+    expect(nsBucket.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
+    expect(Object.isFrozen(nsBucket)).toBe(false);
+    expect(nsBucket[0]?.origin).toBe('namespace');
+
+    // a.cs's accessible namespaces (its own `Demo`) are recorded for the gate.
+    expect(accessibleNamespacesByScope.get(moduleA.id)).toContain('Demo');
+
+    // The per-scope augmentation channel is NOT used for named siblings anymore.
+    expect(bindingAugmentations.get(moduleA.id)?.get('B')).toBeUndefined();
   });
 
   it('scans (no re-parse) UTF-8-heavy cache-miss files before namespace sibling injection', () => {
@@ -306,12 +322,20 @@ describe('populateCsharpNamespaceSiblings', () => {
         referenceSites: Object.freeze([]),
       } as ParsedFile,
     ];
-    const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const namespaceFqnBindings = new Map<string, Map<string, BindingRef[]>>();
     const padding = '漢'.repeat(190_000);
 
     populateCsharpNamespaceSiblings(
       parsedFiles,
-      { bindings: new Map(), bindingAugmentations } as unknown as ScopeResolutionIndexes,
+      {
+        bindings: new Map(),
+        bindingAugmentations: new Map(),
+        workspaceFqnBindings: new Map(),
+        workspaceTypeBindings: new Map(),
+        namespaceFqnBindings,
+        namespaceTypeBindings: new Map(),
+        accessibleNamespacesByScope: new Map(),
+      } as unknown as ScopeResolutionIndexes,
       {
         fileContents: new Map([
           ['a.cs', `namespace Demo;\n// ${padding}\nclass A { }\n`],
@@ -320,7 +344,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       },
     );
 
-    expect(bindingAugmentations.get(moduleA.id)?.get('B')?.[0]?.def.nodeId).toBe('def:b.B');
+    expect(namespaceFqnBindings.get('Demo')?.get('B')?.[0]?.def.nodeId).toBe('def:b.B');
   });
 
   it('routes global-namespace types to workspaceFqnBindings, not per-scope augmentations (#1871 OOM guard)', () => {

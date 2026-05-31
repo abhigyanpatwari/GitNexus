@@ -82,6 +82,7 @@ export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<Suppo
   SupportedLanguages.Rust,
   SupportedLanguages.Ruby,
   SupportedLanguages.Cobol,
+  SupportedLanguages.Swift,
 ]);
 
 /**

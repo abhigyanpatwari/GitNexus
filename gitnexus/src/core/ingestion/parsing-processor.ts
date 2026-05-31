@@ -68,6 +68,11 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
+import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from './ts-js-hoc-utils.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -495,6 +500,7 @@ const processParsingSequential = async (
     // lifecycle and flush-site ownership rules.
     const typeEnv = provider.fieldExtractor
       ? buildTypeEnv(tree, language, {
+          filePath: file.path,
           enclosingFunctionFinder: provider.enclosingFunctionFinder,
           extractFunctionName: provider.methodExtractor?.extractFunctionName,
         })
@@ -540,9 +546,49 @@ const processParsingSequential = async (
       ) {
         return;
       }
+      const exportDefaultCall =
+        nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
+          ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
+          : undefined;
+      const defaultExportHocName = (() => {
+        if (exportDefaultCall === undefined) return null;
+        const argList = exportDefaultCall.childForFieldName?.('arguments');
+        const callback = argList?.namedChildren.find(
+          (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+        );
+        if (callback === undefined) return null;
+
+        const callee = exportDefaultCall.childForFieldName?.('function');
+        if (
+          callee?.type === 'identifier' &&
+          DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
+        ) {
+          return null;
+        }
+        if (callee?.type === 'member_expression') {
+          const property = callee.childForFieldName?.('property');
+          if (
+            property?.type === 'property_identifier' &&
+            ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+          ) {
+            return null;
+          }
+        }
+
+        return deriveDefaultExportHocName(file.path);
+      })();
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) return;
-      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
+      if (
+        !nameNode &&
+        nodeLabel !== 'Constructor' &&
+        !extractedClassSymbol &&
+        !defaultExportHocName
+      ) {
+        return;
+      }
+      const nodeName =
+        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
 
       const startLine = definitionNodeForRange
         ? definitionNodeForRange.startPosition.row + lineOffset
