@@ -161,7 +161,81 @@ export function emitRustScopeCaptures(
     out.push(grouped);
   }
 
+  out.push(...synthesizeRustInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Rust trait `impl` blocks so
+ * the registry-primary scope-resolution path can emit the IMPLEMENTS edge for
+ * `impl Trait for Struct` (mirrors the legacy `@heritage.trait`/`@heritage.class`
+ * path, which the worker pipeline drops for registry-primary languages — #1951).
+ *
+ * Rust inheritance is structurally unlike a base list on a type declaration:
+ * the relationship lives on `impl_item { trait: T, type: S }`, meaning
+ * `S IMPLEMENTS T`. The shared `preEmitInheritanceEdges` derives an edge's
+ * SOURCE from the enclosing *class* def of the `@reference.inherits` site, but
+ * an `impl_item` scope owns no class-like def (the struct `S` is declared
+ * elsewhere as a `struct_item`), so `findEnclosingClassDef` returns undefined
+ * and that pass emits nothing for these sites (it still marks them handled,
+ * suppressing the generic reference bridge). The real IMPLEMENTS edge is
+ * therefore emitted by `rustScopeResolver.emitHeritageEdges`, which reads these
+ * sites back from `parsedFiles[*].referenceSites`.
+ *
+ * To carry both ends of the relationship through a single reference site we
+ * encode: `@reference.name` = the trait `T` (becomes `site.name`, the IMPLEMENTS
+ * target) and `@reference.receiver` = the struct `S` (becomes
+ * `site.explicitReceiver.name`, the IMPLEMENTS source).
+ *
+ * Parity is intentionally pinned to the legacy heritage query's four
+ * `impl_item` variants: both `trait:` and `type:` must normalize to a bare
+ * `type_identifier` (directly, or as the `type:` of a `generic_type`). Inherent
+ * impls (`impl S {}`, no `trait:` field) and qualified `scoped_type_identifier`
+ * bases — which the legacy query does NOT match — emit nothing here too.
+ */
+function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visitRust(root, (node) => {
+    if (node.type !== 'impl_item') return;
+    const traitField = node.childForFieldName('trait');
+    const typeField = node.childForFieldName('type');
+    if (traitField === null || typeField === null) return;
+    const traitName = bareTypeIdentifier(traitField);
+    const structName = bareTypeIdentifier(typeField);
+    if (traitName === null || structName === null) return;
+    out.push({
+      '@reference.inherits': nodeToCapture('@reference.inherits', traitName),
+      '@reference.name': nodeToCapture('@reference.name', traitName),
+      '@reference.receiver': syntheticCapture('@reference.receiver', structName, structName.text),
+    });
+  });
+  return out;
+}
+
+/**
+ * Normalize a `trait:` / `type:` impl_item field to its bare `type_identifier`,
+ * matching exactly the node types the legacy `@heritage` query accepts:
+ *   - `type_identifier`               → the node itself
+ *   - `generic_type type: (type_identifier ...)` → the inner `type:` identifier
+ * Any other node type (e.g. `scoped_type_identifier`) returns null so this
+ * emitter stays at parity with the legacy query (no extra edges).
+ */
+function bareTypeIdentifier(node: SyntaxNode): SyntaxNode | null {
+  if (node.type === 'type_identifier') return node;
+  if (node.type === 'generic_type') {
+    const inner = node.childForFieldName('type');
+    if (inner !== null && inner.type === 'type_identifier') return inner;
+  }
+  return null;
+}
+
+function visitRust(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) visitRust(child, cb);
+  }
 }
 
 function findEnclosingImpl(node: SyntaxNode): SyntaxNode | null {

@@ -1,8 +1,9 @@
 {
   "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. All six languages now thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp this PR).",
   "go": {
-    "fingerprint": "faca3555c61ed6980d2b739bf6b1cac7f4ad4644968a27e4687532d9835cd4c7",
-    "scaling_budget": 1.5
+    "fingerprint": "67d0a5bfed25e0f469ea7f16f7e5c7954f3e6bcbdec020f8972686a5c92fb29a",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
   },
   "cobol": {
     "fingerprint": "575016f329c0be29eb90db974f750d02a21b4a12515f7029bda312df713b27b0",
@@ -14,19 +15,23 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "025f5b6d4cf1d8cc42033f1f6b592f8d5428e571939c7f61df4d34b4bbe14be3",
-    "scaling_budget": 1.5
+    "fingerprint": "dd894fe35cbbf2eafe1c6b6d85b61c274f3e9e57c93135416bf54943b93aa189",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
   },
   "php": {
-    "fingerprint": "00fe6e83cebd67c5f346fedb4234ebedf192995f9f171a424551cb792a0b91a9",
-    "scaling_budget": 1.5
+    "fingerprint": "65fdca54cf8426ec057995981b24fc414c6bca842cb41984ec3bbd5054a84eec",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
   },
   "ruby": {
-    "fingerprint": "0f44b0d153b4534866589db93c582928651238b319cb606f2c6396362770cc18",
-    "scaling_budget": 1.5
+    "fingerprint": "e7952015f51f9e884bb7abcc17fa125661854c8d872b90ef133ec7c48b12d3d0",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
   },
   "swift": {
-    "fingerprint": "e6870c409c1005944c51dffd6e485005bb206f7afcbc2ef078e0c2f781c2b2ad",
-    "scaling_budget": 1.5
+    "fingerprint": "fbbe345fa9e8e5f73f946cfd9edf6ac01ef5e646c2439913c7f173cc63714e55",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
   }
 }

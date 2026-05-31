@@ -585,6 +585,67 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
   }
 }
 
+// ─── Inheritance references (EXTENDS) ────────────────────────────────────
+
+/**
+ * Synthesize `@reference.inherits` captures from JavaScript class heritage so
+ * the registry-primary scope-resolution path emits EXTENDS edges (mirrors C#
+ * `synthesizeCsharpInheritanceReferences` / C++ `emitCppInheritanceCaptures`).
+ * Without this, JS inheritance edges came only from the legacy `@heritage.*`
+ * path, which the worker pipeline drops for registry-primary languages,
+ * yielding 0 inheritance edges in worker mode (issue #1951).
+ *
+ * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
+ * whose base is a DIRECT `(identifier)` child — exactly matching the legacy
+ * JavaScript `@heritage.extends` query
+ * (`(class_declaration name: (identifier) (class_heritage (identifier))`).
+ * JavaScript classes have a single `extends` base and no `implements`, so
+ * every emission is an EXTENDS (decided downstream from the resolved target's
+ * symbol kind in `preEmitInheritanceEdges`).
+ *
+ * Deliberately NOT emitted (preserving parity with the legacy query, incl. the
+ * #1943 HOC behavior):
+ *   - `class` EXPRESSION nodes (legacy captures `class_declaration` only).
+ *   - `member_expression` bases (`extends Foo.Bar`) — not an `(identifier)`.
+ *   - `call_expression` / HOC bases (`extends withFoo(Bar)`) — not an
+ *     `(identifier)`.
+ * The base name is already a bare simple identifier (JS heritage carries no
+ * generics/qualifiers), so no name normalization is needed for
+ * `findClassBindingInScope` to resolve it.
+ */
+function synthesizeJsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]): void {
+  const stack: SyntaxNode[] = [root];
+  for (;;) {
+    const node = stack.pop();
+    if (node === undefined) break;
+    for (const child of node.namedChildren) {
+      if (child !== null) stack.push(child);
+    }
+
+    if (node.type !== 'class_declaration') continue;
+
+    // Find the `class_heritage` child (holds the single `extends` base).
+    let heritage: SyntaxNode | null = null;
+    for (const child of node.namedChildren) {
+      if (child !== null && child.type === 'class_heritage') {
+        heritage = child;
+        break;
+      }
+    }
+    if (heritage === null) continue;
+
+    // Emit only for a direct `(identifier)` base — matching the legacy query
+    // exactly (excludes member_expression / call-expression HOC bases).
+    for (const base of heritage.namedChildren) {
+      if (base === null || base.type !== 'identifier') continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', base),
+        '@reference.name': nodeToCapture('@reference.name', base),
+      });
+    }
+  }
+}
+
 // ─── Main emitter ──────────────────────────────────────────────────────────
 
 export function emitJsScopeCaptures(
@@ -752,6 +813,7 @@ export function emitJsScopeCaptures(
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeInstanceofNarrowings(tree.rootNode, out);
+  synthesizeJsInheritanceReferences(tree.rootNode, out);
 
   return out;
 }

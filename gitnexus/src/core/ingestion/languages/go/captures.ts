@@ -159,7 +159,84 @@ export function emitGoScopeCaptures(
     });
   }
 
+  out.push(...synthesizeGoInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures for Go struct embedding so the
+ * registry-primary scope-resolution path emits inheritance edges (mirrors C#
+ * `synthesizeCsharpInheritanceReferences` / C++ `emitCppInheritanceCaptures`).
+ * Without this, Go embedding edges came only from the legacy `@heritage.*`
+ * path, which is dropped for registry-primary languages in the worker pipeline
+ * (issue #1951).
+ *
+ * Scope EXACTLY matches the legacy Go heritage query + its `shouldSkipExtends`
+ * hook (`heritage-extractors/configs/go.ts`):
+ *
+ *   (type_declaration
+ *     (type_spec name: (type_identifier) @heritage.class
+ *       type: (struct_type
+ *         (field_declaration_list
+ *           (field_declaration type: (type_identifier) @heritage.extends)))))
+ *
+ * i.e. an embedded (anonymous) field — a `field_declaration` whose `type` is a
+ * bare `type_identifier` and which has NO `name` field — inside a struct. Named
+ * fields (`Breed string`) are skipped because their `field_declaration` carries
+ * a `name` field, matching the legacy `shouldSkipExtends` filter. Interface
+ * embedding, pointer embedding (`*Base`), qualified embedding (`pkg.Base`), and
+ * generic embedding (`Base[T]`) are NOT captured by the legacy query and are
+ * therefore intentionally excluded here to preserve parity.
+ *
+ * The embedded name is already a bare simple identifier (the `type_identifier`
+ * node text), so no generic/qualifier stripping is needed for the V1
+ * `findClassBindingInScope` contract. The EXTENDS-vs-IMPLEMENTS split is decided
+ * downstream from the resolved target's symbol kind (`preEmitInheritanceEdges`):
+ * an embedded struct resolves to EXTENDS, an embedded interface to IMPLEMENTS.
+ */
+function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visitGo(root, (node) => {
+    if (node.type !== 'type_declaration') return;
+    for (const spec of node.namedChildren) {
+      if (spec.type !== 'type_spec') continue;
+      const typeNode = spec.childForFieldName('type');
+      if (typeNode === null || typeNode.type !== 'struct_type') continue;
+      const fieldList = findNamedChildOfType(typeNode, 'field_declaration_list');
+      if (fieldList === null) continue;
+      for (const field of fieldList.namedChildren) {
+        if (field.type !== 'field_declaration') continue;
+        // Embedded (anonymous) field: no `name` field. Named fields are
+        // skipped (legacy `shouldSkipExtends`).
+        if (field.childForFieldName('name') !== null) continue;
+        const baseNode = field.childForFieldName('type');
+        // Only bare `type_identifier` embeds — matches the legacy query.
+        if (baseNode === null || baseNode.type !== 'type_identifier') continue;
+        out.push({
+          '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
+          '@reference.name': nodeToCapture('@reference.name', baseNode),
+        });
+      }
+    }
+  });
+  return out;
+}
+
+/** First named child of `node` matching `type`, else null. */
+function findNamedChildOfType(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (const child of node.namedChildren) {
+    if (child.type === type) return child;
+  }
+  return null;
+}
+
+/** Pre-order walk over named children. */
+function visitGo(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (const child of node.namedChildren) {
+    visitGo(child, cb);
+  }
 }
 
 /**

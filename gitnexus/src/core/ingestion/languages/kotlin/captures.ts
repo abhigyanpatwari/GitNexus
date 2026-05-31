@@ -38,6 +38,7 @@ export function emitKotlinScopeCaptures(
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
   out.push(...synthesizeKotlinLambdaBindings(tree.rootNode, returnTypes));
+  out.push(...synthesizeKotlinInheritanceReferences(tree.rootNode));
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
@@ -193,6 +194,67 @@ export function emitKotlinScopeCaptures(
   }
 
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Kotlin `class_declaration`
+ * delegation specifiers so the registry-primary scope-resolution path emits
+ * EXTENDS / IMPLEMENTS edges (mirrors C# `synthesizeCsharpInheritanceReferences`
+ * and C++ `emitCppInheritanceCaptures`). Without this, Kotlin inheritance edges
+ * came only from the legacy `@heritage.*` path, which the worker pipeline drops
+ * for registry-primary languages → 0 inheritance edges in worker mode (#1951).
+ *
+ * Scope mirrors the legacy KOTLIN_QUERIES `@heritage.extends` patterns exactly:
+ * each `delegation_specifier` child of a `class_declaration`, in either form —
+ *   - bare interface/superclass: `class Foo : Bar`
+ *     `(delegation_specifier (user_type (type_identifier)))`
+ *   - constructor-call superclass: `class Foo : Bar()`
+ *     `(delegation_specifier (constructor_invocation (user_type (type_identifier))))`
+ *
+ * Kotlin uses `:` for BOTH superclass and interfaces — the EXTENDS-vs-IMPLEMENTS
+ * split is decided downstream from the resolved target's symbol kind
+ * (`preEmitInheritanceEdges`), so every base is emitted with the same `inherits`
+ * kind here. The bare lookup name is normalized to the simple identifier
+ * (`Base()` → `Base`, `Base<T>` → `Base`, `pkg.Base` → `Base`) so V1's
+ * simple-name `findClassBindingInScope` resolves it.
+ */
+function synthesizeKotlinInheritanceReferences(rootNode: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  for (const classNode of descendantsOfType(rootNode, 'class_declaration')) {
+    for (const child of classNode.namedChildren) {
+      if (child.type !== 'delegation_specifier') continue;
+      // Either `(delegation_specifier (constructor_invocation (user_type …)))`
+      // for `Base()` or `(delegation_specifier (user_type …))` for a bare
+      // interface/superclass — both wrap the same `user_type` → `type_identifier`.
+      const ctor = child.namedChildren.find((n) => n.type === 'constructor_invocation');
+      const userType =
+        ctor?.namedChildren.find((n) => n.type === 'user_type') ??
+        child.namedChildren.find((n) => n.type === 'user_type');
+      if (userType === undefined) continue;
+      const nameNode = kotlinUserTypeNameNode(userType);
+      if (nameNode === null) continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', child),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The bare simple-name `type_identifier` of a `user_type`. Strips generic
+ * type arguments (`Base<T>` → `Base`) and qualifier tails (`pkg.Base` → `Base`)
+ * by taking the LAST direct `type_identifier` child, matching the legacy
+ * `(user_type (type_identifier) @heritage.extends)` capture and V1's
+ * simple-name `findClassBindingInScope` contract.
+ */
+function kotlinUserTypeNameNode(userType: SyntaxNode): SyntaxNode | null {
+  let nameNode: SyntaxNode | null = null;
+  for (const child of userType.namedChildren) {
+    if (child.type === 'type_identifier') nameNode = child;
+  }
+  return nameNode;
 }
 
 function synthesizeKotlinLoopBindings(

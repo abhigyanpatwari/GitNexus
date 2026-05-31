@@ -162,7 +162,54 @@ export function emitPythonScopeCaptures(
     out.push(grouped);
   }
 
+  out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Python class superclass
+ * lists so the registry-primary scope-resolution path emits EXTENDS edges
+ * (mirrors C#'s `synthesizeCsharpInheritanceReferences` / C++'s
+ * `emitCppInheritanceCaptures`). Without this, Python inheritance edges came
+ * only from the legacy `@heritage.*` path, which is dropped for
+ * registry-primary languages in the worker pipeline (issue #1951).
+ *
+ * Scope matches the legacy Python heritage query exactly
+ * (`(class_definition superclasses: (argument_list (identifier) @heritage.extends))`):
+ * only the `superclasses` `argument_list`'s direct `identifier` bases are
+ * emitted — dotted/attribute bases (`class C(base.Foo)`) are an `attribute`
+ * node, NOT an `identifier`, so the legacy query never captured them and we
+ * skip them here to keep legacy/registry edge parity in CI.
+ *
+ * Python has no interfaces, so every base resolves to a Class and the central
+ * `preEmitInheritanceEdges` pass emits EXTENDS. The base lookup name is already
+ * a bare simple identifier, so no generic/qualifier stripping is needed.
+ */
+function synthesizePythonInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visit(root, (node) => {
+    if (node.type !== 'class_definition') return;
+    const superclasses = node.childForFieldName('superclasses');
+    if (superclasses === null || superclasses.type !== 'argument_list') return;
+    for (let i = 0; i < superclasses.namedChildCount; i++) {
+      const base = superclasses.namedChild(i);
+      if (base === null || base.type !== 'identifier') continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', base),
+        '@reference.name': nodeToCapture('@reference.name', base),
+      });
+    }
+  });
+  return out;
+}
+
+function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) visit(child, cb);
+  }
 }
 
 function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {

@@ -1,5 +1,6 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
+  findChild,
   nodeIfType,
   nodeToCapture,
   syntheticCapture,
@@ -430,7 +431,66 @@ export function emitRubyScopeCaptures(
     }
   }
 
+  // Fifth pass: superclass inheritance (`class Foo < Bar`).
+  // Emit `@reference.inherits` captures so the registry-primary scope-
+  // resolution path produces EXTENDS edges (issue #1951). This mirrors the
+  // C#/C++ inheritance synthesis: Ruby's superclass edges previously came
+  // only from the legacy `@heritage.extends` query, which the worker
+  // pipeline drops for registry-primary languages → 0 inheritance edges in
+  // worker mode. Mixins (include/extend/prepend) are NOT touched here — they
+  // flow through `emitHeritageEdges` (the `__heritage__:` import path above),
+  // an independent lane that stays intact when legacy @heritage is gated off.
+  out.push(...synthesizeRubySuperclassReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Ruby `class Foo < Bar`
+ * superclass declarations so the shared `preEmitInheritanceEdges` pass can
+ * resolve the base to a Class def and emit an EXTENDS edge.
+ *
+ * Scope is intentionally limited to `class` nodes whose `superclass` field
+ * holds a bare `constant` base — exactly the legacy RUBY_QUERIES
+ * `@heritage.extends` pattern:
+ *
+ *   (class
+ *     name: (constant) @heritage.class
+ *     superclass: (superclass
+ *       (constant) @heritage.extends)) @heritage
+ *
+ * `module` nodes are excluded (they have no superclass), and qualified
+ * `Foo::Bar` superclasses (`scope_resolution`) are excluded too — the legacy
+ * query matches only `(constant)`, so emitting more would break legacy↔
+ * scope-resolution edge parity. The base name is already a bare simple
+ * identifier (Ruby `constant`), so no generics/qualifier stripping is needed
+ * for `findClassBindingInScope` to resolve it.
+ *
+ * Edge type (EXTENDS vs IMPLEMENTS) is decided downstream from the resolved
+ * target's symbol kind — this pass only emits `@reference.inherits`.
+ */
+function synthesizeRubySuperclassReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visit(root, (node) => {
+    if (node.type !== 'class') return;
+    const superclass = node.childForFieldName('superclass');
+    if (superclass === null) return;
+    const baseNode = findChild(superclass, 'constant');
+    if (baseNode === null) return;
+    out.push({
+      '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
+      '@reference.name': nodeToCapture('@reference.name', baseNode),
+    });
+  });
+  return out;
+}
+
+function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) visit(child, cb);
+  }
 }
 
 function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatch | null {

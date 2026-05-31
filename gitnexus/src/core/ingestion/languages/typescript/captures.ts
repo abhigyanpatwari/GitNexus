@@ -411,8 +411,114 @@ export function emitTsScopeCaptures(
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeInstanceofNarrowings(tree.rootNode, out);
+  synthesizeTsInheritanceReferences(tree.rootNode, out);
 
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from TypeScript class heritage so
+ * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
+ * (mirrors C# `synthesizeCsharpInheritanceReferences` / JS
+ * `synthesizeJsInheritanceReferences`). Without this, TS inheritance edges came
+ * only from the legacy `@heritage.*` path, which the worker pipeline drops for
+ * registry-primary languages — yielding 0 inheritance edges in worker mode
+ * (issue #1951).
+ *
+ * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
+ * `extends_clause` value + `implements_clause` types — exactly matching the
+ * legacy TypeScript `@heritage` query (TYPESCRIPT_QUERIES):
+ *
+ *   (class_declaration name: (type_identifier)
+ *     (class_heritage (extends_clause value: (identifier) @heritage.extends)))
+ *   (class_declaration name: (type_identifier)
+ *     (class_heritage (implements_clause (type_identifier) @heritage.implements)))
+ *
+ * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
+ * — the legacy query captures neither, so the registry path keeps parity with
+ * the legacy DAG under the CI scope-parity gate (REGISTRY_PRIMARY_TYPESCRIPT=0
+ * vs =1). The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
+ * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
+ * are emitted with the same `inherits` kind here. The base lookup name is
+ * normalized to its bare simple identifier (`BaseModel<string>` → `BaseModel`,
+ * `models.Base` → `Base`) so `findClassBindingInScope` resolves it.
+ */
+function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]): void {
+  const stack: SyntaxNode[] = [root];
+  for (;;) {
+    const node = stack.pop();
+    if (node === undefined) break;
+    for (const child of node.namedChildren) {
+      if (child !== null) stack.push(child);
+    }
+
+    if (node.type !== 'class_declaration') continue;
+
+    // Find the `class_heritage` child (holds extends / implements clauses).
+    let heritage: SyntaxNode | null = null;
+    for (const child of node.namedChildren) {
+      if (child !== null && child.type === 'class_heritage') {
+        heritage = child;
+        break;
+      }
+    }
+    if (heritage === null) continue;
+
+    for (const clause of heritage.namedChildren) {
+      if (clause === null) continue;
+      if (clause.type === 'extends_clause') {
+        // `extends Foo` / `extends Foo<T>` — the base is the `value:` field
+        // (an identifier; generics live in a sibling `type_arguments`).
+        const value = clause.childForFieldName('value') ?? clause.firstNamedChild;
+        emitTsInheritanceBase(value, out);
+      } else if (clause.type === 'implements_clause') {
+        // `implements IFoo, IBar<T>` — each base type is a direct named child.
+        for (const base of clause.namedChildren) {
+          emitTsInheritanceBase(base, out);
+        }
+      }
+    }
+  }
+}
+
+/** Emit one `@reference.inherits` match for a TS heritage base, normalizing
+ *  the lookup name to its bare simple identifier. No-ops on null / non-type
+ *  nodes or when the bare name can't be derived. */
+function emitTsInheritanceBase(base: SyntaxNode | null, out: CaptureMatch[]): void {
+  if (base === null) return;
+  const nameNode = terminalTsTypeNameNode(base);
+  if (nameNode === null) return;
+  out.push({
+    '@reference.inherits': nodeToCapture('@reference.inherits', base),
+    '@reference.name': nodeToCapture('@reference.name', nameNode),
+  });
+}
+
+/** Resolve a TypeScript heritage base node to its bare simple-identifier node.
+ *  `Foo` → `Foo`, `Foo<T>` (generic_type) → `Foo`, `models.Base`
+ *  (nested_type_identifier / member_expression) → `Base`. Mirrors C#'s
+ *  `terminalTypeNameNode`; returns null when no leaf identifier is reachable. */
+function terminalTsTypeNameNode(node: SyntaxNode): SyntaxNode | null {
+  switch (node.type) {
+    case 'identifier':
+    case 'type_identifier':
+      return node;
+    case 'generic_type': {
+      // generic_type has a `name:` field (type_identifier / nested_type_identifier);
+      // recurse to strip the type_arguments and reach the bare base identifier.
+      const name = node.childForFieldName('name') ?? node.firstNamedChild;
+      return name === null ? null : terminalTsTypeNameNode(name);
+    }
+    case 'nested_type_identifier':
+    case 'member_expression': {
+      // Qualified `A.B.Base` → tail identifier `Base`.
+      const tail = node.lastNamedChild;
+      return tail === null ? null : terminalTsTypeNameNode(tail);
+    }
+    default:
+      return null;
+  }
 }
 
 /**

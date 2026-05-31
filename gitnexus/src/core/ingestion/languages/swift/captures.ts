@@ -282,7 +282,83 @@ export function emitSwiftScopeCaptures(
     out.push(grouped);
   }
 
+  // ── Emit inheritance references for scope-resolution EXTENDS / IMPLEMENTS ──
+  // Walk every class/struct/enum/actor/extension and protocol declaration's
+  // inheritance specifiers and synthesize `@reference.inherits` captures so
+  // the registry-primary path emits EXTENDS / IMPLEMENTS (mirrors C++ /
+  // C# / Java). Without this, Swift inheritance edges came only from the
+  // legacy `@heritage.*` path, which the worker pipeline drops for
+  // registry-primary languages (issue #1951).
+  out.push(...synthesizeSwiftInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Swift inheritance
+ * specifiers so the registry-primary scope-resolution path emits
+ * EXTENDS / IMPLEMENTS edges (mirrors `synthesizeCsharpInheritanceReferences`
+ * / `emitCppInheritanceCaptures`). Without this, Swift inheritance edges came
+ * only from the legacy `@heritage.*` path, dropped for registry-primary
+ * languages in the worker pipeline (issue #1951).
+ *
+ * Scope matches the legacy SWIFT_QUERIES `@heritage` blocks exactly: a
+ * `class_declaration` (class / struct / enum / actor / extension all share
+ * this node) or a `protocol_declaration`, each with an
+ * `(inheritance_specifier inherits_from: (user_type (type_identifier)))`.
+ * The EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved
+ * target's symbol kind (`preEmitInheritanceEdges` → Interface = IMPLEMENTS,
+ * else EXTENDS), so every base is emitted with the same `inherits` kind here.
+ * The base lookup name is normalized to its bare simple identifier
+ * (`SomeProtocol<T>` → `SomeProtocol`, `Outer.Inner` → `Inner`) to match the
+ * V1 simple-name `findClassBindingInScope` contract.
+ */
+function synthesizeSwiftInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visitSwift(root, (node) => {
+    if (node.type !== 'class_declaration' && node.type !== 'protocol_declaration') return;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child === null || child.type !== 'inheritance_specifier') continue;
+      const inheritsFrom = child.childForFieldName('inherits_from') ?? child.firstNamedChild;
+      if (inheritsFrom === null) continue;
+      const nameNode = swiftBaseTypeIdentifier(inheritsFrom);
+      if (nameNode === null) continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', child),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  });
+  return out;
+}
+
+/** Normalize an `inherits_from` node to its bare simple identifier node.
+ *  The legacy query captures `inherits_from: (user_type (type_identifier))`,
+ *  so only a `user_type`-shaped base contributes an edge. The bare name is
+ *  the FIRST `type_identifier` child of the `user_type` — generic arguments
+ *  live in a sibling `type_arguments`, and a qualified `Outer.Inner` keeps
+ *  the leading segment (matching the legacy `.scm` first-position bind, and
+ *  the proven `firstInheritedType` walk in receiver-binding.ts). Returns
+ *  null for any other base shape (e.g. a tuple / function-type conformance),
+ *  so no edge is synthesized — matching the legacy query's `user_type` gate. */
+function swiftBaseTypeIdentifier(inheritsFrom: SyntaxNode): SyntaxNode | null {
+  if (inheritsFrom.type === 'type_identifier') return inheritsFrom;
+  if (inheritsFrom.type !== 'user_type') return null;
+  for (let i = 0; i < inheritsFrom.namedChildCount; i++) {
+    const child = inheritsFrom.namedChild(i);
+    if (child !== null && child.type === 'type_identifier') return child;
+  }
+  return null;
+}
+
+/** Pre-order walk over named children (mirrors C#'s `visit`). */
+function visitSwift(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) visitSwift(child, cb);
+  }
 }
 
 /** Synthesize a `@type-binding.constructor` for EACH clause of an

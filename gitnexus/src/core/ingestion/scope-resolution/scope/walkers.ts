@@ -301,6 +301,94 @@ export function findClassBindingInScope(
 }
 
 /**
+ * Import/include-aware disambiguation for an *ambiguous* class-like base
+ * name. Engages ONLY as a fallback after `findClassBindingInScope` has
+ * already returned `undefined` — i.e. the scope-chain walk and the
+ * single-match `qualifiedNames` fast paths could not pick a winner because
+ * several same-named class-like defs exist (e.g. two `class Handler`s in
+ * different headers/namespaces).
+ *
+ * Disambiguates by the referencing file's import graph: the enclosing
+ * module scope's finalized `ImportEdge[]` (C++ `#include`, C# `using`, etc.)
+ * each carry the exporting file in `targetFile`. A candidate whose defining
+ * file is brought in by one of those edges is preferred. Resolution is
+ * tiered, strictest first, and only commits when EXACTLY ONE candidate
+ * survives a tier — so a still-ambiguous name keeps the historical
+ * "return undefined" refusal:
+ *
+ *   1. Exact file match — candidate.filePath === an import's `targetFile`
+ *      (covers C++ `#include "handler_a.h"` → that header's class).
+ *   2. Same-directory match — candidate.filePath sits in the same directory
+ *      as some import target file (covers C# `using MyApp.Models;`, where the
+ *      namespace import resolves to ONE representative file in the namespace's
+ *      directory, not necessarily the file declaring the referenced type).
+ *
+ * Language-neutral: keyed only on the finalized import edges and the
+ * candidate defs' `filePath`. Returns `undefined` (preserving refusal) when
+ * the name is single-match-resolvable already (never reached — caller gates
+ * on `findClassBindingInScope` miss), when no import disambiguates, or when
+ * a tier leaves more than one survivor.
+ */
+export function resolveAmbiguousInheritanceBaseViaImports(
+  startScope: ScopeId,
+  baseName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  // Gather the class-like candidates that share this simple name. Defs are
+  // indexed by their `qualifiedName` in `qualifiedNames`; for languages whose
+  // class qualifiedName IS the simple name (C++, C#, etc.) this is the full
+  // candidate set. A single candidate is not "ambiguous" — leave it to the
+  // existing single-match fast path (this fallback shouldn't have been called).
+  const candidateIds = scopes.qualifiedNames.get(baseName);
+  if (candidateIds.length < 2) return undefined;
+  const candidates: SymbolDefinition[] = [];
+  for (const id of candidateIds) {
+    const def = scopes.defs.get(id);
+    if (def !== undefined && isClassLike(def.type)) candidates.push(def);
+  }
+  if (candidates.length < 2) return undefined;
+
+  // Collect the exporting files imported by the referencing file's enclosing
+  // module scope (the chain may carry function-local imports too, but the
+  // module scope is where `#include` / `using` land).
+  const moduleScopeId = moduleScopeIdOf(startScope, scopes);
+  if (moduleScopeId === null) return undefined;
+  const importEdges = scopes.imports.get(moduleScopeId);
+  if (importEdges === undefined || importEdges.length === 0) return undefined;
+  const importedFiles = new Set<string>();
+  const importedDirs = new Set<string>();
+  for (const edge of importEdges) {
+    if (edge.targetFile === null) continue;
+    importedFiles.add(edge.targetFile);
+    importedDirs.add(dirnameOf(edge.targetFile));
+  }
+  if (importedFiles.size === 0) return undefined;
+
+  // Tier 1 — exact file match (C++ `#include "handler_a.h"`).
+  const exact = candidates.filter((c) => importedFiles.has(c.filePath));
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return undefined; // still ambiguous → refuse
+
+  // Tier 2 — same-directory match (C# namespace `using`, where the namespace
+  // import resolves to one representative file in the namespace's directory).
+  const sameDir = candidates.filter((c) => importedDirs.has(dirnameOf(c.filePath)));
+  if (sameDir.length === 1) return sameDir[0];
+
+  return undefined;
+}
+
+/**
+ * Directory portion of a forward-slash workspace-relative path. Returns `''`
+ * for a bare filename (no directory). Workspace paths are always normalized to
+ * `/` separators upstream, so a simple `lastIndexOf('/')` is sufficient and
+ * keeps this dependency-free.
+ */
+function dirnameOf(filePath: string): string {
+  const idx = filePath.lastIndexOf('/');
+  return idx === -1 ? '' : filePath.slice(0, idx);
+}
+
+/**
  * Predicate for value-receiver bridge: the labels for which
  * `reconcileOwnership` registers methods/fields under the def's
  * `nodeId` as the `ownerId`. Explicit allowlist so future NodeLabel
