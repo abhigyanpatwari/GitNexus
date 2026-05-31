@@ -22,13 +22,8 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { cleanupTempDir, cleanupTempDirSync } from '../helpers/test-db.js';
 import os from 'os';
-import { createRequire } from 'module';
 import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
-
-const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version;
-const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 let tempHome: string;
 let installedHook: string;
@@ -119,7 +114,7 @@ describe('antigravity hook adapter e2e', () => {
       expect(output).not.toBeNull();
       expect(output!.hookEventName).toBe('AfterTool');
       expect(output!.additionalContext).toContain('index is stale');
-      expect(output!.additionalContext).toMatch(/npx gitnexus@\S+ analyze/);
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze');
 
       // Mirror to stderr so terminal users see the hint even when the agent
       // discards additionalContext
@@ -158,17 +153,22 @@ describe('antigravity hook adapter e2e', () => {
         }),
       );
 
-      const result = runHook(installedHook, {
-        hook_event_name: 'AfterTool',
-        tool_name: 'run_shell_command',
-        tool_input: { command: 'git commit -m "x"' },
-        tool_response: { llmContent: '[ok]' },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        installedHook,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "x"' },
+          tool_response: { llmContent: '[ok]' },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('--embeddings');
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
     });
 
     it('treats missing meta.json as stale', () => {

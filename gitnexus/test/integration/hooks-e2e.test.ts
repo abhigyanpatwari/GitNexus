@@ -10,12 +10,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { createRequire } from 'module';
 import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
-
-const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version;
-const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 // ─── Paths to both hook variants ────────────────────────────────────
 
@@ -87,7 +82,7 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
       expect(output!.additionalContext).toContain('stale');
-      expect(output!.additionalContext).toMatch(/npx gitnexus@\S+ analyze/);
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze');
     });
 
     it('prefers pnpm dlx when GITNEXUS_INVOCATION=pnpm', () => {
@@ -111,7 +106,7 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toMatch(/pnpm dlx gitnexus@\S+ analyze/);
+      expect(output!.additionalContext).toContain('pnpm dlx gitnexus@latest analyze');
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {
@@ -150,17 +145,22 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
         }),
       );
 
-      const result = runHook(hookPath, {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit -m "test"' },
-        tool_output: { exit_code: 0 },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        hookPath,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('--embeddings');
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
     });
 
     it('treats missing meta.json as stale', () => {
