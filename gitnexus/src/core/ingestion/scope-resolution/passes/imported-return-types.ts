@@ -42,7 +42,12 @@
 import type { ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { lookupBindingsAt, namesAtScope } from '../scope/walkers.js';
+import {
+  lookupBindingsAt,
+  namesAtScope,
+  moduleScopeIdOf,
+  namespaceTypeBindingFor,
+} from '../scope/walkers.js';
 
 /**
  * Max chain depth for the post-finalize re-follow. Effective end-to-end
@@ -66,6 +71,9 @@ export function followChainPostFinalize(
 ): TypeRef {
   let current = start;
   const visited = new Set<string>();
+  // The caller's module scope is fixed across the walk; resolve it once so the
+  // accessibility-gated per-namespace fallback below can be consulted cheaply.
+  const moduleScopeId = moduleScopeIdOf(fromScopeId, scopes);
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
     if (current.rawName.includes('.')) return current;
     let scopeId: ScopeId | null = fromScopeId;
@@ -78,9 +86,17 @@ export function followChainPostFinalize(
       next = undefined;
       scopeId = scope.parent;
     }
-    // Scope-independent fallback: C# global-namespace type bindings live in the
-    // shared `workspaceTypeBindings` channel rather than each Scope.typeBindings
-    // (#1871), so consult it before giving up on the chain.
+    // Scope-independent fallbacks (#1871), mirroring findReceiverTypeBinding's
+    // precedence: named namespaces accessible from this file
+    // (`namespaceTypeBindings`, gated by accessibility) first — they lived in the
+    // chain pre-#1871 and so must outrank the flat global channel — then the
+    // global/default namespace (`workspaceTypeBindings`, visible everywhere).
+    // Both live in shared channels rather than each Scope.typeBindings to avoid
+    // the O(files × names) blow-up.
+    if (next === undefined) {
+      const nsHit = namespaceTypeBindingFor(moduleScopeId, current.rawName, scopes);
+      if (nsHit !== undefined && nsHit !== current) next = nsHit;
+    }
     if (next === undefined) {
       const ws = scopes.workspaceTypeBindings?.get(current.rawName);
       if (ws !== undefined && ws !== current) next = ws;

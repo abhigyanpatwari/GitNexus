@@ -36,7 +36,7 @@ interface BenchResult {
   edgeCount: number;
 }
 
-type FixtureShape = 'spread' | 'concentrated';
+type FixtureShape = 'spread' | 'concentrated' | 'concentrated-named';
 
 function generateCsharpFixture(
   fileCount: number,
@@ -45,9 +45,13 @@ function generateCsharpFixture(
 ): { dir: string; classCount: number; namespaceCount: number } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `csharp-bench-${shape}-${fileCount}-`));
 
-  // "spread": square grid of namespaces. "concentrated": a single
-  // global (no-namespace) bucket so every type lands in the `''` bucket
-  // — the OOM-prone path.
+  // "spread": square grid of namespaces. "concentrated": a single global
+  // (no-namespace) bucket so every type lands in the `''` bucket — the #1954
+  // OOM-prone path. "concentrated-named": every file in ONE named namespace
+  // (`namespace App;`) — the #1871 named-namespace twin, which the global-only
+  // fix did not cover. Both concentrated shapes put all N type defs in a single
+  // bucket; "concentrated-named" exercises the per-namespace channel rather than
+  // the flat workspace channel.
   const namespaces: string[] = [];
   if (shape === 'spread') {
     for (let i = 0; i < namespacesPerLevel; i++) {
@@ -55,6 +59,8 @@ function generateCsharpFixture(
         namespaces.push(`App.Module${i}.Sub${j}`);
       }
     }
+  } else if (shape === 'concentrated-named') {
+    namespaces.push('App'); // single named namespace — all files share it
   } else {
     namespaces.push(''); // global / no namespace declaration
   }
@@ -255,6 +261,39 @@ describe.skipIf(!BENCH_ENABLED)('C# pipeline benchmark', () => {
     }
 
     printResults('C# Pipeline — Concentrated Global Namespace', results);
+
+    for (let i = 1; i < results.length; i++) {
+      const fileRatio = results[i].fileCount / results[i - 1].fileCount;
+      const timeRatio = results[i].elapsedMs / results[i - 1].elapsedMs;
+      expect(timeRatio / fileRatio).toBeLessThan(3);
+    }
+  }, 600_000);
+
+  it('scales with file count — all types in one (named) namespace bucket', async () => {
+    // Regression guard for the #1871 named-namespace twin: every file under one
+    // `namespace App;`, so the `App` bucket holds every type def. The global-only
+    // fix (#1954, workspaceTypeBindings) did NOT cover this — the per-file
+    // namespace-siblings copy (both the BindingRef augmentation and the
+    // typeBindings mirror) was still O(files²) for a concentrated named
+    // namespace. The per-namespace channels (namespaceFqnBindings /
+    // namespaceTypeBindings) keep it sub-quadratic; with the fix reverted the
+    // 1000→2000 step goes quadratic and trips the <3 assertion below.
+    const scales = [500, 1000, 2000];
+    const results: BenchResult[] = [];
+
+    for (const fileCount of scales) {
+      const result = await runBenchmark(fileCount, 1, 'concentrated-named', 180_000);
+      results.push(result);
+      console.log(
+        `  ${fileCount} files: ${result.elapsedMs}ms, ${result.peakHeapMB}MB heap, ${result.nodeCount} nodes, ${result.edgeCount} edges`,
+      );
+    }
+
+    printResults('C# Pipeline — Concentrated Named Namespace', results);
+
+    // The fixture must actually exercise cross-file resolution (not just
+    // parsing), or the scaling assertion would pass vacuously.
+    expect(results[results.length - 1].edgeCount).toBeGreaterThan(0);
 
     for (let i = 1; i < results.length; i++) {
       const fileRatio = results[i].fileCount / results[i - 1].fileCount;

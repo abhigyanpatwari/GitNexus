@@ -103,6 +103,36 @@ export interface ScopeResolutionIndexes {
    *  Populated post-finalize by `populateCsharpNamespaceSiblings`; most
    *  languages leave it empty. */
   readonly workspaceTypeBindings: ReadonlyMap<string, TypeRef>;
+  /** Per-namespace class/def binding lookup — the namespace-scoped analogue of
+   *  `workspaceFqnBindings`. Outer key is the namespace name (e.g. `App.Models`),
+   *  inner key is the simple name. Unlike the flat workspace channels (which are
+   *  visible from *every* file — correct only for the global/default namespace),
+   *  named-namespace types are visible only within that namespace and to files
+   *  that import it, so this channel is consulted through an accessibility gate
+   *  (`accessibleNamespacesByScope`) rather than unconditionally. Routing named
+   *  siblings here gives them one entry per def instead of the O(files × defs)
+   *  per-scope augmentation that OOM'd large single-namespace solutions (#1871).
+   *  Populated post-finalize by language namespace-sibling hooks; most languages
+   *  leave it empty. */
+  readonly namespaceFqnBindings: ReadonlyMap<string, ReadonlyMap<string, readonly BindingRef[]>>;
+  /** Per-namespace *type* binding lookup — the namespace-scoped analogue of
+   *  `workspaceTypeBindings`. Outer key is the namespace name, inner key is the
+   *  bound name (e.g. a method name mapping to its return TypeRef). Consulted by
+   *  the typeBindings chain-walkers (`findReceiverTypeBinding`,
+   *  `followChainPostFinalize`) through the `accessibleNamespacesByScope` gate
+   *  after the per-scope chain and the flat `workspaceTypeBindings` miss.
+   *  Populated post-finalize; most languages leave it empty. */
+  readonly namespaceTypeBindings: ReadonlyMap<string, ReadonlyMap<string, TypeRef>>;
+  /** Accessibility gate for the per-namespace channels: maps a module ScopeId to
+   *  the namespace names type-visible from that file — its own declared
+   *  namespace(s) plus every imported/`using`d namespace (and dotted prefixes).
+   *  This is the same per-file accessible-namespace set the C# hook already
+   *  derives (`expandedNamespaces`), materialized so the language-neutral walkers
+   *  can consult `namespaceFqnBindings` / `namespaceTypeBindings` for exactly the
+   *  namespaces a file can see — preserving namespace visibility semantics
+   *  without the per-file binding copy. Empty when no language populates the
+   *  namespace channels. */
+  readonly accessibleNamespacesByScope: ReadonlyMap<ScopeId, readonly string[]>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];
   /** SCC condensation of the file-level import graph — callers that want
