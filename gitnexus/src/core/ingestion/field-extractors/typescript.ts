@@ -86,18 +86,6 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
       }
     }
 
-    // Check for modifier node (tree-sitter typescript may group these)
-    const modifiers = node.childForFieldName('modifiers');
-    if (modifiers) {
-      for (let i = 0; i < modifiers.childCount; i++) {
-        const modifier = modifiers.child(i);
-        const modText = modifier?.text.trim() as FieldVisibility | undefined;
-        if (modText && TypeScriptFieldExtractor.VISIBILITY_MODIFIERS.has(modText)) {
-          return modText;
-        }
-      }
-    }
-
     // TypeScript class members are public by default
     return 'public';
   }
@@ -113,16 +101,6 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
       }
     }
 
-    const modifiers = node.childForFieldName('modifiers');
-    if (modifiers) {
-      for (let i = 0; i < modifiers.childCount; i++) {
-        const modifier = modifiers.child(i);
-        if (modifier && modifier.text === 'static') {
-          return true;
-        }
-      }
-    }
-
     return false;
   }
 
@@ -134,16 +112,6 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
       const child = node.child(i);
       if (child && !child.isNamed && child.text.trim() === 'readonly') {
         return true;
-      }
-    }
-
-    const modifiers = node.childForFieldName('modifiers');
-    if (modifiers) {
-      for (let i = 0; i < modifiers.childCount; i++) {
-        const modifier = modifiers.child(i);
-        if (modifier && modifier.text === 'readonly') {
-          return true;
-        }
       }
     }
 
