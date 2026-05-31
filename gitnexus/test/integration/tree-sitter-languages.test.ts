@@ -169,6 +169,21 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(names).toContain('uint');
       expect(names).toContain('Point');
     });
+
+    it('captures C typedef anonymous structs, enums, and enumerators', async () => {
+      await loadLanguage(SupportedLanguages.C);
+      const code = `
+        typedef struct { int x; int y; } Point;
+        typedef enum { RED, GREEN, BLUE } Color;
+      `;
+      const provider = getProvider(SupportedLanguages.C);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+      expect(defs.some((d) => d.type === 'definition.struct' && d.name === 'Point')).toBe(true);
+      expect(defs.some((d) => d.type === 'definition.enum' && d.name === 'Color')).toBe(true);
+      expect(names).toEqual(expect.arrayContaining(['RED', 'GREEN', 'BLUE']));
+    });
   });
 
   describe('C++', () => {
@@ -237,6 +252,21 @@ describe('Tree-sitter multi-language parsing', () => {
       const names = defs.map((d) => d.name);
       expect(names).toContain('utils');
       expect(names).toContain('helper');
+    });
+
+    it('captures C++ typedef anonymous structs, enums, and enumerators', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `
+        typedef struct { int x; int y; } Point;
+        typedef enum { Red, Green, Blue } Color;
+      `;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+      expect(defs.some((d) => d.type === 'definition.struct' && d.name === 'Point')).toBe(true);
+      expect(defs.some((d) => d.type === 'definition.enum' && d.name === 'Color')).toBe(true);
+      expect(names).toEqual(expect.arrayContaining(['Red', 'Green', 'Blue']));
     });
   });
 

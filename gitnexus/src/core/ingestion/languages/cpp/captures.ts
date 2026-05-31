@@ -35,9 +35,9 @@ export function emitCppScopeCaptures(
   const rawMatches = getCppScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
-  // Track ranges where typedef-struct was captured as @declaration.struct
+  // Track ranges where typedef-struct/enum was captured as its concrete type
   // so we can suppress the duplicate @declaration.typedef match.
-  const structTypedefRanges = new Set<string>();
+  const concreteTypedefRanges = new Set<string>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -74,11 +74,14 @@ export function emitCppScopeCaptures(
       }
     }
 
-    // ── Track typedef-struct ranges ─────────────────────────────────
-    const structAnchor = grouped['@declaration.struct'] ?? grouped['@declaration.class'];
-    if (structAnchor !== undefined) {
-      const r = structAnchor.range;
-      structTypedefRanges.add(`${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`);
+    // ── Track concrete typedef ranges ───────────────────────────────
+    const concreteTypeAnchor =
+      grouped['@declaration.struct'] ??
+      grouped['@declaration.class'] ??
+      grouped['@declaration.enum'];
+    if (concreteTypeAnchor !== undefined) {
+      const r = concreteTypeAnchor.range;
+      concreteTypedefRanges.add(`${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`);
     }
 
     // Suppress @declaration.typedef if the same range was already captured
@@ -86,7 +89,7 @@ export function emitCppScopeCaptures(
     if (typedefAnchor !== undefined) {
       const r = typedefAnchor.range;
       const key = `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
-      if (structTypedefRanges.has(key)) continue;
+      if (concreteTypedefRanges.has(key)) continue;
     }
 
     // ── Enrich function/method declarations with arity metadata ─────

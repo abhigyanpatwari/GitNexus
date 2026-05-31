@@ -606,8 +606,17 @@ export const C_QUERIES = `
 
 ; Structs, Unions, Enums, Typedefs
 (struct_specifier name: (type_identifier) @name) @definition.struct
+(type_definition
+  type: (struct_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @name) @definition.struct
 (union_specifier name: (type_identifier) @name) @definition.union
 (enum_specifier name: (type_identifier) @name) @definition.enum
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @name) @definition.enum
+(enumerator name: (identifier) @name) @definition.const
 (type_definition declarator: (type_identifier) @name) @definition.typedef
 
 ; Macros
@@ -705,6 +714,15 @@ export const CPP_QUERIES = `
 (enum_specifier name: (type_identifier) @name) @definition.enum
 
 ; Typedefs and unions (common in C-style headers and mixed C/C++ code)
+(type_definition
+  type: (struct_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @name) @definition.struct
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @name) @definition.enum
+(enumerator name: (identifier) @name) @definition.const
 (type_definition declarator: (type_identifier) @name) @definition.typedef
 (union_specifier name: (type_identifier) @name) @definition.union
 
