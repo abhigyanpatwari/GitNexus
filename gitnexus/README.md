@@ -24,6 +24,14 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
+> **On npm 11.x?** `npx` can crash during install (`Cannot destructure property 'package' of 'node.target'`). Use the pnpm form instead:
+>
+> ```bash
+> pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze
+> ```
+>
+> See [Troubleshooting → `npx gitnexus` crashes with `node.target is null` (npm 11)](#npx-gitnexus-crashes-with-nodetarget-is-null-npm-11) for the full matrix (global install, npm downgrade).
+
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
