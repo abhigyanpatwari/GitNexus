@@ -88,7 +88,8 @@ function preEmitInheritanceEdges(
       // edge. The shared bridge resolves the source via
       // `resolveCallerGraphId`, which can degrade class-heritage sites into
       // method-owned EXTENDS edges once methods exist on the class. This
-      // pre-pass is the authoritative inheritance emitter, so broad
+      // pre-pass is the authoritative inheritance emitter and pins the source
+      // to the enclosing class (via the `callerGraphId` override below), so
       // suppression keeps `buildMro` and the final graph class-owned.
       handledSites.add(siteKey);
     }
@@ -123,7 +124,10 @@ function preEmitInheritanceEdges(
         seen,
         0.85,
         false,
-        edgeType,
+        // Pin the edge to the enclosing class (not the method/constructor
+        // `resolveCallerGraphId` would otherwise prefer) and to the
+        // interface-vs-class-derived edge type. See #1951.
+        { edgeType, callerGraphId },
       )
     ) {
       existing.add(edgeKey);

@@ -239,8 +239,11 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
         }
       }
     }
-    for (let i = 0; i < node.childCount; i++) {
-      const child = node.child(i);
+    // Named children only: every type/heritage node we care about is named,
+    // so skipping unnamed punctuation tokens keeps the walk single-pass and
+    // lighter on large files.
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
       if (child !== null) stack.push(child);
     }
   }

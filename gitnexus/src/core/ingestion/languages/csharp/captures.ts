@@ -327,8 +327,13 @@ function terminalTypeNameNode(node: SyntaxNode): SyntaxNode | null {
       return node;
     case 'nullable_type':
       return node.firstNamedChild === null ? null : terminalTypeNameNode(node.firstNamedChild);
-    case 'qualified_name':
-      return node.lastNamedChild;
+    case 'qualified_name': {
+      // `A.B.Base` -> tail identifier `Base`; `A.B.Base<T>` -> the tail is a
+      // `generic_name`, so recurse to drop the type arguments and reach the
+      // bare base identifier (#1951).
+      const tail = node.lastNamedChild;
+      return tail === null ? null : terminalTypeNameNode(tail);
+    }
     case 'generic_name':
       // generic_name has no `name` field (verified by real parse, #1920); the
       // base identifier is the first named child.
