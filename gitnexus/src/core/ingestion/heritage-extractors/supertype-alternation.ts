@@ -75,6 +75,29 @@ export function buildSupertypeAlternation(
  */
 const INNER_NAME_FIELDS = ['name', 'type', 'property', 'attribute', 'value'] as const;
 
+/**
+ * Read-only snapshots of the four module-private node-type sets that drive
+ * {@link normalizeSupertypeName}'s branch selection. Exported ONLY so a unit
+ * test can enumerate the real members and assert each one still fires the
+ * branch it documents — a typo'd/removed/extra member would otherwise fall
+ * through silently. Not part of the runtime contract; do not consume in
+ * production code.
+ *
+ * @internal
+ */
+export const SUPERTYPE_NODE_TYPE_SETS = {
+  innerNameFields: INNER_NAME_FIELDS,
+  get leafTypes(): ReadonlySet<string> {
+    return LEAF_TYPES;
+  },
+  get skippedInnerTypes(): ReadonlySet<string> {
+    return SKIPPED_INNER_TYPES;
+  },
+  get leadingNameTypes(): ReadonlySet<string> {
+    return LEADING_NAME_TYPES;
+  },
+} as const;
+
 /** Node types whose own `.text` is already the simple identifier. */
 const LEAF_TYPES: ReadonlySet<string> = new Set([
   'type_identifier',
@@ -89,9 +112,15 @@ const LEAF_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Child node types to skip during the children-walk fallback: generic
- * argument lists (hold type params, not the name) and delegate/call subtrees
- * (Kotlin `constructor_invocation` → value_arguments, `explicit_delegation` →
- * call_expression hold the delegate, not the supertype name).
+ * argument lists (hold type params, not the name) and delegate/call subtrees.
+ *
+ * `value_arguments` covers the Kotlin `constructor_invocation` shape
+ * (`: Bar()` → `constructor_invocation` wrapping `user_type` + `value_arguments`):
+ * the right-to-left walk would otherwise land on the argument list first, so
+ * skipping it lets the walk fall through to the leading `user_type`. This is
+ * the intentional handling for `constructor_invocation` — it is deliberately
+ * NOT a leading-name type (see {@link LEADING_NAME_TYPES}), because its name is
+ * still recovered by the trailing-name walk once the arguments are skipped.
  */
 const SKIPPED_INNER_TYPES: ReadonlySet<string> = new Set([
   'type_arguments',
@@ -104,6 +133,24 @@ const SKIPPED_INNER_TYPES: ReadonlySet<string> = new Set([
   'annotated_lambda',
 ]);
 
+/**
+ * Node types whose supertype name is their FIRST named child rather than their
+ * last. The trailing-name walk is correct for qualified/scoped shapes
+ * (qualifier-first, name-last), but some wrappers put the supertype first and a
+ * delegate expression after it.
+ *
+ * Kotlin `explicit_delegation` (`: Bar by baz`, `by baz.qux`, `by baz()`) has
+ * shape `(user_type) (by) (<delegate-expression>)`: the supertype is the
+ * leading `user_type`, and the delegate (which can be an identifier, a
+ * navigation `baz.qux`, or a call `baz()`) trails it. A plain right-to-left
+ * walk would pick the delegate's trailing name (`qux` / `baz`) instead of the
+ * supertype, so these node types recurse into their first named child only.
+ *
+ * Structural, not language-named: any grammar exposing a leading-name wrapper
+ * can be added here.
+ */
+const LEADING_NAME_TYPES: ReadonlySet<string> = new Set(['explicit_delegation']);
+
 /** Guard against pathological/cyclic ASTs while descending into a supertype. */
 const MAX_NORMALIZE_DEPTH = 24;
 
@@ -115,11 +162,16 @@ const MAX_NORMALIZE_DEPTH = 24;
  *  2. Try field-based access (name/type/property/attribute/value) and recurse
  *     into the first field that resolves. Some grammars expose the parts only
  *     via fields (Java generic_type→name, Go qualified_type→name, etc.).
- *  3. Fall back to a children walk when fields are empty (e.g. C++
- *     qualified_identifier in 0.23.x can carry the name only as a child, and
- *     Kotlin explicit_delegation wraps the user_type as a child). The LAST
- *     named child is preferred because qualified/scoped shapes put the
- *     qualifier first and the actual name last.
+ *  3. Leading-name wrappers ({@link LEADING_NAME_TYPES}, e.g. Kotlin
+ *     `explicit_delegation` `Bar by baz`) carry the supertype as their FIRST
+ *     named child and a delegate expression after it — recurse into the first
+ *     child so the delegate's name never wins.
+ *  4. Fall back to a children walk when fields are empty (e.g. C++
+ *     qualified_identifier in 0.23.x can carry the name only as a child). The
+ *     LAST named child is preferred because qualified/scoped shapes put the
+ *     qualifier first and the actual name last; delegate/argument subtrees
+ *     ({@link SKIPPED_INNER_TYPES}) are skipped so e.g. a Kotlin
+ *     `constructor_invocation` (`Bar()`) resolves to `Bar`.
  */
 export function normalizeSupertypeName(node: SyntaxNode | null | undefined): string {
   return normalize(node, 0);
@@ -139,6 +191,15 @@ function normalize(node: SyntaxNode | null | undefined, depth: number): string {
       const inner = normalize(child, depth + 1);
       if (inner.length > 0) return inner;
     }
+  }
+
+  // Leading-name wrappers (e.g. Kotlin `explicit_delegation`: `Bar by baz`)
+  // put the supertype FIRST and a delegate expression after it. Recurse into
+  // the first named child only so we pick `Bar`, never the delegate's name.
+  if (LEADING_NAME_TYPES.has(node.type)) {
+    const first = node.namedChild(0);
+    const inner = normalize(first, depth + 1);
+    if (inner.length > 0) return inner;
   }
 
   // Children fallback: walk named children right-to-left so qualified/scoped
@@ -163,8 +224,11 @@ function normalize(node: SyntaxNode | null | undefined, depth: number): string {
 /**
  * Best-effort textual fallback when the AST shape is unrecognized: drop any
  * generic argument list and keep the final qualified segment.
+ *
+ * Exported for unit coverage of the raw-name reduction (`Base<T>` → `Base`,
+ * `pkg.Base` → `Base`, `ns::Base` → `Base`).
  */
-function simplifyRawName(text: string): string {
+export function simplifyRawName(text: string): string {
   const withoutGenerics = text.replace(/[<\[].*$/s, '').trim();
   const segments = withoutGenerics.split(/::|\./);
   return segments[segments.length - 1]?.trim() ?? '';

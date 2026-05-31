@@ -102,9 +102,13 @@ function resetParser(parser: Parser): void {
  * Thrown when a parse exceeds its wall-clock budget (see
  * {@link DEFAULT_PARSE_TIMEOUT_MS}). The parser has already been `reset()` and
  * its budget cleared by the time this propagates, so callers may safely reuse
- * the same parser for the next file. Every existing `parseSourceSafe` caller
- * already wraps the call in try/catch and skips the offending file, which is
- * the intended hard-skip-on-timeout policy.
+ * the same parser for the next file.
+ *
+ * Hard-skip contract: a timeout is fatal for the offending file but MUST NOT
+ * abort the run. Every caller is responsible for catching this specific error
+ * (`instanceof ParseTimeoutError`), skipping that one file (degrade-and-
+ * continue), and re-throwing anything else. Catching it generically and
+ * swallowing all errors would mask real bugs, so callers match on the type.
  */
 export class ParseTimeoutError extends Error {
   readonly budgetMs: number;
@@ -131,11 +135,22 @@ let degradedParseCount = 0;
 const DEGRADED_PARSE_LOG_LIMIT = 20;
 
 /**
- * @internal Test-only reset for the degraded-parse log throttle so unit
- * tests can assert the first-N-then-suppress behaviour deterministically.
+ * Reset the per-run degraded-parse log throttle. Called at the start of every
+ * analysis run (`runFullAnalysis`) so the first-N-then-suppress budget is
+ * scoped to a single run rather than to the lifetime of the module (which, on
+ * a reused process, would suppress all degraded-parse logs after the first
+ * run). Safe to call at any time.
+ */
+export function resetDegradedParseCounter(): void {
+  degradedParseCount = 0;
+}
+
+/**
+ * @internal Test-only alias for {@link resetDegradedParseCounter}, kept so the
+ * existing `safe-parse.test.ts` import keeps working. Prefer the public name.
  */
 export function _resetDegradedParseCounter(): void {
-  degradedParseCount = 0;
+  resetDegradedParseCounter();
 }
 
 /**
@@ -146,6 +161,7 @@ export function _resetDegradedParseCounter(): void {
  */
 export function parseHadErrors(tree: Parser.Tree): boolean {
   const root = tree.rootNode;
+  if (root == null) return false;
   return root.hasError || root.isMissing;
 }
 
@@ -158,6 +174,7 @@ export function getParseDiagnostics(tree: Parser.Tree): {
   isMissing: boolean;
 } {
   const root = tree.rootNode;
+  if (root == null) return { hasError: false, isMissing: false };
   return { hasError: root.hasError, isMissing: root.isMissing };
 }
 

@@ -1,10 +1,29 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
+
+// Mock the logger so the throttled degraded-parse logs (emitted at `debug`,
+// which the default capture destination filters out) are observable as plain
+// spy calls. Each level is a vi.fn() we can count.
+const debugSpy = vi.fn();
+const warnSpy = vi.fn();
+vi.mock('../../src/core/logger.js', () => ({
+  logger: {
+    debug: (...args: unknown[]) => debugSpy(...args),
+    warn: (...args: unknown[]) => warnSpy(...args),
+    info: () => {},
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  },
+}));
+
 import {
   parseSourceSafe,
   parseHadErrors,
+  getParseDiagnostics,
   ParseTimeoutError,
+  resetDegradedParseCounter,
   _resetDegradedParseCounter,
 } from '../../src/core/tree-sitter/safe-parse.js';
 
@@ -138,5 +157,85 @@ describe('parseSourceSafe — intrinsic error detection (#1922)', () => {
   it('reports parseHadErrors=false for clean input', () => {
     const tree = parseSourceSafe(makeParser(), 'def ok():\n    return 1\n');
     expect(parseHadErrors(tree)).toBe(false);
+  });
+});
+
+describe('parseSourceSafe — non-timeout errors propagate unchanged', () => {
+  it('rethrows a non-ParseTimeoutError thrown by the underlying parser', () => {
+    const boom = new Error('stub parser exploded');
+    const stub = {
+      // parseSourceSafe takes the direct-string path for short inputs and
+      // calls parser.parse(...) — make that throw a plain Error.
+      setTimeoutMicros: () => {},
+      reset: () => {},
+      parse: () => {
+        throw boom;
+      },
+    } as unknown as Parser;
+
+    expect(() => parseSourceSafe(stub, 'x = 1\n')).toThrow(boom);
+    try {
+      parseSourceSafe(stub, 'x = 1\n');
+    } catch (err) {
+      expect(err).toBe(boom);
+      expect(err).not.toBeInstanceOf(ParseTimeoutError);
+    }
+  });
+});
+
+describe('parseSourceSafe — degraded-parse log throttle', () => {
+  afterEach(() => {
+    _resetDegradedParseCounter();
+    debugSpy.mockClear();
+    warnSpy.mockClear();
+  });
+
+  const malformed = 'def broken(:\n    return (1 + \n';
+
+  it('logs the first 20 degraded parses then suppresses; reset restores logging', () => {
+    _resetDegradedParseCounter();
+    debugSpy.mockClear();
+
+    const parser = makeParser();
+    for (let i = 0; i < 25; i++) {
+      const tree = parseSourceSafe(parser, malformed, undefined, undefined, `broken-${i}.py`);
+      expect(parseHadErrors(tree)).toBe(true);
+    }
+    // First 20 logged, remaining 5 suppressed.
+    expect(debugSpy).toHaveBeenCalledTimes(20);
+
+    // resetDegradedParseCounter() rewinds the budget so logging resumes.
+    resetDegradedParseCounter();
+    debugSpy.mockClear();
+    parseSourceSafe(parser, malformed, undefined, undefined, 'broken-after-reset.py');
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('_resetDegradedParseCounter delegates to resetDegradedParseCounter', () => {
+    _resetDegradedParseCounter();
+    debugSpy.mockClear();
+    const parser = makeParser();
+    for (let i = 0; i < 21; i++) {
+      parseSourceSafe(parser, malformed, undefined, undefined, `b-${i}.py`);
+    }
+    expect(debugSpy).toHaveBeenCalledTimes(20);
+    _resetDegradedParseCounter();
+    debugSpy.mockClear();
+    parseSourceSafe(parser, malformed, undefined, undefined, 'b-reset.py');
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseHadErrors / getParseDiagnostics — null-root safety', () => {
+  it('treats a missing rootNode as "no errors" rather than throwing', () => {
+    const noRoot = { rootNode: null } as unknown as Parser.Tree;
+    expect(() => parseHadErrors(noRoot)).not.toThrow();
+    expect(parseHadErrors(noRoot)).toBe(false);
+    expect(getParseDiagnostics(noRoot)).toEqual({ hasError: false, isMissing: false });
+  });
+
+  it('still reads a present rootNode normally', () => {
+    const tree = parseSourceSafe(makeParser(), 'x = 1\n');
+    expect(getParseDiagnostics(tree)).toEqual({ hasError: false, isMissing: false });
   });
 });

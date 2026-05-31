@@ -26,12 +26,36 @@ export const goHeritageShapes: SupertypeShapeDescriptor = {
  * The shouldSkipExtends hook checks if the extends node's parent is a
  * field_declaration with a named field child, indicating a regular
  * (non-embedded) field that should not produce a heritage record.
+ *
+ * It also skips type-set constraint operands. An interface constraint like
+ * `interface { int | float64 }` parses as an `interface_type` containing a
+ * single `type_elem` whose named children are the union operands (`int`,
+ * `float64`), separated by unnamed `|` tokens — each operand reaches its
+ * `type_elem` parent directly via `.parent` (no intermediate binary node).
+ * These operands are NOT embedded supertypes, so a multi-operand `type_elem`
+ * (more than one named child) is skipped.
+ *
+ * Residual: a single-element `type_elem` (`interface { ~int }` or
+ * `interface { SomeConstraint }`) is structurally indistinguishable from a
+ * genuine interface embed by element count alone, so it is left to match. This
+ * is acceptable — a one-element type-set is rare in real Go and a spurious
+ * embed edge to a builtin/constraint name is harmless (it resolves to nothing).
  */
 export const goHeritageConfig: HeritageExtractionConfig = {
   language: SupportedLanguages.Go,
 
   shouldSkipExtends(extendsNode) {
-    const fieldDecl = extendsNode.parent;
-    return fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName?.('name') != null;
+    const parent = extendsNode.parent;
+    if (parent == null) return false;
+    // Named struct field (e.g. `Breed string`) — not an embed.
+    if (parent.type === 'field_declaration' && parent.childForFieldName?.('name') != null) {
+      return true;
+    }
+    // Multi-element interface type-set (`int | float64`) — constraint operands,
+    // not embeds. Single-element type_elem is left to match (see JSDoc residual).
+    if (parent.type === 'type_elem' && parent.namedChildCount > 1) {
+      return true;
+    }
+    return false;
   },
 };

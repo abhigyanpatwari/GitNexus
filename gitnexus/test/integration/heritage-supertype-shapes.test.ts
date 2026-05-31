@@ -142,6 +142,23 @@ describe('C# heritage shapes', () => {
     expect(k.has('S->IFoo:extends')).toBe(true);
     expect(k.has('S->IBar:extends')).toBe(true);
   });
+
+  // Alias-qualified bases. Verified against tree-sitter-c-sharp node-types.json
+  // + a live parse of this exact source:
+  //   - `global::System.IDisposable` (dotted) parses as a `qualified_name`
+  //     whose qualifier is an `alias_qualified_name` (already covered).
+  //   - `MyAlias::Foo` (bare, no dotted suffix) parses as a bare
+  //     `alias_qualified_name` base_list entry — previously dropped because the
+  //     descriptor lacked that shape. Both collapse to the simple name.
+  it('alias-qualified bases: global:: (dotted) and bare alias-qualified', async () => {
+    const code =
+      'extern alias MyAlias;\nclass A : System.Exception, global::System.IDisposable, MyAlias::Foo {}';
+    const items = await extractHeritage(code, SupportedLanguages.CSharp, 'A.cs');
+    const k = keys(items);
+    expect(k.has('A->Exception:extends')).toBe(true);
+    expect(k.has('A->IDisposable:extends')).toBe(true);
+    expect(k.has('A->Foo:extends')).toBe(true);
+  });
 });
 
 // ─── TypeScript ────────────────────────────────────────────────────────────────
@@ -209,6 +226,16 @@ describe('Go heritage shapes', () => {
     expect(k.has('I->Reader:extends')).toBe(true);
     expect(k.has('I->Other:extends')).toBe(true);
   });
+
+  it('type-set union operands are NOT embeds (P3c)', async () => {
+    // `int | float64` is a constraint type-set, not an embedded interface. A
+    // multi-operand type_elem is skipped by goHeritageConfig.shouldSkipExtends.
+    const code = 'type N interface {\n\tint | float64\n}\n';
+    const items = await extractHeritage(code, SupportedLanguages.Go, 'n.go');
+    const k = keys(items);
+    expect(k.has('N->int:extends')).toBe(false);
+    expect(k.has('N->float64:extends')).toBe(false);
+  });
 });
 
 // ─── Rust ───────────────────────────────────────────────────────────────────────
@@ -245,17 +272,130 @@ describe('C++ heritage shapes', () => {
 
 // ─── Kotlin (optional grammar) ────────────────────────────────────────────────────
 
-describe('Kotlin heritage shapes', () => {
-  it('explicit delegation (: Bar by baz) captures the supertype', async () => {
-    let available = true;
-    try {
-      getLanguageGrammar(SupportedLanguages.Kotlin);
-    } catch {
-      available = false;
-    }
-    if (!available) return; // optionalDependency not installed
-    const code = 'class Foo : Bar by baz {}';
-    const items = await extractHeritage(code, SupportedLanguages.Kotlin, 'Foo.kt');
+const KOTLIN_AVAILABLE = (() => {
+  try {
+    getLanguageGrammar(SupportedLanguages.Kotlin);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+// Visible skip (not a silent in-body `return`) so an absent optional grammar
+// shows as `skipped` rather than green-washing the by-delegation regression.
+(KOTLIN_AVAILABLE ? describe : describe.skip)('Kotlin heritage shapes', () => {
+  // `explicit_delegation` (`Bar by <delegate>`) places the supertype user_type
+  // FIRST and the delegate expression after `by`; the normalizer must pick the
+  // leading user_type, never the trailing delegate. Every form resolves to Bar.
+  it('bare-identifier delegate: `: Bar by baz`', async () => {
+    const items = await extractHeritage(
+      'class Foo : Bar by baz {}',
+      SupportedLanguages.Kotlin,
+      'Foo.kt',
+    );
+    const k = keys(items);
+    expect(k.has('Foo->Bar:extends')).toBe(true);
+    // The delegate property `baz` must NOT be recorded as the supertype (P2).
+    expect(k.has('Foo->baz:extends')).toBe(false);
+  });
+
+  it('navigation delegate: `: Bar by holder.value`', async () => {
+    const items = await extractHeritage(
+      'class Foo : Bar by holder.value {}',
+      SupportedLanguages.Kotlin,
+      'Foo.kt',
+    );
     expect(keys(items).has('Foo->Bar:extends')).toBe(true);
+  });
+
+  it('call delegate: `: Bar by makeBar()`', async () => {
+    const items = await extractHeritage(
+      'class Foo : Bar by makeBar() {}',
+      SupportedLanguages.Kotlin,
+      'Foo.kt',
+    );
+    expect(keys(items).has('Foo->Bar:extends')).toBe(true);
+  });
+
+  it('constructor invocation: `: Bar()`', async () => {
+    const items = await extractHeritage(
+      'class Foo : Bar() {}',
+      SupportedLanguages.Kotlin,
+      'Foo.kt',
+    );
+    expect(keys(items).has('Foo->Bar:extends')).toBe(true);
+  });
+
+  it('generic supertype with delegation: `: Bar<T> by baz`', async () => {
+    const items = await extractHeritage(
+      'class Foo : Bar<T> by baz {}',
+      SupportedLanguages.Kotlin,
+      'Foo.kt',
+    );
+    expect(keys(items).has('Foo->Bar:extends')).toBe(true);
+  });
+});
+
+// ─── PHP ────────────────────────────────────────────────────────────────────────
+
+describe('PHP heritage shapes', () => {
+  // PHP qualified names collapse to the simple name (the V1 ctx.resolve simple-
+  // name contract): `Models\BaseModel` -> `BaseModel`. The php_only grammar
+  // parses source already in PHP mode (no `<?php` opener).
+  it('qualified extends/implements collapse to the simple name', async () => {
+    const code =
+      'namespace App;\nclass A extends Models\\BaseModel implements Contracts\\Jsonable {}\n';
+    const items = await extractHeritage(code, SupportedLanguages.PHP, 'A.php');
+    const k = keys(items);
+    expect(k.has('A->BaseModel:extends')).toBe(true);
+    expect(k.has('A->Jsonable:implements')).toBe(true);
+  });
+});
+
+// ─── Swift / Dart (vendored, optional) ──────────────────────────────────────────────
+
+const SWIFT_AVAILABLE = (() => {
+  try {
+    getLanguageGrammar(SupportedLanguages.Swift);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+(SWIFT_AVAILABLE ? describe : describe.skip)('Swift heritage shapes', () => {
+  it('captures class supertype and protocol conformance', async () => {
+    const items = await extractHeritage(
+      'class A: BaseClass, SomeProtocol {}',
+      SupportedLanguages.Swift,
+      'A.swift',
+    );
+    const k = keys(items);
+    expect(k.has('A->BaseClass:extends')).toBe(true);
+    expect(k.has('A->SomeProtocol:extends')).toBe(true);
+  });
+});
+
+const DART_AVAILABLE = (() => {
+  try {
+    getLanguageGrammar(SupportedLanguages.Dart);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+(DART_AVAILABLE ? describe : describe.skip)('Dart heritage shapes', () => {
+  it('captures extends / implements / with', async () => {
+    // Dart clause order is fixed: extends, then with, then implements.
+    const items = await extractHeritage(
+      'class A extends Base with MixinM implements Foo {}',
+      SupportedLanguages.Dart,
+      'a.dart',
+    );
+    const k = keys(items);
+    expect(k.has('A->Base:extends')).toBe(true);
+    expect(k.has('A->Foo:implements')).toBe(true);
+    expect(k.has('A->MixinM:trait-impl')).toBe(true);
   });
 });
