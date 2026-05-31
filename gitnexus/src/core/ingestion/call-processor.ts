@@ -40,6 +40,8 @@ import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
+  ALWAYS_ON_SLOW_FILE_WARN_THROTTLE_MS,
+  alwaysOnSlowFileWarnMs,
   deferredCallFileSlowMs,
   deferredCallLogEveryN,
   getDeferredProfileDroppedCount,
@@ -2930,6 +2932,15 @@ export const processCallsFromExtracted = async (
   const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
   let skippedRegistryPrimaryFiles = 0;
 
+  // Always-on slow-file watchdog (#1741). Independent of the verbose/profile
+  // gate above: even a plain `analyze` run surfaces ONE actionable warning
+  // when a single file's call resolution is pathologically slow — turning the
+  // silent "stuck at Resolving calls (N/M)" symptom into a named culprit.
+  // Throttled so a genuinely slow repo can't produce a warn storm.
+  const alwaysSlowFileMs = alwaysOnSlowFileWarnMs();
+  let lastSlowFileWarnAt = 0;
+  let suppressedSlowFileWarnings = 0;
+
   // Fresh dropped-log counter per analyze run — the module-private counter
   // in deferred-resolution-profile.ts is process-lived, so without a reset
   // here it would accumulate across consecutive analyze invocations in the
@@ -2970,6 +2981,9 @@ export const processCallsFromExtracted = async (
 
     resolvedFiles++;
     const tFile = startTimer(profileCalls);
+    // Always-on timer (cheap: one hrtime read) feeding the slow-file watchdog
+    // below. Distinct from `tFile`, which is null unless profiling is on.
+    const tFileAlways = alwaysSlowFileMs > 0 ? process.hrtime.bigint() : null;
 
     if (profileCalls && (resolvedFiles === 1 || resolvedFiles % logEveryN === 0)) {
       logDeferredProfile(
@@ -3141,6 +3155,30 @@ export const processCallsFromExtracted = async (
         logDeferredProfile(
           `slow file ${elapsed.toFixed(0)}ms path=${filePath} calls=${calls.length} lang=${fileLanguage ?? 'unknown'}`,
         );
+      }
+    }
+
+    // Always-on slow-file watchdog (#1741) — fires regardless of verbose.
+    if (tFileAlways !== null) {
+      const elapsedAlways = profileElapsedMs(tFileAlways);
+      if (elapsedAlways >= alwaysSlowFileMs) {
+        const now = Date.now();
+        if (now - lastSlowFileWarnAt >= ALWAYS_ON_SLOW_FILE_WARN_THROTTLE_MS) {
+          lastSlowFileWarnAt = now;
+          const suppressedNote =
+            suppressedSlowFileWarnings > 0
+              ? ` (+${suppressedSlowFileWarnings} more slow files since the last warning)`
+              : '';
+          logger.warn(
+            `⏳ Call resolution for ${filePath} took ${(elapsedAlways / 1000).toFixed(1)}s ` +
+              `(${calls.length} call sites, ${fileLanguage ?? 'unknown'}). The run is not frozen — ` +
+              `this file is unusually expensive to resolve. Resolved ${resolvedFiles}/${resolvedTotal} ` +
+              `files so far.${suppressedNote} Pass -v for per-file deferred-resolution timing.`,
+          );
+          suppressedSlowFileWarnings = 0;
+        } else {
+          suppressedSlowFileWarnings++;
+        }
       }
     }
   }

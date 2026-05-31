@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  alwaysOnSlowFileWarnMs,
   deferredCallFileSlowMs,
   deferredCallLogEveryN,
   endTimer,
@@ -17,9 +18,38 @@ describe('deferred-resolution-profile', () => {
   afterEach(() => {
     delete process.env.GITNEXUS_PROFILE_DEFERRED;
     delete process.env.GITNEXUS_PROFILE_DEFERRED_SLOW_MS;
+    delete process.env.GITNEXUS_SLOW_FILE_WARN_MS;
     delete process.env.GITNEXUS_VERBOSE;
     resetDeferredProfileDroppedCount();
     vi.restoreAllMocks();
+  });
+
+  describe('alwaysOnSlowFileWarnMs (#1741 always-on watchdog)', () => {
+    it('defaults to 15s and is NOT gated on verbose/profile', () => {
+      expect(alwaysOnSlowFileWarnMs()).toBe(15_000);
+      // Still 15s even with profiling fully off — the whole point is always-on.
+      expect(isDeferredResolutionProfileEnabled()).toBe(false);
+    });
+
+    it('reads a positive override from GITNEXUS_SLOW_FILE_WARN_MS', () => {
+      process.env.GITNEXUS_SLOW_FILE_WARN_MS = '2000';
+      expect(alwaysOnSlowFileWarnMs()).toBe(2000);
+    });
+
+    it('treats 0 / negative / non-numeric as disabled (0)', () => {
+      process.env.GITNEXUS_SLOW_FILE_WARN_MS = '0';
+      expect(alwaysOnSlowFileWarnMs()).toBe(0);
+      process.env.GITNEXUS_SLOW_FILE_WARN_MS = '-5';
+      expect(alwaysOnSlowFileWarnMs()).toBe(0);
+      process.env.GITNEXUS_SLOW_FILE_WARN_MS = 'nope';
+      expect(alwaysOnSlowFileWarnMs()).toBe(0);
+    });
+
+    it('does not prefix-parse exponent notation into a tiny value', () => {
+      // Number('1e9') === 1e9 (unlike parseInt('1e9',10) === 1).
+      process.env.GITNEXUS_SLOW_FILE_WARN_MS = '1e9';
+      expect(alwaysOnSlowFileWarnMs()).toBe(1_000_000_000);
+    });
   });
 
   it('is off by default', () => {
