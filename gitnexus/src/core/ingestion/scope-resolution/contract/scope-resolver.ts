@@ -139,7 +139,19 @@
  *     once per workspace at resolve time), and merging would create a
  *     god-interface that complicates future migrations.
  *
- *   - **I8 — Two-channel binding lifecycle.**
+ *   - **I8 — Binding-channel lifecycle.** Post-finalize binding lookup
+ *     fans across several channels (`lookupBindingsAt` /
+ *     `findReceiverTypeBinding` consult them in precedence order):
+ *     `indexes.bindings` (frozen finalize output), `Scope.bindings`
+ *     (lexical local, first-tier shadowing), `indexes.bindingAugmentations`
+ *     (per-scope append-only), `indexes.workspaceFqnBindings` +
+ *     `indexes.workspaceTypeBindings` (scope-independent / global, consulted
+ *     unconditionally), and `indexes.namespaceFqnBindings` +
+ *     `indexes.namespaceTypeBindings` (per-namespace, consulted only for the
+ *     namespaces in `indexes.accessibleNamespacesByScope` for the caller's
+ *     module). All but `indexes.bindings` are mutable post-finalize and
+ *     populated by hooks; only `indexes.bindings` is frozen.
+ *
  *     `indexes.bindings` is the **finalize-output channel**. After
  *     `finalizeScopeModel` returns, its inner `BindingRef[]` arrays
  *     are deep-frozen by `materializeBindings` and MUST NOT be
