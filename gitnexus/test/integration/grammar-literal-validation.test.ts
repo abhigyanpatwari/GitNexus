@@ -21,16 +21,10 @@ import { collectAllLiterals, type CollectedLiterals } from '../helpers/literal-c
  * childForFieldName, Set/array node-type lists) plus the registry scope queries.
  */
 
-// Allowlist: node-type literals intentionally handled in code but not emitted by
-// any *currently installed* grammar. Default to empty — fix a dead literal at its
-// source rather than allowlisting it. Each entry below must carry a justification.
-//   - parameterized_type: defensive alternate generic-type node. Current
-//     tree-sitter-java emits `generic_type` and tree-sitter-kotlin emits
-//     `user_type`+`type_projection` (verified via real parse, #1920), but the
-//     shared type-arg extractor (type-extractors/shared.ts) keeps a
-//     `parameterized_type` branch for grammar-version resilience; behaviour is
-//     pinned by extract-generic-type-args.test.ts.
-const knownFailures = new Set<string>(['parameterized_type']);
+// Empty by design: every dead grammar literal this gate surfaces is removed in
+// this PR — no allowlisted debt. Mirrors query-compilation.test.ts:40. Keep it
+// empty; fix the literal at its source rather than allowlisting it here.
+const knownFailures = new Set<string>([]);
 
 interface Failure {
   kind: 'node-type' | 'field' | 'query';
