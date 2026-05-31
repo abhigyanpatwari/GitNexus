@@ -276,7 +276,7 @@ for the full list; stable `latest` is unaffected.
 This error comes from **npm 11.x's arborist** while installing gitnexus (often via `npx`), before gitnexus code runs. It is triggered by platform-filtered `optionalDependencies` in native packages such as `onnxruntime-node` / `@huggingface/transformers` (used when indexing with `--embeddings`). GitNexus cannot catch it at runtime — use one of these workarounds:
 
 ```bash
-pnpm dlx gitnexus analyze              # recommended when pnpm is available
+pnpm dlx gitnexus@latest analyze       # recommended when pnpm is available
 npm install -g gitnexus@latest         # global install avoids per-run npx reify
 gitnexus analyze                       # if already installed globally
 ```
