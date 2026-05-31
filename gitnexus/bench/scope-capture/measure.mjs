@@ -34,6 +34,9 @@ import { emitPhpScopeCaptures } from '../../src/core/ingestion/languages/php/ind
 import { emitRubyScopeCaptures } from '../../src/core/ingestion/languages/ruby/index.ts';
 import { emitCobolScopeCaptures } from '../../src/core/ingestion/languages/cobol/index.ts';
 import { emitSwiftScopeCaptures } from '../../src/core/ingestion/languages/swift/index.ts';
+import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescript/index.ts';
+import { emitJsScopeCaptures } from '../../src/core/ingestion/languages/javascript/index.ts';
+import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'lang-resolution');
@@ -174,6 +177,46 @@ const LANGS = [
       `  var id: Int64 = 0\n  var name: String = ""\n` +
       `  func getId() -> Int64 { return self.id }\n` +
       `  func setName(_ v: String) { self.name = v }\n}\n\n`,
+  },
+  {
+    name: 'typescript',
+    emit: emitTsScopeCaptures,
+    fixturePrefix: 'typescript',
+    exts: ['.ts', '.tsx'],
+    file: 'bench.ts',
+    // Inheritance-bearing units so the @reference.inherits synth pass (#1951)
+    // is exercised at scale, not just the base capture loop.
+    header: 'class Base {}\n\n',
+    unit: (n) =>
+      `class Entity${n} extends Base {\n` +
+      `  id: number = 0;\n  name: string = '';\n` +
+      `  getId(): number { return this.id; }\n` +
+      `  setName(v: string): void { this.name = v; }\n}\n\n`,
+  },
+  {
+    name: 'javascript',
+    emit: emitJsScopeCaptures,
+    fixturePrefix: 'javascript',
+    exts: ['.js', '.jsx', '.mjs', '.cjs'],
+    file: 'bench.js',
+    header: 'class Base {}\n\n',
+    unit: (n) =>
+      `class Entity${n} extends Base {\n` +
+      `  getId() { return this.id; }\n` +
+      `  setName(v) { this.name = v; }\n}\n\n`,
+  },
+  {
+    name: 'kotlin',
+    emit: emitKotlinScopeCaptures,
+    fixturePrefix: 'kotlin',
+    exts: ['.kt', '.kts'],
+    file: 'bench.kt',
+    header: 'open class Base\n\n',
+    unit: (n) =>
+      `class Entity${n} : Base() {\n` +
+      `  var id: Long = 0\n  var name: String = ""\n` +
+      `  fun getId(): Long { return id }\n` +
+      `  fun setName(v: String) { name = v }\n}\n\n`,
   },
 ];
 

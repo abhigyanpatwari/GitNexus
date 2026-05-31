@@ -75,6 +75,45 @@ function pickFirstDefined(grouped: CaptureMatch, tags: readonly string[]): Captu
   return undefined;
 }
 
+function pickFirstNode(
+  groupedNodes: Record<string, SyntaxNode | undefined>,
+  tags: readonly string[],
+): SyntaxNode | undefined {
+  for (const tag of tags) {
+    const node = groupedNodes[tag];
+    if (node !== undefined) return node;
+  }
+  return undefined;
+}
+
+/** Walks the parent chain from `node` (inclusive), returning the first node
+ *  whose type matches, or null. Faster than `findNodeAtRange` when the caller
+ *  already holds the anchor node — avoids re-scanning the tree from the root. */
+function findSelfOrAncestorOfType(node: SyntaxNode | undefined, type: string): SyntaxNode | null {
+  if (node === undefined) return null;
+  let current: SyntaxNode | null = node;
+  while (current !== null) {
+    if (current.type === type) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+/** Walks the parent chain from `node` (inclusive), returning the first node
+ *  whose type is in the set, or null. Plural form of {@link findSelfOrAncestorOfType}. */
+function findSelfOrAncestorOfTypes(
+  node: SyntaxNode | undefined,
+  types: readonly string[],
+): SyntaxNode | null {
+  if (node === undefined) return null;
+  let current: SyntaxNode | null = node;
+  while (current !== null) {
+    if (types.includes(current.type)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
 /** Filter `@reference.read.member` in non-read contexts (same logic as TS). */
 function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   const parent = memberNode.parent;
@@ -95,8 +134,17 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   }
 }
 
-/** Find the first JS function-like node at the given range. */
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
+/** Find the first JS function-like node at the given range.
+ *  Prefers the threaded anchor node (walk up its parent chain) so the common
+ *  case avoids a root re-scan; falls back to a range scan from root only when
+ *  the anchor isn't a function-like (or isn't supplied). */
+function findFunctionNode(
+  rootNode: SyntaxNode,
+  range: Capture['range'],
+  anchorNode?: SyntaxNode,
+): SyntaxNode | null {
+  const fromAnchor = findSelfOrAncestorOfTypes(anchorNode, FUNCTION_NODE_TYPES);
+  if (fromAnchor !== null) return fromAnchor;
   for (const nodeType of FUNCTION_NODE_TYPES) {
     const n = findNodeAtRange(rootNode, range, nodeType);
     if (n !== null) return n;
@@ -668,9 +716,17 @@ export function emitJsScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The query hands us each matched
+    // node as c.node, so anchors resolve by walking up from the captured node
+    // (findSelfOrAncestorOfType[s]) instead of re-deriving them with
+    // findNodeAtRange(tree.rootNode, ...) per match — the O(matches x N)
+    // root-walk fixed for go #1915 / python #1918 / csharp, mirrored here
+    // (mirrors typescript/captures.ts groupedNodes).
+    const groupedNodes: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -678,6 +734,10 @@ export function emitJsScopeCaptures(
     if (grouped['@import.statement'] !== undefined) {
       const stmtCapture = grouped['@import.statement'];
       const stmtNode =
+        findSelfOrAncestorOfTypes(groupedNodes['@import.statement'], [
+          'import_statement',
+          'export_statement',
+        ]) ??
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_statement') ??
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'export_statement');
       if (stmtNode !== null) {
@@ -690,7 +750,9 @@ export function emitJsScopeCaptures(
     // Decompose dynamic import() calls.
     if (grouped['@import.dynamic'] !== undefined) {
       const dynCapture = grouped['@import.dynamic'];
-      const callNode = findNodeAtRange(tree.rootNode, dynCapture.range, 'call_expression');
+      const callNode =
+        findSelfOrAncestorOfType(groupedNodes['@import.dynamic'], 'call_expression') ??
+        findNodeAtRange(tree.rootNode, dynCapture.range, 'call_expression');
       if (callNode !== null) {
         const decomposed = splitImportStatement(callNode);
         for (const d of decomposed) out.push(d);
@@ -701,7 +763,9 @@ export function emitJsScopeCaptures(
     // Filter @reference.read.member false-positives.
     if (grouped['@reference.read.member'] !== undefined) {
       const anchor = grouped['@reference.read.member'];
-      const memberNode = findNodeAtRange(tree.rootNode, anchor.range, 'member_expression');
+      const memberNode =
+        findSelfOrAncestorOfType(groupedNodes['@reference.read.member'], 'member_expression') ??
+        findNodeAtRange(tree.rootNode, anchor.range, 'member_expression');
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
         continue;
       }
@@ -716,7 +780,11 @@ export function emitJsScopeCaptures(
     // scope instead of a phantom Function.
     const fnDeclAnchor = grouped['@declaration.function'];
     if (fnDeclAnchor !== undefined) {
-      const arrowNode = findFunctionNode(tree.rootNode, fnDeclAnchor.range);
+      const arrowNode = findFunctionNode(
+        tree.rootNode,
+        fnDeclAnchor.range,
+        groupedNodes['@declaration.function'],
+      );
       if (arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
         continue;
       }
@@ -726,7 +794,11 @@ export function emitJsScopeCaptures(
     }
 
     if (fnDeclAnchor !== undefined) {
-      const fnNode = findFunctionNode(tree.rootNode, fnDeclAnchor.range);
+      const fnNode = findFunctionNode(
+        tree.rootNode,
+        fnDeclAnchor.range,
+        groupedNodes['@declaration.function'],
+      );
       if (fnNode !== null && isDefaultExportHocFunctionNode(fnNode)) {
         grouped['@declaration.name'] = syntheticCapture(
           '@declaration.name',
@@ -738,8 +810,9 @@ export function emitJsScopeCaptures(
 
     // Synthesize arity metadata on function-like declarations.
     const declAnchor = pickFirstDefined(grouped, FUNCTION_DECL_TAGS);
+    const declAnchorNode = pickFirstNode(groupedNodes, FUNCTION_DECL_TAGS);
     if (declAnchor !== undefined) {
-      const fnNode = findFunctionNode(tree.rootNode, declAnchor.range);
+      const fnNode = findFunctionNode(tree.rootNode, declAnchor.range, declAnchorNode);
       if (fnNode !== null) {
         const arity = computeTsArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -768,8 +841,10 @@ export function emitJsScopeCaptures(
 
     // Synthesize @reference.arity on callsites.
     const callAnchor = pickFirstDefined(grouped, CALL_TAGS);
+    const callAnchorNode = pickFirstNode(groupedNodes, CALL_TAGS);
     if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
       const callNode =
+        findSelfOrAncestorOfTypes(callAnchorNode, ['call_expression', 'new_expression']) ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'new_expression');
       if (callNode !== null) {
@@ -798,7 +873,11 @@ export function emitJsScopeCaptures(
     // Synthesize `this` receiver type-bindings on class member functions.
     const scopeFnAnchor = grouped['@scope.function'];
     if (scopeFnAnchor !== undefined) {
-      const fnNode = findFunctionNode(tree.rootNode, scopeFnAnchor.range);
+      const fnNode = findFunctionNode(
+        tree.rootNode,
+        scopeFnAnchor.range,
+        groupedNodes['@scope.function'],
+      );
       if (fnNode !== null) {
         const synth = synthesizeTsReceiverBinding(fnNode);
         if (synth !== null) out.push(synth);

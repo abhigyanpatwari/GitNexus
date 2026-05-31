@@ -33,5 +33,20 @@
     "fingerprint": "fbbe345fa9e8e5f73f946cfd9edf6ac01ef5e646c2439913c7f173cc63714e55",
     "scaling_budget": 1.5,
     "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
+  },
+  "typescript": {
+    "fingerprint": "3d01a5d210338b22c5112e1edba3cf98dc311f9bd52c3f1a72cf21123c5b7009",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
+  },
+  "javascript": {
+    "fingerprint": "531241f41853faaf88f970b0191032b35990f46069458dbf5c81b15144879dd7",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
+  },
+  "kotlin": {
+    "fingerprint": "891508a3b9c02aab2eb8c83cb5312b8c7f3584efb840739bc393543c0abdc92d",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
   }
 }

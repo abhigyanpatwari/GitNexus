@@ -1,6 +1,6 @@
-import { makeScopeId, type Capture, type CaptureMatch, type Range } from 'gitnexus-shared';
+import { makeScopeId, type Capture, type CaptureMatch } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
@@ -42,9 +42,16 @@ export function emitKotlinScopeCaptures(
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The query hands us each matched
+    // node as capture.node, so anchors resolve via a type-guarded lookup
+    // (nodeIfType) instead of re-deriving them with
+    // findNodeAtRange(tree.rootNode, ...) per match — the O(matches x N)
+    // root-walk fixed for go #1915 / python #1918 / csharp, mirrored here.
+    const groupedNodes: Record<string, SyntaxNode> = {};
     for (const capture of match.captures) {
       const tag = '@' + capture.name;
       grouped[tag] = nodeToCapture(tag, capture.node);
+      groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -70,11 +77,7 @@ export function emitKotlinScopeCaptures(
     }
 
     if (grouped['@import.statement'] !== undefined) {
-      const importNode = findNodeAtRange(
-        tree.rootNode,
-        grouped['@import.statement']!.range,
-        'import_header',
-      );
+      const importNode = nodeIfType(groupedNodes['@import.statement'], 'import_header');
       if (importNode !== null) {
         const decomposed = splitKotlinImportHeader(importNode);
         if (decomposed !== null) {
@@ -92,8 +95,7 @@ export function emitKotlinScopeCaptures(
     }
 
     if (grouped['@reference.read.member'] !== undefined) {
-      const anchor = grouped['@reference.read.member']!;
-      const navNode = findNodeAtRange(tree.rootNode, anchor.range, 'navigation_expression');
+      const navNode = nodeIfType(groupedNodes['@reference.read.member'], 'navigation_expression');
       if (navNode === null || !shouldEmitReadMember(navNode)) continue;
     }
 
@@ -115,19 +117,15 @@ export function emitKotlinScopeCaptures(
       grouped['@type-binding.name'] !== undefined &&
       grouped['@type-binding.type'] !== undefined
     ) {
-      const annotation = grouped['@type-binding.annotation']!;
-      if (propertyDeclHasConstructorValue(tree.rootNode, annotation.range)) {
+      const propNode = nodeIfType(groupedNodes['@type-binding.annotation'], 'property_declaration');
+      if (propNode !== null && propertyDeclHasConstructorValue(propNode)) {
         continue;
       }
     }
 
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const fnNode = findNodeAtRange(
-        tree.rootNode,
-        grouped['@scope.function']!.range,
-        'function_declaration',
-      );
+      const fnNode = nodeIfType(groupedNodes['@scope.function'], 'function_declaration');
       if (fnNode !== null) {
         out.push(...synthesizeKotlinReceiverBinding(fnNode));
       }
@@ -136,11 +134,7 @@ export function emitKotlinScopeCaptures(
 
     const declTag = FUNCTION_DECL_TAGS.find((tag) => grouped[tag] !== undefined);
     if (declTag !== undefined) {
-      const fnNode = findNodeAtRange(
-        tree.rootNode,
-        grouped[declTag]!.range,
-        'function_declaration',
-      );
+      const fnNode = nodeIfType(groupedNodes[declTag], 'function_declaration');
       if (fnNode !== null) {
         const arity = computeKotlinArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -171,7 +165,7 @@ export function emitKotlinScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((tag) => grouped[tag] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode = findNodeAtRange(tree.rootNode, grouped[callTag]!.range, 'call_expression');
+      const callNode = nodeIfType(groupedNodes[callTag], 'call_expression');
       if (callNode !== null) {
         const args = callArguments(callNode);
         grouped['@reference.arity'] = syntheticCapture(
@@ -189,7 +183,7 @@ export function emitKotlinScopeCaptures(
 
     out.push(grouped);
 
-    const extensionFallback = extensionFreeCallFallback(grouped, tree.rootNode);
+    const extensionFallback = extensionFreeCallFallback(grouped, groupedNodes);
     if (extensionFallback !== null) out.push(extensionFallback);
   }
 
@@ -1107,13 +1101,11 @@ function shouldEmitReadMember(navNode: SyntaxNode): boolean {
   return true;
 }
 
-/** True when the property_declaration anchored at `range` has a
- *  `call_expression` value sibling (i.e. `val x: T = Foo()`). Used to
- *  suppress the explicit-annotation type-binding capture so the
- *  constructor-inferred binding wins (#1762). */
-function propertyDeclHasConstructorValue(rootNode: SyntaxNode, range: Range): boolean {
-  const propNode = findNodeAtRange(rootNode, range, 'property_declaration');
-  if (propNode === null) return false;
+/** True when the given `property_declaration` has a `call_expression`
+ *  value sibling (i.e. `val x: T = Foo()`). Used to suppress the
+ *  explicit-annotation type-binding capture so the constructor-inferred
+ *  binding wins (#1762). */
+function propertyDeclHasConstructorValue(propNode: SyntaxNode): boolean {
   const variable = propNode.namedChildren.find((c) => c.type === 'variable_declaration');
   if (variable === undefined) return false;
   const value = propNode.namedChildren.find(
@@ -1159,17 +1151,20 @@ function inferArgType(argNode: SyntaxNode): string {
 
 function extensionFreeCallFallback(
   grouped: Record<string, Capture>,
-  rootNode: SyntaxNode,
+  groupedNodes: Record<string, SyntaxNode>,
 ): CaptureMatch | null {
   const member = grouped['@reference.call.member'];
   const receiver = grouped['@reference.receiver'];
   const name = grouped['@reference.name'];
   if (member === undefined || receiver === undefined || name === undefined) return null;
 
-  const callNode = findNodeAtRange(rootNode, member.range, 'call_expression');
+  // The `@reference.call.member` anchor IS the `call_expression`, and the
+  // `@reference.receiver` anchor IS the receiver node — both threaded from the
+  // query match (no per-match root walk).
+  const callNode = nodeIfType(groupedNodes['@reference.call.member'], 'call_expression');
   if (callNode === null) return null;
-  const receiverNode = findNodeAtRange(rootNode, receiver.range);
-  if (receiverNode === null || !isLiteralReceiver(receiverNode)) return null;
+  const receiverNode = groupedNodes['@reference.receiver'];
+  if (receiverNode === undefined || !isLiteralReceiver(receiverNode)) return null;
 
   const out: Record<string, Capture> = {
     '@reference.call.free': syntheticCapture('@reference.call.free', callNode, callNode.text),
