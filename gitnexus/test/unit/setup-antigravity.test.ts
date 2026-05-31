@@ -294,6 +294,7 @@ const ADAPTER_SRC = path.join(
 const LOCK_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-lock.cjs');
 const PROBE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-db-lock-probe.cjs');
 const WIN_RM_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'win-rm-list-json.ps1');
+const RESOLVE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'resolve-analyze-cmd.cjs');
 
 async function stageAdapter(): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-adapter-'));
@@ -304,6 +305,9 @@ async function stageAdapter(): Promise<string> {
   // the lock probe silently fails open and the adapter's Windows DB-lock path
   // would be untested in child-process smoke tests.
   await fs.copyFile(WIN_RM_SRC, path.join(tmp, 'win-rm-list-json.ps1'));
+  // The adapter top-level `require('./resolve-analyze-cmd.cjs')`s this helper;
+  // without staging it the spawned adapter crashes with MODULE_NOT_FOUND.
+  await fs.copyFile(RESOLVE_SRC, path.join(tmp, 'resolve-analyze-cmd.cjs'));
   return path.join(tmp, 'gitnexus-antigravity-hook.cjs');
 }
 
@@ -311,15 +315,25 @@ function runAdapter(
   hookPath: string,
   input: Record<string, any>,
   cwd?: string,
+  env?: Record<string, string>,
 ): { stdout: string; stderr: string; status: number | null } {
   const result = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(input),
     encoding: 'utf-8',
     timeout: 10000,
     cwd,
+    env: env ? { ...process.env, ...env } : process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   return { stdout: result.stdout || '', stderr: result.stderr || '', status: result.status };
+}
+
+// A staged adapter that fails to load (e.g. a missing sibling helper) exits
+// non-zero and prints MODULE_NOT_FOUND — a state that otherwise masquerades as
+// "no stdout" in the silent-path tests below. Assert the process actually ran.
+function expectAdapterLoaded(stderr: string, status: number | null): void {
+  expect(status).toBe(0);
+  expect(stderr).not.toMatch(/MODULE_NOT_FOUND|Cannot find module/);
 }
 
 describe('gitnexus-antigravity-hook adapter', () => {
@@ -337,7 +351,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
   });
 
   it('AfterTool with no .gitnexus/ produces no stdout', async () => {
-    const { stdout } = runAdapter(
+    const { stdout, stderr, status } = runAdapter(
       adapter,
       {
         hook_event_name: 'AfterTool',
@@ -349,10 +363,11 @@ describe('gitnexus-antigravity-hook adapter', () => {
       workdir,
     );
     expect(stdout.trim()).toBe('');
+    expectAdapterLoaded(stderr, status);
   });
 
   it('AfterTool ignores unrelated tools silently', async () => {
-    const { stdout, stderr } = runAdapter(
+    const { stdout, stderr, status } = runAdapter(
       adapter,
       {
         hook_event_name: 'AfterTool',
@@ -365,6 +380,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
     );
     expect(stdout.trim()).toBe('');
     expect(stderr).not.toMatch(/\[GitNexus\]/);
+    expectAdapterLoaded(stderr, status);
   });
 
   it('AfterTool ignores non-git run_shell_command silently', async () => {
@@ -376,7 +392,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
       'utf-8',
     );
 
-    const { stdout, stderr } = runAdapter(
+    const { stdout, stderr, status } = runAdapter(
       adapter,
       {
         hook_event_name: 'AfterTool',
@@ -389,6 +405,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
     );
     expect(stdout.trim()).toBe('');
     expect(stderr).not.toMatch(/\[GitNexus\]/);
+    expectAdapterLoaded(stderr, status);
   });
 
   it('AfterTool emits stale-index hint after a successful git commit', async () => {
@@ -418,6 +435,10 @@ describe('gitnexus-antigravity-hook adapter', () => {
         cwd: workdir,
       },
       workdir,
+      // Force a deterministic invocation mode: the emitted analyze command
+      // varies by what's installed on each CI runner (gitnexus/pnpm/npx), and
+      // only the `gitnexus` mode yields the bare `gitnexus analyze` form.
+      { GITNEXUS_INVOCATION: 'gitnexus' },
     );
 
     // Hint surfaces both via the agent-visible channel and stderr (terminal).
@@ -438,7 +459,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
       'utf-8',
     );
 
-    const { stdout } = runAdapter(
+    const { stdout, stderr, status } = runAdapter(
       adapter,
       {
         hook_event_name: 'AfterTool',
@@ -450,6 +471,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
       workdir,
     );
     expect(stdout.trim()).toBe('');
+    expectAdapterLoaded(stderr, status);
   });
 
   it('ignores unknown tool names without crashing', async () => {
