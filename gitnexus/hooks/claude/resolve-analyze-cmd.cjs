@@ -19,11 +19,12 @@ const { execFileSync } = require('child_process');
 
 const NPX_REF = 'gitnexus@latest';
 
-// PATH-probe timeout, kept well under Claude Code's 10s hook budget. The
-// stale-index hook may run `git rev-parse` (~3s) plus up to two probes
-// (gitnexus, then pnpm), so a low cap bounds the worst case while a healthy
-// `which`/`where` returns in well under a second.
-const PROBE_TIMEOUT_MS = 2000;
+// PATH-probe timeout, kept well under Claude Code's 10s hook budget. In a
+// linked worktree the stale-index hook runs `git rev-parse --git-common-dir`
+// (~2s) and `git rev-parse HEAD` (~3s) before up to two probes (gitnexus, then
+// pnpm), so a 1s cap holds the worst case near ~7s with comfortable headroom; a
+// healthy `which`/`where` returns in well under a second.
+const PROBE_TIMEOUT_MS = 1000;
 
 /**
  * Pick the best match from `where`/`which` output. A global `gitnexus` may be a
