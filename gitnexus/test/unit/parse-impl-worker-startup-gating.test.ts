@@ -50,6 +50,8 @@ describe('handleWorkerStartupFailure — always fail fast with the cause (#1741)
     expect(message).toMatch(/deterministic/i);
     expect(message).toContain('tree-sitter-c-sharp'); // captured stderr propagated
     expect(message).toContain('--workers 0'); // the explicit sequential escape hatch
+    // The native-binding hint is apt for an init crash and is kept (R7).
+    expect(message).toMatch(/native binding/i);
   });
 
   it('throws when the bounded startup retry budget was exhausted', () => {
@@ -65,6 +67,10 @@ describe('handleWorkerStartupFailure — always fail fast with the cause (#1741)
     );
     expect(message).toMatch(/could not be constructed/i);
     expect(message).toContain('--workers 0');
+    // The real construction error is surfaced verbatim (R7) …
+    expect(message).toContain('Worker script not found: /tmp/parse-worker.js');
+    // … and the native-binding guess is NOT applied to a construction failure.
+    expect(message).not.toMatch(/native binding/i);
   });
 
   it('never silently degrades — there is no non-throwing path', () => {

@@ -154,10 +154,15 @@ export function handleWorkerStartupFailure(err: Error): never {
   const isInit = err instanceof WorkerPoolInitializationError;
   const readinessFailures = isInit ? err.readinessFailures : [];
   const crashClass = isInit ? err.crashClass : undefined;
+  // Surface the real cause verbatim: readiness failures for an init crash, or
+  // the construction error message (e.g. "Worker script not found: …") when the
+  // pool never got to spawn workers.
   const failureDetail =
     readinessFailures.length > 0
       ? ` Underlying worker failure(s): ${readinessFailures.join(' | ')}`
-      : '';
+      : isInit
+        ? ''
+        : ` Underlying error: ${err.message}`;
 
   // Always surface the real crash — never let a startup failure pass silently.
   logger.error(
@@ -174,13 +179,21 @@ export function handleWorkerStartupFailure(err: Error): never {
           `ready, so the pool has no usable workers.`
         : `the worker pool could not be constructed.`;
 
+  // Class-aware fix hint: a missing/broken native binding is the likely cause
+  // when workers crashed during init, but it is the WRONG guess for a pool that
+  // never constructed (commonly a missing build / unresolvable worker path).
+  const fixHint = isInit
+    ? `Fix the worker startup failure shown above (often a missing/broken native ` +
+      `binding or a top-of-script import error in parse-worker).`
+    : `Fix the worker pool construction error shown above (commonly a missing ` +
+      `build, so dist/ has no parse-worker, or an unresolvable worker path).`;
+
   throw new Error(
     `Worker pool failed to start: ${cause}${failureDetail}\n\n` +
       `GitNexus will NOT silently fall back to the (much slower) sequential ` +
       `parser and hide this crash — that masked a worker-startup regression as ` +
       `a 2-hour "stuck" run in #1741. Options:\n` +
-      `  • Fix the worker startup failure shown above (often a missing/broken ` +
-      `native binding or a top-of-script import error in parse-worker).\n` +
+      `  • ${fixHint}\n` +
       `  • Re-run with --workers 0 to parse sequentially without the worker pool.`,
   );
 }

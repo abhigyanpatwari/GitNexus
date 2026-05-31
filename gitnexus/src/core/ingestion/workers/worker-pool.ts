@@ -559,21 +559,6 @@ export function resolveAutoPoolSize(): number {
 }
 
 /**
- * Wait for a freshly-spawned replacement worker to emit the
- * `{type:'ready'}` handshake from `parse-worker.ts` before treating its
- * slot as dispatch-ready. Trusting Node's `online` event alone (which
- * fires when the worker thread starts, BEFORE the worker script's
- * top-of-script body runs) let a worker that crashes during init
- * (parser/grammar import failure, missing native binding) slip past
- * pool startup. The pool then only noticed the dead replacement on the
- * first dispatch's idle timeout (default 30s) — a long stall masking
- * an actual crash. This handshake bounds the wait at
- * {@link WORKER_READY_TIMEOUT_MS} and surfaces init failures as
- * `error` / `exit` / `messageerror` events directly. `messageerror` is
- * wired the same way: a V8 deserialization failure during startup is
- * treated as worker death and rejects the readiness promise.
- */
-/**
  * Max characters of a worker's stderr retained for crash diagnostics. A
  * native-binding load failure or a top-of-script throw prints a stack to
  * stderr; we keep the tail so `waitForWorkerReady` can attach the real
@@ -622,6 +607,21 @@ function withStderr(worker: Worker, message: string): string {
   return tail ? `${message}. Worker stderr:\n${tail}` : message;
 }
 
+/**
+ * Wait for a freshly-spawned replacement worker to emit the
+ * `{type:'ready'}` handshake from `parse-worker.ts` before treating its
+ * slot as dispatch-ready. Trusting Node's `online` event alone (which
+ * fires when the worker thread starts, BEFORE the worker script's
+ * top-of-script body runs) let a worker that crashes during init
+ * (parser/grammar import failure, missing native binding) slip past
+ * pool startup. The pool then only noticed the dead replacement on the
+ * first dispatch's idle timeout (default 30s) — a long stall masking
+ * an actual crash. This handshake bounds the wait at
+ * {@link WORKER_READY_TIMEOUT_MS} and surfaces init failures as
+ * `error` / `exit` / `messageerror` events directly. `messageerror` is
+ * wired the same way: a V8 deserialization failure during startup is
+ * treated as worker death and rejects the readiness promise.
+ */
 function waitForWorkerReady(worker: Worker): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
