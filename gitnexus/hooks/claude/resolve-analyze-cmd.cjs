@@ -25,7 +25,10 @@ function resolveOnPath(command, winGitnexusWrapper = false) {
       .map((l) => l.trim())
       .filter(Boolean);
     if (isWin && winGitnexusWrapper) {
-      return lines.find((l) => /\.(cmd|bat)$/i.test(l)) || null;
+      // A global gitnexus may be a .cmd/.bat (npm), a .exe, or an extensionless
+      // shim (Volta, scoop). Any non-empty `where` hit means it is on PATH; the
+      // emitted hint is `gitnexus analyze` regardless of which shim resolves it.
+      return lines.find((l) => /\.(cmd|bat|exe)$/i.test(l)) || lines[0] || null;
     }
     return lines[0] || null;
   } catch {

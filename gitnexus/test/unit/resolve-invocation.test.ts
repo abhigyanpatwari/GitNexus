@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import {
   formatAnalyzeCommand,
   getNpmMajorVersion,
+  resolveGitnexusBin,
   resolveInvocationMode,
   warnIfNpm11NpxRisk,
   resetInvocationStateForTests,
@@ -147,5 +148,61 @@ describe('resolve-analyze-cmd.cjs parity', () => {
       'resolve-analyze-cmd.cjs',
     );
     expect(readFileSync(inRepo, 'utf-8')).toBe(readFileSync(plugin, 'utf-8'));
+  });
+});
+
+describe('resolveGitnexusBin Windows shim detection', () => {
+  let platformDescriptor: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  });
+
+  afterEach(() => {
+    if (platformDescriptor) {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+    vi.clearAllMocks();
+    delete process.env.GITNEXUS_INVOCATION;
+    resetInvocationStateForTests();
+  });
+
+  it('detects a .exe-only global shim (Volta/scoop) and yields gitnexus analyze', () => {
+    mockedExec.mockImplementation((_cmd, args) => {
+      if (args[0] === 'gitnexus')
+        return 'C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe\r\n';
+      throw new Error('missing');
+    });
+    expect(resolveGitnexusBin()).toBe('C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe');
+    expect(resolveInvocationMode()).toBe('gitnexus');
+    expect(formatAnalyzeCommand()).toBe('gitnexus analyze');
+  });
+
+  it('detects an extensionless global shim', () => {
+    mockedExec.mockImplementation((_cmd, args) => {
+      if (args[0] === 'gitnexus') return 'C:\\tools\\gitnexus\r\n';
+      throw new Error('missing');
+    });
+    expect(resolveGitnexusBin()).toBe('C:\\tools\\gitnexus');
+    expect(resolveInvocationMode()).toBe('gitnexus');
+  });
+
+  it('still detects a .cmd shim and prefers it over an extensionless sibling', () => {
+    mockedExec.mockImplementation((_cmd, args) => {
+      if (args[0] === 'gitnexus') return 'C:\\npm\\gitnexus\r\nC:\\npm\\gitnexus.cmd\r\n';
+      throw new Error('missing');
+    });
+    expect(resolveGitnexusBin()).toBe('C:\\npm\\gitnexus.cmd');
+  });
+
+  it('strips the CRLF carriage return from where output', () => {
+    mockedExec.mockImplementation((_cmd, args) => {
+      if (args[0] === 'gitnexus') return 'C:\\npm\\gitnexus.cmd\r\n';
+      throw new Error('missing');
+    });
+    const bin = resolveGitnexusBin();
+    expect(bin).not.toMatch(/\r/);
+    expect(bin).toBe('C:\\npm\\gitnexus.cmd');
   });
 });
