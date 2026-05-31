@@ -30,6 +30,14 @@ const { resolveInvocationMode, NPX_REF } = createRequire(import.meta.url)(
   '../../hooks/claude/resolve-analyze-cmd.cjs',
 ) as InvocationResolver;
 
+// Fail loud at module load if the canonical cjs export shape drifts (e.g. a
+// renamed export), rather than as a late TypeError inside warnIfNpm11NpxRisk.
+if (typeof resolveInvocationMode !== 'function' || typeof NPX_REF !== 'string') {
+  throw new Error(
+    'resolve-analyze-cmd.cjs must export resolveInvocationMode (function) and NPX_REF (string)',
+  );
+}
+
 export { NPX_REF };
 
 export function getNpmMajorVersion(): number | null {

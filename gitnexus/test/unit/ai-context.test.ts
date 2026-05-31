@@ -130,6 +130,7 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('## Cross-Repo Groups');
     expect(content).toContain('pnpm dlx gitnexus@latest group list');
     expect(content).toContain('pnpm dlx gitnexus@latest group sync');
+    expect(content).toContain('pnpm dlx gitnexus@latest group impact');
     expect(content).not.toMatch(/\bnpx gitnexus\b/);
   });
 

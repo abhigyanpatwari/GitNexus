@@ -149,6 +149,14 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
     delete process.env.GITNEXUS_INVOCATION;
   });
 
+  it('exposes the resolver contract the load-time guard enforces', () => {
+    // The module's createRequire guard throws at load if the cjs export shape
+    // drifts; that this module imported at all (and these hold) proves it passed.
+    expect(typeof NPX_REF).toBe('string');
+    expect(typeof getNpmMajorVersion).toBe('function');
+    expect(typeof warnIfNpm11NpxRisk).toBe('function');
+  });
+
   it('parses the npm major version', () => {
     mockedExec.mockReturnValue('11.5.2\n');
     expect(getNpmMajorVersion()).toBe(11);
