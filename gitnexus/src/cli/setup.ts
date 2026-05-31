@@ -339,6 +339,35 @@ async function mergeHooksJsonc(
  * Merges hook config without overwriting existing hooks, preserving
  * comments and formatting in the JSONC file.
  */
+const HOOK_HELPERS = [
+  'hook-lock.cjs',
+  'hook-db-lock-probe.cjs',
+  'win-rm-list-json.ps1',
+  'resolve-analyze-cmd.cjs',
+] as const;
+
+/**
+ * Copy the shared hook helpers from `srcDir` into `destDir`. Every adapter
+ * top-level `require()`s these, so a missing helper makes the installed hook
+ * crash with MODULE_NOT_FOUND — a failed copy is recorded as a setup error
+ * rather than silently swallowed. Both the Claude and Antigravity install paths
+ * copy this same list from hooks/claude/ (the canonical source).
+ */
+export async function copyHookHelpers(
+  srcDir: string,
+  destDir: string,
+  label: string,
+  result: SetupResult,
+): Promise<void> {
+  for (const helper of HOOK_HELPERS) {
+    try {
+      await fs.copyFile(path.join(srcDir, helper), path.join(destDir, helper));
+    } catch {
+      result.errors.push(`${label}: failed to copy ${helper} — hook may crash at runtime`);
+    }
+  }
+}
+
 async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   const claudeDir = path.join(os.homedir(), '.claude');
   if (!(await dirExists(claudeDir))) return;
@@ -370,41 +399,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       // Script not found in source — skip
     }
 
-    try {
-      await fs.copyFile(
-        path.join(pluginHooksPath, 'hook-lock.cjs'),
-        path.join(destHooksDir, 'hook-lock.cjs'),
-      );
-    } catch {
-      // Helper not found in source — skip
-    }
-
-    try {
-      await fs.copyFile(
-        path.join(pluginHooksPath, 'hook-db-lock-probe.cjs'),
-        path.join(destHooksDir, 'hook-db-lock-probe.cjs'),
-      );
-    } catch {
-      // Helper not found in source — skip
-    }
-
-    try {
-      await fs.copyFile(
-        path.join(pluginHooksPath, 'win-rm-list-json.ps1'),
-        path.join(destHooksDir, 'win-rm-list-json.ps1'),
-      );
-    } catch {
-      // Helper not found in source — skip
-    }
-
-    try {
-      await fs.copyFile(
-        path.join(pluginHooksPath, 'resolve-analyze-cmd.cjs'),
-        path.join(destHooksDir, 'resolve-analyze-cmd.cjs'),
-      );
-    } catch {
-      // Helper not found in source — skip
-    }
+    await copyHookHelpers(pluginHooksPath, destHooksDir, 'Claude Code hooks', result);
 
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
     // Escape backslashes FIRST, then quotes (CodeQL js/incomplete-sanitization).
@@ -600,20 +595,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
     // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
     // server ownership probe silently fails open and the hook may contend
     // with the MCP server on the LadybugDB.
-    for (const helper of [
-      'hook-lock.cjs',
-      'hook-db-lock-probe.cjs',
-      'win-rm-list-json.ps1',
-      'resolve-analyze-cmd.cjs',
-    ]) {
-      try {
-        await fs.copyFile(path.join(pluginClaudeDir, helper), path.join(destHooksDir, helper));
-      } catch {
-        result.errors.push(
-          `Antigravity hooks: failed to copy ${helper} — hook may crash at runtime`,
-        );
-      }
-    }
+    await copyHookHelpers(pluginClaudeDir, destHooksDir, 'Antigravity hooks', result);
 
     const hookPath = path.join(destHooksDir, 'gitnexus-antigravity-hook.cjs').replace(/\\/g, '/');
     const escapedHookPath = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');

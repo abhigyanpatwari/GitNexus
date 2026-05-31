@@ -246,6 +246,9 @@ describe('setupAntigravity', () => {
     // Required by hook-db-lock-probe.cjs on Windows; without it the MCP
     // server ownership probe silently fails open.
     await expect(fs.access(path.join(destDir, 'win-rm-list-json.ps1'))).resolves.toBeUndefined();
+    // The adapter top-level require()s this; the production install path must
+    // co-locate it next to the adapter (symmetric with the Claude install).
+    await expect(fs.access(path.join(destDir, 'resolve-analyze-cmd.cjs'))).resolves.toBeUndefined();
   });
 
   it('installs skills under ~/.gemini/antigravity/skills/<name>/SKILL.md', async () => {

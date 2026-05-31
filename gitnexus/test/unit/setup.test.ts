@@ -267,19 +267,40 @@ describe('setupClaudeCode', () => {
     });
   });
 
-  it('copies hook-db-lock-probe.cjs and win-rm-list-json.ps1 to ~/.claude/hooks/gitnexus/', async () => {
+  it('copies shared hook helpers (incl. resolve-analyze-cmd.cjs) to ~/.claude/hooks/gitnexus/', async () => {
     setPlatform('linux');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
     const destHooksDir = path.join(tempHome, '.claude', 'hooks', 'gitnexus');
+    await expect(fs.access(path.join(destHooksDir, 'hook-lock.cjs'))).resolves.toBeUndefined();
     await expect(
       fs.access(path.join(destHooksDir, 'hook-db-lock-probe.cjs')),
     ).resolves.toBeUndefined();
     await expect(
       fs.access(path.join(destHooksDir, 'win-rm-list-json.ps1')),
     ).resolves.toBeUndefined();
+    // The Claude adapter top-level require()s this; without it the installed
+    // hook would crash with MODULE_NOT_FOUND (the antigravity-side bug class).
+    await expect(
+      fs.access(path.join(destHooksDir, 'resolve-analyze-cmd.cjs')),
+    ).resolves.toBeUndefined();
+  });
+
+  it('records a setup error when a hook helper cannot be copied (not silent)', async () => {
+    const { copyHookHelpers } = await import('../../src/cli/setup.js');
+    const destDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copy-helpers-'));
+    const result = { configured: [] as string[], skipped: [] as string[], errors: [] as string[] };
+    try {
+      // A non-existent source dir makes every helper copy fail.
+      await copyHookHelpers(path.join(destDir, 'nope'), destDir, 'Claude Code hooks', result);
+      expect(result.errors.length).toBe(4);
+      expect(result.errors.some((e) => e.includes('resolve-analyze-cmd.cjs'))).toBe(true);
+      expect(result.errors.every((e) => e.startsWith('Claude Code hooks:'))).toBe(true);
+    } finally {
+      await fs.rm(destDir, { recursive: true, force: true });
+    }
   });
 
   it('falls back to npx on Windows when no .cmd/.bat wrapper is found', async () => {
