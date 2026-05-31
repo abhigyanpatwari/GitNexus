@@ -6,17 +6,12 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 
-const _require = createRequire(import.meta.url);
-const _pkg = _require('../../package.json') as { version?: unknown };
-if (typeof _pkg.version !== 'string' || !_pkg.version) {
-  throw new Error(
-    'gitnexus/package.json#version is missing or not a string — cannot build invocation hints.',
-  );
-}
-const PKG_VERSION = _pkg.version;
-export const NPX_REF = `gitnexus@${PKG_VERSION}`;
+// Invocation hints standardize on `gitnexus@latest`: the safety this delivers
+// is the *method* steered to (global / `pnpm dlx`), not a pinned version, and
+// the in-repo CJS mirror already degrades to `latest` once copied outside the
+// package. The version-pinned MCP-registration ref lives separately in setup.ts.
+export const NPX_REF = 'gitnexus@latest';
 
 export type InvocationMode = 'gitnexus' | 'pnpm' | 'npx';
 

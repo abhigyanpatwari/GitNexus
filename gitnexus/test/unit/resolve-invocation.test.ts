@@ -12,6 +12,8 @@ import {
   warnIfNpm11NpxRisk,
   NPX_REF,
 } from '../../src/cli/resolve-invocation.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const mockedExec = vi.mocked(execFileSync);
 
@@ -19,6 +21,10 @@ describe('resolve-invocation', () => {
   afterEach(() => {
     vi.clearAllMocks();
     delete process.env.GITNEXUS_INVOCATION;
+  });
+
+  it('standardizes the invocation ref on gitnexus@latest', () => {
+    expect(NPX_REF).toBe('gitnexus@latest');
   });
 
   it('forces invocation mode via GITNEXUS_INVOCATION', () => {
@@ -71,5 +77,28 @@ describe('resolve-invocation', () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(String(write.mock.calls[0]?.[0])).toContain('node.target is null');
     expect(String(write.mock.calls[0]?.[0])).toContain('pnpm dlx');
+  });
+});
+
+describe('resolve-analyze-cmd.cjs parity', () => {
+  it('keeps the two CJS hook copies byte-identical', () => {
+    const inRepo = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      'hooks',
+      'claude',
+      'resolve-analyze-cmd.cjs',
+    );
+    const plugin = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      'gitnexus-claude-plugin',
+      'hooks',
+      'resolve-analyze-cmd.cjs',
+    );
+    expect(readFileSync(inRepo, 'utf-8')).toBe(readFileSync(plugin, 'utf-8'));
   });
 });

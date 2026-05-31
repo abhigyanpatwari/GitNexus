@@ -1,19 +1,14 @@
 /**
  * Shared analyze-command hint for Claude/Antigravity hooks (CJS).
- * Keep in sync with src/cli/resolve-invocation.ts.
+ *
+ * Duplicated byte-for-byte in gitnexus/hooks/claude/ and
+ * gitnexus-claude-plugin/hooks/; resolve-invocation.test.ts enforces parity.
+ * Mirrors src/cli/resolve-invocation.ts — edit all copies together.
  */
 
 const { execFileSync } = require('child_process');
-const path = require('path');
 
-let pkgVersion = 'latest';
-try {
-  pkgVersion = require(path.join(__dirname, '..', '..', 'package.json')).version;
-} catch {
-  /* plugin or dev layout without package.json nearby */
-}
-
-const NPX_REF = `gitnexus@${pkgVersion}`;
+const NPX_REF = 'gitnexus@latest';
 
 function resolveOnPath(command, winGitnexusWrapper = false) {
   const isWin = process.platform === 'win32';

@@ -1,6 +1,9 @@
 /**
- * Shared analyze-command hint for Claude plugin hooks (CJS).
- * Keep in sync with gitnexus/hooks/claude/resolve-analyze-cmd.cjs.
+ * Shared analyze-command hint for Claude/Antigravity hooks (CJS).
+ *
+ * Duplicated byte-for-byte in gitnexus/hooks/claude/ and
+ * gitnexus-claude-plugin/hooks/; resolve-invocation.test.ts enforces parity.
+ * Mirrors src/cli/resolve-invocation.ts — edit all copies together.
  */
 
 const { execFileSync } = require('child_process');
