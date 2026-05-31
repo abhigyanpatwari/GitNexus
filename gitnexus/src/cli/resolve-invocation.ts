@@ -16,6 +16,10 @@ export const NPX_REF = 'gitnexus@latest';
 export type InvocationMode = 'gitnexus' | 'pnpm' | 'npx';
 
 let npm11Warned = false;
+// Cache the PATH-probe-derived mode so repeated callers in one process do not
+// re-spawn `which`/`where`. The (cheap) GITNEXUS_INVOCATION override is always
+// re-read and never cached.
+let cachedAutoMode: InvocationMode | null = null;
 
 function resolveOnPath(command: string, winGitnexusWrapper = false): string | null {
   const isWin = process.platform === 'win32';
@@ -70,9 +74,17 @@ export function resolveInvocationMode(): InvocationMode {
   if (forced === 'gitnexus' || forced === 'pnpm' || forced === 'npx') {
     return forced;
   }
-  if (resolveGitnexusBin()) return 'gitnexus';
-  if (isPnpmOnPath()) return 'pnpm';
-  return 'npx';
+  if (cachedAutoMode) return cachedAutoMode;
+  if (resolveGitnexusBin()) cachedAutoMode = 'gitnexus';
+  else if (isPnpmOnPath()) cachedAutoMode = 'pnpm';
+  else cachedAutoMode = 'npx';
+  return cachedAutoMode;
+}
+
+/** Test-only: clear the memoized mode and the once-only npm-11 warning flag. */
+export function resetInvocationStateForTests(): void {
+  cachedAutoMode = null;
+  npm11Warned = false;
 }
 
 export function formatAnalyzeCommand(options?: { embeddings?: boolean }): string {

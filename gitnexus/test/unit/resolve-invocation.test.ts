@@ -10,6 +10,7 @@ import {
   getNpmMajorVersion,
   resolveInvocationMode,
   warnIfNpm11NpxRisk,
+  resetInvocationStateForTests,
   NPX_REF,
 } from '../../src/cli/resolve-invocation.js';
 import { readFileSync } from 'node:fs';
@@ -21,6 +22,10 @@ describe('resolve-invocation', () => {
   afterEach(() => {
     vi.clearAllMocks();
     delete process.env.GITNEXUS_INVOCATION;
+    // Clear the memoized mode + once-only warning flag so neither leaks into
+    // the next test (static top-level imports mean vi.resetModules alone would
+    // not rebind them).
+    resetInvocationStateForTests();
   });
 
   it('standardizes the invocation ref on gitnexus@latest', () => {
@@ -77,6 +82,48 @@ describe('resolve-invocation', () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(String(write.mock.calls[0]?.[0])).toContain('node.target is null');
     expect(String(write.mock.calls[0]?.[0])).toContain('pnpm dlx');
+  });
+
+  it('memoizes PATH probing across repeated resolveInvocationMode calls', () => {
+    mockedExec.mockImplementation((_cmd, args) => {
+      const bin = args[0];
+      if (bin === 'gitnexus') throw new Error('missing');
+      if (bin === 'pnpm') return '/usr/local/bin/pnpm\n';
+      throw new Error(`unexpected ${bin}`);
+    });
+
+    expect(resolveInvocationMode()).toBe('pnpm');
+    const callsAfterFirst = mockedExec.mock.calls.length;
+    expect(resolveInvocationMode()).toBe('pnpm');
+    expect(resolveInvocationMode()).toBe('pnpm');
+    // No additional PATH probes after the first resolution.
+    expect(mockedExec.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('does not warn when the resolved mode is not npx', () => {
+    process.env.GITNEXUS_INVOCATION = 'pnpm';
+    mockedExec.mockReturnValue('11.0.0\n');
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when npm is older than 11', () => {
+    process.env.GITNEXUS_INVOCATION = 'npx';
+    mockedExec.mockReturnValue('10.9.0\n');
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when npm is absent', () => {
+    process.env.GITNEXUS_INVOCATION = 'npx';
+    mockedExec.mockImplementation(() => {
+      throw new Error('missing');
+    });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    warnIfNpm11NpxRisk();
+    expect(write).not.toHaveBeenCalled();
   });
 });
 

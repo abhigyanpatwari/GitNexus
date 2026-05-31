@@ -9,9 +9,6 @@ import { createLazyAction, createLbugLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
-import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
-
-warnIfNpm11NpxRisk();
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
