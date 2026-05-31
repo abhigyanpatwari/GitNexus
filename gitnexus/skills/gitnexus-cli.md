@@ -12,7 +12,7 @@ All commands work via `npx` — no global install required.
 ### analyze — Build or refresh the index
 
 ```bash
-npx gitnexus analyze
+pnpm dlx gitnexus@latest analyze
 ```
 
 Run from the project root. This parses all source files, builds the knowledge graph, writes it to `.gitnexus/`, and generates CLAUDE.md / AGENTS.md context files.

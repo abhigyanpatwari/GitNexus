@@ -22,7 +22,7 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 4. Plan update order: interfaces → implementations → callers → tests
 ```
 
-> If "Index is stale" → run `npx gitnexus analyze` in terminal.
+> If "Index is stale" → run `pnpm dlx gitnexus@latest analyze` in terminal.
 
 ## Checklists
 
