@@ -293,7 +293,9 @@ function terminalTypeNameNode(node: SyntaxNode): SyntaxNode | null {
     case 'qualified_name':
       return node.lastNamedChild;
     case 'generic_name':
-      return node.childForFieldName('name') ?? node.firstNamedChild;
+      // generic_name has no `name` field (verified by real parse, #1920); the
+      // base identifier is the first named child.
+      return node.firstNamedChild;
     default:
       return null;
   }
