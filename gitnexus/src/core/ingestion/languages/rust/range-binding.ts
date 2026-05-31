@@ -310,9 +310,9 @@ function processStructDestructuring(
     for (const fieldNode of patternNode.namedChildren) {
       let fieldName: string | undefined;
       if (fieldNode.type === 'field_pattern') {
+        // shorthand `{ a }` and full `{ b: c }` are both field_pattern; the
+        // `name` field is shorthand_field_identifier or field_identifier.
         fieldName = fieldNode.childForFieldName('name')?.text;
-      } else if (fieldNode.type === 'shorthand_field_pattern') {
-        fieldName = fieldNode.firstNamedChild?.text;
       }
       if (fieldName === undefined) continue;
 
