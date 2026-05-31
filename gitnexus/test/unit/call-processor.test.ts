@@ -28,6 +28,7 @@ import {
   type ResolutionContext,
 } from '../../src/core/ingestion/model/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { _captureLogger } from '../../src/core/logger.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import type {
   ExtractedAssignment,
@@ -65,6 +66,63 @@ describe('processCallsFromExtracted', () => {
     expect(rels[0].targetId).toBe('Function:src/index.ts:helper');
     expect(rels[0].confidence).toBe(0.95);
     expect(rels[0].reason).toBe('same-file');
+  });
+
+  it('warns (always-on, without -v) when a single file is pathologically slow to resolve (#1741)', async () => {
+    ctx.model.symbols.add('src/slow.ts', 'helper', 'Function:src/slow.ts:helper', 'Function');
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/slow.ts', calledName: 'helper', sourceId: 'Function:src/slow.ts:main' },
+    ];
+
+    // Drive the always-on per-file watchdog timer deterministically: each
+    // hrtime read advances 20s, so every measured interval is 20s (> the 15s
+    // default threshold) regardless of how many times the code reads the clock.
+    let tick = 0n;
+    const STEP = 20_000_000_000n; // 20s in ns
+    const hrSpy = vi.spyOn(process.hrtime, 'bigint').mockImplementation(() => {
+      tick += STEP;
+      return tick;
+    });
+    const cap = _captureLogger();
+    try {
+      await processCallsFromExtracted(graph, calls, ctx);
+      const messages = cap.records().map((r) => String(r.msg ?? ''));
+      const warn = messages.find((m) => m.includes('src/slow.ts') && /took 20\.0s/.test(m));
+      expect(warn).toBeDefined();
+      // The "Resolved N/M files" denominator must be the real non-skipped total,
+      // not 0 (#1741): resolvedTotal was previously only pre-counted on the
+      // profile path, so this always-on warning printed a bogus "Resolved 1/0".
+      expect(warn).toMatch(/Resolved 1\/1 files so far/);
+      expect(warn).not.toContain('/0 files');
+      // Edge must still be created — the watchdog is observation-only.
+      expect(graph.relationships.some((r) => r.type === 'CALLS')).toBe(true);
+    } finally {
+      cap.restore();
+      hrSpy.mockRestore();
+    }
+  });
+
+  it('does not warn when the slow-file watchdog is disabled (GITNEXUS_SLOW_FILE_WARN_MS=0)', async () => {
+    process.env.GITNEXUS_SLOW_FILE_WARN_MS = '0';
+    ctx.model.symbols.add('src/x.ts', 'helper', 'Function:src/x.ts:helper', 'Function');
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/x.ts', calledName: 'helper', sourceId: 'Function:src/x.ts:main' },
+    ];
+    let tick = 0n;
+    const hrSpy = vi.spyOn(process.hrtime, 'bigint').mockImplementation(() => {
+      tick += 20_000_000_000n;
+      return tick;
+    });
+    const cap = _captureLogger();
+    try {
+      await processCallsFromExtracted(graph, calls, ctx);
+      const messages = cap.records().map((r) => String(r.msg ?? ''));
+      expect(messages.some((m) => m.includes('unusually expensive'))).toBe(false);
+    } finally {
+      cap.restore();
+      hrSpy.mockRestore();
+      delete process.env.GITNEXUS_SLOW_FILE_WARN_MS;
+    }
   });
 
   it('creates CALLS relationship for import-resolved resolution', async () => {

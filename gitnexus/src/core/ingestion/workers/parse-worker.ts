@@ -1,4 +1,4 @@
-import { parentPort } from 'node:worker_threads';
+import { parentPort, threadId } from 'node:worker_threads';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -97,6 +97,28 @@ import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/l
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
+
+// ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
+// When GITNEXUS_WORKER_BOOTSTRAP=1 (or --verbose sets GITNEXUS_VERBOSE), each
+// worker reports its startup stage timings to stderr — which the pool tees
+// and captures (worker-pool.ts captureWorkerStderr). This makes a slow or
+// crashing startup diagnosable: you can see whether a worker reached
+// "grammars loaded", "ready sent", or never emitted a line at all (=> it
+// crashed in a native binding load before this code ran). The pool then
+// attaches whatever stderr it captured to its readiness-failure message,
+// so the operator sees the real cause instead of "did not report ready".
+const BOOTSTRAP_LOG =
+  process.env.GITNEXUS_WORKER_BOOTSTRAP === '1' || process.env.GITNEXUS_VERBOSE === '1';
+const bootstrapStart = performance.now();
+const bootstrapLog = (stage: string): void => {
+  if (!BOOTSTRAP_LOG) return;
+  const ms = Math.round(performance.now() - bootstrapStart);
+  process.stderr.write(`[parse-worker bootstrap] thread=${threadId} ${stage} (+${ms}ms)\n`);
+};
+// First line we can emit: every static import above (tree-sitter native
+// bindings, language grammars, helper modules) has already resolved by the
+// time this module-body statement runs.
+bootstrapLog('imports + grammars loaded');
 // ============================================================================
 // Types for serializable results
 // ============================================================================
@@ -2189,6 +2211,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
 // `WORKER_READY_TIMEOUT_MS` (5s), so emitting it AFTER all top-of-script
 // init (imports, native binding loads, type-env setup) completes is the
 // load-bearing signal that this worker is ready for dispatch.
+bootstrapLog('ready sent');
 parentPort!.postMessage({ type: 'ready' });
 
 // Module-scope `TextDecoder` for sub-batch content. The pool sends each
@@ -2219,7 +2242,12 @@ function decodeSubBatchFiles(
   }));
 }
 
+let firstTaskLogged = false;
 parentPort!.on('message', (msg: WorkerIncomingMessage) => {
+  if (!firstTaskLogged) {
+    firstTaskLogged = true;
+    bootstrapLog('first task received');
+  }
   try {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {

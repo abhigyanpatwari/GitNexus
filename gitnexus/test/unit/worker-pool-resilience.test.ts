@@ -9,6 +9,8 @@ import {
   WorkerPoolDispatchError,
   resolveWorkerPoolOptions,
   resolveAutoPoolSize,
+  workerPoolDisabledByEnv,
+  crashSignature,
 } from '../../src/core/ingestion/workers/worker-pool.js';
 /**
  * The pool now sends sub-batch dispatches via native `worker.postMessage`
@@ -184,6 +186,8 @@ describe('worker pool resilience', () => {
       // from a circuit-breaker trip. Fresh pool has not been
       // terminated.
       terminated: false,
+      // #1741: no startup backoff is pending once every slot reached ready.
+      pendingStartupTimers: 0,
       // U12: every slot starts at generation 0; no respawns yet on a
       // fresh pool. Per-slot zeros (not a single scalar) because each
       // slot tracks its own respawn history independently.
@@ -218,6 +222,8 @@ describe('worker pool resilience', () => {
       poolBroken: false,
       // F16: pool is still alive (just lost a slot); terminated=false.
       terminated: false,
+      // #1741: a runtime death is unrelated to startup backoff timers.
+      pendingStartupTimers: 0,
       // U12: slot 0 was dropped before any successful respawn (budget=0),
       // so its generation stays at 0. Slot 1 never died, also 0.
       slotGenerations: [0, 0],
@@ -642,5 +648,59 @@ describe('resolveAutoPoolSize', () => {
 
   it('returns an integer (never a float)', () => {
     expect(Number.isInteger(resolveAutoPoolSize())).toBe(true);
+  });
+});
+
+describe('workerPoolDisabledByEnv (#1741 — env=0 → sequential signal)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is true only for a literal GITNEXUS_WORKER_POOL_SIZE=0', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '0');
+    expect(workerPoolDisabledByEnv()).toBe(true);
+  });
+
+  it('is false for a positive env size (the pool is used)', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '4');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+  });
+
+  it('treats empty/whitespace as unset (not a disable signal — auto formula applies)', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '   ');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+  });
+
+  it('is false for an invalid value', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', 'abc');
+    expect(workerPoolDisabledByEnv()).toBe(false);
+  });
+});
+
+describe('crashSignature (#1741 — deterministic-loop fingerprint normalization)', () => {
+  it('collapses Windows backslash temp paths that differ only in a random token', () => {
+    const a = crashSignature("Cannot find module 'C:\\Users\\ci\\Temp\\worker-7f3a.js'");
+    const b = crashSignature("Cannot find module 'C:\\Users\\ci\\Temp\\worker-2b9c.js'");
+    expect(a).toBe(b);
+  });
+
+  it('collapses bare (no-0x) hex backtrace tokens', () => {
+    expect(crashSignature('SIGSEGV at 00007f8a2b1c4d')).toBe(
+      crashSignature('SIGSEGV at 00007fcc3d2e5a'),
+    );
+  });
+
+  it('collapses POSIX paths and exit codes (stderr-less crashes still group)', () => {
+    expect(crashSignature('Worker exited with code 1 (/tmp/pool-9/w.js)')).toBe(
+      crashSignature('Worker exited with code 139 (/tmp/pool-4/w.js)'),
+    );
+  });
+
+  it('keeps genuinely different crashes distinct', () => {
+    expect(crashSignature('Error: Cannot find module tree-sitter-c-sharp')).not.toBe(
+      crashSignature('Error: out of memory'),
+    );
   });
 });
