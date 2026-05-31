@@ -57,6 +57,7 @@ try {
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
+  buildConcreteTypedefDefinitionRanges,
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
@@ -65,6 +66,7 @@ import {
   getLabelFromCaptures,
   genericFuncName,
   inferFunctionLabel,
+  isSuppressedConcreteTypedefDuplicate,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
@@ -1121,6 +1123,7 @@ const processFileGroup = (
       );
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     const provider = getProvider(language);
 
@@ -1225,6 +1228,8 @@ const processFileGroup = (
       for (const c of match.captures) {
         captureMap[c.name] = c.node;
       }
+
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) continue;
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
