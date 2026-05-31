@@ -66,6 +66,24 @@ describe('skill-file steering (#1939)', () => {
     expect(offenders.map((f) => path.relative(REPO_ROOT, f))).toEqual([]);
   });
 
+  it('routes every gitnexus-cli skill command off `npx` (status/clean/wiki/list too, #1945)', () => {
+    // The cli skill demonstrates every subcommand, not just analyze. On npm 11
+    // each one resolves the same package through the same crash-prone npx
+    // install, so the whole skill uses the pnpm `--allow-build … dlx` form.
+    // Scope this stricter "no npx gitnexus <anything>" guard to the cli skill
+    // copies — other skills/docs may legitimately mention npx in prose.
+    const cliSkillFiles = files.filter(
+      (f) =>
+        /gitnexus-cli/.test(path.basename(path.dirname(f))) ||
+        path.basename(f) === 'gitnexus-cli.md',
+    );
+    expect(cliSkillFiles.length).toBeGreaterThan(0); // guard is not vacuous
+    const offenders = cliSkillFiles.filter((f) =>
+      /npx\s+gitnexus\b/.test(readFileSync(f, 'utf-8')),
+    );
+    expect(offenders.map((f) => path.relative(REPO_ROOT, f))).toEqual([]);
+  });
+
   it('uses the pnpm pre-`dlx` --allow-build form, never the broken post-`dlx` position', () => {
     // `pnpm dlx --allow-build=…` (flags after `dlx`) is parsed as a package spec
     // and rejected on pnpm 10.2–10.13.x; the flags must precede `dlx` (#1939).
