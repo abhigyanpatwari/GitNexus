@@ -51,7 +51,7 @@ const extractDeclaration: TypeBindingExtractor = (
   env: Map<string, string>,
 ): void => {
   // Swift property_declaration has pattern and type_annotation
-  const pattern = node.childForFieldName('pattern') ?? findChild(node, 'pattern');
+  const pattern = findChild(node, 'pattern');
   const typeAnnotation = node.childForFieldName('type') ?? findChild(node, 'type_annotation');
   if (!pattern || !typeAnnotation) return;
   const varName = extractVarName(pattern) ?? pattern.text;
@@ -65,10 +65,10 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   let typeNode: SyntaxNode | null = null;
 
   if (node.type === 'parameter') {
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('internal_name');
+    nameNode = node.childForFieldName('name');
     typeNode = node.childForFieldName('type');
   } else {
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+    nameNode = node.childForFieldName('name');
     typeNode = node.childForFieldName('type');
   }
 
@@ -90,7 +90,7 @@ const extractInitializer: InitializerExtractor = (
   // Skip if has type annotation — extractDeclaration handled it
   if (node.childForFieldName('type') || findChild(node, 'type_annotation')) return;
   // Find pattern (variable name)
-  const pattern = node.childForFieldName('pattern') ?? findChild(node, 'pattern');
+  const pattern = findChild(node, 'pattern');
   if (!pattern) return;
   const varName = extractVarName(pattern) ?? pattern.text;
   if (!varName || env.has(varName)) return;
@@ -139,7 +139,7 @@ const extractInitializer: InitializerExtractor = (
 const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (node.type !== 'property_declaration') return undefined;
   if (hasTypeAnnotation(node)) return undefined;
-  const pattern = node.childForFieldName('pattern') ?? findChild(node, 'pattern');
+  const pattern = findChild(node, 'pattern');
   if (!pattern) return undefined;
   const varName = pattern.text;
   if (!varName) return undefined;

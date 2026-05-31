@@ -290,7 +290,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
     typeNode = node.childForFieldName('type');
     nameNode = node.childForFieldName('name');
   } else {
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+    nameNode = node.childForFieldName('name');
     typeNode = node.childForFieldName('type');
   }
 

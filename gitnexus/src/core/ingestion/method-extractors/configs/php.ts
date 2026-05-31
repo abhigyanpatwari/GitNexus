@@ -113,7 +113,6 @@ function extractPhpReturnType(node: SyntaxNode): string | undefined {
     'named_type',
     'union_type',
     'optional_type',
-    'nullable_type',
     'intersection_type',
   ]);
 

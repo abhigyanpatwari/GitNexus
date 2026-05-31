@@ -112,7 +112,6 @@ type PatternOverrides = Map<string, Map<string, PatternOverride[]>>;
  *  Includes both multi-arm pattern-match branches AND if-statement bodies for null-check narrowing. */
 const NARROWING_BRANCH_TYPES = new Set([
   'when_entry', // Kotlin when
-  'switch_block_label', // Java switch (enhanced)
   'if_statement', // TS/JS, Java, C/C++
   'if_expression', // Kotlin (if is an expression)
   'statement_block', // TS/JS: { ... } body of if
@@ -977,7 +976,6 @@ export const buildTypeEnv = (
             (child.type === 'user_type' ||
               child.type === 'type_identifier' ||
               child.type === 'generic_type' ||
-              child.type === 'parameterized_type' ||
               child.type === 'nullable_type')
           ) {
             fallbackType = child;

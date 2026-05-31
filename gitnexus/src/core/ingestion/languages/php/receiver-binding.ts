@@ -27,6 +27,11 @@ const TYPE_DECL_NODE_TYPES = new Set([
   'interface_declaration',
   'trait_declaration',
   'enum_declaration',
+  // tree-sitter-php node for `new class {...}` (real node is `anonymous_class`,
+  // not `anonymous_class_declaration`). Included so the enclosing-type walk
+  // stops AT the anon class and the guard below skips it (otherwise a method in
+  // an anon class nested in a named class would mis-bind $this to the outer class).
+  'anonymous_class',
 ]);
 
 const FUNCTION_NODE_TYPES = new Set([
@@ -98,7 +103,7 @@ export function synthesizePhpReceiverBinding(fnNode: SyntaxNode): CaptureMatch[]
   if (enclosingType === null) return [];
 
   // Anonymous class — skip (no stable name).
-  if (enclosingType.type === 'anonymous_class_declaration') return [];
+  if (enclosingType.type === 'anonymous_class') return [];
 
   const enclosingName = typeName(enclosingType);
   if (enclosingName === null) return [];
@@ -106,10 +111,8 @@ export function synthesizePhpReceiverBinding(fnNode: SyntaxNode): CaptureMatch[]
   // Anchor the synthesized captures to the method body (compound_statement)
   // so they land inside the function scope, not at the class scope.
   // For interface/abstract methods that have no body, skip.
-  const bodyNode =
-    fnNode.childForFieldName('body') ??
-    // arrow_function: body is the expression after `=>`
-    fnNode.childForFieldName('return_value');
+  // tree-sitter-php arrow_function also exposes its expression via the `body` field.
+  const bodyNode = fnNode.childForFieldName('body');
   if (bodyNode === null) return [];
 
   const out: CaptureMatch[] = [];
