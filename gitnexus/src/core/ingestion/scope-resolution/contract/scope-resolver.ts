@@ -460,6 +460,36 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional hook to emit IMPORTS edges that no syntactic import
+   * statement produces. Some languages grant files implicit visibility
+   * of one another within a compilation unit (e.g. every file in a
+   * build target sees its siblings' top-level declarations without an
+   * explicit import). The generic import pipeline only emits File→File
+   * IMPORTS edges from finalized `ImportEdge`s, so a language with this
+   * implicit-visibility rule has no edge to emit through that path.
+   *
+   * Runs immediately after `emitHeritageEdges` (so it shares the same
+   * pre-MRO surface: writable graph, parsedFiles, nodeLookup). Must be
+   * idempotent — the orchestrator may invoke it more than once during
+   * re-resolution. Implementations dedup their own emissions.
+   *
+   * `resolutionConfig` is the opaque per-workspace value returned by
+   * `loadResolutionConfig` (same channel threaded into `resolveImportTarget`).
+   * Swift uses it to group same-module files by the SPM target subtree;
+   * languages that don't need per-workspace config ignore the trailing
+   * parameter (it is optional so existing impls keep compiling).
+   *
+   * Default: undefined (cross-file visibility requires an explicit
+   * import; the finalized-ImportEdge pipeline covers it).
+   */
+  readonly emitImplicitImportEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    resolutionConfig?: unknown,
+  ) => void;
+
+  /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
    * owner. Python's rule: methods (Function defs whose parent scope
    * is Class) AND class-body fields (defs in Class scopes) are owned
@@ -582,6 +612,16 @@ export interface ScopeResolver {
    * but is too loose as a default for strict module systems.
    */
   readonly allowGlobalFreeCallFallback?: boolean;
+
+  /**
+   * When true, a constructor-form call `Type(...)` links to the Class def
+   * itself rather than its explicit Constructor def. Default
+   * (undefined/false) targets the explicit Constructor when one exists,
+   * else falls back to the Class. Languages whose call graph models
+   * `Type(...)` as a reference to the type (not its initializer) — e.g.
+   * Swift — opt in.
+   */
+  readonly constructorCallTargetsClass?: boolean;
 
   /**
    * Optional per-slot conversion-rank function for overload resolution.
@@ -767,6 +807,12 @@ export interface ScopeResolver {
        *  itself; the cache is opt-in for hooks that need AST-level
        *  facts beyond what `ParsedFile` exposes. */
       readonly treeCache?: { get(filePath: string): unknown };
+      /** Opaque per-workspace value from `loadResolutionConfig` (same
+       *  channel threaded into `resolveImportTarget`). Swift uses it to
+       *  group same-module siblings by the SPM target subtree; languages
+       *  that don't need per-workspace config ignore it. Optional so
+       *  existing impls keep compiling. */
+      readonly resolutionConfig?: unknown;
     },
   ) => void;
 
@@ -810,12 +856,20 @@ export interface ScopeResolver {
    * `NewUser → User` mirrored from the target package). Runs after
    * `populateNamespaceSiblings` and before `propagateImportedReturnTypes`
    * so the SCC-ordered pass sees the mirrored bindings.
+   *
+   * `resolutionConfig` is the opaque per-workspace value returned by
+   * `loadResolutionConfig` (same channel threaded into `resolveImportTarget`).
+   * Swift uses it to group same-module sibling files by the SPM target
+   * subtree; languages that don't need per-workspace config ignore the
+   * trailing parameter (it is optional so existing impls keep compiling).
+   *
    * Default: undefined (no namespace typeBinding mirroring).
    */
   readonly mirrorNamespaceTypeBindings?: (
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     workspaceIndex: import('../../scope-resolution/workspace-index.js').WorkspaceResolutionIndex,
+    resolutionConfig?: unknown,
   ) => void;
 
   /**

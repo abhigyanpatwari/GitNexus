@@ -206,6 +206,42 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // (pass under registry-primary, fail under legacy). Currently
     // empty — all 127 tests pass under legacy mode.
   ]),
+  swift: new Set<string>([
+    // Swift scope-resolution achieves 77/77 baseline parity. The tests
+    // listed here are scope-resolver-only correctness wins from the U4
+    // remediation (PR #1948): they PASS under registry-primary but FAIL
+    // under the legacy DAG, which has no equivalent mechanism. Backporting
+    // to legacy is out of scope per the migration policy. Each entry below
+    // states the registry-primary mechanism and why legacy can't match.
+    //
+    // BUG1 read-edge: the legacy DAG emits a `read` ACCESSES edge only for
+    // a field-access CHAIN that feeds a call (e.g. `user.address.save()`);
+    // a STANDALONE field read (`let current = self.balance`) produces no
+    // read ACCESSES under legacy. The scope-resolver emits it from the
+    // reference-site `read` kind. (The write-edge and no-spurious-read
+    // assertions DO pass both legs and are not skipped.)
+    'still emits a read ACCESSES for a genuine standalone field read (not the write LHS)',
+    // BUG2 class-func: the observable signal is the RESOLUTION PROVENANCE of
+    // a `self.<property>` read inside a `class func` vs `static func` vs an
+    // instance method. The legacy DAG cannot resolve these self-property
+    // reads at all (it emits no ACCESSES for this fixture), so the
+    // provenance-parity check is a scope-resolver-only correctness check.
+    'a class func gets no instance self-binding (parity with static func; instance method differs)',
+    // BUG3 second-binding: the second `if let` / `guard let` clause binding
+    // (`b: makeB() -> B`) is inferred only by the scope-resolver's
+    // per-clause `@type-binding.constructor` synthesis. The colliding
+    // `B.shared` / `Decoy.shared` defeats a unique-name global fallback, so
+    // legacy leaves `b.shared()` unresolved.
+    'resolves b.shared() to B.shared via the SECOND if-let clause binding',
+    'resolves b.shared() to B.shared via the SECOND guard-let clause binding',
+    // BUG4 nested-extension self-call: `added` hoists onto Bar in both legs
+    // (the HAS_METHOD assertion is NOT skipped), but resolving the
+    // `self.base()` call to `Bar.base` (self == Bar, the trailing identifier
+    // of `Foo.Bar`) depends on the scope-resolver's extension `self`
+    // type-binding plus its cross-file self-dispatch; the legacy DAG leaves
+    // the `self.base()` call unresolved for this fixture.
+    'resolves self.base() inside added() to Bar.base (self == Bar), not Foo',
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class

@@ -108,20 +108,20 @@ describe('isRegistryPrimary', () => {
   it('isolates flags per-language (one on does not affect others)', () => {
     process.env['REGISTRY_PRIMARY_PYTHON'] = 'true';
     expect(isRegistryPrimary(SupportedLanguages.Python)).toBe(true);
-    // Swift is not in MIGRATED_LANGUAGES — default false stays
+    // Dart is not in MIGRATED_LANGUAGES — default false stays
     // false regardless of Python's flag.
-    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(false);
+    expect(isRegistryPrimary(SupportedLanguages.Dart)).toBe(false);
   });
 
   it('respects a mid-process env-var mutation (no stale cache)', () => {
-    // Use Swift — not in MIGRATED_LANGUAGES — so the unset default is
+    // Use Dart — not in MIGRATED_LANGUAGES — so the unset default is
     // deterministically `false`, independent of which languages have
     // been flipped to registry-primary.
-    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(false);
-    process.env['REGISTRY_PRIMARY_SWIFT'] = 'true';
-    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(true);
-    delete process.env['REGISTRY_PRIMARY_SWIFT'];
-    expect(isRegistryPrimary(SupportedLanguages.Swift)).toBe(false);
+    expect(isRegistryPrimary(SupportedLanguages.Dart)).toBe(false);
+    process.env['REGISTRY_PRIMARY_DART'] = 'true';
+    expect(isRegistryPrimary(SupportedLanguages.Dart)).toBe(true);
+    delete process.env['REGISTRY_PRIMARY_DART'];
+    expect(isRegistryPrimary(SupportedLanguages.Dart)).toBe(false);
   });
 
   it('handles the CPlusPlus → REGISTRY_PRIMARY_CPP mapping correctly', () => {
