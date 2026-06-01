@@ -1541,6 +1541,48 @@ export const processCalls = async (
     ctx.clearCache();
   }
 
+  // ── Vue template-component CALLS (registry-primary path) ──
+  // When Vue is registry-primary the loop above skips Vue files entirely,
+  // so the inline template emitter at ≈L1506 never fires. Template
+  // component-reference CALLS are intentionally excluded from the
+  // scope-based captures (`vue/captures.ts:11-13`), so we emit them here
+  // unconditionally for all Vue files — mirroring what the legacy emitter
+  // would have produced without double-counting (the scope path never
+  // emits `reason: 'vue-template-component'` edges).
+  if (isRegistryPrimary(SupportedLanguages.Vue)) {
+    for (const file of files) {
+      const language = getLanguageFromFilename(file.path);
+      if (language !== SupportedLanguages.Vue) continue;
+      const templateComponents = extractTemplateComponents(file.content);
+      if (templateComponents.length === 0) continue;
+      const fileId = generateId('File', file.path);
+      const importedFiles = ctx.importMap.get(file.path);
+      if (!importedFiles) continue;
+      for (const componentName of templateComponents) {
+        for (const importedPath of importedFiles) {
+          if (!importedPath.endsWith('.vue')) continue;
+          const basename = importedPath.slice(
+            importedPath.lastIndexOf('/') + 1,
+            importedPath.lastIndexOf('.'),
+          );
+          if (basename !== componentName) continue;
+          const targetFileId = generateId('File', importedPath);
+          if (graph.getNode(targetFileId)) {
+            graph.addRelationship({
+              id: generateId('CALLS', `${fileId}:${componentName}->${targetFileId}`),
+              sourceId: fileId,
+              targetId: targetFileId,
+              type: 'CALLS',
+              confidence: 0.9,
+              reason: 'vue-template-component',
+            });
+          }
+          break;
+        }
+      }
+    }
+  }
+
   // ── Resolve deferred write-access edges ──
   // All properties (including Ruby attr_accessor) are now registered.
   for (const pw of pendingWrites) {

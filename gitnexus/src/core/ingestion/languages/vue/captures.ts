@@ -26,8 +26,22 @@ import { emitTsScopeCaptures } from '../typescript/captures.js';
 /**
  * Emit scope captures for a Vue SFC.
  *
- * Returns an empty array when the file has no `<script>` / `<script
- * setup>` block (e.g. render-function-only components).
+ * Handles two call-site shapes:
+ *
+ *   1. **Full SFC content** (sequential path, <15 files): `sourceText`
+ *      contains the whole `.vue` file with `<template>`, `<script>`, etc.
+ *      `extractVueScript` extracts the script block and we delegate to
+ *      `emitTsScopeCaptures` with that extracted content.
+ *
+ *   2. **Already-extracted script content** (worker-mode path, ≥15 files):
+ *      the parse worker calls `extractVueScript` itself before calling
+ *      `extractParsedFile`, so `sourceText` is already the bare TypeScript
+ *      text with no `<script>` tags.  `extractVueScript` returns `null`
+ *      here.  We detect this case by the absence of any SFC block-level
+ *      markers (`<template`, `<style`) and delegate directly.
+ *
+ * Returns an empty array for render-function-only components (SFC without
+ * a `<script>` block, which still have `<template>` or `<style>` markers).
  */
 export function emitVueScopeCaptures(
   sourceText: string,
@@ -35,6 +49,17 @@ export function emitVueScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   const extracted = extractVueScript(sourceText);
-  if (extracted === null) return [];
-  return emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
+  if (extracted !== null) {
+    return emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
+  }
+  // extractVueScript returned null: either a render-function-only SFC (has
+  // <template> / <style> but no <script>) or already-extracted script text.
+  // Distinguish by looking for SFC block-level tags in the raw source.
+  const hasSfcMarkers = /<(?:template|style)\b/i.test(sourceText);
+  if (hasSfcMarkers) {
+    // Real SFC with no script block — genuinely nothing to capture.
+    return [];
+  }
+  // Pre-extracted script content from the parse worker — delegate directly.
+  return emitTsScopeCaptures(sourceText, filePath, cachedTree);
 }

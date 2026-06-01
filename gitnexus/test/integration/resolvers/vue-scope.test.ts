@@ -70,54 +70,58 @@ describe('Vue Composition API (<script setup>)', () => {
 
   // Import resolution --------------------------------------------------------
 
-  it('resolves imports from .vue to .ts type files', () => {
+  it('resolves value imports from UserProfile.vue to types.ts', () => {
     const imports = getRelationships(result, 'IMPORTS');
+    // import { formatUser, formatPost } from './types' → 2 value-import edges
+    // (import type { User, Post } is type-only, not emitted as IMPORTS)
     const vueToTypes = imports.filter(
       (e) => e.sourceFilePath.endsWith('UserProfile.vue') && e.targetFilePath.endsWith('types.ts'),
     );
-    expect(vueToTypes.length).toBeGreaterThanOrEqual(1);
+    expect(vueToTypes.length).toBe(2);
   });
 
-  it('resolves imports from .vue to .ts api files', () => {
+  it('resolves value imports from UserProfile.vue to api.ts', () => {
     const imports = getRelationships(result, 'IMPORTS');
+    // import { fetchUser, fetchPosts, saveUser } from './api' → 3 edges
     const vueToApi = imports.filter(
       (e) => e.sourceFilePath.endsWith('UserProfile.vue') && e.targetFilePath.endsWith('api.ts'),
     );
-    expect(vueToApi.length).toBeGreaterThanOrEqual(1);
+    expect(vueToApi.length).toBe(3);
   });
 
-  it('resolves imports between .vue files', () => {
+  it('resolves default import from App.vue to UserProfile.vue', () => {
     const imports = getRelationships(result, 'IMPORTS');
+    // import UserProfile from './UserProfile.vue' → 1 default-import edge
     const vueToVue = imports.filter(
       (e) => e.sourceFilePath.endsWith('App.vue') && e.targetFilePath.endsWith('UserProfile.vue'),
     );
-    expect(vueToVue.length).toBeGreaterThanOrEqual(1);
+    expect(vueToVue.length).toBe(1);
   });
 
   // CALLS edges --------------------------------------------------------------
 
-  it('emits CALLS edge from <script setup> to imported TS function (formatUser)', () => {
+  it('emits CALLS edge from <script setup> to imported formatUser', () => {
     const calls = getRelationships(result, 'CALLS');
     const toFormatUser = calls.filter(
       (e) => e.sourceFilePath.endsWith('UserProfile.vue') && e.target === 'formatUser',
     );
-    expect(toFormatUser.length).toBeGreaterThanOrEqual(1);
+    expect(toFormatUser.length).toBe(1);
   });
 
-  it('emits CALLS edge from <script setup> to imported TS function (fetchUser)', () => {
+  it('emits CALLS edge from <script setup> to imported fetchUser', () => {
     const calls = getRelationships(result, 'CALLS');
     const toFetchUser = calls.filter(
       (e) => e.sourceFilePath.endsWith('UserProfile.vue') && e.target === 'fetchUser',
     );
-    expect(toFetchUser.length).toBeGreaterThanOrEqual(1);
+    expect(toFetchUser.length).toBe(1);
   });
 
-  it('emits CALLS edge from <script setup> to imported TS function (saveUser)', () => {
+  it('emits CALLS edge from <script setup> to imported saveUser', () => {
     const calls = getRelationships(result, 'CALLS');
     const toSaveUser = calls.filter(
       (e) => e.sourceFilePath.endsWith('UserProfile.vue') && e.target === 'saveUser',
     );
-    expect(toSaveUser.length).toBeGreaterThanOrEqual(1);
+    expect(toSaveUser.length).toBe(1);
   });
 
   it('emits CALLS edge from PostList.vue to formatPost', () => {
@@ -125,7 +129,7 @@ describe('Vue Composition API (<script setup>)', () => {
     const toFormatPost = calls.filter(
       (e) => e.sourceFilePath.endsWith('PostList.vue') && e.target === 'formatPost',
     );
-    expect(toFormatPost.length).toBeGreaterThanOrEqual(1);
+    expect(toFormatPost.length).toBe(1);
   });
 
   // <script setup> top-level export ------------------------------------------
@@ -171,11 +175,9 @@ describe('Vue Options API (defineComponent)', () => {
 
   it('extracts Function nodes from methods block', () => {
     const fns = getNodesByLabel(result, 'Function');
-    // TodoList methods
     expect(fns).toContain('addTodo');
     expect(fns).toContain('toggleItem');
     expect(fns).toContain('clearDone');
-    // Counter methods
     expect(fns).toContain('increment');
     expect(fns).toContain('decrement');
     expect(fns).toContain('reset');
@@ -196,38 +198,40 @@ describe('Vue Options API (defineComponent)', () => {
 
   // Import resolution --------------------------------------------------------
 
-  it('resolves imports from Options API .vue to .ts utils', () => {
+  it('resolves value imports from TodoList.vue to utils.ts', () => {
     const imports = getRelationships(result, 'IMPORTS');
+    // import { createTodo, toggleTodo, filterDone, filterPending } → 4 value edges
+    // (import type { Todo } is type-only, not emitted as IMPORTS)
     const vueToUtils = imports.filter(
       (e) => e.sourceFilePath.endsWith('TodoList.vue') && e.targetFilePath.endsWith('utils.ts'),
     );
-    expect(vueToUtils.length).toBeGreaterThanOrEqual(1);
+    expect(vueToUtils.length).toBe(4);
   });
 
   // CALLS edges --------------------------------------------------------------
 
-  it('emits CALLS edge from Options API component to imported createTodo', () => {
+  it('emits CALLS edge from addTodo in TodoList.vue to createTodo', () => {
     const calls = getRelationships(result, 'CALLS');
     const toCreateTodo = calls.filter(
       (e) => e.sourceFilePath.endsWith('TodoList.vue') && e.target === 'createTodo',
     );
-    expect(toCreateTodo.length).toBeGreaterThanOrEqual(1);
+    expect(toCreateTodo.length).toBe(1);
   });
 
-  it('emits CALLS edge from Options API component to imported filterDone', () => {
+  it('emits CALLS edge from TodoList.vue to filterDone (computed doneCount)', () => {
     const calls = getRelationships(result, 'CALLS');
     const toFilterDone = calls.filter(
       (e) => e.sourceFilePath.endsWith('TodoList.vue') && e.target === 'filterDone',
     );
-    expect(toFilterDone.length).toBeGreaterThanOrEqual(1);
+    expect(toFilterDone.length).toBe(1);
   });
 
-  it('emits CALLS edge from Options API component to imported filterPending', () => {
+  it('emits CALLS edge from TodoList.vue to filterPending (computed pendingTodos)', () => {
     const calls = getRelationships(result, 'CALLS');
     const toFilterPending = calls.filter(
       (e) => e.sourceFilePath.endsWith('TodoList.vue') && e.target === 'filterPending',
     );
-    expect(toFilterPending.length).toBeGreaterThanOrEqual(1);
+    expect(toFilterPending.length).toBe(1);
   });
 
   it('emits CALLS edge from clearDone to filterPending', () => {
@@ -235,7 +239,7 @@ describe('Vue Options API (defineComponent)', () => {
     const toClearDone = calls.filter(
       (e) => e.source === 'clearDone' && e.target === 'filterPending',
     );
-    expect(toClearDone.length).toBeGreaterThanOrEqual(1);
+    expect(toClearDone.length).toBe(1);
   });
 
   // Non-setup scripts should not be implicitly exported ----------------------
@@ -246,7 +250,6 @@ describe('Vue Options API (defineComponent)', () => {
       (n) => n.properties.name === 'addTodo' && n.properties.filePath.endsWith('TodoList.vue'),
     );
     if (addTodo !== undefined) {
-      // Options API methods inside defineComponent are not top-level exports
       expect(addTodo.properties.isExported).toBe(false);
     }
   });
@@ -295,43 +298,43 @@ describe('Vue cross-file composable and class resolution', () => {
     expect(fns).toContain('useUserList');
   });
 
-  it('extracts composable functions from usePost.ts', () => {
+  it('extracts composable function usePost from usePost.ts', () => {
     const fns = getNodesByLabel(result, 'Function');
     expect(fns).toContain('usePost');
   });
 
   // Import resolution --------------------------------------------------------
 
-  it('resolves imports from composable to model file', () => {
+  it('resolves import from useUser.ts to models.ts (1 named export: UserModel)', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const compToModel = imports.filter(
       (e) => e.sourceFilePath.endsWith('useUser.ts') && e.targetFilePath.endsWith('models.ts'),
     );
-    expect(compToModel.length).toBeGreaterThanOrEqual(1);
+    expect(compToModel.length).toBe(1);
   });
 
-  it('resolves imports from <script setup> to composable', () => {
+  it('resolves import from UserCard.vue to useUser.ts (1 named export: useUser)', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const vueToComp = imports.filter(
       (e) => e.sourceFilePath.endsWith('UserCard.vue') && e.targetFilePath.endsWith('useUser.ts'),
     );
-    expect(vueToComp.length).toBeGreaterThanOrEqual(1);
+    expect(vueToComp.length).toBe(1);
   });
 
-  it('resolves imports from App.vue to composable', () => {
+  it('resolves import from App.vue to useUser.ts (1 named export: useUserList)', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const appToComp = imports.filter(
       (e) => e.sourceFilePath.endsWith('App.vue') && e.targetFilePath.endsWith('useUser.ts'),
     );
-    expect(appToComp.length).toBeGreaterThanOrEqual(1);
+    expect(appToComp.length).toBe(1);
   });
 
-  it('resolves imports from App.vue to models.ts', () => {
+  it('resolves import from App.vue to models.ts (1 named export: UserModel)', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const appToModel = imports.filter(
       (e) => e.sourceFilePath.endsWith('App.vue') && e.targetFilePath.endsWith('models.ts'),
     );
-    expect(appToModel.length).toBeGreaterThanOrEqual(1);
+    expect(appToModel.length).toBe(1);
   });
 
   // CALLS edges --------------------------------------------------------------
@@ -341,7 +344,7 @@ describe('Vue cross-file composable and class resolution', () => {
     const toUseUser = calls.filter(
       (e) => e.sourceFilePath.endsWith('UserCard.vue') && e.target === 'useUser',
     );
-    expect(toUseUser.length).toBeGreaterThanOrEqual(1);
+    expect(toUseUser.length).toBe(1);
   });
 
   it('emits CALLS edge from PostCard.vue to usePost composable', () => {
@@ -349,7 +352,7 @@ describe('Vue cross-file composable and class resolution', () => {
     const toUsePost = calls.filter(
       (e) => e.sourceFilePath.endsWith('PostCard.vue') && e.target === 'usePost',
     );
-    expect(toUsePost.length).toBeGreaterThanOrEqual(1);
+    expect(toUsePost.length).toBe(1);
   });
 
   it('emits CALLS edge from App.vue to useUserList composable', () => {
@@ -357,7 +360,7 @@ describe('Vue cross-file composable and class resolution', () => {
     const toUseUserList = calls.filter(
       (e) => e.sourceFilePath.endsWith('App.vue') && e.target === 'useUserList',
     );
-    expect(toUseUserList.length).toBeGreaterThanOrEqual(1);
+    expect(toUseUserList.length).toBe(1);
   });
 
   it('emits CALLS edge from useUser.ts to UserModel constructor', () => {
@@ -365,15 +368,15 @@ describe('Vue cross-file composable and class resolution', () => {
     const toUserModel = calls.filter(
       (e) => e.sourceFilePath.endsWith('useUser.ts') && e.target === 'UserModel',
     );
-    expect(toUserModel.length).toBeGreaterThanOrEqual(1);
+    expect(toUserModel.length).toBe(1);
   });
 
-  it('emits CALLS edge from App.vue to addUser (composable return)', () => {
+  it('emits CALLS edge from App.vue to addUser (returned from useUserList)', () => {
     const calls = getRelationships(result, 'CALLS');
     const toAddUser = calls.filter(
       (e) => e.sourceFilePath.endsWith('App.vue') && e.target === 'addUser',
     );
-    expect(toAddUser.length).toBeGreaterThanOrEqual(1);
+    expect(toAddUser.length).toBe(1);
   });
 
   // File nodes ---------------------------------------------------------------

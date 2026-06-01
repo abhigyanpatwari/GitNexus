@@ -18,10 +18,11 @@
  * ## Known limitations
  *
  *   1. **Template expressions** — Bindings referenced in `<template>` are
- *      not resolved through the scope model. Component-reference CALLS
- *      edges are emitted by the legacy template extractor in the parse
- *      worker; expression-level calls (e.g. `{{ formatDate(x) }}`) are
- *      not yet captured (tracked in #1647).
+ *      not resolved through the scope model. PascalCase component-reference
+ *      CALLS edges are emitted by a dedicated pass in `call-processor.ts`
+ *      (the `isRegistryPrimary(Vue)` guard exempts them from the legacy
+ *      skip so they survive the migration). Expression-level calls (e.g.
+ *      `{{ formatDate(x) }}`) are not yet captured (tracked in #1647).
  *   2. **Options API `this` resolution** — `this.X()` in Options API
  *      components does not resolve through type-binding when the component
  *      uses a plain object literal rather than a class. `fieldFallbackOnMethodLookup`
