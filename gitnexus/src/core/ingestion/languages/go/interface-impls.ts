@@ -10,20 +10,41 @@ type SignatureContext = {
   readonly packageQualifier: string | undefined;
   readonly importQualifiers: ReadonlyMap<string, string>;
 };
+type DetectionIndexes = {
+  readonly interfaces: readonly SymbolDefinition[];
+  readonly structsById: ReadonlyMap<string, SymbolDefinition>;
+  readonly methodsByOwner: ReadonlyMap<string, MethodSet>;
+  readonly interfaceById: ReadonlyMap<string, SymbolDefinition>;
+  readonly interfaceOwnMethodsById: ReadonlyMap<string, MethodSet>;
+  readonly embeddedSitesByInterfaceId: ReadonlyMap<string, readonly string[]>;
+  readonly structIdsByMethodName: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly signatureContextByDefId: ReadonlyMap<string, SignatureContext>;
+};
 
 export function detectGoInterfaceImplementations(
   parsedFiles: readonly ParsedFile[],
   _indexes: ScopeResolutionIndexes,
   _model: SemanticModel,
 ): Map<string, string[]> {
+  return detectGoInterfaceImplementationsFromIndexes(buildDetectionIndexes(parsedFiles, _indexes));
+}
+
+function buildDetectionIndexes(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+): DetectionIndexes {
   const interfaces: SymbolDefinition[] = [];
-  const structs: SymbolDefinition[] = [];
+  const structsById = new Map<string, SymbolDefinition>();
   const methodsByOwner = new Map<string, Map<string, SymbolDefinition[]>>();
   const interfaceById = new Map<string, SymbolDefinition>();
+  const interfaceOwnMethodsById = new Map<string, MethodSet>();
+  const embeddedSitesByInterfaceId = new Map<string, string[]>();
+  const structIdsByMethodName = new Map<string, Set<string>>();
   const signatureContextByDefId = new Map<string, SignatureContext>();
+  const interfaceIdByScopeId = new Map<string, string>();
 
   for (const parsed of parsedFiles) {
-    const signatureContext = signatureContextForFile(parsed, _indexes);
+    const signatureContext = signatureContextForFile(parsed, indexes);
     for (const def of parsed.localDefs) {
       signatureContextByDefId.set(def.nodeId, signatureContext);
       if (def.type === 'Interface') {
@@ -32,7 +53,7 @@ export function detectGoInterfaceImplementations(
         continue;
       }
       if (def.type === 'Struct') {
-        structs.push(def);
+        structsById.set(def.nodeId, def);
         continue;
       }
       if (def.type !== 'Method' && def.type !== 'Function') continue;
@@ -41,35 +62,85 @@ export function detectGoInterfaceImplementations(
       const methodName = simpleQualifiedName(def);
       if (methodName === undefined || methodName.length === 0) continue;
 
-      let methods = methodsByOwner.get(def.ownerId);
-      if (methods === undefined) {
-        methods = new Map<string, SymbolDefinition[]>();
-        methodsByOwner.set(def.ownerId, methods);
-      }
-      const overloads = methods.get(methodName) ?? [];
-      overloads.push(def);
-      methods.set(methodName, overloads);
+      addMethod(methodsByOwner, def.ownerId, methodName, def);
     }
   }
 
+  for (const [ownerId, methods] of methodsByOwner) {
+    if (!structsById.has(ownerId)) continue;
+    for (const methodName of methods.keys()) {
+      addStructMethodCandidate(structIdsByMethodName, methodName, ownerId);
+    }
+  }
+
+  for (const parsed of parsedFiles) {
+    for (const scope of parsed.scopes) {
+      const iface = scope.ownedDefs.find((def) => def.type === 'Interface');
+      if (iface !== undefined) interfaceIdByScopeId.set(scope.id, iface.nodeId);
+    }
+  }
+
+  for (const parsed of parsedFiles) {
+    const childScopesByParent = new Map<string, (typeof parsed.scopes)[number][]>();
+    for (const scope of parsed.scopes) {
+      if (scope.parent === null) continue;
+      const children = childScopesByParent.get(scope.parent) ?? [];
+      children.push(scope);
+      childScopesByParent.set(scope.parent, children);
+    }
+
+    for (const scope of parsed.scopes) {
+      const ifaceId = interfaceIdByScopeId.get(scope.id);
+      if (ifaceId === undefined) continue;
+      const methods = new Map<string, SymbolDefinition[]>();
+      for (const childScope of childScopesByParent.get(scope.id) ?? []) {
+        for (const def of childScope.ownedDefs) {
+          if (def.type !== 'Method' && def.type !== 'Function') continue;
+          const methodName = simpleQualifiedName(def);
+          if (methodName === undefined || methodName.length === 0) continue;
+          addMethodOverload(methods, methodName, def);
+        }
+      }
+      interfaceOwnMethodsById.set(ifaceId, methods);
+    }
+
+    for (const site of parsed.referenceSites) {
+      if (site.kind !== 'inherits') continue;
+      const ifaceId = interfaceIdByScopeId.get(site.inScope);
+      if (ifaceId === undefined) continue;
+      const sites = embeddedSitesByInterfaceId.get(ifaceId) ?? [];
+      sites.push(site.name);
+      embeddedSitesByInterfaceId.set(ifaceId, sites);
+    }
+  }
+
+  return {
+    interfaces,
+    structsById,
+    methodsByOwner,
+    interfaceById,
+    interfaceOwnMethodsById,
+    embeddedSitesByInterfaceId,
+    structIdsByMethodName,
+    signatureContextByDefId,
+  };
+}
+
+function detectGoInterfaceImplementationsFromIndexes(
+  indexes: DetectionIndexes,
+): Map<string, string[]> {
   const implementations = new Map<string, string[]>();
-  for (const iface of interfaces) {
-    const required = collectInterfaceMethodSet(
-      iface,
-      parsedFiles,
-      methodsByOwner,
-      interfaceById,
-      new Set(),
-    );
+  for (const iface of indexes.interfaces) {
+    const required = collectInterfaceMethodSet(iface, indexes, new Set());
     if (required === undefined || required.size === 0) continue;
     if (!methodSetHasVerifiableSignatures(required)) continue;
 
     const implementors: string[] = [];
-    for (const struct of structs) {
-      const actual = methodsByOwner.get(struct.nodeId);
+    for (const structId of candidateStructIdsFor(required, indexes)) {
+      const actual = indexes.methodsByOwner.get(structId);
       if (actual === undefined) continue;
-      if (methodSetSatisfies(actual, required, signatureContextByDefId)) {
-        implementors.push(struct.nodeId);
+      if (methodSetSatisfies(actual, required, indexes.signatureContextByDefId)) {
+        implementors.push(structId);
       }
     }
     if (implementors.length > 0) implementations.set(iface.nodeId, implementors);
@@ -78,59 +149,60 @@ export function detectGoInterfaceImplementations(
   return implementations;
 }
 
-function collectInterfaceScopeMethods(
-  iface: SymbolDefinition,
-  parsedFiles: readonly ParsedFile[],
-): MutableMethodSet | undefined {
-  for (const parsed of parsedFiles) {
-    for (const scope of parsed.scopes) {
-      if (!scope.ownedDefs.some((def) => def.nodeId === iface.nodeId)) continue;
-      const methods = new Map<string, SymbolDefinition[]>();
-      for (const childScope of parsed.scopes) {
-        if (childScope.parent !== scope.id) continue;
-        for (const def of childScope.ownedDefs) {
-          if (def.type !== 'Method' && def.type !== 'Function') continue;
-          const methodName = simpleQualifiedName(def);
-          if (methodName === undefined || methodName.length === 0) continue;
-          const overloads = methods.get(methodName) ?? [];
-          overloads.push(def);
-          methods.set(methodName, overloads);
-        }
-      }
-      return methods;
-    }
+function addMethod(
+  methodsByOwner: Map<string, Map<string, SymbolDefinition[]>>,
+  ownerId: string,
+  methodName: string,
+  def: SymbolDefinition,
+): void {
+  let methods = methodsByOwner.get(ownerId);
+  if (methods === undefined) {
+    methods = new Map<string, SymbolDefinition[]>();
+    methodsByOwner.set(ownerId, methods);
   }
-  return undefined;
+  addMethodOverload(methods, methodName, def);
+}
+
+function addMethodOverload(
+  methods: Map<string, SymbolDefinition[]>,
+  methodName: string,
+  def: SymbolDefinition,
+): void {
+  const overloads = methods.get(methodName) ?? [];
+  overloads.push(def);
+  methods.set(methodName, overloads);
+}
+
+function addStructMethodCandidate(
+  structIdsByMethodName: Map<string, Set<string>>,
+  methodName: string,
+  structId: string,
+): void {
+  const structIds = structIdsByMethodName.get(methodName) ?? new Set<string>();
+  structIds.add(structId);
+  structIdsByMethodName.set(methodName, structIds);
 }
 
 function collectInterfaceMethodSet(
   iface: SymbolDefinition,
-  parsedFiles: readonly ParsedFile[],
-  methodsByOwner: ReadonlyMap<string, MethodSet>,
-  interfaceById: ReadonlyMap<string, SymbolDefinition>,
+  indexes: DetectionIndexes,
   visiting: Set<string>,
 ): MutableMethodSet | undefined {
   if (visiting.has(iface.nodeId)) return undefined;
   visiting.add(iface.nodeId);
 
   const ownMethods =
-    methodsByOwner.get(iface.nodeId) ?? collectInterfaceScopeMethods(iface, parsedFiles);
+    indexes.methodsByOwner.get(iface.nodeId) ?? indexes.interfaceOwnMethodsById.get(iface.nodeId);
   const merged = cloneMethodSet(ownMethods);
 
-  const embeddedInterfaces = embeddedInterfacesFor(iface, parsedFiles, interfaceById);
+  const embeddedInterfaces = embeddedInterfacesFor(iface, indexes);
   if (embeddedInterfaces === undefined) {
     visiting.delete(iface.nodeId);
     return undefined;
   }
 
   for (const embeddedIface of embeddedInterfaces) {
-    const embeddedMethods = collectInterfaceMethodSet(
-      embeddedIface,
-      parsedFiles,
-      methodsByOwner,
-      interfaceById,
-      visiting,
-    );
+    const embeddedMethods = collectInterfaceMethodSet(embeddedIface, indexes, visiting);
     if (embeddedMethods === undefined) {
       visiting.delete(iface.nodeId);
       return undefined;
@@ -144,30 +216,25 @@ function collectInterfaceMethodSet(
 
 function embeddedInterfacesFor(
   iface: SymbolDefinition,
-  parsedFiles: readonly ParsedFile[],
-  interfaceById: ReadonlyMap<string, SymbolDefinition>,
+  indexes: DetectionIndexes,
 ): SymbolDefinition[] | undefined {
-  const ifaceScopes = new Set<string>();
-  for (const parsed of parsedFiles) {
-    for (const scope of parsed.scopes) {
-      if (scope.ownedDefs.some((def) => def.nodeId === iface.nodeId)) {
-        ifaceScopes.add(scope.id);
-      }
-    }
-  }
-  if (ifaceScopes.size === 0) return [];
-
   const embedded: SymbolDefinition[] = [];
-  for (const parsed of parsedFiles) {
-    for (const site of parsed.referenceSites) {
-      if (site.kind !== 'inherits') continue;
-      if (!ifaceScopes.has(site.inScope)) continue;
-      const resolved = resolveEmbeddedInterface(site.name, interfaceById);
-      if (resolved === undefined) return undefined;
-      embedded.push(resolved);
-    }
+  for (const name of indexes.embeddedSitesByInterfaceId.get(iface.nodeId) ?? []) {
+    const resolved = resolveEmbeddedInterface(name, indexes.interfaceById);
+    if (resolved === undefined) return undefined;
+    embedded.push(resolved);
   }
   return embedded;
+}
+
+function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): readonly string[] {
+  let best: ReadonlySet<string> | undefined;
+  for (const name of required.keys()) {
+    const candidates = indexes.structIdsByMethodName.get(name);
+    if (candidates === undefined) return [];
+    if (best === undefined || candidates.size < best.size) best = candidates;
+  }
+  return best === undefined ? [...indexes.structsById.keys()] : [...best];
 }
 
 function resolveEmbeddedInterface(
