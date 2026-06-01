@@ -110,6 +110,34 @@ describe('Java generic-base heritage resolution (#1951)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified (namespaced) bases (#1956 tri-review U2): `extends app.base.Box<T>`
+// + `implements app.base.IFoo<T>` (qualified-generic, on Service) and `extends
+// app.base.Base` + `implements app.base.IBar` (qualified non-generic, on Plain).
+// The registry-primary synth resolves these by their scoped-name tail; the
+// legacy @heritage query was widened with scoped_type_identifier arms to match.
+// Runs under BOTH legs via createResolverParityIt, so it fails on the legacy leg
+// if the widening regresses (=1/=0 parity break).
+// ---------------------------------------------------------------------------
+
+describe('Java qualified-base heritage resolution (#1956 U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for qualified and qualified-generic superclasses', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box']);
+  });
+
+  it('emits IMPLEMENTS for qualified and qualified-generic interfaces', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler + Processor in two packages, imports disambiguate
 // ---------------------------------------------------------------------------
 

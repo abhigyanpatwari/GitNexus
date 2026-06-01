@@ -337,6 +337,30 @@ export const TYPESCRIPT_QUERIES = `
     (implements_clause
       (generic_type name: (type_identifier) @heritage.implements)))) @heritage.impl
 
+; Heritage queries - qualified (namespaced) bases (#1956 tri-review U2). The
+; registry-primary synth already resolves these by their trailing simple name;
+; these arms keep the legacy @heritage leg at parity. extends uses a
+; member_expression (value: field) with type_arguments as a sibling, so one arm
+; covers both extends ns.Base and extends ns.Base<T>. implements uses
+; nested_type_identifier (plain) or a generic_type wrapping one. Each is anchored
+; on the trailing property_identifier / type_identifier so capture text stays the
+; bare name (verified against a real parse).
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (extends_clause
+      value: (member_expression property: (property_identifier) @heritage.extends)))) @heritage
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (implements_clause
+      (nested_type_identifier (type_identifier) @heritage.implements)))) @heritage.impl
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (implements_clause
+      (generic_type name: (nested_type_identifier (type_identifier) @heritage.implements))))) @heritage.impl
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_expression
@@ -808,6 +832,21 @@ export const JAVA_QUERIES = `
 ; Heritage - implements generic interfaces (e.g. implements IFoo<T>)
 (class_declaration name: (identifier) @heritage.class
   (super_interfaces (type_list (generic_type (type_identifier) @heritage.implements)))) @heritage.impl
+
+; Heritage - qualified (namespaced) bases, e.g. extends a.b.Base / implements
+; a.b.IFoo<T> (#1956 tri-review U2). The registry-primary synth already resolves
+; these by their trailing simple name; these arms keep the legacy @heritage leg
+; at parity. A scoped_type_identifier's direct (type_identifier) child is the
+; trailing base name (the a.b prefix is a nested scoped_type_identifier), and
+; generic_type is positional in tree-sitter-java. Verified against a real parse.
+(class_declaration name: (identifier) @heritage.class
+  (superclass (scoped_type_identifier (type_identifier) @heritage.extends))) @heritage
+(class_declaration name: (identifier) @heritage.class
+  (superclass (generic_type (scoped_type_identifier (type_identifier) @heritage.extends)))) @heritage
+(class_declaration name: (identifier) @heritage.class
+  (super_interfaces (type_list (scoped_type_identifier (type_identifier) @heritage.implements)))) @heritage.impl
+(class_declaration name: (identifier) @heritage.class
+  (super_interfaces (type_list (generic_type (scoped_type_identifier (type_identifier) @heritage.implements))))) @heritage.impl
 
 ; Write access: obj.field = value
 (assignment_expression

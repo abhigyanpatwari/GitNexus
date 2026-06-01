@@ -58,6 +58,34 @@ describe('TypeScript generic-base heritage resolution (#1951)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified (namespaced) bases (#1956 tri-review U2): `extends ns.Box<string>`
+// + `implements ns.IFoo<string>` (qualified-generic, on Service) and `extends
+// ns.Base` + `implements ns.IBar` (qualified non-generic, on Plain). extends
+// uses a member_expression value; implements uses a nested_type_identifier
+// (plain) or a generic_type wrapping one. The registry-primary synth resolves
+// these by their tail; the legacy @heritage query was widened to match. Runs
+// under BOTH legs via createResolverParityIt.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript qualified-base heritage resolution (#1956 U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for qualified and qualified-generic superclasses', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box']);
+  });
+
+  it('emits IMPLEMENTS for qualified and qualified-generic interfaces', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface
 // ---------------------------------------------------------------------------
 

@@ -433,8 +433,11 @@ export function emitTsScopeCaptures(
  * sibling field), and `implements IFoo<T>` is captured by a legacy clause
  * widened to read the `generic_type`'s `name:` identifier — so the registry
  * path keeps parity on SIMPLE (unqualified) generic bases too (#1951).
- * Qualified bases (`ns.Base`, `ns.Base<T>`) remain a pre-existing legacy gap
- * the synth resolves but the legacy query does not — both outcomes are safe.
+ * Qualified bases (`ns.Base`, `ns.Base<T>`, `ns.IFoo<T>`) are ALSO now at parity
+ * (#1956 tri-review U2): the synth resolves them by their member_expression /
+ * nested_type_identifier tail, and the legacy `@heritage` query was widened with
+ * matching arms (member_expression for extends, nested_type_identifier plain +
+ * generic-wrapped for implements).
  *
  * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
  * — the legacy query captures neither, so the registry path keeps parity with
@@ -505,6 +508,9 @@ function terminalTsTypeNameNode(node: SyntaxNode): SyntaxNode | null {
   switch (node.type) {
     case 'identifier':
     case 'type_identifier':
+    // `extends ns.Base` parses as a member_expression whose tail is a
+    // `property_identifier` (not a type_identifier) — treat it as a leaf name.
+    case 'property_identifier':
       return node;
     case 'generic_type': {
       // generic_type has a `name:` field (type_identifier / nested_type_identifier);

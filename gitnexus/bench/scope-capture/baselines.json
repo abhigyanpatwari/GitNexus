@@ -46,14 +46,14 @@
     "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
   },
   "java": {
-    "fingerprint": "91e7a556286300aaf9dfdfd2553f470c505a318391d68ca5f0e83f0c93ea978d",
+    "fingerprint": "6f9fd696192f14e82e316c5a89bb7260abdf2544900c336925508d4f85e2aaa0",
     "scaling_budget": 1.5,
-    "_added": "#1956: java added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (class extends Base implements Marker). Adding it exposed a pre-existing O(n^2) findNodeAtRange(tree.rootNode,...) root-walk in java/captures.ts — the #1848/#1915/#1918 family bug, never fixed for java because java had no bench. Fixed by threading the query's captured c.node (byte-identical capture output, verified by a before/after digest over all java-* fixtures); scaling now linear (~0.99, was 3.09)."
+    "_rebaselined": "#1956 tri-review U2: + java-qualified-base fixture (extends/implements app.base.* scoped + qualified-generic bases); the synth already resolved scoped tails, so this is additive corpus growth, no synth change. Linear (~1.08). (Earlier: java added to bench in #1956 review, which exposed + fixed the pre-existing O(n^2) findNodeAtRange root-walk; scaling 3.09 -> ~0.99.)"
   },
   "typescript": {
-    "fingerprint": "bc2aba682c02b85aaebae88b918a6b0acf21df9a0ba21235b452b2bda3232d0f",
+    "fingerprint": "7087f62dbab5fff0d8a9c39f7bc305842ee73a7ba20d7b44677f6511c92e5b92",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 review: + typescript-generic-base fixture; scale source already heritage-bearing (extends Base since #1918); linear (~1.0)."
+    "_rebaselined": "#1956 tri-review U2: + typescript-qualified-base fixture AND terminalTsTypeNameNode now treats a member_expression tail (property_identifier) as a leaf name, so qualified `extends ns.Base` synthesizes an edge (was dropped). Linear (~1.03)."
   },
   "javascript": {
     "fingerprint": "531241f41853faaf88f970b0191032b35990f46069458dbf5c81b15144879dd7",
