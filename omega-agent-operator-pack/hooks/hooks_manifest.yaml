@@ -1,0 +1,82 @@
+version: 1
+name: omega-agent-operator-hooks
+
+hooks:
+  - event: omega.observe.started
+    description: User intent intake has started.
+    payload:
+      - user_goal
+      - available_context
+      - constraints
+
+  - event: omega.observe.completed
+    description: Intent, constraints, and risks have been extracted.
+    payload:
+      - goal
+      - output_target
+      - risk_level
+      - missing_context
+
+  - event: omega.orient.completed
+    description: Deliverable mode has been selected.
+    payload:
+      - mode
+      - artifact_set
+      - autonomy_level
+
+  - event: omega.decide.completed
+    description: Artifact plan and safety boundaries are locked.
+    payload:
+      - selected_actions
+      - approval_required
+      - assumptions
+
+  - event: omega.act.started
+    description: Artifact production has started.
+    payload:
+      - planned_files
+      - tools_required
+
+  - event: omega.act.file_created
+    description: A file artifact was created.
+    payload:
+      - path
+      - checksum
+      - artifact_type
+
+  - event: omega.verify.completed
+    description: Verification gate completed.
+    payload:
+      - ok
+      - present
+      - missing
+      - notes
+
+  - event: omega.learn.checkpoint_created
+    description: Continuity checkpoint was created.
+    payload:
+      - checkpoint_id
+      - path
+      - next_command
+
+  - event: omega.error
+    description: Error occurred during operation.
+    payload:
+      - stage
+      - message
+      - recoverable
+      - next_safe_action
+
+approval_gates:
+  destructive_actions:
+    required: true
+  deployments:
+    required: true
+  credential_changes:
+    required: true
+  external_sends:
+    required: true
+  irreversible_writes:
+    required: true
+  scheduled_autonomy:
+    required: true
