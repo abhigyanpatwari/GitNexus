@@ -446,7 +446,8 @@ const JAVASCRIPT_SCOPE_QUERY = `
   constructor: (identifier) @reference.name) @reference.call.constructor
 
 (new_expression
-  constructor: (member_expression) @reference.call.constructor.qualified) @reference.call.constructor
+  constructor: (member_expression
+    property: (property_identifier) @reference.name) @reference.call.constructor.qualified) @reference.call.constructor
 
 ;; Write access: obj.field = value
 (assignment_expression
