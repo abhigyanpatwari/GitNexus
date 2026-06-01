@@ -3,6 +3,7 @@ import {
   nodeIfType,
   nodeToCapture,
   syntheticCapture,
+  walkNamedTree,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { getRustParser, getRustScopeQuery } from './query.js';
@@ -197,7 +198,7 @@ export function emitRustScopeCaptures(
  */
 function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visitRust(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'impl_item') return;
     const traitField = node.childForFieldName('trait');
     const typeField = node.childForFieldName('type');
@@ -239,14 +240,6 @@ function bareTypeIdentifier(node: SyntaxNode): SyntaxNode | null {
     return inner !== null ? bareTypeIdentifier(inner) : null;
   }
   return null;
-}
-
-function visitRust(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null) visitRust(child, cb);
-  }
 }
 
 function findEnclosingImpl(node: SyntaxNode): SyntaxNode | null {

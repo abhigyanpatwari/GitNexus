@@ -17,7 +17,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeIfType, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import {
+  nodeIfType,
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+} from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
 import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
@@ -280,7 +285,7 @@ export function emitCsharpScopeCaptures(
  */
 function synthesizeCsharpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visit(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'class_declaration' && node.type !== 'interface_declaration') return;
     const baseList = findNamedChild(node, 'base_list');
     if (baseList === null) return;
@@ -302,7 +307,7 @@ function synthesizeGenericTypeArgumentReferences(root: SyntaxNode): CaptureMatch
   const out: CaptureMatch[] = [];
   // Treat all generic type arguments as static type references, including
   // declaration signatures and call-site generic instantiations.
-  visit(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'generic_name') return;
     const args = findNamedChild(node, 'type_argument_list');
     if (args === null) return;
@@ -348,13 +353,6 @@ function findNamedChild(node: SyntaxNode, type: string): SyntaxNode | null {
     if (child !== null && child.type === type) return child;
   }
   return null;
-}
-
-function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (const child of node.namedChildren) {
-    if (child !== null) visit(child, cb);
-  }
 }
 
 /** C# 12 primary constructor: `class X(a, b) { }` / `record X(a, b)`.

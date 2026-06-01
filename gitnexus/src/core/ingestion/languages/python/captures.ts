@@ -17,7 +17,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
@@ -188,7 +193,7 @@ export function emitPythonScopeCaptures(
  */
 function synthesizePythonInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visit(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'class_definition') return;
     const superclasses = node.childForFieldName('superclasses');
     if (superclasses === null || superclasses.type !== 'argument_list') return;
@@ -202,14 +207,6 @@ function synthesizePythonInheritanceReferences(root: SyntaxNode): CaptureMatch[]
     }
   });
   return out;
-}
-
-function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null) visit(child, cb);
-  }
 }
 
 function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {

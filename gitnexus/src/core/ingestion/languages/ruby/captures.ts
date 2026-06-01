@@ -4,6 +4,7 @@ import {
   nodeIfType,
   nodeToCapture,
   syntheticCapture,
+  walkNamedTree,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { getRubyParser, getRubyScopeQuery } from './query.js';
@@ -471,7 +472,7 @@ export function emitRubyScopeCaptures(
  */
 function synthesizeRubySuperclassReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visit(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'class') return;
     const superclass = node.childForFieldName('superclass');
     if (superclass === null) return;
@@ -483,14 +484,6 @@ function synthesizeRubySuperclassReferences(root: SyntaxNode): CaptureMatch[] {
     });
   });
   return out;
-}
-
-function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null) visit(child, cb);
-  }
 }
 
 function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatch | null {

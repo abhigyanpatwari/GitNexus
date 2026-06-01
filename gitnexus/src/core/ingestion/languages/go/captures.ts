@@ -1,5 +1,10 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { getGoParser, getGoScopeQuery } from './query.js';
 import { recordGoCacheHit, recordGoCacheMiss } from './cache-stats.js';
 import { computeGoCallArity, computeGoDeclarationArity } from './arity-metadata.js';
@@ -197,7 +202,7 @@ export function emitGoScopeCaptures(
  */
 function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visitGo(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'type_declaration') return;
     for (const spec of node.namedChildren) {
       if (spec.type !== 'type_spec') continue;
@@ -232,13 +237,6 @@ function findNamedChildOfType(node: SyntaxNode, type: string): SyntaxNode | null
 }
 
 /** Pre-order walk over named children. */
-function visitGo(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (const child of node.namedChildren) {
-    visitGo(child, cb);
-  }
-}
-
 /**
  * Resolve the node passed to `splitGoImportStatement` for an @import.statement
  * match. The capture is on the `import_spec`; the original preferred an

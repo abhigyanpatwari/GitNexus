@@ -37,6 +37,7 @@ import {
   nodeIfType,
   nodeToCapture,
   syntheticCapture,
+  walkNamedTree,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { splitSwiftImport } from './import-decomposer.js';
@@ -315,7 +316,7 @@ export function emitSwiftScopeCaptures(
  */
 function synthesizeSwiftInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visitSwift(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type !== 'class_declaration' && node.type !== 'protocol_declaration') return;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
@@ -356,14 +357,6 @@ function swiftBaseTypeIdentifier(inheritsFrom: SyntaxNode): SyntaxNode | null {
 }
 
 /** Pre-order walk over named children (mirrors C#'s `visit`). */
-function visitSwift(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null) visitSwift(child, cb);
-  }
-}
-
 /** Synthesize a `@type-binding.constructor` for EACH clause of an
  *  if-let / guard-let optional binding:
  *    `if let u = getUser()` → one binding `u: getUser`

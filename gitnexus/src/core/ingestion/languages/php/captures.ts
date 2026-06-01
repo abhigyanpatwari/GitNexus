@@ -32,7 +32,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeIfType, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import {
+  nodeIfType,
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+} from '../../utils/ast-helpers.js';
 import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import { computePhpArityMetadata } from './arity-metadata.js';
 import { synthesizePhpReceiverBinding } from './receiver-binding.js';
@@ -329,7 +334,7 @@ export function emitPhpScopeCaptures(
  */
 function synthesizePhpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
-  visit(root, (node) => {
+  walkNamedTree(root, (node) => {
     if (node.type === 'class_declaration') {
       // extends: single base_clause child carrying one base name.
       const baseClause = findNamedChild(node, 'base_clause');
@@ -418,14 +423,6 @@ function findNamedChild(node: SyntaxNode, type: string): SyntaxNode | null {
 }
 
 /** Pre-order walk over named children, invoking `cb` on each node. */
-function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
-  cb(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null) visit(child, cb);
-  }
-}
-
 // ─── PHP receiver normalization ──────────────────────────────────────────────
 
 /**
