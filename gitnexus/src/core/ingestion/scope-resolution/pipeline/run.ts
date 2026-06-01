@@ -113,13 +113,14 @@ function preEmitInheritanceEdges(
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
     if (callerGraphId === undefined || targetGraphId === undefined) continue;
     // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
-    // conforming to an interface OR mixing in a trait is IMPLEMENTS, deriving
-    // from a class-like is EXTENDS. This matches the legacy heritage emitters
-    // (`resolveExtendsType` maps Interface→IMPLEMENTS; the trait-impl branch of
-    // `resolveAndAddHeritageEdge` maps trait use → IMPLEMENTS), so the
-    // registry-primary path matches the legacy DAG (e.g. PHP `use Trait`).
-    // Languages without `Interface`/`Trait` base targets (e.g. C++) always take
-    // the EXTENDS branch, so their behavior is unchanged.
+    // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
+    // deriving from a class-like is EXTENDS. This matches the legacy heritage
+    // emitters (`resolveExtendsType` maps Interface→IMPLEMENTS; the trait-impl
+    // branch of `resolveAndAddHeritageEdge` maps trait use → IMPLEMENTS), so the
+    // registry-primary path matches the legacy DAG. The discriminator is purely
+    // symbol-kind-driven (no language is named here, per AGENTS.md): a base that
+    // resolves to neither an Interface nor a Trait symbol always takes the
+    // EXTENDS branch, so such languages are unchanged.
     const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
       targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
     const edgeKey = `${edgeType}:${callerGraphId}->${targetGraphId}`;
