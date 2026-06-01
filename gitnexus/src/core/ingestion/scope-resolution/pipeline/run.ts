@@ -52,6 +52,43 @@ import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution
 import { logger } from '../../../logger.js';
 
 /**
+ * Emit one class-owned inheritance edge directly (the inheritance pre-pass is
+ * the authoritative emitter — see `preEmitInheritanceEdges`). Encapsulates the
+ * dual dedup contract so the two sets' joint semantics live in one place:
+ *   - `existing` — coarse per-`(caller, target, type)` gate, seeded from the
+ *     graph (so this pass is a no-op when the legacy path already emitted it).
+ *   - `seen` — per-site key shared with the generic edge bridge so the two
+ *     passes never double-emit the same resolution.
+ * The `dedupKey` and `rel:` id shape match `tryEmitEdge` exactly, so graph
+ * output stays byte-identical. The caller is the enclosing class (NOT the
+ * method/constructor `resolveCallerGraphId` would prefer — that broke MRO for
+ * C# 12 primary constructors, #1951); the edge type is pre-discriminated.
+ */
+function emitInheritanceEdgeDirect(
+  graph: KnowledgeGraph,
+  seen: Set<string>,
+  existing: Set<string>,
+  callerGraphId: string,
+  targetGraphId: string,
+  edgeType: 'EXTENDS' | 'IMPLEMENTS',
+  site: { readonly atRange: { startLine: number; startCol: number } },
+): void {
+  const edgeKey = `${edgeType}:${callerGraphId}->${targetGraphId}`;
+  const dedupKey = `${edgeKey}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  if (existing.has(edgeKey) || seen.has(dedupKey)) return;
+  seen.add(dedupKey);
+  existing.add(edgeKey);
+  graph.addRelationship({
+    id: `rel:${dedupKey}`,
+    sourceId: callerGraphId,
+    targetId: targetGraphId,
+    type: edgeType,
+    confidence: 0.85,
+    reason: 'scope-resolution: inherits',
+  });
+}
+
+/**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
  * graph in time for `buildMro`, while `handledSites` prevents the generic
@@ -123,27 +160,7 @@ function preEmitInheritanceEdges(
     // EXTENDS branch, so such languages are unchanged.
     const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
       targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
-    const edgeKey = `${edgeType}:${callerGraphId}->${targetGraphId}`;
-    // Emit the inheritance edge directly rather than threading an override bag
-    // through `tryEmitEdge`. This pre-pass is the authoritative inheritance
-    // emitter: it already owns the caller (the enclosing class — NOT the
-    // method/constructor `resolveCallerGraphId` would otherwise prefer, which
-    // broke MRO for C# 12 primary constructors, #1951), the target id, and the
-    // EXTENDS-vs-IMPLEMENTS type. The per-site `dedupKey` + shared `seen` set and
-    // the `rel:` id shape match `tryEmitEdge` exactly, so graph output and
-    // cross-pass dedup are byte-identical.
-    const dedupKey = `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
-    if (existing.has(edgeKey) || seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-    existing.add(edgeKey);
-    graph.addRelationship({
-      id: `rel:${dedupKey}`,
-      sourceId: callerGraphId,
-      targetId: targetGraphId,
-      type: edgeType,
-      confidence: 0.85,
-      reason: 'scope-resolution: inherits',
-    });
+    emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
   }
 
   return handledSites;
