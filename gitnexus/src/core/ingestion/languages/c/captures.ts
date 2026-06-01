@@ -1,6 +1,6 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
@@ -33,17 +33,30 @@ export function emitCScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
+    // hands us each matched node as `c.node`, so anchors resolve via a
+    // type-guarded lookup (`nodeIfType`) instead of re-deriving them with
+    // `findNodeAtRange(tree.rootNode, ...)` per match — the
+    // O(matches × rootChildren) root-walk fixed for go #1848 / python #1918 /
+    // rust/csharp #1915 / java #1951, mirrored here for C. Every C scope-query
+    // anchor below captures directly ON the node the old root-walk re-derived
+    // (verified against C_SCOPE_QUERY in query.ts: @import.statement on
+    // preproc_include, @declaration.function on function_definition/declaration,
+    // @reference.call.free/.member on call_expression), so the type check is
+    // exact. C has no inheritance construct, so there is no heritage synthesis.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
-    // Handle #include statements
+    // Handle #include statements. `@import.statement` is captured directly on
+    // the `preproc_include` node.
     if (grouped['@import.statement'] !== undefined) {
-      const anchor = grouped['@import.statement']!;
-      const includeNode = findNodeAtRange(tree.rootNode, anchor.range, 'preproc_include');
+      const includeNode = nodeIfType(nodeMap['@import.statement'], 'preproc_include');
       if (includeNode !== null) {
         const split = splitCInclude(includeNode);
         if (split !== null) {
@@ -71,12 +84,16 @@ export function emitCScopeCaptures(
       if (concreteTypedefRanges.has(key)) continue;
     }
 
-    // Enrich function declarations with arity metadata and detect static linkage
-    const declAnchor = grouped['@declaration.function'];
-    if (declAnchor !== undefined) {
-      const fnNode =
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'function_definition') ??
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'declaration');
+    // Enrich function declarations with arity metadata and detect static linkage.
+    // `@declaration.function` is captured directly on the `function_definition`
+    // node (definitions) or the `declaration` node (prototypes) — the captured
+    // node IS what the old findNodeAtRange re-derived.
+    if (grouped['@declaration.function'] !== undefined) {
+      const fnNode = nodeIfType(
+        nodeMap['@declaration.function'],
+        'function_definition',
+        'declaration',
+      );
       if (fnNode !== null) {
         const arity = computeCDeclarationArity(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -111,10 +128,12 @@ export function emitCScopeCaptures(
       }
     }
 
-    // Enrich call references with arity
-    const callAnchor = grouped['@reference.call.free'] ?? grouped['@reference.call.member'];
-    if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode = findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression');
+    // Enrich call references with arity. @reference.call.free / .member are both
+    // captured directly on the `call_expression` node — the captured node IS
+    // what the old findNodeAtRange re-derived.
+    const callAnchorNode = nodeMap['@reference.call.free'] ?? nodeMap['@reference.call.member'];
+    if (callAnchorNode !== undefined && grouped['@reference.arity'] === undefined) {
+      const callNode = nodeIfType(callAnchorNode, 'call_expression');
       if (callNode !== null) {
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',

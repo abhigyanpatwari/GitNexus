@@ -89,10 +89,14 @@ function generatePyDao(entityCount) {
     lines.push(`import top.level.module${i}`);
   }
   lines.push('');
+  // Shared base + mixin so every Entity is heritage-bearing — exercises the
+  // @reference.inherits synth (#1951) at scale (single + multiple inheritance),
+  // not just the base capture loop.
+  lines.push('class Base:', '    pass', '', 'class Mixin:', '    pass', '');
   for (let i = 0; i < entityCount; i++) {
     const n = String(i).padStart(4, '0');
     lines.push(
-      `class Entity${n}:`,
+      `class Entity${n}(Base, Mixin):`,
       `    def __init__(self, id: int, name: str):`,
       `        self.id = id`,
       `        self.name = name`,

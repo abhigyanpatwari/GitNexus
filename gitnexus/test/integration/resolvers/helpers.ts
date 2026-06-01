@@ -26,6 +26,16 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Generic type-argument USES edges are emitted by the registry-primary
     // resolver only; the legacy DAG path does not synthesize these references.
     'emits USES edges for generic type arguments',
+    // Ambiguous same-named base (Handler/IProcessor declared in both Models/
+    // and Other/) is disambiguated to the Models/ definitions by the
+    // registry-primary import-aware resolver: `using MyApp.Models;` emits the
+    // file-level import edge that `resolveAmbiguousInheritanceBaseViaImports`
+    // keys on. The legacy DAG does not emit the C# namespace using-import edge
+    // (same root cause as the using-import-edge expected-failure above), so it
+    // cannot disambiguate and `resolveHeritageId` refuses to a synthetic
+    // Class:/Interface: target. Scope-resolver-only correctness win; backporting
+    // is out of scope per the migration policy.
+    'resolves both ambiguous bases to the imported Models namespace via import-aware disambiguation',
   ]),
   go: new Set([
     // The legacy DAG path does not resolve method calls when the method is
