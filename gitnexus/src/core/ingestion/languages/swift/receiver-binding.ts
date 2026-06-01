@@ -83,7 +83,12 @@ function isClassKeyword(typeNode: SyntaxNode): boolean {
 
 /** First inherited type (superclass or first protocol) as raw text, or
  *  null. For a class the first `inheritance_specifier` is conventionally
- *  the superclass — `super.x()` only compiles when that is true. */
+ *  the superclass — `super.x()` only compiles when that is true. For a
+ *  `user_type` base the name is the LAST `type_identifier` segment: a
+ *  qualified `Outer.Inner` parses flat as `(user_type (type_identifier
+ *  "Outer") (type_identifier "Inner"))` and the actual base is the trailing
+ *  `Inner` (generic args sit in a sibling `type_arguments`, never a
+ *  `type_identifier`). Mirrors `swiftBaseTypeIdentifier` in captures.ts. */
 function firstInheritedType(typeNode: SyntaxNode): string | null {
   for (let i = 0; i < typeNode.namedChildCount; i++) {
     const child = typeNode.namedChild(i);
@@ -91,7 +96,12 @@ function firstInheritedType(typeNode: SyntaxNode): string | null {
     const inheritsFrom = child.childForFieldName('inherits_from') ?? child.firstNamedChild;
     if (inheritsFrom === null) return null;
     if (inheritsFrom.type === 'user_type') {
-      return inheritsFrom.firstNamedChild?.text ?? inheritsFrom.text;
+      let lastName: string | null = null;
+      for (let j = 0; j < inheritsFrom.namedChildCount; j++) {
+        const seg = inheritsFrom.namedChild(j);
+        if (seg !== null && seg.type === 'type_identifier') lastName = seg.text;
+      }
+      return lastName ?? inheritsFrom.text;
     }
     return inheritsFrom.text;
   }

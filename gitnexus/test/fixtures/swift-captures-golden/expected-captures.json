@@ -199,6 +199,14 @@
     "captureGroups": 10,
     "digest": "bd01b5adcd523ceee95772cc74ded0dbc1d70449fc9e9d17e975299dcbac783f"
   },
+  "swift-qualified-base/Sources/Derived.swift": {
+    "captureGroups": 4,
+    "digest": "39e6ba35775ce624d1fb982204d2e2f0fcbbaf3046e317242602d9f245eb5a9d"
+  },
+  "swift-qualified-base/Sources/Outer.swift": {
+    "captureGroups": 9,
+    "digest": "8674f64c110ed91d7e63add63a90612c56d7b827e1b0ade54841677e82c56d80"
+  },
   "swift-return-type-inference/App.swift": {
     "captureGroups": 21,
     "digest": "ec0a14090e0240bdd52a955cf7c95c2bc994085ca1482911dd882c5cdaa17c81"

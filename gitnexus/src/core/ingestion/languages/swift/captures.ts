@@ -334,22 +334,25 @@ function synthesizeSwiftInheritanceReferences(root: SyntaxNode): CaptureMatch[] 
 }
 
 /** Normalize an `inherits_from` node to its bare simple identifier node.
- *  The legacy query captures `inherits_from: (user_type (type_identifier))`,
- *  so only a `user_type`-shaped base contributes an edge. The bare name is
- *  the FIRST `type_identifier` child of the `user_type` — generic arguments
- *  live in a sibling `type_arguments`, and a qualified `Outer.Inner` keeps
- *  the leading segment (matching the legacy `.scm` first-position bind, and
- *  the proven `firstInheritedType` walk in receiver-binding.ts). Returns
- *  null for any other base shape (e.g. a tuple / function-type conformance),
- *  so no edge is synthesized — matching the legacy query's `user_type` gate. */
+ *  Only a `user_type`-shaped base contributes an edge. The base is the LAST
+ *  `type_identifier` child of the `user_type`: a qualified `Outer.Inner`
+ *  parses flat as `(user_type (type_identifier "Outer") (type_identifier
+ *  "Inner"))` and the actual base type is the TRAILING segment `Inner`
+ *  (mirrors Java `scoped_type_identifier` → `lastNamedChild` and TS
+ *  `nested_type_identifier` → tail). Generic arguments live in a sibling
+ *  `type_arguments` node — never a `type_identifier` — so they are skipped:
+ *  `Box<Int>` → `Box`, `Outer.Inner<T>` → `Inner`. Returns null for any other
+ *  base shape (e.g. a tuple / function-type conformance), so no edge is
+ *  synthesized — matching the legacy query's `user_type` gate. */
 function swiftBaseTypeIdentifier(inheritsFrom: SyntaxNode): SyntaxNode | null {
   if (inheritsFrom.type === 'type_identifier') return inheritsFrom;
   if (inheritsFrom.type !== 'user_type') return null;
+  let last: SyntaxNode | null = null;
   for (let i = 0; i < inheritsFrom.namedChildCount; i++) {
     const child = inheritsFrom.namedChild(i);
-    if (child !== null && child.type === 'type_identifier') return child;
+    if (child !== null && child.type === 'type_identifier') last = child;
   }
-  return null;
+  return last;
 }
 
 /** Pre-order walk over named children (mirrors C#'s `visit`). */
