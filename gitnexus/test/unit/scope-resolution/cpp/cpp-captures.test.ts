@@ -222,6 +222,14 @@ describe('emitCppScopeCaptures — variable declarations', () => {
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('x');
   });
+
+  it('captures all names in mixed initialized and uninitialized declarations', () => {
+    const matches = allMatches('void f() { int a = 1, b, *p, c = 3, d; }', (t) =>
+      t.includes('@declaration.variable'),
+    );
+    const names = matches.map((m) => m['@declaration.name'].text).sort();
+    expect(names).toEqual(['a', 'b', 'c', 'd', 'p']);
+  });
 });
 
 // ── Declarations — enums ────────────────────────────────────────────────────
