@@ -280,6 +280,37 @@ describe('Ruby qualified class names', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified-base heritage: `class C < Outer::Super` (scope_resolution super-
+// class) must emit EXTENDS at parity with the legacy @heritage leg (#1951).
+// The bare control `class D < Base` keeps the original path byte-identical, and
+// `include Mixin` flows through the unchanged mixin → IMPLEMENTS lane.
+// ---------------------------------------------------------------------------
+
+describe('Ruby qualified-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-qualified-base'), () => {});
+  }, 60000);
+
+  pit('emits EXTENDS for scoped (C < Outer::Super) and bare (D < Base) bases', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const edges = edgeSet(extends_);
+    // Scoped superclass resolves by its trailing bare name (Outer::Super → Super).
+    expect(edges).toContain('C → Super');
+    // Bare control resolves unchanged.
+    expect(edges).toContain('D → Base');
+  });
+
+  pit('emits IMPLEMENTS for the include Mixin (unchanged mixin lane): C → Mixin', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'C' && e.target === 'Mixin');
+    expect(edge).toBeDefined();
+    expect(edge!.rel.reason).toBe('include');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler in two dirs, require_relative disambiguates
 // ---------------------------------------------------------------------------
 

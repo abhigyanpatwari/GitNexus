@@ -198,31 +198,47 @@ export function emitKotlinScopeCaptures(
  * came only from the legacy `@heritage.*` path, which the worker pipeline drops
  * for registry-primary languages → 0 inheritance edges in worker mode (#1951).
  *
- * Scope mirrors the legacy KOTLIN_QUERIES `@heritage.extends` patterns exactly:
- * each `delegation_specifier` child of a `class_declaration`, in either form —
+ * Scope mirrors the legacy KOTLIN_QUERIES `@heritage.extends` patterns exactly
+ * (the config-driven `kotlinHeritageShapes`: `user_type`,
+ * `constructor_invocation`, `explicit_delegation`). Each `delegation_specifier`
+ * child of a `class_declaration`, in one of three forms —
  *   - bare interface/superclass: `class Foo : Bar`
  *     `(delegation_specifier (user_type (type_identifier)))`
  *   - constructor-call superclass: `class Foo : Bar()`
  *     `(delegation_specifier (constructor_invocation (user_type (type_identifier))))`
+ *   - interface delegation: `class Foo : Bar by delegate`
+ *     `(delegation_specifier (explicit_delegation (user_type (type_identifier)) …))`
+ *     — the delegated interface is the LEADING `user_type`; the trailing
+ *     delegate expression (`by delegate`) is NOT a supertype (#1951). This is
+ *     the dropped shape the registry-primary synth previously skipped, leaving
+ *     `class F : Iface by d` with no IMPLEMENTS edge in worker mode.
  *
  * Kotlin uses `:` for BOTH superclass and interfaces — the EXTENDS-vs-IMPLEMENTS
  * split is decided downstream from the resolved target's symbol kind
  * (`preEmitInheritanceEdges`), so every base is emitted with the same `inherits`
  * kind here. The bare lookup name is normalized to the simple identifier
- * (`Base()` → `Base`, `Base<T>` → `Base`, `pkg.Base` → `Base`) so V1's
- * simple-name `findClassBindingInScope` resolves it.
+ * (`Base()` → `Base`, `Base<T>` → `Base`, `pkg.Base` → `Base`,
+ * `Iface by d` → `Iface`) so V1's simple-name `findClassBindingInScope`
+ * resolves it. The extracted bare name agrees with the legacy leg's
+ * `normalizeSupertypeName` for every shape (verified by real-parse).
  */
 function synthesizeKotlinInheritanceReferences(rootNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
   for (const classNode of descendantsOfType(rootNode, 'class_declaration')) {
     for (const child of classNode.namedChildren) {
       if (child.type !== 'delegation_specifier') continue;
-      // Either `(delegation_specifier (constructor_invocation (user_type …)))`
-      // for `Base()` or `(delegation_specifier (user_type …))` for a bare
-      // interface/superclass — both wrap the same `user_type` → `type_identifier`.
+      // Three wrappers, all resolving to a leading `user_type` →
+      // `type_identifier`:
+      //   - `(delegation_specifier (constructor_invocation (user_type …)))` for `Base()`
+      //   - `(delegation_specifier (explicit_delegation (user_type …) <delegate>))`
+      //     for `Iface by d` — the supertype is the FIRST `user_type`; the
+      //     delegate expression that trails `by` is ignored.
+      //   - `(delegation_specifier (user_type …))` for a bare interface/superclass.
       const ctor = child.namedChildren.find((n) => n.type === 'constructor_invocation');
+      const delegation = child.namedChildren.find((n) => n.type === 'explicit_delegation');
       const userType =
         ctor?.namedChildren.find((n) => n.type === 'user_type') ??
+        delegation?.namedChildren.find((n) => n.type === 'user_type') ??
         child.namedChildren.find((n) => n.type === 'user_type');
       if (userType === undefined) continue;
       const nameNode = kotlinUserTypeNameNode(userType);

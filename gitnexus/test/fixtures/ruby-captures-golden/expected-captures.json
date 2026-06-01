@@ -223,6 +223,14 @@
     "captureGroups": 9,
     "digest": "0e229692965ca5fd6dc5493aa69f056585912f2e4f4acf5af7915a4aee26cb09"
   },
+  "ruby-qualified-base/lib/derived.rb": {
+    "captureGroups": 18,
+    "digest": "8825a54a774c8c77f96315413f632fda626f35d705d8fe697cd362f7acf77a8a"
+  },
+  "ruby-qualified-base/lib/outer.rb": {
+    "captureGroups": 18,
+    "digest": "f81f06be06d013a08a5c9b730a79494251f102f48ca4c25bf0bbd4a2cdcd889e"
+  },
   "ruby-qualified-types/lib/admin/user.rb": {
     "captureGroups": 8,
     "digest": "1bceb829c2429e1415c296ea97a2475203c3cbf69c07123186f4c277a44b2f9f"

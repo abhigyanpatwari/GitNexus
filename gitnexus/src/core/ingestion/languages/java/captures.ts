@@ -226,9 +226,14 @@ export function emitJavaScopeCaptures(
  * edges came only from the legacy `@heritage.*` path, which is dropped for
  * registry-primary languages in the worker pipeline (issue #1951).
  *
- * Scope is intentionally limited to `class_declaration` (`superclass` extends +
- * `interfaces` implements clauses) so interface/enum/record heritage stays
- * unemitted, matching the legacy Java heritage query's class scope. Generic
+ * Scope covers `class_declaration` (`superclass` extends + `interfaces`
+ * implements clauses) AND `interface_declaration` (`extends_interfaces` →
+ * interface-to-interface EXTENDS), matching the legacy Java heritage query
+ * (tree-sitter-queries.ts), which has a dedicated `interface_declaration
+ * (extends_interfaces (type_list …))` arm. Without the interface arm the
+ * registry-primary synth silently dropped every `interface IA extends IB`
+ * edge while the legacy leg emitted it — the exact =0/=N parity break #1951
+ * targets. Enum/record heritage stays unemitted (no legacy arm). Generic
  * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
  * `@heritage` query was widened to capture the inner `type_identifier` of a
  * `generic_type` (tree-sitter-queries.ts), so both paths now agree on SIMPLE
@@ -240,6 +245,12 @@ export function emitJavaScopeCaptures(
  * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
  * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
+ * An `interface IA extends IB` base resolves to an Interface too, so it is
+ * emitted as IMPLEMENTS — matching the legacy `interface_declaration` arm,
+ * which tags the bases `@heritage.impl` (`kind: 'implements'`) and likewise
+ * resolves them as interfaces. The synth therefore does not need to know the
+ * declaration's own kind; it only emits inherits sites and lets the resolved
+ * target decide the edge type.
  * Base names are normalized to their bare simple identifier (`Box<T>` → `Box`,
  * `java.io.Serializable` → `Serializable`) to match the V1 simple-name
  * `findClassBindingInScope` contract.
@@ -257,6 +268,22 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
       const interfaces = node.childForFieldName('interfaces');
       if (interfaces !== null) {
         for (const typeList of interfaces.namedChildren) {
+          if (typeList === null || typeList.type !== 'type_list') continue;
+          for (const base of typeList.namedChildren) emitJavaInheritanceBase(out, base);
+        }
+      }
+    } else if (node.type === 'interface_declaration') {
+      // `interface IA extends IB, IC<T>` — the `extends_interfaces` clause is
+      // NOT exposed via a tree-sitter field (unlike a class's `superclass` /
+      // `interfaces`), so scan named children for it. It wraps a `type_list`
+      // whose bases reuse `javaBaseLookupNameNode` (handles type_identifier /
+      // generic_type / scoped_type_identifier). These resolve to Interface
+      // targets, so `preEmitInheritanceEdges` emits them as IMPLEMENTS, at
+      // parity with the legacy `interface_declaration` @heritage.impl arm.
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const extendsInterfaces = node.namedChild(i);
+        if (extendsInterfaces === null || extendsInterfaces.type !== 'extends_interfaces') continue;
+        for (const typeList of extendsInterfaces.namedChildren) {
           if (typeList === null || typeList.type !== 'type_list') continue;
           for (const base of typeList.namedChildren) emitJavaInheritanceBase(out, base);
         }

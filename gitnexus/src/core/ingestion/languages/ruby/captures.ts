@@ -451,21 +451,31 @@ export function emitRubyScopeCaptures(
  * superclass declarations so the shared `preEmitInheritanceEdges` pass can
  * resolve the base to a Class def and emit an EXTENDS edge.
  *
- * Scope is intentionally limited to `class` nodes whose `superclass` field
- * holds a bare `constant` base — exactly the legacy RUBY_QUERIES
- * `@heritage.extends` pattern:
+ * Scope is `class` nodes whose `superclass` field holds either a bare
+ * `constant` base (`class D < Super`) or a qualified/scoped
+ * `scope_resolution` base (`class C < Outer::Super`, `class E < A::B::C`) —
+ * exactly the two shapes the config-driven legacy `@heritage.extends`
+ * alternation now captures (heritage-extractors/configs/ruby.ts
+ * `rubyHeritageShapes: ['constant', 'scope_resolution']`):
  *
  *   (class
  *     name: (constant) @heritage.class
  *     superclass: (superclass
- *       (constant) @heritage.extends)) @heritage
+ *       [(constant) (scope_resolution)] @heritage.extends)) @heritage
  *
- * `module` nodes are excluded (they have no superclass), and qualified
- * `Foo::Bar` superclasses (`scope_resolution`) are excluded too — the legacy
- * query matches only `(constant)`, so emitting more would break legacy↔
- * scope-resolution edge parity. The base name is already a bare simple
- * identifier (Ruby `constant`), so no generics/qualifier stripping is needed
- * for `findClassBindingInScope` to resolve it.
+ * Previously this pass emitted only for a direct `(constant)` child, so the
+ * production registry-primary path silently dropped `Outer::Super`
+ * superclasses while the legacy @heritage leg captured them — the exact
+ * EXTENDS/IMPLEMENTS-drop bug of #1951.
+ *
+ * THE PARITY CONTRACT: the `@reference.name` bare text must equal the legacy
+ * leg's `normalizeSupertypeName(baseNode)` reduction. For a `scope_resolution`
+ * (`Outer::Super`, `A::B::C`) the normalizer recurses into the `name:` field
+ * and returns the trailing `constant` (`Super` / `C`); this synth mirrors that
+ * by reading the same `name:` tail. A bare `constant` is unchanged
+ * (byte-identical to the prior emission). `module` nodes are excluded (no
+ * superclass field). Mixins (include/extend/prepend) are untouched — they flow
+ * through the `__heritage__:` import lane above.
  *
  * Edge type (EXTENDS vs IMPLEMENTS) is decided downstream from the resolved
  * target's symbol kind — this pass only emits `@reference.inherits`.
@@ -476,7 +486,7 @@ function synthesizeRubySuperclassReferences(root: SyntaxNode): CaptureMatch[] {
     if (node.type !== 'class') return;
     const superclass = node.childForFieldName('superclass');
     if (superclass === null) return;
-    const baseNode = findChild(superclass, 'constant');
+    const baseNode = extractRubySuperclassBaseNode(superclass);
     if (baseNode === null) return;
     out.push({
       '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
@@ -484,6 +494,35 @@ function synthesizeRubySuperclassReferences(root: SyntaxNode): CaptureMatch[] {
     });
   });
   return out;
+}
+
+/**
+ * Reduce a Ruby `superclass` node to the bare `constant` the resolver should
+ * look up, at parity with the legacy heritage leg's
+ * `normalizeSupertypeName(baseNode)`:
+ *
+ *   - direct `(constant)` child (`class D < Super`)       → that constant
+ *     (unchanged from the original emission — kept byte-identical)
+ *   - `(scope_resolution)` child (`class C < Outer::Super`,
+ *     `class E < A::B::C`)                                → the trailing
+ *     `name:` constant (`Super` / `C`)
+ *
+ * A `scope_resolution` nests qualifier-first, name-last
+ * (`scope: (...) name: (constant)`), so the `name:` field is always the
+ * trailing simple identifier — the same tail `normalizeSupertypeName` reaches
+ * by recursing through its `name` field. Any other shape returns null (no
+ * edge), keeping this emitter at parity with the legacy alternation
+ * (`['constant', 'scope_resolution']`).
+ */
+function extractRubySuperclassBaseNode(superclass: SyntaxNode): SyntaxNode | null {
+  const directConstant = findChild(superclass, 'constant');
+  if (directConstant !== null) return directConstant;
+  const scoped = findChild(superclass, 'scope_resolution');
+  if (scoped !== null) {
+    const tail = scoped.childForFieldName('name');
+    if (tail !== null && tail.type === 'constant') return tail;
+  }
+  return null;
 }
 
 function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatch | null {

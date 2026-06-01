@@ -644,22 +644,29 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
  * yielding 0 inheritance edges in worker mode (issue #1951).
  *
  * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
- * whose base is a DIRECT `(identifier)` child — exactly matching the legacy
- * JavaScript `@heritage.extends` query
- * (`(class_declaration name: (identifier) (class_heritage (identifier))`).
- * JavaScript classes have a single `extends` base and no `implements`, so
- * every emission is an EXTENDS (decided downstream from the resolved target's
- * symbol kind in `preEmitInheritanceEdges`).
+ * base, matching the legacy JavaScript `@heritage` query's class scope and its
+ * supertype shape descriptor (`javascriptHeritageShapes`:
+ * `['identifier', 'member_expression']`). JavaScript classes have a single
+ * `extends` base and no `implements`, so every emission is an EXTENDS (decided
+ * downstream from the resolved target's symbol kind in
+ * `preEmitInheritanceEdges`).
+ *
+ * Bases handled (at parity with the legacy `@heritage` leg, #1951):
+ *   - `(identifier)` base (`extends Base`) — bare simple name.
+ *   - `(member_expression)` base (`extends ns.Base`, `extends a.b.Base`) —
+ *     qualified; reduced to its trailing `property_identifier` (`Base`) so the
+ *     V1 `findClassBindingInScope` simple-name contract holds. This mirrors the
+ *     TypeScript `terminalTsTypeNameNode` member_expression arm.
  *
  * Deliberately NOT emitted (preserving parity with the legacy query, incl. the
  * #1943 HOC behavior):
  *   - `class` EXPRESSION nodes (legacy captures `class_declaration` only).
- *   - `member_expression` bases (`extends Foo.Bar`) — not an `(identifier)`.
- *   - `call_expression` / HOC bases (`extends withFoo(Bar)`) — not an
- *     `(identifier)`.
- * The base name is already a bare simple identifier (JS heritage carries no
- * generics/qualifiers), so no name normalization is needed for
- * `findClassBindingInScope` to resolve it.
+ *   - `call_expression` / HOC bases (`extends withFoo(Bar)`) — not a legacy
+ *     heritage shape; left to the normal call-resolution path.
+ *
+ * The `@reference.name` bare-name text emitted for each base equals
+ * `normalizeSupertypeName(base)` (the legacy leg's reduction): `Base` → `Base`,
+ * `ns.Base` → `Base`, `a.b.Base` → `Base` — keeping the two legs at parity.
  */
 function synthesizeJsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]): void {
   const stack: SyntaxNode[] = [root];
@@ -682,15 +689,41 @@ function synthesizeJsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
     }
     if (heritage === null) continue;
 
-    // Emit only for a direct `(identifier)` base — matching the legacy query
-    // exactly (excludes member_expression / call-expression HOC bases).
+    // Emit for `(identifier)` and `(member_expression)` bases — matching the
+    // legacy heritage shape descriptor (`call_expression` HOC bases excluded).
     for (const base of heritage.namedChildren) {
-      if (base === null || base.type !== 'identifier') continue;
+      if (base === null) continue;
+      const nameNode = terminalJsHeritageNameNode(base);
+      if (nameNode === null) continue;
       out.push({
         '@reference.inherits': nodeToCapture('@reference.inherits', base),
-        '@reference.name': nodeToCapture('@reference.name', base),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
       });
     }
+  }
+}
+
+/** Resolve a JavaScript heritage base node to its bare simple-identifier node.
+ *  `Base` (identifier) → `Base`, `ns.Base` / `a.b.Base` (member_expression) →
+ *  the trailing `property_identifier` `Base`. Mirrors the TypeScript
+ *  `terminalTsTypeNameNode` member_expression arm. Returns null for any other
+ *  shape (e.g. `call_expression` HOC bases), which is then skipped — keeping
+ *  parity with the legacy `javascriptHeritageShapes` descriptor and
+ *  `normalizeSupertypeName`'s reduction of each shape. */
+function terminalJsHeritageNameNode(node: SyntaxNode): SyntaxNode | null {
+  switch (node.type) {
+    case 'identifier':
+    // `extends ns.Base` parses as a member_expression whose tail is a
+    // `property_identifier` (not an identifier) — treat it as a leaf name.
+    case 'property_identifier':
+      return node;
+    case 'member_expression': {
+      // Qualified `ns.Base` / `a.b.Base` → tail identifier `Base`.
+      const tail = node.lastNamedChild;
+      return tail === null ? null : terminalJsHeritageNameNode(tail);
+    }
+    default:
+      return null;
   }
 }
 

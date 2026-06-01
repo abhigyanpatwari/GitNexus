@@ -483,6 +483,14 @@
     "captureGroups": 19,
     "digest": "42b79c274955abcd548ca842077e05b0b6b46e324dd29f7a297882ac790ce11f"
   },
+  "csharp-qualified-base/src/Domain.cs": {
+    "captureGroups": 15,
+    "digest": "76cdfe6e0bb9ace81fda8e4c3e1b5bea536b3d906170ee92c68a8b4d5b918fbc"
+  },
+  "csharp-qualified-base/src/Shapes.cs": {
+    "captureGroups": 38,
+    "digest": "d0023367c412f37f030860022c859a58a249aff2d17ec92b109f47a7efe77cf3"
+  },
   "csharp-qualified-types/Data/User.cs": {
     "captureGroups": 7,
     "digest": "16b056de69cc44d953e4cc702f22986b61d935193c4d6bd9cd9a1adcbe2b3e6c"
@@ -508,8 +516,8 @@
     "digest": "e7da2e190dad718eeaa22dad011740fd2086eb2f86331d887e47cd9c5092003c"
   },
   "csharp-record-base/src/Models/UserRecord.cs": {
-    "captureGroups": 9,
-    "digest": "4b7092ef2ded4e37d2fe1591610259e18b9bd3d92ebe32c90eef6683d9b9a0f6"
+    "captureGroups": 10,
+    "digest": "e6276cd40438125f468adb2f193786a6e888032a3980d0d7ac586d355c40534c"
   },
   "csharp-recursive-pattern/Models/Repo.cs": {
     "captureGroups": 8,

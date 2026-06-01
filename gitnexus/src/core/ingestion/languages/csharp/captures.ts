@@ -274,19 +274,32 @@ export function emitCsharpScopeCaptures(
  * edges came only from the legacy `@heritage.*` path, which is dropped for
  * registry-primary languages in the worker pipeline (issue #1951).
  *
- * Scope is intentionally limited to `class_declaration` / `interface_declaration`
- * base lists — matching the legacy C# heritage query — so records/structs
- * stay edgeless and the registry path keeps parity with the legacy DAG. The
+ * Scope covers every `base_list`-bearing declaration the legacy `@heritage`
+ * leg matches: `class_declaration`, `interface_declaration`,
+ * `record_declaration`, and `struct_declaration`. Records and structs were
+ * dropped before (#1951): a `record R(...) : Base(args), IFoo` or
+ * `struct S : IFoo, ns.IBar` produced no registry-primary inheritance edge
+ * even though the legacy heritage query covered them. The
  * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`), so all bases are emitted with the
  * same `inherits` kind here; the base lookup name is normalized to its bare
- * simple identifier (`IRepository<T>` → `IRepository`, `A.B.IFace` → `IFace`)
- * to match the V1 simple-name `findClassBindingInScope` contract.
+ * simple identifier (`IRepository<T>` → `IRepository`, `A.B.IFace` → `IFace`,
+ * `Base(args)` primary-ctor base → `Base`, `MyAlias::Foo` → `Foo`) to match
+ * the V1 simple-name `findClassBindingInScope` contract — exactly the bare
+ * text `normalizeSupertypeName` (supertype-alternation.ts) reduces each shape
+ * to on the legacy leg.
  */
 function synthesizeCsharpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
   walkNamedTree(root, (node) => {
-    if (node.type !== 'class_declaration' && node.type !== 'interface_declaration') return;
+    if (
+      node.type !== 'class_declaration' &&
+      node.type !== 'interface_declaration' &&
+      node.type !== 'record_declaration' &&
+      node.type !== 'struct_declaration'
+    ) {
+      return;
+    }
     const baseList = findNamedChild(node, 'base_list');
     if (baseList === null) return;
     for (const base of baseList.namedChildren) {
@@ -338,6 +351,21 @@ function terminalTypeNameNode(node: SyntaxNode): SyntaxNode | null {
       // bare base identifier (#1951).
       const tail = node.lastNamedChild;
       return tail === null ? null : terminalTypeNameNode(tail);
+    }
+    case 'alias_qualified_name': {
+      // `MyAlias::Foo` / `global::IDisposable` -> the `name` field is the bare
+      // identifier (the `alias` is the qualifier). Mirrors
+      // normalizeSupertypeName's `name`-field reduction for this shape (#1951).
+      const name = node.childForFieldName('name');
+      return name === null ? null : terminalTypeNameNode(name);
+    }
+    case 'primary_constructor_base_type': {
+      // record base with a constructor call: `Base(args)` / `pkg.Base(id)` /
+      // `Box<int>(id)`. The `type` field holds the supertype (identifier /
+      // qualified_name / generic_name); the trailing argument_list is dropped.
+      // Mirrors normalizeSupertypeName's `type`-field reduction (#1951).
+      const type = node.childForFieldName('type');
+      return type === null ? null : terminalTypeNameNode(type);
     }
     case 'generic_name':
       // generic_name has no `name` field (verified by real parse, #1920); the

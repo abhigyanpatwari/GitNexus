@@ -216,8 +216,8 @@
     "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "python-django-app-imports/accounts/models.py": {
-    "captureGroups": 7,
-    "digest": "35025fe0635eb78a60be6ec7a808aa1db586f49a878f16263307b3a04452b4d5"
+    "captureGroups": 8,
+    "digest": "b240f4ea2135824ee47fd5f2d9a4788ff0374cafb5070b295fc710a523f19873"
   },
   "python-django-app-imports/accounts/tests.py": {
     "captureGroups": 2,
@@ -244,8 +244,8 @@
     "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "python-django-app-imports/billing/models.py": {
-    "captureGroups": 11,
-    "digest": "9e7f426103b6c5f53630bddf7c50253bee22c0c018ef85437fdefe0117998053"
+    "captureGroups": 12,
+    "digest": "eedb2e1992f85a6743555947118784db9c78f3c113d2d598e53dd54cb80a0629"
   },
   "python-django-app-imports/billing/tests.py": {
     "captureGroups": 2,
@@ -622,6 +622,22 @@
   "python-plain-import-alias/models.py": {
     "captureGroups": 11,
     "digest": "abf5fcdf7cc473efa5a149319b0fc3d14b3ae91a2e9a14d621243c5ed7fafafa"
+  },
+  "python-qualified-base/a/__init__.py": {
+    "captureGroups": 0,
+    "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "python-qualified-base/a/b.py": {
+    "captureGroups": 7,
+    "digest": "725adf1074b272c8d2ce664549106b07286a92cfb08ab4d605068102317f8baa"
+  },
+  "python-qualified-base/base_mod.py": {
+    "captureGroups": 12,
+    "digest": "7fc34dae23f54cdee030a2d4a1d80c0bf226ea3b37335ecf48551c4707d32e20"
+  },
+  "python-qualified-base/service.py": {
+    "captureGroups": 16,
+    "digest": "adecbd613fe97656cd5797c4dbef9f3c32bcd1b9faa5e765227af5d2001da427"
   },
   "python-qualified-constructor/main.py": {
     "captureGroups": 9,
