@@ -116,7 +116,7 @@ describe('C# ambiguous symbol resolution', () => {
     expect(ifaces.filter((n) => n === 'IProcessor').length).toBe(2);
   });
 
-  it('heritage targets are synthetic (correct refusal for ambiguous namespace import)', () => {
+  it('disambiguates both ambiguous bases to the imported Models namespace, never Other', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const implements_ = getRelationships(result, 'IMPLEMENTS');
 
@@ -125,13 +125,14 @@ describe('C# ambiguous symbol resolution', () => {
     expect(implements_.length).toBe(1);
     expect(implements_[0].source).toBe('UserHandler');
 
-    // The key invariant: no edge points to Other/
-    if (extends_[0].targetFilePath) {
-      expect(extends_[0].targetFilePath).not.toContain('Other/');
-    }
-    if (implements_[0].targetFilePath) {
-      expect(implements_[0].targetFilePath).not.toContain('Other/');
-    }
+    // `using MyApp.Models;` disambiguates both same-named bases to the Models/
+    // definitions via import-aware resolution (#1951). Pin the exact target file
+    // unconditionally (the prior `if (targetFilePath)` guard passed vacuously
+    // whether resolution succeeded OR refused — it only caught a wrong Other/).
+    expect(extends_[0].target).toBe('Handler');
+    expect(extends_[0].targetFilePath).toBe('Models/Handler.cs');
+    expect(implements_[0].target).toBe('IProcessor');
+    expect(implements_[0].targetFilePath).toBe('Models/IProcessor.cs');
   });
 });
 

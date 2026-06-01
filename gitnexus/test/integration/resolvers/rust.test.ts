@@ -120,6 +120,54 @@ describe('Rust cross-module trait-impl collision resolution (#1951)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified/scoped trait paths (#1956 tri-review U1): `impl crate::traits::Foo
+// for S` and `impl crate::traits::Wrapped<T> for S`. The base is a
+// `scoped_type_identifier` (or a generic_type wrapping one). Both the synth
+// (registry leg, rust/captures.ts `bareTypeIdentifier`) and the legacy
+// `@heritage` query now resolve it by its trailing bare name (KTD-1). The traits
+// are unique, so both legs resolve identically — parity-tested. (Ambiguous
+// scoped bases reuse the same refuse-on-ambiguity path as bare names, already
+// covered by rust-cross-module-collision / rust-ambiguous; that path diverges
+// across legs by design and is intentionally not added to this parity fixture.)
+// ---------------------------------------------------------------------------
+
+describe('Rust qualified/scoped trait-impl resolution (#1956 U1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-qualified-trait'), () => {});
+  }, 60000);
+
+  it('detects the structs and traits', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Gadget', 'Widget']);
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Drawable', 'Wrapped']);
+  });
+
+  it('emits IMPLEMENTS edges for qualified and qualified-generic trait paths', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    // `impl crate::traits::Drawable for Widget` (scoped) and
+    // `impl crate::traits::Wrapped<u32> for Gadget` (generic-of-scoped) both
+    // resolve by their trailing bare name.
+    expect(edgeSet(implements_)).toEqual(['Gadget → Wrapped', 'Widget → Drawable']);
+    for (const edge of implements_) {
+      expect(edge.rel.reason).toBe('trait-impl');
+    }
+  });
+
+  it('sources each edge from its struct file and targets the trait module', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    for (const edge of implements_) {
+      expect(edge.sourceFilePath).toBe('src/widget.rs');
+      expect(edge.targetFilePath).toBe('src/traits.rs');
+    }
+  });
+
+  it('does not emit EXTENDS edges (Rust trait impls are IMPLEMENTS)', () => {
+    expect(getRelationships(result, 'EXTENDS').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler struct in two modules, crate:: import disambiguates
 // ---------------------------------------------------------------------------
 

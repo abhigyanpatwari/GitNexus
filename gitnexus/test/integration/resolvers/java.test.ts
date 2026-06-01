@@ -110,6 +110,37 @@ describe('Java generic-base heritage resolution (#1951)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified (namespaced) bases (#1956 tri-review U2). Three shapes:
+//   - Service: 3-segment generic (extends app.base.Box<T>, implements app.base.IFoo<T>)
+//   - Plain:   2-segment plain    (extends base.Base, implements base.IBar)
+//   - Two:     2-segment generic  (extends base.Box<T>, implements base.IFoo<T>)
+// The registry-primary synth resolves each by its scoped-name tail; the legacy
+// @heritage query was widened with end-anchored scoped_type_identifier arms to
+// match. The 2-segment cases are the regression guard: an un-anchored arm
+// double-matches a 2-segment base (both segments are direct type_identifier
+// children) and emits a spurious prefix edge, breaking the =1/=1 parity this
+// runs under BOTH legs (createResolverParityIt) to assert.
+// ---------------------------------------------------------------------------
+
+describe('Java qualified-base heritage resolution (#1956 U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits exactly one EXTENDS per class, tail-resolved (no spurious prefix edge)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box', 'Two → Box']);
+  });
+
+  it('emits exactly one IMPLEMENTS per class, tail-resolved (no spurious prefix edge)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo', 'Two → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler + Processor in two packages, imports disambiguate
 // ---------------------------------------------------------------------------
 

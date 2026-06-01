@@ -69,24 +69,13 @@ export function tryEmitEdge(
   seen: Set<string>,
   confidence = 0.85,
   collapseByCallerTarget = false,
-  inheritanceOverride?: {
-    readonly edgeType?: 'EXTENDS' | 'IMPLEMENTS';
-    readonly callerGraphId?: string;
-  },
 ): boolean {
-  // The inheritance pre-pass (`preEmitInheritanceEdges`) supplies overrides so
-  // an inherited-from edge is (a) typed IMPLEMENTS when the resolved target is
-  // an interface — not just the kind-mapped EXTENDS — and (b) ALWAYS owned by
-  // the enclosing class. Without (b), `resolveCallerGraphId` prefers a
-  // Function/Method/Constructor anchor in the scope, so a C# 12 class with a
-  // primary constructor (synthesized into the class scope) degraded its
-  // inheritance edge source to the constructor, breaking MRO (#1951). When the
-  // override is unset, caller + edge type derive from the site, as before.
-  const callerGraphId =
-    inheritanceOverride?.callerGraphId ?? resolveCallerGraphId(site.inScope, scopes, nodeLookup);
+  // Inheritance edges are emitted directly by `preEmitInheritanceEdges` (which
+  // owns the enclosing-class caller and the EXTENDS-vs-IMPLEMENTS type), so this
+  // generic bridge derives caller + edge type purely from the site.
+  const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
   const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
-  const edgeType =
-    inheritanceOverride?.edgeType ?? mapReferenceKindToEdgeType(site.kind as Reference['kind']);
+  const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
   if (targetGraphId === undefined) return false;
   if (edgeType === undefined) return false;

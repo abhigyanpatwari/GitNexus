@@ -337,6 +337,30 @@ export const TYPESCRIPT_QUERIES = `
     (implements_clause
       (generic_type name: (type_identifier) @heritage.implements)))) @heritage.impl
 
+; Heritage queries - qualified (namespaced) bases (#1956 tri-review U2). The
+; registry-primary synth already resolves these by their trailing simple name;
+; these arms keep the legacy @heritage leg at parity. extends uses a
+; member_expression (value: field) with type_arguments as a sibling, so one arm
+; covers both extends ns.Base and extends ns.Base<T>. implements uses
+; nested_type_identifier (plain) or a generic_type wrapping one. Each is anchored
+; on the trailing property_identifier / type_identifier so capture text stays the
+; bare name (verified against a real parse).
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (extends_clause
+      value: (member_expression property: (property_identifier) @heritage.extends)))) @heritage
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (implements_clause
+      (nested_type_identifier (type_identifier) @heritage.implements)))) @heritage.impl
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (implements_clause
+      (generic_type name: (nested_type_identifier (type_identifier) @heritage.implements))))) @heritage.impl
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_expression
@@ -809,6 +833,25 @@ export const JAVA_QUERIES = `
 (class_declaration name: (identifier) @heritage.class
   (super_interfaces (type_list (generic_type (type_identifier) @heritage.implements)))) @heritage.impl
 
+; Heritage - qualified (namespaced) bases, e.g. extends a.b.Base / implements
+; a.b.IFoo<T> (#1956 tri-review U2). The registry-primary synth already resolves
+; these by their trailing simple name; these arms keep the legacy @heritage leg
+; at parity. tree-sitter-java's scoped_type_identifier has NO name: field, so the
+; trailing segment is captured via the trailing end-anchor (last named child). The
+; anchor is REQUIRED: for a 2-segment base (extends Outer.Inner) BOTH segments
+; parse as direct (type_identifier) children, so an un-anchored (type_identifier)
+; would double-match and emit a spurious prefix edge (only a 3+-segment base nests
+; its prefix as a scoped_type_identifier). generic_type is positional in
+; tree-sitter-java. Verified against a real parse for 2- and 3-segment bases.
+(class_declaration name: (identifier) @heritage.class
+  (superclass (scoped_type_identifier (type_identifier) @heritage.extends .))) @heritage
+(class_declaration name: (identifier) @heritage.class
+  (superclass (generic_type (scoped_type_identifier (type_identifier) @heritage.extends .)))) @heritage
+(class_declaration name: (identifier) @heritage.class
+  (super_interfaces (type_list (scoped_type_identifier (type_identifier) @heritage.implements .)))) @heritage.impl
+(class_declaration name: (identifier) @heritage.class
+  (super_interfaces (type_list (generic_type (scoped_type_identifier (type_identifier) @heritage.implements .))))) @heritage.impl
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (field_access
@@ -1183,11 +1226,26 @@ export const RUST_QUERIES = `
   (field_declaration
     name: (field_identifier) @name) @definition.property)
 
-; Heritage (trait implementation) — all combinations of concrete/generic trait × concrete/generic type
-(impl_item trait: (type_identifier) @heritage.trait type: (type_identifier) @heritage.class) @heritage
-(impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (type_identifier) @heritage.class) @heritage
-(impl_item trait: (type_identifier) @heritage.trait type: (generic_type type: (type_identifier) @heritage.class)) @heritage
-(impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (generic_type type: (type_identifier) @heritage.class)) @heritage
+; Heritage (trait implementation). Each of trait:/type: is one of: concrete
+; type_identifier, qualified scoped_type_identifier (resolved by its name: tail
+; -- KTD-1), or a generic_type wrapping either. The capture is always anchored
+; on the trailing bare type_identifier, so heritage.trait / heritage.class text
+; stays the simple name -- matching the synth in rust/captures.ts
+; bareTypeIdentifier. (No predicates -> safe to alternate; verified against a
+; real parse for all trait x type combinations.)
+(impl_item
+  trait: [
+    (type_identifier) @heritage.trait
+    (scoped_type_identifier name: (type_identifier) @heritage.trait)
+    (generic_type type: (type_identifier) @heritage.trait)
+    (generic_type type: (scoped_type_identifier name: (type_identifier) @heritage.trait))
+  ]
+  type: [
+    (type_identifier) @heritage.class
+    (scoped_type_identifier name: (type_identifier) @heritage.class)
+    (generic_type type: (type_identifier) @heritage.class)
+    (generic_type type: (scoped_type_identifier name: (type_identifier) @heritage.class))
+  ]) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression

@@ -89,7 +89,13 @@ describe('sequential native parser availability', () => {
     }
   });
 
-  it('skips Swift files in processCalls when the native parser is unavailable', async () => {
+  it('skips Swift files in processCalls (registry-primary: scope-resolution owns call resolution)', async () => {
+    // Swift is registry-primary, so processCalls skips it via the
+    // isRegistryPrimary gate (call-processor.ts) BEFORE the parser-availability
+    // check — the registry-primary scope-resolution path owns its call edges
+    // (#1951). The unavailable-parser mock is therefore moot: the file is skipped
+    // (no loadLanguage) regardless. The legacy availability-skip path itself is
+    // exercised by the Dart verbose test below (Dart is not registry-primary).
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
     await expect(
@@ -141,7 +147,13 @@ describe('sequential native parser availability', () => {
     }
   });
 
-  it('skips Swift files in processHeritage when the native parser is unavailable', async () => {
+  it('skips Swift files in processHeritage (registry-primary: scope-resolution owns heritage)', async () => {
+    // Swift is registry-primary, so processHeritage skips it via the
+    // isRegistryPrimary gate (heritage-processor.ts) BEFORE the parser-availability
+    // check — scope-resolution (#1951) owns its EXTENDS/IMPLEMENTS edges. The
+    // unavailable-parser mock is therefore moot: the file is skipped (no
+    // loadLanguage) regardless. The legacy availability-skip path itself is
+    // exercised by the Dart verbose test below (Dart is not registry-primary).
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
     await expect(

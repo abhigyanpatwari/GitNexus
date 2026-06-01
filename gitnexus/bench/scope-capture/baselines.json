@@ -26,9 +26,9 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "d571fa9542e3ce37b09a48dbd9232f49eec1166a27b00c2231aca17bf6a6cf60",
+    "fingerprint": "2ffad4ba7b1d2eb1ac407cb6d75d0eb98cbc1878260dbdfe982c0fc925b2d00c",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956: rust-cross-module-collision fixture + heritage-bearing scale source (impl Shape for Entity_n trait-impl) so the trait-impl synth is gated at scale; linear (~1.01)."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04)."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
@@ -46,9 +46,9 @@
     "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
   },
   "java": {
-    "fingerprint": "91e7a556286300aaf9dfdfd2553f470c505a318391d68ca5f0e83f0c93ea978d",
+    "fingerprint": "26aef1fe39add78485949637e3002d657e16ae2e11331cc7733be61872718bf4",
     "scaling_budget": 1.5,
-    "_added": "#1956: java added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (class extends Base implements Marker). Adding it exposed a pre-existing O(n^2) findNodeAtRange(tree.rootNode,...) root-walk in java/captures.ts — the #1848/#1915/#1918 family bug, never fixed for java because java had no bench. Fixed by threading the query's captured c.node (byte-identical capture output, verified by a before/after digest over all java-* fixtures); scaling now linear (~0.99, was 3.09)."
+    "_rebaselined": "#1956 tri-review U2 + review fix: java-qualified-base fixture now covers 2-segment (Plain, Two) AND 3-segment (Service) qualified bases — the 2-segment shape guards the legacy @heritage end-anchor (an un-anchored scoped arm double-matches a 2-segment base). Synth unchanged (already tail-resolves). Linear (~1.03). (Earlier: java added to bench in #1956 review, which exposed + fixed the pre-existing O(n^2) findNodeAtRange root-walk; scaling 3.09 -> ~0.99.)"
   },
   "typescript": {
     "fingerprint": "92bf77d913084b0952533392ae6dd20b71e11c106287186eb61ad7454bbbb5c4",
