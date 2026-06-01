@@ -165,7 +165,15 @@ describe('sequential native parser availability', () => {
   it('warns when processHeritage skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
+    // processHeritage skips registry-primary languages via an earlier
+    // `isRegistryPrimary` gate (#1951) BEFORE the parser-availability skip this
+    // test exercises. Swift is registry-primary by default, so force legacy mode
+    // (REGISTRY_PRIMARY_SWIFT=0) to reach the availability-skip warning path.
+    // Without this the test's pass/fail depends on whether another test leaked
+    // the flag into process.env — the source of its flakiness in the full suite.
+    const previousReg = process.env.REGISTRY_PRIMARY_SWIFT;
     process.env.GITNEXUS_VERBOSE = '1';
+    process.env.REGISTRY_PRIMARY_SWIFT = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
@@ -190,6 +198,11 @@ describe('sequential native parser availability', () => {
         delete process.env.GITNEXUS_VERBOSE;
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
+      }
+      if (previousReg === undefined) {
+        delete process.env.REGISTRY_PRIMARY_SWIFT;
+      } else {
+        process.env.REGISTRY_PRIMARY_SWIFT = previousReg;
       }
     }
   });
