@@ -57,6 +57,9 @@ export async function closeWikiDb(): Promise<void> {
 
 /**
  * Get all source files with their exported symbol names and types.
+ * Includes top-level exports (File→DEFINES→n) and exported class members
+ * (File→DEFINES→Class→HAS_METHOD/HAS_PROPERTY→n) since class members no
+ * longer have a direct File→DEFINES edge.
  */
 export async function getFilesWithExports(): Promise<FileWithExports[]> {
   const rows = await executeQuery(
@@ -65,7 +68,12 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
     RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
-    ORDER BY f.filePath
+    UNION
+    MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(c)
+          -[mr:CodeRelation]->(n)
+    WHERE mr.type IN ['HAS_METHOD', 'HAS_PROPERTY'] AND n.isExported = true
+    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    ORDER BY filePath
   `,
   );
 
