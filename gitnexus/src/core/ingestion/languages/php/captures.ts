@@ -321,10 +321,11 @@ export function emitPhpScopeCaptures(
  * `Base`) to match the V1 simple-name `findClassBindingInScope` contract.
  *
  * NOTE (#1951 trait-use parity): legacy emits trait-use as an IMPLEMENTS edge
- * (`heritage.trait` → `trait-impl` → IMPLEMENTS in heritage-processor.ts),
- * but the central pass classifies a resolved `Trait` def as EXTENDS (only
- * `Interface` yields IMPLEMENTS). See the resolver's risk note — the central
- * target-kind discriminator must treat `Trait` as IMPLEMENTS for full parity.
+ * (`heritage.trait` → `trait-impl` → IMPLEMENTS in heritage-processor.ts), and
+ * the central pass matches it — `preEmitInheritanceEdges` (run.ts) maps a
+ * resolved `Interface` OR `Trait` target to IMPLEMENTS (`type === 'Interface'
+ * || type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS'`), so `use Trait` resolves to
+ * IMPLEMENTS on both the legacy and registry-primary paths.
  */
 function synthesizePhpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
