@@ -37,6 +37,7 @@ import { emitSwiftScopeCaptures } from '../../src/core/ingestion/languages/swift
 import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescript/index.ts';
 import { emitJsScopeCaptures } from '../../src/core/ingestion/languages/javascript/index.ts';
 import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/index.ts';
+import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'lang-resolution');
@@ -96,9 +97,12 @@ const LANGS = [
     fixturePrefix: 'go',
     exts: ['.go'],
     file: 'bench.go',
-    header: 'package generated\n\n',
+    // Heritage-bearing: each Entity embeds Base (Go inheritance = struct
+    // embedding) so the @reference.inherits synth (#1951) is driven at scale.
+    header:
+      'package generated\n\ntype Base struct{}\n\nfunc (b *Base) BaseMethod() string { return "base" }\n\n',
     unit: (n) =>
-      `type Entity${n} struct {\n\tid int64\n\tname string\n}\n\n` +
+      `type Entity${n} struct {\n\tBase\n\tid int64\n\tname string\n}\n\n` +
       `func (e *Entity${n}) GetID() int64 { return e.id }\n` +
       `func (e *Entity${n}) SetName(v string) { e.name = v }\n\n`,
   },
@@ -108,9 +112,12 @@ const LANGS = [
     fixturePrefix: 'csharp',
     exts: ['.cs'],
     file: 'bench.cs',
-    header: 'namespace Generated;\n\n',
+    // Heritage-bearing: extends Base + implements IEntity (both forms) so the
+    // @reference.inherits synth (#1951) is driven at scale, not just the base loop.
+    header:
+      'namespace Generated;\n\npublic class Base { }\n\npublic interface IEntity {\n  long GetId();\n}\n\n',
     unit: (n) =>
-      `public class Entity${n} {\n` +
+      `public class Entity${n} : Base, IEntity {\n` +
       `  public long Id;\n  public string Name;\n` +
       `  public long GetId() { return Id; }\n` +
       `  public void SetName(string v) { Name = v; }\n}\n\n`,
@@ -121,12 +128,15 @@ const LANGS = [
     fixturePrefix: 'rust',
     exts: ['.rs'],
     file: 'bench.rs',
-    header: '',
+    // Heritage-bearing: `impl Shape for Entity_n` (Rust inheritance lives on
+    // impl_item) so the @reference.inherits trait-impl synth (#1951) is driven
+    // at scale. The two methods move into the trait impl to keep unit size flat.
+    header: 'trait Shape {\n  fn area(&self) -> i64;\n  fn name(&self) -> String;\n}\n\n',
     unit: (n) =>
       `struct Entity${n} {\n  id: i64,\n  name: String,\n}\n\n` +
-      `impl Entity${n} {\n` +
-      `  fn get_id(&self) -> i64 { self.id }\n` +
-      `  fn set_name(&mut self, v: String) { self.name = v; }\n}\n\n`,
+      `impl Shape for Entity${n} {\n` +
+      `  fn area(&self) -> i64 { self.id }\n` +
+      `  fn name(&self) -> String { self.name.clone() }\n}\n\n`,
   },
   {
     name: 'php',
@@ -134,9 +144,13 @@ const LANGS = [
     fixturePrefix: 'php',
     exts: ['.php'],
     file: 'bench.php',
-    header: '<?php\n\n',
+    // Heritage-bearing: extends Base + uses a trait (both forms) so the
+    // @reference.inherits synth (#1951) is driven at scale.
+    header:
+      '<?php\n\nclass Base {}\n\ntrait Auditable {\n  public function audit() { return true; }\n}\n\n',
     unit: (n) =>
-      `class Entity${n} {\n` +
+      `class Entity${n} extends Base {\n` +
+      `  use Auditable;\n` +
       `  public $id;\n  public $name;\n` +
       `  function getId() { return $this->id; }\n` +
       `  function setName($v) { $this->name = $v; }\n}\n\n`,
@@ -147,9 +161,13 @@ const LANGS = [
     fixturePrefix: 'ruby',
     exts: ['.rb'],
     file: 'bench.rb',
-    header: '',
+    // Heritage-bearing: `< Base` superclass + `include Trackable` mixin (both
+    // forms) so the @reference.inherits synth (#1951) is driven at scale.
+    header:
+      'class Base\n  def base_id\n    @id\n  end\nend\n\nmodule Trackable\n  def track\n    @tracked = true\n  end\nend\n\n',
     unit: (n) =>
-      `class Entity${n}\n` +
+      `class Entity${n} < Base\n` +
+      `  include Trackable\n` +
       `  def get_id\n    @id\n  end\n` +
       `  def set_name(v)\n    @name = v\n  end\nend\n\n`,
   },
@@ -171,12 +189,30 @@ const LANGS = [
     fixturePrefix: 'swift',
     exts: ['.swift'],
     file: 'bench.swift',
-    header: '',
+    // Heritage-bearing: inherits Base + conforms to Serviceable (both forms) so
+    // the @reference.inherits synth (#1951) is driven at scale.
+    header:
+      'class Base {\n  func ping() -> String { return "base" }\n}\n\nprotocol Serviceable {\n  func serve() -> String\n}\n\n',
     unit: (n) =>
-      `class Entity${n} {\n` +
+      `class Entity${n}: Base, Serviceable {\n` +
       `  var id: Int64 = 0\n  var name: String = ""\n` +
       `  func getId() -> Int64 { return self.id }\n` +
-      `  func setName(_ v: String) { self.name = v }\n}\n\n`,
+      `  func serve() -> String { return self.name }\n}\n\n`,
+  },
+  {
+    name: 'java',
+    emit: emitJavaScopeCaptures,
+    fixturePrefix: 'java',
+    exts: ['.java'],
+    file: 'bench.java',
+    // Java was previously unbenched. Heritage-bearing: extends Base + implements
+    // Marker (both forms) so the @reference.inherits synth (#1951) is driven at scale.
+    header: 'package generated;\n\nclass Base {}\n\ninterface Marker {}\n\n',
+    unit: (n) =>
+      `class Entity${n} extends Base implements Marker {\n` +
+      `  long id = 0L;\n  String name = "";\n` +
+      `  public long getId() { return this.id; }\n` +
+      `  public void setName(String v) { this.name = v; }\n}\n\n`,
   },
   {
     name: 'typescript',

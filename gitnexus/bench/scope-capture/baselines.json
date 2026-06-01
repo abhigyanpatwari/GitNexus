@@ -1,52 +1,58 @@
 {
-  "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. All six languages now thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp this PR).",
+  "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. The synthetic source is now HERITAGE-BEARING for every language (each Entity extends/implements/embeds/uses-trait/conforms-to a shared base) so the #1951 @reference.inherits synth is gated at scale, not just the base capture loop. All languages thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp #1951, java #1956).",
   "go": {
-    "fingerprint": "67d0a5bfed25e0f469ea7f16f7e5c7954f3e6bcbdec020f8972686a5c92fb29a",
+    "fingerprint": "c491e013c5ddf8ab05be254ebfe8dec00b0269f72e695005ebcdd318b672272b",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
+    "_rebaselined": "#1956: heritage-bearing scale source (struct embedding of Base) so the inheritance synth is gated at scale; linear (~1.05)."
   },
   "cobol": {
     "fingerprint": "575016f329c0be29eb90db974f750d02a21b4a12515f7029bda312df713b27b0",
-    "scaling_budget": 1.5
+    "scaling_budget": 1.5,
+    "_note": "COBOL has no inheritance construct, so its scale source stays flat; unchanged."
   },
   "csharp": {
-    "_rebaselined": "#1951: C# now synthesizes @reference.inherits captures from class/interface base lists (+ csharp-primary-ctor-heritage fixture); legitimate capture-output change, scaling stays linear (~1.06).",
-    "fingerprint": "b872903a5ae3891b1b79ced6044b4d949c51e363f52e8bc30d4673719c5732ec",
+    "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + implements IEntity); both edge forms gated at scale; linear (~1.04).",
+    "fingerprint": "77e393ec6aac0d785fe5bc0a1473197343cc52ea30bb2a4afc90b172a131d151",
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "cfe46cc7063106ccb369d532984c75800da5831b743b1b06760e03b4373fdd33",
+    "fingerprint": "d571fa9542e3ce37b09a48dbd9232f49eec1166a27b00c2231aca17bf6a6cf60",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 review: + rust-cross-module-collision fixture (added to the rust-* corpus); capture-output addition only, existing fixtures byte-identical, scaling stays linear (~1.02)."
+    "_rebaselined": "#1956: rust-cross-module-collision fixture + heritage-bearing scale source (impl Shape for Entity_n trait-impl) so the trait-impl synth is gated at scale; linear (~1.01)."
   },
   "php": {
-    "fingerprint": "65fdca54cf8426ec057995981b24fc414c6bca842cb41984ec3bbd5054a84eec",
+    "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
+    "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "e7952015f51f9e884bb7abcc17fa125661854c8d872b90ef133ec7c48b12d3d0",
+    "fingerprint": "ad244d5b94571852555c177a3001185f0fb119e41f0a1255392d9fc0839b54dc",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
+    "_rebaselined": "#1956: heritage-bearing scale source (class < Base + include mixin); both forms gated at scale; linear (~0.97)."
   },
   "swift": {
-    "fingerprint": "679d35552735e94523a0885901b1673c1dabb17ccc88e516b904993dd09d8c0e",
+    "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 review: + swift-qualified-base fixture (added to the swift-* corpus); existing fixtures byte-identical (golden regen was purely additive), scaling stays linear (~1.07)."
+    "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
+  },
+  "java": {
+    "fingerprint": "91e7a556286300aaf9dfdfd2553f470c505a318391d68ca5f0e83f0c93ea978d",
+    "scaling_budget": 1.5,
+    "_added": "#1956: java added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (class extends Base implements Marker). Adding it exposed a pre-existing O(n^2) findNodeAtRange(tree.rootNode,...) root-walk in java/captures.ts — the #1848/#1915/#1918 family bug, never fixed for java because java had no bench. Fixed by threading the query's captured c.node (byte-identical capture output, verified by a before/after digest over all java-* fixtures); scaling now linear (~0.99, was 3.09)."
   },
   "typescript": {
     "fingerprint": "bc2aba682c02b85aaebae88b918a6b0acf21df9a0ba21235b452b2bda3232d0f",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 review: + typescript-generic-base fixture (added to the typescript-* corpus); scope-capture synth unchanged (only the legacy @heritage query was widened), existing fixtures byte-identical, scaling stays linear (~1.0)."
+    "_rebaselined": "#1956 review: + typescript-generic-base fixture; scale source already heritage-bearing (extends Base since #1918); linear (~1.0)."
   },
   "javascript": {
     "fingerprint": "531241f41853faaf88f970b0191032b35990f46069458dbf5c81b15144879dd7",
     "scaling_budget": 1.5,
-    "_added": "#1951: bench coverage added (was ungated); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
+    "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
   },
   "kotlin": {
     "fingerprint": "891508a3b9c02aab2eb8c83cb5312b8c7f3584efb840739bc393543c0abdc92d",
     "scaling_budget": 1.5,
-    "_added": "#1951: bench coverage added (was ungated); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
+    "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
   }
 }
