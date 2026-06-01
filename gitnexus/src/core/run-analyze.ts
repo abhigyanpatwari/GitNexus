@@ -478,7 +478,10 @@ export async function runFullAnalysis(
         : p.message || phaseLabel;
       progress(p.phase, scaled, message);
     },
-    { parseCache, workerPoolSize: options.workerPoolSize },
+    {
+      parseCache,
+      workerPoolSize: options.workerPoolSize,
+    },
   );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────

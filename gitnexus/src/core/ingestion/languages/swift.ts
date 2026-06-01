@@ -32,6 +32,16 @@ import { swiftVariableConfig } from '../variable-extractors/configs/swift.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { swiftCallConfig } from '../call-extractors/configs/swift.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitSwiftScopeCaptures,
+  interpretSwiftImport,
+  interpretSwiftTypeBinding,
+  swiftBindingScopeFor,
+  swiftImportOwningScope,
+  swiftReceiverBinding,
+  swiftMergeBindings,
+  swiftArityCompatibility,
+} from './swift/index.js';
 
 /**
  * Group Swift files by SPM target for implicit module visibility.
@@ -332,4 +342,14 @@ export const swiftProvider = defineLanguage({
   implicitImportWirer: wireSwiftImplicitImports,
   orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,
+  // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #937). See
+  //    languages/swift/ for the implementations. ──────────────────────
+  emitScopeCaptures: emitSwiftScopeCaptures,
+  interpretImport: interpretSwiftImport,
+  interpretTypeBinding: interpretSwiftTypeBinding,
+  bindingScopeFor: swiftBindingScopeFor,
+  importOwningScope: swiftImportOwningScope,
+  receiverBinding: swiftReceiverBinding,
+  mergeBindings: (_scope, bindings) => swiftMergeBindings(bindings),
+  arityCompatibility: swiftArityCompatibility,
 });

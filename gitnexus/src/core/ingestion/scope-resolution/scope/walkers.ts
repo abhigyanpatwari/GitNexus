@@ -56,35 +56,64 @@ export function lookupBindingsAt(
   const finalized = scopes.bindings.get(scopeId)?.get(name);
   const augmented = scopes.bindingAugmentations.get(scopeId)?.get(name);
   const workspace = scopes.workspaceFqnBindings?.get(name);
+  // Per-namespace channel (#1871 named-namespace generalization). Gated by
+  // accessibility: only a *module* scope carries an `accessibleNamespacesByScope`
+  // entry, so this collects nothing at child scopes and at module scopes only for
+  // the namespaces that file can see. Empty (no entry) for every non-C# bundle,
+  // so the behavior of the three pre-existing channels is unchanged.
+  const namespaceRefs = collectNamespaceFqnBindings(scopeId, name, scopes);
   const fLen = finalized?.length ?? 0;
   const aLen = augmented?.length ?? 0;
   const wLen = workspace?.length ?? 0;
-  if (fLen === 0 && aLen === 0 && wLen === 0) return EMPTY_BINDINGS;
-  if (aLen === 0 && wLen === 0) return finalized!;
-  if (fLen === 0 && wLen === 0) return augmented!;
-  if (fLen === 0 && aLen === 0) return workspace!;
+  const nLen = namespaceRefs?.length ?? 0;
+  if (fLen === 0 && aLen === 0 && wLen === 0 && nLen === 0) return EMPTY_BINDINGS;
+  if (aLen === 0 && wLen === 0 && nLen === 0) return finalized!;
+  if (fLen === 0 && wLen === 0 && nLen === 0) return augmented!;
+  if (fLen === 0 && aLen === 0 && nLen === 0) return workspace!;
+  if (fLen === 0 && aLen === 0 && wLen === 0) return namespaceRefs!;
+  // Merge in precedence order, deduped by `def.nodeId` so the strongest source
+  // wins duplicate metadata. Named-namespace refs come BEFORE the flat global
+  // `workspace` channel: pre-#1871 these lived in `bindingAugmentations` (which
+  // `lookupBindingsAt` already ranks above `workspaceFqnBindings`), so a name in
+  // both an accessible named namespace and the global namespace must still
+  // resolve named-first. Order: finalized > augmented > namespace > workspace.
   const seen = new Set<string>();
   const out: BindingRef[] = [];
-  if (fLen > 0) {
-    for (const r of finalized!) {
-      seen.add(r.def.nodeId);
-      out.push(r);
-    }
-  }
-  if (aLen > 0) {
-    for (const r of augmented!) {
+  for (const src of [finalized, augmented, namespaceRefs, workspace]) {
+    if (src === undefined) continue;
+    for (const r of src) {
       if (seen.has(r.def.nodeId)) continue;
       seen.add(r.def.nodeId);
-      out.push(r);
-    }
-  }
-  if (wLen > 0) {
-    for (const r of workspace!) {
-      if (seen.has(r.def.nodeId)) continue;
       out.push(r);
     }
   }
   return out;
+}
+
+/**
+ * Collect `BindingRef`s for `name` from the per-namespace channel
+ * (`namespaceFqnBindings`) across every namespace accessible from `scopeId`.
+ * Accessibility comes from `accessibleNamespacesByScope`, which is keyed by
+ * *module* scope id — so this returns `undefined` at non-module scopes and at
+ * every scope in a bundle that didn't populate the channel (all non-C# today).
+ * Language-neutral: keyed only by namespace strings and the index.
+ */
+function collectNamespaceFqnBindings(
+  scopeId: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] | undefined {
+  const namespaces = scopes.accessibleNamespacesByScope?.get(scopeId);
+  if (namespaces === undefined || namespaces.length === 0) return undefined;
+  let collected: BindingRef[] | undefined;
+  for (const ns of namespaces) {
+    const bucket = scopes.namespaceFqnBindings?.get(ns)?.get(name);
+    if (bucket !== undefined && bucket.length > 0) {
+      if (collected === undefined) collected = [];
+      for (const r of bucket) collected.push(r);
+    }
+  }
+  return collected;
 }
 
 const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
@@ -153,6 +182,7 @@ export function findReceiverTypeBinding(
 ): TypeRef | undefined {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
+  let moduleScopeId: ScopeId | null = null;
   while (currentId !== null) {
     if (visited.has(currentId)) return undefined;
     visited.add(currentId);
@@ -160,9 +190,65 @@ export function findReceiverTypeBinding(
     if (scope === undefined) return undefined;
     const typeRef = scope.typeBindings.get(receiverName);
     if (typeRef !== undefined) return typeRef;
+    if (scope.kind === 'Module') moduleScopeId = currentId;
     currentId = scope.parent;
   }
+  // Fallback 1 — named namespaces accessible from this file (own + `using`d),
+  // gated by `accessibleNamespacesByScope`. Consulted BEFORE the global channel
+  // so a more-specific named binding wins, matching the pre-#1871 order where
+  // these lived in the file's own `Scope.typeBindings` (the chain, above the
+  // global fallback). Shared-channel routing avoids the O(files × names) blow-up.
+  const named = namespaceTypeBindingFor(moduleScopeId, receiverName, scopes);
+  if (named !== undefined) return named;
+  // Fallback 2 — global/default namespace: C# global types are visible from
+  // every file (see `workspaceTypeBindings` doc), so this flat channel is the
+  // final, unconditional fallback (#1871).
+  return scopes.workspaceTypeBindings?.get(receiverName);
+}
+
+/**
+ * Resolve a typeBinding for `name` from the per-namespace channel
+ * (`namespaceTypeBindings`) across the namespaces accessible from `moduleScopeId`.
+ * First accessible-namespace hit wins. Returns `undefined` when the module has no
+ * accessibility entry (non-module scope id, or a bundle that didn't populate the
+ * channel — all non-C# today). Shared by the two typeBindings chain-walkers so
+ * the named-namespace fallback stays identical between them.
+ */
+export function namespaceTypeBindingFor(
+  moduleScopeId: ScopeId | null,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): TypeRef | undefined {
+  if (moduleScopeId === null) return undefined;
+  const namespaces = scopes.accessibleNamespacesByScope?.get(moduleScopeId);
+  if (namespaces === undefined) return undefined;
+  for (const ns of namespaces) {
+    const hit = scopes.namespaceTypeBindings?.get(ns)?.get(name);
+    if (hit !== undefined) return hit;
+  }
   return undefined;
+}
+
+/**
+ * Walk the scope chain from `startScope` to its enclosing Module scope id, or
+ * `null` if none is found. Used by chain-followers that need the module scope to
+ * consult the accessibility-gated per-namespace channels.
+ */
+export function moduleScopeIdOf(
+  startScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): ScopeId | null {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return null;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return null;
+    if (scope.kind === 'Module') return currentId;
+    currentId = scope.parent;
+  }
+  return null;
 }
 
 /**

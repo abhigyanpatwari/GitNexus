@@ -112,7 +112,6 @@ type PatternOverrides = Map<string, Map<string, PatternOverride[]>>;
  *  Includes both multi-arm pattern-match branches AND if-statement bodies for null-check narrowing. */
 const NARROWING_BRANCH_TYPES = new Set([
   'when_entry', // Kotlin when
-  'switch_block_label', // Java switch (enhanced)
   'if_statement', // TS/JS, Java, C/C++
   'if_expression', // Kotlin (if is an expression)
   'statement_block', // TS/JS: { ... } body of if
@@ -152,7 +151,11 @@ const lookupInEnv = (
   callNode: SyntaxNode,
   patternOverrides?: PatternOverrides,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
-  extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
+  extractFunctionNameHook?: (
+    n: SyntaxNode,
+    filePath?: string,
+  ) => { funcName: string | null; label: NodeLabel } | null,
+  filePath?: string,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
   if (varName === 'self' || varName === 'this' || varName === '$this') {
@@ -170,6 +173,7 @@ const lookupInEnv = (
     callNode,
     enclosingFunctionFinder,
     extractFunctionNameHook,
+    filePath,
   );
 
   // Check position-indexed pattern overrides first (e.g., Kotlin when/is smart casts).
@@ -386,12 +390,17 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
 const findEnclosingScopeKey = (
   node: SyntaxNode,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
-  extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
+  extractFunctionNameHook?: (
+    n: SyntaxNode,
+    filePath?: string,
+  ) => { funcName: string | null; label: NodeLabel } | null,
+  filePath?: string,
 ): string | undefined => {
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const funcName = extractFunctionNameHook?.(current)?.funcName ?? genericFuncName(current);
+      const funcName =
+        extractFunctionNameHook?.(current, filePath)?.funcName ?? genericFuncName(current);
       if (funcName) return `${funcName}@${current.startIndex}`;
     }
     // Language-specific hook (e.g., Dart function_body → sibling function_signature)
@@ -783,6 +792,7 @@ const resolveFixpointBindings = (
  * Uses an options object to allow future extensions without positional parameter sprawl.
  */
 export interface BuildTypeEnvOptions {
+  filePath?: string;
   model?: SemanticModel;
   parentMap?: ReadonlyMap<string, readonly string[]>;
   /** Pre-resolved bindings from upstream files (Phase 14).
@@ -807,7 +817,10 @@ export interface BuildTypeEnvOptions {
    *  Replaces the generic name-field lookup for languages with non-standard
    *  AST structures (C/C++ declarator unwrapping, Swift init/deinit, etc.).
    *  When null is returned or not provided, falls back to node.childForFieldName('name')?.text. */
-  extractFunctionName?: (node: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null;
+  extractFunctionName?: (
+    node: SyntaxNode,
+    filePath?: string,
+  ) => { funcName: string | null; label: NodeLabel } | null;
 }
 
 /** Seed cross-file type bindings into the file scope.
@@ -977,7 +990,6 @@ export const buildTypeEnv = (
             (child.type === 'user_type' ||
               child.type === 'type_identifier' ||
               child.type === 'generic_type' ||
-              child.type === 'parameterized_type' ||
               child.type === 'nullable_type')
           ) {
             fallbackType = child;
@@ -1285,6 +1297,7 @@ export const buildTypeEnv = (
         patternOverrides,
         options?.enclosingFunctionFinder,
         extractFuncNameHook,
+        options?.filePath,
       ),
     constructorBindings: bindings,
     fileScope: () => env.get(FILE_SCOPE) ?? emptyFileScope(),
