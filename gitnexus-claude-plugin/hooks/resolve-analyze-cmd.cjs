@@ -17,10 +17,13 @@
  * This stays self-contained CJS because the Claude/Antigravity hooks run as
  * standalone files copied into the user's hook dir, where no package import is
  * available. The CLI reuses this module from src/cli/resolve-invocation.ts via
- * createRequire rather than re-implementing it. Shipped in two packages —
+ * createRequire rather than re-implementing it. Two committed copies must stay
+ * byte-identical (enforced by resolve-invocation.test.ts) — edit both together:
  * gitnexus/hooks/claude/ (the canonical copy the CLI and `gitnexus setup` read)
- * and gitnexus-claude-plugin/hooks/ — kept byte-identical by
- * resolve-invocation.test.ts. Edit both together.
+ * and gitnexus-claude-plugin/hooks/. A THIRD copy is written at runtime to
+ * `<repo>/.gitnexus/run.cjs` by `gitnexus analyze` (ai-context.ts) so docs can
+ * reference it directly via the `require.main === module` exec tail below; that
+ * copy is gitignored and refreshed on every analyze, so it cannot drift for long.
  */
 
 const { execFileSync } = require('child_process');
@@ -201,14 +204,64 @@ function formatAnalyzeCommand(options = {}, deps = {}) {
   return `npx ${NPX_REF} analyze${suffix}`;
 }
 
+/**
+ * Resolve `mode` into a concrete { program, args } pair for a set of gitnexus
+ * subcommand arguments. Shared by the direct-exec entrypoint below; pure (no
+ * spawn) so it is unit-testable. `--embeddings` widens the pnpm allow-build set.
+ */
+function buildRunnerArgv(mode, gitnexusArgs, deps = {}) {
+  const embeddings = gitnexusArgs.includes('--embeddings');
+  if (mode === 'gitnexus') return { program: 'gitnexus', args: [...gitnexusArgs] };
+  if (mode === 'pnpm') {
+    return {
+      program: 'pnpm',
+      args: [...formatPnpmAllowBuildArgs({ embeddings }, deps), 'dlx', NPX_REF, ...gitnexusArgs],
+    };
+  }
+  return { program: 'npx', args: [NPX_REF, ...gitnexusArgs] };
+}
+
 module.exports = {
   formatAnalyzeCommand,
   formatDocumentationDlxCommand,
   formatPnpmAllowBuildArgs,
   formatPnpmDlxCommand,
   resolveInvocationMode,
+  buildRunnerArgv,
   pickPathMatch,
   getNpmMajorVersion,
   NPX_REF,
   PNPM_ALLOW_BUILD_BASE,
 };
+
+// Direct-exec entrypoint (#1945): `node run.cjs <gitnexus args…>` resolves the
+// best available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time and
+// runs it, inheriting stdio and propagating the child's exit code. This lets the
+// committed skills and generated AGENTS.md/CLAUDE.md reference ONE stable,
+// CLI-neutral command without baking in a package-manager assumption. `gitnexus
+// analyze` drops a copy of this file at `.gitnexus/run.cjs`. Skipped on require()
+// (the CLI and tests reuse the exports above), so it runs only when invoked as a
+// script.
+if (require.main === module) {
+  const gitnexusArgs = process.argv.slice(2);
+  const { program, args } = buildRunnerArgv(resolveInvocationMode(), gitnexusArgs);
+  try {
+    execFileSync(program, args, {
+      stdio: 'inherit',
+      windowsHide: true,
+      // On Windows, `npx`/`pnpm`/`gitnexus` resolve to `.cmd`/`.ps1`/`.exe`
+      // shims (npm, Volta, Corepack, scoop). execFileSync does not do PATHEXT
+      // resolution and Node refuses to spawn `.cmd`/`.bat` without a shell
+      // (CVE-2024-27980), so a bare program name ENOENTs. A shell lets the OS
+      // resolve the shim; POSIX needs no shell (direct PATH lookup works).
+      shell: process.platform === 'win32',
+    });
+  } catch (err) {
+    // Make spawn failures (resolved program absent from PATH) self-explanatory
+    // instead of a silent exit 1, then propagate the runner's own exit code.
+    if (typeof err.status !== 'number') {
+      process.stderr.write(`gitnexus runner: could not launch \`${program}\` — ${err.message}\n`);
+    }
+    process.exit(typeof err.status === 'number' ? err.status : 1);
+  }
+}

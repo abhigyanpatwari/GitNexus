@@ -53,6 +53,11 @@ interface CjsModule {
     output: string,
     opts?: { isWin?: boolean; gitnexusWrapper?: boolean },
   ) => string | null;
+  buildRunnerArgv: (
+    mode: 'gitnexus' | 'pnpm' | 'npx',
+    gitnexusArgs: string[],
+    deps?: { pnpmMajor?: number | null; pnpmMinor?: number | null },
+  ) => { program: string; args: string[] };
   NPX_REF: string;
 }
 
@@ -311,6 +316,49 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
     warnIfNpm11NpxRisk();
     expect(write).not.toHaveBeenCalled();
     write.mockRestore();
+  });
+});
+
+describe('buildRunnerArgv (project-local runner exec, #1945)', () => {
+  it('passes gitnexus args straight through for the global-binary mode', () => {
+    expect(cjs.buildRunnerArgv('gitnexus', ['group', 'list'])).toEqual({
+      program: 'gitnexus',
+      args: ['group', 'list'],
+    });
+  });
+
+  it('prefixes the registry ref for npx mode', () => {
+    expect(cjs.buildRunnerArgv('npx', ['analyze'])).toEqual({
+      program: 'npx',
+      args: ['gitnexus@latest', 'analyze'],
+    });
+  });
+
+  it('builds the pre-`dlx` --allow-build invocation for pnpm mode', () => {
+    // Inject a pnpm version >= 10.2 so the allow-build flags are emitted without
+    // a live `pnpm --version` probe.
+    const { program, args } = cjs.buildRunnerArgv('pnpm', ['analyze'], {
+      pnpmMajor: 10,
+      pnpmMinor: 14,
+    });
+    expect(program).toBe('pnpm');
+    // Flags must precede `dlx` (ERR_PNPM_SPEC_NOT_SUPPORTED otherwise, #1939).
+    const dlxIdx = args.indexOf('dlx');
+    expect(dlxIdx).toBeGreaterThan(0);
+    expect(args.slice(0, dlxIdx)).toEqual([
+      '--allow-build=@ladybugdb/core',
+      '--allow-build=gitnexus',
+      '--allow-build=tree-sitter',
+    ]);
+    expect(args.slice(dlxIdx)).toEqual(['dlx', 'gitnexus@latest', 'analyze']);
+  });
+
+  it('widens the pnpm allow-build set when --embeddings is requested', () => {
+    const { args } = cjs.buildRunnerArgv('pnpm', ['analyze', '--embeddings'], {
+      pnpmMajor: 10,
+      pnpmMinor: 14,
+    });
+    expect(args).toContain('--allow-build=onnxruntime-node');
   });
 });
 
