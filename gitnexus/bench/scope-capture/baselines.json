@@ -26,9 +26,9 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "d571fa9542e3ce37b09a48dbd9232f49eec1166a27b00c2231aca17bf6a6cf60",
+    "fingerprint": "2ffad4ba7b1d2eb1ac407cb6d75d0eb98cbc1878260dbdfe982c0fc925b2d00c",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956: rust-cross-module-collision fixture + heritage-bearing scale source (impl Shape for Entity_n trait-impl) so the trait-impl synth is gated at scale; linear (~1.01)."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04)."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",

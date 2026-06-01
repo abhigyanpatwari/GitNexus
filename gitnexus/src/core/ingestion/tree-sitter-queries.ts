@@ -1183,11 +1183,26 @@ export const RUST_QUERIES = `
   (field_declaration
     name: (field_identifier) @name) @definition.property)
 
-; Heritage (trait implementation) — all combinations of concrete/generic trait × concrete/generic type
-(impl_item trait: (type_identifier) @heritage.trait type: (type_identifier) @heritage.class) @heritage
-(impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (type_identifier) @heritage.class) @heritage
-(impl_item trait: (type_identifier) @heritage.trait type: (generic_type type: (type_identifier) @heritage.class)) @heritage
-(impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (generic_type type: (type_identifier) @heritage.class)) @heritage
+; Heritage (trait implementation). Each of trait:/type: is one of: concrete
+; type_identifier, qualified scoped_type_identifier (resolved by its name: tail
+; -- KTD-1), or a generic_type wrapping either. The capture is always anchored
+; on the trailing bare type_identifier, so heritage.trait / heritage.class text
+; stays the simple name -- matching the synth in rust/captures.ts
+; bareTypeIdentifier. (No predicates -> safe to alternate; verified against a
+; real parse for all trait x type combinations.)
+(impl_item
+  trait: [
+    (type_identifier) @heritage.trait
+    (scoped_type_identifier name: (type_identifier) @heritage.trait)
+    (generic_type type: (type_identifier) @heritage.trait)
+    (generic_type type: (scoped_type_identifier name: (type_identifier) @heritage.trait))
+  ]
+  type: [
+    (type_identifier) @heritage.class
+    (scoped_type_identifier name: (type_identifier) @heritage.class)
+    (generic_type type: (type_identifier) @heritage.class)
+    (generic_type type: (scoped_type_identifier name: (type_identifier) @heritage.class))
+  ]) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression

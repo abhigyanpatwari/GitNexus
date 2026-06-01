@@ -188,11 +188,12 @@ export function emitRustScopeCaptures(
  * target) and `@reference.receiver` = the struct `S` (becomes
  * `site.explicitReceiver.name`, the IMPLEMENTS source).
  *
- * Parity is intentionally pinned to the legacy heritage query's four
- * `impl_item` variants: both `trait:` and `type:` must normalize to a bare
- * `type_identifier` (directly, or as the `type:` of a `generic_type`). Inherent
- * impls (`impl S {}`, no `trait:` field) and qualified `scoped_type_identifier`
- * bases — which the legacy query does NOT match — emit nothing here too.
+ * Parity is intentionally pinned to the legacy heritage query's `impl_item`
+ * patterns: both `trait:` and `type:` normalize to the base's trailing bare
+ * `type_identifier` — directly, via a `scoped_type_identifier`'s `name:` tail
+ * (`crate::traits::Drawable` → `Drawable`; KTD-1 tail resolution), or through a
+ * `generic_type`'s `type:` field (which may itself be either). Inherent impls
+ * (`impl S {}`, no `trait:` field) still emit nothing.
  */
 function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
@@ -214,18 +215,28 @@ function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
 }
 
 /**
- * Normalize a `trait:` / `type:` impl_item field to its bare `type_identifier`,
- * matching exactly the node types the legacy `@heritage` query accepts:
- *   - `type_identifier`               → the node itself
- *   - `generic_type type: (type_identifier ...)` → the inner `type:` identifier
- * Any other node type (e.g. `scoped_type_identifier`) returns null so this
- * emitter stays at parity with the legacy query (no extra edges).
+ * Normalize a `trait:` / `type:` impl_item field to the base's trailing bare
+ * `type_identifier`, matching exactly the node shapes the legacy `@heritage`
+ * query accepts (kept at parity — see the `impl_item` heritage arm in
+ * tree-sitter-queries.ts):
+ *   - `type_identifier`                                  → the node itself
+ *   - `scoped_type_identifier name: (type_identifier)`   → the trailing `name:` id
+ *     (`crate::traits::Drawable` → `Drawable`; KTD-1 tail resolution — the
+ *     simple name then resolves scope-aware via `emitRustTraitImplEdges`)
+ *   - `generic_type type: <any of the above>`            → recurse into `type:`
+ *     (covers `Box<T>` and `m::Wrapped<T>`)
+ * Any other node type returns null (no edge), keeping this emitter at parity
+ * with the legacy query.
  */
 function bareTypeIdentifier(node: SyntaxNode): SyntaxNode | null {
   if (node.type === 'type_identifier') return node;
+  if (node.type === 'scoped_type_identifier') {
+    const tail = node.childForFieldName('name');
+    return tail !== null && tail.type === 'type_identifier' ? tail : null;
+  }
   if (node.type === 'generic_type') {
     const inner = node.childForFieldName('type');
-    if (inner !== null && inner.type === 'type_identifier') return inner;
+    return inner !== null ? bareTypeIdentifier(inner) : null;
   }
   return null;
 }
