@@ -839,10 +839,24 @@ export function emitJsScopeCaptures(
       }
     }
 
-    // Synthesize @reference.arity on callsites.
+    // Synthesize @reference.arity on callsites. Skip JSX element anchors: a JSX
+    // component used as a call argument (e.g. `render(<Foo .../>)`) is itself a
+    // @reference.call.* anchor, and the ascent below would climb into the
+    // enclosing call_expression and mis-attribute that call's arity to the
+    // component. A JSX component reference has no call arity here — this restores
+    // the pre-#1951 range-based behavior (no call_expression at the JSX range).
+    // The guard lives at this call site, not inside findSelfOrAncestorOfTypes,
+    // which is also used by the import-statement and function-scope ascents.
     const callAnchor = pickFirstDefined(grouped, CALL_TAGS);
     const callAnchorNode = pickFirstNode(groupedNodes, CALL_TAGS);
-    if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
+    const anchorIsJsxElement =
+      callAnchorNode?.type === 'jsx_self_closing_element' ||
+      callAnchorNode?.type === 'jsx_opening_element';
+    if (
+      callAnchor !== undefined &&
+      grouped['@reference.arity'] === undefined &&
+      !anchorIsJsxElement
+    ) {
       const callNode =
         findSelfOrAncestorOfTypes(callAnchorNode, ['call_expression', 'new_expression']) ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??

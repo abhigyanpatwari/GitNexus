@@ -89,6 +89,28 @@ describe('captures.ts ancestor-walk rewrite (U8 / B5)', () => {
     expect('@declaration.parameter-count' in jsxCalls[0]).toBe(false);
   });
 
+  it('JSX as a call argument does not inherit the enclosing call arity (#1956 U3)', () => {
+    // `render(<Foo a={1} b={2} />)`: the JSX element is itself a
+    // @reference.call.free anchor nested INSIDE the render() call_expression.
+    // The arity walk-up (findSelfOrAncestorOfTypes) would climb from the JSX
+    // element into render() and stamp arity 1 onto the Foo component ref. The
+    // early JSX-anchor guard prevents that; the enclosing render() call still
+    // gets its real arity (1 argument: the element).
+    const matches = emitTsScopeCaptures(
+      'function App() { return render(<Foo a={1} b={2} />); }',
+      'test.tsx',
+    );
+    const fooJsx = matches.find(
+      (m) => '@reference.call.free' in m && m['@reference.name']?.text === 'Foo',
+    );
+    const renderCall = matches.find(
+      (m) => '@reference.call.free' in m && m['@reference.name']?.text === 'render',
+    );
+    expect(fooJsx).toBeDefined();
+    expect('@reference.arity' in fooJsx!).toBe(false);
+    expect(renderCall?.['@reference.arity']?.text).toBe('1');
+  });
+
   it('constructor call `new Foo(1, 2)` emits exactly one @reference.call.constructor capture', () => {
     // new_expression anchor → self in ancestor walk.
     const count = countMatches(

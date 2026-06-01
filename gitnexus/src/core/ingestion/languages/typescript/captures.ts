@@ -336,21 +336,29 @@ export function emitTsScopeCaptures(
     // calls use `new_expression`; regular calls use `call_expression`.
     //
     // JSX call anchors (`jsx_self_closing_element` / `jsx_opening_element`
-    // captured by the TSX-only suffix in `query.ts`) intentionally do
-    // NOT carry arity metadata. The lookup below would resolve `callNode`
-    // to `null` for a JSX anchor (the anchor is neither a call_expression
-    // nor a new_expression), so the synthesis branch silently no-ops and
-    // the JSX call enters the registry with name-only resolution. This
-    // is acceptable for React: components are virtually never
-    // overloaded in the current GitNexus graph model, so name-only
-    // dispatch matches the single component definition. If a future
-    // codebase introduces overloaded React components AND needs JSX
-    // calls to disambiguate by props-arity, a JSX-aware arity
-    // synthesizer would need to count `jsx_attribute` children of the
-    // opening tag instead of `arguments`.
+    // captured by the TSX-only suffix in `query.ts`) intentionally do NOT carry
+    // arity metadata. A JSX component used as a call argument (e.g.
+    // `render(<Foo .../>)`) is itself a @reference.call.* anchor; without a guard
+    // the ascent below would climb from it into the enclosing call_expression and
+    // mis-attribute that call's arity to the component. The early guard skips
+    // arity synthesis for JSX anchors — restoring the pre-#1951 range-based
+    // behavior (the old findNodeAtRange found no call_expression at the JSX
+    // element's range). The guard lives here, not inside findSelfOrAncestorOfTypes
+    // (shared with the import-statement and function-scope ascents). This is
+    // acceptable for React: components are virtually never overloaded in the
+    // current GitNexus graph model, so name-only dispatch matches the single
+    // component definition. A future props-arity-aware synthesizer would count
+    // `jsx_attribute` children of the opening tag instead of `arguments`.
     const callAnchor = pickFirstCapture(grouped, CALL_TAGS);
     const callAnchorNode = pickFirstNode(groupedNodes, CALL_TAGS);
-    if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
+    const anchorIsJsxElement =
+      callAnchorNode?.type === 'jsx_self_closing_element' ||
+      callAnchorNode?.type === 'jsx_opening_element';
+    if (
+      callAnchor !== undefined &&
+      grouped['@reference.arity'] === undefined &&
+      !anchorIsJsxElement
+    ) {
       const callNode =
         findSelfOrAncestorOfTypes(callAnchorNode, ['call_expression', 'new_expression']) ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
