@@ -1,20 +1,28 @@
 /**
- * Worker-path inheritance edges for registry-primary C# and Java (issue #1951).
+ * Worker-path inheritance edges for the registry-primary languages (issue #1951).
  *
  * Diagrams showed classes and interfaces with no EXTENDS / IMPLEMENTS edges
- * between them. Root cause: C# and Java are registry-primary, so their legacy
- * `@heritage.*` edges are dropped by the worker pipeline's `shouldAccumulate`
- * gate (parse-impl.ts) — while the scope-resolution path that DOES run in
- * worker mode emitted nothing for them (unlike C++, they synthesized no
+ * between them. Root cause: registry-primary languages have their legacy
+ * `@heritage.*` edges dropped by the worker pipeline's `shouldAccumulate` gate
+ * (parse-impl.ts) — while the scope-resolution path that DOES run in worker
+ * mode emitted nothing for them (unlike C++, they synthesized no
  * `@reference.inherits` captures). Small fixtures stayed under the worker
  * threshold and ran sequentially (legacy heritage intact), so the bug hid.
  *
+ * The migration routed every language's inheritance through scope-resolution.
  * These tests force the worker pool on small fixtures (production threshold is
  * 15 files / 512 KB) and assert the edges are present. They FAIL before the
- * fix (0 EXTENDS / 0 IMPLEMENTS in worker mode) and pass once C#/Java emit
- * inheritance through scope-resolution. The `usedWorkerPool === true` guard is
- * mandatory: without the compiled worker (built by `pretest:integration`) the
- * pipeline silently falls back to sequential, which would hide the regression.
+ * fix (0 EXTENDS / 0 IMPLEMENTS in worker mode) and pass once each language
+ * emits inheritance through scope-resolution. The `usedWorkerPool === true`
+ * guard is mandatory: without the compiled worker (built by
+ * `pretest:integration`) the pipeline silently falls back to sequential, which
+ * would hide the regression.
+ *
+ * The C#/Java blocks below are the original (#1951) coverage; the
+ * table-driven block at the end extends worker-forced coverage to the other
+ * migrated languages (go, python, php, rust, kotlin, ruby, typescript,
+ * javascript, swift) so a worker-only capture regression in ANY of them fails
+ * here rather than slipping every sequential gate.
  *
  * Run under the default (registry-primary) flags — the bug only exists on the
  * registry-primary path, so we must NOT force REGISTRY_PRIMARY_*=0 here.
@@ -27,8 +35,12 @@ import {
   edgeSet,
   type PipelineResult,
 } from './resolvers/helpers.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 const FIXTURES = path.resolve(__dirname, '..', 'fixtures', 'lang-resolution');
+
+const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
 
 const runWorker = (fixture: string): Promise<PipelineResult> =>
   runPipelineFromRepo(path.join(FIXTURES, fixture), () => {}, {
@@ -184,3 +196,102 @@ describe('Worker/sequential inheritance-edge parity (#1951)', () => {
     expect(getRelationships(sequential, 'IMPLEMENTS').length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Worker-forced coverage for the remaining migrated languages (#1951 review).
+// Each language's inheritance now flows ONLY through its scope-resolution synth
+// in worker mode (legacy heritage gated off). Edge sets are sorted (edgeSet
+// sorts), so the expectations below are in sorted order.
+// ---------------------------------------------------------------------------
+
+interface WorkerHeritageCase {
+  readonly lang: string;
+  readonly fixture: string;
+  readonly extends: readonly string[];
+  readonly implements: readonly string[];
+  /** Optional gate for grammars that may not be installed (Swift). */
+  readonly available?: boolean;
+}
+
+const WORKER_HERITAGE_CASES: readonly WorkerHeritageCase[] = [
+  // Go struct embedding → EXTENDS.
+  { lang: 'Go', fixture: 'go-child-extends-parent', extends: ['Child → Parent'], implements: [] },
+  // Python single inheritance → EXTENDS.
+  {
+    lang: 'Python',
+    fixture: 'python-child-extends-parent',
+    extends: ['Child → Parent'],
+    implements: [],
+  },
+  // PHP class extends + trait use → EXTENDS (Base) + IMPLEMENTS (trait Auditable).
+  {
+    lang: 'PHP',
+    fixture: 'php-parent-vs-trait',
+    extends: ['Child → Base'],
+    implements: ['Child → Auditable'],
+  },
+  // Rust `impl T for S` → IMPLEMENTS (resolved scope-aware after #1951 review).
+  {
+    lang: 'Rust',
+    fixture: 'rust-traits',
+    extends: [],
+    implements: ['Button → Clickable', 'Button → Drawable'],
+  },
+  // Kotlin class + interfaces → EXTENDS (BaseModel) + IMPLEMENTS (2 interfaces).
+  {
+    lang: 'Kotlin',
+    fixture: 'kotlin-heritage',
+    extends: ['User → BaseModel'],
+    implements: ['User → Serializable', 'User → Validatable'],
+  },
+  // Ruby `class Child < Parent` → EXTENDS.
+  {
+    lang: 'Ruby',
+    fixture: 'ruby-child-extends-parent',
+    extends: ['Child → Parent'],
+    implements: [],
+  },
+  // TypeScript generic base + generic interface → EXTENDS (Box) + IMPLEMENTS (IFoo).
+  {
+    lang: 'TypeScript',
+    fixture: 'typescript-generic-base',
+    extends: ['Service → Box'],
+    implements: ['Service → IFoo'],
+  },
+  // JavaScript `class Child extends Parent` → EXTENDS.
+  {
+    lang: 'JavaScript',
+    fixture: 'javascript-child-extends-parent',
+    extends: ['Child → Parent'],
+    implements: [],
+  },
+  // Swift class inheritance → EXTENDS (grammar is an optional dependency).
+  {
+    lang: 'Swift',
+    fixture: 'swift-child-extends-parent',
+    extends: ['Child → Parent'],
+    implements: [],
+    available: swiftAvailable,
+  },
+];
+
+for (const c of WORKER_HERITAGE_CASES) {
+  describe.skipIf(c.available === false)(
+    `${c.lang} inheritance edges on the worker path (#1951)`,
+    () => {
+      let result: PipelineResult;
+      beforeAll(async () => {
+        result = await runWorker(c.fixture);
+      }, 120_000);
+
+      it('genuinely used the worker pool (guards against silent sequential fallback)', () => {
+        expect(result.usedWorkerPool).toBe(true);
+      });
+
+      it('emits the expected EXTENDS / IMPLEMENTS edge set via scope-resolution', () => {
+        expect(edgeSet(getRelationships(result, 'EXTENDS'))).toEqual([...c.extends]);
+        expect(edgeSet(getRelationships(result, 'IMPLEMENTS'))).toEqual([...c.implements]);
+      });
+    },
+  );
+}
