@@ -28,8 +28,5 @@
       "prettier --write"
     ],
     "*.{js,jsx,mjs,json,css,yml,yaml}": "prettier --write"
-  },
-  "dependencies": {
-    "tree-sitter-swift": "^0.7.1"
   }
 }

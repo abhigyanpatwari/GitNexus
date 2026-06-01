@@ -209,13 +209,14 @@ describe('COBOL parsing coverage (F17-F23)', () => {
       expect(targets).not.toContain('WS-COUNT');
     });
 
-    it('total CALLS count stays reasonable (no TIMES false positives)', () => {
-      // PERFTIMS has: 1 perform + 1 perform-thru + 1 goto = 3 CALLS
+    it('total CALLS count stays reasonable (TIMES with count is real)', () => {
+      // PERFTIMS has: 2 perform (2000-PROCESS + 2000-PROCESS THRU first-target)
+      //   + 2 perform for count TIMES (2000-PROCESS 3 TIMES + WS-COUNT TIMES)
+      //   + 1 perform-thru + 1 goto = 6 CALLS
       // DIGITLEAD has: 2 perform + 1 perform-thru + 1 goto = 4 CALLS
-      // Total should be ~7 across both fixtures
+      // Total: 10 across both fixtures
       const calls = getRelationships(result, 'CALLS');
-      // Should be exactly 8 as observed: 4 from DIGITLEAD + 4 from PERFTIMS
-      expect(calls.length).toBe(8);
+      expect(calls.length).toBe(10);
     });
   });
 });

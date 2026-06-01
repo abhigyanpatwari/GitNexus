@@ -806,11 +806,12 @@ function parseExecSqlBlock(
   block: string,
   line: number,
 ): CobolRegexResults['execSqlBlocks'][number] {
-  // Strip EXEC SQL ... END-EXEC wrapper
+  // Strip EXEC SQL ... END-EXEC wrapper and trailing period
   const body = block
     .replace(/\bEXEC\s+SQL\b/i, '')
     .replace(/\bEND-EXEC\b/i, '')
     .replace(/\s+/g, ' ')
+    .replace(/\.\s*$/, '')
     .trim();
 
   // Determine operation from first SQL keyword
@@ -840,9 +841,10 @@ function parseExecSqlBlock(
   // Extract table names from FROM, INTO (INSERT), UPDATE, DELETE FROM, JOIN
   const tables: string[] = [];
   const tablePatterns = [
-    // FROM table1 [alias], table2 [alias] … — handle comma-separated lists
-    // with optional single-word aliases after each table name
-    /\bFROM\s+([A-Z0-9][A-Z0-9_]+(?:\s+[A-Z0-9][A-Z0-9_]*)?(?:\s*,\s*[A-Z0-9][A-Z0-9_]+(?:\s+[A-Z0-9][A-Z0-9_]*)?)*)/gi,
+    // FROM table1 [AS alias], table2 [AS alias] … — handle comma-separated
+    // lists with optional AS keyword, terminated by SQL clause keywords
+    // (WHERE, JOIN, GROUP, ON, ORDER, HAVING, UNION, SET, INTO, VALUES).
+    /\bFROM\s+([A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?(?:\s*,\s*[A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?)*)(?:\s+(?:WHERE|JOIN|GROUP|ON|ORDER|HAVING|UNION|SET|INTO|VALUES)\b|$)/gi,
     /\bINSERT\s+INTO\s+([A-Z0-9][A-Z0-9_]+)/gi,
     /\bUPDATE\s+([A-Z0-9][A-Z0-9_]+)/gi,
     /\bJOIN\s+([A-Z0-9][A-Z0-9_]+)/gi,
@@ -1962,13 +1964,11 @@ export function extractCobolSymbolsWithRegex(
       if (!PERFORM_KEYWORD_SKIP.has(target.toUpperCase())) {
         const matchEnd = perfMatch.index! + perfMatch[0].length;
         const afterTarget = line.substring(matchEnd).trim();
-        // Check for inline PERFORM ... TIMES pattern (not a paragraph call):
-        // - "PERFORM target {count} TIMES" → afterTarget = "3 TIMES."
-        // - "PERFORM target identifier TIMES" → afterTarget = "WS-COUNT TIMES."
-        // - "PERFORM identifier TIMES" → afterTarget = "TIMES." (target IS the counter)
-        const hasTimesClause =
-          /^\s*TIMES\b/i.test(afterTarget) ||
-          /(?:\d+|[A-Z0-9][A-Z0-9-]*)\s+TIMES\b/i.test(afterTarget);
+        // Check for inline PERFORM ... TIMES pattern where the target IS
+        // the counter variable itself (e.g., PERFORM WS-COUNT TIMES).
+        // Out-of-line PERFORM target count TIMES (e.g., PERFORM 2000-PROCESS 3 TIMES)
+        // IS a real paragraph call — do NOT suppress it.
+        const hasTimesClause = /^\s*TIMES\b/i.test(afterTarget);
         if (!hasTimesClause) {
           result.performs.push({
             caller: currentParagraph,
@@ -2063,7 +2063,8 @@ export function extractCobolSymbolsWithRegex(
           break;
         }
         case 'ADD': {
-          // ADD a TO b [GIVING c] — target is after TO or GIVING
+          // ADD a TO b [GIVING c] — target is after TO or GIVING.
+          // If no TO, try GIVING directly (ADD a GIVING b).
           const addGiving = rest.match(
             /\bTO\s+([A-Z0-9][A-Z0-9-]+)(?:\s+GIVING\s+([A-Z0-9][A-Z0-9-]+))?/i,
           );
@@ -2078,6 +2079,27 @@ export function extractCobolSymbolsWithRegex(
               }
               return m;
             });
+            // Non-GIVING ADD A TO B: the TO operand (B) is both read and written
+            // (the existing value is read, added, then stored back). Add B as a
+            // source so both ACCESSES edges are created.
+            if (!addGiving[2]) {
+              if (!sources.includes(target)) sources.push(target);
+            }
+          } else {
+            // No TO — try GIVING directly: ADD a GIVING b
+            const addOnlyGiving = rest.match(/\bGIVING\s+([A-Z0-9][A-Z0-9-]+)/i);
+            if (addOnlyGiving) {
+              target = addOnlyGiving[1];
+              givingTarget = addOnlyGiving[1];
+              // Everything before GIVING is sources
+              const beforeGiving = rest.substring(0, rest.toUpperCase().indexOf(' GIVING '));
+              beforeGiving.replace(/\b([A-Z0-9][A-Z0-9-]+)\b/gi, (m: string) => {
+                if (!/^(?:ADD|CORRESPONDING|CORR)$/i.test(m) && !sources.includes(m)) {
+                  sources.push(m);
+                }
+                return m;
+              });
+            }
           }
           break;
         }
