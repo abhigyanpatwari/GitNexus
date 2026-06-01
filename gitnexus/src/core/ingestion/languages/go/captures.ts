@@ -1,5 +1,10 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { getGoParser, getGoScopeQuery } from './query.js';
 import { recordGoCacheHit, recordGoCacheMiss } from './cache-stats.js';
 import { computeGoCallArity, computeGoDeclarationArity } from './arity-metadata.js';
@@ -159,7 +164,138 @@ export function emitGoScopeCaptures(
     });
   }
 
+  out.push(...synthesizeGoInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures for Go struct embedding so the
+ * registry-primary scope-resolution path emits inheritance edges (mirrors C#
+ * `synthesizeCsharpInheritanceReferences` / C++ `emitCppInheritanceCaptures`).
+ * Without this, Go embedding edges came only from the legacy `@heritage.*`
+ * path, which is dropped for registry-primary languages in the worker pipeline
+ * (issue #1951).
+ *
+ * Scope EXACTLY matches the legacy Go heritage query + its `shouldSkipExtends`
+ * hook (`heritage-extractors/configs/go.ts`), whose supertype alternation is
+ * `[(type_identifier) (qualified_type) (generic_type)]` (see `goHeritageShapes`)
+ * matched against BOTH struct embedding and interface-in-interface embedding:
+ *
+ *   struct:    (struct_type (field_declaration_list
+ *                (field_declaration type: <base>)))   — anonymous (no `name`) field
+ *   interface: (interface_type (type_elem <base>))    — single-element type_elem
+ *
+ * i.e. an embedded (anonymous) field inside a struct, or an embedded type inside
+ * an interface. Named struct fields (`Breed string`) are skipped because their
+ * `field_declaration` carries a `name` field; multi-operand interface type-sets
+ * (`int | float64`) are skipped because their `type_elem` has >1 named child —
+ * both matching the legacy `shouldSkipExtends` filter.
+ *
+ * The base shapes covered (issue #1951 — these were previously DROPPED by the
+ * registry-primary synth, so production silently omitted their edges even though
+ * the legacy `@heritage` leg, config-driven since #1940, captured them):
+ *   - bare `type_identifier`  (`Base`)                       → the node itself
+ *   - `qualified_type`        (`pkg.Base`)                    → `name:` tail
+ *   - `generic_type`          (`Box[T]`)                      → `type:` base
+ *   - pointer embeds          (`*Base`, `*pkg.Base`, …)       → the `*` is an
+ *     unnamed token, so `field_declaration.type` already points at the inner
+ *     shape above; no `pointer_type` unwrap is needed in this grammar version.
+ *
+ * The captured `@reference.name` is reduced to its bare simple identifier so the
+ * V1 simple-name `findClassBindingInScope` contract keeps holding — `pkg.Base`
+ * → `Base`, `Box[T]` → `Box`. {@link goEmbedBaseNameNode} returns the node whose
+ * `.text` EQUALS `normalizeSupertypeName(base)` for every shape (verified by
+ * real-parse), so this synth stays at parity with the legacy leg's reduction.
+ * For a bare `type_identifier` it returns the same node, keeping the simple-base
+ * path byte-identical.
+ *
+ * The EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved
+ * target's symbol kind (`preEmitInheritanceEdges`): an embedded struct resolves
+ * to EXTENDS, an embedded interface to IMPLEMENTS.
+ */
+function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'type_declaration') return;
+    for (const spec of node.namedChildren) {
+      if (spec.type !== 'type_spec') continue;
+      const typeNode = spec.childForFieldName('type');
+      if (typeNode === null) continue;
+      if (typeNode.type === 'struct_type') {
+        const fieldList = findNamedChildOfType(typeNode, 'field_declaration_list');
+        if (fieldList === null) continue;
+        for (const field of fieldList.namedChildren) {
+          if (field.type !== 'field_declaration') continue;
+          // Embedded (anonymous) field: no `name` field. Named fields are
+          // skipped (legacy `shouldSkipExtends`).
+          if (field.childForFieldName('name') !== null) continue;
+          // `field.type` is the embedded base — bare/qualified/generic, with any
+          // `*` pointer marker as an unnamed sibling token (already unwrapped).
+          emitGoEmbedInheritance(field.childForFieldName('type'), out);
+        }
+      } else if (typeNode.type === 'interface_type') {
+        for (const elem of typeNode.namedChildren) {
+          // Only `type_elem` (an embedded type); `method_elem` is a method, not
+          // an embed. Multi-operand type-sets (`int | float64`) parse as a
+          // `type_elem` with >1 named child — skip them (legacy
+          // `shouldSkipExtends`); a single-element `type_elem` is the embed.
+          if (elem.type !== 'type_elem' || elem.namedChildCount !== 1) continue;
+          emitGoEmbedInheritance(elem.namedChild(0), out);
+        }
+      }
+    }
+  });
+  return out;
+}
+
+/**
+ * Emit one `@reference.inherits` / `@reference.name` match for a Go embed base
+ * node, reducing the name to its bare simple identifier. No-ops when `baseNode`
+ * is null or not one of the embed shapes.
+ */
+function emitGoEmbedInheritance(baseNode: SyntaxNode | null, out: CaptureMatch[]): void {
+  if (baseNode === null) return;
+  const nameNode = goEmbedBaseNameNode(baseNode);
+  if (nameNode === null) return;
+  out.push({
+    '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
+    '@reference.name': nodeToCapture('@reference.name', nameNode),
+  });
+}
+
+/**
+ * Reduce a Go embed base node to its trailing bare `type_identifier`, matching
+ * the node shapes the legacy `@heritage` query accepts (`goHeritageShapes`) and
+ * the reduction `normalizeSupertypeName` performs (verified by real-parse to
+ * yield an identical `.text` for each shape):
+ *   - `type_identifier`                          → the node itself (`Base`)
+ *   - `qualified_type` name: (type_identifier)   → the trailing `name:` id
+ *                                                  (`pkg.Base` → `Base`)
+ *   - `generic_type` type: <any of the above>    → recurse into `type:`
+ *                                                  (`Box[T]` → `Box`)
+ * Any other node type returns null (no edge), keeping this emitter at parity
+ * with the legacy leg.
+ */
+function goEmbedBaseNameNode(node: SyntaxNode): SyntaxNode | null {
+  if (node.type === 'type_identifier') return node;
+  if (node.type === 'qualified_type') {
+    const name = node.childForFieldName('name');
+    return name !== null ? goEmbedBaseNameNode(name) : null;
+  }
+  if (node.type === 'generic_type') {
+    const inner = node.childForFieldName('type');
+    return inner !== null ? goEmbedBaseNameNode(inner) : null;
+  }
+  return null;
+}
+
+/** First named child of `node` matching `type`, else null. */
+function findNamedChildOfType(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (const child of node.namedChildren) {
+    if (child.type === type) return child;
+  }
+  return null;
 }
 
 /**
