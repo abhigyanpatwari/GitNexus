@@ -74,9 +74,13 @@ export function emitCobolScopeCaptures(
     const endCol = endColFrom(lines[Math.min(endLine, lines.length) - 1] ?? '');
 
     const progIdLine = findProgramIdLine(cleaned, name);
+    // Determine PROGRAM-ID name column: free-format has no fixed column;
+    // fixed-format uses column 7 (after 6-char sequence area replaced by preprocessing)
+    const isFreeFormat = />>SOURCE\s+(?:FORMAT\s+(?:IS\s+)?)?FREE/i.test(cleaned);
+    const nameCol = isFreeFormat ? findProgramIdNameColumn(lines, progIdLine) : 7;
     const nameRange =
       progIdLine !== -1
-        ? rangeOf(progIdLine, 7, progIdLine, lines[progIdLine - 1]?.length ?? endCol)
+        ? rangeOf(progIdLine, nameCol, progIdLine, lines[progIdLine - 1]?.length ?? endCol)
         : rangeOf(startLine, startCol, endLine, endCol);
 
     const grouped: Record<string, Capture> = {
@@ -116,9 +120,11 @@ export function emitCobolScopeCaptures(
     const endCol = endColFrom(lines[Math.min(endLine, lines.length) - 1] ?? '');
 
     const progIdLine = findProgramIdLine(cleaned, prog.name);
+    const isFreeFormatNested = />>SOURCE\s+(?:FORMAT\s+(?:IS\s+)?)?FREE/i.test(cleaned);
+    const nameColNested = isFreeFormatNested ? findProgramIdNameColumn(lines, progIdLine) : 7;
     const nameRange =
       progIdLine !== -1
-        ? rangeOf(progIdLine, 7, progIdLine, lines[progIdLine - 1]?.length ?? endCol)
+        ? rangeOf(progIdLine, nameColNested, progIdLine, lines[progIdLine - 1]?.length ?? endCol)
         : rangeOf(startLine, startCol, endLine, endCol);
 
     const grouped: Record<string, Capture> = {
@@ -296,4 +302,20 @@ function findProgramIdLine(cleanedSource: string, programName: string): number {
 /** Simple regex escape for special chars. */
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Find the column position of the program name on the PROGRAM-ID line.
+ * Searches for `PROGRAM-ID. name` and returns the column where name starts.
+ * Returns 0 as fallback if the line can't be parsed (the range will be
+ * from column 0 which is still valid for capture bounds).
+ */
+function findProgramIdNameColumn(lines: string[], lineNum: number): number {
+  if (lineNum < 1 || lineNum > lines.length) return 0;
+  const line = lines[lineNum - 1];
+  const m = line.match(/\bPROGRAM-ID\.\s+([A-Z0-9][A-Z0-9-]*)/i);
+  if (!m || m.index === undefined) return 0;
+  // Column = index of start of capture group 1
+  const nameStart = m.index + m[0].length - m[1].length;
+  return nameStart;
 }
