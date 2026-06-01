@@ -185,6 +185,48 @@ function extractPattern(toolName, toolInput) {
   return null;
 }
 
+function commandExistsOnPath(command) {
+  const pathValue = process.env.PATH || process.env.Path || process.env.path || '';
+  if (!pathValue) return false;
+
+  const extensions =
+    process.platform === 'win32'
+      ? Array.from(
+          new Set([
+            '',
+            '.cmd',
+            '.bat',
+            '.exe',
+            '.ps1',
+            ...(process.env.PATHEXT || '')
+              .split(';')
+              .map((ext) => ext.trim().toLowerCase())
+              .filter(Boolean)
+              .map((ext) => (ext.startsWith('.') ? ext : `.${ext}`)),
+          ]),
+        )
+      : [''];
+
+  for (const dir of pathValue.split(path.delimiter).filter(Boolean)) {
+    for (const ext of extensions) {
+      try {
+        const candidate = path.join(dir, `${command}${ext}`);
+        if (!fs.statSync(candidate).isFile()) continue;
+        if (process.platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+        /* try next candidate */
+      }
+    }
+  }
+  return false;
+}
+
+function buildAnalyzeCommand(hadEmbeddings) {
+  const analyzeBin = commandExistsOnPath('gitnexus') ? 'gitnexus' : 'npx gitnexus';
+  return `${analyzeBin} analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+}
+
 /**
  * Spawn a gitnexus CLI command synchronously.
  * Detects binary on PATH once, then runs exactly once.
@@ -345,7 +387,7 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  const analyzeCmd = buildAnalyzeCommand(hadEmbeddings);
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +

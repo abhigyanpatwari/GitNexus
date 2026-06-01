@@ -22,7 +22,13 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { cleanupTempDir, cleanupTempDirSync } from '../helpers/test-db.js';
 import os from 'os';
-import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
+import {
+  createGitNexusPathEntry,
+  envWithPath,
+  parseHookOutput,
+  pathWithoutGitNexus,
+  runHook,
+} from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
 
 let tempHome: string;
@@ -97,13 +103,20 @@ describe('antigravity hook adapter e2e', () => {
         JSON.stringify({ lastCommit: 'a'.repeat(40), stats: {} }),
       );
 
-      const result = runHook(installedHook, {
-        hook_event_name: 'AfterTool',
-        tool_name: 'run_shell_command',
-        tool_input: { command: 'git commit -m "test"' },
-        tool_response: { llmContent: '[committed]' },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        installedHook,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_response: { llmContent: '[committed]' },
+          cwd: tmpDir,
+        },
+        undefined,
+        {
+          env: envWithPath(pathWithoutGitNexus()),
+        },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
@@ -114,6 +127,38 @@ describe('antigravity hook adapter e2e', () => {
       // Mirror to stderr so terminal users see the hint even when the agent
       // discards additionalContext
       expect(result.stderr).toContain('[GitNexus] index is stale');
+    });
+
+    it('suggests direct gitnexus analyze when gitnexus is on PATH', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'a'.repeat(39) + 'b', stats: {} }),
+      );
+      const gitNexusPath = createGitNexusPathEntry();
+
+      try {
+        const result = runHook(
+          installedHook,
+          {
+            hook_event_name: 'AfterTool',
+            tool_name: 'run_shell_command',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_response: { llmContent: '[committed]' },
+            cwd: tmpDir,
+          },
+          undefined,
+          {
+            env: envWithPath(gitNexusPath.pathValue),
+          },
+        );
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+        expect(output!.additionalContext).not.toContain('npx gitnexus analyze');
+      } finally {
+        gitNexusPath.cleanup();
+      }
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {

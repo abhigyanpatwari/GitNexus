@@ -10,7 +10,13 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
+import {
+  createGitNexusPathEntry,
+  envWithPath,
+  parseHookOutput,
+  pathWithoutGitNexus,
+  runHook,
+} from '../utils/hook-test-helpers.js';
 
 // ─── Paths to both hook variants ────────────────────────────────────
 
@@ -66,18 +72,60 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
         JSON.stringify({ lastCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', stats: {} }),
       );
 
-      const result = runHook(hookPath, {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit -m "test"' },
-        tool_output: { exit_code: 0 },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        hookPath,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        },
+        undefined,
+        {
+          env: envWithPath(pathWithoutGitNexus()),
+        },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
       expect(output!.additionalContext).toContain('stale');
       expect(output!.additionalContext).toContain('npx gitnexus analyze');
+    });
+
+    it('suggests direct gitnexus analyze when gitnexus is on PATH', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({
+          lastCommit: 'abababababababababababababababababababab',
+          stats: {},
+        }),
+      );
+      const gitNexusPath = createGitNexusPathEntry();
+
+      try {
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_output: { exit_code: 0 },
+            cwd: tmpDir,
+          },
+          undefined,
+          {
+            env: envWithPath(gitNexusPath.pathValue),
+          },
+        );
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+        expect(output!.additionalContext).not.toContain('npx gitnexus analyze');
+      } finally {
+        gitNexusPath.cleanup();
+      }
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {
