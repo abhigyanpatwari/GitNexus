@@ -16,8 +16,8 @@
     "digest": "08a61721581c4f17741ef0c4ee1c8945235ee7f2aca7d88d2fe122071cd62e6f"
   },
   "go-ambiguous/internal/services/user.go": {
-    "captureGroups": 8,
-    "digest": "802b81a07c64c01f2381cf33d41cdb1a58f535c0007b5ae151c38cda87f28321"
+    "captureGroups": 9,
+    "digest": "642da0df644ebd5a789e2de2d473ced2c9a77e5f6f1b4a1b1d53cf04845b820c"
   },
   "go-assignment-chain/cmd/main.go": {
     "captureGroups": 50,
@@ -64,8 +64,8 @@
     "digest": "5c31199e148340ee32dd48e32a00003e094be963b1287b9b40c6b4effca12175"
   },
   "go-child-extends-parent/models/child.go": {
-    "captureGroups": 3,
-    "digest": "6fd9fe7b82066f82a93bf5e5024ddf89382091ec04e55648845c8295f13bd412"
+    "captureGroups": 4,
+    "digest": "61dafb01f7616ab6d965bcf17197de315f57a606c7b39cb25a0f83b84508d86d"
   },
   "go-child-extends-parent/models/parent.go": {
     "captureGroups": 8,
@@ -232,8 +232,8 @@
     "digest": "2afaeb50d544a55fe437ef20e2c0de92152d2ba62f2693c329255787bb3d0a02"
   },
   "go-parent-resolution/models/user.go": {
-    "captureGroups": 8,
-    "digest": "c76ba16343dd94024fdaac10fa7640536966e530d675c0084434f42edb5b5f15"
+    "captureGroups": 9,
+    "digest": "bc39ef8b54dcfcf975155ff69721bf2075ca170fb81bb081a1052dda72f64ecd"
   },
   "go-pkg/cmd/main.go": {
     "captureGroups": 14,
@@ -244,8 +244,8 @@
     "digest": "2204643b50f486423ee7a5877b2bab7d6334cbe62b14b4435fe4ba8a6465ce92"
   },
   "go-pkg/internal/models/admin.go": {
-    "captureGroups": 13,
-    "digest": "1a5ec9fd5e752adcfec91cd03b3c2a67c124852228a527002237ec51cd4b39b7"
+    "captureGroups": 14,
+    "digest": "85b2e848f29885082671f00d015bcce3b14ebd372a88acbc225e6ade1ee5449c"
   },
   "go-pkg/internal/models/repository.go": {
     "captureGroups": 3,
@@ -266,6 +266,18 @@
   "go-pointer-constructor-inference/models/user.go": {
     "captureGroups": 10,
     "digest": "5c31199e148340ee32dd48e32a00003e094be963b1287b9b40c6b4effca12175"
+  },
+  "go-qualified-base/base/base.go": {
+    "captureGroups": 16,
+    "digest": "4c50e40140094556e8bfc540f0ea6627c55823a1e4fcc91ca5d74912df67d499"
+  },
+  "go-qualified-base/consumers/local.go": {
+    "captureGroups": 19,
+    "digest": "9097247f77ab93b742c715ff9d656038fc8ea0558e3fe7e4df64e6b1c6fcb64c"
+  },
+  "go-qualified-base/consumers/qualified.go": {
+    "captureGroups": 14,
+    "digest": "01fe99cadcdf3ce6f00cafce8db0474ad152983f766c8dee9b9da42c9256ae2f"
   },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,

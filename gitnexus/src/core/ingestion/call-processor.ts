@@ -410,7 +410,7 @@ const findEnclosingFunction = (
 
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
 
@@ -925,6 +925,7 @@ export const processCalls = async (
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
     const typeEnv = buildTypeEnv(tree, language, {
+      filePath: file.path,
       model: ctx.model,
       parentMap,
       importedBindings,
@@ -1035,15 +1036,18 @@ export const processCalls = async (
               ? { declaredType: routedFieldInfo.type }
               : {}),
         });
-        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-        graph.addRelationship({
-          id: relId,
-          sourceId: fileId,
-          targetId: nodeId,
-          type: 'DEFINES',
-          confidence: 1.0,
-          reason: '',
-        });
+        // Only emit File -> Property DEFINES for top-level properties (issue #1944).
+        if (!propEnclosingClassId) {
+          const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+          graph.addRelationship({
+            id: relId,
+            sourceId: fileId,
+            targetId: nodeId,
+            type: 'DEFINES',
+            confidence: 1.0,
+            reason: '',
+          });
+        }
         if (propEnclosingClassId) {
           graph.addRelationship({
             id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
@@ -1293,7 +1297,8 @@ export const processCalls = async (
         while (p) {
           if (FUNCTION_NODE_TYPES.has(p.type)) {
             const funcName =
-              provider.methodExtractor?.extractFunctionName?.(p)?.funcName ?? genericFuncName(p);
+              provider.methodExtractor?.extractFunctionName?.(p, file.path)?.funcName ??
+              genericFuncName(p);
             if (funcName) {
               scope = `${funcName}@${p.startIndex}`;
               break;

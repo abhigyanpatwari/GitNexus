@@ -129,6 +129,15 @@ export function getImplTraitName(implNode: SyntaxNode): string | null {
   return null;
 }
 
+// NOTE: this strips reference/pointer sigils and generic arguments but NOT a
+// path qualifier, so `crate::traits::Drawable` stays qualified here — whereas
+// the inheritance synth (rust/captures.ts `bareTypeIdentifier`) resolves scoped
+// bases by their trailing simple name (`Drawable`). The two intentionally
+// diverge for scoped paths. This is inert today (`getImplTraitName` has no
+// ingestion consumer and Rust's `isSuperReceiver` is false, so nothing keys an
+// edge on this name); the synth is the single source of truth for the
+// inheritance edge. A future change that wires `getImplTraitName` into
+// resolution must reconcile this with the synth's tail-only normalization.
 function normalizeRustTypeName(text: string): string {
   let t = text.trim();
   while (t.startsWith('&')) t = t.replace(/^&\s*(mut\s+)?/, '');

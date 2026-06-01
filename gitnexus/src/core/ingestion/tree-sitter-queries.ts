@@ -4,7 +4,52 @@
  * Note: Different grammars (typescript vs tsx vs javascript) may have
  * slightly different node types. These queries are designed to be
  * compatible with the standard tree-sitter grammars.
+ *
+ * Heritage (extends/implements/embed/trait) supertype positions are NOT
+ * hand-written per shape. Each language declares its supertype node-type
+ * shapes in heritage-extractors/configs/<lang>.ts; buildSupertypeAlternation()
+ * turns those into a tree-sitter `[(a) (b) …] @heritage.*` alternation that is
+ * interpolated into the heritage blocks below. The matching runtime
+ * name-normalizer lives in heritage-extractors/supertype-alternation.ts. This
+ * keeps qualified/generic/scoped/interface supertypes from being silently
+ * dropped (they previously matched only the bare `(type_identifier)`).
  */
+
+import { buildSupertypeAlternation } from './heritage-extractors/supertype-alternation.js';
+import { javaHeritageShapes } from './heritage-extractors/configs/java.js';
+import { csharpHeritageShapes } from './heritage-extractors/configs/csharp.js';
+import {
+  typescriptExtendsShapes,
+  typescriptInterfaceShapes,
+} from './heritage-extractors/configs/typescript.js';
+import { javascriptHeritageShapes } from './heritage-extractors/configs/javascript.js';
+import { pythonHeritageShapes } from './heritage-extractors/configs/python.js';
+import { rustHeritageShapes } from './heritage-extractors/configs/rust.js';
+import { goHeritageShapes } from './heritage-extractors/configs/go.js';
+import { kotlinHeritageShapes } from './heritage-extractors/configs/kotlin.js';
+import { cppHeritageShapes } from './heritage-extractors/configs/cpp.js';
+import { rubyHeritageShapes } from './heritage-extractors/configs/ruby.js';
+
+// Pre-built heritage alternation fragments, one per (language, capture-tag).
+// These are plain strings interpolated into the *_QUERIES template literals.
+const JAVA_EXTENDS_ALT = buildSupertypeAlternation(javaHeritageShapes, 'heritage.extends');
+const JAVA_IMPLEMENTS_ALT = buildSupertypeAlternation(javaHeritageShapes, 'heritage.implements');
+const CSHARP_BASE_ALT = buildSupertypeAlternation(csharpHeritageShapes, 'heritage.extends');
+const TS_EXTENDS_ALT = buildSupertypeAlternation(typescriptExtendsShapes, 'heritage.extends');
+const TS_INTERFACE_IMPLEMENTS_ALT = buildSupertypeAlternation(
+  typescriptInterfaceShapes,
+  'heritage.implements',
+);
+const JS_EXTENDS_ALT = buildSupertypeAlternation(javascriptHeritageShapes, 'heritage.extends');
+const PYTHON_EXTENDS_ALT = buildSupertypeAlternation(pythonHeritageShapes, 'heritage.extends');
+const RUST_TRAIT_ALT = buildSupertypeAlternation(rustHeritageShapes, 'heritage.trait');
+const RUST_CLASS_ALT = buildSupertypeAlternation(rustHeritageShapes, 'heritage.class');
+const GO_EMBED_ALT = buildSupertypeAlternation(goHeritageShapes, 'heritage.extends');
+const KOTLIN_EXTENDS_ALT = buildSupertypeAlternation(kotlinHeritageShapes, 'heritage.extends');
+const CPP_BASE_ALT = buildSupertypeAlternation(cppHeritageShapes, 'heritage.extends');
+const RUBY_SUPERCLASS_ALT = buildSupertypeAlternation(rubyHeritageShapes, 'heritage.extends');
+const RUBY_CLASS_ALT = buildSupertypeAlternation(rubyHeritageShapes, 'heritage.class');
+import { ARRAY_METHOD_NOT_ANY_OF_PREDICATE } from './ts-js-hoc-utils.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -95,10 +140,17 @@ export const TYPESCRIPT_QUERIES = `
 ; \`tsExtractFunctionName\` for the resolution logic and the \`query.ts\`
 ; comment for the full anchor-discipline rationale and the chained-
 ; array-method trade-off.
+;
+; NOTE: Excludes member-expression calls to common array methods (map, filter,
+; reduce, etc.) to avoid false positives like \`const x = arr.map(a => ...)\`
+; being classified as a Function when it's actually a Const holding an array.
+; Direct identifier calls and member expressions on non-array-methods (like
+; React.memo) are still matched.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -106,14 +158,36 @@ export const TYPESCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (arrow_function)))))) @definition.function
 
@@ -122,15 +196,40 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (function_expression)))))) @definition.function
 
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (arrow_function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (function_expression)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; \`var X = HOC(...)\` parity with registry-primary. Legacy code (and any
 ; transpiler output that downlevels \`const\` to \`var\`) hits this shape.
+; Same array-method exclusions as const/let patterns above.
 (variable_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -138,8 +237,59 @@ export const TYPESCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
+; The worker rewrites the wrapper-derived @name to a file-derived symbol name
+; so helpers like \`defineEventHandler\` / \`React.memo\` do not collapse
+; unrelated modules onto the same Function name.
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+ (export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+ (export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression)))) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.
@@ -205,19 +355,29 @@ export const TYPESCRIPT_QUERIES = `
   (accessibility_modifier)
   pattern: (identifier) @name) @definition.property
 
-; Heritage queries - class extends
+; Heritage queries - class extends (bare or qualified ns.Base; generics ride
+; a separate type_arguments field, captured by the extends_clause value).
 (class_declaration
   name: (type_identifier) @heritage.class
   (class_heritage
     (extends_clause
-      value: (identifier) @heritage.extends))) @heritage
+      value: ${TS_EXTENDS_ALT}))) @heritage
 
-; Heritage queries - class implements interface
+; Heritage queries - class implements interface (bare/generic/nested)
 (class_declaration
   name: (type_identifier) @heritage.class
   (class_heritage
     (implements_clause
-      (type_identifier) @heritage.implements))) @heritage.impl
+      ${TS_INTERFACE_IMPLEMENTS_ALT}))) @heritage.impl
+
+; Heritage queries - interface extends interface(s): interface I extends A, B<T>
+; Without this, interface-to-interface chains are never captured. Tagged as
+; @heritage.implements (interface relationship), matching the Java interface
+; extends block.
+(interface_declaration
+  name: (type_identifier) @heritage.class
+  (extends_type_clause
+    ${TS_INTERFACE_IMPLEMENTS_ALT})) @heritage.impl
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -329,10 +489,12 @@ export const JAVASCRIPT_QUERIES = `
 ; / debounce / user-defined HOC factories). Both \`const\` and \`var\` forms
 ; are mirrored so JS code that uses \`var\` (or transpiler output) gets the
 ; same attribution as the registry-primary path.
+; Excludes common array methods (map, filter, reduce, etc.) to avoid false positives.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -340,14 +502,36 @@ export const JAVASCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (arrow_function)))))) @definition.function
 
@@ -356,14 +540,39 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (function_expression)))))) @definition.function
 
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (arrow_function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (function_expression)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; \`var X = HOC(...)\` parity with registry-primary.
+; Same array-method exclusions as const/let patterns.
 (variable_declaration
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function))))) @definition.function
 
@@ -371,8 +580,56 @@ export const JAVASCRIPT_QUERIES = `
   (variable_declarator
     name: (identifier) @name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression))))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression))))
+  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+
+; HOC-wrapped default exports (JS parity with TS patterns above).
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+ (export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+ (export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+ (export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression)))) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.
@@ -413,11 +670,12 @@ export const JAVASCRIPT_QUERIES = `
   property: (property_identifier) @name) @definition.property
 
 ; Heritage queries - class extends (JavaScript uses different AST than TypeScript)
-; In tree-sitter-javascript, class_heritage directly contains the parent identifier
+; In tree-sitter-javascript, class_heritage directly contains the parent
+; expression: a bare identifier or a qualified member_expression (ns.Base).
 (class_declaration
   name: (identifier) @heritage.class
   (class_heritage
-    (identifier) @heritage.extends)) @heritage
+    ${JS_EXTENDS_ALT})) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -505,11 +763,12 @@ export const PYTHON_QUERIES = `
   (assignment
     left: (identifier) @name)) @definition.variable
 
-; Heritage queries - Python class inheritance
+; Heritage queries - Python class inheritance (bare, qualified attribute
+; models.Model, or subscript Generic[T]).
 (class_definition
   name: (identifier) @heritage.class
   superclasses: (argument_list
-    (identifier) @heritage.extends)) @heritage
+    ${PYTHON_EXTENDS_ALT})) @heritage
 
 ; Write access: obj.field = value
 (assignment
@@ -575,13 +834,18 @@ export const JAVA_QUERIES = `
   declarator: (variable_declarator
     name: (identifier) @name)) @definition.variable
 
-; Heritage - extends class
+; Heritage - extends class (bare / generic Foo<T> / scoped pkg.Foo)
 (class_declaration name: (identifier) @heritage.class
-  (superclass (type_identifier) @heritage.extends)) @heritage
+  (superclass ${JAVA_EXTENDS_ALT})) @heritage
 
-; Heritage - implements interfaces
+; Heritage - implements interfaces (bare / generic / scoped)
 (class_declaration name: (identifier) @heritage.class
-  (super_interfaces (type_list (type_identifier) @heritage.implements))) @heritage.impl
+  (super_interfaces (type_list ${JAVA_IMPLEMENTS_ALT}))) @heritage.impl
+
+; Heritage - interface extends interface(s): interface IA extends IB, IC<T>
+; Without this, interface-to-interface relationships are never captured.
+(interface_declaration name: (identifier) @heritage.class
+  (extends_interfaces (type_list ${JAVA_IMPLEMENTS_ALT}))) @heritage.impl
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -655,14 +919,24 @@ export const GO_QUERIES = `
   (field_declaration
     name: (field_identifier) @name) @definition.property)
 
-; Struct embedding (anonymous fields = inheritance)
+; Struct embedding (anonymous fields = inheritance). Named fields also match
+; the field_declaration pattern but are filtered by goHeritageConfig
+; .shouldSkipExtends. Embed type may be bare, qualified (pkg.Base) or generic.
 (type_declaration
   (type_spec
     name: (type_identifier) @heritage.class
     type: (struct_type
       (field_declaration_list
         (field_declaration
-          type: (type_identifier) @heritage.extends))))) @definition.struct
+          type: ${GO_EMBED_ALT}))))) @definition.struct
+
+; Interface embedding: an embedded interface inside an interface_type
+; (type I interface { io.Reader; Other }) — type_elem holds the embed.
+(type_declaration
+  (type_spec
+    name: (type_identifier) @heritage.class
+    type: (interface_type
+      (type_elem ${GO_EMBED_ALT})))) @definition.interface
 
 ; Calls
 (call_expression function: (identifier) @call.name) @call
@@ -832,11 +1106,11 @@ export const CPP_QUERIES = `
   declarator: (init_declarator
     declarator: (identifier) @name)) @definition.variable
 
-; Heritage
+; Heritage (base class). Bracketed alternation matches the base node whether
+; or not it is preceded by an access_specifier (public/private/protected), and
+; covers bare / templated (Base<T>) / qualified (ns::Base) bases.
 (class_specifier name: (type_identifier) @heritage.class
-  (base_class_clause (type_identifier) @heritage.extends)) @heritage
-(class_specifier name: (type_identifier) @heritage.class
-  (base_class_clause (access_specifier) (type_identifier) @heritage.extends)) @heritage
+  (base_class_clause ${CPP_BASE_ALT})) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -900,19 +1174,25 @@ export const CSHARP_QUERIES = `
     (variable_declarator
       (identifier) @name))) @definition.variable
 
-; Heritage
+; Heritage. Every base_list entry is captured as @heritage.extends regardless
+; of bare/generic/qualified/scoped/primary-ctor shape; EXTENDS-vs-IMPLEMENTS is
+; decided downstream by resolveExtendsType, so we do not pre-split here.
 (class_declaration name: (identifier) @heritage.class
-  (base_list (identifier) @heritage.extends)) @heritage
-(class_declaration name: (identifier) @heritage.class
-  (base_list (generic_name (identifier) @heritage.extends))) @heritage
+  (base_list ${CSHARP_BASE_ALT})) @heritage
+
+; record base_list: record R(...) : Base(args), IFoo
+(record_declaration name: (identifier) @heritage.class
+  (base_list ${CSHARP_BASE_ALT})) @heritage
+
+; struct base_list: struct S : IFoo, ns.IBar
+(struct_declaration name: (identifier) @heritage.class
+  (base_list ${CSHARP_BASE_ALT})) @heritage
 
 ; Interface inheritance: interface IFoo : IBar / interface IFoo : IBar, IBaz
 ; Without these patterns, interface-to-interface relationships are never
 ; captured, so transitive "class X implements IBar" chains are broken.
 (interface_declaration name: (identifier) @heritage.class
-  (base_list (identifier) @heritage.extends)) @heritage
-(interface_declaration name: (identifier) @heritage.class
-  (base_list (generic_name (identifier) @heritage.extends))) @heritage
+  (base_list ${CSHARP_BASE_ALT})) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -957,11 +1237,12 @@ export const RUST_QUERIES = `
   (field_declaration
     name: (field_identifier) @name) @definition.property)
 
-; Heritage (trait implementation) — all combinations of concrete/generic trait × concrete/generic type
-(impl_item trait: (type_identifier) @heritage.trait type: (type_identifier) @heritage.class) @heritage
-(impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (type_identifier) @heritage.class) @heritage
-(impl_item trait: (type_identifier) @heritage.trait type: (generic_type type: (type_identifier) @heritage.class)) @heritage
-(impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (generic_type type: (type_identifier) @heritage.class)) @heritage
+; Heritage (trait implementation). Both trait and type positions accept bare /
+; generic (Trait<T>) / scoped (ns::Trait) shapes; the normalizer reduces each
+; to the innermost simple name.
+(impl_item
+  trait: ${RUST_TRAIT_ALT}
+  type: ${RUST_CLASS_ALT}) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -1145,10 +1426,13 @@ export const RUBY_QUERIES = `
   (identifier) @call.name @call)
 
 ; ── Heritage: class < SuperClass ─────────────────────────────────────────────
+; Both the class name and the superclass accept a bare constant or a
+; scope_resolution (class Foo::Bar < Base::Sup); normalized to the trailing
+; constant downstream.
 (class
-  name: (constant) @heritage.class
+  name: ${RUBY_CLASS_ALT}
   superclass: (superclass
-    (constant) @heritage.extends)) @heritage
+    ${RUBY_SUPERCLASS_ALT})) @heritage
 
 ; Write access: obj.field = value (Ruby setter — syntactically a method call to field=)
 (assignment
@@ -1237,18 +1521,16 @@ export const KOTLIN_QUERIES = `
   (simple_identifier) @call.name) @call
 
 ; ── Heritage: extends / implements via delegation_specifier ──────────────
-; Interface implementation (bare user_type): class Foo : Bar
+; A delegation_specifier wraps one of:
+;   user_type               class Foo : Bar          (interface impl / bare)
+;   constructor_invocation  class Foo : Bar()        (superclass ctor call)
+;   explicit_delegation     class Foo : Bar by baz   (interface delegation)
+; The normalizer descends into the wrapper to the inner user_type's name, so a
+; single alternation captures all three forms (including qualified pkg.Bar and
+; generic Gen<T>).
 (class_declaration
   (type_identifier) @heritage.class
-  (delegation_specifier
-    (user_type (type_identifier) @heritage.extends))) @heritage
-
-; Class extension (constructor_invocation): class Foo : Bar()
-(class_declaration
-  (type_identifier) @heritage.class
-  (delegation_specifier
-    (constructor_invocation
-      (user_type (type_identifier) @heritage.extends)))) @heritage
+  (delegation_specifier ${KOTLIN_EXTENDS_ALT})) @heritage
 
 ; Write access: obj.field = value
 (assignment
