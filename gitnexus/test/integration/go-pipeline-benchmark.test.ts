@@ -32,8 +32,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import { emitGoScopeCaptures } from '../../src/core/ingestion/languages/go/index.js';
+import {
+  emitGoScopeCaptures,
+  detectGoInterfaceImplementations,
+} from '../../src/core/ingestion/languages/go/index.js';
 
 const BENCH_ENABLED = process.env.GITNEXUS_BENCH === '1';
 
@@ -453,4 +457,265 @@ describe('Go scope-capture O(n^2) regression tripwire', () => {
     // The actual regression guard: a re-regression to O(n^2) blows this budget.
     expect(elapsedMs).toBeLessThan(BUDGET_MS);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Go structural interface detection benchmarks
+// ---------------------------------------------------------------------------
+
+/**
+ * Build synthetic ParsedFile data for detectGoInterfaceImplementations.
+ *
+ * Creates `interfaceCount` interfaces (each with Find + Save methods) and
+ * `structCount` structs that implement all of them (matching signatures).
+ * Also generates a few BadStruct entries with mismatched signatures to
+ * verify they are correctly excluded (non-vacuous guard).
+ */
+function generateSyntheticInterfaceData(interfaceCount: number, structCount: number): ParsedFile[] {
+  const defs: SymbolDefinition[] = [];
+  const ifaceIds: string[] = [];
+  const structIds: string[] = [];
+
+  // Interfaces
+  for (let i = 0; i < interfaceCount; i++) {
+    const ifaceId = `iface:Repo${i}`;
+    ifaceIds.push(ifaceId);
+    defs.push({
+      nodeId: ifaceId,
+      filePath: 'repo.go',
+      type: 'Interface',
+      qualifiedName: `Repo${i}`,
+    });
+    // Find(id string) User
+    defs.push({
+      nodeId: `iface:Repo${i}.Find`,
+      filePath: 'repo.go',
+      type: 'Method',
+      qualifiedName: `Repo${i}.Find`,
+      ownerId: ifaceId,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'User',
+    });
+    // Save(user User) error
+    defs.push({
+      nodeId: `iface:Repo${i}.Save`,
+      filePath: 'repo.go',
+      type: 'Method',
+      qualifiedName: `Repo${i}.Save`,
+      ownerId: ifaceId,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['User'],
+      returnType: 'error',
+    });
+  }
+
+  // Structs — each implements all interfaces
+  for (let s = 0; s < structCount; s++) {
+    const structId = `struct:Impl${s}`;
+    structIds.push(structId);
+    defs.push({
+      nodeId: structId,
+      filePath: 'repo.go',
+      type: 'Struct',
+      qualifiedName: `Impl${s}`,
+    });
+    for (let i = 0; i < interfaceCount; i++) {
+      defs.push({
+        nodeId: `struct:Impl${s}.Repo${i}.Find`,
+        filePath: 'repo.go',
+        type: 'Method',
+        qualifiedName: `Impl${s}.Find`,
+        ownerId: structId,
+        parameterCount: 1,
+        requiredParameterCount: 1,
+        parameterTypes: ['string'],
+        returnType: 'User',
+      });
+      defs.push({
+        nodeId: `struct:Impl${s}.Repo${i}.Save`,
+        filePath: 'repo.go',
+        type: 'Method',
+        qualifiedName: `Impl${s}.Save`,
+        ownerId: structId,
+        parameterCount: 1,
+        requiredParameterCount: 1,
+        parameterTypes: ['User'],
+        returnType: 'error',
+      });
+    }
+  }
+
+  // BadStructs — wrong Save signature (string instead of User), should NOT match
+  for (let b = 0; b < Math.min(5, structCount); b++) {
+    const badId = `struct:Bad${b}`;
+    defs.push({
+      nodeId: badId,
+      filePath: 'repo.go',
+      type: 'Struct',
+      qualifiedName: `Bad${b}`,
+    });
+    for (let i = 0; i < interfaceCount; i++) {
+      defs.push({
+        nodeId: `struct:Bad${b}.Repo${i}.Find`,
+        filePath: 'repo.go',
+        type: 'Method',
+        qualifiedName: `Bad${b}.Find`,
+        ownerId: badId,
+        parameterCount: 1,
+        requiredParameterCount: 1,
+        parameterTypes: ['string'],
+        returnType: 'User',
+      });
+      // Mismatched Save: string param instead of User
+      defs.push({
+        nodeId: `struct:Bad${b}.Repo${i}.Save`,
+        filePath: 'repo.go',
+        type: 'Method',
+        qualifiedName: `Bad${b}.Save`,
+        ownerId: badId,
+        parameterCount: 1,
+        requiredParameterCount: 1,
+        parameterTypes: ['string'],
+        returnType: 'error',
+      });
+    }
+  }
+
+  return [
+    {
+      filePath: 'repo.go',
+      language: 'go',
+      scopes: [],
+      imports: [],
+      localDefs: defs,
+      referenceSites: [],
+    },
+  ] as ParsedFile[];
+}
+
+/**
+ * Ungated tripwire: runs in normal CI. Calls detectGoInterfaceImplementations
+ * directly on synthetic data to catch O(n²) regressions. The current indexed
+ * path (structIdsByMethodName intersection) keeps this well under budget.
+ */
+describe('Go structural interface detection O(n²) regression tripwire', () => {
+  it('detects implementations for 50 interfaces × 50 structs within budget', () => {
+    const IFACE_COUNT = 50;
+    const STRUCT_COUNT = 50;
+    const BUDGET_MS = 5_000;
+
+    const parsed = generateSyntheticInterfaceData(IFACE_COUNT, STRUCT_COUNT);
+    const emptyIndexes = {} as any;
+    const emptyModel = {} as any;
+
+    // Warm up
+    detectGoInterfaceImplementations(
+      generateSyntheticInterfaceData(5, 5),
+      emptyIndexes,
+      emptyModel,
+    );
+
+    const start = Date.now();
+    const result = detectGoInterfaceImplementations(parsed, emptyIndexes, emptyModel);
+    const elapsedMs = Date.now() - start;
+
+    // Sanity: each interface should be implemented by all STRUCT_COUNT structs
+    expect(result.size).toBe(IFACE_COUNT);
+    for (const [, impls] of result) {
+      expect(impls).toHaveLength(STRUCT_COUNT);
+    }
+    // Regression guard
+    expect(elapsedMs).toBeLessThan(BUDGET_MS);
+
+    console.log(
+      `  interface-detection tripwire: ${IFACE_COUNT}×${STRUCT_COUNT} = ${IFACE_COUNT * STRUCT_COUNT} pairs, ${elapsedMs}ms`,
+    );
+  }, 30_000);
+});
+
+/**
+ * Gated scaling benchmark: measures how detectGoInterfaceImplementations
+ * scales as interface and struct counts grow proportionally.
+ *
+ * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/go-pipeline-benchmark.test.ts
+ */
+describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', () => {
+  const scales = [50, 200, 800];
+  const REPS = 3;
+
+  it('scales linearly with interface × struct count', () => {
+    interface ScaleResult {
+      ifaceCount: number;
+      structCount: number;
+      totalPairs: number;
+      elapsedMs: number;
+      implEdges: number;
+    }
+
+    const results: ScaleResult[] = [];
+    const emptyIndexes = {} as any;
+    const emptyModel = {} as any;
+
+    for (const n of scales) {
+      // Warm up with small data once
+      detectGoInterfaceImplementations(
+        generateSyntheticInterfaceData(5, 5),
+        emptyIndexes,
+        emptyModel,
+      );
+
+      let bestMs = Infinity;
+      let implEdges = 0;
+      const parsed = generateSyntheticInterfaceData(n, n);
+
+      for (let r = 0; r < REPS; r++) {
+        const start = Date.now();
+        const result = detectGoInterfaceImplementations(parsed, emptyIndexes, emptyModel);
+        const elapsed = Date.now() - start;
+        if (elapsed < bestMs) {
+          bestMs = elapsed;
+          implEdges = 0;
+          for (const [, impls] of result) implEdges += impls.length;
+        }
+      }
+
+      results.push({
+        ifaceCount: n,
+        structCount: n,
+        totalPairs: n * n,
+        elapsedMs: bestMs,
+        implEdges,
+      });
+      console.log(`  ${n}×${n} = ${n * n} pairs: ${bestMs}ms (${implEdges} IMPLEMENTS edges)`);
+    }
+
+    // Print scaling table
+    console.log('\nGo Interface Detection — Scaling');
+    console.log('┌──────────┬──────────┬───────────┬───────────┐');
+    console.log('│ Iface×St │ Pairs    │ Time (ms) │ IMPL edges│');
+    console.log('├──────────┼──────────┼───────────┼───────────┤');
+    for (const r of results) {
+      console.log(
+        `│ ${String(`${r.ifaceCount}×${r.structCount}`).padStart(8)} │ ${String(r.totalPairs).padStart(8)} │ ${String(r.elapsedMs).padStart(9)} │ ${String(r.implEdges).padStart(9)} │`,
+      );
+    }
+    console.log('└──────────┴──────────┴───────────┴───────────┘');
+
+    // Assert linear scaling
+    if (results.length >= 2) {
+      console.log('\nScaling ratios (time_ratio / size_ratio):');
+      for (let i = 1; i < results.length; i++) {
+        const sizeRatio = results[i].totalPairs / results[i - 1].totalPairs;
+        const timeRatio = results[i].elapsedMs / results[i - 1].elapsedMs;
+        const scaling = timeRatio / sizeRatio;
+        console.log(
+          `  ${results[i - 1].totalPairs} → ${results[i].totalPairs}: ${scaling.toFixed(2)}x (${scaling < 1.5 ? 'linear' : scaling < 3 ? 'superlinear' : 'WARNING: quadratic'})`,
+        );
+        expect(scaling).toBeLessThan(1.5);
+      }
+    }
+  }, 300_000);
 });
