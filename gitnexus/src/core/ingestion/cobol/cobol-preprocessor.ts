@@ -438,11 +438,6 @@ const MOVE_SKIP = new Set([
   'ALL',
 ]);
 
-/** Strip parenthesized subscript/reference-modification suffixes */
-function stripSubscript(name: string): string {
-  return name.replace(/\([^)]*\)/g, '').trim();
-}
-
 /**
  * Parse the text after "MOVE ... TO" into an array of target variable names.
  * Handles: multiple targets, OF/IN qualifiers, subscripts, trailing periods.

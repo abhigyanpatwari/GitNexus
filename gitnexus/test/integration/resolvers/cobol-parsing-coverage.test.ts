@@ -10,7 +10,6 @@ import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
-  edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
