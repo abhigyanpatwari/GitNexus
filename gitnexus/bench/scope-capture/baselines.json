@@ -5,8 +5,9 @@
     "scaling_budget": 1.5
   },
   "cobol": {
-    "fingerprint": "77e5be936a7ec5c1a99a9a37258176307797892cdf0a4f1d68bf74ae7439a172",
-    "scaling_budget": 1.5
+    "fingerprint": "68ee0e95eb9f86f2d92ca35f730f4c2d4d83abc1b5241ae767ff3437780ec8d1",
+    "scaling_budget": 1.5,
+    "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
   },
   "csharp": {
     "fingerprint": "bdc7803046011876b2d21ae38e9cb8c97ca1e01769f93ca8affe9317585427bf",
