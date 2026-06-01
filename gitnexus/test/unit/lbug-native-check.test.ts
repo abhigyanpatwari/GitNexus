@@ -24,6 +24,7 @@ describe('checkLbugNative', () => {
       expect(result.message).toContain('install.js');
       expect(result.message).toContain('trustedDependencies');
       expect(result.message).toContain('ignore-scripts');
+      expect(result.message).toContain('--allow-build=@ladybugdb/core');
       expect(result.message).toContain('pnpm approve-builds');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });

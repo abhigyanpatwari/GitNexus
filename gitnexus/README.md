@@ -303,10 +303,14 @@ Error: dlopen(.../@ladybugdb/core/lbugjs.node, ...): tried: '...' (no such file)
   code: 'ERR_DLOPEN_FAILED'
 ```
 
-Use a method that runs install scripts:
+Options that run install scripts:
 
 ```bash
-# npx/npm run install scripts (recommended for one-off use)
+# pnpm dlx with explicit build permission (one-off, no global install required)
+pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \
+  dlx gitnexus@latest analyze
+
+# npx/npm (run install scripts by default)
 npx gitnexus@latest analyze
 
 # pnpm: install non-ephemerally and approve the build
@@ -314,9 +318,6 @@ pnpm add -g gitnexus
 pnpm approve-builds -g      # approve @ladybugdb/core's build script
 gitnexus analyze
 ```
-
-`pnpm dlx gitnexus` cannot be made to work directly, because `dlx` runs
-ephemerally and never executes the dependency's build script.
 
 ### Installation fails with native module errors
 
