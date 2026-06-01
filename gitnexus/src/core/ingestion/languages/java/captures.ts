@@ -15,7 +15,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import { nodeIfType, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitImportDeclaration } from './import-decomposer.js';
 import { computeJavaArityMetadata } from './arity-metadata.js';
 import { synthesizeJavaReceiverBinding } from './receiver-binding.js';
@@ -65,16 +65,26 @@ export function emitJavaScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
+    // hands us each matched node as `c.node`, so anchors resolve via a
+    // type-guarded lookup (`nodeIfType`) instead of re-deriving them with
+    // `findNodeAtRange(tree.rootNode, ...)` per match — the
+    // O(matches × rootChildren) root-walk fixed for go #1848 / python #1918 /
+    // rust/csharp #1915, mirrored here for java (#1951). Every Java scope-query
+    // anchor below captures directly ON the node the old root-walk re-derived
+    // (verified against JAVA_SCOPE_QUERY in query.ts), so the type check is exact.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
-    // Decompose each `import_declaration`.
+    // Decompose each `import_declaration`. `@import.statement` is captured
+    // directly on the `import_declaration` node.
     if (grouped['@import.statement'] !== undefined) {
-      const stmtCapture = grouped['@import.statement'];
-      const stmtNode = findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_declaration');
+      const stmtNode = nodeIfType(nodeMap['@import.statement'], 'import_declaration');
       if (stmtNode !== null) {
         const decomposed = splitImportDeclaration(stmtNode);
         if (decomposed !== null) {
@@ -101,9 +111,9 @@ export function emitJavaScopeCaptures(
     }
 
     // Filter read.member when it's a child of method_invocation or assignment.
+    // `@reference.read.member` is captured directly on the `field_access` node.
     if (grouped['@reference.read.member'] !== undefined) {
-      const anchor = grouped['@reference.read.member'];
-      const memberNode = findNodeAtRange(tree.rootNode, anchor.range, 'field_access');
+      const memberNode = nodeIfType(nodeMap['@reference.read.member'], 'field_access');
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
         continue;
       }
@@ -113,8 +123,8 @@ export function emitJavaScopeCaptures(
     // instance method-like.
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const anchor = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      // `@scope.function` is captured directly on the method/constructor node.
+      const fnNode = findFunctionNode(nodeMap['@scope.function']);
       if (fnNode !== null) {
         for (const synth of synthesizeJavaReceiverBinding(fnNode)) {
           out.push(synth);
@@ -126,8 +136,9 @@ export function emitJavaScopeCaptures(
     // Synthesize arity metadata on function-like declarations.
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
-      const anchor = grouped[declTag]!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      // FUNCTION_DECL_TAGS (@declaration.method/.constructor) are captured
+      // directly on the method/constructor node.
+      const fnNode = findFunctionNode(nodeMap[declTag]);
       if (fnNode !== null) {
         const arity = computeJavaArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -159,10 +170,14 @@ export function emitJavaScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'method_invocation') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
+      // @reference.call.free/.member are captured on the `method_invocation`;
+      // @reference.call.constructor on the `object_creation_expression`. The
+      // captured node IS the call node the old findNodeAtRange re-derived.
+      const callNode = nodeIfType(
+        nodeMap[callTag],
+        'method_invocation',
+        'object_creation_expression',
+      );
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
         // Exclude interleaved comments — tree-sitter-java emits `block_comment` /
@@ -432,11 +447,16 @@ function inferArgType(argNode: SyntaxNode): string {
   }
 }
 
-/** Find the first Java function-like node at the given range. */
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n as SyntaxNode;
-  }
-  return null;
+/**
+ * Resolve a Java function-like node from a query-captured node.
+ *
+ * The `@scope.function` / `@declaration.method` / `@declaration.constructor`
+ * anchors all capture directly on the `method_declaration` /
+ * `constructor_declaration` node (per JAVA_SCOPE_QUERY), so this is a type
+ * guard against `FUNCTION_NODE_TYPES` — the threaded-node equivalent of the
+ * old `findNodeAtRange(tree.rootNode, range, type)` root-walk, minus the
+ * O(matches × rootChildren) traversal.
+ */
+function findFunctionNode(node: SyntaxNode | undefined): SyntaxNode | null {
+  return nodeIfType(node, ...FUNCTION_NODE_TYPES);
 }
