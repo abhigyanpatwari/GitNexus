@@ -236,7 +236,6 @@ function findNamedChildOfType(node: SyntaxNode, type: string): SyntaxNode | null
   return null;
 }
 
-/** Pre-order walk over named children. */
 /**
  * Resolve the node passed to `splitGoImportStatement` for an @import.statement
  * match. The capture is on the `import_spec`; the original preferred an

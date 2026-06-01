@@ -836,17 +836,21 @@ export const JAVA_QUERIES = `
 ; Heritage - qualified (namespaced) bases, e.g. extends a.b.Base / implements
 ; a.b.IFoo<T> (#1956 tri-review U2). The registry-primary synth already resolves
 ; these by their trailing simple name; these arms keep the legacy @heritage leg
-; at parity. A scoped_type_identifier's direct (type_identifier) child is the
-; trailing base name (the a.b prefix is a nested scoped_type_identifier), and
-; generic_type is positional in tree-sitter-java. Verified against a real parse.
+; at parity. tree-sitter-java's scoped_type_identifier has NO name: field, so the
+; trailing segment is captured via the trailing end-anchor (last named child). The
+; anchor is REQUIRED: for a 2-segment base (extends Outer.Inner) BOTH segments
+; parse as direct (type_identifier) children, so an un-anchored (type_identifier)
+; would double-match and emit a spurious prefix edge (only a 3+-segment base nests
+; its prefix as a scoped_type_identifier). generic_type is positional in
+; tree-sitter-java. Verified against a real parse for 2- and 3-segment bases.
 (class_declaration name: (identifier) @heritage.class
-  (superclass (scoped_type_identifier (type_identifier) @heritage.extends))) @heritage
+  (superclass (scoped_type_identifier (type_identifier) @heritage.extends .))) @heritage
 (class_declaration name: (identifier) @heritage.class
-  (superclass (generic_type (scoped_type_identifier (type_identifier) @heritage.extends)))) @heritage
+  (superclass (generic_type (scoped_type_identifier (type_identifier) @heritage.extends .)))) @heritage
 (class_declaration name: (identifier) @heritage.class
-  (super_interfaces (type_list (scoped_type_identifier (type_identifier) @heritage.implements)))) @heritage.impl
+  (super_interfaces (type_list (scoped_type_identifier (type_identifier) @heritage.implements .)))) @heritage.impl
 (class_declaration name: (identifier) @heritage.class
-  (super_interfaces (type_list (generic_type (scoped_type_identifier (type_identifier) @heritage.implements))))) @heritage.impl
+  (super_interfaces (type_list (generic_type (scoped_type_identifier (type_identifier) @heritage.implements .))))) @heritage.impl
 
 ; Write access: obj.field = value
 (assignment_expression

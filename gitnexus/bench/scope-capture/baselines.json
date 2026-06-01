@@ -46,9 +46,9 @@
     "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
   },
   "java": {
-    "fingerprint": "6f9fd696192f14e82e316c5a89bb7260abdf2544900c336925508d4f85e2aaa0",
+    "fingerprint": "26aef1fe39add78485949637e3002d657e16ae2e11331cc7733be61872718bf4",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U2: + java-qualified-base fixture (extends/implements app.base.* scoped + qualified-generic bases); the synth already resolved scoped tails, so this is additive corpus growth, no synth change. Linear (~1.08). (Earlier: java added to bench in #1956 review, which exposed + fixed the pre-existing O(n^2) findNodeAtRange root-walk; scaling 3.09 -> ~0.99.)"
+    "_rebaselined": "#1956 tri-review U2 + review fix: java-qualified-base fixture now covers 2-segment (Plain, Two) AND 3-segment (Service) qualified bases — the 2-segment shape guards the legacy @heritage end-anchor (an un-anchored scoped arm double-matches a 2-segment base). Synth unchanged (already tail-resolves). Linear (~1.03). (Earlier: java added to bench in #1956 review, which exposed + fixed the pre-existing O(n^2) findNodeAtRange root-walk; scaling 3.09 -> ~0.99.)"
   },
   "typescript": {
     "fingerprint": "7087f62dbab5fff0d8a9c39f7bc305842ee73a7ba20d7b44677f6511c92e5b92",

@@ -110,13 +110,16 @@ describe('Java generic-base heritage resolution (#1951)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Qualified (namespaced) bases (#1956 tri-review U2): `extends app.base.Box<T>`
-// + `implements app.base.IFoo<T>` (qualified-generic, on Service) and `extends
-// app.base.Base` + `implements app.base.IBar` (qualified non-generic, on Plain).
-// The registry-primary synth resolves these by their scoped-name tail; the
-// legacy @heritage query was widened with scoped_type_identifier arms to match.
-// Runs under BOTH legs via createResolverParityIt, so it fails on the legacy leg
-// if the widening regresses (=1/=0 parity break).
+// Qualified (namespaced) bases (#1956 tri-review U2). Three shapes:
+//   - Service: 3-segment generic (extends app.base.Box<T>, implements app.base.IFoo<T>)
+//   - Plain:   2-segment plain    (extends base.Base, implements base.IBar)
+//   - Two:     2-segment generic  (extends base.Box<T>, implements base.IFoo<T>)
+// The registry-primary synth resolves each by its scoped-name tail; the legacy
+// @heritage query was widened with end-anchored scoped_type_identifier arms to
+// match. The 2-segment cases are the regression guard: an un-anchored arm
+// double-matches a 2-segment base (both segments are direct type_identifier
+// children) and emits a spurious prefix edge, breaking the =1/=1 parity this
+// runs under BOTH legs (createResolverParityIt) to assert.
 // ---------------------------------------------------------------------------
 
 describe('Java qualified-base heritage resolution (#1956 U2)', () => {
@@ -126,14 +129,14 @@ describe('Java qualified-base heritage resolution (#1956 U2)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'java-qualified-base'), () => {});
   }, 60000);
 
-  it('emits EXTENDS for qualified and qualified-generic superclasses', () => {
+  it('emits exactly one EXTENDS per class, tail-resolved (no spurious prefix edge)', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box']);
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box', 'Two → Box']);
   });
 
-  it('emits IMPLEMENTS for qualified and qualified-generic interfaces', () => {
+  it('emits exactly one IMPLEMENTS per class, tail-resolved (no spurious prefix edge)', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo']);
+    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo', 'Two → IFoo']);
   });
 });
 
