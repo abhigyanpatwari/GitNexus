@@ -107,19 +107,18 @@ describe('sequential native parser availability', () => {
   it('warns when processCalls skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
-    // Swift is now registry-primary (MIGRATED_LANGUAGES), and
-    // call-processor gates registry-primary languages before the skip
-    // counter — so force the legacy path off here to exercise the
-    // skip/warn branch. (We do NOT edit the processor.)
-    const previousFlag = process.env.REGISTRY_PRIMARY_SWIFT;
     process.env.GITNEXUS_VERBOSE = '1';
-    process.env.REGISTRY_PRIMARY_SWIFT = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
+      // Use Dart, a non-registry-primary language. call-processor gates
+      // registry-primary languages (Swift, etc.) via the isRegistryPrimary
+      // gate before the parser-availability skip counter, so a Dart file
+      // exercises the skip/warn branch without forcing any language out of
+      // registry-primary mode (Swift must stay scope-based).
       await processCalls(
         createKnowledgeGraph(),
-        [{ path: 'App.swift', content: 'func demo() {}' }],
+        [{ path: 'App.dart', content: 'void demo() {}' }],
         createASTCache(),
         createResolutionContext(),
       );
@@ -130,7 +129,7 @@ describe('sequential native parser availability', () => {
           .some(
             (r) =>
               r.msg ===
-              '[ingestion] Skipped 1 swift file(s) in call processing — swift parser not available.',
+              '[ingestion] Skipped 1 dart file(s) in call processing — dart parser not available.',
           ),
       ).toBe(true);
     } finally {
@@ -138,11 +137,6 @@ describe('sequential native parser availability', () => {
         delete process.env.GITNEXUS_VERBOSE;
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
-      }
-      if (previousFlag === undefined) {
-        delete process.env.REGISTRY_PRIMARY_SWIFT;
-      } else {
-        process.env.REGISTRY_PRIMARY_SWIFT = previousFlag;
       }
     }
   });
@@ -165,21 +159,19 @@ describe('sequential native parser availability', () => {
   it('warns when processHeritage skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
-    // processHeritage skips registry-primary languages via an earlier
-    // `isRegistryPrimary` gate (#1951) BEFORE the parser-availability skip this
-    // test exercises. Swift is registry-primary by default, so force legacy mode
-    // (REGISTRY_PRIMARY_SWIFT=0) to reach the availability-skip warning path.
-    // Without this the test's pass/fail depends on whether another test leaked
-    // the flag into process.env — the source of its flakiness in the full suite.
-    const previousReg = process.env.REGISTRY_PRIMARY_SWIFT;
     process.env.GITNEXUS_VERBOSE = '1';
-    process.env.REGISTRY_PRIMARY_SWIFT = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
+      // Use Dart, a non-registry-primary language. processHeritage skips
+      // registry-primary languages (Swift, etc.) via the isRegistryPrimary gate
+      // — scope-based resolution owns their inheritance (#1951) — BEFORE the
+      // legacy parser-availability skip this test exercises. Dart still flows
+      // through the legacy heritage path, so the skip/warn branch fires without
+      // forcing any language out of registry-primary mode.
       await processHeritage(
         createKnowledgeGraph(),
-        [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
+        [{ path: 'App.dart', content: 'class Widget extends StatelessWidget {}' }],
         createASTCache(),
         createResolutionContext(),
       );
@@ -190,7 +182,7 @@ describe('sequential native parser availability', () => {
           .some(
             (r) =>
               r.msg ===
-              '[ingestion] Skipped 1 swift file(s) in heritage processing — swift parser not available.',
+              '[ingestion] Skipped 1 dart file(s) in heritage processing — dart parser not available.',
           ),
       ).toBe(true);
     } finally {
@@ -198,11 +190,6 @@ describe('sequential native parser availability', () => {
         delete process.env.GITNEXUS_VERBOSE;
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
-      }
-      if (previousReg === undefined) {
-        delete process.env.REGISTRY_PRIMARY_SWIFT;
-      } else {
-        process.env.REGISTRY_PRIMARY_SWIFT = previousReg;
       }
     }
   });
