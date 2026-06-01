@@ -123,6 +123,22 @@
     "captureGroups": 15,
     "digest": "043cd8b9341ab299750f8d07f1d1ca34b714c4ecf69acba80ec827e93e3852c0"
   },
+  "rust-cross-module-collision/src/a.rs": {
+    "captureGroups": 11,
+    "digest": "27e5b3770416d99fa69fcd492adf565c296780181e11fd5ac6bd26f3c57a9ab0"
+  },
+  "rust-cross-module-collision/src/b.rs": {
+    "captureGroups": 11,
+    "digest": "45fbd21cf6ed58ca9501d26be034a4969388a730dfc6d36e3982fbc3aa56dcd2"
+  },
+  "rust-cross-module-collision/src/main.rs": {
+    "captureGroups": 7,
+    "digest": "e0120e3f215282e68d83b4f8f5d8918945e0b3e7ce4e0128c6afd2aa43caa1c0"
+  },
+  "rust-cross-module-collision/src/traits.rs": {
+    "captureGroups": 3,
+    "digest": "88eef9d92ea6e370bd8ef7fbf64c42ec622ec933fb53c56b32bc67db87fa8e03"
+  },
   "rust-deep-field-chain/models.rs": {
     "captureGroups": 24,
     "digest": "fe28a5861492fc4b20d911e44abc246ec33e4f3305fe4bd7e95c952972f17564"
