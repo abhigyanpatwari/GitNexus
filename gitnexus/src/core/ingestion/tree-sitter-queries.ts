@@ -1109,6 +1109,39 @@ export const CSHARP_QUERIES = `
   (base_list (identifier) @heritage.extends)) @heritage
 (class_declaration name: (identifier) @heritage.class
   (base_list (generic_name (identifier) @heritage.extends))) @heritage
+(class_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (identifier) @heritage.extends))) @heritage
+(class_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (generic_name (identifier) @heritage.extends)))) @heritage
+
+; Records and structs can also carry base_list entries. Records may inherit a
+; class; structs and records can implement interfaces. Primary-constructor base
+; entries wrap the actual base type under primary_constructor_base_type.type.
+(record_declaration name: (identifier) @heritage.class
+  (base_list (identifier) @heritage.extends)) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (generic_name (identifier) @heritage.extends))) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (identifier) @heritage.extends))) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (generic_name (identifier) @heritage.extends)))) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (primary_constructor_base_type type: (identifier) @heritage.extends))) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (primary_constructor_base_type type: (generic_name (identifier) @heritage.extends)))) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (primary_constructor_base_type type: (qualified_name name: (identifier) @heritage.extends)))) @heritage
+(record_declaration name: (identifier) @heritage.class
+  (base_list (primary_constructor_base_type type: (qualified_name name: (generic_name (identifier) @heritage.extends))))) @heritage
+
+(struct_declaration name: (identifier) @heritage.class
+  (base_list (identifier) @heritage.extends)) @heritage
+(struct_declaration name: (identifier) @heritage.class
+  (base_list (generic_name (identifier) @heritage.extends))) @heritage
+(struct_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (identifier) @heritage.extends))) @heritage
+(struct_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (generic_name (identifier) @heritage.extends)))) @heritage
 
 ; Interface inheritance: interface IFoo : IBar / interface IFoo : IBar, IBaz
 ; Without these patterns, interface-to-interface relationships are never
@@ -1117,6 +1150,10 @@ export const CSHARP_QUERIES = `
   (base_list (identifier) @heritage.extends)) @heritage
 (interface_declaration name: (identifier) @heritage.class
   (base_list (generic_name (identifier) @heritage.extends))) @heritage
+(interface_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (identifier) @heritage.extends))) @heritage
+(interface_declaration name: (identifier) @heritage.class
+  (base_list (qualified_name name: (generic_name (identifier) @heritage.extends)))) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression

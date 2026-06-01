@@ -257,7 +257,29 @@ export function emitCsharpScopeCaptures(
   }
 
   out.push(...synthesizeGenericTypeArgumentReferences(tree.rootNode));
+  out.push(...synthesizeBaseClassInheritanceReferences(tree.rootNode));
 
+  return out;
+}
+
+function synthesizeBaseClassInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  visit(root, (node) => {
+    if (node.type !== 'class_declaration' && node.type !== 'record_declaration') return;
+
+    const baseList = findNamedChild(node, 'base_list');
+    if (baseList === null) return;
+    const base = baseList.namedChild(0);
+    if (base === null) return;
+    if (base.type !== 'primary_constructor_base_type') return;
+
+    const name = baseLookupName(base);
+    if (name === null) return;
+    out.push({
+      '@reference.inherits': nodeToCapture('@reference.inherits', base),
+      '@reference.name': syntheticCapture('@reference.name', base, name),
+    });
+  });
   return out;
 }
 
@@ -299,6 +321,14 @@ function terminalTypeNameNode(node: SyntaxNode): SyntaxNode | null {
     default:
       return null;
   }
+}
+
+function baseLookupName(node: SyntaxNode): string | null {
+  const typeNode =
+    node.type === 'primary_constructor_base_type' ? node.childForFieldName('type') : node;
+  if (typeNode === null) return null;
+  const nameNode = terminalTypeNameNode(typeNode);
+  return nameNode?.text ?? null;
 }
 
 function findNamedChild(node: SyntaxNode, type: string): SyntaxNode | null {

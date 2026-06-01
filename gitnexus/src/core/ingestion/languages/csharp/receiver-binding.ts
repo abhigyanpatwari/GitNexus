@@ -54,13 +54,22 @@ function typeName(typeNode: SyntaxNode): string | null {
  *  form so downstream interpret layer can strip generics/qualifiers
  *  the same way as other type-binding captures. Returns null when the
  *  type has no base (or an empty base_list). */
+function baseTypeText(baseNode: SyntaxNode): string | null {
+  const typeNode =
+    baseNode.type === 'primary_constructor_base_type'
+      ? baseNode.childForFieldName('type')
+      : baseNode;
+  if (typeNode === null) return null;
+  return typeNode.text;
+}
+
 function firstBaseText(typeNode: SyntaxNode): string | null {
   for (let i = 0; i < typeNode.namedChildCount; i++) {
     const child = typeNode.namedChild(i);
     if (child === null || child.type !== 'base_list') continue;
     const firstBase = child.namedChild(0);
     if (firstBase === null) return null;
-    return firstBase.text;
+    return baseTypeText(firstBase);
   }
   return null;
 }

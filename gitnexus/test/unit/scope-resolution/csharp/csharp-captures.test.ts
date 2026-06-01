@@ -308,6 +308,18 @@ describe('emitCsharpScopeCaptures — receiver-binding synthesis (`this` / `base
     expect(baseMatch!['@type-binding.type'].text).toBe('BaseModel');
   });
 
+  it('emits primary-constructor base binding without constructor arguments', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(string Name) : Models.BaseEntity(Name) { public bool M() { base.Save(); return true; } }',
+      'test.cs',
+    );
+    const baseMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'base',
+    );
+    expect(baseMatch).toBeDefined();
+    expect(baseMatch!['@type-binding.type'].text).toBe('Models.BaseEntity');
+  });
+
   it('does not emit `this` or `base` for static methods', () => {
     const matches = emitCsharpScopeCaptures('class User { public static void M() { } }', 'test.cs');
     const receiverMatches = matches.filter((m) => '@type-binding.self' in m);
@@ -464,5 +476,20 @@ describe('emitCsharpScopeCaptures — references', () => {
       .map((m) => m['@reference.name'].text);
 
     expect(names).toContain('USER_INFO');
+  });
+
+  it('synthesizes inheritance reference for primary-constructor record base types', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(string Name) : Models.BaseEntity(Name) { }',
+      'test.cs',
+    );
+    const inherits = matches.find((m) => '@reference.inherits' in m);
+    expect(inherits).toBeDefined();
+    expect(inherits!['@reference.name'].text).toBe('BaseEntity');
+  });
+
+  it('does not synthesize scope inheritance for interface-only class bases', () => {
+    const matches = emitCsharpScopeCaptures('class Worker : IJob { }', 'test.cs');
+    expect(matches.some((m) => '@reference.inherits' in m)).toBe(false);
   });
 });

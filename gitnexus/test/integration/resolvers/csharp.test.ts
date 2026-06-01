@@ -2267,14 +2267,9 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
     expect(all).toContain('UserRecord');
   });
 
-  it('does not emit a spurious self-EXTENDS (record heritage not emitted by C# heritage queries)', () => {
-    // NOTE: C# tree-sitter heritage queries cover class/interface
-    // declarations but not `record_declaration`, so records don't
-    // emit an EXTENDS edge today. The record-base linkage is still
-    // visible via `base.Save()` resolution (next test). This
-    // assertion pins the negative invariant so a future heritage
-    // extension for records can flip both tests at once.
+  it('emits EXTENDS for record inheritance without a self-edge', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('UserRecord → BaseEntity');
     const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
     expect(selfExtend).toBeUndefined();
   });
@@ -2288,13 +2283,6 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/BaseEntity.cs',
     );
     expect(baseSave).toBeDefined();
-    // NOTE: no `rel.reason` assertion here. Records don't emit EXTENDS
-    // edges today (see the negative-invariant test above), so the
-    // super-branch MRO lookup returns no ancestor and the edge is
-    // produced by the downstream reference-index fallback instead of
-    // the canonical super path. The `csharp-super-resolution` and
-    // `csharp-generic-parent` suites pin the super-branch reason on
-    // paths that do go through MRO.
     const selfSave = calls.find(
       (c) =>
         c.source === 'Save' &&
@@ -2302,6 +2290,44 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/UserRecord.cs',
     );
     expect(selfSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1924 F10/F11: record/struct heritage plus qualified and
+// primary-constructor base types.
+// ---------------------------------------------------------------------------
+
+describe('C# record/struct heritage capture gaps (#1924 F10/F11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'issue-1924-csharp-heritage'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for qualified primary-constructor record bases', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('UserRecord → BaseEntity');
+  });
+
+  it('emits IMPLEMENTS for record and struct qualified interface bases', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edges = edgeSet(implements_);
+    expect(edges).toContain('UserRecord → IAuditable');
+    expect(edges).toContain('AuditStamp → IAuditable');
+    expect(edges).toContain('AuditStamp → IQualified');
+  });
+
+  it('keeps base.Save() on the record bound to BaseEntity.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseSave = calls.find(
+      (c) =>
+        c.source === 'Save' &&
+        c.target === 'Save' &&
+        c.sourceFilePath === 'src/Models/UserRecord.cs' &&
+        c.targetFilePath === 'src/Models/BaseEntity.cs',
+    );
+    expect(baseSave).toBeDefined();
   });
 });
 
