@@ -426,13 +426,13 @@ export function emitTsScopeCaptures(
  * (issue #1951).
  *
  * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
- * `extends_clause` value + `implements_clause` types — exactly matching the
- * legacy TypeScript `@heritage` query (TYPESCRIPT_QUERIES):
- *
- *   (class_declaration name: (type_identifier)
- *     (class_heritage (extends_clause value: (identifier) @heritage.extends)))
- *   (class_declaration name: (type_identifier)
- *     (class_heritage (implements_clause (type_identifier) @heritage.implements)))
+ * `extends_clause` value + `implements_clause` types, matching the legacy
+ * TypeScript `@heritage` query's class scope (TYPESCRIPT_QUERIES). Generic
+ * bases agree across both paths: `extends Base<T>` is captured by the legacy
+ * `extends_clause value: (identifier)` already (the `type_arguments` are a
+ * sibling field), and `implements IFoo<T>` is captured by a legacy clause
+ * widened to read the `generic_type`'s `name:` identifier — so the registry
+ * path keeps parity on generic bases too (#1951).
  *
  * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
  * — the legacy query captures neither, so the registry path keeps parity with

@@ -32,6 +32,32 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
 }
 
 // ---------------------------------------------------------------------------
+// Generic-base heritage (#1951): extends Box<T> already worked (value: identifier
+// captures Base; type_args are a sibling), but `implements IFoo<T>` matched 0 in
+// the legacy @heritage query while the registry synth emitted 1 — a latent =0/=1
+// parity break. Widening the legacy implements clause closes it. Runs under BOTH
+// legs via createResolverParityIt, so it fails on the legacy leg if it regresses.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript generic-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-generic-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS Service → Box for a generic superclass (extends Box<string>)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Service → Box']);
+  });
+
+  it('emits IMPLEMENTS Service → IFoo for a generic interface (implements IFoo<string>)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Service → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface
 // ---------------------------------------------------------------------------
 

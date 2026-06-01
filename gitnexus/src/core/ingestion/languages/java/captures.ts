@@ -212,14 +212,18 @@ export function emitJavaScopeCaptures(
  * registry-primary languages in the worker pipeline (issue #1951).
  *
  * Scope is intentionally limited to `class_declaration` (`superclass` extends +
- * `interfaces` implements clauses) — matching the legacy Java heritage query —
- * so interface/enum/record heritage stays unemitted and the registry path
- * keeps parity with the legacy DAG. The EXTENDS-vs-IMPLEMENTS split is decided
- * downstream from the resolved target's symbol kind (`preEmitInheritanceEdges`):
- * a superclass resolves to a class (EXTENDS), an implemented interface resolves
- * to an interface (IMPLEMENTS). Base names are normalized to their bare simple
- * identifier (`Box<T>` → `Box`, `java.io.Serializable` → `Serializable`) to
- * match the V1 simple-name `findClassBindingInScope` contract.
+ * `interfaces` implements clauses) so interface/enum/record heritage stays
+ * unemitted, matching the legacy Java heritage query's class scope. Generic
+ * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
+ * `@heritage` query was widened to capture the inner `type_identifier` of a
+ * `generic_type` (tree-sitter-queries.ts), so both paths now agree on generic
+ * bases — the more-correct behavior, consistent with C#/Rust (#1951). The
+ * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
+ * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
+ * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
+ * Base names are normalized to their bare simple identifier (`Box<T>` → `Box`,
+ * `java.io.Serializable` → `Serializable`) to match the V1 simple-name
+ * `findClassBindingInScope` contract.
  */
 function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];

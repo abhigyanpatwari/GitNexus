@@ -84,6 +84,32 @@ describe('Java heritage resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Generic-base heritage (#1951): extends Box<T> + implements IFoo<T>. The
+// legacy @heritage query was type_identifier-only and matched 0 generic bases,
+// while the registry-primary synth emitted 1 — a latent =0/=1 parity break.
+// Widening the legacy query closes it. This block runs under BOTH legs via
+// createResolverParityIt, so it fails on the legacy leg if widening regresses.
+// ---------------------------------------------------------------------------
+
+describe('Java generic-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-generic-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS Service → Box for a generic superclass (extends Box<String>)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Service → Box']);
+  });
+
+  it('emits IMPLEMENTS Service → IFoo for a generic interface (implements IFoo<String>)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Service → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler + Processor in two packages, imports disambiguate
 // ---------------------------------------------------------------------------
 

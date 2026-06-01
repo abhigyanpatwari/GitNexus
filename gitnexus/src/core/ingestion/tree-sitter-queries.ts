@@ -326,6 +326,17 @@ export const TYPESCRIPT_QUERIES = `
     (implements_clause
       (type_identifier) @heritage.implements))) @heritage.impl
 
+; Heritage queries - class implements generic interface (e.g. implements IFoo<T>).
+; The base is the generic_type's name: type_identifier, so capture text stays the
+; bare name, matching the registry-primary scope-resolution synth (#1951). TS
+; extends Base<T> already captures via the extends_clause value: (identifier)
+; above (type_arguments is a sibling field), so only implements needs widening.
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (implements_clause
+      (generic_type name: (type_identifier) @heritage.implements)))) @heritage.impl
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_expression
@@ -783,9 +794,20 @@ export const JAVA_QUERIES = `
 (class_declaration name: (identifier) @heritage.class
   (superclass (type_identifier) @heritage.extends)) @heritage
 
+; Heritage - extends generic class (e.g. extends Box<T>). The base is the
+; inner type_identifier, so the capture text stays the bare base name and the
+; legacy path matches the registry-primary scope-resolution synth (#1951).
+; generic_type has no type: field in tree-sitter-java — the base is positional.
+(class_declaration name: (identifier) @heritage.class
+  (superclass (generic_type (type_identifier) @heritage.extends))) @heritage
+
 ; Heritage - implements interfaces
 (class_declaration name: (identifier) @heritage.class
   (super_interfaces (type_list (type_identifier) @heritage.implements))) @heritage.impl
+
+; Heritage - implements generic interfaces (e.g. implements IFoo<T>)
+(class_declaration name: (identifier) @heritage.class
+  (super_interfaces (type_list (generic_type (type_identifier) @heritage.implements)))) @heritage.impl
 
 ; Write access: obj.field = value
 (assignment_expression
