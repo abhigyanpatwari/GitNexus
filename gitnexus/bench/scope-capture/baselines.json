@@ -51,9 +51,10 @@
     "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.)"
   },
   "typescript": {
-    "fingerprint": "7087f62dbab5fff0d8a9c39f7bc305842ee73a7ba20d7b44677f6511c92e5b92",
+    "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U2: + typescript-qualified-base fixture AND terminalTsTypeNameNode now treats a member_expression tail (property_identifier) as a leaf name, so qualified `extends ns.Base` synthesizes an edge (was dropped). Linear (~1.03)."
+    "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures — fingerprint drift expected.",
+    "_note": "#1968: F44, F85, F87 — fingerprint drift expected."
   },
   "javascript": {
     "fingerprint": "a8ddfb15620ae55e50651fc21ab14c4a1f874d9b19e208cc6cbf0a8daac8ec5b",
