@@ -291,6 +291,33 @@ npm install -g npm@latest            # update npm itself
 npm cache clean --force              # clear a possibly corrupt cache
 ```
 
+### `ERR_DLOPEN_FAILED` / `lbugjs.node` missing (pnpm dlx, pnpx)
+
+GitNexus depends on `@ladybugdb/core`, whose native database addon
+(`lbugjs.node`) is placed by a postinstall script. `pnpm dlx`, `pnpx`, and any
+install run with `--ignore-scripts` skip lifecycle scripts, so the addon is
+never put in place and the runtime crashes with `ERR_DLOPEN_FAILED`:
+
+```
+Error: dlopen(.../@ladybugdb/core/lbugjs.node, ...): tried: '...' (no such file)
+  code: 'ERR_DLOPEN_FAILED'
+```
+
+Use a method that runs install scripts:
+
+```bash
+# npx/npm run install scripts (recommended for one-off use)
+npx gitnexus@latest analyze
+
+# pnpm: install non-ephemerally and approve the build
+pnpm add -g gitnexus
+pnpm approve-builds -g      # approve @ladybugdb/core's build script
+gitnexus analyze
+```
+
+`pnpm dlx gitnexus` cannot be made to work directly, because `dlx` runs
+ephemerally and never executes the dependency's build script.
+
 ### Installation fails with native module errors
 
 Some optional language grammars (Dart, Kotlin, Swift) require native compilation. If they fail, GitNexus still works — those languages will be skipped.
