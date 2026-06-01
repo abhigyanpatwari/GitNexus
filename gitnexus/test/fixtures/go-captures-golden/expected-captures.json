@@ -347,6 +347,22 @@
     "captureGroups": 10,
     "digest": "16f0d425b25bdc7eaaf331bd47ce1ece6d476ae0e24e72110ce96c1f315bd314"
   },
+  "go-structural-interface-cross-package/api/repository.go": {
+    "captureGroups": 9,
+    "digest": "1db7a323e898c73b735cda04710e4a1bbffa357379282d4e3f7687552c8d60b9"
+  },
+  "go-structural-interface-cross-package/cmd/main.go": {
+    "captureGroups": 20,
+    "digest": "3e01decd9f10f143ca1d137baa50498442566723193f046add0f34396ff5400a"
+  },
+  "go-structural-interface-cross-package/other/user.go": {
+    "captureGroups": 5,
+    "digest": "4d6298ea05addadfa17f6dd8a2eb0fa2ea63b73de69355015594504ae4e6c1b1"
+  },
+  "go-structural-interface-cross-package/store/repository.go": {
+    "captureGroups": 33,
+    "digest": "9a497524610994e9a47555cd5874074b278d3e12850e3ee62a1afadb25fcabe8"
+  },
   "go-structural-interface-dispatch/repository.go": {
     "captureGroups": 112,
     "digest": "eae7f9f24bafaa9f72b39ee118467bf90d23f4add3407004fa5a8da4a352a5a7"

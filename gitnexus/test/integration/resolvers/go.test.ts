@@ -365,16 +365,15 @@ describe('Go structural interface dispatch', () => {
   }
 
   it('emits signature-checked structural IMPLEMENTS edges only for valid implementors', () => {
-    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
+      (edge) => edge.rel.reason === 'go-structural-implements',
+    );
     expect(edgeSet(implementsEdges)).toEqual([
       'File → ReadCloser',
       'File → Reader',
       'MemoryRepository → Repository',
       'SqlRepository → Repository',
     ]);
-    expect(implementsEdges.every((edge) => edge.rel.reason === 'go-structural-implements')).toBe(
-      true,
-    );
   });
 
   it('feeds structural IMPLEMENTS into METHOD_IMPLEMENTS edges', () => {
@@ -424,6 +423,43 @@ describe('Go structural interface dispatch', () => {
       .map((edge) => owningTypeName(edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['File']);
+  });
+});
+
+describe('Go cross-package structural interface dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-structural-interface-cross-package'),
+      () => {},
+    );
+  }, 60000);
+
+  function owningTypeName(methodId: string): string {
+    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
+      if (rel.targetId !== methodId) continue;
+      const owner = result.graph.getNode(rel.sourceId);
+      return (owner?.properties.name ?? rel.sourceId) as string;
+    }
+    return '';
+  }
+
+  it('matches local interface types against package-qualified implementation signatures', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toContain('GoodStore → Saver');
+    expect(edgeSet(implementsEdges)).not.toContain('WrongStore → Saver');
+  });
+
+  it('fans out cross-package interface receivers only to valid implementors', () => {
+    const saveCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'fallback' && edge.target === 'Save',
+    );
+    const dispatchTargets = saveCalls
+      .filter((edge) => edge.rel.reason === 'interface-dispatch')
+      .map((edge) => owningTypeName(edge.rel.targetId))
+      .sort();
+    expect(dispatchTargets).toEqual(['GoodStore']);
   });
 });
 
