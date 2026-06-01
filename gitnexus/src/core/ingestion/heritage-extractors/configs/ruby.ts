@@ -1,8 +1,22 @@
 // gitnexus/src/core/ingestion/heritage-extractors/configs/ruby.ts
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { HeritageExtractionConfig, HeritageInfo } from '../../heritage-types.js';
+import type {
+  HeritageExtractionConfig,
+  HeritageInfo,
+  SupertypeShapeDescriptor,
+} from '../../heritage-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+
+/**
+ * Ruby `class A < B` superclass shapes, and the class-name shapes for
+ * `class Foo::Bar`. Both positions accept a bare `constant` or a
+ * `scope_resolution` (`Base::Sup` / `Foo::Bar`); the normalizer reduces the
+ * scope_resolution to its trailing constant.
+ */
+export const rubyHeritageShapes: SupertypeShapeDescriptor = {
+  shapes: ['constant', 'scope_resolution'],
+};
 
 /**
  * Maximum parent depth for enclosing class/module walk.
