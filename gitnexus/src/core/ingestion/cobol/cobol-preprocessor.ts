@@ -183,6 +183,19 @@ export interface CobolRegexResults {
 
   // Phase 4.1: INITIALIZE
   initializes: Array<{ target: string; line: number; caller: string | null }>;
+
+  // Phase 4.2: Arithmetic operations (COMPUTE, ADD, SUBTRACT, MULTIPLY, DIVIDE)
+  arithmeticOps: Array<{
+    verb: 'COMPUTE' | 'ADD' | 'SUBTRACT' | 'MULTIPLY' | 'DIVIDE';
+    /** Target variable (written to) */
+    target: string;
+    /** Source operand variables (read from) */
+    sources: string[];
+    line: number;
+    caller: string | null;
+    /** For ADD/SUBTRACT/MULTIPLY/DIVIDE with GIVING: the GIVING target */
+    givingTarget?: string;
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,36 +319,37 @@ const RE_SECTION =
   /\b(WORKING-STORAGE|LINKAGE|FILE|LOCAL-STORAGE|SCREEN|INPUT-OUTPUT|CONFIGURATION)\s+SECTION\b/i;
 
 // IDENTIFICATION DIVISION
-const RE_PROGRAM_ID = /\bPROGRAM-ID\.\s*([A-Z][A-Z0-9-]*)(?:\s+IS\s+COMMON)?/i;
-const RE_END_PROGRAM = /\bEND\s+PROGRAM\s+([A-Z][A-Z0-9-]*)\s*\./i;
+const RE_PROGRAM_ID = /\bPROGRAM-ID\.\s*([A-Z0-9][A-Z0-9-]*)(?:\s+IS\s+COMMON)?/i;
+const RE_END_PROGRAM = /\bEND\s+PROGRAM\s+([A-Z0-9][A-Z0-9-]*)\s*\./i;
 const RE_AUTHOR = /^\s+AUTHOR\.\s*(.+)/i;
 const RE_DATE_WRITTEN = /^\s+DATE-WRITTEN\.\s*(.+)/i;
 const RE_DATE_COMPILED = /^\s+DATE-COMPILED\.\s*(.+)/i;
 const RE_INSTALLATION = /^\s+INSTALLATION\.\s*(.+)/i;
 
 // ENVIRONMENT DIVISION — SELECT
-const RE_SELECT_START = /\bSELECT\s+(?:OPTIONAL\s+)?([A-Z][A-Z0-9-]+)/i;
+const RE_SELECT_START = /\bSELECT\s+(?:OPTIONAL\s+)?([A-Z0-9][A-Z0-9-]+)/i;
 
 // DATA DIVISION
 // ^\s* (not ^\s+) to support both fixed-format (indented) and free-format (trimmed)
-const RE_FD = /^\s*(?:FD|SD|RD)\s+([A-Z][A-Z0-9-]+)/i;
-const RE_DATA_ITEM = /^\s*(\d{1,2})\s+([A-Z][A-Z0-9-]+)\s*(.*)/i;
-const RE_ANONYMOUS_REDEFINES = /^\s*(\d{1,2})\s+REDEFINES\s+([A-Z][A-Z0-9-]+)/i;
-const RE_88_LEVEL = /^\s*88\s+([A-Z][A-Z0-9-]+)\s+VALUES?\s+(?:ARE\s+)?(.+)/i;
+const RE_FD = /^\s*(?:FD|SD|RD)\s+([A-Z0-9][A-Z0-9-]+)/i;
+const RE_DATA_ITEM = /^\s*(\d{1,2})\s+([A-Z0-9][A-Z0-9-]+)\s*(.*)/i;
+const RE_ANONYMOUS_REDEFINES = /^\s*(\d{1,2})\s+REDEFINES\s+([A-Z0-9][A-Z0-9-]+)/i;
+const RE_88_LEVEL = /^\s*88\s+([A-Z0-9][A-Z0-9-]+)\s+VALUES?\s+(?:ARE\s+)?(.+)/i;
 
 // PROCEDURE DIVISION
 // These patterns support both fixed-format (7 leading spaces) and free-format (any indentation)
-const RE_PROC_SECTION = /^\s*([A-Z][A-Z0-9-]+)\s+SECTION(?:\s+\d+)?\.\s*$/i;
-const RE_PROC_PARAGRAPH = /^\s*([A-Z][A-Z0-9-]+)\.\s*$/i;
-const RE_PERFORM = /\bPERFORM\s+([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/gi;
+const RE_PROC_SECTION = /^\s*([A-Z0-9][A-Z0-9-]+)\s+SECTION(?:\s+\d+)?\.\s*$/i;
+const RE_PROC_PARAGRAPH = /^\s*([A-Z0-9][A-Z0-9-]+)\.\s*$/i;
+const RE_PERFORM =
+  /\bPERFORM\s+([A-Z0-9][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z0-9][A-Z0-9-]+))?/gi;
 
 // ALL DIVISIONS
 // Both double-quoted ("PROG") and single-quoted ('PROG') targets are valid COBOL.
 // Use separate alternation groups so quotes must match (prevents "PROG' false-matches).
 const RE_CALL = /\bCALL\s+(?:"([^"]+)"|'([^']+)')/gi;
 // Dynamic CALL via data item (no quotes): CALL WS-PROGRAM-NAME
-const RE_CALL_DYNAMIC = /(?<![A-Z0-9-])\bCALL\s+([A-Z][A-Z0-9-]+)(?=\s|\.|$)/gi;
-const RE_COPY_UNQUOTED = /\bCOPY\s+([A-Z][A-Z0-9-]+)(?:\s|\.)/i;
+const RE_CALL_DYNAMIC = /(?<![A-Z0-9-])\bCALL\s+([A-Z0-9][A-Z0-9-]+)(?=\s|\.|$)/gi;
+const RE_COPY_UNQUOTED = /\bCOPY\s+([A-Z0-9][A-Z0-9-]+)(?:\s|\.)/i;
 const RE_COPY_QUOTED = /\bCOPY\s+(?:"([^"]+)"|'([^']+)')(?:\s|\.)/i;
 
 // EXEC blocks
@@ -346,32 +360,32 @@ const RE_END_EXEC = /\bEND-EXEC\b/i;
 // GO TO — control flow transfer (same graph semantics as PERFORM)
 // GO TO — captures first target; GO TO p1 p2 p3 DEPENDING ON x handled below
 const RE_GOTO =
-  /\bGO\s+TO\s+([A-Z][A-Z0-9-]+(?:\s+[A-Z][A-Z0-9-]+)*?)(?:\s+DEPENDING\s+ON\s+[A-Z][A-Z0-9-]+)?(?:\s*\.|$)/i;
+  /\bGO\s+TO\s+([A-Z0-9][A-Z0-9-]+(?:\s+[A-Z0-9][A-Z0-9-]+)*?)(?:\s+DEPENDING\s+ON\s+[A-Z0-9][A-Z0-9-]+)?(?:\s*\.|$)/i;
 
 // SORT/MERGE file references
-const RE_SORT = /\bSORT\s+([A-Z][A-Z0-9-]+)/i;
-const RE_MERGE = /\bMERGE\s+([A-Z][A-Z0-9-]+)/i;
+const RE_SORT = /\bSORT\s+([A-Z0-9][A-Z0-9-]+)/i;
+const RE_MERGE = /\bMERGE\s+([A-Z0-9][A-Z0-9-]+)/i;
 
 // SEARCH — table access
-const RE_SEARCH = /\bSEARCH\s+(?:ALL\s+)?([A-Z][A-Z0-9-]+)/i;
+const RE_SEARCH = /\bSEARCH\s+(?:ALL\s+)?([A-Z0-9][A-Z0-9-]+)/i;
 
 // CANCEL — program lifecycle
 const RE_CANCEL = /\bCANCEL\s+(?:"([^"]+)"|'([^']+)')/gi;
-const RE_CANCEL_DYNAMIC = /(?<![A-Z0-9-])\bCANCEL\s+([A-Z][A-Z0-9-]+)(?=\s|\.|$)/gi;
+const RE_CANCEL_DYNAMIC = /(?<![A-Z0-9-])\bCANCEL\s+([A-Z0-9][A-Z0-9-]+)(?=\s|\.|$)/gi;
 
 // Level 66 RENAMES
-const RE_66_LEVEL = /^\s*66\s+([A-Z][A-Z0-9-]+)\s+RENAMES\s+([A-Z][A-Z0-9-]+)/i;
+const RE_66_LEVEL = /^\s*66\s+([A-Z0-9][A-Z0-9-]+)\s+RENAMES\s+([A-Z0-9][A-Z0-9-]+)/i;
 
 // DECLARATIVES boundary and USE AFTER EXCEPTION
 const RE_DECLARATIVES_START = /^\s*DECLARATIVES\s*\.\s*$/i;
 const RE_DECLARATIVES_END = /^\s*END\s+DECLARATIVES\s*\.\s*$/i;
 const RE_USE_AFTER =
-  /\bUSE\s+(?:AFTER\s+)?(?:STANDARD\s+)?(?:EXCEPTION|ERROR)\s+ON\s+([A-Z][A-Z0-9-]+|INPUT|OUTPUT|I-O|EXTEND)\b/i;
+  /\bUSE\s+(?:AFTER\s+)?(?:STANDARD\s+)?(?:EXCEPTION|ERROR)\s+ON\s+([A-Z0-9][A-Z0-9-]+|INPUT|OUTPUT|I-O|EXTEND)\b/i;
 
 // SET statement (condition, index)
 //
 // Catastrophic-backtracking note (CodeQL js/redos): the previous shape
-// `((?:[A-Z][A-Z0-9-]+(?:\s+OF\s+[A-Z][A-Z0-9-]+)?\s+)+)TO\s+TRUE`
+// `((?:[A-Z0-9][A-Z0-9-]+(?:\s+OF\s+[A-Z0-9][A-Z0-9-]+)?\s+)+)TO\s+TRUE`
 // nested `\s+` quantifiers across alternations and was exponential on
 // inputs like "SET a OF a OF a ... TO TRUE". Replaced with a lazy
 // dot-match bounded by the explicit `\s+TO\s+TRUE` suffix — `.+?` is
@@ -382,7 +396,7 @@ const RE_USE_AFTER =
 // pathological-input timing assertion exercises the production regex
 // instead of an inline copy that drifts.
 export const RE_SET_TO_TRUE = /\bSET\s+(.+?)\s+TO\s+TRUE\b/i;
-export const RE_SET_INDEX = /\bSET\s+(.+?)\s+(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z][A-Z0-9-]+)/i;
+export const RE_SET_INDEX = /\bSET\s+(.+?)\s+(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z0-9][A-Z0-9-]+)/i;
 
 // INITIALIZE statement — data reset (captures targets before REPLACING/WITH clause)
 const RE_INITIALIZE = /\bINITIALIZE\s+([\s\S]*?)(?=\bREPLACING\b|\bWITH\b|\.\s*$|$)/i;
@@ -409,7 +423,8 @@ const RE_PROC_USING = /\bPROCEDURE\s+DIVISION\s+USING\s+([\s\S]*?)(?:\.|$)/i;
 const RE_ENTRY = /\bENTRY\s+(?:"([^"]+)"|'([^']+)')(?:\s+USING\s+([\s\S]*?))?(?:\.|$)/i;
 
 // MOVE statement — captures everything after TO for multi-target extraction
-const RE_MOVE = /\bMOVE\s+((?:CORRESPONDING|CORR)\s+)?([A-Z][A-Z0-9-]+)\s+TO\s+(.+)/i;
+const RE_MOVE =
+  /\bMOVE\s+((?:CORRESPONDING|CORR)\s+)?([A-Z0-9][A-Z0-9-]+(?:\([^)]*\))*)\s+TO\s+(.+)/i;
 const MOVE_SKIP = new Set([
   'SPACES',
   'ZEROS',
@@ -449,7 +464,7 @@ function extractMoveTargets(afterTo: string): string[] {
       skipNext = true;
       continue;
     }
-    if (/^[A-Z][A-Z0-9-]+$/i.test(token) && !MOVE_SKIP.has(token.toUpperCase())) {
+    if (/^[A-Z0-9][A-Z0-9-]+$/i.test(token) && !MOVE_SKIP.has(token.toUpperCase())) {
       targets.push(token);
     }
   }
@@ -605,14 +620,14 @@ function parseDataItemClauses(rest: string): {
   }
 
   // REDEFINES <name>
-  const redefMatch = text.match(/\bREDEFINES\s+([A-Z][A-Z0-9-]+)/i);
+  const redefMatch = text.match(/\bREDEFINES\s+([A-Z0-9][A-Z0-9-]+)/i);
   if (redefMatch) {
     result.redefines = redefMatch[1];
   }
 
   // OCCURS <n> [TO <m>] [TIMES] [DEPENDING ON <field>]
   const occursMatch = text.match(
-    /\bOCCURS\s+(\d+)(?:\s+TO\s+(\d+))?\s*(?:TIMES\s*)?(?:DEPENDING\s+ON\s+([A-Z][A-Z0-9-]+(?:\s*\([^)]*\))?))?/i,
+    /\bOCCURS\s+(\d+)(?:\s+TO\s+(\d+))?\s*(?:TIMES\s*)?(?:DEPENDING\s+ON\s+([A-Z0-9][A-Z0-9-]+(?:\s*\([^)]*\))?))?/i,
   );
   if (occursMatch) {
     result.occurs = parseInt(occursMatch[1], 10);
@@ -653,7 +668,7 @@ function parseDataItemClauses(rest: string): {
             result.value = numMatch[1];
           } else {
             // Try figurative constant or identifier
-            const identMatch = afterValue.match(/^([A-Z][A-Z0-9-]*)/i);
+            const identMatch = afterValue.match(/^([A-Z0-9][A-Z0-9-]*)/i);
             if (identMatch) result.value = identMatch[1].toUpperCase();
           }
         }
@@ -721,7 +736,7 @@ function parseSelectStatement(stmt: string, startLine: number): FileDeclaration 
   // Normalize whitespace
   const text = stmt.replace(/\s+/g, ' ').trim();
 
-  const nameMatch = text.match(/^SELECT\s+(?:OPTIONAL\s+)?([A-Z][A-Z0-9-]+)/i);
+  const nameMatch = text.match(/^SELECT\s+(?:OPTIONAL\s+)?([A-Z0-9][A-Z0-9-]+)/i);
   if (!nameMatch) return null;
 
   const result: FileDeclaration = {
@@ -730,7 +745,7 @@ function parseSelectStatement(stmt: string, startLine: number): FileDeclaration 
     line: startLine,
   };
 
-  const assignMatch = text.match(/\bASSIGN\s+(?:TO\s+)?("([^"]+)"|([A-Z][A-Z0-9-]*))/i);
+  const assignMatch = text.match(/\bASSIGN\s+(?:TO\s+)?("([^"]+)"|([A-Z0-9][A-Z0-9-]*))/i);
   if (assignMatch) {
     result.assignTo = assignMatch[2] || assignMatch[3] || '';
   }
@@ -747,19 +762,21 @@ function parseSelectStatement(stmt: string, startLine: number): FileDeclaration 
     result.access = accessMatch[1].toUpperCase();
   }
 
-  const keyMatch = text.match(/\bRECORD\s+KEY\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)/i);
+  const keyMatch = text.match(/\bRECORD\s+KEY\s+(?:IS\s+)?([A-Z0-9][A-Z0-9-]+)/i);
   if (keyMatch) {
     result.recordKey = keyMatch[1];
   }
 
   // ALTERNATE RECORD KEY
-  const altKeyMatches = text.matchAll(/\bALTERNATE\s+RECORD\s+KEY\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)/gi);
+  const altKeyMatches = text.matchAll(
+    /\bALTERNATE\s+RECORD\s+KEY\s+(?:IS\s+)?([A-Z0-9][A-Z0-9-]+)/gi,
+  );
   const alternateKeys: string[] = [];
   for (const m of altKeyMatches) alternateKeys.push(m[1]);
   if (alternateKeys.length > 0) result.alternateKeys = alternateKeys;
 
   // FILE STATUS IS / STATUS IS
-  const statusMatch = text.match(/\b(?:FILE\s+)?STATUS\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)/i);
+  const statusMatch = text.match(/\b(?:FILE\s+)?STATUS\s+(?:IS\s+)?([A-Z0-9][A-Z0-9-]+)/i);
   if (statusMatch) {
     result.fileStatus = statusMatch[1];
   }
@@ -789,11 +806,12 @@ function parseExecSqlBlock(
   block: string,
   line: number,
 ): CobolRegexResults['execSqlBlocks'][number] {
-  // Strip EXEC SQL ... END-EXEC wrapper
+  // Strip EXEC SQL ... END-EXEC wrapper and trailing period
   const body = block
     .replace(/\bEXEC\s+SQL\b/i, '')
     .replace(/\bEND-EXEC\b/i, '')
     .replace(/\s+/g, ' ')
+    .replace(/\.\s*$/, '')
     .trim();
 
   // Determine operation from first SQL keyword
@@ -823,18 +841,24 @@ function parseExecSqlBlock(
   // Extract table names from FROM, INTO (INSERT), UPDATE, DELETE FROM, JOIN
   const tables: string[] = [];
   const tablePatterns = [
-    /\bFROM\s+([A-Z][A-Z0-9_]+)/gi,
-    /\bINSERT\s+INTO\s+([A-Z][A-Z0-9_]+)/gi,
-    /\bUPDATE\s+([A-Z][A-Z0-9_]+)/gi,
-    /\bJOIN\s+([A-Z][A-Z0-9_]+)/gi,
+    // FROM table1 [AS alias], table2 [AS alias] … — handle comma-separated
+    // lists with optional AS keyword, terminated by SQL clause keywords
+    // (WHERE, JOIN, GROUP, ON, ORDER, HAVING, UNION, SET, INTO, VALUES, FETCH, FOR, LIMIT, OFFSET, WITH).
+    /\bFROM\s+([A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?(?:\s*,\s*[A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?)*)(?:\s+(?:WHERE|JOIN|GROUP|ON|ORDER|HAVING|UNION|SET|INTO|VALUES|FETCH|FOR|LIMIT|OFFSET|WITH)\b|$)/gi,
+    /\bINSERT\s+INTO\s+([A-Z0-9][A-Z0-9_]+)/gi,
+    /\bUPDATE\s+([A-Z0-9][A-Z0-9_]+)/gi,
+    /\bJOIN\s+([A-Z0-9][A-Z0-9_]+)/gi,
   ];
   for (const re of tablePatterns) {
     let m: RegExpExecArray | null;
     while ((m = re.exec(body)) !== null) {
-      const name = m[1].toUpperCase();
-      // Skip host variables and SQL keywords
-      if (!name.startsWith(':') && !tables.includes(name)) {
-        tables.push(name);
+      // Split comma-separated table list and strip aliases
+      const names = m[1].split(',').map((n) => n.trim().split(/\s+/)[0].toUpperCase());
+      for (const name of names) {
+        // Skip host variables and SQL keywords
+        if (!name.startsWith(':') && !tables.includes(name)) {
+          tables.push(name);
+        }
       }
     }
   }
@@ -849,7 +873,7 @@ function parseExecSqlBlock(
 
   // Extract host variables: :VARIABLE-NAME (strip the colon)
   const hostVariables: string[] = [];
-  const hostRe = /:([A-Z][A-Z0-9-]+)/gi;
+  const hostRe = /:([A-Z0-9][A-Z0-9-]+)/gi;
   let hm: RegExpExecArray | null;
   while ((hm = hostRe.exec(body)) !== null) {
     const name = hm[1];
@@ -910,24 +934,24 @@ function parseExecCicsBlock(
   const result: CobolRegexResults['execCicsBlocks'][number] = { line, command };
 
   // MAP name: MAP('name') or MAP("name") or MAP(IDENTIFIER)
-  const mapMatch = body.match(/\bMAP\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i);
+  const mapMatch = body.match(/\bMAP\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
   if (mapMatch) result.mapName = mapMatch[1] ?? mapMatch[2];
 
   // PROGRAM name: PROGRAM('name') or PROGRAM("name") or PROGRAM(VARIABLE)
-  const progMatch = body.match(/\bPROGRAM\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i);
+  const progMatch = body.match(/\bPROGRAM\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
   if (progMatch) {
     result.programName = progMatch[1] ?? progMatch[2];
     result.programIsLiteral = !!progMatch[1];
   }
 
   // TRANSID: TRANSID('name') or TRANSID("name") or TRANSID(VARIABLE)
-  const transMatch = body.match(/\bTRANSID\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i);
+  const transMatch = body.match(/\bTRANSID\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
   if (transMatch) result.transId = transMatch[1] ?? transMatch[2];
 
   // FILE/DATASET: FILE('name') or DATASET('name') or FILE(VARIABLE)
   // Used in CICS READ, WRITE, REWRITE, DELETE, STARTBR, READNEXT, READPREV, ENDBR
   const fileMatch = body.match(
-    /\b(?:FILE|DATASET)\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i,
+    /\b(?:FILE|DATASET)\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i,
   );
   if (fileMatch) {
     result.fileName = fileMatch[1] ?? fileMatch[2];
@@ -935,19 +959,19 @@ function parseExecCicsBlock(
   }
 
   // QUEUE: QUEUE('name') — used in WRITEQ/READQ TS/TD
-  const queueMatch = body.match(/\bQUEUE\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i);
+  const queueMatch = body.match(/\bQUEUE\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
   if (queueMatch) result.queueName = queueMatch[1] ?? queueMatch[2];
 
   // HANDLE ABEND LABEL(paragraph-name) — error handler target
-  const labelMatch = body.match(/\bLABEL\s*\(\s*([A-Z][A-Z0-9-]+)\s*\)/i);
+  const labelMatch = body.match(/\bLABEL\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
   if (labelMatch) result.labelName = labelMatch[1];
 
   // INTO(data-area) — data target (READ INTO, RECEIVE INTO, RETRIEVE INTO, READQ INTO)
-  const intoMatch = body.match(/\bINTO\s*\(\s*([A-Z][A-Z0-9-]+)\s*\)/i);
+  const intoMatch = body.match(/\bINTO\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
   if (intoMatch) result.intoField = intoMatch[1];
 
   // FROM(data-area) — data source (WRITE FROM, SEND FROM, WRITEQ FROM, START FROM)
-  const fromMatch = body.match(/\bFROM\s*\(\s*([A-Z][A-Z0-9-]+)\s*\)/i);
+  const fromMatch = body.match(/\bFROM\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
   if (fromMatch) result.fromField = fromMatch[1];
 
   return result;
@@ -972,16 +996,16 @@ function parseExecDliBlock(
   const pcbMatch = body.match(/\bUSING\s+PCB\s*\(\s*(\d+)\s*\)/i);
   if (pcbMatch) result.pcbNumber = parseInt(pcbMatch[1], 10);
 
-  const segMatch = body.match(/\bSEGMENT\s*\(\s*([A-Z][A-Z0-9-]*)\s*\)/i);
+  const segMatch = body.match(/\bSEGMENT\s*\(\s*([A-Z0-9][A-Z0-9-]*)\s*\)/i);
   if (segMatch) result.segmentName = segMatch[1];
 
-  const intoMatch = body.match(/\bINTO\s*\(\s*([A-Z][A-Z0-9-]+)\s*\)/i);
+  const intoMatch = body.match(/\bINTO\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
   if (intoMatch) result.intoField = intoMatch[1];
 
-  const fromMatch = body.match(/\bFROM\s*\(\s*([A-Z][A-Z0-9-]+)\s*\)/i);
+  const fromMatch = body.match(/\bFROM\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
   if (fromMatch) result.fromField = fromMatch[1];
 
-  const psbMatch = body.match(/\bPSB\s*\(\s*([A-Z][A-Z0-9-]+)\s*\)/i);
+  const psbMatch = body.match(/\bPSB\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
   if (psbMatch) result.psbName = psbMatch[1];
 
   return result;
@@ -1028,6 +1052,7 @@ export function extractCobolSymbolsWithRegex(
     sets: [],
     inspects: [],
     initializes: [],
+    arithmeticOps: [],
   };
 
   // --- State ---
@@ -1451,7 +1476,7 @@ export function extractCobolSymbolsWithRegex(
       }
     } else if (
       currentDivision === 'procedure' &&
-      /(?<![A-Z0-9-])\bCALL\s+(?:"[^"]+"|'[^']+'|[A-Z][A-Z0-9-]+)/i.test(line)
+      /(?<![A-Z0-9-])\bCALL\s+(?:"[^"]+"|'[^']+'|[A-Z0-9][A-Z0-9-]+)/i.test(line)
     ) {
       // Check if this is a complete single-line CALL (ends with period or END-CALL)
       if (/\.\s*$/.test(line) || /\bEND-CALL\b/i.test(line)) {
@@ -1587,7 +1612,9 @@ export function extractCobolSymbolsWithRegex(
             .trim()
             .split(/\s+/)
             .map((f) => f.replace(/\.$/, ''))
-            .filter((f) => /^[A-Z][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase())),
+            .filter(
+              (f) => /^[A-Z0-9][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase()),
+            ),
         );
       }
       if (givingIdx >= 0) {
@@ -1597,16 +1624,18 @@ export function extractCobolSymbolsWithRegex(
             .trim()
             .split(/\s+/)
             .map((f) => f.replace(/\.$/, ''))
-            .filter((f) => /^[A-Z][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase())),
+            .filter(
+              (f) => /^[A-Z0-9][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase()),
+            ),
         );
       }
       // INPUT PROCEDURE IS / OUTPUT PROCEDURE IS → control-flow targets (like PERFORM)
       // Supports optional THRU/THROUGH range: INPUT PROCEDURE IS proc-start THRU proc-end
       const inputProcMatch = fullSort.match(
-        /\bINPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/i,
+        /\bINPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z0-9][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z0-9][A-Z0-9-]+))?/i,
       );
       const outputProcMatch = fullSort.match(
-        /\bOUTPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/i,
+        /\bOUTPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z0-9][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z0-9][A-Z0-9-]+))?/i,
       );
       if (inputProcMatch) {
         result.performs.push({
@@ -1632,7 +1661,7 @@ export function extractCobolSymbolsWithRegex(
   function flushInspect(): void {
     if (inspectAccum === null) return;
     const text = inspectAccum;
-    const fieldMatch = text.match(/\bINSPECT\s+([A-Z][A-Z0-9-]+)/i);
+    const fieldMatch = text.match(/\bINSPECT\s+([A-Z0-9][A-Z0-9-]+)/i);
     if (!fieldMatch) {
       inspectAccum = null;
       return;
@@ -1643,7 +1672,7 @@ export function extractCobolSymbolsWithRegex(
       /\bTALLYING\b([\s\S]+?)(?:\bREPLACING\b|\bCONVERTING\b|\.\s*$)/i,
     );
     if (tallySection) {
-      const counterRe = /([A-Z][A-Z0-9-]+)\s+FOR\b/gi;
+      const counterRe = /([A-Z0-9][A-Z0-9-]+)\s+FOR\b/gi;
       let cm: RegExpExecArray | null;
       while ((cm = counterRe.exec(tallySection[1])) !== null) {
         counters.push(cm[1]);
@@ -1693,10 +1722,10 @@ export function extractCobolSymbolsWithRegex(
               (s) =>
                 s.length > 0 &&
                 !CALL_USING_FILTER.has(s.toUpperCase()) &&
-                /^[A-Z][A-Z0-9-]+$/i.test(s),
+                /^[A-Z0-9][A-Z0-9-]+$/i.test(s),
             )
         : undefined;
-      const retMatch = afterCall.match(/\bRETURNING\s+([A-Z][A-Z0-9-]+)/i);
+      const retMatch = afterCall.match(/\bRETURNING\s+([A-Z0-9][A-Z0-9-]+)/i);
       const returning = retMatch ? retMatch[1] : undefined;
       result.calls.push({
         target: callTarget,
@@ -1720,10 +1749,10 @@ export function extractCobolSymbolsWithRegex(
               (s) =>
                 s.length > 0 &&
                 !CALL_USING_FILTER.has(s.toUpperCase()) &&
-                /^[A-Z][A-Z0-9-]+$/i.test(s),
+                /^[A-Z0-9][A-Z0-9-]+$/i.test(s),
             )
         : undefined;
-      const dynRetMatch = afterDynCall.match(/\bRETURNING\s+([A-Z][A-Z0-9-]+)/i);
+      const dynRetMatch = afterDynCall.match(/\bRETURNING\s+([A-Z0-9][A-Z0-9-]+)/i);
       const dynReturning = dynRetMatch ? dynRetMatch[1] : undefined;
       result.calls.push({
         target: dynCallMatch[1],
@@ -1933,11 +1962,14 @@ export function extractCobolSymbolsWithRegex(
       const target = perfMatch[1];
       // Skip COBOL inline-perform keywords that are not paragraph names
       if (!PERFORM_KEYWORD_SKIP.has(target.toUpperCase())) {
-        // Also check for "PERFORM identifier TIMES" — the identifier is a
-        // data item count, not a paragraph name (fundamental regex ambiguity).
         const matchEnd = perfMatch.index! + perfMatch[0].length;
         const afterTarget = line.substring(matchEnd).trim();
-        if (!/^TIMES\b/i.test(afterTarget)) {
+        // Check for inline PERFORM ... TIMES pattern where the target IS
+        // the counter variable itself (e.g., PERFORM WS-COUNT TIMES).
+        // Out-of-line PERFORM target count TIMES (e.g., PERFORM 2000-PROCESS 3 TIMES)
+        // IS a real paragraph call — do NOT suppress it.
+        const hasTimesClause = /^\s*TIMES\b/i.test(afterTarget);
+        if (!hasTimesClause) {
           result.performs.push({
             caller: currentParagraph,
             target,
@@ -1976,7 +2008,7 @@ export function extractCobolSymbolsWithRegex(
         // MOVE CORRESPONDING is always single-target per COBOL standard
         const targets = isCorresponding
           ? [moveMatch[3].replace(/\..*$/, '').trim().split(/\s+/)[0]].filter((t) =>
-              /^[A-Z][A-Z0-9-]+$/i.test(t),
+              /^[A-Z0-9][A-Z0-9-]+$/i.test(t),
             )
           : extractMoveTargets(moveMatch[3]);
 
@@ -1992,13 +2024,169 @@ export function extractCobolSymbolsWithRegex(
       }
     }
 
+    // Arithmetic statements — COMPUTE, ADD, SUBTRACT, MULTIPLY, DIVIDE
+    // All extract target (written) and source operands (read) for ACCESSES edges
+    // Mask quoted strings before matching to avoid false positives from
+    // arithmetic keywords inside string literals (e.g., DISPLAY "COMPUTE").
+    const lineForArith = line.replace(/"[^"]*"/g, ' ').replace(/'[^']*'/g, ' ');
+    const arithMatch = lineForArith.match(/\b(COMPUTE|ADD|SUBTRACT|MULTIPLY|DIVIDE)\s+(.+)/i);
+    if (arithMatch) {
+      const verb = arithMatch[1].toUpperCase() as
+        | 'COMPUTE'
+        | 'ADD'
+        | 'SUBTRACT'
+        | 'MULTIPLY'
+        | 'DIVIDE';
+      const rest = arithMatch[2].replace(/\..*$/, '').trim();
+      let target = '';
+      const sources: string[] = [];
+      let givingTarget: string | undefined;
+
+      switch (verb) {
+        case 'COMPUTE': {
+          // COMPUTE target = expression
+          const eqIdx = rest.indexOf('=');
+          if (eqIdx > 0) {
+            target = rest.substring(0, eqIdx).trim().split(/\s+/)[0] || '';
+            const expr = rest.substring(eqIdx + 1).trim();
+            // Extract identifiers from expression (skip literals and operators)
+            const idRe = /[A-Z0-9][A-Z0-9-]*/gi;
+            let idMatch: RegExpExecArray | null;
+            while ((idMatch = idRe.exec(expr)) !== null) {
+              const name = idMatch[0];
+              if (
+                !/^(?:AND|OR|NOT|IN|OF|BY|TO|FROM|DIVIDED|INTO|GIVING|TIMES|PLUS|MINUS|MULTIPLIED)$/i.test(
+                  name,
+                )
+              ) {
+                if (!sources.includes(name)) sources.push(name);
+              }
+            }
+          }
+          break;
+        }
+        case 'ADD': {
+          // ADD a TO b [GIVING c] — target is after TO or GIVING.
+          // If no TO, try GIVING directly (ADD a GIVING b).
+          const addGiving = rest.match(
+            /\bTO\s+([A-Z0-9][A-Z0-9-]+)(?:\s+GIVING\s+([A-Z0-9][A-Z0-9-]+))?/i,
+          );
+          if (addGiving) {
+            target = addGiving[2] ?? addGiving[1];
+            if (addGiving[2]) givingTarget = addGiving[2];
+            // Everything before TO is sources
+            const beforeTo = rest.substring(0, rest.toUpperCase().indexOf(' TO '));
+            beforeTo.replace(/\b([A-Z0-9][A-Z0-9-]+)\b/gi, (m: string) => {
+              if (!/^(?:ADD|CORRESPONDING|CORR)$/i.test(m) && !sources.includes(m)) {
+                sources.push(m);
+              }
+              return m;
+            });
+            // Non-GIVING ADD A TO B: the TO operand (B) is both read and written
+            // (the existing value is read, added, then stored back). Add B as a
+            // source so both ACCESSES edges are created.
+            if (!addGiving[2]) {
+              if (!sources.includes(target)) sources.push(target);
+            }
+          } else {
+            // No TO — try GIVING directly: ADD a GIVING b
+            const addOnlyGiving = rest.match(/\bGIVING\s+([A-Z0-9][A-Z0-9-]+)/i);
+            if (addOnlyGiving) {
+              target = addOnlyGiving[1];
+              givingTarget = addOnlyGiving[1];
+              // Everything before GIVING is sources
+              const beforeGiving = rest.substring(0, rest.toUpperCase().indexOf(' GIVING '));
+              beforeGiving.replace(/\b([A-Z0-9][A-Z0-9-]+)\b/gi, (m: string) => {
+                if (!/^(?:ADD|CORRESPONDING|CORR)$/i.test(m) && !sources.includes(m)) {
+                  sources.push(m);
+                }
+                return m;
+              });
+            }
+          }
+          break;
+        }
+        case 'SUBTRACT': {
+          // SUBTRACT a FROM b [GIVING c] — target is after FROM or GIVING
+          const subGiving = rest.match(
+            /\bFROM\s+([A-Z0-9][A-Z0-9-]+)(?:\s+GIVING\s+([A-Z0-9][A-Z0-9-]+))?/i,
+          );
+          if (subGiving) {
+            target = subGiving[2] ?? subGiving[1];
+            if (subGiving[2]) givingTarget = subGiving[2];
+            const beforeFrom = rest.substring(0, rest.toUpperCase().indexOf(' FROM '));
+            beforeFrom.replace(/\b([A-Z0-9][A-Z0-9-]+)\b/gi, (m: string) => {
+              if (!/^(?:SUBTRACT|CORRESPONDING|CORR)$/i.test(m) && !sources.includes(m)) {
+                sources.push(m);
+              }
+              return m;
+            });
+          }
+          break;
+        }
+        case 'MULTIPLY': {
+          // MULTIPLY a BY b [GIVING c] — target is after BY or GIVING
+          const mulGiving = rest.match(
+            /\bBY\s+([A-Z0-9][A-Z0-9-]+)(?:\s+GIVING\s+([A-Z0-9][A-Z0-9-]+))?/i,
+          );
+          if (mulGiving) {
+            target = mulGiving[2] ?? mulGiving[1];
+            if (mulGiving[2]) givingTarget = mulGiving[2];
+            const beforeBy = rest.substring(0, rest.toUpperCase().indexOf(' BY '));
+            beforeBy.replace(/\b([A-Z0-9][A-Z0-9-]+)\b/gi, (m: string) => {
+              if (!/^(?:MULTIPLY|CORRESPONDING|CORR)$/i.test(m) && !sources.includes(m)) {
+                sources.push(m);
+              }
+              return m;
+            });
+          }
+          break;
+        }
+        case 'DIVIDE': {
+          // DIVIDE a INTO b [GIVING c] or DIVIDE a BY b [GIVING c]
+          const divInto = rest.match(
+            /\bINTO\s+([A-Z0-9][A-Z0-9-]+)(?:\s+GIVING\s+([A-Z0-9][A-Z0-9-]+))?/i,
+          );
+          const divBy = !divInto
+            ? rest.match(/\bBY\s+([A-Z0-9][A-Z0-9-]+)(?:\s+GIVING\s+([A-Z0-9][A-Z0-9-]+))?/i)
+            : null;
+          const divMatch = divInto ?? divBy;
+          if (divMatch) {
+            target = divMatch[2] ?? divMatch[1];
+            if (divMatch[2]) givingTarget = divMatch[2];
+            const beforeKeyword = divInto
+              ? rest.substring(0, rest.toUpperCase().indexOf(' INTO '))
+              : rest.substring(0, rest.toUpperCase().indexOf(' BY '));
+            beforeKeyword.replace(/\b([A-Z0-9][A-Z0-9-]+)\b/gi, (m: string) => {
+              if (!/^(?:DIVIDE|CORRESPONDING|CORR)$/i.test(m) && !sources.includes(m)) {
+                sources.push(m);
+              }
+              return m;
+            });
+          }
+          break;
+        }
+      }
+
+      if (target) {
+        result.arithmeticOps.push({
+          verb,
+          target,
+          sources,
+          line: lineNum,
+          caller: currentParagraph,
+          givingTarget,
+        });
+      }
+    }
+
     // GO TO — control flow transfer (handles GO TO p1 p2 p3 DEPENDING ON x)
     const gotoMatch = line.match(RE_GOTO);
     if (gotoMatch) {
       const targets = gotoMatch[1]
         .trim()
         .split(/\s+/)
-        .filter((t) => /^[A-Z][A-Z0-9-]+$/i.test(t));
+        .filter((t) => /^[A-Z0-9][A-Z0-9-]+$/i.test(t));
       for (const target of targets) {
         result.gotos.push({ caller: currentParagraph, target, line: lineNum });
       }
@@ -2046,7 +2234,7 @@ export function extractCobolSymbolsWithRegex(
         }
       }
     }
-    const inspectMatch = line.match(/\bINSPECT\s+([A-Z][A-Z0-9-]+)/i);
+    const inspectMatch = line.match(/\bINSPECT\s+([A-Z0-9][A-Z0-9-]+)/i);
     if (inspectMatch && inspectAccum === null) {
       inspectAccum = line;
       inspectStartLine = lineNum;
@@ -2079,7 +2267,7 @@ export function extractCobolSymbolsWithRegex(
       const targets = setTrueMatch[1]
         .trim()
         .split(/\s+/)
-        .filter((t) => /^[A-Z][A-Z0-9-]+$/i.test(t) && t.toUpperCase() !== 'OF');
+        .filter((t) => /^[A-Z0-9][A-Z0-9-]+$/i.test(t) && t.toUpperCase() !== 'OF');
       if (targets.length > 0) {
         result.sets.push({ targets, form: 'to-true', line: lineNum, caller: currentParagraph });
       }
@@ -2089,7 +2277,7 @@ export function extractCobolSymbolsWithRegex(
         const targets = setIdxMatch[1]
           .trim()
           .split(/\s+/)
-          .filter((t) => /^[A-Z][A-Z0-9-]+$/i.test(t));
+          .filter((t) => /^[A-Z0-9][A-Z0-9-]+$/i.test(t));
         const mode = setIdxMatch[2].toUpperCase();
         const form =
           mode === 'TO'
@@ -2114,7 +2302,8 @@ export function extractCobolSymbolsWithRegex(
         .trim()
         .split(/\s+/)
         .filter(
-          (t) => /^[A-Z][A-Z0-9-]+$/i.test(t) && !INITIALIZE_CLAUSE_KEYWORDS.has(t.toUpperCase()),
+          (t) =>
+            /^[A-Z0-9][A-Z0-9-]+$/i.test(t) && !INITIALIZE_CLAUSE_KEYWORDS.has(t.toUpperCase()),
         );
       for (const target of targets) {
         result.initializes.push({ target, line: lineNum, caller: currentParagraph });
