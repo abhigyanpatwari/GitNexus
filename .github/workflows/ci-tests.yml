@@ -90,6 +90,34 @@ jobs:
         run: npx tsx scripts/run-cross-platform.ts
         working-directory: gitnexus
 
+  # Tree-sitter ABI gate (#1922). Two halves, both blocking:
+  #   1. Static, offline: assert every grammar's compiled ABI loads on the
+  #      pinned runtime (check-tree-sitter-upgrade-readiness.py --assert-current).
+  #   2. Dynamic: run the parser-loader ABI load-smoke on the OS matrix so an
+  #      ABI-incompatible prebuilt (esp. the binary-only Swift vendor, which the
+  #      static check can't introspect) fails on the platform it ships to.
+  abi-assert:
+    name: tree-sitter ABI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Assert installed + vendored grammar ABIs (static)
+        shell: bash
+        run: python3 .github/scripts/check-tree-sitter-upgrade-readiness.py --assert-current
+
+      - name: Run parser-loader ABI load-smoke (dynamic)
+        run: npx vitest run test/unit/parser-loader-abi.test.ts
+        working-directory: gitnexus
+
   # End-to-end smoke test for the #1728 packaging fix: pack the published
   # tarball, install it globally into a temp prefix, and assert no junction
   # creation (the EPERM root cause) plus working CLI plus vendor cleanliness
