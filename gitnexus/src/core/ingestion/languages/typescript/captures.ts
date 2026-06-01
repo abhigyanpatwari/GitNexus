@@ -432,7 +432,9 @@ export function emitTsScopeCaptures(
  * `extends_clause value: (identifier)` already (the `type_arguments` are a
  * sibling field), and `implements IFoo<T>` is captured by a legacy clause
  * widened to read the `generic_type`'s `name:` identifier — so the registry
- * path keeps parity on generic bases too (#1951).
+ * path keeps parity on SIMPLE (unqualified) generic bases too (#1951).
+ * Qualified bases (`ns.Base`, `ns.Base<T>`) remain a pre-existing legacy gap
+ * the synth resolves but the legacy query does not — both outcomes are safe.
  *
  * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
  * — the legacy query captures neither, so the registry path keeps parity with

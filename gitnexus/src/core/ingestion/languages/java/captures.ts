@@ -216,8 +216,12 @@ export function emitJavaScopeCaptures(
  * unemitted, matching the legacy Java heritage query's class scope. Generic
  * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
  * `@heritage` query was widened to capture the inner `type_identifier` of a
- * `generic_type` (tree-sitter-queries.ts), so both paths now agree on generic
- * bases — the more-correct behavior, consistent with C#/Rust (#1951). The
+ * `generic_type` (tree-sitter-queries.ts), so both paths now agree on SIMPLE
+ * (unqualified) generic bases — the more-correct behavior, consistent with
+ * C#/Rust (#1951). Qualified bases (`a.b.Box`, `a.b.Box<T>`) remain a
+ * pre-existing legacy gap: the synth resolves them (scoped-name tail), the
+ * legacy query matches neither — both outcomes are safe (correct edge vs none).
+ * The
  * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
  * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
