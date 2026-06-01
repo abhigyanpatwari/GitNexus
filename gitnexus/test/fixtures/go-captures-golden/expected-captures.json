@@ -17,7 +17,7 @@
   },
   "go-ambiguous/internal/services/user.go": {
     "captureGroups": 9,
-    "digest": "8ea0928bedaf47ef8f87d9056b8ded595e308dbbc4eec34be161fb35929b9a05"
+    "digest": "0a988c48838a34eb7a6f29b324191c39c19087e728914fffa06bbb9221841d23"
   },
   "go-assignment-chain/cmd/main.go": {
     "captureGroups": 50,
@@ -233,7 +233,7 @@
   },
   "go-parent-resolution/models/user.go": {
     "captureGroups": 9,
-    "digest": "471cd8293f1f77dc5994170013c4ba2158ff862d21f8b155de744fc9f07847f1"
+    "digest": "e1b57b0c5865d84b80518fe52e3807f813ae5589b4b558d0037e6ea136843f85"
   },
   "go-pkg/cmd/main.go": {
     "captureGroups": 14,
@@ -245,7 +245,7 @@
   },
   "go-pkg/internal/models/admin.go": {
     "captureGroups": 14,
-    "digest": "9e5b6da00374196debf9da0e11e6c849b7417b47d61e98927a43d7f29d692bb2"
+    "digest": "6c307b22f7ddd3c2c34a525a61e4ed36602e22b5845fc6533be15515ef7d78fb"
   },
   "go-pkg/internal/models/repository.go": {
     "captureGroups": 5,
@@ -268,16 +268,16 @@
     "digest": "4193f6356f75505415e36d4b090dc9f5265937efe72b4251c33e5b5f06aaa99d"
   },
   "go-qualified-base/base/base.go": {
-    "captureGroups": 16,
-    "digest": "4c50e40140094556e8bfc540f0ea6627c55823a1e4fcc91ca5d74912df67d499"
+    "captureGroups": 17,
+    "digest": "c2f2241a4e31ad1b003c1649d7511437f3884815412aeac65754cf3cfb9b6dc1"
   },
   "go-qualified-base/consumers/local.go": {
-    "captureGroups": 19,
-    "digest": "9097247f77ab93b742c715ff9d656038fc8ea0558e3fe7e4df64e6b1c6fcb64c"
+    "captureGroups": 21,
+    "digest": "b2299f18656c85c33fc8df655b16a5a4762c8b1c6259aa61a5257a8b5c9c74d8"
   },
   "go-qualified-base/consumers/qualified.go": {
-    "captureGroups": 14,
-    "digest": "01fe99cadcdf3ce6f00cafce8db0474ad152983f766c8dee9b9da42c9256ae2f"
+    "captureGroups": 15,
+    "digest": "3206c6c0061cfc3f7b83fb87af85eac96dae0fd8af66ea38ef34cff912dc57ee"
   },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,
@@ -364,8 +364,8 @@
     "digest": "9a497524610994e9a47555cd5874074b278d3e12850e3ee62a1afadb25fcabe8"
   },
   "go-structural-interface-dispatch/repository.go": {
-    "captureGroups": 112,
-    "digest": "eae7f9f24bafaa9f72b39ee118467bf90d23f4add3407004fa5a8da4a352a5a7"
+    "captureGroups": 113,
+    "digest": "abfa8dbebbe72f2e13aa433702c9bb682d71aaf4d5ea8ce01952a79a3037e431"
   },
   "go-type-assertion/main.go": {
     "captureGroups": 11,
