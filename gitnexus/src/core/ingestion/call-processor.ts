@@ -1036,15 +1036,18 @@ export const processCalls = async (
               ? { declaredType: routedFieldInfo.type }
               : {}),
         });
-        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-        graph.addRelationship({
-          id: relId,
-          sourceId: fileId,
-          targetId: nodeId,
-          type: 'DEFINES',
-          confidence: 1.0,
-          reason: '',
-        });
+        // Only emit File -> Property DEFINES for top-level properties (issue #1944).
+        if (!propEnclosingClassId) {
+          const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+          graph.addRelationship({
+            id: relId,
+            sourceId: fileId,
+            targetId: nodeId,
+            type: 'DEFINES',
+            confidence: 1.0,
+            reason: '',
+          });
+        }
         if (propEnclosingClassId) {
           graph.addRelationship({
             id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),

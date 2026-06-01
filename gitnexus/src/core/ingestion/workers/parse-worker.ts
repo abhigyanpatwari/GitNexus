@@ -1590,16 +1590,20 @@ const processFileGroup = (
                       ? { isReadonly: routedFieldInfo.isReadonly }
                       : {}),
                   });
-                  const fileId = generateId('File', file.path);
-                  const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-                  result.relationships.push({
-                    id: relId,
-                    sourceId: fileId,
-                    targetId: nodeId,
-                    type: 'DEFINES',
-                    confidence: 1.0,
-                    reason: '',
-                  });
+                  // Only emit File -> Property DEFINES for top-level properties
+                  // (issue #1944); class members are reached via HAS_PROPERTY.
+                  if (!propEnclosingClassId) {
+                    const fileId = generateId('File', file.path);
+                    const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+                    result.relationships.push({
+                      id: relId,
+                      sourceId: fileId,
+                      targetId: nodeId,
+                      type: 'DEFINES',
+                      confidence: 1.0,
+                      reason: '',
+                    });
+                  }
                   if (propEnclosingClassId) {
                     result.relationships.push({
                       id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
@@ -2094,16 +2098,19 @@ const processFileGroup = (
           : {}),
       });
 
-      const fileId = generateId('File', file.path);
-      const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-      result.relationships.push({
-        id: relId,
-        sourceId: fileId,
-        targetId: nodeId,
-        type: 'DEFINES',
-        confidence: 1.0,
-        reason: '',
-      });
+      // Only emit File -> Symbol DEFINES for top-level symbols (issue #1944).
+      if (ownerId === undefined) {
+        const fileId = generateId('File', file.path);
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+        result.relationships.push({
+          id: relId,
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        });
+      }
 
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
       if (ownerId !== undefined) {

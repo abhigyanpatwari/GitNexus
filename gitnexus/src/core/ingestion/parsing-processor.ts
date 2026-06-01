@@ -879,23 +879,28 @@ const processParsingSequential = async (
         qualifiedName: qualifiedTypeName,
       });
 
-      const fileId = generateId('File', file.path);
-
-      const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-
-      const relationship: GraphRelationship = {
-        id: relId,
-        sourceId: fileId,
-        targetId: nodeId,
-        type: 'DEFINES',
-        confidence: 1.0,
-        reason: '',
-      };
-
-      graph.addRelationship(relationship);
-
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
       const ownerIdForMemberEdge = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? null;
+
+      // Only emit File -> Symbol DEFINES for top-level symbols. Class members
+      // are reachable via Class -> Member (HAS_METHOD / HAS_PROPERTY), so a
+      // direct File -> Member edge would bypass the class in the graph and
+      // produce a flat radial layout instead of the correct File->Class->Member
+      // hierarchy (issue #1944).
+      if (!ownerIdForMemberEdge) {
+        const fileId = generateId('File', file.path);
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+        const relationship: GraphRelationship = {
+          id: relId,
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        };
+        graph.addRelationship(relationship);
+      }
+
       if (ownerIdForMemberEdge) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         graph.addRelationship({
