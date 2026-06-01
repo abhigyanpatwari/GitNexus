@@ -26,6 +26,7 @@
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { swiftQualifiedBaseTail } from './base-type.js';
 import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
 
 const TYPE_DECL_NODE_TYPES = new Set(['class_declaration', 'protocol_declaration']);
@@ -84,11 +85,9 @@ function isClassKeyword(typeNode: SyntaxNode): boolean {
 /** First inherited type (superclass or first protocol) as raw text, or
  *  null. For a class the first `inheritance_specifier` is conventionally
  *  the superclass — `super.x()` only compiles when that is true. For a
- *  `user_type` base the name is the LAST `type_identifier` segment: a
- *  qualified `Outer.Inner` parses flat as `(user_type (type_identifier
- *  "Outer") (type_identifier "Inner"))` and the actual base is the trailing
- *  `Inner` (generic args sit in a sibling `type_arguments`, never a
- *  `type_identifier`). Mirrors `swiftBaseTypeIdentifier` in captures.ts. */
+ *  `user_type` base the name is its trailing `type_identifier` segment (see
+ *  `swiftQualifiedBaseTail`), falling back to the raw node text when there is
+ *  no `type_identifier` child. */
 function firstInheritedType(typeNode: SyntaxNode): string | null {
   for (let i = 0; i < typeNode.namedChildCount; i++) {
     const child = typeNode.namedChild(i);
@@ -96,12 +95,7 @@ function firstInheritedType(typeNode: SyntaxNode): string | null {
     const inheritsFrom = child.childForFieldName('inherits_from') ?? child.firstNamedChild;
     if (inheritsFrom === null) return null;
     if (inheritsFrom.type === 'user_type') {
-      let lastName: string | null = null;
-      for (let j = 0; j < inheritsFrom.namedChildCount; j++) {
-        const seg = inheritsFrom.namedChild(j);
-        if (seg !== null && seg.type === 'type_identifier') lastName = seg.text;
-      }
-      return lastName ?? inheritsFrom.text;
+      return swiftQualifiedBaseTail(inheritsFrom)?.text ?? inheritsFrom.text;
     }
     return inheritsFrom.text;
   }
