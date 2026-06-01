@@ -13,10 +13,29 @@ const PYTHON_SCOPE_QUERY = `
 (module) @scope.module
 (class_definition) @scope.class
 (function_definition) @scope.function
+(lambda) @scope.function
 
 ;; Declarations
 (class_definition
   name: (identifier) @declaration.name) @declaration.class
+
+;; Heritage — bare identifier
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (identifier) @heritage.extends)) @heritage
+
+;; Heritage — qualified base (module.Class)
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (attribute) @heritage.extends)) @heritage
+
+;; Heritage — subscripted/generic base (Generic[T])
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (subscript) @heritage.extends)) @heritage
 
 (function_definition
   name: (identifier) @declaration.name) @declaration.function
@@ -233,6 +252,29 @@ const PYTHON_SCOPE_QUERY = `
 (function_definition
   name: (identifier) @type-binding.name
   return_type: (type) @type-binding.type) @type-binding.return
+
+;; Decorators — simple @decorator
+(decorator
+  (identifier) @reference.name) @reference.decorator.call
+
+;; Decorators — @obj.decorator (single attribute)
+(decorator
+  (attribute
+    object: (_) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.decorator.call
+
+;; Decorators — @a.b.decorator (nested attributes)
+(decorator
+  (attribute
+    object: (attribute) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.decorator.call
+
+;; Decorators — @obj.method(args)
+(decorator
+  (call
+    function: (attribute
+      object: (_) @reference.receiver
+      attribute: (identifier) @reference.name))) @reference.decorator.call
 
 ;; References — calls
 (call
