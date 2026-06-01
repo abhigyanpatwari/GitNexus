@@ -219,7 +219,7 @@ gitnexus analyze --skills        # Generate repo-specific skill files from detec
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
-gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
+gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
@@ -247,6 +247,23 @@ gitnexus group status <name>     # Check staleness of repos in a group
 ```
 
 If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `gitnexus analyze --worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
+
+#### Embeddings node limit
+
+`gitnexus analyze --embeddings` generates semantic search vectors with a default 50,000-node safety cap to protect memory on large repositories. Override the cap when you know the host has enough memory for a larger graph, or disable it entirely for a one-off full embeddings run.
+
+```bash
+# Generate embeddings with the default 50,000 node safety cap
+gitnexus analyze --embeddings
+
+# Disable the safety cap entirely
+gitnexus analyze --embeddings 0
+
+# Use a custom cap
+gitnexus analyze --embeddings 100000
+```
+
+If embeddings are skipped on a large repository, the indexed graph likely exceeds the default safety cap. Re-run with `gitnexus analyze --embeddings 0` to remove the cap, or `gitnexus analyze --embeddings <n>` to choose a higher limit while still keeping memory bounded.
 
 #### Environment variables
 
