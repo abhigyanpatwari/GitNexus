@@ -6,9 +6,9 @@
     "_rebaselined": "#1956 synth-widening: + go-qualified-base fixture; synthesizeGoInheritanceReferences now emits embeds for qualified_type (pkg.Base), generic_type (Box[T]), pointer, AND interface_type embeds (matching the #1940 legacy leg), reduced to bare names at parity. go-ambiguous gains an embed inherits capture. Linear (~1.01). (Earlier #1956: heritage-bearing scale source so the synth is gated at scale.)"
   },
   "cobol": {
-    "fingerprint": "575016f329c0be29eb90db974f750d02a21b4a12515f7029bda312df713b27b0",
+    "fingerprint": "68ee0e95eb9f86f2d92ca35f730f4c2d4d83abc1b5241ae767ff3437780ec8d1",
     "scaling_budget": 1.5,
-    "_note": "COBOL has no inheritance construct, so its scale source stays flat; unchanged."
+    "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
   },
   "c": {
     "fingerprint": "0de009bdbfe095f530fa87eb32bce6ab83092c904f26b3c8fe8d8ab587cf6dc9",
