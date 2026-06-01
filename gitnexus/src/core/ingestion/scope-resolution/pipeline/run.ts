@@ -347,7 +347,7 @@ export function runScopeResolution(
   // the heritage declarations are syntactic method calls, not grammar-level
   // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
   // the freshly-emitted IMPLEMENTS edges.
-  provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup);
+  provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup, finalized);
   // Implicit IMPORTS-edge hook — for languages whose files have compiler-
   // implicit cross-file visibility (no syntactic import statement). The
   // finalized-ImportEdge pipeline (`emitImportEdges`) cannot produce these

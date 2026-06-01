@@ -76,6 +76,50 @@ describe('Rust trait implementation resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cross-module collision (#1951 review): two `struct User` in separate modules,
+// each `impl Drawable`. The legacy global last-write-wins simple-name index
+// collapsed both impl sites onto ONE `User`, sourcing one (or both) edges from
+// the wrong module's struct. Scope-aware resolution sources each edge from the
+// `User` defined in that impl's own module, so BOTH edges are present and
+// correctly sourced.
+// ---------------------------------------------------------------------------
+
+describe('Rust cross-module trait-impl collision resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-cross-module-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects 2 User structs in separate modules and 1 Drawable trait', () => {
+    const structs: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Struct') structs.push(`${n.properties.name}@${n.properties.filePath}`);
+    });
+    const users = structs.filter((s) => s.startsWith('User@')).sort();
+    expect(users).toEqual(['User@src/a.rs', 'User@src/b.rs']);
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Drawable']);
+  });
+
+  it('emits one IMPLEMENTS edge per module, each sourced from its OWN User', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(2);
+    expect(edgeSet(implements_)).toEqual(['User → Drawable', 'User → Drawable']);
+    // The fix: each edge sources from the User in its own module — not a single
+    // last-write-wins struct. Before the fix, both edges collapsed onto one file.
+    const sourceFiles = implements_.map((e) => e.sourceFilePath).sort();
+    expect(sourceFiles).toEqual(['src/a.rs', 'src/b.rs']);
+    for (const edge of implements_) {
+      expect(edge.rel.reason).toBe('trait-impl');
+      expect(edge.targetFilePath).toBe('src/traits.rs');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler struct in two modules, crate:: import disambiguates
 // ---------------------------------------------------------------------------
 

@@ -459,9 +459,15 @@ export interface ScopeResolver {
    * `include`/`extend`/`prepend`) use this hook to emit IMPLEMENTS edges
    * from parsed import or reference data.
    *
-   * Receives the graph (writable), parsedFiles, and nodeLookup — same
-   * surface as `buildMro`. Must be idempotent (the orchestrator may call
-   * it more than once during re-resolution).
+   * Receives the graph (writable), parsedFiles, nodeLookup, and the
+   * finalized `ScopeResolutionIndexes` — the same scope/import/def model
+   * `preEmitInheritanceEdges` resolves against. The trailing `scopes`
+   * parameter is appended and optional so implementations that don't need
+   * scope-aware resolution (e.g. Ruby) keep their narrower signature. Rust
+   * uses it to resolve `impl T for S` trait/struct names through the scope
+   * chain + import-aware disambiguation (refusing ambiguous matches) instead
+   * of a global simple-name index. Must be idempotent (the orchestrator may
+   * call it more than once during re-resolution).
    *
    * Default: undefined (no extra heritage edges needed).
    */
@@ -469,6 +475,7 @@ export interface ScopeResolver {
     graph: KnowledgeGraph,
     parsedFiles: readonly ParsedFile[],
     nodeLookup: GraphNodeLookup,
+    scopes?: ScopeResolutionIndexes,
   ) => void;
 
   /**
