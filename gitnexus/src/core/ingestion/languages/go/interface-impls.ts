@@ -130,8 +130,9 @@ function detectGoInterfaceImplementationsFromIndexes(
   indexes: DetectionIndexes,
 ): Map<string, string[]> {
   const implementations = new Map<string, string[]>();
+  const methodSetCache = new Map<string, MutableMethodSet>();
   for (const iface of indexes.interfaces) {
-    const required = collectInterfaceMethodSet(iface, indexes, new Set());
+    const required = collectInterfaceMethodSet(iface, indexes, new Set(), methodSetCache);
     if (required === undefined || required.size === 0) continue;
     if (!methodSetHasVerifiableSignatures(required)) continue;
 
@@ -187,7 +188,10 @@ function collectInterfaceMethodSet(
   iface: SymbolDefinition,
   indexes: DetectionIndexes,
   visiting: Set<string>,
+  cache: Map<string, MutableMethodSet>,
 ): MutableMethodSet | undefined {
+  const cached = cache.get(iface.nodeId);
+  if (cached !== undefined) return cloneMethodSet(cached);
   if (visiting.has(iface.nodeId)) return undefined;
   visiting.add(iface.nodeId);
 
@@ -202,7 +206,7 @@ function collectInterfaceMethodSet(
   }
 
   for (const embeddedIface of embeddedInterfaces) {
-    const embeddedMethods = collectInterfaceMethodSet(embeddedIface, indexes, visiting);
+    const embeddedMethods = collectInterfaceMethodSet(embeddedIface, indexes, visiting, cache);
     if (embeddedMethods === undefined) {
       visiting.delete(iface.nodeId);
       return undefined;
@@ -211,6 +215,7 @@ function collectInterfaceMethodSet(
   }
 
   visiting.delete(iface.nodeId);
+  cache.set(iface.nodeId, cloneMethodSet(merged));
   return merged;
 }
 

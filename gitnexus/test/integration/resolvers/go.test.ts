@@ -374,6 +374,7 @@ describe('Go structural interface dispatch', () => {
       'MemoryRepository → Repository',
       'SqlRepository → Repository',
     ]);
+    expect(implementsEdges.every((edge) => edge.rel.confidence === 0.85)).toBe(true);
   });
 
   it('feeds structural IMPLEMENTS into METHOD_IMPLEMENTS edges', () => {
