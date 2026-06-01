@@ -224,7 +224,7 @@ describe.skipIf(!BENCH_ENABLED)('COBOL pipeline benchmark', () => {
 
     for (const fileCount of scales) {
       const paragraphsPerProgram = 3;
-      const result = await runBenchmark(fileCount, paragraphsPerProgram, 600_000);
+      const result = await runBenchmark(fileCount, paragraphsPerProgram, 300_000);
       results.push(result);
       console.log(
         `  ${fileCount} files: ${result.elapsedMs}ms, ${result.peakHeapMB}MB heap, ${result.nodeCount} nodes, ${result.edgeCount} edges`,
@@ -248,5 +248,5 @@ describe.skipIf(!BENCH_ENABLED)('COBOL pipeline benchmark', () => {
       const nodeRatio = results[i].nodeCount / results[i - 1].nodeCount;
       expect(nodeRatio / fileRatio).toBeLessThan(1.3);
     }
-  }, 900_000);
+  }, 600_000);
 });
