@@ -17,12 +17,16 @@
  *
  * ## Known limitations
  *
- *   1. **Template expressions** — Bindings referenced in `<template>` are
- *      not resolved through the scope model. PascalCase component-reference
- *      CALLS edges are emitted by a dedicated pass in `call-processor.ts`
- *      (the `isRegistryPrimary(Vue)` guard exempts them from the legacy
- *      skip so they survive the migration). Expression-level calls (e.g.
- *      `{{ formatDate(x) }}`) are not yet captured (tracked in #1647).
+ *   1. **Template expressions** — Full template AST parsing is not performed.
+ *      A dedicated post-loop pass in `call-processor.ts` extracts three
+ *      categories of template-derived edges via lightweight regex:
+ *        - PascalCase component references → `vue-template-component` CALLS
+ *        - `@event="methodName"` single-identifier handlers → `vue-template-callback` CALLS
+ *        - `:prop="varName"` single-identifier bindings → `vue-template-attribute` ACCESSES
+ *      Complex inline expressions (`@click="toggle(item)"`, `{{ a + b }}`,
+ *      member-access bindings `:key="post.id"`) are intentionally excluded
+ *      because they cannot be resolved to a single call/access target without
+ *      a full template AST. Tracked in #1647.
  *   2. **Options API `this` resolution** — `this.X()` in Options API
  *      components does not resolve through type-binding when the component
  *      uses a plain object literal rather than a class. `fieldFallbackOnMethodLookup`

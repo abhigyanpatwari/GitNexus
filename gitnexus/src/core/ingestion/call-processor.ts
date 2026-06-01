@@ -85,7 +85,11 @@ import type {
   FileConstructorBindings,
 } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
-import { extractTemplateComponents } from './vue-sfc-extractor.js';
+import {
+  extractTemplateComponents,
+  extractTemplateEventHandlers,
+  extractTemplateAttributeBindings,
+} from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -1541,43 +1545,89 @@ export const processCalls = async (
     ctx.clearCache();
   }
 
-  // ── Vue template-component CALLS (registry-primary path) ──
-  // When Vue is registry-primary the loop above skips Vue files entirely,
-  // so the inline template emitter at ≈L1506 never fires. Template
-  // component-reference CALLS are intentionally excluded from the
-  // scope-based captures (`vue/captures.ts:11-13`), so we emit them here
-  // unconditionally for all Vue files — mirroring what the legacy emitter
-  // would have produced without double-counting (the scope path never
-  // emits `reason: 'vue-template-component'` edges).
+  // ── Vue template edges (registry-primary path) ──────────────────────────
+  // When Vue is registry-primary the main loop above skips Vue files entirely.
+  // The scope-based captures intentionally exclude template expressions
+  // (`vue/captures.ts:11–13`), so all three categories of template-derived
+  // edges are emitted here, unconditionally for every Vue file:
+  //
+  //   1. Component-reference CALLS  (`vue-template-component`)
+  //      PascalCase elements matched against the import map.
+  //   2. Event-handler CALLS        (`vue-template-callback`)
+  //      `@event="methodName"` → CALLS to the resolved in-file function.
+  //   3. Attribute-binding ACCESSES (`vue-template-attribute`)
+  //      `:prop="varName"` → ACCESSES to the resolved in-file variable.
+  //
+  // None of these overlap with edges emitted by the scope-based resolution
+  // path, so there is no double-counting.
   if (isRegistryPrimary(SupportedLanguages.Vue)) {
     for (const file of files) {
       const language = getLanguageFromFilename(file.path);
       if (language !== SupportedLanguages.Vue) continue;
-      const templateComponents = extractTemplateComponents(file.content);
-      if (templateComponents.length === 0) continue;
       const fileId = generateId('File', file.path);
-      const importedFiles = ctx.importMap.get(file.path);
-      if (!importedFiles) continue;
-      for (const componentName of templateComponents) {
-        for (const importedPath of importedFiles) {
-          if (!importedPath.endsWith('.vue')) continue;
-          const basename = importedPath.slice(
-            importedPath.lastIndexOf('/') + 1,
-            importedPath.lastIndexOf('.'),
-          );
-          if (basename !== componentName) continue;
-          const targetFileId = generateId('File', importedPath);
-          if (graph.getNode(targetFileId)) {
-            graph.addRelationship({
-              id: generateId('CALLS', `${fileId}:${componentName}->${targetFileId}`),
-              sourceId: fileId,
-              targetId: targetFileId,
-              type: 'CALLS',
-              confidence: 0.9,
-              reason: 'vue-template-component',
-            });
+
+      // 1 — component-reference CALLS
+      const templateComponents = extractTemplateComponents(file.content);
+      if (templateComponents.length > 0) {
+        const importedFiles = ctx.importMap.get(file.path);
+        if (importedFiles) {
+          for (const componentName of templateComponents) {
+            for (const importedPath of importedFiles) {
+              if (!importedPath.endsWith('.vue')) continue;
+              const basename = importedPath.slice(
+                importedPath.lastIndexOf('/') + 1,
+                importedPath.lastIndexOf('.'),
+              );
+              if (basename !== componentName) continue;
+              const targetFileId = generateId('File', importedPath);
+              if (graph.getNode(targetFileId)) {
+                graph.addRelationship({
+                  id: generateId('CALLS', `${fileId}:${componentName}->${targetFileId}`),
+                  sourceId: fileId,
+                  targetId: targetFileId,
+                  type: 'CALLS',
+                  confidence: 0.9,
+                  reason: 'vue-template-component',
+                });
+              }
+              break;
+            }
           }
-          break;
+        }
+      }
+
+      // 2 — event-handler CALLS (@click="methodName")
+      const eventHandlers = extractTemplateEventHandlers(file.content);
+      for (const handlerName of eventHandlers) {
+        const resolved = ctx.resolve(handlerName, file.path);
+        if (!resolved) continue;
+        for (const candidate of resolved.candidates) {
+          if (candidate.type !== 'Function' && candidate.type !== 'Method') continue;
+          graph.addRelationship({
+            id: generateId('CALLS', `${fileId}:@${handlerName}->${candidate.nodeId}`),
+            sourceId: fileId,
+            targetId: candidate.nodeId,
+            type: 'CALLS',
+            confidence: 0.9,
+            reason: 'vue-template-callback',
+          });
+        }
+      }
+
+      // 3 — attribute-binding ACCESSES (:prop="varName")
+      const boundVars = extractTemplateAttributeBindings(file.content);
+      for (const varName of boundVars) {
+        const resolved = ctx.resolve(varName, file.path);
+        if (!resolved) continue;
+        for (const candidate of resolved.candidates) {
+          graph.addRelationship({
+            id: generateId('ACCESSES', `${fileId}:bind:${varName}->${candidate.nodeId}`),
+            sourceId: fileId,
+            targetId: candidate.nodeId,
+            type: 'ACCESSES',
+            confidence: 0.8,
+            reason: 'vue-template-attribute',
+          });
         }
       }
     }

@@ -152,6 +152,54 @@ describe('Vue Composition API (<script setup>)', () => {
     expect(selectPost!.properties.isExported).toBe(true);
   });
 
+  // Template event-handler CALLS --------------------------------------------
+
+  it('emits CALLS edge from @click="handleSave" in UserProfile.vue template', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const templateToSave = calls.filter(
+      (e) =>
+        e.sourceFilePath.endsWith('UserProfile.vue') &&
+        e.target === 'handleSave' &&
+        e.rel.reason === 'vue-template-callback',
+    );
+    expect(templateToSave.length).toBe(1);
+  });
+
+  it('emits CALLS edge from @select="onPostSelected" in App.vue template', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const templateToHandler = calls.filter(
+      (e) =>
+        e.sourceFilePath.endsWith('App.vue') &&
+        e.target === 'onPostSelected' &&
+        e.rel.reason === 'vue-template-callback',
+    );
+    expect(templateToHandler.length).toBe(1);
+  });
+
+  // Template attribute-binding ACCESSES -------------------------------------
+
+  it('emits ACCESSES edge for :userId="currentUserId" in App.vue template', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const attrAccess = accesses.filter(
+      (e) =>
+        e.sourceFilePath.endsWith('App.vue') &&
+        e.target === 'currentUserId' &&
+        e.rel.reason === 'vue-template-attribute',
+    );
+    expect(attrAccess.length).toBe(1);
+  });
+
+  it('emits ACCESSES edge for :posts="allPosts" in App.vue template', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const attrAccess = accesses.filter(
+      (e) =>
+        e.sourceFilePath.endsWith('App.vue') &&
+        e.target === 'allPosts' &&
+        e.rel.reason === 'vue-template-attribute',
+    );
+    expect(attrAccess.length).toBe(1);
+  });
+
   // File nodes ---------------------------------------------------------------
 
   it('creates File nodes for .vue files', () => {
@@ -252,6 +300,19 @@ describe('Vue Options API (defineComponent)', () => {
     if (addTodo !== undefined) {
       expect(addTodo.properties.isExported).toBe(false);
     }
+  });
+
+  // Template event-handler CALLS --------------------------------------------
+
+  it('emits CALLS edge from @keyup.enter="addTodo" in TodoList.vue template', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const templateToAdd = calls.filter(
+      (e) =>
+        e.sourceFilePath.endsWith('TodoList.vue') &&
+        e.target === 'addTodo' &&
+        e.rel.reason === 'vue-template-callback',
+    );
+    expect(templateToAdd.length).toBe(1);
   });
 
   // File nodes ---------------------------------------------------------------
@@ -377,6 +438,19 @@ describe('Vue cross-file composable and class resolution', () => {
       (e) => e.sourceFilePath.endsWith('App.vue') && e.target === 'addUser',
     );
     expect(toAddUser.length).toBe(1);
+  });
+
+  // Template event-handler CALLS --------------------------------------------
+
+  it('emits CALLS edge from @loaded="onUserLoaded" in App.vue template', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const templateToHandler = calls.filter(
+      (e) =>
+        e.sourceFilePath.endsWith('App.vue') &&
+        e.target === 'onUserLoaded' &&
+        e.rel.reason === 'vue-template-callback',
+    );
+    expect(templateToHandler.length).toBe(1);
   });
 
   // File nodes ---------------------------------------------------------------

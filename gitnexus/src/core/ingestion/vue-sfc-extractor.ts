@@ -140,3 +140,76 @@ export function extractTemplateComponents(vueContent: string): string[] {
 
   return [...components];
 }
+
+// Matches simple method-name references in Vue event-handler attributes.
+// Captures only bare identifiers — not inline expressions with arguments,
+// arrow functions, or compound expressions.
+//
+//   @click="handleSave"          → "handleSave"
+//   @keyup.enter="addTodo"       → "addTodo"
+//   v-on:submit.prevent="onSave" → "onSave"
+//   @click="toggle(item)"        — skipped (has parens)
+//   @click="() => count++"       — skipped (arrow function)
+const EVENT_HANDLER_RE = /(?:@|v-on:)[\w:.]+\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
+
+/**
+ * Extract method names from Vue template event-handler bindings.
+ *
+ * Only captures single-identifier handlers (`@click="handleSave"`).
+ * Inline expressions with arguments or operators are intentionally ignored
+ * — they cannot be resolved to a single call target without parsing the
+ * full template AST.
+ *
+ * Returns deduplicated method names.
+ */
+export function extractTemplateEventHandlers(vueContent: string): string[] {
+  const templateMatch = TEMPLATE_RE.exec(vueContent);
+  if (!templateMatch) return [];
+
+  const templateContent = templateMatch[2];
+  const handlers = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  EVENT_HANDLER_RE.lastIndex = 0;
+  while ((match = EVENT_HANDLER_RE.exec(templateContent)) !== null) {
+    handlers.add(match[1]);
+  }
+
+  return [...handlers];
+}
+
+// Matches simple variable references in Vue bound-attribute values.
+// Captures only bare identifiers — not member-access (":key=\"post.id\""),
+// literals (":id=\"1\""), or expressions (":val=\"a + b\"").
+//
+//   :userId="currentUserId"      → "currentUserId"
+//   :posts="allPosts"            → "allPosts"
+//   v-bind:disabled="isLoading"  → "isLoading"
+//   :key="post.id"               — skipped (member access)
+//   :id="1"                      — skipped (literal)
+const BOUND_ATTR_RE = /(?::[\w-]+|v-bind:[\w-]+)\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
+
+/**
+ * Extract variable identifiers from Vue template bound-attribute values.
+ *
+ * Covers `:prop="varName"` and `v-bind:prop="varName"` patterns where
+ * the value is a single plain identifier.  Member-access expressions
+ * (`:key="post.id"`) and literals are excluded by design.
+ *
+ * Returns deduplicated identifier names.
+ */
+export function extractTemplateAttributeBindings(vueContent: string): string[] {
+  const templateMatch = TEMPLATE_RE.exec(vueContent);
+  if (!templateMatch) return [];
+
+  const templateContent = templateMatch[2];
+  const vars = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  BOUND_ATTR_RE.lastIndex = 0;
+  while ((match = BOUND_ATTR_RE.exec(templateContent)) !== null) {
+    vars.add(match[1]);
+  }
+
+  return [...vars];
+}

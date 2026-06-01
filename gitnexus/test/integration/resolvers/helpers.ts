@@ -310,6 +310,30 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // the `self.base()` call unresolved for this fixture.
     'resolves self.base() inside added() to Bar.base (self == Bar), not Foo',
   ]),
+  vue: new Set<string>([
+    // IMPORTS edge cardinality: the legacy import-processor emits 1 edge per
+    // (source-file, target-file) pair; the scope-based path emits 1 edge per
+    // imported symbol. All `toBe(N>1)` IMPORTS assertions reflect the scope-
+    // based count and therefore fail under the legacy resolver.
+    'resolves value imports from UserProfile.vue to types.ts',
+    'resolves value imports from UserProfile.vue to api.ts',
+    'resolves value imports from TodoList.vue to utils.ts',
+    // Template-derived edges are emitted by the dedicated registry-primary
+    // Vue template pass (`call-processor.ts`). The legacy resolver never runs
+    // this pass, so these edges are absent on the REGISTRY_PRIMARY_VUE=0 path.
+    'emits CALLS edge from @click="handleSave" in UserProfile.vue template',
+    'emits CALLS edge from @select="onPostSelected" in App.vue template',
+    'emits CALLS edge from @keyup.enter="addTodo" in TodoList.vue template',
+    'emits CALLS edge from @loaded="onUserLoaded" in App.vue template',
+    'emits ACCESSES edge for :userId="currentUserId" in App.vue template',
+    'emits ACCESSES edge for :posts="allPosts" in App.vue template',
+    // <script setup> implicit-export detection: the scope-based path marks
+    // all top-level <script setup> bindings as exported; the legacy path
+    // relies on per-node isExported flags from the parse worker which may
+    // not propagate correctly through the legacy resolver flow.
+    'marks <script setup> top-level functions as exported',
+    'marks <script setup> top-level functions in PostList as exported',
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class
