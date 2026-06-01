@@ -4,9 +4,6 @@
  * Each fixture FAILS on main and PASSES on the fix branch.
  */
 import { describe, it, expect } from 'vitest';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
 import { emitPythonScopeCaptures } from '../../../src/core/ingestion/languages/python/index.js';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { pythonProvider } from '../../../src/core/ingestion/languages/python.js';
