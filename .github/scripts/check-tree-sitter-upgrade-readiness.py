@@ -332,6 +332,111 @@ def vendored_drift_summary(
     }
 
 
+# ── Assert mode (CI gate) ─────────────────────────────────────────────────
+
+
+def assert_current() -> int:
+    """Assert every grammar's ABI is loadable by the CURRENT runtime.
+
+    Unlike the readiness report (which probes the npm registry + upstream
+    main for the *target* runtime), this mode is hermetic and offline: it
+    reads only what's checked out / installed locally and asserts each
+    grammar's compiled ABI lies within the current runtime's
+    ``RUNTIME_ABI_RANGES`` window. It is the static half of the #1922 ABI
+    gate; the runtime load-smoke (`parser-loader-abi.test.ts`) is the
+    dynamic half.
+
+    Coverage, reusing the existing helpers:
+      - npm-installed grammars: ABI from node_modules/<name>/<parser.c>.
+      - vendored grammars (dart/proto/swift): ABI via ``vendored_drift_summary``.
+      - Swift is prebuilt-only (no parser.c) → not introspectable here;
+        treated as "covered by the runtime load-smoke", not asserted.
+      - INTENTIONAL_PINS are honored: a pinned grammar is expected to sit at
+        an ABI the current runtime loads (that's *why* it's pinned), so it is
+        asserted like any other rather than skipped.
+
+    Returns 0 when every introspectable grammar is in range, 1 otherwise.
+    Prints a plain-text (non-Markdown) report so CI logs stay readable.
+    """
+    current_runtime = read_current_runtime()
+    abi_range = RUNTIME_ABI_RANGES.get(current_runtime)
+    if abi_range is None:
+        print(
+            f"FAIL: RUNTIME_ABI_RANGES has no entry for current runtime "
+            f"{current_runtime!r}; add it before asserting.",
+        )
+        return 1
+    lo, hi = abi_range
+    pinned_versions = read_pinned_grammar_versions()
+
+    print(
+        f"Asserting all grammar ABIs load on tree-sitter@{current_runtime}.x "
+        f"(ABI {lo}–{hi})."
+    )
+
+    failures: list[str] = []
+    checked = 0
+    skipped: list[str] = []
+
+    for name, (upstream_repo, upstream_branch, parser_path) in sorted(GRAMMARS.items()):
+        pinned_spec = pinned_versions.get(name, "—")
+        pin_note = f" [intentional pin: {pinned_spec}]" if name in INTENTIONAL_PINS else ""
+
+        if is_vendored_pin(pinned_spec):
+            v = vendored_drift_summary(name, upstream_repo, upstream_branch, parser_path)
+            abi = v["vendored_abi"]
+            if abi is None:
+                # Prebuilt-only vendor (e.g. tree-sitter-swift): no parser.c to
+                # introspect. The runtime load-smoke covers it instead.
+                skipped.append(f"{name} (vendored, prebuilt — covered by load-smoke)")
+                continue
+            checked += 1
+            if lo <= abi <= hi:
+                print(f"  OK   {name}: vendored ABI {abi} in range{pin_note}")
+            else:
+                msg = (
+                    f"{name}: vendored ABI {abi} outside current runtime range "
+                    f"{lo}..{hi}{pin_note}"
+                )
+                print(f"  FAIL {msg}")
+                failures.append(msg)
+            continue
+
+        installed_parser = GITNEXUS_DIR / "node_modules" / name / parser_path
+        if not installed_parser.is_file():
+            installed_parser = GITNEXUS_DIR / "node_modules" / name / "src" / "parser.c"
+        abi = extract_language_version(installed_parser)
+        if abi is None:
+            skipped.append(f"{name} (not installed / no parser.c — covered by load-smoke)")
+            continue
+        checked += 1
+        if lo <= abi <= hi:
+            print(f"  OK   {name}: installed ABI {abi} in range{pin_note}")
+        else:
+            msg = (
+                f"{name}: installed ABI {abi} outside current runtime range "
+                f"{lo}..{hi}{pin_note}"
+            )
+            print(f"  FAIL {msg}")
+            failures.append(msg)
+
+    print("")
+    if skipped:
+        print("Not statically introspectable (asserted via runtime load-smoke):")
+        for s in skipped:
+            print(f"  - {s}")
+        print("")
+
+    if failures:
+        print(f"RESULT: FAIL — {len(failures)} grammar(s) out of range, {checked} checked.")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+
+    print(f"RESULT: OK — all {checked} introspectable grammar ABIs in range.")
+    return 0
+
+
 # ── Main ────────────────────────────────────────────────────────────────
 
 
@@ -806,4 +911,9 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     except Exception:
         pass
+    # `--assert-current` is the offline CI gate (#1922): assert every grammar's
+    # ABI loads on the CURRENT runtime. Bare invocation keeps the original
+    # target-runtime readiness report behaviour.
+    if "--assert-current" in sys.argv[1:]:
+        sys.exit(assert_current())
     sys.exit(main())

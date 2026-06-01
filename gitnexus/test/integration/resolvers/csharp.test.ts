@@ -116,7 +116,7 @@ describe('C# ambiguous symbol resolution', () => {
     expect(ifaces.filter((n) => n === 'IProcessor').length).toBe(2);
   });
 
-  it('heritage targets are synthetic (correct refusal for ambiguous namespace import)', () => {
+  it('resolves both ambiguous bases to the imported Models namespace via import-aware disambiguation', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const implements_ = getRelationships(result, 'IMPLEMENTS');
 
@@ -125,13 +125,18 @@ describe('C# ambiguous symbol resolution', () => {
     expect(implements_.length).toBe(1);
     expect(implements_[0].source).toBe('UserHandler');
 
-    // The key invariant: no edge points to Other/
-    if (extends_[0].targetFilePath) {
-      expect(extends_[0].targetFilePath).not.toContain('Other/');
-    }
-    if (implements_[0].targetFilePath) {
-      expect(implements_[0].targetFilePath).not.toContain('Other/');
-    }
+    // `using MyApp.Models;` emits the file-level import edge, so import-aware
+    // resolution (#1951) disambiguates both same-named bases to the Models/
+    // definitions (NOT Other/) — pinned exactly (the prior `if (targetFilePath)`
+    // guard was vacuous). This asserts the correct registry-primary model; the
+    // legacy DAG does not emit the C# namespace using-import edge and so refuses
+    // to disambiguate, which is why this test is listed in
+    // LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES (helpers.ts) — a scope-resolver-
+    // only correctness win, not branched with conditional logic here.
+    expect(extends_[0].target).toBe('Handler');
+    expect(extends_[0].targetFilePath).toBe('Models/Handler.cs');
+    expect(implements_[0].target).toBe('IProcessor');
+    expect(implements_[0].targetFilePath).toBe('Models/IProcessor.cs');
   });
 });
 
@@ -2267,13 +2272,18 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
     expect(all).toContain('UserRecord');
   });
 
-  it('does not emit a spurious self-EXTENDS (record heritage not emitted by C# heritage queries)', () => {
-    // NOTE: C# tree-sitter heritage queries cover class/interface
-    // declarations but not `record_declaration`, so records don't
-    // emit an EXTENDS edge today. The record-base linkage is still
-    // visible via `base.Save()` resolution (next test). This
-    // assertion pins the negative invariant so a future heritage
-    // extension for records can flip both tests at once.
+  it('emits no spurious self-EXTENDS for a record (record→record same-namespace EXTENDS is a known registry gap)', () => {
+    // Since #1956 the registry-primary synth walks `record_declaration` base_lists
+    // (matching the legacy @heritage leg), so record→class and record→interface
+    // bases now resolve to EXTENDS/IMPLEMENTS edges — see the qualified/record/
+    // struct block below (record R : Base, record P : Base(id), …). The
+    // record→RECORD case in the SAME namespace (`record UserRecord : BaseEntity`,
+    // both in `Models`) is a separate, pre-existing registry resolution gap: the
+    // synth emits the @reference.inherits capture, but the same-namespace
+    // record-target binding is not resolved on the registry leg, so no
+    // UserRecord→BaseEntity EXTENDS edge appears there (the legacy leg does emit
+    // it). It is NOT asserted here — doing so would diverge between legs — and is
+    // tracked as a follow-up. The self-edge invariant must hold on both legs.
     const extends_ = getRelationships(result, 'EXTENDS');
     const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
     expect(selfExtend).toBeUndefined();
@@ -2288,13 +2298,12 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/BaseEntity.cs',
     );
     expect(baseSave).toBeDefined();
-    // NOTE: no `rel.reason` assertion here. Records don't emit EXTENDS
-    // edges today (see the negative-invariant test above), so the
-    // super-branch MRO lookup returns no ancestor and the edge is
-    // produced by the downstream reference-index fallback instead of
-    // the canonical super path. The `csharp-super-resolution` and
+    // NOTE: no `rel.reason` assertion here. The base.Save() linkage is
+    // exercised independently of which path produces it (super-branch MRO
+    // now that records emit EXTENDS since #1951, or the downstream
+    // reference-index fallback). The `csharp-super-resolution` and
     // `csharp-generic-parent` suites pin the super-branch reason on
-    // paths that do go through MRO.
+    // paths that go through MRO.
     const selfSave = calls.find(
       (c) =>
         c.source === 'Save' &&
@@ -2302,6 +2311,55 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/UserRecord.cs',
     );
     expect(selfSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# qualified / record / struct / alias-qualified base heritage (#1951)
+//
+// The registry-primary synth previously walked only class/interface base
+// lists, so `record R(...) : Base, IFoo`, `record P(...) : Base(id), IBar`
+// (primary_constructor_base_type), `struct S : IFoo, ns.IBar`, and the
+// `alias_qualified_name` base `B : DomainAlias::Base` produced NO inheritance
+// edges in worker mode — even though the legacy @heritage leg covered them.
+// This block runs on BOTH legs (createResolverParityIt) and asserts the now-
+// emitted edge sets, exactly mirroring the bare names normalizeSupertypeName
+// reduces each shape to (Base / IFoo / IBar).
+// ---------------------------------------------------------------------------
+
+describe('C# qualified/record/struct/alias base heritage (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for every class-like base, tail/type/alias-resolved', () => {
+    // R, P (record bases incl. primary_constructor_base_type `Base(id)`), and
+    // A (qualified_name) / B (alias_qualified_name) all derive from the Class
+    // `Base`, so each takes the EXTENDS branch (target kind = Class).
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['A → Base', 'B → Base', 'P → Base', 'R → Base']);
+  });
+
+  it('emits IMPLEMENTS for interface bases on records and structs', () => {
+    // R → IFoo (record identifier base), P → IBar (record identifier base
+    // alongside the primary_constructor_base_type), S → IFoo + S → IBar
+    // (struct base_list: identifier + qualified_name). Interface targets take
+    // the IMPLEMENTS branch.
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['P → IBar', 'R → IFoo', 'S → IBar', 'S → IFoo']);
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
   });
 });
 

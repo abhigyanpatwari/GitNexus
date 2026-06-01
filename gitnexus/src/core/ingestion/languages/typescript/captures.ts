@@ -336,21 +336,29 @@ export function emitTsScopeCaptures(
     // calls use `new_expression`; regular calls use `call_expression`.
     //
     // JSX call anchors (`jsx_self_closing_element` / `jsx_opening_element`
-    // captured by the TSX-only suffix in `query.ts`) intentionally do
-    // NOT carry arity metadata. The lookup below would resolve `callNode`
-    // to `null` for a JSX anchor (the anchor is neither a call_expression
-    // nor a new_expression), so the synthesis branch silently no-ops and
-    // the JSX call enters the registry with name-only resolution. This
-    // is acceptable for React: components are virtually never
-    // overloaded in the current GitNexus graph model, so name-only
-    // dispatch matches the single component definition. If a future
-    // codebase introduces overloaded React components AND needs JSX
-    // calls to disambiguate by props-arity, a JSX-aware arity
-    // synthesizer would need to count `jsx_attribute` children of the
-    // opening tag instead of `arguments`.
+    // captured by the TSX-only suffix in `query.ts`) intentionally do NOT carry
+    // arity metadata. A JSX component used as a call argument (e.g.
+    // `render(<Foo .../>)`) is itself a @reference.call.* anchor; without a guard
+    // the ascent below would climb from it into the enclosing call_expression and
+    // mis-attribute that call's arity to the component. The early guard skips
+    // arity synthesis for JSX anchors — restoring the pre-#1951 range-based
+    // behavior (the old findNodeAtRange found no call_expression at the JSX
+    // element's range). The guard lives here, not inside findSelfOrAncestorOfTypes
+    // (shared with the import-statement and function-scope ascents). This is
+    // acceptable for React: components are virtually never overloaded in the
+    // current GitNexus graph model, so name-only dispatch matches the single
+    // component definition. A future props-arity-aware synthesizer would count
+    // `jsx_attribute` children of the opening tag instead of `arguments`.
     const callAnchor = pickFirstCapture(grouped, CALL_TAGS);
     const callAnchorNode = pickFirstNode(groupedNodes, CALL_TAGS);
-    if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
+    const anchorIsJsxElement =
+      callAnchorNode?.type === 'jsx_self_closing_element' ||
+      callAnchorNode?.type === 'jsx_opening_element';
+    if (
+      callAnchor !== undefined &&
+      grouped['@reference.arity'] === undefined &&
+      !anchorIsJsxElement
+    ) {
       const callNode =
         findSelfOrAncestorOfTypes(callAnchorNode, ['call_expression', 'new_expression']) ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
@@ -411,8 +419,122 @@ export function emitTsScopeCaptures(
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeInstanceofNarrowings(tree.rootNode, out);
+  synthesizeTsInheritanceReferences(tree.rootNode, out);
 
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from TypeScript class heritage so
+ * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
+ * (mirrors C# `synthesizeCsharpInheritanceReferences` / JS
+ * `synthesizeJsInheritanceReferences`). Without this, TS inheritance edges came
+ * only from the legacy `@heritage.*` path, which the worker pipeline drops for
+ * registry-primary languages — yielding 0 inheritance edges in worker mode
+ * (issue #1951).
+ *
+ * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
+ * `extends_clause` value + `implements_clause` types, matching the legacy
+ * TypeScript `@heritage` query's class scope (TYPESCRIPT_QUERIES). Generic
+ * bases agree across both paths: `extends Base<T>` is captured by the legacy
+ * `extends_clause value: (identifier)` already (the `type_arguments` are a
+ * sibling field), and `implements IFoo<T>` is captured by a legacy clause
+ * widened to read the `generic_type`'s `name:` identifier — so the registry
+ * path keeps parity on SIMPLE (unqualified) generic bases too (#1951).
+ * Qualified bases (`ns.Base`, `ns.Base<T>`, `ns.IFoo<T>`) are ALSO now at parity
+ * (#1956 tri-review U2): the synth resolves them by their member_expression /
+ * nested_type_identifier tail, and the legacy `@heritage` query was widened with
+ * matching arms (member_expression for extends, nested_type_identifier plain +
+ * generic-wrapped for implements).
+ *
+ * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
+ * — the legacy query captures neither, so the registry path keeps parity with
+ * the legacy DAG under the CI scope-parity gate (REGISTRY_PRIMARY_TYPESCRIPT=0
+ * vs =1). The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
+ * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
+ * are emitted with the same `inherits` kind here. The base lookup name is
+ * normalized to its bare simple identifier (`BaseModel<string>` → `BaseModel`,
+ * `models.Base` → `Base`) so `findClassBindingInScope` resolves it.
+ */
+function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]): void {
+  const stack: SyntaxNode[] = [root];
+  for (;;) {
+    const node = stack.pop();
+    if (node === undefined) break;
+    for (const child of node.namedChildren) {
+      if (child !== null) stack.push(child);
+    }
+
+    if (node.type !== 'class_declaration') continue;
+
+    // Find the `class_heritage` child (holds extends / implements clauses).
+    let heritage: SyntaxNode | null = null;
+    for (const child of node.namedChildren) {
+      if (child !== null && child.type === 'class_heritage') {
+        heritage = child;
+        break;
+      }
+    }
+    if (heritage === null) continue;
+
+    for (const clause of heritage.namedChildren) {
+      if (clause === null) continue;
+      if (clause.type === 'extends_clause') {
+        // `extends Foo` / `extends Foo<T>` — the base is the `value:` field
+        // (an identifier; generics live in a sibling `type_arguments`).
+        const value = clause.childForFieldName('value') ?? clause.firstNamedChild;
+        emitTsInheritanceBase(value, out);
+      } else if (clause.type === 'implements_clause') {
+        // `implements IFoo, IBar<T>` — each base type is a direct named child.
+        for (const base of clause.namedChildren) {
+          emitTsInheritanceBase(base, out);
+        }
+      }
+    }
+  }
+}
+
+/** Emit one `@reference.inherits` match for a TS heritage base, normalizing
+ *  the lookup name to its bare simple identifier. No-ops on null / non-type
+ *  nodes or when the bare name can't be derived. */
+function emitTsInheritanceBase(base: SyntaxNode | null, out: CaptureMatch[]): void {
+  if (base === null) return;
+  const nameNode = terminalTsTypeNameNode(base);
+  if (nameNode === null) return;
+  out.push({
+    '@reference.inherits': nodeToCapture('@reference.inherits', base),
+    '@reference.name': nodeToCapture('@reference.name', nameNode),
+  });
+}
+
+/** Resolve a TypeScript heritage base node to its bare simple-identifier node.
+ *  `Foo` → `Foo`, `Foo<T>` (generic_type) → `Foo`, `models.Base`
+ *  (nested_type_identifier / member_expression) → `Base`. Mirrors C#'s
+ *  `terminalTypeNameNode`; returns null when no leaf identifier is reachable. */
+function terminalTsTypeNameNode(node: SyntaxNode): SyntaxNode | null {
+  switch (node.type) {
+    case 'identifier':
+    case 'type_identifier':
+    // `extends ns.Base` parses as a member_expression whose tail is a
+    // `property_identifier` (not a type_identifier) — treat it as a leaf name.
+    case 'property_identifier':
+      return node;
+    case 'generic_type': {
+      // generic_type has a `name:` field (type_identifier / nested_type_identifier);
+      // recurse to strip the type_arguments and reach the bare base identifier.
+      const name = node.childForFieldName('name') ?? node.firstNamedChild;
+      return name === null ? null : terminalTsTypeNameNode(name);
+    }
+    case 'nested_type_identifier':
+    case 'member_expression': {
+      // Qualified `A.B.Base` → tail identifier `Base`.
+      const tail = node.lastNamedChild;
+      return tail === null ? null : terminalTsTypeNameNode(tail);
+    }
+    default:
+      return null;
+  }
 }
 
 /**

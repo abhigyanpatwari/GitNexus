@@ -17,7 +17,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
@@ -162,7 +167,102 @@ export function emitPythonScopeCaptures(
     out.push(grouped);
   }
 
+  out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Python class superclass
+ * lists so the registry-primary scope-resolution path emits EXTENDS edges
+ * (mirrors C#'s `synthesizeCsharpInheritanceReferences` / C++'s
+ * `emitCppInheritanceCaptures` / TypeScript's `synthesizeTsInheritanceReferences`).
+ * Without this, Python inheritance edges came only from the legacy
+ * `@heritage.*` path, which is dropped for registry-primary languages in the
+ * worker pipeline (issue #1951).
+ *
+ * Scope matches the legacy Python heritage leg (config-driven since #1940):
+ * every direct base in the `superclasses` `argument_list`, resolved to its bare
+ * simple name. Three base shapes that the previous synth DROPPED — and so
+ * silently omitted in production while the legacy `@heritage` leg captured them
+ * — are now handled (#1951):
+ *
+ *   - `class C(pkg.Base)`     → `attribute`  (trailing `.attribute` id → `Base`)
+ *   - `class C(pkg.sub.Base)` → nested `attribute` (recurse → `Base`)
+ *   - `class C(Generic[T])`   → `subscript`  (`.value` id → `Generic`)
+ *
+ * The bare-name text MUST agree with `normalizeSupertypeName` (the legacy leg's
+ * reduction in heritage-extractors/supertype-alternation.ts) so both legs emit
+ * the same edge under the CI scope-parity gate: `pkg.Base` → `Base`,
+ * `Generic[T]` → `Generic`, `pkg.Container[str]` → `Container`. Verified by a
+ * real tree-sitter-python parse. The simple `identifier` base keeps its exact
+ * prior capture (the base node itself).
+ *
+ * Tuple/multi bases (`class C(A, pkg.B, Gen[T])`) already iterate here — each
+ * `argument_list` named child is one base. Python has no interfaces, so every
+ * base resolves to a Class and the central `preEmitInheritanceEdges` pass emits
+ * EXTENDS; the EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * resolved target's symbol kind, so all bases are emitted with the same
+ * `inherits` kind here.
+ */
+function synthesizePythonInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'class_definition') return;
+    const superclasses = node.childForFieldName('superclasses');
+    if (superclasses === null || superclasses.type !== 'argument_list') return;
+    for (let i = 0; i < superclasses.namedChildCount; i++) {
+      const base = superclasses.namedChild(i);
+      if (base === null) continue;
+      const nameNode = pythonBaseLookupNameNode(base);
+      if (nameNode === null) continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', base),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * Reduce a Python superclass base node to the bare simple-identifier node whose
+ * `.text` is the lookup name `findClassBindingInScope` resolves. Mirrors the
+ * TypeScript `terminalTsTypeNameNode` / C++ `extractBaseLookupName` reference
+ * patterns, and its returned node's `.text` is contractually equal to
+ * `normalizeSupertypeName(base)` for every shape (real-parse verified):
+ *
+ *   - `identifier`  (`Base`)            → the node itself
+ *   - `attribute`   (`pkg.Base`,
+ *                    `pkg.sub.Base`)    → trailing `attribute:` identifier → `Base`
+ *   - `subscript`   (`Generic[T]`,
+ *                    `pkg.Container[T]`)→ `value:` (recurse, strips `[...]` and
+ *                                          any qualifier) → `Generic` / `Container`
+ *
+ * Returns null for any other shape (no leaf identifier reachable), so it never
+ * emits a spurious edge.
+ */
+function pythonBaseLookupNameNode(base: SyntaxNode): SyntaxNode | null {
+  switch (base.type) {
+    case 'identifier':
+      return base;
+    case 'attribute': {
+      // `pkg.Base` / `pkg.sub.Base`: the `attribute:` field is the trailing
+      // simple-identifier segment (`Base`); recurse so chained dotted paths
+      // still resolve to the final identifier.
+      const attr = base.childForFieldName('attribute');
+      return attr === null ? null : pythonBaseLookupNameNode(attr);
+    }
+    case 'subscript': {
+      // `Generic[T]` / `pkg.Container[str]`: the `value:` field is the
+      // subscripted base (identifier or attribute); recurse to strip the
+      // `[...]` slice and any qualifier, reaching the bare base name.
+      const value = base.childForFieldName('value');
+      return value === null ? null : pythonBaseLookupNameNode(value);
+    }
+    default:
+      return null;
+  }
 }
 
 function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {

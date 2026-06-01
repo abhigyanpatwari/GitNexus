@@ -26,6 +26,7 @@
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { swiftQualifiedBaseTail } from './base-type.js';
 import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
 
 const TYPE_DECL_NODE_TYPES = new Set(['class_declaration', 'protocol_declaration']);
@@ -83,7 +84,10 @@ function isClassKeyword(typeNode: SyntaxNode): boolean {
 
 /** First inherited type (superclass or first protocol) as raw text, or
  *  null. For a class the first `inheritance_specifier` is conventionally
- *  the superclass — `super.x()` only compiles when that is true. */
+ *  the superclass — `super.x()` only compiles when that is true. For a
+ *  `user_type` base the name is its trailing `type_identifier` segment (see
+ *  `swiftQualifiedBaseTail`), falling back to the raw node text when there is
+ *  no `type_identifier` child. */
 function firstInheritedType(typeNode: SyntaxNode): string | null {
   for (let i = 0; i < typeNode.namedChildCount; i++) {
     const child = typeNode.namedChild(i);
@@ -91,7 +95,7 @@ function firstInheritedType(typeNode: SyntaxNode): string | null {
     const inheritsFrom = child.childForFieldName('inherits_from') ?? child.firstNamedChild;
     if (inheritsFrom === null) return null;
     if (inheritsFrom.type === 'user_type') {
-      return inheritsFrom.firstNamedChild?.text ?? inheritsFrom.text;
+      return swiftQualifiedBaseTail(inheritsFrom)?.text ?? inheritsFrom.text;
     }
     return inheritsFrom.text;
   }
