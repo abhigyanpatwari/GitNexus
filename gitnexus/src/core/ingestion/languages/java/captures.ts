@@ -236,8 +236,7 @@ export function emitJavaScopeCaptures(
  * C#/Rust (#1951). Qualified bases (`a.b.Box`, `a.b.Box<T>`) remain a
  * pre-existing legacy gap: the synth resolves them (scoped-name tail), the
  * legacy query matches neither — both outcomes are safe (correct edge vs none).
- * The
- * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
+ * The EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
  * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
  * Base names are normalized to their bare simple identifier (`Box<T>` → `Box`,
