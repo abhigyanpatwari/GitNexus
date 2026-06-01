@@ -843,8 +843,8 @@ function parseExecSqlBlock(
   const tablePatterns = [
     // FROM table1 [AS alias], table2 [AS alias] … — handle comma-separated
     // lists with optional AS keyword, terminated by SQL clause keywords
-    // (WHERE, JOIN, GROUP, ON, ORDER, HAVING, UNION, SET, INTO, VALUES).
-    /\bFROM\s+([A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?(?:\s*,\s*[A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?)*)(?:\s+(?:WHERE|JOIN|GROUP|ON|ORDER|HAVING|UNION|SET|INTO|VALUES)\b|$)/gi,
+    // (WHERE, JOIN, GROUP, ON, ORDER, HAVING, UNION, SET, INTO, VALUES, FETCH, FOR, LIMIT, OFFSET, WITH).
+    /\bFROM\s+([A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?(?:\s*,\s*[A-Z0-9][A-Z0-9_]+(?:\s+(?:AS\s+)?[A-Z0-9][A-Z0-9_]*)?)*)(?:\s+(?:WHERE|JOIN|GROUP|ON|ORDER|HAVING|UNION|SET|INTO|VALUES|FETCH|FOR|LIMIT|OFFSET|WITH)\b|$)/gi,
     /\bINSERT\s+INTO\s+([A-Z0-9][A-Z0-9_]+)/gi,
     /\bUPDATE\s+([A-Z0-9][A-Z0-9_]+)/gi,
     /\bJOIN\s+([A-Z0-9][A-Z0-9_]+)/gi,
@@ -2026,7 +2026,10 @@ export function extractCobolSymbolsWithRegex(
 
     // Arithmetic statements — COMPUTE, ADD, SUBTRACT, MULTIPLY, DIVIDE
     // All extract target (written) and source operands (read) for ACCESSES edges
-    const arithMatch = line.match(/\b(COMPUTE|ADD|SUBTRACT|MULTIPLY|DIVIDE)\s+(.+)/i);
+    // Mask quoted strings before matching to avoid false positives from
+    // arithmetic keywords inside string literals (e.g., DISPLAY "COMPUTE").
+    const lineForArith = line.replace(/"[^"]*"/g, ' ').replace(/'[^']*'/g, ' ');
+    const arithMatch = lineForArith.match(/\b(COMPUTE|ADD|SUBTRACT|MULTIPLY|DIVIDE)\s+(.+)/i);
     if (arithMatch) {
       const verb = arithMatch[1].toUpperCase() as
         | 'COMPUTE'

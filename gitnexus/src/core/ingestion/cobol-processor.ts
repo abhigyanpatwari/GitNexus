@@ -178,8 +178,8 @@ export const processCobol = (
   const moduleNodeIds = new Map<string, string>(); // uppercase program name -> node id
 
   // ── 3. Process each COBOL program ──────────────────────────────────
-  const MAX_COBOL_FILE_SIZE =
-    parseInt(process.env.GITNEXUS_MAX_COBOL_FILE_SIZE_BYTES ?? '', 10) || 5 * 1024 * 1024;
+  const raw = parseInt(process.env.GITNEXUS_MAX_COBOL_FILE_SIZE_BYTES ?? '', 10);
+  const MAX_COBOL_FILE_SIZE = Number.isFinite(raw) && raw > 0 ? raw : 5 * 1024 * 1024;
   for (const file of programs) {
     // File-size guard: skip excessively large files to prevent OOM
     if (file.content.length > MAX_COBOL_FILE_SIZE) {
