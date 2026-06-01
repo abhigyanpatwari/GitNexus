@@ -93,6 +93,39 @@ describe('Go package import & call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified / generic / pointer / interface embeds (#1951)
+//
+// The registry-primary inheritance synth (languages/go/captures.ts) used to
+// emit edges ONLY for a bare `type_identifier` struct embed, silently DROPPING
+// the qualified (`pkg.Base`), pointer (`*pkg.Base`), qualified-generic
+// (`pkg.Box[T]`) struct embeds and ALL interface embeds — even though the
+// legacy `@heritage` leg (config-driven since #1940) captured them. This
+// fixture widens the synth to parity: every base reduces to its bare simple
+// name, struct bases resolve to EXTENDS and interface bases to IMPLEMENTS. The
+// bare-name struct embed (T → Local) is the byte-identical simple-base path
+// (unchanged), kept here as a regression guard. Runs under BOTH legs
+// (createResolverParityIt), so a regression on either leg fails.
+// ---------------------------------------------------------------------------
+
+describe('Go qualified-base embed resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for qualified / pointer / generic / bare struct embeds (tail-resolved)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['G → Box', 'P → Base', 'S → Base', 'T → Local']);
+  });
+
+  it('emits IMPLEMENTS for qualified and bare interface embeds (tail-resolved)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['R → Reader', 'RLocal → LocalIface']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler struct in two packages, package import disambiguates
 // ---------------------------------------------------------------------------
 

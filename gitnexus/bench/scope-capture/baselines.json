@@ -1,31 +1,70 @@
 {
-  "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. All six languages now thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp this PR).",
+  "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. The synthetic source is now HERITAGE-BEARING for every language (each Entity extends/implements/embeds/uses-trait/conforms-to a shared base) so the #1951 @reference.inherits synth is gated at scale, not just the base capture loop. All languages thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp #1951, java #1956).",
   "go": {
-    "fingerprint": "faca3555c61ed6980d2b739bf6b1cac7f4ad4644968a27e4687532d9835cd4c7",
-    "scaling_budget": 1.5
+    "fingerprint": "976bfd17cee048db11e06a27298e48919b7d45d5277d11923faeb61b138737dd",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 synth-widening: + go-qualified-base fixture; synthesizeGoInheritanceReferences now emits embeds for qualified_type (pkg.Base), generic_type (Box[T]), pointer, AND interface_type embeds (matching the #1940 legacy leg), reduced to bare names at parity. go-ambiguous gains an embed inherits capture. Linear (~1.01). (Earlier #1956: heritage-bearing scale source so the synth is gated at scale.)"
   },
   "cobol": {
     "fingerprint": "575016f329c0be29eb90db974f750d02a21b4a12515f7029bda312df713b27b0",
-    "scaling_budget": 1.5
+    "scaling_budget": 1.5,
+    "_note": "COBOL has no inheritance construct, so its scale source stays flat; unchanged."
+  },
+  "c": {
+    "fingerprint": "0de009bdbfe095f530fa87eb32bce6ab83092c904f26b3c8fe8d8ab587cf6dc9",
+    "scaling_budget": 1.5,
+    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance — flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
+  },
+  "cpp": {
+    "fingerprint": "a571d260559fa48994d12970965b4f9df93efd087541ca31dc7818ac4cd2a2a6",
+    "scaling_budget": 1.5,
+    "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12."
   },
   "csharp": {
-    "fingerprint": "bdc7803046011876b2d21ae38e9cb8c97ca1e01769f93ca8affe9317585427bf",
+    "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.)",
+    "fingerprint": "68ef32c126d5c6de5d8184c6ad0a6104043036daf9805947db8b21741b883f43",
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "025f5b6d4cf1d8cc42033f1f6b592f8d5428e571939c7f61df4d34b4bbe14be3",
-    "scaling_budget": 1.5
+    "fingerprint": "2ffad4ba7b1d2eb1ac407cb6d75d0eb98cbc1878260dbdfe982c0fc925b2d00c",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04)."
   },
   "php": {
-    "fingerprint": "00fe6e83cebd67c5f346fedb4234ebedf192995f9f171a424551cb792a0b91a9",
-    "scaling_budget": 1.5
+    "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "0f44b0d153b4534866589db93c582928651238b319cb606f2c6396362770cc18",
-    "scaling_budget": 1.5
+    "fingerprint": "bdc7dbfbe5ce7b1e98292f88b404071b4a4b5566f6e756cd637e36a2214967e1",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)"
   },
   "swift": {
-    "fingerprint": "e6870c409c1005944c51dffd6e485005bb206f7afcbc2ef078e0c2f781c2b2ad",
-    "scaling_budget": 1.5
+    "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
+  },
+  "java": {
+    "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.)"
+  },
+  "typescript": {
+    "fingerprint": "7087f62dbab5fff0d8a9c39f7bc305842ee73a7ba20d7b44677f6511c92e5b92",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 tri-review U2: + typescript-qualified-base fixture AND terminalTsTypeNameNode now treats a member_expression tail (property_identifier) as a leaf name, so qualified `extends ns.Base` synthesizes an edge (was dropped). Linear (~1.03)."
+  },
+  "javascript": {
+    "fingerprint": "a8ddfb15620ae55e50651fc21ab14c4a1f874d9b19e208cc6cbf0a8daac8ec5b",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
+    "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05)."
+  },
+  "kotlin": {
+    "fingerprint": "5121a11855cd9cc44a357ae3ff50953de80cdd743f00e8924c31503b132bcd84",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
+    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87)."
   }
 }

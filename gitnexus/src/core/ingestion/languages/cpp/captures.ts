@@ -1,6 +1,6 @@
 import type { Capture, CaptureMatch, ParameterTypeClass } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
@@ -41,17 +41,28 @@ export function emitCppScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
+    // hands us each matched node as `c.node`, so anchors resolve via a
+    // type-guarded lookup (`nodeIfType`) instead of re-deriving them with
+    // `findNodeAtRange(tree.rootNode, ...)` per match — the
+    // O(matches × rootChildren) root-walk fixed for go #1848 / python #1918 /
+    // rust/csharp #1915 / java, mirrored here for C++ (#1951). Each C++
+    // scope-query anchor used below captures directly ON the node the old
+    // root-walk re-derived (verified against CPP_SCOPE_QUERY in query.ts and a
+    // real-parse AST probe), so the type check is exact.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
     // ── Handle #include statements ──────────────────────────────────
+    // `@import.statement` is captured directly on the `preproc_include` node.
     if (grouped['@import.statement'] !== undefined) {
-      const anchor = grouped['@import.statement']!;
-      const includeNode = findNodeAtRange(tree.rootNode, anchor.range, 'preproc_include');
+      const includeNode = nodeIfType(nodeMap['@import.statement'], 'preproc_include');
       if (includeNode !== null) {
         const split = splitCppInclude(includeNode);
         if (split !== null) {
@@ -62,9 +73,9 @@ export function emitCppScopeCaptures(
     }
 
     // ── Handle using declarations (using namespace / using name) ────
+    // `@import.using-decl` is captured directly on the `using_declaration` node.
     if (grouped['@import.using-decl'] !== undefined) {
-      const anchor = grouped['@import.using-decl']!;
-      const usingNode = findNodeAtRange(tree.rootNode, anchor.range, 'using_declaration');
+      const usingNode = nodeIfType(nodeMap['@import.using-decl'], 'using_declaration');
       if (usingNode !== null) {
         const split = splitCppUsingDecl(usingNode);
         if (split !== null) {
@@ -93,12 +104,18 @@ export function emitCppScopeCaptures(
     }
 
     // ── Enrich function/method declarations with arity metadata ─────
-    const declAnchor = grouped['@declaration.function'] ?? grouped['@declaration.method'];
-    if (declAnchor !== undefined) {
-      const fnNode =
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'function_definition') ??
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'declaration') ??
-        findNodeAtRange(tree.rootNode, declAnchor.range, 'field_declaration');
+    // `@declaration.function` / `@declaration.method` capture directly on the
+    // `function_definition` (definitions/templates), `declaration` (free/
+    // constructor prototypes), or `field_declaration` (class-body method
+    // prototypes) node — the node the old findNodeAtRange re-derived.
+    const declAnchorNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'];
+    if (declAnchorNode !== undefined) {
+      const fnNode = nodeIfType(
+        declAnchorNode,
+        'function_definition',
+        'declaration',
+        'field_declaration',
+      );
       if (fnNode !== null) {
         const arity = computeCppDeclarationArity(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -182,9 +199,9 @@ export function emitCppScopeCaptures(
     }
 
     // ── Detect static variables (file-local linkage) ────────────────
-    const varDeclAnchor = grouped['@declaration.variable'];
-    if (varDeclAnchor !== undefined) {
-      const varNode = findNodeAtRange(tree.rootNode, varDeclAnchor.range, 'declaration');
+    // `@declaration.variable` is captured directly on the `declaration` node.
+    if (grouped['@declaration.variable'] !== undefined) {
+      const varNode = nodeIfType(nodeMap['@declaration.variable'], 'declaration');
       if (varNode !== null) {
         if (hasStaticStorageClass(varNode) || isInsideAnonymousNamespace(varNode)) {
           const nameText = grouped['@declaration.name']?.text;
@@ -196,22 +213,30 @@ export function emitCppScopeCaptures(
     }
 
     // ── Enrich call references with arity ───────────────────────────
+    // `@reference.call.free` / `.member` capture on the `call_expression` (plain
+    // / member / template calls) or on the `binary_expression` (the operator-call
+    // patterns: `a + b`, `lhs << rhs`); `@reference.call.qualified` always on the
+    // `call_expression`. The captured node IS the node the old findNodeAtRange
+    // re-derived (verified against CPP_SCOPE_QUERY + a real-parse probe).
     const callAnchor =
       grouped['@reference.call.free'] ??
       grouped['@reference.call.member'] ??
       grouped['@reference.call.qualified'];
+    const callAnchorNode =
+      nodeMap['@reference.call.free'] ??
+      nodeMap['@reference.call.member'] ??
+      nodeMap['@reference.call.qualified'];
     const operatorAnchor = grouped['@reference.operator'];
     if (operatorAnchor !== undefined) {
+      // When `@reference.operator` fires, the co-captured call anchor is the
+      // enclosing `binary_expression` itself, so a type guard reproduces the
+      // old findNodeAtRange(callAnchor.range, 'binary_expression').
       const operatorNode =
-        callAnchor !== undefined
-          ? findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression')
-          : null;
+        callAnchorNode !== undefined ? nodeIfType(callAnchorNode, 'binary_expression') : null;
       if (operatorNode !== null && isPrimitiveOnlyBinaryOperator(operatorNode)) continue;
     }
-    if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode =
-        findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
-        findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression');
+    if (callAnchorNode !== undefined && grouped['@reference.arity'] === undefined) {
+      const callNode = nodeIfType(callAnchorNode, 'call_expression', 'binary_expression');
       if (callNode?.type === 'call_expression') {
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
@@ -228,17 +253,25 @@ export function emitCppScopeCaptures(
     }
 
     if (operatorAnchor !== undefined && grouped['@reference.name'] === undefined) {
+      // The old code did `findNodeAtRange(tree.rootNode, operatorAnchor.range,
+      // operatorAnchor.text)`, searching for a node of type `+` / `<<` at the
+      // operator-token range. That token is an UNNAMED grammar node, and
+      // findNodeAtRange only descends `namedChild`ren, so the search NEVER hit
+      // and ALWAYS fell back to `tree.rootNode`. Use `tree.rootNode` directly to
+      // preserve the exact synthetic-capture range while dropping the root-walk.
       grouped['@reference.name'] = syntheticCapture(
         '@reference.name',
-        findNodeAtRange(tree.rootNode, operatorAnchor.range, operatorAnchor.text) ?? tree.rootNode,
+        tree.rootNode,
         `operator${operatorAnchor.text}`,
       );
     }
 
     // ── Enrich constructor calls (new Foo()) with arity ─────────────
+    // `@reference.call.constructor` is captured directly on the `new_expression`.
     const ctorCallAnchor = grouped['@reference.call.constructor'];
+    const ctorCallAnchorNode = nodeMap['@reference.call.constructor'];
     if (ctorCallAnchor !== undefined && grouped['@reference.arity'] === undefined) {
-      const newNode = findNodeAtRange(tree.rootNode, ctorCallAnchor.range, 'new_expression');
+      const newNode = nodeIfType(ctorCallAnchorNode, 'new_expression');
       if (newNode !== null) {
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
@@ -249,12 +282,18 @@ export function emitCppScopeCaptures(
     }
 
     // ── Synthesize argument types for overload narrowing ────────────
+    // The any-call anchor is either the call/operator anchor (`call_expression`
+    // / `binary_expression`) or the constructor anchor (`new_expression`); the
+    // captured node IS what the old findNodeAtRange re-derived.
     const anyCallAnchor = callAnchor ?? ctorCallAnchor;
+    const anyCallAnchorNode = callAnchorNode ?? ctorCallAnchorNode;
     if (anyCallAnchor !== undefined && grouped['@reference.parameter-types'] === undefined) {
-      const cNode =
-        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'call_expression') ??
-        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'new_expression') ??
-        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'binary_expression');
+      const cNode = nodeIfType(
+        anyCallAnchorNode,
+        'call_expression',
+        'new_expression',
+        'binary_expression',
+      );
       if (cNode !== null) {
         const argTypes =
           cNode.type === 'binary_expression'
@@ -293,13 +332,12 @@ export function emitCppScopeCaptures(
     // `@declaration.namespace` fires only for NAMED namespaces (the query
     // requires a `name: (namespace_identifier)` child). Use the unconditional
     // `@scope.namespace` capture so the anonymous-namespace branch also runs.
-    const namespaceScopeAnchor = grouped['@declaration.namespace'] ?? grouped['@scope.namespace'];
-    if (namespaceScopeAnchor !== undefined) {
-      const nsNode = findNodeAtRange(
-        tree.rootNode,
-        namespaceScopeAnchor.range,
-        'namespace_definition',
-      );
+    // `@declaration.namespace` and `@scope.namespace` both capture directly on
+    // the `namespace_definition` node.
+    const namespaceScopeAnchorNode =
+      nodeMap['@declaration.namespace'] ?? nodeMap['@scope.namespace'];
+    if (namespaceScopeAnchorNode !== undefined) {
+      const nsNode = nodeIfType(namespaceScopeAnchorNode, 'namespace_definition');
       if (nsNode !== null) {
         // Range coords stored in the shared Range shape use 1-based
         // line numbers (see `ast-helpers.ts` rangeForNode where
@@ -329,11 +367,11 @@ export function emitCppScopeCaptures(
     // qualified `Ns::f(s)` and member `obj.f(s)` calls bypass the
     // free-call fallback entirely (handled by receiver-bound-calls).
     if (grouped['@reference.call.free'] !== undefined) {
-      const freeCallNode = findNodeAtRange(
-        tree.rootNode,
-        grouped['@reference.call.free']!.range,
-        'call_expression',
-      );
+      // `@reference.call.free` captures on a `call_expression` (plain/template
+      // free call) or a `binary_expression` (the `lhs << rhs` operator-call
+      // pattern). The old findNodeAtRange filtered to `call_expression`, so the
+      // `binary_expression` case yields null here — `nodeIfType` matches exactly.
+      const freeCallNode = nodeIfType(nodeMap['@reference.call.free'], 'call_expression');
       if (freeCallNode !== null) {
         const adlAnchorRange = grouped['@reference.call.free']!.range;
         if (isParenthesizedFunctionCall(freeCallNode)) {
@@ -358,7 +396,8 @@ export function emitCppScopeCaptures(
       grouped['@type-binding.type']?.text === 'auto'
     ) {
       const anchor = grouped['@type-binding.assignment']!;
-      const declNode = findNodeAtRange(tree.rootNode, anchor.range, 'declaration');
+      // `@type-binding.assignment` is captured directly on the `declaration` node.
+      const declNode = nodeIfType(nodeMap['@type-binding.assignment'], 'declaration');
       if (declNode !== null) {
         const declarator = declNode.childForFieldName('declarator');
         if (declarator?.type === 'init_declarator') {

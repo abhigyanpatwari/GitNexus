@@ -23,6 +23,31 @@ import {
 const it = createResolverParityIt('javascript');
 
 // ---------------------------------------------------------------------------
+// Qualified (namespaced) base (#1951): `extends ns.Base` parses as a
+// class_heritage holding a member_expression (object: `ns`, property: `Base`).
+// The registry-primary synth (synthesizeJsInheritanceReferences) previously
+// dropped member_expression bases, emitting only for a direct identifier base,
+// so production silently omitted this EXTENDS edge. It is now resolved by the
+// base's trailing property_identifier (`Base`), matching the legacy @heritage
+// leg's normalizeSupertypeName reduction. `Plain extends Base` is the bare
+// control (its simple-base handling is unchanged). Runs under BOTH legs via
+// createResolverParityIt.
+// ---------------------------------------------------------------------------
+
+describe('JavaScript qualified-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'javascript-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for the qualified base (ns.Base) and the bare control (Base)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Base']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // skipGraphPhases: verify pipeline works correctly when graph phases are skipped
 // ---------------------------------------------------------------------------
 

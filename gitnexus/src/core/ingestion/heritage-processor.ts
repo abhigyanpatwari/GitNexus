@@ -20,6 +20,7 @@ import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, type NodeLabel, type SupportedLanguages } from 'gitnexus-shared';
+import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
@@ -202,6 +203,10 @@ export const processHeritage = async (
     // 1. Check language support
     const language = getLanguageFromFilename(file.path);
     if (!language) continue;
+    // Registry-primary gate: the scope-based phase owns inheritance (EXTENDS/
+    // IMPLEMENTS) for this language, so the legacy `@heritage` pass skips it —
+    // mirrors `call-processor`/`import-processor` (#1951).
+    if (isRegistryPrimary(language)) continue;
     if (!isLanguageAvailable(language)) {
       if (skippedByLang) {
         skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
