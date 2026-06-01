@@ -350,11 +350,6 @@ describe('Go structural interface dispatch', () => {
     );
   }, 60000);
 
-  function nodeQualifiedName(nodeId: string): string {
-    const node = result.graph.getNode(nodeId);
-    return (node?.properties.qualifiedName ?? node?.properties.name ?? nodeId) as string;
-  }
-
   function owningTypeName(methodId: string): string {
     for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
       if (rel.targetId !== methodId) continue;
