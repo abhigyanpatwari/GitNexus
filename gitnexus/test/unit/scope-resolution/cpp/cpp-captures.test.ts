@@ -230,6 +230,13 @@ describe('emitCppScopeCaptures — variable declarations', () => {
     const names = matches.map((m) => m['@declaration.name'].text).sort();
     expect(names).toEqual(['a', 'b', 'c', 'd', 'p']);
   });
+
+  it('captures qualified-type multi-declarator variables', () => {
+    const src = 'namespace data { struct Pair {}; } void f() { data::Pair a, b; }';
+    const matches = allMatches(src, (t) => t.includes('@declaration.variable'));
+    const names = matches.map((m) => m['@declaration.name'].text).sort();
+    expect(names).toEqual(['a', 'b']);
+  });
 });
 
 // ── Declarations — enums ────────────────────────────────────────────────────
