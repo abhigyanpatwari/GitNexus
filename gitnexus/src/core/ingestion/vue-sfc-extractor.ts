@@ -141,6 +141,31 @@ export function extractTemplateComponents(vueContent: string): string[] {
   return [...components];
 }
 
+// ── Per-element event binding extraction ──────────────────────────────────
+//
+// Two sibling regexes capture opening tags distinguished by PascalCase
+// (Vue components) vs lowercase (native HTML elements). Both stop their
+// attribute-block capture at the first unescaped `>` — which handles the
+// common single-line case without a full template AST. Multi-line tags
+// whose attribute block contains a literal `>` are documented as a known
+// limitation (#1647).
+const COMPONENT_TAG_RE = /<([A-Z][A-Za-z0-9]+)([^>]*?)(?:\/>|>)/g;
+const NATIVE_TAG_RE = /<([a-z][a-z0-9-]*)([^>]*?)(?:\/>|>)/g;
+
+// Within any tag's attribute block: matches Vue event bindings.
+//   @action="handleAction"
+//   @keyup.enter="submit"
+//   v-on:click="onClick"
+const TAG_EVENT_RE = /(?:@|v-on:)([\w:.]+)\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
+
+// ── Script emit() call extraction ─────────────────────────────────────────
+//
+// Matches `emit('eventName', ...)` and `emit("eventName", ...)` calls.
+// Only extracts the event name — the payload and context are not needed for
+// graph edge attribution.
+const EMIT_CALL_RE = /\bemit\s*\(\s*['"]([A-Za-z][A-Za-z0-9-]*)["']/g;
+
+// ── All-event-handler regex (native + component elements) ─────────────────
 // Matches simple method-name references in Vue event-handler attributes.
 // Captures only bare identifiers — not inline expressions with arguments,
 // arrow functions, or compound expressions.
@@ -188,6 +213,131 @@ export function extractTemplateEventHandlers(vueContent: string): string[] {
 //   :key="post.id"               — skipped (member access)
 //   :id="1"                      — skipped (literal)
 const BOUND_ATTR_RE = /(?::[\w-]+|v-bind:[\w-]+)\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
+
+export interface ComponentEventBinding {
+  /** PascalCase name of the child component element (e.g. `"PostList"`). */
+  componentName: string;
+  /** Vue event name without the `@` prefix (e.g. `"select"`, `"keyup.enter"`). */
+  eventName: string;
+  /** Bare identifier of the parent handler function (e.g. `"onPostSelected"`). */
+  handlerName: string;
+}
+
+/**
+ * Extract Vue component event bindings from a `<template>` block.
+ *
+ * Scans PascalCase component elements (e.g. `<PostList>`, `<UserCard>`) and
+ * returns each `@event="handler"` binding found in the element's attribute
+ * block. Native HTML element event handlers (`@click` on `<button>`, etc.)
+ * are intentionally excluded — only component-to-component event bindings
+ * that go through Vue's `emit()` / `defineEmits` system are included.
+ *
+ * **Limitation:** component tags whose attribute block spans multiple lines
+ * and contains a `>` inside an attribute value are not captured (the regex
+ * stops at the first `>`). Full template AST parsing would be required for
+ * those edge cases (tracked in #1647).
+ */
+export function extractComponentEventBindings(vueContent: string): ComponentEventBinding[] {
+  const templateMatch = TEMPLATE_RE.exec(vueContent);
+  if (!templateMatch) return [];
+
+  const templateContent = templateMatch[2];
+  const bindings: ComponentEventBinding[] = [];
+
+  COMPONENT_TAG_RE.lastIndex = 0;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = COMPONENT_TAG_RE.exec(templateContent)) !== null) {
+    const componentName = tagMatch[1];
+    const attrs = tagMatch[2];
+
+    TAG_EVENT_RE.lastIndex = 0;
+    let eventMatch: RegExpExecArray | null;
+    while ((eventMatch = TAG_EVENT_RE.exec(attrs)) !== null) {
+      bindings.push({
+        componentName,
+        eventName: eventMatch[1],
+        handlerName: eventMatch[2],
+      });
+    }
+  }
+
+  return bindings;
+}
+
+/**
+ * Extract event handler names bound to native HTML elements in the template.
+ *
+ * Only processes lowercase-named elements (`<button>`, `<input>`, `<div>`,
+ * etc.) — PascalCase component elements are handled by
+ * `extractComponentEventBindings`. Returns bare handler identifiers only;
+ * inline expressions with arguments or arrow functions are excluded.
+ *
+ * These handlers represent direct DOM-event→function relationships and
+ * are emitted as `CALLS` edges (not `BINDS_EVENT_HANDLER`), because native
+ * events are synchronous browser callbacks, not Vue's component-event system.
+ */
+export function extractNativeElementEventHandlers(vueContent: string): string[] {
+  const templateMatch = TEMPLATE_RE.exec(vueContent);
+  if (!templateMatch) return [];
+
+  const templateContent = templateMatch[2];
+  const handlers: string[] = [];
+
+  NATIVE_TAG_RE.lastIndex = 0;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = NATIVE_TAG_RE.exec(templateContent)) !== null) {
+    const attrs = tagMatch[2];
+
+    TAG_EVENT_RE.lastIndex = 0;
+    let eventMatch: RegExpExecArray | null;
+    while ((eventMatch = TAG_EVENT_RE.exec(attrs)) !== null) {
+      handlers.push(eventMatch[2]);
+    }
+  }
+
+  return handlers;
+}
+
+export interface ScriptEmitCall {
+  /** Vue event name passed to `emit()` (e.g. `"action"`, `"update"`). */
+  eventName: string;
+}
+
+/**
+ * Extract `emit('eventName', ...)` calls from a Vue SFC's `<script>` block.
+ *
+ * Scans the raw SFC source (full `.vue` file), extracts the script content,
+ * then finds bare `emit('...')` calls. Only captures literal string event
+ * names — dynamic expressions (`emit(eventName)`) are excluded.
+ *
+ * Returns deduplicated emit declarations.
+ */
+export function extractScriptEmitCalls(vueContent: string): ScriptEmitCall[] {
+  const extracted = extractVueScript(vueContent);
+  // Also handle already-extracted script content (worker-mode path)
+  const scriptText =
+    extracted !== null
+      ? extracted.scriptContent
+      : /<(?:template|style)\b/i.test(vueContent)
+        ? null
+        : vueContent;
+  if (!scriptText) return [];
+
+  const seen = new Set<string>();
+  const calls: ScriptEmitCall[] = [];
+
+  EMIT_CALL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = EMIT_CALL_RE.exec(scriptText)) !== null) {
+    const eventName = match[1];
+    if (!seen.has(eventName)) {
+      seen.add(eventName);
+      calls.push({ eventName });
+    }
+  }
+
+  return calls;
+}
 
 /**
  * Extract variable identifiers from Vue template bound-attribute values.

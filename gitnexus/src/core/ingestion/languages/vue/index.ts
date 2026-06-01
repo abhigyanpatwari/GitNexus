@@ -18,11 +18,16 @@
  * ## Known limitations
  *
  *   1. **Template expressions** — Full template AST parsing is not performed.
- *      A dedicated post-loop pass in `call-processor.ts` extracts three
- *      categories of template-derived edges via lightweight regex:
- *        - PascalCase component references → `vue-template-component` CALLS
- *        - `@event="methodName"` single-identifier handlers → `vue-template-callback` CALLS
- *        - `:prop="varName"` single-identifier bindings → `vue-template-attribute` ACCESSES
+ *      `vueScopeResolver.emitPostResolutionEdges` extracts four categories of
+ *      template-derived edges via lightweight regex, all emitted after standard
+ *      scope-resolution passes complete:
+ *        - PascalCase component references → `vue-template-component` `CALLS`
+ *        - `@event="handler"` on **native** elements → `vue-template-callback` `CALLS`
+ *        - `@event="handler"` on **component** elements → `vue-event: @<name>` `BINDS_EVENT_HANDLER`
+ *        - `:prop="varName"` single-identifier bindings → `vue-template-attribute` `ACCESSES`
+ *      `BINDS_EVENT_HANDLER` and `EMITS_EVENT` are complementary "hanging" edges:
+ *      a Cypher query joining on the shared component File node reveals which
+ *      handlers receive which component's emitted events.
  *      Complex inline expressions (`@click="toggle(item)"`, `{{ a + b }}`,
  *      member-access bindings `:key="post.id"`) are intentionally excluded
  *      because they cannot be resolved to a single call/access target without

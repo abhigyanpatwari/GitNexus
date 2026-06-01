@@ -318,15 +318,19 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'resolves value imports from UserProfile.vue to types.ts',
     'resolves value imports from UserProfile.vue to api.ts',
     'resolves value imports from TodoList.vue to utils.ts',
-    // Template-derived edges are emitted by the dedicated registry-primary
-    // Vue template pass (`call-processor.ts`). The legacy resolver never runs
-    // this pass, so these edges are absent on the REGISTRY_PRIMARY_VUE=0 path.
+    // Template-derived edges are emitted via `emitPostResolutionEdges` on the
+    // registry-primary path. The legacy resolver never runs this hook, so
+    // these edges are absent on the REGISTRY_PRIMARY_VUE=0 path.
     'emits CALLS edge from @click="handleSave" in UserProfile.vue template',
-    'emits CALLS edge from @select="onPostSelected" in App.vue template',
     'emits CALLS edge from @keyup.enter="addTodo" in TodoList.vue template',
-    'emits CALLS edge from @loaded="onUserLoaded" in App.vue template',
     'emits ACCESSES edge for :userId="currentUserId" in App.vue template',
     'emits ACCESSES edge for :posts="allPosts" in App.vue template',
+    // Component event-system edges (BINDS_EVENT_HANDLER / EMITS_EVENT) are
+    // registry-primary-only — the legacy resolver has no equivalent.
+    'emits BINDS_EVENT_HANDLER from onPostSelected to PostList (component event)',
+    'emits BINDS_EVENT_HANDLER from onUserLoaded to UserCard (component event)',
+    'emits EMITS_EVENT from PostList.vue for emit("select")',
+    'emits EMITS_EVENT from UserCard.vue for emit("loaded")',
     // <script setup> implicit-export detection: the scope-based path marks
     // all top-level <script setup> bindings as exported; the legacy path
     // relies on per-node isExported flags from the parse worker which may

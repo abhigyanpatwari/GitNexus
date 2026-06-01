@@ -115,7 +115,25 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
-  | 'QUERIES';
+  | 'QUERIES'
+  /** Vue component event system: a handler function in a parent component is
+   *  bound to an event emitted by a child component (`@event="handlerFn"`).
+   *  Source = handler Function/Method node in the parent.
+   *  Target = the child component's File node.
+   *  `reason` encodes the event name: `vue-event: @<eventName>`.
+   *  Complements `EMITS_EVENT`; together they enable Cypher queries that
+   *  trace which handlers receive which component's emitted events. */
+  | 'BINDS_EVENT_HANDLER'
+  /** Vue component event system: a function inside a component calls
+   *  `emit('eventName', ...)`, advertising that this component can emit
+   *  that event.
+   *  Source = Function/Method node containing the `emit()` call (falls
+   *  back to the File node when the enclosing function cannot be determined).
+   *  Target = the component's own File node (self-referential annotation).
+   *  `reason` encodes the event name: `vue-emit: <eventName>`.
+   *  Complements `BINDS_EVENT_HANDLER`; a Cypher query joining on the
+   *  component File node reveals all (emitter, handler) pairs. */
+  | 'EMITS_EVENT';
 
 export interface GraphNode {
   id: string;

@@ -916,6 +916,39 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional post-resolution hook for emitting language-specific graph edges
+   * that cannot be derived from scope captures or import resolution alone.
+   *
+   * Runs AFTER all standard edge-emission passes (receiver-bound CALLS,
+   * free-call fallback, references-via-lookup, and import edges). Receives
+   * the fully-resolved graph, all ParsedFiles, the node lookup, the finalized
+   * scope indexes, and the raw file-content map.
+   *
+   * Vue uses this hook to emit:
+   *   - `CALLS` (`vue-template-component`) for PascalCase component elements
+   *   - `BINDS_EVENT_HANDLER` for `@event="handler"` on component elements
+   *   - `EMITS_EVENT` for `emit('eventName', …)` calls in script blocks
+   *   - `ACCESSES` (`vue-template-attribute`) for `:prop="var"` bindings
+   *
+   * Unlike `emitImplicitImportEdges` and `emitHeritageEdges` (which run
+   * before MRO construction), this hook runs last, after the full graph is
+   * populated, so it can safely query node existence and resolved import
+   * targets via `indexes.imports`.
+   *
+   * Default: undefined (no supplementary edges needed).
+   */
+  readonly emitPostResolutionEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    indexes: ScopeResolutionIndexes,
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly resolutionConfig?: unknown;
+    },
+  ) => void;
+
+  /**
    * Optional post-resolution pass: emit CALLS edges for member-call sites
    * whose receiver cannot be typed by the scope chain (no `TypeRef`).
    * Dynamically-typed languages with untyped/`mixed`/`Any` parameters use

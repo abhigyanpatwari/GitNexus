@@ -165,15 +165,23 @@ describe('Vue Composition API (<script setup>)', () => {
     expect(templateToSave.length).toBe(1);
   });
 
-  it('emits CALLS edge from @select="onPostSelected" in App.vue template', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const templateToHandler = calls.filter(
+  it('emits BINDS_EVENT_HANDLER from onPostSelected to PostList (component event)', () => {
+    const bindings = getRelationships(result, 'BINDS_EVENT_HANDLER');
+    const toPostList = bindings.filter(
       (e) =>
         e.sourceFilePath.endsWith('App.vue') &&
         e.target === 'onPostSelected' &&
-        e.rel.reason === 'vue-template-callback',
+        e.rel.reason === 'vue-event: @select',
     );
-    expect(templateToHandler.length).toBe(1);
+    expect(toPostList.length).toBe(1);
+  });
+
+  it('emits EMITS_EVENT from PostList.vue for emit("select")', () => {
+    const emits = getRelationships(result, 'EMITS_EVENT');
+    const postListEmit = emits.filter(
+      (e) => e.sourceFilePath.endsWith('PostList.vue') && e.rel.reason === 'vue-emit: select',
+    );
+    expect(postListEmit.length).toBe(1);
   });
 
   // Template attribute-binding ACCESSES -------------------------------------
@@ -442,15 +450,23 @@ describe('Vue cross-file composable and class resolution', () => {
 
   // Template event-handler CALLS --------------------------------------------
 
-  it('emits CALLS edge from @loaded="onUserLoaded" in App.vue template', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const templateToHandler = calls.filter(
+  it('emits BINDS_EVENT_HANDLER from onUserLoaded to UserCard (component event)', () => {
+    const bindings = getRelationships(result, 'BINDS_EVENT_HANDLER');
+    const toUserCard = bindings.filter(
       (e) =>
         e.sourceFilePath.endsWith('App.vue') &&
         e.target === 'onUserLoaded' &&
-        e.rel.reason === 'vue-template-callback',
+        e.rel.reason === 'vue-event: @loaded',
     );
-    expect(templateToHandler.length).toBe(1);
+    expect(toUserCard.length).toBe(1);
+  });
+
+  it('emits EMITS_EVENT from UserCard.vue for emit("loaded")', () => {
+    const emits = getRelationships(result, 'EMITS_EVENT');
+    const userCardEmit = emits.filter(
+      (e) => e.sourceFilePath.endsWith('UserCard.vue') && e.rel.reason === 'vue-emit: loaded',
+    );
+    expect(userCardEmit.length).toBe(1);
   });
 
   // File nodes ---------------------------------------------------------------
