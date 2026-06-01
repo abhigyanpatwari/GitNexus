@@ -10,6 +10,16 @@
     "scaling_budget": 1.5,
     "_note": "COBOL has no inheritance construct, so its scale source stays flat; unchanged."
   },
+  "c": {
+    "fingerprint": "0de009bdbfe095f530fa87eb32bce6ab83092c904f26b3c8fe8d8ab587cf6dc9",
+    "scaling_budget": 1.5,
+    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance — flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
+  },
+  "cpp": {
+    "fingerprint": "a571d260559fa48994d12970965b4f9df93efd087541ca31dc7818ac4cd2a2a6",
+    "scaling_budget": 1.5,
+    "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12."
+  },
   "csharp": {
     "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + implements IEntity); both edge forms gated at scale; linear (~1.04).",
     "fingerprint": "77e393ec6aac0d785fe5bc0a1473197343cc52ea30bb2a4afc90b172a131d151",

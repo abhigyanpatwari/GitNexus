@@ -38,6 +38,8 @@ import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescri
 import { emitJsScopeCaptures } from '../../src/core/ingestion/languages/javascript/index.ts';
 import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/index.ts';
 import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/index.ts';
+import { emitCScopeCaptures } from '../../src/core/ingestion/languages/c/index.ts';
+import { emitCppScopeCaptures } from '../../src/core/ingestion/languages/cpp/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'lang-resolution');
@@ -182,6 +184,36 @@ const LANGS = [
       '       PROGRAM-ID. BENCH.\n' +
       '       PROCEDURE DIVISION.\n',
     unit: (n) => `       PARA-${String(n).padStart(5, '0')}.\n           DISPLAY "P${n}".\n`,
+  },
+  {
+    name: 'c',
+    emit: emitCScopeCaptures,
+    fixturePrefix: 'c',
+    exts: ['.c', '.h'],
+    file: 'bench.c',
+    // C has no inheritance construct — flat scale source. Added (was unbenched);
+    // adding it exposed + fixed the same O(n²) findNodeAtRange root-walk (#1956).
+    header: '#include <stdint.h>\n#include <stddef.h>\n\ntypedef int64_t id_t;\n\n',
+    unit: (n) =>
+      `typedef struct Entity${n} {\n  id_t id;\n  const char *name;\n} Entity${n};\n\n` +
+      `id_t entity_${n}_get_id(Entity${n} *e) { return e->id; }\n` +
+      `void entity_${n}_set_name(Entity${n} *e, const char *v) { e->name = v; }\n\n`,
+  },
+  {
+    name: 'cpp',
+    emit: emitCppScopeCaptures,
+    fixturePrefix: 'cpp',
+    exts: ['.cpp', '.cc', '.cxx', '.hpp', '.h'],
+    file: 'bench.cpp',
+    // Heritage-bearing: `: public Base, public Mixin` (single + multiple
+    // inheritance) drives emitCppInheritanceCaptures (#1951) at scale. Added
+    // (was unbenched); adding it exposed + fixed the same O(n²) root-walk (#1956).
+    header:
+      '#include <string>\n\nclass Base {\n public:\n  long baseId() const { return 0; }\n};\n\nclass Mixin {\n public:\n  void mix() {}\n};\n\n',
+    unit: (n) =>
+      `class Entity${n} : public Base, public Mixin {\n public:\n  long id;\n  std::string name;\n` +
+      `  long getId() const { return id; }\n` +
+      `  void setName(std::string v) { name = v; }\n};\n\n`,
   },
   {
     name: 'swift',
