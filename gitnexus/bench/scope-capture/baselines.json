@@ -15,9 +15,9 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "dd894fe35cbbf2eafe1c6b6d85b61c274f3e9e57c93135416bf54943b93aa189",
+    "fingerprint": "cfe46cc7063106ccb369d532984c75800da5831b743b1b06760e03b4373fdd33",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
+    "_rebaselined": "#1956 review: + rust-cross-module-collision fixture (added to the rust-* corpus); capture-output addition only, existing fixtures byte-identical, scaling stays linear (~1.02)."
   },
   "php": {
     "fingerprint": "65fdca54cf8426ec057995981b24fc414c6bca842cb41984ec3bbd5054a84eec",
@@ -30,14 +30,14 @@
     "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
   },
   "swift": {
-    "fingerprint": "fbbe345fa9e8e5f73f946cfd9edf6ac01ef5e646c2439913c7f173cc63714e55",
+    "fingerprint": "679d35552735e94523a0885901b1673c1dabb17ccc88e516b904993dd09d8c0e",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1951: scope-resolution inheritance captures (@reference.inherits); legitimate capture-output change, scaling stays linear."
+    "_rebaselined": "#1956 review: + swift-qualified-base fixture (added to the swift-* corpus); existing fixtures byte-identical (golden regen was purely additive), scaling stays linear (~1.07)."
   },
   "typescript": {
-    "fingerprint": "3d01a5d210338b22c5112e1edba3cf98dc311f9bd52c3f1a72cf21123c5b7009",
+    "fingerprint": "bc2aba682c02b85aaebae88b918a6b0acf21df9a0ba21235b452b2bda3232d0f",
     "scaling_budget": 1.5,
-    "_added": "#1951: bench coverage added (was ungated); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear."
+    "_rebaselined": "#1956 review: + typescript-generic-base fixture (added to the typescript-* corpus); scope-capture synth unchanged (only the legacy @heritage query was widened), existing fixtures byte-identical, scaling stays linear (~1.0)."
   },
   "javascript": {
     "fingerprint": "531241f41853faaf88f970b0191032b35990f46069458dbf5c81b15144879dd7",
