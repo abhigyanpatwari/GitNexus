@@ -35,7 +35,6 @@ import { resolveReferenceSites, type ResolveStats } from '../../resolve-referenc
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
-import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
@@ -124,27 +123,26 @@ function preEmitInheritanceEdges(
     const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
       targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
     const edgeKey = `${edgeType}:${callerGraphId}->${targetGraphId}`;
-    if (existing.has(edgeKey)) continue;
-
-    if (
-      tryEmitEdge(
-        graph,
-        scopes,
-        nodeLookup,
-        site,
-        targetDef,
-        'scope-resolution: inherits',
-        seen,
-        0.85,
-        false,
-        // Pin the edge to the enclosing class (not the method/constructor
-        // `resolveCallerGraphId` would otherwise prefer) and to the
-        // interface-vs-class-derived edge type. See #1951.
-        { edgeType, callerGraphId },
-      )
-    ) {
-      existing.add(edgeKey);
-    }
+    // Emit the inheritance edge directly rather than threading an override bag
+    // through `tryEmitEdge`. This pre-pass is the authoritative inheritance
+    // emitter: it already owns the caller (the enclosing class — NOT the
+    // method/constructor `resolveCallerGraphId` would otherwise prefer, which
+    // broke MRO for C# 12 primary constructors, #1951), the target id, and the
+    // EXTENDS-vs-IMPLEMENTS type. The per-site `dedupKey` + shared `seen` set and
+    // the `rel:` id shape match `tryEmitEdge` exactly, so graph output and
+    // cross-pass dedup are byte-identical.
+    const dedupKey = `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+    if (existing.has(edgeKey) || seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    existing.add(edgeKey);
+    graph.addRelationship({
+      id: `rel:${dedupKey}`,
+      sourceId: callerGraphId,
+      targetId: targetGraphId,
+      type: edgeType,
+      confidence: 0.85,
+      reason: 'scope-resolution: inherits',
+    });
   }
 
   return handledSites;
