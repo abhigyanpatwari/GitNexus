@@ -25,6 +25,7 @@
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { generateId } from '../../../../lib/utils.js';
 import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
@@ -164,6 +165,56 @@ function preEmitInheritanceEdges(
   }
 
   return handledSites;
+}
+
+function emitDetectedInterfaceImplementations(
+  graph: KnowledgeGraph,
+  parsedFiles: readonly ParsedFile[],
+  nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+  provider: ScopeResolver,
+  indexes: ReturnType<typeof finalizeScopeModel>,
+  model: SemanticModel,
+): number {
+  if (provider.detectInterfaceImplementations === undefined) return 0;
+
+  const graphIdByDefId = new Map<string, string>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+      const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
+      if (graphId !== undefined) graphIdByDefId.set(def.nodeId, graphId);
+    }
+  }
+
+  const existing = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    existing.add(`${rel.sourceId}->${rel.targetId}`);
+  }
+
+  let emitted = 0;
+  const detected = provider.detectInterfaceImplementations(parsedFiles, indexes, model);
+  for (const [interfaceDefId, implementorDefIds] of detected) {
+    const targetId = graphIdByDefId.get(interfaceDefId);
+    if (targetId === undefined) continue;
+    for (const implementorDefId of implementorDefIds) {
+      const sourceId = graphIdByDefId.get(implementorDefId);
+      if (sourceId === undefined) continue;
+      const edgeKey = `${sourceId}->${targetId}`;
+      if (existing.has(edgeKey)) continue;
+      existing.add(edgeKey);
+      graph.addRelationship({
+        id: generateId('IMPLEMENTS', edgeKey),
+        sourceId,
+        targetId,
+        type: 'IMPLEMENTS',
+        confidence: 0.85,
+        reason: `${provider.language}-structural-implements`,
+      });
+      emitted++;
+    }
+  }
+
+  return emitted;
 }
 
 export type ScopeResolutionSubPhase =
@@ -377,6 +428,14 @@ export function runScopeResolution(
   // heritage hook are invisible and ACCESSES edges silently fail to emit.
   const postHeritageNodeLookup =
     provider.emitHeritageEdges !== undefined ? buildGraphNodeLookup(graph) : nodeLookup;
+  emitDetectedInterfaceImplementations(
+    graph,
+    parsedFiles,
+    postHeritageNodeLookup,
+    provider,
+    finalized,
+    readonlyModel,
+  );
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);
   const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(
     graph,

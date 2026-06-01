@@ -28,7 +28,7 @@ export function interpretGoTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   let normalizedType: string;
   if (captures['@type-binding.self'] !== undefined) {
     source = 'self';
-    normalizedType = normalizeGoTypeName(type);
+    normalizedType = type.trim();
   } else if (captures['@type-binding.constructor'] !== undefined) {
     source = 'constructor-inferred';
     normalizedType = normalizeGoTypeName(type);

@@ -39,6 +39,16 @@ const GO_SCOPE_QUERY = `
 (method_declaration
   name: (field_identifier) @declaration.name) @declaration.method
 
+;; Declarations — interface methods
+(method_elem
+  name: (field_identifier) @declaration.name) @declaration.method
+
+;; References — embedded interface types
+(type_spec
+  type: (interface_type
+    (type_elem
+      [(type_identifier) (qualified_type)] @reference.name))) @reference.inherits
+
 ;; Declarations — struct fields
 (struct_type
   (field_declaration_list
