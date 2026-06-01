@@ -20,6 +20,11 @@ const PYTHON_SCOPE_QUERY = `
   name: (identifier) @declaration.name) @declaration.class
 
 ;; Heritage — bare identifier
+;; NOTE: captures.ts on main already synthesizes @reference.inherits for
+;; qualified bases via #1951/#1956. These @heritage.* patterns are redundant
+;; with that synthesis but kept as documentation and a safety net for the
+;; generic heritage extractor path. They produce topicOf edges that the
+;; resolution pipeline ignores when the synthesis path wins.
 (class_definition
   name: (identifier) @heritage.class
   superclasses: (argument_list
@@ -255,26 +260,19 @@ const PYTHON_SCOPE_QUERY = `
 
 ;; Decorators — simple @decorator
 (decorator
-  (identifier) @reference.name) @reference.decorator.call
+  (identifier) @reference.name) @reference.call.free
 
-;; Decorators — @obj.decorator (single attribute)
+;; Decorators — @obj.decorator (single attribute, identifier receiver)
 (decorator
   (attribute
-    object: (_) @reference.receiver
-    attribute: (identifier) @reference.name)) @reference.decorator.call
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.call.member
 
 ;; Decorators — @a.b.decorator (nested attributes)
 (decorator
   (attribute
     object: (attribute) @reference.receiver
-    attribute: (identifier) @reference.name)) @reference.decorator.call
-
-;; Decorators — @obj.method(args)
-(decorator
-  (call
-    function: (attribute
-      object: (_) @reference.receiver
-      attribute: (identifier) @reference.name))) @reference.decorator.call
+    attribute: (identifier) @reference.name)) @reference.call.member
 
 ;; References — calls
 (call

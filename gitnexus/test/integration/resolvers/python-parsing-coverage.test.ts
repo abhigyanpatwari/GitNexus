@@ -4,13 +4,16 @@
  * Each fixture FAILS on main and PASSES on the fix branch.
  */
 import { describe, it, expect } from 'vitest';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import { emitPythonScopeCaptures } from '../../../src/core/ingestion/languages/python/index.js';
+import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
+import { pythonProvider } from '../../../src/core/ingestion/languages/python.js';
 import type { CaptureMatch } from 'gitnexus-shared';
 
 /**
  * Count matches whose capture-key set satisfies `predicate`.
- * `predicate` receives the list of tag names (e.g. ['@scope.function', '@declaration.name'])
- * for each match.
  */
 function countCaptures(src: string, predicate: (tags: string[]) => boolean): number {
   const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
@@ -82,43 +85,55 @@ class C(types.Type):
 // ---------------------------------------------------------------------------
 
 describe('F58 — Python decorator captures', () => {
-  it('simple @app.route decorator captures @reference.name', () => {
+  it('simple @app.route decorator emits @reference.call.member', () => {
     const src = `
 @app.route("/")
 def index():
     return "ok"
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const decoratorMatches = matches.filter((m) => m['@reference.decorator.call']);
-    expect(decoratorMatches.length).toBeGreaterThanOrEqual(1);
-    const decoratorNames = decoratorMatches.map((m) => m['@reference.name']?.text);
-    expect(decoratorNames).toContain('route');
+    const decoratorMatches = matches.filter((m) => m['@reference.call.member']);
+    expect(decoratorMatches.length).toBe(1);
+    expect(decoratorMatches[0]['@reference.name']?.text).toBe('route');
   });
 
-  it('nested attribute decorator @api.v1.endpoint captures @reference.name', () => {
+  it('nested attribute decorator @api.v1.endpoint emits @reference.call.member', () => {
     const src = `
 @api.v1.endpoint
 def handler():
     pass
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const decoratorMatches = matches.filter((m) => m['@reference.decorator.call']);
-    expect(decoratorMatches.length).toBeGreaterThanOrEqual(1);
-    const name = decoratorMatches[0]['@reference.name']?.text;
-    expect(name).toBe('endpoint');
+    const decoratorMatches = matches.filter((m) => m['@reference.call.member']);
+    expect(decoratorMatches.length).toBe(1);
+    expect(decoratorMatches[0]['@reference.name']?.text).toBe('endpoint');
   });
 
-  it('simple @decorator (bare identifier) captures @reference.name', () => {
+  it('simple @decorator (bare identifier) emits @reference.call.free', () => {
     const src = `
 @login_required
 def protected_view():
     pass
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const decoratorMatches = matches.filter((m) => m['@reference.decorator.call']);
-    expect(decoratorMatches.length).toBeGreaterThanOrEqual(1);
-    const name = decoratorMatches[0]['@reference.name']?.text;
-    expect(name).toBe('login_required');
+    const decoratorMatches = matches.filter((m) => m['@reference.call.free']);
+    expect(decoratorMatches.length).toBe(1);
+    expect(decoratorMatches[0]['@reference.name']?.text).toBe('login_required');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F58 — End-to-end: extractParsedFile produces referenceSites
+// ---------------------------------------------------------------------------
+
+describe('F58 — decorator produces referenceSites in extractParsedFile', () => {
+  it('@login_required produces a referenceSite entry', () => {
+    const src = `@login_required\ndef foo():\n    pass\n`;
+    const parsedFile = extractParsedFile(pythonProvider, src, 'app.py', () => {});
+    expect(parsedFile).not.toBeNull();
+    expect(parsedFile!.referenceSites.length).toBeGreaterThanOrEqual(1);
+    const hasLoginRef = parsedFile!.referenceSites.some((r) => r.name === 'login_required');
+    expect(hasLoginRef).toBe(true);
   });
 });
 
@@ -130,7 +145,6 @@ describe('F61 — Python lambda scope', () => {
   it('bare lambda emits @scope.function', () => {
     const src = `handler = lambda x: x + 1\n`;
     const scopeFnCount = countCaptures(src, (tags) => tags.includes('@scope.function'));
-    // 1 for lambda
     expect(scopeFnCount).toBe(1);
   });
 
@@ -148,7 +162,6 @@ def normal(x):
 handler = lambda x: x * 2
 `;
     const scopeFnCount = countCaptures(src, (tags) => tags.includes('@scope.function'));
-    // 1 normal function + 1 lambda = 2
     expect(scopeFnCount).toBe(2);
   });
 });

@@ -27,10 +27,10 @@ export default defineConfig({
       // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.
       // CI will fail if a PR drops below these floors.
       thresholds: {
-        statements: 25,
-        branches: 22,
-        functions: 27,
-        lines: 26,
+        statements: 26,
+        branches: 23,
+        functions: 28,
+        lines: 27,
       },
     },
 
