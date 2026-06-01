@@ -13,6 +13,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
   loadGraphToLbug,
@@ -216,6 +217,14 @@ export async function runFullAnalysis(
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
+
+  // Scope the degraded-parse log throttle to this run. On a reused process
+  // (e.g. tests, or any host that calls runFullAnalysis more than once) the
+  // module-level counter would otherwise stay saturated and suppress every
+  // degraded-parse log after the first run. The per-parse worker holds its own
+  // counter in its own module instance and is process-scoped, so no separate
+  // worker-side reset is needed (see safe-parse.ts ParseTimeoutError contract).
+  resetDegradedParseCounter();
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
 

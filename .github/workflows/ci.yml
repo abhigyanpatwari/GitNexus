@@ -112,6 +112,11 @@ jobs:
         shell: bash
         env:
           QUALITY: ${{ needs.quality.result }}
+          # The tree-sitter ABI gate (#1922) runs as the `abi-assert` job
+          # inside the `tests` reusable workflow. A failed job fails the
+          # reusable workflow, so `needs.tests.result` below blocks the merge
+          # on an ABI mismatch. (`jobs.<id>.result` cannot be exposed as a
+          # workflow_call output, so the gate is enforced transitively here.)
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
           SCOPE_PARITY: ${{ needs.scope-parity.result }}
@@ -120,9 +125,12 @@ jobs:
           echo "Tests:          $TESTS"
           echo "E2E:            $E2E"
           echo "Scope parity:   $SCOPE_PARITY"
+          # A failed `abi-assert` job (#1922) inside the tests reusable
+          # workflow makes TESTS != success, so this clause also blocks the
+          # merge on a tree-sitter ABI mismatch.
           if [[ "$QUALITY" != "success" ]] ||
              [[ "$TESTS" != "success" ]]; then
-            echo "::error::Quality or test jobs failed"
+            echo "::error::Quality or test jobs failed (includes the tree-sitter ABI gate, #1922)"
             exit 1
           fi
           if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then

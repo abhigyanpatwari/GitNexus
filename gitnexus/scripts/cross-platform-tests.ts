@@ -101,6 +101,7 @@ const NATIVE_ADDON_SMOKE = [
   'test/integration/pipeline.test.ts',
   'test/integration/pipeline-graph-golden.test.ts',
   'test/unit/parser-loader.test.ts',
+  'test/unit/parser-loader-abi.test.ts',
 ];
 
 // Filesystem behavior tests — exercise operations that vary across
