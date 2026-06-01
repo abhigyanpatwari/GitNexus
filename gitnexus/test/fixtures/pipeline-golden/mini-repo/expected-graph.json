@@ -3,7 +3,7 @@
   "fixture": "mini-repo",
   "totalFileCount": 7,
   "symbols": 37,
-  "relationships": 74,
+  "relationships": 73,
   "processes": 4,
   "byType": {
     "Class": 1,
@@ -19,11 +19,11 @@
   "byRelType": {
     "CALLS": 9,
     "CONTAINS": 7,
-    "DEFINES": 21,
+    "DEFINES": 20,
     "HAS_METHOD": 1,
     "IMPORTS": 12,
     "MEMBER_OF": 12,
     "STEP_IN_PROCESS": 12
   },
-  "edgeDigest": "6f414427a20c037df3e336f055c83f987e7d381c9bfa73b4d2be690cb8103302"
+  "edgeDigest": "196198eb9a900721aec892400d141189aa1e874722917843c7f1206805d817f1"
 }
