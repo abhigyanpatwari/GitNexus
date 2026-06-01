@@ -1960,13 +1960,15 @@ export function extractCobolSymbolsWithRegex(
       const target = perfMatch[1];
       // Skip COBOL inline-perform keywords that are not paragraph names
       if (!PERFORM_KEYWORD_SKIP.has(target.toUpperCase())) {
-        // Check for inline PERFORM ... TIMES pattern (not a paragraph call):
-        // PERFORM target {count} TIMES or PERFORM target identifier TIMES
-        // The TIMES keyword may follow a number or identifier, not necessarily
-        // immediately after the target name.
         const matchEnd = perfMatch.index! + perfMatch[0].length;
         const afterTarget = line.substring(matchEnd).trim();
-        const hasTimesClause = /(?:\d+|[A-Z0-9][A-Z0-9-]*)\s+TIMES\b/i.test(afterTarget);
+        // Check for inline PERFORM ... TIMES pattern (not a paragraph call):
+        // - "PERFORM target {count} TIMES" → afterTarget = "3 TIMES."
+        // - "PERFORM target identifier TIMES" → afterTarget = "WS-COUNT TIMES."
+        // - "PERFORM identifier TIMES" → afterTarget = "TIMES." (target IS the counter)
+        const hasTimesClause =
+          /^\s*TIMES\b/i.test(afterTarget) ||
+          /(?:\d+|[A-Z0-9][A-Z0-9-]*)\s+TIMES\b/i.test(afterTarget);
         if (!hasTimesClause) {
           result.performs.push({
             caller: currentParagraph,
