@@ -35,18 +35,58 @@ import { resolveReferenceSites, type ResolveStats } from '../../resolve-referenc
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
-import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
-import { findClassBindingInScope, findEnclosingClassDef } from '../scope/walkers.js';
+import {
+  findClassBindingInScope,
+  findEnclosingClassDef,
+  resolveAmbiguousInheritanceBaseViaImports,
+} from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 
 import { logger } from '../../../logger.js';
+
+/**
+ * Emit one class-owned inheritance edge directly (the inheritance pre-pass is
+ * the authoritative emitter — see `preEmitInheritanceEdges`). Encapsulates the
+ * dual dedup contract so the two sets' joint semantics live in one place:
+ *   - `existing` — coarse per-`(caller, target, type)` gate, seeded from the
+ *     graph (so this pass is a no-op when the legacy path already emitted it).
+ *   - `seen` — per-site key shared with the generic edge bridge so the two
+ *     passes never double-emit the same resolution.
+ * The `dedupKey` and `rel:` id shape match `tryEmitEdge` exactly, so graph
+ * output stays byte-identical. The caller is the enclosing class (NOT the
+ * method/constructor `resolveCallerGraphId` would prefer — that broke MRO for
+ * C# 12 primary constructors, #1951); the edge type is pre-discriminated.
+ */
+function emitInheritanceEdgeDirect(
+  graph: KnowledgeGraph,
+  seen: Set<string>,
+  existing: Set<string>,
+  callerGraphId: string,
+  targetGraphId: string,
+  edgeType: 'EXTENDS' | 'IMPLEMENTS',
+  site: { readonly atRange: { startLine: number; startCol: number } },
+): void {
+  const edgeKey = `${edgeType}:${callerGraphId}->${targetGraphId}`;
+  const dedupKey = `${edgeKey}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  if (existing.has(edgeKey) || seen.has(dedupKey)) return;
+  seen.add(dedupKey);
+  existing.add(edgeKey);
+  graph.addRelationship({
+    id: `rel:${dedupKey}`,
+    sourceId: callerGraphId,
+    targetId: targetGraphId,
+    type: edgeType,
+    confidence: 0.85,
+    reason: 'scope-resolution: inherits',
+  });
+}
 
 /**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
@@ -63,9 +103,16 @@ function preEmitInheritanceEdges(
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
+  // Seed the dedup set with both inheritance edge types already in the graph
+  // (e.g. emitted by the legacy heritage path in sequential mode). Keying by
+  // edge type lets us add IMPLEMENTS without colliding with EXTENDS and keeps
+  // this pass a no-op when the legacy path already produced the same edge.
   const existing = new Set<string>();
   for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
-    existing.add(`${rel.sourceId}->${rel.targetId}`);
+    existing.add(`EXTENDS:${rel.sourceId}->${rel.targetId}`);
+  }
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    existing.add(`IMPLEMENTS:${rel.sourceId}->${rel.targetId}`);
   }
 
   for (const site of scopes.referenceSites) {
@@ -81,12 +128,20 @@ function preEmitInheritanceEdges(
       // edge. The shared bridge resolves the source via
       // `resolveCallerGraphId`, which can degrade class-heritage sites into
       // method-owned EXTENDS edges once methods exist on the class. This
-      // pre-pass is the authoritative inheritance emitter, so broad
+      // pre-pass is the authoritative inheritance emitter and pins the source
+      // to the enclosing class (via the `callerGraphId` override below), so
       // suppression keeps `buildMro` and the final graph class-owned.
       handledSites.add(siteKey);
     }
 
-    const targetDef = findClassBindingInScope(site.inScope, site.name, scopes);
+    const targetDef =
+      findClassBindingInScope(site.inScope, site.name, scopes) ??
+      // Import-aware disambiguation fallback (#1951). Only engages when the
+      // scope-chain + single-match lookups above returned undefined because
+      // the simple name is ambiguous (multiple same-named class-like defs).
+      // Picks the candidate whose defining file is imported/included by the
+      // referencing file. Never changes behavior for single-match cases.
+      resolveAmbiguousInheritanceBaseViaImports(site.inScope, site.name, scopes);
     if (targetDef === undefined) continue;
 
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
@@ -94,23 +149,18 @@ function preEmitInheritanceEdges(
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
     if (callerGraphId === undefined || targetGraphId === undefined) continue;
-    const edgeKey = `${callerGraphId}->${targetGraphId}`;
-    if (existing.has(edgeKey)) continue;
-
-    if (
-      tryEmitEdge(
-        graph,
-        scopes,
-        nodeLookup,
-        site,
-        targetDef,
-        'scope-resolution: inherits',
-        seen,
-        0.85,
-      )
-    ) {
-      existing.add(edgeKey);
-    }
+    // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
+    // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
+    // deriving from a class-like is EXTENDS. This matches the legacy heritage
+    // emitters (`resolveExtendsType` maps Interface→IMPLEMENTS; the trait-impl
+    // branch of `resolveAndAddHeritageEdge` maps trait use → IMPLEMENTS), so the
+    // registry-primary path matches the legacy DAG. The discriminator is purely
+    // symbol-kind-driven (no language is named here, per AGENTS.md): a base that
+    // resolves to neither an Interface nor a Trait symbol always takes the
+    // EXTENDS branch, so such languages are unchanged.
+    const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
+      targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
+    emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
   }
 
   return handledSites;
@@ -313,7 +363,7 @@ export function runScopeResolution(
   // the heritage declarations are syntactic method calls, not grammar-level
   // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
   // the freshly-emitted IMPLEMENTS edges.
-  provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup);
+  provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup, finalized);
   // Implicit IMPORTS-edge hook — for languages whose files have compiler-
   // implicit cross-file visibility (no syntactic import statement). The
   // finalized-ImportEdge pipeline (`emitImportEdges`) cannot produce these

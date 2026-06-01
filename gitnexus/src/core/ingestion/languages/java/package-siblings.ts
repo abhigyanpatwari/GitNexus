@@ -12,13 +12,27 @@ import type { BindingRef, ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { getJavaParser } from './query.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
 import { logger } from '../../../logger.js';
 
-function extractPackageName(content: string, cachedTree?: unknown): string {
-  const tree =
-    (cachedTree as ReturnType<ReturnType<typeof getJavaParser>['parse']> | undefined) ??
-    parseSourceSafe(getJavaParser(), content);
+function extractPackageName(content: string, filePath: string, cachedTree?: unknown): string {
+  let tree = cachedTree as ReturnType<ReturnType<typeof getJavaParser>['parse']> | undefined;
+  if (tree === undefined) {
+    try {
+      tree = parseSourceSafe(getJavaParser(), content);
+    } catch (err) {
+      if (err instanceof ParseTimeoutError) {
+        // Degrade to "no package" so a single pathological file doesn't abort
+        // same-package sibling injection for the whole run.
+        logger.warn(
+          { file: filePath },
+          'java package-siblings: parse timed out, treating as no package',
+        );
+        return '';
+      }
+      throw err;
+    }
+  }
   for (const child of tree.rootNode.namedChildren) {
     if (child.type === 'package_declaration') {
       const scoped = child.namedChildren.find(
@@ -48,7 +62,7 @@ export function populateJavaPackageSiblings(
   for (const parsed of parsedFiles) {
     const content = ctx.fileContents.get(parsed.filePath);
     if (content === undefined) continue;
-    const pkg = extractPackageName(content, ctx.treeCache?.get(parsed.filePath));
+    const pkg = extractPackageName(content, parsed.filePath, ctx.treeCache?.get(parsed.filePath));
     let bucket = buckets.get(pkg);
     if (bucket === undefined) {
       bucket = { parsed: [], moduleScopes: [] };

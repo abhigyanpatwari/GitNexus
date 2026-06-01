@@ -18,7 +18,8 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
  *
  * The grammar is vendored in `vendor/tree-sitter-proto/` with
  * parser.c regenerated against tree-sitter-cli 0.24 (ABI version 14)
- * so it is compatible with the project's tree-sitter 0.25 runtime.
+ * so it is compatible with the project's tree-sitter 0.21.1 runtime
+ * (which loads ABI 13–14).
  */
 
 const _require = createRequire(import.meta.url);

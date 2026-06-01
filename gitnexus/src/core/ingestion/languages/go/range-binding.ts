@@ -2,7 +2,8 @@ import type { ParsedFile, Scope, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getGoParser } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
+import { logger } from '../../../logger.js';
 
 export function populateGoRangeBindings(
   parsedFiles: readonly ParsedFile[],
@@ -18,12 +19,28 @@ export function populateGoRangeBindings(
     const sourceText = ctx.fileContents.get(parsed.filePath);
     if (sourceText === undefined) continue;
 
-    const cachedTree = ctx.treeCache?.get(parsed.filePath);
-    const tree =
-      (cachedTree as ReturnType<typeof parser.parse> | undefined) ??
-      parseSourceSafe(parser, sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
-      });
+    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
+      | ReturnType<typeof parser.parse>
+      | undefined;
+    let tree: ReturnType<typeof parser.parse>;
+    if (cachedTree !== undefined) {
+      tree = cachedTree;
+    } else {
+      try {
+        tree = parseSourceSafe(parser, sourceText, undefined, {
+          bufferSize: getTreeSitterBufferSize(sourceText),
+        });
+      } catch (err) {
+        if (err instanceof ParseTimeoutError) {
+          logger.warn(
+            { file: parsed.filePath },
+            'go range-binding: parse timed out, skipping file',
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
 
