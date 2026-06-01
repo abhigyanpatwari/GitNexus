@@ -178,4 +178,31 @@ type Pairer interface {
 
     expect(pairDecl?.['@declaration.return-type']?.text).toBe('(int, int)');
   });
+
+  it('captures interface method return signatures for structural matching', () => {
+    const src = `
+package main
+
+type Shapes interface {
+  Touch()
+  Close() error
+  Pair() (int, error)
+  NamedPair() (a, b int)
+}
+`;
+    const methods = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@declaration.method'] !== undefined)
+      .map((m) => ({
+        name: m['@declaration.name']?.text,
+        returns: m['@declaration.return-type']?.text,
+      }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    expect(methods).toEqual([
+      { name: 'Close', returns: 'error' },
+      { name: 'NamedPair', returns: '(int, int)' },
+      { name: 'Pair', returns: '(int, error)' },
+      { name: 'Touch', returns: undefined },
+    ]);
+  });
 });

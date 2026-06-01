@@ -167,6 +167,18 @@ function preEmitInheritanceEdges(
   return handledSites;
 }
 
+/**
+ * Emit language-inferred structural interface implementations before MRO and
+ * interface dispatch are built. Languages such as Go do not declare
+ * `implements` explicitly, so their resolver can infer defId-level interface
+ * satisfaction from parsed files and this bridge converts those defIds to
+ * graph node ids.
+ *
+ * Existing explicit IMPLEMENTS edges win: the local `existing` set prevents
+ * duplicate structural edges and keeps this hook language-neutral. The reason
+ * string carries the provider language (`go-structural-implements`) so callers
+ * can distinguish inferred edges from source-declared heritage.
+ */
 function emitDetectedInterfaceImplementations(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],

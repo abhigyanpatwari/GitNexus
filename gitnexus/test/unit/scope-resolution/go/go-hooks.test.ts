@@ -480,6 +480,75 @@ describe('Go structural interface detection', () => {
     expect(result.get(readCloser.nodeId)).toEqual([struct.nodeId]);
   });
 
+  it('does not emit implementations for cyclic embedded interfaces', () => {
+    const ifaceA = goDef('iface:A', 'Interface', 'A');
+    const ifaceB = goDef('iface:B', 'Interface', 'B');
+    const struct = goDef('struct:CycleImpl', 'Struct', 'CycleImpl');
+    const ifaceAMethod = goDef('iface:A.A', 'Method', 'A.A', ifaceA.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const ifaceBMethod = goDef('iface:B.B', 'Method', 'B.B', ifaceB.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const structA = goDef('struct:CycleImpl.A', 'Method', 'CycleImpl.A', struct.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const structB = goDef('struct:CycleImpl.B', 'Method', 'CycleImpl.B', struct.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs([ifaceA, ifaceB, struct, ifaceAMethod, ifaceBMethod, structA, structB], {
+        scopes: [scope('scope:A', 'Class', [ifaceA]), scope('scope:B', 'Class', [ifaceB])],
+        referenceSites: [inheritsSite('B', 'scope:A'), inheritsSite('A', 'scope:B')],
+      }),
+      emptyIndexes,
+      {} as any,
+    );
+
+    expect(result.get(ifaceA.nodeId)).toBeUndefined();
+    expect(result.get(ifaceB.nodeId)).toBeUndefined();
+  });
+
+  it('allows one struct to satisfy multiple unrelated interfaces', () => {
+    const reader = goDef('iface:Reader', 'Interface', 'Reader');
+    const closer = goDef('iface:Closer', 'Interface', 'Closer');
+    const file = goDef('struct:File', 'Struct', 'File');
+    const readerRead = goDef('iface:Reader.Read', 'Method', 'Reader.Read', reader.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const closerClose = goDef('iface:Closer.Close', 'Method', 'Closer.Close', closer.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const fileRead = goDef('struct:File.Read', 'Method', 'File.Read', file.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const fileClose = goDef('struct:File.Close', 'Method', 'File.Close', file.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs([reader, closer, file, readerRead, closerClose, fileRead, fileClose]),
+      emptyIndexes,
+      {} as any,
+    );
+
+    expect(result.get(reader.nodeId)).toEqual([file.nodeId]);
+    expect(result.get(closer.nodeId)).toEqual([file.nodeId]);
+  });
+
   it('does not emit implementations when an embedded interface cannot be resolved', () => {
     const readCloser = goDef('iface:ReadCloser', 'Interface', 'ReadCloser');
     const struct = goDef('struct:CloseOnly', 'Struct', 'CloseOnly');

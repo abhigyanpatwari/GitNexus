@@ -267,5 +267,8 @@ function returnTypesCompatible(actual: string | undefined, required: string | un
 }
 
 function normalizeSignatureType(typeName: string): string {
+  // Go type identity includes pointer/slice/map/variadic shape and package
+  // qualifiers. Only erase whitespace here; stripping `*`, `[]`, `...`, or
+  // `pkg.` would make non-identical method signatures compare equal.
   return typeName.replace(/\s+/g, '');
 }
