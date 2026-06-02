@@ -18,6 +18,10 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 3. **Web UI (if needed):** `cd gitnexus-web && npm install`
 4. Run tests as described in [TESTING.md](TESTING.md).
 
+### Containerized development (optional)
+
+If you prefer an isolated environment with Claude Code, OpenAI Codex CLI, and Cursor CLI pre-installed, open the repo in VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) and run **Dev Containers: Reopen in Container**. See [`.devcontainer/README.md`](.devcontainer/README.md) for first-time auth flows and Windows WSL2 setup.
+
 ## Branch and pull requests
 
 - Use short-lived branches off the default branch of the repo you are targeting.
