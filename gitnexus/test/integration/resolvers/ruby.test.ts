@@ -1449,19 +1449,24 @@ describe('Ruby namespaced class/module definitions — graph nodes (issue #1975)
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-namespaced'), () => {});
   }, 60000);
 
-  // R1: a Class node is materialized for the namespaced class.
+  // R1/R3: a distinct Class node is materialized for the namespaced class,
+  // keyed by its full scoped name (so Foo::Bar and Baz::Bar never collide).
+  // The node id matches the HAS_METHOD owner id derived from the same name field;
+  // qualifiedName carries the dotted path (Foo.Bar).
   pit('materializes a Class node for class Foo::Bar', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('Bar');
+    const classes = getNodesByLabelFull(result, 'Class');
+    expect(classes.some((c) => c.properties.qualifiedName === 'Foo.Bar')).toBe(true);
   });
 
-  // R1: deep chain resolves to the trailing constant.
+  // R1: deep chain Outer::Middle::Inner → qualifiedName Outer.Middle.Inner.
   pit('materializes a Class node for class Outer::Middle::Inner', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('Inner');
+    const classes = getNodesByLabelFull(result, 'Class');
+    expect(classes.some((c) => c.properties.qualifiedName === 'Outer.Middle.Inner')).toBe(true);
   });
 
   // R1: module → Trait (Ruby modules are relabeled Trait for class-like lookup).
   pit('materializes a Trait node for module Baz::Qux', () => {
-    expect(getNodesByLabel(result, 'Trait')).toContain('Qux');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Baz::Qux');
   });
 
   // R2: methods of namespaced declarations must not produce dangling HAS_METHOD edges.

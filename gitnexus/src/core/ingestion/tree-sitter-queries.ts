@@ -1396,9 +1396,20 @@ export const RUBY_QUERIES = `
 (module
   name: (constant) @name) @definition.module
 
+; Namespaced module: module Baz::Qux (name field is a scope_resolution node).
+; Separate top-level pattern (not a [...] alternation) so neither branch is
+; silently dropped — see #1975. The full scope_resolution text keys the node so
+; it matches the HAS_METHOD owner id derived from the same name field.
+(module
+  name: (scope_resolution) @name) @definition.module
+
 ; ── Classes ──────────────────────────────────────────────────────────────────
 (class
   name: (constant) @name) @definition.class
+
+; Namespaced class: class Foo::Bar (name field is a scope_resolution node).
+(class
+  name: (scope_resolution) @name) @definition.class
 
 ; ── Instance methods ─────────────────────────────────────────────────────────
 (method
