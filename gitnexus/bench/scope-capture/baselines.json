@@ -46,10 +46,10 @@
     "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
   },
   "dart": {
-    "fingerprint": "aae373f22d18d36333040f659e38c6d24ccdeca95e8e8df46579db34e32a79fe",
+    "fingerprint": "cf6d7a4462462184665e06b7ecd91831123924623ab42fdd595a09696d24ca27",
     "scaling_budget": 1.5,
-    "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~0.95).",
-    "_rebaselined": "#1970 review: UpperCamelCase free-calls re-tagged to constructor calls; cascade calls emitted (cascade_section walk); built-in-named calls suppressed; enum bodies get a class-like scope; + dart-construct-cascade fixture."
+    "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
+    "_rebaselined": "#1970 review: UpperCamelCase free-calls re-tagged to constructor calls; cascade calls emitted; built-in-named calls suppressed; enum bodies get a class-like scope. #1926 F24/F25: + dart-member-call-contexts + dart-constructor-body fixtures; findFunctionBody walks to the method_signature wrapper so constructor bodies get a Function scope."
   },
   "java": {
     "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",

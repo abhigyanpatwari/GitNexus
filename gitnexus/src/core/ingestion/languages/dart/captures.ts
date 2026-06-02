@@ -152,9 +152,24 @@ export function emitDartScopeCaptures(
 
 // ─── Function scope synthesis ───────────────────────────────────────────────
 
-/** The sibling `function_body` of a signature/method declaration, or null. */
+/**
+ * The sibling `function_body` of a declaration, or null (abstract/bodyless).
+ *
+ * The body is the next named sibling of the declaration's *statement-level*
+ * node. For methods/operators the `@declaration` anchor IS the `method_signature`
+ * (body is its sibling). For a constructor the anchor is the INNER
+ * `constructor_signature`, whose body is a sibling of the WRAPPING
+ * `method_signature` (AST: `class_body > method_signature > constructor_signature`,
+ * then `function_body`) — so walk up to the `method_signature` wrapper first.
+ * Top-level `function_signature` (parent `program`) and abstract `declaration`
+ * nodes are unaffected.
+ */
 function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
-  const next = declNode.nextNamedSibling;
+  const node =
+    declNode.parent !== null && declNode.parent.type === 'method_signature'
+      ? declNode.parent
+      : declNode;
+  const next = node.nextNamedSibling;
   return next !== null && next.type === 'function_body' ? next : null;
 }
 

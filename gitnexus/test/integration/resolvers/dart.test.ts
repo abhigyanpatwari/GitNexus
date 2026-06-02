@@ -6,7 +6,7 @@
  * All Dart pipeline features are covered: Property nodes, HAS_PROPERTY edges,
  * CALLS chain resolution, IMPORTS, call attribution, and ACCESSES field reads.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -15,6 +15,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
 import {
@@ -36,6 +37,12 @@ if (dartAvailable) {
     dartAvailable = false;
   }
 }
+
+// Parity-aware `it`: tests whose names are registered in
+// LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES['dart'] (registry-primary-only
+// correctness wins) are skipped under REGISTRY_PRIMARY_DART=0 and asserted
+// under =1, keeping the dual-mode parity gate green.
+const it = createResolverParityIt('dart');
 
 // ── Phase 8: Field-type resolution ──────────────────────────────────────
 
@@ -603,5 +610,72 @@ describe.skipIf(!dartAvailable)('Dart implicit-constructor construction', () => 
     const calls = getRelationships(result, 'CALLS');
     const ctorCall = calls.find((c) => c.source === 'build' && c.target === 'Widget');
     expect(ctorCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F24 (issue #1926): member calls (obj.method()) in return / list-literal /
+// named-argument / arrow-body contexts. The legacy DAG only captures member
+// calls under expression_statement / initialized_variable_definition, so these
+// are registry-primary-only wins (registered in LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart member-call contexts (F24)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-member-call-contexts'), () => {});
+  }, 60000);
+
+  it('resolves a member call in a return statement (svc.compute())', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'inReturn' && c.target === 'compute');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toContain('models.dart');
+  });
+
+  it('resolves member calls inside a list literal', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'inList' && c.target === 'first')).toBeDefined();
+    expect(calls.find((c) => c.source === 'inList' && c.target === 'second')).toBeDefined();
+  });
+
+  it('resolves a member call in a named argument', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'inNamedArg' && c.target === 'load');
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves a member call in an arrow body', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'inArrow' && c.target === 'run');
+    expect(edge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F25 (issue #1926): calls inside a constructor body are mis-attributed by the
+// legacy enclosing-function finder (it only unwraps function_signature, not the
+// constructor_signature whose body is a sibling of the wrapping method_signature).
+// The registry-primary scope path synthesizes a Function scope for the
+// constructor body, and the Constructor def is a valid caller anchor, so the
+// call attributes to the constructor. Registry-primary-only win.
+// (Getter/setter and operator bodies are out of scope: Property is not a caller
+// anchor, and the structure phase emits no Method node for operators — see the
+// helpers.ts expected-failures comment.)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart constructor body call attribution (F25)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-constructor-body'), () => {});
+  }, 60000);
+
+  it('attributes a call inside a constructor body to the constructor', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.target === 'setup' && c.sourceLabel === 'Constructor');
+    expect(edge).toBeDefined();
+    expect(edge!.source).toBe('Vector');
   });
 });
