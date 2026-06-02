@@ -980,6 +980,12 @@ export const CPP_QUERIES = `
   name: (template_type
     (type_identifier) @name
     (template_argument_list) @template-arguments)) @definition.class
+; Out-of-line nested definition: class Outer::Inner { ... } / struct Outer::Inner { ... }.
+; Key the node by the full qualified_identifier text so the def materializes a
+; node that matches the HAS_METHOD owner id (also the full qualified text) and
+; stays distinct from a same-tail type in another scope (#1975, #1978).
+(class_specifier name: (qualified_identifier) @name) @definition.class
+(struct_specifier name: (qualified_identifier) @name) @definition.struct
 (struct_specifier name: (type_identifier) @name) @definition.struct
 (struct_specifier
   name: (template_type
@@ -1213,6 +1219,10 @@ export const RUST_QUERIES = `
 (trait_item name: (type_identifier) @name) @definition.trait
 (impl_item type: (type_identifier) @name !trait) @definition.impl
 (impl_item type: (generic_type type: (type_identifier) @name) !trait) @definition.impl
+; Scoped inherent impl: impl path::Type { ... }. Key the Impl node by the full
+; scoped_type_identifier text so it matches the owner id (also full text) and
+; stays distinct from a same-tail type in another module (#1975).
+(impl_item type: (scoped_type_identifier) @name !trait) @definition.impl
 (mod_item name: (identifier) @name) @definition.module
 
 ; Type aliases, const, static, macros
