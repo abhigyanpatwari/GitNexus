@@ -63,7 +63,12 @@ beforeAll(async () => {
   if (!fs.existsSync(installedHook)) {
     throw new Error(`Antigravity adapter was not installed at ${installedHook}`);
   }
-  for (const helper of ['hook-lock.cjs', 'hook-db-lock-probe.cjs', 'win-rm-list-json.ps1']) {
+  for (const helper of [
+    'hook-lock.cjs',
+    'hook-db-lock-probe.cjs',
+    'win-rm-list-json.ps1',
+    'resolve-analyze-cmd.cjs',
+  ]) {
     const helperPath = path.join(path.dirname(installedHook), helper);
     if (!fs.existsSync(helperPath)) {
       throw new Error(`Helper not installed: ${helperPath}`);
