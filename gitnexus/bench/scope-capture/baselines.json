@@ -37,9 +37,10 @@
     "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "bdc7dbfbe5ce7b1e98292f88b404071b4a4b5566f6e756cd637e36a2214967e1",
+    "fingerprint": "c3e9eec6ed152eae1f7d9759c08041d7d6230a4c532ec07d33f3c9f1ff7b9588",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)"
+    "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)",
+    "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected."
   },
   "swift": {
     "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
