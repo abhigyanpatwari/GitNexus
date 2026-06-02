@@ -86,11 +86,11 @@ func main() {
     const matches = emitGoScopeCaptures(src, 'main.go');
     // The closure is still captured as a @scope.function...
     expect(matches.some((m) => m['@scope.function']?.text.startsWith('func()'))).toBe(true);
-    // ...and the method's receiver self-binding is synthesized (name + pointer-stripped type)...
+    // ...and the method's receiver self-binding is synthesized with its raw pointer shape...
     const selves = matches.filter((m) => m['@type-binding.self'] !== undefined);
     expect(selves).toHaveLength(1); // exactly one — from the method, not the closure
     expect(selves[0]!['@type-binding.name']?.text).toBe('u');
-    expect(selves[0]!['@type-binding.type']?.text).toBe('User');
+    expect(selves[0]!['@type-binding.type']?.text).toBe('*User');
   });
 
   it('does not drop a var-form type assertion binding', () => {
@@ -161,5 +161,48 @@ func Map[T any](x T) T { return x }
     );
     expect(decl).toBeDefined();
     expect(decl!['@declaration.name']?.text).toBe('Map');
+  });
+
+  it('expands grouped named return types into separate return values', () => {
+    const src = `
+package main
+
+type Pairer interface {
+  Pair() (a, b int)
+}
+`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    const pairDecl = matches.find(
+      (m) => m['@declaration.method'] !== undefined && m['@declaration.name']?.text === 'Pair',
+    );
+
+    expect(pairDecl?.['@declaration.return-type']?.text).toBe('(int, int)');
+  });
+
+  it('captures interface method return signatures for structural matching', () => {
+    const src = `
+package main
+
+type Shapes interface {
+  Touch()
+  Close() error
+  Pair() (int, error)
+  NamedPair() (a, b int)
+}
+`;
+    const methods = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@declaration.method'] !== undefined)
+      .map((m) => ({
+        name: m['@declaration.name']?.text,
+        returns: m['@declaration.return-type']?.text,
+      }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    expect(methods).toEqual([
+      { name: 'Close', returns: 'error' },
+      { name: 'NamedPair', returns: '(int, int)' },
+      { name: 'Pair', returns: '(int, error)' },
+      { name: 'Touch', returns: undefined },
+    ]);
   });
 });

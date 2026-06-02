@@ -24,6 +24,14 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
+> **On npm 11.x?** `npx` can crash during install (`Cannot destructure property 'package' of 'node.target'`). Use the pnpm form instead:
+>
+> ```bash
+> pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze
+> ```
+>
+> See [Troubleshooting → `npx gitnexus` crashes with `node.target is null` (npm 11)](#cannot-destructure-property-package-of-nodetarget-as-it-is-null) for the full matrix (global install, npm downgrade).
+
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
@@ -273,22 +281,27 @@ for the full list; stable `latest` is unaffected.
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
 
-This crash was caused by a dependency URL format that is incompatible with
-certain npm/arborist versions ([npm/cli#8126](https://github.com/npm/cli/issues/8126)).
-It is fixed in **gitnexus v1.6.2+**. Upgrade to the latest version:
+This error comes from **npm 11.x's arborist** while installing gitnexus (often via `npx`), before gitnexus code runs. It is triggered by platform-filtered `optionalDependencies` in native packages such as `onnxruntime-node` / `@huggingface/transformers` (used when indexing with `--embeddings`). GitNexus cannot catch it at runtime — use one of these workarounds:
 
 ```bash
-npx gitnexus@latest analyze          # always uses the newest release
-# — or —
-npm install -g gitnexus@latest       # upgrade a global install
+pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze       # auto-selected when pnpm + npm 11+
+npm install -g gitnexus@latest         # global install avoids per-run npx reify
+gitnexus analyze                       # if already installed globally
 ```
 
-If you still hit npm install issues after upgrading, these generic workarounds
-may help:
+On **pnpm 10+**, lifecycle scripts are blocked unless explicitly allowed — the resolver adds `--allow-build` for `@ladybugdb/core`, `gitnexus`, and `tree-sitter` automatically when it picks `pnpm dlx`.
+
+If you must stay on npm 11.x without pnpm, downgrade npm toolchain-wide (last resort):
 
 ```bash
-npm install -g npm@latest            # update npm itself
-npm cache clean --force              # clear a possibly corrupt cache
+npm install -g npm@10.9.0
+```
+
+See [#1939](https://github.com/abhigyanpatwari/GitNexus/issues/1939) and the original [#819](https://github.com/abhigyanpatwari/GitNexus/issues/819) thread. An older variant of this crash (tree-sitter-dart tarball URL) was fixed in gitnexus v1.6.2+ ([#820](https://github.com/abhigyanpatwari/GitNexus/pull/820)); if you still see install failures after upgrading, clear cache:
+
+```bash
+npm cache clean --force
+npx gitnexus@latest analyze
 ```
 
 ### `ERR_DLOPEN_FAILED` / `lbugjs.node` missing (pnpm dlx, pnpx)

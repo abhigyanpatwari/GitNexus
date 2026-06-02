@@ -71,10 +71,12 @@ export function populateGoRangeBindings(
 
       // Resolve range expression type
       let elementType: string | null = null;
+      const functionScope = findEnclosingFunctionScope(rangeNode, scopeMap);
 
       if (rangeExpr.type === 'identifier') {
-        // Look up the identifier's type in scope typeBindings (V1: module scope only)
-        const binding = moduleScope.typeBindings.get(rangeExpr.text);
+        const binding =
+          functionScope?.typeBindings.get(rangeExpr.text) ??
+          moduleScope.typeBindings.get(rangeExpr.text);
         if (binding !== null && binding !== undefined) {
           elementType = extractElementType(binding);
         }
@@ -96,7 +98,6 @@ export function populateGoRangeBindings(
 
       if (elementType !== null && valueVar !== null) {
         // Inject type binding for the range variable onto the enclosing function scope
-        const functionScope = findEnclosingFunctionScope(rangeNode, scopeMap);
         const targetScope = functionScope ?? moduleScope;
         const mutable = targetScope.typeBindings as Map<string, TypeRef>;
         mutable.set(valueVar, {
@@ -137,7 +138,7 @@ function findEnclosingFunctionScope(
       for (const scope of scopeMap.values()) {
         if (
           scope.kind === 'Function' &&
-          scope.range.startLine === current.startPosition.row &&
+          scope.range.startLine === current.startPosition.row + 1 &&
           scope.range.startCol === current.startPosition.column
         ) {
           return scope;

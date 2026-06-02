@@ -11,7 +11,7 @@ export function synthesizeGoReceiverBinding(fnNode: SyntaxNode): CaptureMatch | 
   const nameNode = param.childForFieldName('name');
   const typeNode = param.childForFieldName('type');
   if (nameNode === null || typeNode === null) return null;
-  const typeName = typeNode.text.replace(/^\*/, '');
+  const typeName = typeNode.text;
 
   return {
     '@type-binding.self': syntheticCapture('@type-binding.self', fnNode, nameNode.text),

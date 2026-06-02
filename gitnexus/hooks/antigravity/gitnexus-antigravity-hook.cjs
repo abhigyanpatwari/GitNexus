@@ -25,6 +25,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
 const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 
 function readInput() {
   try {
@@ -315,7 +316,7 @@ function buildStaleIndexHint(gitNexusDir, cwd) {
 
   if (currentHead === lastCommit) return '';
 
-  const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings });
   return (
     `[GitNexus] index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
     `Run \`${analyzeCmd}\` to refresh the knowledge graph.`

@@ -170,7 +170,7 @@ export function emitReceiverBoundCalls(
   const graphIdToClassDef = new Map<string, SymbolDefinition>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
-      if (def.type !== 'Class' && def.type !== 'Interface') continue;
+      if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
       if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
     }

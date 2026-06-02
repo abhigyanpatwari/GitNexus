@@ -63,7 +63,12 @@ beforeAll(async () => {
   if (!fs.existsSync(installedHook)) {
     throw new Error(`Antigravity adapter was not installed at ${installedHook}`);
   }
-  for (const helper of ['hook-lock.cjs', 'hook-db-lock-probe.cjs', 'win-rm-list-json.ps1']) {
+  for (const helper of [
+    'hook-lock.cjs',
+    'hook-db-lock-probe.cjs',
+    'win-rm-list-json.ps1',
+    'resolve-analyze-cmd.cjs',
+  ]) {
     const helperPath = path.join(path.dirname(installedHook), helper);
     if (!fs.existsSync(helperPath)) {
       throw new Error(`Helper not installed: ${helperPath}`);
@@ -97,19 +102,24 @@ describe('antigravity hook adapter e2e', () => {
         JSON.stringify({ lastCommit: 'a'.repeat(40), stats: {} }),
       );
 
-      const result = runHook(installedHook, {
-        hook_event_name: 'AfterTool',
-        tool_name: 'run_shell_command',
-        tool_input: { command: 'git commit -m "test"' },
-        tool_response: { llmContent: '[committed]' },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        installedHook,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_response: { llmContent: '[committed]' },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
       expect(output!.hookEventName).toBe('AfterTool');
       expect(output!.additionalContext).toContain('index is stale');
-      expect(output!.additionalContext).toContain('npx gitnexus analyze');
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze');
 
       // Mirror to stderr so terminal users see the hint even when the agent
       // discards additionalContext
@@ -148,17 +158,22 @@ describe('antigravity hook adapter e2e', () => {
         }),
       );
 
-      const result = runHook(installedHook, {
-        hook_event_name: 'AfterTool',
-        tool_name: 'run_shell_command',
-        tool_input: { command: 'git commit -m "x"' },
-        tool_response: { llmContent: '[ok]' },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        installedHook,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "x"' },
+          tool_response: { llmContent: '[ok]' },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('--embeddings');
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
     });
 
     it('treats missing meta.json as stale', () => {

@@ -44,12 +44,15 @@ export function populateGoWorkspaceOwners(
 function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
   // Build struct name → def map from ALL scopes' ownedDefs (struct defs
   // live in Class scopes now, not Module scope).
-  const structByQualifiedName = new Map<string, string>(); // qname → nodeId
+  const structByQualifiedName = new Map<string, { nodeId: string; qualifiedName: string }>();
   for (const parsed of parsedFiles) {
     for (const scope of parsed.scopes) {
       for (const def of scope.ownedDefs) {
         if (isClassLike(def.type) && def.qualifiedName) {
-          structByQualifiedName.set(def.qualifiedName, def.nodeId);
+          structByQualifiedName.set(def.qualifiedName, {
+            nodeId: def.nodeId,
+            qualifiedName: def.qualifiedName,
+          });
         }
       }
     }
@@ -69,26 +72,35 @@ function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
 
         // Find the self typeBinding in this Function scope.
         let receiverType: string | undefined;
+        let receiverKind: 'value' | 'pointer' = 'value';
         for (const [, tb] of scope.typeBindings) {
           if (tb.source === 'self') {
             receiverType = tb.rawName;
+            receiverKind = tb.rawName.trim().startsWith('*') ? 'pointer' : 'value';
             break;
           }
         }
         if (receiverType === undefined) continue;
+        receiverType = receiverType.replace(/^\*+/, '').trim();
 
-        let ownerId = structByQualifiedName.get(receiverType);
-        if (ownerId === undefined) {
-          for (const [qname, nodeId] of structByQualifiedName) {
+        let owner = structByQualifiedName.get(receiverType);
+        if (owner === undefined) {
+          for (const [qname, candidate] of structByQualifiedName) {
             if (qname.endsWith('.' + receiverType)) {
-              ownerId = nodeId;
+              owner = candidate;
               break;
             }
           }
         }
-        if (ownerId !== undefined) {
+        if (owner !== undefined) {
           for (const def of methodDefs) {
-            (def as { ownerId?: string }).ownerId = ownerId;
+            (def as { ownerId?: string }).ownerId = owner.nodeId;
+            (def as { goReceiverKind?: 'value' | 'pointer' }).goReceiverKind = receiverKind;
+            const simpleName = def.qualifiedName?.split('.').pop() ?? def.qualifiedName;
+            if (simpleName !== undefined && !def.qualifiedName?.includes('.')) {
+              (def as { qualifiedName?: string }).qualifiedName =
+                `${owner.qualifiedName}.${simpleName}`;
+            }
           }
         }
       }
