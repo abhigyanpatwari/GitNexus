@@ -45,6 +45,11 @@
     "scaling_budget": 1.5,
     "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
   },
+  "dart": {
+    "fingerprint": "3eb9bd82f6f7d4ac2481102863a0f6507f9e682cd8ad8f662bb455edcc4ce349",
+    "scaling_budget": 1.5,
+    "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~0.99)."
+  },
   "java": {
     "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",
     "scaling_budget": 1.5,

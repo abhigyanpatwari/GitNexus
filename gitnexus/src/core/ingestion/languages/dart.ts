@@ -32,6 +32,16 @@ import { dartVariableConfig } from '../variable-extractors/configs/dart.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { dartCallConfig } from '../call-extractors/configs/dart.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitDartScopeCaptures,
+  interpretDartImport,
+  interpretDartTypeBinding,
+  dartBindingScopeFor,
+  dartImportOwningScope,
+  dartReceiverBinding,
+  dartMergeBindings,
+  dartArityCompatibility,
+} from './dart/index.js';
 
 /**
  * Resolve the enclosing function from a `function_body` node by looking at its
@@ -143,4 +153,17 @@ export const dartProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Dart),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
   builtInNames: BUILT_INS,
+
+  // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #939) ──────────────
+  // Parsing-side surface consumed by `ScopeExtractor` once per file. The
+  // emit-side `ScopeResolver` lives in `dart/scope-resolver.ts`; the same
+  // function references flow through both interfaces.
+  emitScopeCaptures: emitDartScopeCaptures,
+  interpretImport: interpretDartImport,
+  interpretTypeBinding: interpretDartTypeBinding,
+  bindingScopeFor: dartBindingScopeFor,
+  importOwningScope: dartImportOwningScope,
+  receiverBinding: dartReceiverBinding,
+  mergeBindings: (_scope, bindings) => dartMergeBindings(bindings),
+  arityCompatibility: dartArityCompatibility,
 });
