@@ -84,5 +84,44 @@ jobs:
       # breaking or malicious publish could then change CI behavior, or change
       # how devcontainer.json is read, with no diff to show for it. Bump this pin
       # deliberately, alongside the Dockerfile and devcontainer.json pins.
+      #
+      # @devcontainers/cli wraps the Dockerfile with `# syntax=docker/dockerfile:1`,
+      # which BuildKit resolves from Docker Hub. Hub blips surface as
+      # `DeadlineExceeded` / `i/o timeout` on the syntax frontend (see run
+      # 26797815133). Build retry (2 attempts, 45s backoff) matches
+      # `.github/actions/docker-build-push-retry` (docker/build-push-action#1422).
+      # Pre-pull of docker/dockerfile:1 is extra hardening; best-effort so the
+      # build retry still runs if Hub is flaky only during pull.
+      - name: Pre-pull BuildKit Dockerfile frontend (retry)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          img="docker/dockerfile:1"
+          for attempt in 1 2 3; do
+            if docker pull "$img"; then
+              exit 0
+            fi
+            echo "::warning::docker pull ${img} attempt ${attempt} failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 15))
+            fi
+          done
+          echo "::warning::failed to pre-pull ${img} after 3 attempts; continuing — build step may still succeed"
+          exit 1
       - name: Build devcontainer via @devcontainers/cli
-        run: npx --yes @devcontainers/cli@0.87.0 build --workspace-folder .
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            if npx --yes @devcontainers/cli@0.87.0 build --workspace-folder .; then
+              if [ "$attempt" -eq 2 ]; then
+                echo "::notice::devcontainer build retry succeeded (attempt 2); investigate if this recurs across runs."
+              fi
+              exit 0
+            fi
+            if [ "$attempt" -eq 2 ]; then
+              echo "::error::devcontainer build failed after 2 attempts"
+              exit 1
+            fi
+            echo "::warning::devcontainer build attempt ${attempt} failed; retrying in 45s…"
+            sleep 45
+          done
