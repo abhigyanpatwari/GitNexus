@@ -27,12 +27,13 @@
  * declaration transparently.
  */
 
-import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { Callsite, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import {
   isOverloadAmbiguousAfterNormalization,
   narrowOverloadCandidates,
 } from '../../scope-resolution/passes/overload-narrowing.js';
+import { cppConversionRank } from './conversion-rank.js';
 
 interface RangeKey {
   readonly startLine: number;
@@ -107,6 +108,7 @@ export function resolveCppQualifiedNamespaceMember(
   memberName: string,
   parsedFiles: readonly ParsedFile[],
   _scopes: ScopeResolutionIndexes,
+  callsite?: Callsite,
 ): SymbolDefinition | 'ambiguous' | undefined {
   const allHits: SymbolDefinition[] = [];
   const seenNodeId = new Set<string>();
@@ -132,19 +134,17 @@ export function resolveCppQualifiedNamespaceMember(
   if (allHits.length === 0) return undefined;
   if (allHits.length === 1) return allHits[0];
 
-  // Multi-candidate: the `resolveQualifiedReceiverMember` hook has no
-  // access to call-site arity or argument types, so
-  // `narrowOverloadCandidates` cannot actually narrow here — the call
-  // with `(allHits, undefined, undefined)` is effectively a pass-through.
-  // We retain it so that `isOverloadAmbiguousAfterNormalization` can
-  // still detect int/long-style normalization collisions on this path,
-  // but for any multi-hit case where candidates have genuinely distinct
-  // signatures (e.g. `foo(int)` vs `foo(double)` in different inline
-  // children), we conservatively suppress rather than pick arbitrarily.
-  // A future enhancement could thread call-site argument info through
-  // the `resolveQualifiedReceiverMember` contract to enable real
-  // narrowing here.
-  const narrowed = narrowOverloadCandidates(allHits, undefined, undefined);
+  // Multi-candidate: thread call-site arity/argument-types through the
+  // `resolveQualifiedReceiverMember` contract so `narrowOverloadCandidates`
+  // can disambiguate via exact-type match and, when available, conversion-rank
+  // scoring (`cppConversionRank`). Same-signature ambiguity is still detected
+  // by `isOverloadAmbiguousAfterNormalization` below.
+  const narrowed = narrowOverloadCandidates(
+    allHits,
+    callsite?.arity,
+    callsite?.argumentTypes,
+    callsite !== undefined ? { conversionRankFn: cppConversionRank } : undefined,
+  );
   if (narrowed.length === 1) return narrowed[0];
   if (narrowed.length === 0) return undefined;
   if (isOverloadAmbiguousAfterNormalization(narrowed, undefined)) return 'ambiguous';

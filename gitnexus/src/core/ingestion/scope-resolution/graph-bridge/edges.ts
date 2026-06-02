@@ -70,6 +70,9 @@ export function tryEmitEdge(
   confidence = 0.85,
   collapseByCallerTarget = false,
 ): boolean {
+  // Inheritance edges are emitted directly by `preEmitInheritanceEdges` (which
+  // owns the enclosing-class caller and the EXTENDS-vs-IMPLEMENTS type), so this
+  // generic bridge derives caller + edge type purely from the site.
   const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
   const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
   const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
@@ -81,6 +84,57 @@ export function tryEmitEdge(
   // the provider opts in (C# matches legacy DAG behavior this way).
   // Write/read ACCESSES keep per-site dedup so multiple writes to the
   // same field on different lines produce distinct edges.
+  const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
+  const dedupKey = useCollapsed
+    ? `${edgeType}:${callerGraphId}->${targetGraphId}`
+    : `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  if (seen.has(dedupKey)) return false;
+  seen.add(dedupKey);
+
+  graph.addRelationship({
+    id: `rel:${dedupKey}`,
+    sourceId: callerGraphId,
+    targetId: targetGraphId,
+    type: edgeType,
+    confidence,
+    reason,
+  });
+  return true;
+}
+
+/**
+ * Variant of `tryEmitEdge` that takes a pre-resolved target graph id
+ * instead of resolving it from a `SymbolDefinition`. Used by the
+ * value-receiver-owner bridge (`receiver-bound-calls.ts` Case 5) where
+ * the picked owner-indexed method def carries no `qualifiedName` (object
+ * literals have no class owner to seed it) and therefore cannot
+ * round-trip through `resolveDefGraphId`. The def's `nodeId` IS the
+ * canonical graph node id (written by the parse phase), so the caller
+ * passes it directly.
+ *
+ * All other invariants of `tryEmitEdge` apply: dedup key shape, collapse
+ * flag honoring, edge-type mapping, caller-id resolution.
+ */
+export function tryEmitEdgeWithExplicitTargetId(
+  graph: KnowledgeGraph,
+  scopes: ScopeResolutionIndexes,
+  nodeLookup: GraphNodeLookup,
+  site: {
+    readonly inScope: ScopeId;
+    readonly atRange: { startLine: number; startCol: number };
+    readonly kind: string;
+  },
+  targetGraphId: string,
+  reason: string,
+  seen: Set<string>,
+  confidence = 0.85,
+  collapseByCallerTarget = false,
+): boolean {
+  const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
+  const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
+  if (callerGraphId === undefined) return false;
+  if (edgeType === undefined) return false;
+
   const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
   const dedupKey = useCollapsed
     ? `${edgeType}:${callerGraphId}->${targetGraphId}`

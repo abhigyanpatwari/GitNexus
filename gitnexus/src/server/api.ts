@@ -22,8 +22,9 @@ import {
   flushWAL,
   closeLbug,
   withLbugDb,
+  isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
-import { isWriteQuery } from '../core/lbug/pool-adapter.js';
+import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -447,7 +448,14 @@ export const streamGraphNdjson = async (
  */
 const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
   app.get(routePath, (req, res) => {
-    const job = jm.getJob(req.params.jobId);
+    let jobId: string;
+    try {
+      jobId = assertString(req.params.jobId, 'jobId');
+    } catch (err: any) {
+      res.status(err.status ?? 400).json({ error: err.message });
+      return;
+    }
+    const job = jm.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -493,7 +501,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
       try {
         eventId++;
         if (progress.phase === 'complete' || progress.phase === 'failed') {
-          const eventJob = jm.getJob(req.params.jobId);
+          const eventJob = jm.getJob(jobId);
           res.write(
             `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
               repoName: eventJob?.repoName,
@@ -621,6 +629,44 @@ export const handleFileRequest = async (
   }
 };
 
+export const handleQueryRequest = async (
+  req: express.Request,
+  res: express.Response,
+  resolveRepo: (repoName?: string) => Promise<{ storagePath: string } | undefined>,
+): Promise<void> => {
+  try {
+    const cypher = req.body.cypher as string;
+    if (!cypher) {
+      res.status(400).json({ error: 'Missing "cypher" in request body' });
+      return;
+    }
+    const queryParams = req.body.params;
+    if (queryParams !== undefined && !isValidQueryParams(queryParams)) {
+      res.status(400).json({
+        error: '"params" must be a plain object with scalar values (string/number/boolean/null)',
+      });
+      return;
+    }
+
+    const entry = await resolveRepo(requestedRepo(req));
+    if (!entry) {
+      res.status(404).json({ error: 'Repository not found' });
+      return;
+    }
+    const lbugPath = path.join(entry.storagePath, 'lbug');
+    const result = await withLbugDb(lbugPath, () => executePrepared(cypher, queryParams ?? {}), {
+      readOnly: true,
+    });
+    res.json({ result });
+  } catch (err: any) {
+    if (isReadOnlyDbError(err)) {
+      res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
+      return;
+    }
+    res.status(500).json({ error: err.message || 'Query failed' });
+  }
+};
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
   app.disable('x-powered-by');
@@ -646,6 +692,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // local-bound default).
   app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
+  // Chromium Private Network Access (required since Chrome 130+). Must run before
+  // cors: the cors middleware ends OPTIONS preflight responses, so this header
+  // has to be set on res before cors writes the preflight reply.
+  app.use((_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    next();
+  });
+
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
   // Disallowed origins get the response without Access-Control-Allow-Origin,
@@ -660,21 +714,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
-  // Support Chromium Private Network Access (required since Chrome 130+).
-  // Without this header, Chrome/Edge/Brave/Arc block public->loopback requests
-  // which breaks bridge mode entirely.
-  app.use((_req, res, next) => {
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
-    next();
-  });
-
-  // Handle PNA preflight: Chromium sends Access-Control-Request-Private-Network
-  // on OPTIONS requests and expects the allow header in the response.
-  // Note: the actual Allow-Private-Network header is already set by the global
-  // middleware above, so we just need to call next() here.
-  app.options('*', (_req, res, next) => {
-    next();
-  });
+  // No explicit OPTIONS route is registered. The Chromium Private Network
+  // Access header is set by the global middleware above (pre-cors), and
+  // `cors()` itself handles OPTIONS preflights for every path. Registering a
+  // wildcard OPTIONS catchall here would throw under Express 5's stricter
+  // path parser (the source of the original startup crash this branch fixed).
 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
@@ -984,8 +1028,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.once('close', abortStreaming);
 
         try {
-          await withLbugDb(lbugPath, async () =>
-            streamGraphNdjson(res, includeContent, abortController.signal),
+          // Read-only open: /api/graph never writes. Write-mode opens engage
+          // LadybugDB's checkpoint machinery (`.shadow` sidecar), which on
+          // Windows races with the OS file handle release and trips
+          // "Cannot open file ... lbug.shadow - Error 2". See pool-adapter.ts
+          // which already opens read-only for the same reason, and the
+          // /api/query precedent in PR #1655.
+          await withLbugDb(
+            lbugPath,
+            async () => streamGraphNdjson(res, includeContent, abortController.signal),
+            { readOnly: true },
           );
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.end();
@@ -998,7 +1050,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent));
+      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent), {
+        readOnly: true,
+      });
       res.json(graph);
     } catch (err: any) {
       if (err instanceof ClientDisconnectedError) {
@@ -1020,29 +1074,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Execute Cypher query
   app.post('/api/query', async (req, res) => {
-    try {
-      const cypher = req.body.cypher as string;
-      if (!cypher) {
-        res.status(400).json({ error: 'Missing "cypher" in request body' });
-        return;
-      }
-
-      if (isWriteQuery(cypher)) {
-        res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
-        return;
-      }
-
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-      const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
-      res.json({ result });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Query failed' });
-    }
+    await handleQueryRequest(req, res, resolveRepo);
   });
 
   // Search (supports mode: 'hybrid' | 'semantic' | 'bm25', and optional enrichment)
@@ -1067,68 +1099,70 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const mode: string = req.body.mode ?? 'hybrid';
       const enrich: boolean = req.body.enrich !== false; // default true
 
-      const results = await withLbugDb(lbugPath, async () => {
-        let searchResults: any[];
-        let ftsAvailable: boolean | undefined;
+      const results = await withLbugDb(
+        lbugPath,
+        async () => {
+          let searchResults: any[];
+          let ftsAvailable: boolean | undefined;
 
-        if (mode === 'semantic') {
-          const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-          if (!isEmbedderReady()) {
-            return { searchResults: [] as any[], ftsAvailable: undefined };
-          }
-          const { semanticSearch: semSearch } =
-            await import('../core/embeddings/embedding-pipeline.js');
-          searchResults = await semSearch(executeQuery, query, limit);
-          // Normalize semantic results to HybridSearchResult shape
-          searchResults = searchResults.map((r: any, i: number) => ({
-            ...r,
-            score: r.score ?? 1 - (r.distance ?? 0),
-            rank: i + 1,
-            sources: ['semantic'],
-          }));
-        } else if (mode === 'bm25') {
-          const ftsResponse = await searchFTSFromLbug(query, limit);
-          ftsAvailable = ftsResponse.ftsAvailable;
-          searchResults = ftsResponse.results.map((r: any, i: number) => ({
-            ...r,
-            rank: i + 1,
-            sources: ['bm25'],
-          }));
-        } else {
-          // hybrid (default)
-          const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-          if (isEmbedderReady()) {
+          if (mode === 'semantic') {
+            const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+            if (!isEmbedderReady()) {
+              return { searchResults: [] as any[], ftsAvailable: undefined };
+            }
             const { semanticSearch: semSearch } =
               await import('../core/embeddings/embedding-pipeline.js');
-            searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
-          } else {
+            searchResults = await semSearch(executeQuery, query, limit);
+            // Normalize semantic results to HybridSearchResult shape
+            searchResults = searchResults.map((r: any, i: number) => ({
+              ...r,
+              score: r.score ?? 1 - (r.distance ?? 0),
+              rank: i + 1,
+              sources: ['semantic'],
+            }));
+          } else if (mode === 'bm25') {
             const ftsResponse = await searchFTSFromLbug(query, limit);
             ftsAvailable = ftsResponse.ftsAvailable;
-            searchResults = ftsResponse.results;
+            searchResults = ftsResponse.results.map((r: any, i: number) => ({
+              ...r,
+              rank: i + 1,
+              sources: ['bm25'],
+            }));
+          } else {
+            // hybrid (default)
+            const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+            if (isEmbedderReady()) {
+              const { semanticSearch: semSearch } =
+                await import('../core/embeddings/embedding-pipeline.js');
+              searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
+            } else {
+              const ftsResponse = await searchFTSFromLbug(query, limit);
+              ftsAvailable = ftsResponse.ftsAvailable;
+              searchResults = ftsResponse.results;
+            }
           }
-        }
 
-        if (!enrich) return { searchResults, ftsAvailable };
+          if (!enrich) return { searchResults, ftsAvailable };
 
-        // Server-side enrichment: add connections, cluster, processes per result
-        // Uses parameterized queries to prevent Cypher injection via nodeId
-        const validLabel = (label: string): boolean =>
-          (NODE_TABLES as readonly string[]).includes(label);
+          // Server-side enrichment: add connections, cluster, processes per result
+          // Uses parameterized queries to prevent Cypher injection via nodeId
+          const validLabel = (label: string): boolean =>
+            (NODE_TABLES as readonly string[]).includes(label);
 
-        const enriched = await Promise.all(
-          searchResults.slice(0, limit).map(async (r: any) => {
-            const nodeId: string = r.nodeId || r.id || '';
-            const nodeLabel = nodeId.split(':')[0];
-            const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
+          const enriched = await Promise.all(
+            searchResults.slice(0, limit).map(async (r: any) => {
+              const nodeId: string = r.nodeId || r.id || '';
+              const nodeLabel = nodeId.split(':')[0];
+              const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
 
-            if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
+              if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
 
-            // Run connections, cluster, and process queries in parallel
-            // Label is validated against NODE_TABLES (compile-time safe identifiers);
-            // nodeId uses $nid parameter binding to prevent injection
-            const [connRes, clusterRes, procRes] = await Promise.all([
-              executePrepared(
-                `
+              // Run connections, cluster, and process queries in parallel
+              // Label is validated against NODE_TABLES (compile-time safe identifiers);
+              // nodeId uses $nid parameter binding to prevent injection
+              const [connRes, clusterRes, procRes] = await Promise.all([
+                executePrepared(
+                  `
               MATCH (n:${nodeLabel} {id: $nid})
               OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
               OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
@@ -1137,65 +1171,67 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
               LIMIT 1
             `,
-                { nid: nodeId },
-              ).catch(() => []),
-              executePrepared(
-                `
+                  { nid: nodeId },
+                ).catch(() => []),
+                executePrepared(
+                  `
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
               RETURN c.label AS label, c.description AS description
               LIMIT 1
             `,
-                { nid: nodeId },
-              ).catch(() => []),
-              executePrepared(
-                `
+                  { nid: nodeId },
+                ).catch(() => []),
+                executePrepared(
+                  `
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[rel:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
               RETURN p.id AS id, p.label AS label, rel.step AS step, p.stepCount AS stepCount
               ORDER BY rel.step
             `,
-                { nid: nodeId },
-              ).catch(() => []),
-            ]);
+                  { nid: nodeId },
+                ).catch(() => []),
+              ]);
 
-            if (connRes.length > 0) {
-              const row = connRes[0];
-              const outgoing = (Array.isArray(row) ? row[0] : row.outgoing || [])
-                .filter((c: any) => c?.name)
-                .slice(0, 5);
-              const incoming = (Array.isArray(row) ? row[1] : row.incoming || [])
-                .filter((c: any) => c?.name)
-                .slice(0, 5);
-              enrichment.connections = { outgoing, incoming };
-            }
+              if (connRes.length > 0) {
+                const row = connRes[0];
+                const outgoing = (Array.isArray(row) ? row[0] : row.outgoing || [])
+                  .filter((c: any) => c?.name)
+                  .slice(0, 5);
+                const incoming = (Array.isArray(row) ? row[1] : row.incoming || [])
+                  .filter((c: any) => c?.name)
+                  .slice(0, 5);
+                enrichment.connections = { outgoing, incoming };
+              }
 
-            if (clusterRes.length > 0) {
-              const row = clusterRes[0];
-              enrichment.cluster = Array.isArray(row) ? row[0] : row.label;
-            }
+              if (clusterRes.length > 0) {
+                const row = clusterRes[0];
+                enrichment.cluster = Array.isArray(row) ? row[0] : row.label;
+              }
 
-            if (procRes.length > 0) {
-              enrichment.processes = procRes
-                .map((row: any) => ({
-                  id: Array.isArray(row) ? row[0] : row.id,
-                  label: Array.isArray(row) ? row[1] : row.label,
-                  step: Array.isArray(row) ? row[2] : row.step,
-                  stepCount: Array.isArray(row) ? row[3] : row.stepCount,
-                }))
-                .filter((p: any) => p.id && p.label);
-            }
+              if (procRes.length > 0) {
+                enrichment.processes = procRes
+                  .map((row: any) => ({
+                    id: Array.isArray(row) ? row[0] : row.id,
+                    label: Array.isArray(row) ? row[1] : row.label,
+                    step: Array.isArray(row) ? row[2] : row.step,
+                    stepCount: Array.isArray(row) ? row[3] : row.stepCount,
+                  }))
+                  .filter((p: any) => p.id && p.label);
+              }
 
-            return { ...r, ...enrichment };
-          }),
-        );
+              return { ...r, ...enrichment };
+            }),
+          );
 
-        return { searchResults: enriched, ftsAvailable };
-      });
+          return { searchResults: enriched, ftsAvailable };
+        },
+        { readOnly: true },
+      );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
         response.warning =
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.';
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
       }
       res.json(response);
     } catch (err: any) {
@@ -1271,8 +1307,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const fileRows = await withLbugDb(lbugPath, () =>
-        executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
+      const fileRows = await withLbugDb(
+        lbugPath,
+        () =>
+          executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
+        { readOnly: true },
       );
 
       // Search files on disk one at a time (constant memory)

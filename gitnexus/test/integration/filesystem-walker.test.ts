@@ -398,5 +398,194 @@ describe('filesystem-walker', () => {
       expect(skipWarnings.length).toBeGreaterThan(0);
       expect(String(skipWarnings[0].msg ?? '')).toContain('generated/vendored');
     });
+
+    // Regression: issue #1659. The skipped-paths list and the
+    // GITNEXUS_MAX_FILE_SIZE hint must appear by default, otherwise users
+    // see "Skipped N large files" with no actionable detail and misdiagnose
+    // missing IMPORTS/CALLS edges as a resolver bug.
+    it('lists the skipped path by default (not gated behind GITNEXUS_VERBOSE)', async () => {
+      await walkRepositoryPaths(sizeDir);
+      const pathWarnings = cap.records().filter((r) => String(r.msg ?? '').includes(BIG_FILE));
+      expect(pathWarnings.length).toBeGreaterThan(0);
+    });
+
+    it('emits a GITNEXUS_MAX_FILE_SIZE hint when running with the default cap', async () => {
+      await walkRepositoryPaths(sizeDir);
+      const hint = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('GITNEXUS_MAX_FILE_SIZE=<KB>'));
+      expect(hint.length).toBe(1);
+    });
+
+    it('omits the GITNEXUS_MAX_FILE_SIZE hint when an override is active', async () => {
+      process.env.GITNEXUS_MAX_FILE_SIZE = '1';
+      await walkRepositoryPaths(sizeDir);
+      const hint = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('GITNEXUS_MAX_FILE_SIZE=<KB>'));
+      expect(hint.length).toBe(0);
+    });
+
+    // Edge case from the #1661 adversarial review: setting GITNEXUS_MAX_FILE_SIZE
+    // to the same value as the default (512KB) used to still print the hint
+    // because the byte comparison resolved to equal. The hint should care
+    // about whether the operator set the env var, not what value they chose.
+    it('omits the GITNEXUS_MAX_FILE_SIZE hint when the override equals the default value', async () => {
+      process.env.GITNEXUS_MAX_FILE_SIZE = '512';
+      await walkRepositoryPaths(sizeDir);
+      const hint = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('GITNEXUS_MAX_FILE_SIZE=<KB>'));
+      expect(hint.length).toBe(0);
+    });
+
+    it('routes large-file notices through console.warn while analyze progress is active', async () => {
+      const originalProgressActive = process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = '1';
+        await walkRepositoryPaths(sizeDir);
+        const messages = warnSpy.mock.calls.map(([msg]) => String(msg));
+        expect(messages.some((m) => m.includes('Skipped 1 large files'))).toBe(true);
+        expect(messages.some((m) => m.includes(BIG_FILE))).toBe(true);
+        expect(cap.records().filter((r) => String(r.msg ?? '').includes('Skipped '))).toHaveLength(
+          0,
+        );
+      } finally {
+        warnSpy.mockRestore();
+        if (originalProgressActive === undefined) {
+          delete process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
+        } else {
+          process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = originalProgressActive;
+        }
+      }
+    });
+  });
+
+  describe('large file skip preview cap (#1659)', () => {
+    let manyDir: string;
+    const ORIGINAL_ENV = process.env.GITNEXUS_MAX_FILE_SIZE;
+    const ORIGINAL_VERBOSE = process.env.GITNEXUS_VERBOSE;
+    let cap: ReturnType<typeof _captureLogger>;
+
+    beforeAll(async () => {
+      manyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-size-many-'));
+      await fs.mkdir(path.join(manyDir, 'src'), { recursive: true });
+      // 8 files >512KB so the preview-cap path (5) is exercised.
+      for (let i = 0; i < 8; i++) {
+        await fs.writeFile(path.join(manyDir, 'src', `big${i}.ts`), 'x'.repeat(600 * 1024));
+      }
+    });
+
+    afterAll(async () => {
+      await fs.rm(manyDir, { recursive: true, force: true });
+    });
+
+    beforeEach(() => {
+      delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      delete process.env.GITNEXUS_VERBOSE;
+      _resetMaxFileSizeWarnings();
+      cap = _captureLogger();
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_ENV === undefined) {
+        delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      } else {
+        process.env.GITNEXUS_MAX_FILE_SIZE = ORIGINAL_ENV;
+      }
+      if (ORIGINAL_VERBOSE === undefined) {
+        delete process.env.GITNEXUS_VERBOSE;
+      } else {
+        process.env.GITNEXUS_VERBOSE = ORIGINAL_VERBOSE;
+      }
+      cap.restore();
+    });
+
+    it('truncates the path list to 5 and mentions GITNEXUS_VERBOSE when over the cap', async () => {
+      await walkRepositoryPaths(manyDir);
+      const pathLines = cap.records().filter((r) => /^\s*-\s/.test(String(r.msg ?? '')));
+      expect(pathLines.length).toBe(5);
+      const more = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('and 3 more (set GITNEXUS_VERBOSE=1'));
+      expect(more.length).toBe(1);
+    });
+
+    // Boundary check from the #1661 adversarial review: the SKIPPED_PREVIEW_CAP
+    // comparison is `<=`, so 5 paths should list all five without a truncation
+    // line and 6 paths should list exactly five plus "...and 1 more". Tested
+    // explicitly so a future off-by-one refactor (`<=` → `<`) fails fast.
+    it('lists all paths and omits the truncation line at exactly 5 skipped files', async () => {
+      const fiveDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-size-five-'));
+      try {
+        await fs.mkdir(path.join(fiveDir, 'src'), { recursive: true });
+        for (let i = 0; i < 5; i++) {
+          await fs.writeFile(path.join(fiveDir, 'src', `big${i}.ts`), 'x'.repeat(600 * 1024));
+        }
+        await walkRepositoryPaths(fiveDir);
+        const pathLines = cap.records().filter((r) => /^\s*-\s/.test(String(r.msg ?? '')));
+        expect(pathLines.length).toBe(5);
+        const more = cap.records().filter((r) => String(r.msg ?? '').includes('...and '));
+        expect(more.length).toBe(0);
+      } finally {
+        await fs.rm(fiveDir, { recursive: true, force: true });
+      }
+    });
+
+    it('lists exactly 5 paths plus "...and 1 more" at exactly 6 skipped files', async () => {
+      const sixDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-size-six-'));
+      try {
+        await fs.mkdir(path.join(sixDir, 'src'), { recursive: true });
+        for (let i = 0; i < 6; i++) {
+          await fs.writeFile(path.join(sixDir, 'src', `big${i}.ts`), 'x'.repeat(600 * 1024));
+        }
+        await walkRepositoryPaths(sixDir);
+        const pathLines = cap.records().filter((r) => /^\s*-\s/.test(String(r.msg ?? '')));
+        expect(pathLines.length).toBe(5);
+        const more = cap
+          .records()
+          .filter((r) => String(r.msg ?? '').includes('and 1 more (set GITNEXUS_VERBOSE=1'));
+        expect(more.length).toBe(1);
+      } finally {
+        await fs.rm(sixDir, { recursive: true, force: true });
+      }
+    });
+
+    it('lists every skipped path when GITNEXUS_VERBOSE=1', async () => {
+      process.env.GITNEXUS_VERBOSE = '1';
+      await walkRepositoryPaths(manyDir);
+      const pathLines = cap.records().filter((r) => /^\s*-\s/.test(String(r.msg ?? '')));
+      expect(pathLines.length).toBe(8);
+      const more = cap.records().filter((r) => String(r.msg ?? '').includes('and '));
+      expect(more.length).toBe(0);
+    });
+
+    // Issue #1659 follow-up (PR #1661 review): paths were pushed in fs.stat
+    // completion order, so the default preview could vary between runs on
+    // the same repo. The implementation sorts skippedLargePaths before
+    // slicing, so the listed paths come out in sorted order, which is the
+    // stable contract operators can rely on.
+    it('lists skipped paths in sorted order (deterministic preview)', async () => {
+      process.env.GITNEXUS_VERBOSE = '1';
+      await walkRepositoryPaths(manyDir);
+      const pathLines = cap
+        .records()
+        .map((r) => String(r.msg ?? ''))
+        .filter((m) => /^\s*-\s/.test(m))
+        .map((m) => m.replace(/^\s*-\s*/, ''));
+      expect(pathLines).toEqual([...pathLines].sort());
+      // sanity-check we actually saw all 8 of the manyDir fixture
+      expect(pathLines).toEqual([
+        'src/big0.ts',
+        'src/big1.ts',
+        'src/big2.ts',
+        'src/big3.ts',
+        'src/big4.ts',
+        'src/big5.ts',
+        'src/big6.ts',
+        'src/big7.ts',
+      ]);
+    });
   });
 });

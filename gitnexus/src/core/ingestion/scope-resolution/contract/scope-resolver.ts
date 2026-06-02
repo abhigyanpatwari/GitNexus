@@ -139,7 +139,19 @@
  *     once per workspace at resolve time), and merging would create a
  *     god-interface that complicates future migrations.
  *
- *   - **I8 — Two-channel binding lifecycle.**
+ *   - **I8 — Binding-channel lifecycle.** Post-finalize binding lookup
+ *     fans across several channels (`lookupBindingsAt` /
+ *     `findReceiverTypeBinding` consult them in precedence order):
+ *     `indexes.bindings` (frozen finalize output), `Scope.bindings`
+ *     (lexical local, first-tier shadowing), `indexes.bindingAugmentations`
+ *     (per-scope append-only), `indexes.workspaceFqnBindings` +
+ *     `indexes.workspaceTypeBindings` (scope-independent / global, consulted
+ *     unconditionally), and `indexes.namespaceFqnBindings` +
+ *     `indexes.namespaceTypeBindings` (per-namespace, consulted only for the
+ *     namespaces in `indexes.accessibleNamespacesByScope` for the caller's
+ *     module). All but `indexes.bindings` are mutable post-finalize and
+ *     populated by hooks; only `indexes.bindings` is frozen.
+ *
  *     `indexes.bindings` is the **finalize-output channel**. After
  *     `finalizeScopeModel` returns, its inner `BindingRef[]` arrays
  *     are deep-frozen by `materializeBindings` and MUST NOT be
@@ -438,6 +450,72 @@ export interface ScopeResolver {
   ) => Map<string /* DefId */, string[] /* ancestor DefIds */>;
 
   /**
+   * Optional pre-MRO hook to emit heritage edges (IMPLEMENTS) that the
+   * generic `preEmitInheritanceEdges` pass cannot produce. Runs AFTER
+   * `preEmitInheritanceEdges` (which emits EXTENDS from `@reference.inherits`
+   * sites) and BEFORE `buildMro` (which reads the graph for EXTENDS +
+   * IMPLEMENTS). Languages whose heritage declarations are syntactic method
+   * calls rather than grammar-level heritage clauses (e.g., Ruby
+   * `include`/`extend`/`prepend`) use this hook to emit IMPLEMENTS edges
+   * from parsed import or reference data.
+   *
+   * Receives the graph (writable), parsedFiles, nodeLookup, and the finalized
+   * `ScopeResolutionIndexes` — the same scope/import/def model
+   * `preEmitInheritanceEdges` resolves against, and already a first-class part
+   * of this contract (the structure/binding hooks below take it too), so the
+   * trailing `scopes` parameter is not a new type dependency here. It is
+   * appended and optional so implementations that don't need scope-aware
+   * resolution keep their narrower signature.
+   *
+   * `scopes` has exactly ONE consumer: the Rust resolver — see
+   * `emitRustTraitImplEdges` in languages/rust/scope-resolver.ts — which
+   * resolves `impl T for S` trait/struct names through the scope chain +
+   * import-aware disambiguation (refusing ambiguous matches) instead of a
+   * global last-write-wins simple-name index (#1951). Other implementations
+   * (e.g. Ruby `include`/`extend`/`prepend`) ignore it and keep the 3-arg
+   * shape. Must be idempotent (the orchestrator may call it more than once
+   * during re-resolution).
+   *
+   * Default: undefined (no extra heritage edges needed).
+   */
+  readonly emitHeritageEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    scopes?: ScopeResolutionIndexes,
+  ) => void;
+
+  /**
+   * Optional hook to emit IMPORTS edges that no syntactic import
+   * statement produces. Some languages grant files implicit visibility
+   * of one another within a compilation unit (e.g. every file in a
+   * build target sees its siblings' top-level declarations without an
+   * explicit import). The generic import pipeline only emits File→File
+   * IMPORTS edges from finalized `ImportEdge`s, so a language with this
+   * implicit-visibility rule has no edge to emit through that path.
+   *
+   * Runs immediately after `emitHeritageEdges` (so it shares the same
+   * pre-MRO surface: writable graph, parsedFiles, nodeLookup). Must be
+   * idempotent — the orchestrator may invoke it more than once during
+   * re-resolution. Implementations dedup their own emissions.
+   *
+   * `resolutionConfig` is the opaque per-workspace value returned by
+   * `loadResolutionConfig` (same channel threaded into `resolveImportTarget`).
+   * Swift uses it to group same-module files by the SPM target subtree;
+   * languages that don't need per-workspace config ignore the trailing
+   * parameter (it is optional so existing impls keep compiling).
+   *
+   * Default: undefined (cross-file visibility requires an explicit
+   * import; the finalized-ImportEdge pipeline covers it).
+   */
+  readonly emitImplicitImportEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    resolutionConfig?: unknown,
+  ) => void;
+
+  /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
    * owner. Python's rule: methods (Function defs whose parent scope
    * is Class) AND class-body fields (defs in Class scopes) are owned
@@ -562,6 +640,16 @@ export interface ScopeResolver {
   readonly allowGlobalFreeCallFallback?: boolean;
 
   /**
+   * When true, a constructor-form call `Type(...)` links to the Class def
+   * itself rather than its explicit Constructor def. Default
+   * (undefined/false) targets the explicit Constructor when one exists,
+   * else falls back to the Class. Languages whose call graph models
+   * `Type(...)` as a reference to the type (not its initializer) — e.g.
+   * Swift — opt in.
+   */
+  readonly constructorCallTargetsClass?: boolean;
+
+  /**
    * Optional per-slot conversion-rank function for overload resolution.
    * When provided, `narrowOverloadCandidates` uses ranked scoring as a
    * fallback when the exact-type filter produces no match. The function
@@ -586,6 +674,44 @@ export interface ScopeResolver {
    * Languages without file-local linkage semantics leave this undefined.
    */
   readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+
+  /**
+   * Optional predicate to identify members for which dispatch through
+   * an instance receiver is **invalid at the language level** — i.e.
+   * calling `instance.member()` would be a compile error or a
+   * type-system violation, even if a member of that name exists on
+   * the receiver's class. When provided, the receiver-bound calls
+   * pass filters out such members at every instance-receiver dispatch
+   * case (Case 0 compound receiver, Case 3b chain-typebinding, Case 4
+   * simple typeBinding, Case 5 value-receiver bridge) so the resolver
+   * does not emit a misleading `CALLS` edge for a call site the
+   * language itself would reject.
+   *
+   * **Reserved for the "instance receiver is invalid" semantic only.**
+   * Hooks for languages where static / class-level members are still
+   * legally callable through an instance (Python `@staticmethod`,
+   * JavaScript `static` methods accessed via the prototype chain in
+   * some lookup paths) should return `false` for those members — the
+   * filter would silently suppress legitimate edges otherwise. The
+   * canonical fit today is Kotlin companion-object methods, where
+   * `instance.companionMethod()` is a compile error.
+   *
+   * Case 2 (class-name receiver) is intentionally unaffected: a call
+   * through the class name (`Foo.staticMethod()`) is a legitimate
+   * dispatch.
+   *
+   * Case 0.5 (implicit `this` receiver) currently fires only for
+   * languages with `resolveThisViaEnclosingClass === true` (C++ at
+   * time of writing), none of which expose static-only semantics. A
+   * future language that enables BOTH `resolveThisViaEnclosingClass`
+   * AND `isStaticOnly` must wire the filter into Case 0.5's chain
+   * walk too — see the inline note in `receiver-bound-calls.ts`.
+   *
+   * Languages without static-only semantics leave this undefined and
+   * the legacy unfiltered behavior applies (every owned member of the
+   * receiver class is a dispatch candidate).
+   */
+  readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 
   /**
    * Optional predicate to gate free-call fallback emission by caller-side
@@ -667,6 +793,7 @@ export interface ScopeResolver {
     callerScope: ScopeId,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
+    callsite?: Callsite,
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
@@ -706,6 +833,12 @@ export interface ScopeResolver {
        *  itself; the cache is opt-in for hooks that need AST-level
        *  facts beyond what `ParsedFile` exposes. */
       readonly treeCache?: { get(filePath: string): unknown };
+      /** Opaque per-workspace value from `loadResolutionConfig` (same
+       *  channel threaded into `resolveImportTarget`). Swift uses it to
+       *  group same-module siblings by the SPM target subtree; languages
+       *  that don't need per-workspace config ignore it. Optional so
+       *  existing impls keep compiling. */
+      readonly resolutionConfig?: unknown;
     },
   ) => void;
 
@@ -749,12 +882,20 @@ export interface ScopeResolver {
    * `NewUser → User` mirrored from the target package). Runs after
    * `populateNamespaceSiblings` and before `propagateImportedReturnTypes`
    * so the SCC-ordered pass sees the mirrored bindings.
+   *
+   * `resolutionConfig` is the opaque per-workspace value returned by
+   * `loadResolutionConfig` (same channel threaded into `resolveImportTarget`).
+   * Swift uses it to group same-module sibling files by the SPM target
+   * subtree; languages that don't need per-workspace config ignore the
+   * trailing parameter (it is optional so existing impls keep compiling).
+   *
    * Default: undefined (no namespace typeBinding mirroring).
    */
   readonly mirrorNamespaceTypeBindings?: (
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     workspaceIndex: import('../../scope-resolution/workspace-index.js').WorkspaceResolutionIndex,
+    resolutionConfig?: unknown,
   ) => void;
 
   /**

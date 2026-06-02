@@ -66,18 +66,48 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
         JSON.stringify({ lastCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', stats: {} }),
       );
 
-      const result = runHook(hookPath, {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit -m "test"' },
-        tool_output: { exit_code: 0 },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        hookPath,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
       expect(output!.additionalContext).toContain('stale');
-      expect(output!.additionalContext).toContain('npx gitnexus analyze');
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze');
+    });
+
+    it('prefers pnpm dlx when GITNEXUS_INVOCATION=pnpm', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', stats: {} }),
+      );
+
+      const result = runHook(
+        hookPath,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'pnpm' } },
+      );
+
+      const output = parseHookOutput(result.stdout);
+      expect(output).not.toBeNull();
+      expect(output!.additionalContext).toContain('--allow-build=@ladybugdb/core');
+      expect(output!.additionalContext).toContain('gitnexus@latest analyze');
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {
@@ -116,17 +146,22 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
         }),
       );
 
-      const result = runHook(hookPath, {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit -m "test"' },
-        tool_output: { exit_code: 0 },
-        cwd: tmpDir,
-      });
+      const result = runHook(
+        hookPath,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+      );
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('--embeddings');
+      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
     });
 
     it('treats missing meta.json as stale', () => {

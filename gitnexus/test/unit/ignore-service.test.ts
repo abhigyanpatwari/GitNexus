@@ -175,8 +175,19 @@ describe('shouldIgnorePath', () => {
       expect(shouldIgnorePath('src/api.generated.ts')).toBe(true);
     });
 
+    it('ignores generated Monaco editor worker bundles', () => {
+      expect(shouldIgnorePath('public/monaco-workers/json.worker.js')).toBe(true);
+      expect(shouldIgnorePath('keep-ui/public/monaco-workers/125.js')).toBe(true);
+    });
+
     it('ignores TypeScript declaration files', () => {
       expect(shouldIgnorePath('types/index.d.ts')).toBe(true);
+    });
+
+    it('ignores Laravel compiled Blade view cache files', () => {
+      expect(shouldIgnorePath('storage/framework/views/1a2b3c.php')).toBe(true);
+      expect(shouldIgnorePath('project/storage/framework/views/1a2b3c.php')).toBe(true);
+      expect(shouldIgnorePath('project\\storage\\framework\\views\\1a2b3c.php')).toBe(true);
     });
   });
 
@@ -211,6 +222,7 @@ describe('isHardcodedIgnoredDirectory', () => {
     expect(isHardcodedIgnoredDirectory('node_modules')).toBe(true);
     expect(isHardcodedIgnoredDirectory('.git')).toBe(true);
     expect(isHardcodedIgnoredDirectory('dist')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('monaco-workers')).toBe(true);
     expect(isHardcodedIgnoredDirectory('__pycache__')).toBe(true);
   });
 
@@ -310,6 +322,13 @@ describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771
     expect(filter.ignored(mkPath('dist/bundle.js'))).toBe(true);
     expect(filter.childrenIgnored(mkPath('node_modules'))).toBe(true);
     expect(filter.childrenIgnored(mkPath('.git'))).toBe(true);
+  });
+
+  it('explicit negation can still opt into generated Monaco worker bundles', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!public/monaco-workers/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.childrenIgnored(mkPath('public/monaco-workers'))).toBe(false);
+    expect(filter.ignored(mkPath('public/monaco-workers/json.worker.js'))).toBe(false);
   });
 
   it('standard `.gitignore` rules (no negation) still layer on top of hardcoded', async () => {

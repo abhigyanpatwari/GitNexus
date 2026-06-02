@@ -4,7 +4,7 @@
  * Tests: formatQueryResult, formatContextResult, formatImpactResult,
  * formatCypherResult, formatDetectChangesResult, formatListReposResult, MAX_BODY_SIZE
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   formatQueryResult,
   formatContextResult,
@@ -13,7 +13,64 @@ import {
   formatDetectChangesResult,
   formatListReposResult,
   MAX_BODY_SIZE,
+  validateHost,
 } from '../../src/cli/eval-server.js';
+
+// ─── validateHost ────────────────────────────────────────────────────
+
+beforeEach(() => {
+  vi.unstubAllEnvs();
+  vi.stubEnv('GITNEXUS_LANG', 'en');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('validateHost', () => {
+  it('passes "localhost" through unchanged', () => {
+    expect(validateHost('localhost')).toBe('localhost');
+  });
+
+  it('accepts valid IPv4 addresses', () => {
+    expect(validateHost('127.0.0.1')).toBe('127.0.0.1');
+    expect(validateHost('0.0.0.0')).toBe('0.0.0.0');
+    expect(validateHost('192.168.1.5')).toBe('192.168.1.5');
+    expect(validateHost('10.0.0.1')).toBe('10.0.0.1');
+  });
+
+  it('accepts valid IPv6 addresses', () => {
+    expect(validateHost('::1')).toBe('::1');
+    expect(validateHost('::')).toBe('::');
+    expect(validateHost('2001:db8::1')).toBe('2001:db8::1');
+  });
+
+  it('returns null for a non-IP hostname', () => {
+    expect(validateHost('foo.bar')).toBeNull();
+    expect(validateHost('myhost.local')).toBeNull();
+    expect(validateHost('example.com')).toBeNull();
+  });
+
+  it('returns null for out-of-range IPv4 octets', () => {
+    expect(validateHost('999.999.999.999')).toBeNull();
+    expect(validateHost('192.168.1.256')).toBeNull();
+  });
+
+  it('returns null for incomplete IPv4 addresses', () => {
+    expect(validateHost('192.168.1')).toBeNull();
+    expect(validateHost('192.168')).toBeNull();
+  });
+
+  it('returns null for an empty string', () => {
+    expect(validateHost('')).toBeNull();
+  });
+
+  it('returns null for whitespace or padded IPs', () => {
+    expect(validateHost(' ')).toBeNull();
+    expect(validateHost(' 127.0.0.1')).toBeNull();
+    expect(validateHost('127.0.0.1 ')).toBeNull();
+  });
+});
 
 // ─── MAX_BODY_SIZE ───────────────────────────────────────────────────
 
@@ -332,6 +389,25 @@ describe('formatDetectChangesResult', () => {
       affected_processes: [],
     });
     expect(result).toContain('and 5 more');
+  });
+
+  it('localizes detect_changes labels for Simplified Chinese', () => {
+    vi.stubEnv('GITNEXUS_LANG', 'zh-CN');
+
+    const result = formatDetectChangesResult({
+      summary: { changed_files: 2, changed_count: 3, affected_count: 1, risk_level: 'MEDIUM' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+      affected_processes: [
+        { name: 'Auth Flow', step_count: 5, changed_steps: [{ symbol: 'foo' }] },
+      ],
+    });
+
+    expect(result).toContain('变更：2 个文件，3 个符号');
+    expect(result).toContain('受影响流程：1');
+    expect(result).toContain('风险等级：MEDIUM');
+    expect(result).toContain('已变更符号：');
+    expect(result).toContain('受影响执行流程：');
+    expect(result).toContain('Auth Flow (5 步) — 已变更：foo');
   });
 });
 

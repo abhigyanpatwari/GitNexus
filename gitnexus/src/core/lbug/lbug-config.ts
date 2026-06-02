@@ -1,7 +1,193 @@
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
+import { execFileSync } from 'child_process';
+import { isMainThread } from 'worker_threads';
 import type lbug from '@ladybugdb/core';
+import { logger } from '../logger.js';
+
+// ─── Windows non-ASCII path workaround (#1811) ───────────────────────────────
+//
+// KuzuDB's native C++ layer on Windows uses CreateFileA (ANSI), not
+// CreateFileW. Non-ASCII path bytes from Node.js (UTF-8) are
+// misinterpreted via the system's Active Code Page (e.g. GBK), producing
+// a garbled path — "Error 3: The system cannot find the path."
+//
+// Layered workaround:
+//   1. Try 8.3 short-name form (fast, no persistent state)
+//   2. Fall back to an NTFS junction from an ASCII temp path
+//   3. If both fail, log a diagnostic and return the original path
+
+const NON_ASCII_RE = /[^\x00-\x7F]/;
+const JUNCTION_PREFIX = 'gitnexus-junction-';
+
+const activeJunctions = new Set<string>();
+let cleanupRegistered = false;
+let orphanScanDone = false;
+
+function junctionHash(targetDir: string): string {
+  return crypto.createHash('sha256').update(targetDir).digest('hex').slice(0, 16);
+}
+
+function tryShortPath(p: string): string | null {
+  try {
+    // Pass the path via environment variable so the command string is
+    // static — avoids CodeQL command-injection taint (the path never
+    // appears in the shell command text).
+    const result = execFileSync('cmd.exe', ['/c', 'for %I in ("%GITNEXUS_SP%") do @echo %~sI'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, GITNEXUS_SP: p },
+    });
+    const shortPath = result.trim();
+    if (
+      shortPath &&
+      !NON_ASCII_RE.test(shortPath) &&
+      (!shortPath.includes('?') || p.includes('?'))
+    ) {
+      return shortPath;
+    }
+  } catch {
+    // 8.3 unavailable or cmd failed
+  }
+  return null;
+}
+
+function tryJunction(targetDir: string, leaf: string): string | null {
+  const hash = junctionHash(targetDir);
+  const junctionLink = path.join(os.tmpdir(), `${JUNCTION_PREFIX}${hash}`);
+
+  if (fsSync.existsSync(junctionLink)) {
+    try {
+      const existing = fsSync.readlinkSync(junctionLink);
+      if (path.resolve(existing) === path.resolve(targetDir)) {
+        activeJunctions.add(junctionLink);
+        return path.join(junctionLink, leaf);
+      }
+      fsSync.rmSync(junctionLink, { recursive: true, force: true });
+    } catch {
+      // Stale or broken junction — remove and recreate
+      try {
+        fsSync.rmSync(junctionLink, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+
+  try {
+    fsSync.symlinkSync(targetDir, junctionLink, 'junction');
+    activeJunctions.add(junctionLink);
+    return path.join(junctionLink, leaf);
+  } catch (err: any) {
+    if (err.code === 'EEXIST') {
+      try {
+        const existing = fsSync.readlinkSync(junctionLink);
+        if (path.resolve(existing) === path.resolve(targetDir)) {
+          activeJunctions.add(junctionLink);
+          return path.join(junctionLink, leaf);
+        }
+      } catch {
+        /* cannot verify — fall through */
+      }
+    }
+  }
+  return null;
+}
+
+function registerCleanupHandlers(): void {
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+
+  process.on('exit', () => cleanupNativePathJunctions());
+
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      cleanupNativePathJunctions();
+      if (process.platform === 'win32') {
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      } else {
+        process.kill(process.pid, signal);
+      }
+    });
+  }
+}
+
+function scanOrphanedJunctions(): void {
+  if (orphanScanDone) return;
+  orphanScanDone = true;
+  try {
+    const tmpdir = os.tmpdir();
+    const entries = fsSync.readdirSync(tmpdir);
+    for (const entry of entries) {
+      if (!entry.startsWith(JUNCTION_PREFIX)) continue;
+      const junctionPath = path.join(tmpdir, entry);
+      try {
+        const target = fsSync.readlinkSync(junctionPath);
+        try {
+          fsSync.lstatSync(target);
+        } catch {
+          fsSync.rmSync(junctionPath, { recursive: true, force: true });
+        }
+      } catch {
+        // Not a symlink/junction or unreadable — leave it
+      }
+    }
+  } catch {
+    // tmpdir unreadable — skip scan
+  }
+}
+
+export function cleanupNativePathJunctions(): void {
+  for (const junctionPath of activeJunctions) {
+    try {
+      fsSync.rmSync(junctionPath, { recursive: true, force: true });
+    } catch {
+      // Best effort — EPERM on Windows is common during exit
+    }
+  }
+  activeJunctions.clear();
+}
+
+export function toNativeSafePath(p: string): string {
+  if (process.platform !== 'win32') return p;
+  if (!NON_ASCII_RE.test(p)) return p;
+
+  if (isMainThread) {
+    scanOrphanedJunctions();
+    registerCleanupHandlers();
+  }
+
+  const shortPath = tryShortPath(p);
+  if (shortPath) return shortPath;
+
+  if (!isMainThread) {
+    logger.warn(
+      `GitNexus: non-ASCII path in worker thread — junction fallback skipped. ` +
+        `Path: "${p}". 8.3 short names may need to be enabled on this volume.`,
+    );
+    return p;
+  }
+
+  const targetDir = path.dirname(p);
+  const leaf = path.basename(p);
+  if (fsSync.existsSync(targetDir)) {
+    const junctionResult = tryJunction(targetDir, leaf);
+    if (junctionResult) return junctionResult;
+  }
+
+  logger.warn(
+    `GitNexus: non-ASCII path "${p}" could not be converted to an ASCII-safe form. ` +
+      'LadybugDB may fail with "Cannot open file." To fix: move the repo to a path ' +
+      'without CJK/Unicode characters, or enable 8.3 short names on this volume ' +
+      '(fsutil 8dot3name set 0).',
+  );
+  return p;
+}
 
 /**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
@@ -45,17 +231,99 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   return 16 * 1024 * 1024 * 1024;
 })();
 
+export const parseWalCheckpointThreshold = (raw: string | undefined): number | undefined => {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return undefined;
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < -1) return undefined;
+  return parsed;
+};
+
+/**
+ * Default GitNexus WAL auto-checkpoint threshold in bytes (64 MiB).
+ *
+ * Larger than Ladybug's stock ~16 MiB to reduce checkpoint rename/remove
+ * churn under heavy analyze write load — the original race that motivated
+ * issue #1741 triggered at the stock threshold. README examples in
+ * `README.md` and `gitnexus/README.md` and the recovery hint in
+ * `analyze.ts` MUST stay in sync with this value.
+ */
+const DEFAULT_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
+
+const resolveCheckpointThreshold = (): number => {
+  const raw = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
+  if (raw === undefined) return DEFAULT_WAL_CHECKPOINT_THRESHOLD;
+  const parsed = parseWalCheckpointThreshold(raw);
+  if (parsed !== undefined) return parsed;
+  // Non-empty but unparseable input: warn the operator and fall back. Mirrors
+  // the CLI's `--wal-checkpoint-threshold` validation (which hard-errors)
+  // but the env-var path stays soft to preserve "set once in your shell"
+  // ergonomics across mixed-version invocations.
+  if (raw.trim().length > 0) {
+    logger.warn(
+      { rawValue: raw, fallback: DEFAULT_WAL_CHECKPOINT_THRESHOLD },
+      `Ignoring invalid GITNEXUS_WAL_CHECKPOINT_THRESHOLD=${raw}; expected integer >= -1; falling back to default (${DEFAULT_WAL_CHECKPOINT_THRESHOLD}).`,
+    );
+  }
+  return DEFAULT_WAL_CHECKPOINT_THRESHOLD;
+};
+
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
 
 export const WAL_RECOVERY_SUGGESTION =
-  'WAL corruption detected. Run `gitnexus analyze` to rebuild the index.';
+  'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.';
 
 export function isWalCorruptionError(err: unknown): boolean {
   if (!err) return false;
   const msg = err instanceof Error ? err.message : String(err);
   return WAL_CORRUPTION_RE.test(msg);
 }
+
+// ─── Ladybug WAL checkpoint IO error matchers ───────────────────────────────
+//
+// Matched against LadybugDB v0.16.1 (see `gitnexus/package.json`
+// @ladybugdb/core). Strict regexes encode local_file_system.cpp wording
+// verified at that version. Two-tier strategy: strict matchers first so we
+// only fire on real checkpoint-rotation shapes; a permissive fallback
+// catches future Ladybug message drift so the recovery hint keeps surfacing
+// even if upstream wording changes.
+//
+// From Ladybug native LocalFileSystem exceptions (`local_file_system.cpp`),
+// surfaced in Node as:
+// "Runtime exception: IO exception: Error renaming file ..."
+// "Runtime exception: IO exception: Error removing directory or file ..."
+// We only match checkpoint-rotation shapes:
+//   - "<db>.wal -> <db>.wal.checkpoint" rename failures
+//   - "<db>.wal.checkpoint" remove failures
+// Example matches:
+//   "Runtime exception: IO exception: Error renaming file /x/lbug.wal to /x/lbug.wal.checkpoint. ErrorMessage: Permission denied"
+//   "Runtime exception: IO exception: Error removing directory or file /x/lbug.wal.checkpoint.  Error Message: Permission denied"
+// Matching is case-insensitive to remain robust across wrappers/platforms.
+const LBUG_CHECKPOINT_RENAME_RE =
+  /^runtime exception: io exception:\s*error renaming file\s+.+?\.wal\s+to\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
+const LBUG_CHECKPOINT_REMOVE_RE =
+  /^runtime exception: io exception:\s*error removing directory or file\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
+/**
+ * Permissive fallback: any IO-exception-shaped message that mentions a
+ * `.wal.checkpoint` path. Catches future Ladybug message drift (different
+ * verb, additional preamble, locale variation) so the recovery hint keeps
+ * surfacing even if the strict regexes go stale.
+ */
+const LBUG_CHECKPOINT_PERMISSIVE_RE = /io exception.*\.wal\.checkpoint/i;
+
+/**
+ * True when `err` looks like a Ladybug WAL-checkpoint rotation/remove IO
+ * failure. Tries strict matchers first (renames + removes), then falls
+ * back to the permissive matcher.
+ */
+export const isLbugCheckpointIoError = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (LBUG_CHECKPOINT_RENAME_RE.test(msg) || LBUG_CHECKPOINT_REMOVE_RE.test(msg)) return true;
+  return LBUG_CHECKPOINT_PERMISSIVE_RE.test(msg);
+};
 
 type LbugModule = typeof lbug;
 
@@ -103,8 +371,8 @@ export function createLbugDatabase(
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
-    true, // autoCheckpoint
-    -1, // checkpointThreshold
+    true, // autoCheckpoint (always on)
+    resolveCheckpointThreshold(), // checkpointThreshold (default 64 MiB; override with GITNEXUS_WAL_CHECKPOINT_THRESHOLD; -1 keeps Ladybug stock ~16 MiB)
     options.throwOnWalReplayFailure ?? true,
     true, // enableChecksums
   ) as lbug.Database;
@@ -268,12 +536,10 @@ export async function openLbugConnection(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): Promise<LbugConnectionHandle> {
+  const safePath = toNativeSafePath(databasePath);
   let db: lbug.Database | undefined;
   try {
-    db = await openWithLockRetry(
-      () => createLbugDatabase(lbugModule, databasePath, options),
-      databasePath,
-    );
+    db = await openWithLockRetry(() => createLbugDatabase(lbugModule, safePath, options), safePath);
     return { db, conn: new lbugModule.Connection(db) };
   } catch (err) {
     if (db) await db.close().catch(() => {});

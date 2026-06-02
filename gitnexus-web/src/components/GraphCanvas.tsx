@@ -9,11 +9,16 @@ import {
   Pause,
   Lightbulb,
   LightbulbOff,
+  Network,
+  GitBranch,
+  Target,
 } from '@/lib/lucide-icons';
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import {
   knowledgeGraphToGraphology,
+  knowledgeGraphToTreeGraphology,
+  knowledgeGraphToCirclesGraphology,
   filterGraphByDepth,
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
@@ -21,12 +26,14 @@ import {
 import type { GraphNode } from 'gitnexus-shared';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
+import { useTranslation } from 'react-i18next';
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
 }
 
 export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
+  const { t } = useTranslation('graph');
   const {
     graph,
     setSelectedNode,
@@ -46,6 +53,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     clearAICitationHighlights,
     clearBlastRadius,
     animatedNodes,
+    graphViewMode,
+    setGraphViewMode,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -147,7 +156,21 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
     animatedNodes: effectiveAnimatedNodes,
     visibleEdgeTypes,
+    layoutMode: graphViewMode,
   });
+
+  const handleViewModeChange = useCallback(
+    (mode: 'force' | 'tree' | 'circles') => {
+      if (mode === graphViewMode) return;
+      setSelectedNode(null);
+      setSigmaSelectedNode(null);
+      setHoveredNodeName(null);
+      setGraphViewMode(mode);
+      // Reset zoom when switching views
+      resetZoom();
+    },
+    [graphViewMode, resetZoom, setGraphViewMode, setSelectedNode, setSigmaSelectedNode],
+  );
 
   // Expose focusNode to parent via ref
   useImperativeHandle(
@@ -172,25 +195,30 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   useEffect(() => {
     if (!graph) return;
 
-    // Build communityMemberships map from MEMBER_OF relationships
-    // MEMBER_OF edges: nodeId -> communityId (stored as targetId)
-    const communityMemberships = new Map<string, number>();
-    graph.relationships.forEach((rel) => {
-      if (rel.type === 'MEMBER_OF') {
-        // Find the community node to get its index
-        const communityNode = nodeById.get(rel.targetId);
-        if (communityNode && communityNode.label === 'Community') {
-          // Extract community index from id (e.g., "comm_5" -> 5)
-          const numericPart = rel.targetId.replace('comm_', '');
-          const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
-          communityMemberships.set(rel.sourceId, communityIdx);
-        }
-      }
-    });
+    let sigmaGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
 
-    const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
+    if (graphViewMode === 'tree') {
+      sigmaGraph = knowledgeGraphToTreeGraphology(graph);
+    } else if (graphViewMode === 'circles') {
+      sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
+    } else {
+      // Build community memberships map from MEMBER_OF relationships
+      const communityMemberships = new Map<string, number>();
+      graph.relationships.forEach((rel) => {
+        if (rel.type === 'MEMBER_OF') {
+          const communityNode = nodeById.get(rel.targetId);
+          if (communityNode && communityNode.label === 'Community') {
+            const numericPart = rel.targetId.replace('comm_', '');
+            const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
+            communityMemberships.set(rel.sourceId, communityIdx);
+          }
+        }
+      });
+      sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
+    }
+
     setSigmaGraph(sigmaGraph);
-  }, [graph, nodeById, setSigmaGraph]);
+  }, [graph, nodeById, setSigmaGraph, graphViewMode]);
 
   // Update node visibility when filters change
   useEffect(() => {
@@ -203,7 +231,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
     sigma.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sigmaRef identity never changes
-  }, [visibleLabels, depthFilter, appSelectedNode]);
+  }, [graph, graphViewMode, visibleLabels, depthFilter, appSelectedNode]);
 
   // Sync app selected node with sigma
   useEffect(() => {
@@ -243,6 +271,53 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         />
       </div>
 
+      {/* View Mode Tabs */}
+      <div
+        role="tablist"
+        aria-label={t('canvas.viewModes.label')}
+        className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-lg border border-border-subtle bg-elevated/90 p-1 backdrop-blur-sm"
+      >
+        <button
+          role="tab"
+          aria-selected={graphViewMode === 'force'}
+          onClick={() => handleViewModeChange('force')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            graphViewMode === 'force'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+        >
+          <Network className="h-3.5 w-3.5" />
+          {t('canvas.viewModes.force')}
+        </button>
+        <button
+          role="tab"
+          aria-selected={graphViewMode === 'tree'}
+          onClick={() => handleViewModeChange('tree')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            graphViewMode === 'tree'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+        >
+          <GitBranch className="h-3.5 w-3.5" />
+          {t('canvas.viewModes.tree')}
+        </button>
+        <button
+          role="tab"
+          aria-selected={graphViewMode === 'circles'}
+          onClick={() => handleViewModeChange('circles')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            graphViewMode === 'circles'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+        >
+          <Target className="h-3.5 w-3.5" />
+          {t('canvas.viewModes.circles')}
+        </button>
+      </div>
+
       {/* Sigma container */}
       <div
         ref={containerRef}
@@ -268,7 +343,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
             onClick={handleClearSelection}
             className="ml-2 rounded px-2 py-0.5 text-xs text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
           >
-            Clear
+            {t('canvas.clear')}
           </button>
         </div>
       )}
@@ -278,21 +353,21 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         <button
           onClick={zoomIn}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Zoom In"
+          title={t('canvas.zoomIn')}
         >
           <ZoomIn className="h-4 w-4" />
         </button>
         <button
           onClick={zoomOut}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Zoom Out"
+          title={t('canvas.zoomOut')}
         >
           <ZoomOut className="h-4 w-4" />
         </button>
         <button
           onClick={resetZoom}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Fit to Screen"
+          title={t('canvas.fit')}
         >
           <Maximize2 className="h-4 w-4" />
         </button>
@@ -305,7 +380,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           <button
             onClick={handleFocusSelected}
             className="flex h-9 w-9 items-center justify-center rounded-md border border-accent/30 bg-accent/20 text-accent transition-colors hover:bg-accent/30"
-            title="Focus on Selected Node"
+            title={t('canvas.focusSelected')}
           >
             <Focus className="h-4 w-4" />
           </button>
@@ -316,7 +391,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           <button
             onClick={handleClearSelection}
             className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-            title="Clear Selection"
+            title={t('canvas.clearSelection')}
           >
             <RotateCcw className="h-4 w-4" />
           </button>
@@ -333,7 +408,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
               ? 'animate-pulse border-accent bg-accent text-white shadow-glow'
               : 'border-border-subtle bg-elevated text-text-secondary hover:bg-hover hover:text-text-primary'
           } `}
-          title={isLayoutRunning ? 'Stop Layout' : 'Run Layout Again'}
+          title={isLayoutRunning ? t('canvas.stopLayout') : t('canvas.runLayout')}
         >
           {isLayoutRunning ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </button>
@@ -343,7 +418,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {isLayoutRunning && (
         <div className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 animate-fade-in items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/20 px-3 py-1.5 backdrop-blur-sm">
           <div className="h-2 w-2 animate-ping rounded-full bg-emerald-400" />
-          <span className="text-xs font-medium text-emerald-400">Layout optimizing...</span>
+          <span className="text-xs font-medium text-emerald-400">
+            {t('canvas.layoutOptimizing')}
+          </span>
         </div>
       )}
 
@@ -359,7 +436,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
               ? 'flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20'
               : 'flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle bg-elevated text-text-muted transition-colors hover:bg-hover hover:text-text-primary'
           }
-          title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
+          title={
+            isAIHighlightsEnabled ? t('canvas.turnOffHighlights') : t('canvas.turnOnHighlights')
+          }
           data-testid="ai-highlights-toggle"
         >
           {isAIHighlightsEnabled ? (

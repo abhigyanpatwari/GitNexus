@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateAIContextFiles } from '../../src/cli/ai-context.js';
+import { generateAIContextFiles, generateGitNexusContent } from '../../src/cli/ai-context.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -93,6 +93,80 @@ describe('generateAIContextFiles', () => {
     }
   });
 
+  it('emits the project-local runner command and drops .gitnexus/run.cjs regardless of mode (#1945)', async () => {
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-analyze-cmd-test-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    const prior = process.env.GITNEXUS_INVOCATION;
+    try {
+      // Force a mode whose machine-resolved command (`gitnexus analyze`) differs
+      // from the emitted string, so this fails loudly if generation ever goes
+      // back to resolving the command per-machine instead of pointing at the
+      // fixed, CLI-neutral project-local runner.
+      process.env.GITNEXUS_INVOCATION = 'gitnexus';
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(subDir, subStorage, 'CmdProject', stats);
+
+      // The runner is copied next to the index so the emitted command resolves.
+      const runner = await fs.readFile(path.join(subStorage, 'run.cjs'), 'utf-8');
+      expect(runner).toContain('buildRunnerArgv'); // it's the real resolver copy
+
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        // Primary command is the fixed project-local runner, not machine-resolved.
+        expect(content).toContain('`node .gitnexus/run.cjs analyze`');
+        expect(content).not.toContain('run `gitnexus analyze`'); // no machine-resolved leak
+        // Bootstrap path (for a not-yet-analyzed checkout) + npm-11 escape hatch.
+        expect(content).toContain('npx gitnexus analyze');
+        expect(content).toContain('1939');
+      }
+    } finally {
+      if (prior === undefined) delete process.env.GITNEXUS_INVOCATION;
+      else process.env.GITNEXUS_INVOCATION = prior;
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits Cross-Repo Groups commands through the project-local runner (#1945)', () => {
+    // Exercise the groupNames>0 branch directly — the no-group path cannot
+    // catch a group-command regression because the block is not emitted.
+    const content = generateGitNexusContent(
+      'TestProject',
+      { nodes: 50, edges: 100, processes: 5 },
+      undefined,
+      ['TeamGroup'],
+    );
+    expect(content).toContain('## Cross-Repo Groups');
+    expect(content).toContain('node .gitnexus/run.cjs group list');
+    expect(content).toContain('node .gitnexus/run.cjs group sync');
+    expect(content).toContain('node .gitnexus/run.cjs group impact');
+    // Group commands must not hardcode a package manager.
+    expect(content).not.toMatch(/dlx gitnexus@latest group/);
+    expect(content).not.toMatch(/npx gitnexus group/);
+  });
+
+  it('degrades gracefully when the runner copy fails (#1945)', async () => {
+    // A read-only/full-disk storage dir must not abort generation. The copy is
+    // best-effort + logged; the generated docs still carry the inline bootstrap
+    // (`npx gitnexus analyze`) so a reader hitting the absent runner has a path.
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copyfail-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    const spy = vi.spyOn(fs, 'copyFile').mockRejectedValueOnce(new Error('EACCES: read-only'));
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      // Must not throw despite the copy failure.
+      await generateAIContextFiles(subDir, subStorage, 'CopyFail', stats);
+      const content = await fs.readFile(path.join(subDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).toContain('npx gitnexus analyze'); // bootstrap survives
+      // The runner was not written, so the file is absent.
+      await expect(fs.access(path.join(subStorage, 'run.cjs'))).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
     // The trimmed block must still contain everything that is genuinely
     // unique per repo or load-bearing for the agent: the freshness warning,
@@ -104,7 +178,7 @@ describe('generateAIContextFiles', () => {
 
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-    expect(content).toContain('If any GitNexus tool warns the index is stale');
+    expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze`');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -626,21 +700,28 @@ Indexed as **Idem** (1 symbols, 2 relationships, 3 execution flows). Custom.
     }
   });
 
-  it('noStats + keep marker: stats line update is NOT corrupted by Always-Do tuple text (#1508 review F3)', async () => {
-    // Regression guard: with the old fallback regex `\(([^)]+)\)`, when
-    // noStats=true suppressed the canonical stats line from generated
-    // content, the fallback matched the FIRST parenthesized text in the
-    // template, which was `({target: "symbolName", direction: "upstream"})`
-    // from the Always Do bullet — silently writing that as the stats line.
+  it('noStats + keep marker: stats line drops the volatile counts (#1706)', async () => {
+    // #1706: --no-stats must win in the keep-marker path too. A lean block
+    // committed to git would otherwise churn the parenthetical counts on
+    // every analyze, producing no-value merge conflicts between branches.
+    // The parenthetical is stripped; the project name still refreshes.
+    //
+    // Also a regression guard (#1508 review F3): the rewritten stats line
+    // MUST NOT pick up the `({target: "symbolName", direction: "upstream"})`
+    // tuple from the Always Do bullet.
+    //
+    // Asserted for BOTH AGENTS.md and CLAUDE.md: generateAIContextFiles
+    // updates them through separate upsertGitNexusSection call sites, so the
+    // parity check guards against a future asymmetry between the two.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-nostats-'));
     try {
-      const claudePath = path.join(dir, 'CLAUDE.md');
       const seed = `<!-- gitnexus:start -->
 <!-- gitnexus:keep -->
 Indexed as **NoStatsTest** (1 symbols, 1 relationships, 1 execution flows). Custom.
 <!-- gitnexus:end -->
 `;
-      await fs.writeFile(claudePath, seed, 'utf-8');
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
 
       const stats = { nodes: 42, edges: 84, processes: 3 };
       await generateAIContextFiles(
@@ -649,16 +730,84 @@ Indexed as **NoStatsTest** (1 symbols, 1 relationships, 1 execution flows). Cust
         'NoStatsTest',
         stats,
         undefined,
-        { noStats: true },
+        {
+          noStats: true,
+        },
       );
 
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const result = await fs.readFile(path.join(dir, f), 'utf-8');
+        // Stats line MUST NOT have been corrupted with the Always-Do tuple text
+        expect(result, f).not.toMatch(/\(\{target:/);
+        expect(result, f).not.toMatch(/direction:\s*"upstream"/);
+        // The volatile counts MUST be gone — no parenthetical, no leaked numbers.
+        expect(result, f).not.toContain('42 symbols');
+        expect(result, f).not.toMatch(/\(\d+\s+symbols,/);
+        // The count-free stats line is still present and the name refreshed.
+        expect(result, f).toContain('Indexed as **NoStatsTest**');
+        // Custom prose still preserved
+        expect(result, f).toContain('Custom.');
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('noStats + keep marker: project name still refreshes when counts are stripped (#1706)', async () => {
+    // Stripping the parenthetical must not freeze the whole line: a repo
+    // rename should still propagate into the keep-section stats line, even
+    // when the existing line has no parenthetical to match against.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-nostats-rename-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      // Seed already in the count-free shape a prior --no-stats run produces.
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **OldName**. Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 7, edges: 8, processes: 9 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'NewName', stats, undefined, {
+        noStats: true,
+      });
+
       const result = await fs.readFile(claudePath, 'utf-8');
-      // Stats line MUST NOT have been corrupted with the Always-Do tuple text
-      expect(result).not.toMatch(/\(\{target:/);
-      expect(result).not.toMatch(/direction:\s*"upstream"/);
-      // Stats line should reflect a sensible numeric update (passed stats)
-      expect(result).toContain('42 symbols');
-      // Custom prose still preserved
+      expect(result).toContain('Indexed as **NewName**');
+      expect(result).not.toContain('OldName');
+      expect(result).not.toMatch(/\(\d+\s+symbols,/);
+      expect(result).toContain('Custom.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('noStats + keep marker: counts return when --no-stats is dropped after a count-free run (#1706)', async () => {
+    // --no-stats must not be sticky: once a prior run has left the
+    // keep-section line count-free, a later run WITHOUT --no-stats must
+    // restore the parenthetical. The optional parenthetical in statsPattern
+    // is what keeps the count-free line re-matchable.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-counts-return-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      // Seed already in the count-free shape a prior --no-stats run produces.
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **FreezeTest**. Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 11, edges: 22, processes: 3 };
+      // No noStats option — the counts must come back.
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'FreezeTest', stats);
+
+      const result = await fs.readFile(claudePath, 'utf-8');
+      expect(result).toContain(
+        'Indexed as **FreezeTest** (11 symbols, 22 relationships, 3 execution flows)',
+      );
+      // Suffix prose after the stats line is preserved.
       expect(result).toContain('Custom.');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });

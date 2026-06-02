@@ -39,6 +39,18 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
+import {
+  ALWAYS_ON_SLOW_FILE_WARN_THROTTLE_MS,
+  alwaysOnSlowFileWarnMs,
+  deferredCallFileSlowMs,
+  deferredCallLogEveryN,
+  getDeferredProfileDroppedCount,
+  isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
+  profileElapsedMs,
+  resetDeferredProfileDroppedCount,
+  startTimer,
+} from './utils/deferred-resolution-profile.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
@@ -398,7 +410,7 @@ const findEnclosingFunction = (
 
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
 
@@ -913,6 +925,7 @@ export const processCalls = async (
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
     const typeEnv = buildTypeEnv(tree, language, {
+      filePath: file.path,
       model: ctx.model,
       parentMap,
       importedBindings,
@@ -1023,15 +1036,18 @@ export const processCalls = async (
               ? { declaredType: routedFieldInfo.type }
               : {}),
         });
-        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-        graph.addRelationship({
-          id: relId,
-          sourceId: fileId,
-          targetId: nodeId,
-          type: 'DEFINES',
-          confidence: 1.0,
-          reason: '',
-        });
+        // Only emit File -> Property DEFINES for top-level properties (issue #1944).
+        if (!propEnclosingClassId) {
+          const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+          graph.addRelationship({
+            id: relId,
+            sourceId: fileId,
+            targetId: nodeId,
+            type: 'DEFINES',
+            confidence: 1.0,
+            reason: '',
+          });
+        }
         if (propEnclosingClassId) {
           graph.addRelationship({
             id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
@@ -1281,7 +1297,8 @@ export const processCalls = async (
         while (p) {
           if (FUNCTION_NODE_TYPES.has(p.type)) {
             const funcName =
-              provider.methodExtractor?.extractFunctionName?.(p)?.funcName ?? genericFuncName(p);
+              provider.methodExtractor?.extractFunctionName?.(p, file.path)?.funcName ??
+              genericFuncName(p);
             if (funcName) {
               scope = `${funcName}@${p.startIndex}`;
               break;
@@ -2909,6 +2926,52 @@ export const processCallsFromExtracted = async (
   }
   const totalFiles = byFile.size;
   let filesProcessed = 0;
+  // Counts only files that survived the registry-primary skip — what the user
+  // is actually waiting on. Keyed by this counter, the first per-file progress
+  // log fires on the first *resolved* file rather than file #1 of byFile,
+  // which would silently land inside the skip block on mixed Python+JVM repos
+  // where the skipped language sorts first.
+  let resolvedFiles = 0;
+  const profileCalls = isDeferredResolutionProfileEnabled();
+  const slowFileMs = profileCalls ? deferredCallFileSlowMs() : 0;
+  const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
+  let skippedRegistryPrimaryFiles = 0;
+
+  // Always-on slow-file watchdog (#1741). Independent of the verbose/profile
+  // gate above: even a plain `analyze` run surfaces ONE actionable warning
+  // when a single file's call resolution is pathologically slow — turning the
+  // silent "stuck at Resolving calls (N/M)" symptom into a named culprit.
+  // Throttled so a genuinely slow repo can't produce a warn storm.
+  const alwaysSlowFileMs = alwaysOnSlowFileWarnMs();
+  let lastSlowFileWarnAt = 0;
+  let suppressedSlowFileWarnings = 0;
+
+  // Fresh dropped-log counter per analyze run — the module-private counter
+  // in deferred-resolution-profile.ts is process-lived, so without a reset
+  // here it would accumulate across consecutive analyze invocations in the
+  // same Node process (e.g., the MCP server, eval harness, integration
+  // tests).
+  if (profileCalls) resetDeferredProfileDroppedCount();
+
+  // One-pass pre-count of the eventual non-skipped total so the live progress
+  // denominator stays stable as the loop iterates. Otherwise `${totalFiles -
+  // skippedRegistryPrimaryFiles}` drifts upward — files iterated before later
+  // registry-primary skips have been seen carry an inflated denominator, and
+  // the ratio only self-corrects after every file has been classified.
+  //
+  // Runs whenever its result will actually be read: on the profile path (the
+  // live deferred-profile log) OR when the always-on slow-file watchdog is
+  // active (#1741) — the watchdog's warning prints `${resolvedFiles}/${resolvedTotal}`
+  // unconditionally, so leaving resolvedTotal at 0 on a plain run produced a
+  // bogus "Resolved N/0 files" denominator on exactly the unprofiled runs the
+  // watchdog exists for. When both gates are off, skip the extra Map pass.
+  let resolvedTotal = 0;
+  if (profileCalls || alwaysSlowFileMs > 0) {
+    for (const filePath of byFile.keys()) {
+      const lang = getLanguageFromFilename(filePath);
+      if (!lang || !isRegistryPrimary(lang)) resolvedTotal++;
+    }
+  }
 
   for (const [filePath, calls] of byFile) {
     filesProcessed++;
@@ -2920,7 +2983,22 @@ export const processCallsFromExtracted = async (
     // Registry-primary gate: skip Python (etc.) entirely when the
     // scope-based phase owns CALLS for this language.
     const fileLanguage = getLanguageFromFilename(filePath);
-    if (fileLanguage && isRegistryPrimary(fileLanguage)) continue;
+    if (fileLanguage && isRegistryPrimary(fileLanguage)) {
+      skippedRegistryPrimaryFiles++;
+      continue;
+    }
+
+    resolvedFiles++;
+    const tFile = startTimer(profileCalls);
+    // Always-on timer (cheap: one hrtime read) feeding the slow-file watchdog
+    // below. Distinct from `tFile`, which is null unless profiling is on.
+    const tFileAlways = alwaysSlowFileMs > 0 ? process.hrtime.bigint() : null;
+
+    if (profileCalls && (resolvedFiles === 1 || resolvedFiles % logEveryN === 0)) {
+      logDeferredProfile(
+        `calls ${resolvedFiles}/${resolvedTotal} file=${filePath} sites=${calls.length}`,
+      );
+    }
 
     ctx.enableCache(filePath);
     const widenCache: WidenCache = new Map();
@@ -3079,6 +3157,49 @@ export const processCallsFromExtracted = async (
     }
 
     ctx.clearCache();
+
+    if (tFile !== null) {
+      const elapsed = profileElapsedMs(tFile);
+      if (elapsed >= slowFileMs) {
+        logDeferredProfile(
+          `slow file ${elapsed.toFixed(0)}ms path=${filePath} calls=${calls.length} lang=${fileLanguage ?? 'unknown'}`,
+        );
+      }
+    }
+
+    // Always-on slow-file watchdog (#1741) — fires regardless of verbose.
+    if (tFileAlways !== null) {
+      const elapsedAlways = profileElapsedMs(tFileAlways);
+      if (elapsedAlways >= alwaysSlowFileMs) {
+        const now = Date.now();
+        if (now - lastSlowFileWarnAt >= ALWAYS_ON_SLOW_FILE_WARN_THROTTLE_MS) {
+          lastSlowFileWarnAt = now;
+          const suppressedNote =
+            suppressedSlowFileWarnings > 0
+              ? ` (+${suppressedSlowFileWarnings} more slow files since the last warning)`
+              : '';
+          logger.warn(
+            `⏳ Call resolution for ${filePath} took ${(elapsedAlways / 1000).toFixed(1)}s ` +
+              `(${calls.length} call sites, ${fileLanguage ?? 'unknown'}). The run is not frozen — ` +
+              `this file is unusually expensive to resolve. Resolved ${resolvedFiles}/${resolvedTotal} ` +
+              `files so far.${suppressedNote} Pass -v for per-file deferred-resolution timing.`,
+          );
+          suppressedSlowFileWarnings = 0;
+        } else {
+          suppressedSlowFileWarnings++;
+        }
+      }
+    }
+  }
+
+  if (profileCalls) {
+    logDeferredProfile(
+      `processCallsFromExtracted done: ${totalFiles} files, ${extractedCalls.length} call sites, skipped registry-primary files=${skippedRegistryPrimaryFiles}`,
+    );
+    const droppedCount = getDeferredProfileDroppedCount();
+    if (droppedCount > 0) {
+      logDeferredProfile(`note: ${droppedCount} profile log lines dropped (logger errors)`);
+    }
   }
 
   onProgress?.(totalFiles, totalFiles);

@@ -1,0 +1,86 @@
+{
+  "app": {
+    "name": "GitNexus",
+    "nexusAI": "Nexus AI"
+  },
+  "actions": {
+    "cancel": "Cancel",
+    "dismiss": "Dismiss",
+    "tryAgain": "Try again",
+    "hide": "Hide",
+    "retry": "Retry",
+    "copy": "Copy",
+    "copied": "Copied",
+    "close": "Close",
+    "run": "Run",
+    "clear": "Clear",
+    "remove": "Remove",
+    "focusInGraph": "Focus in graph",
+    "expand": "Expand",
+    "collapse": "Collapse"
+  },
+  "chat": {
+    "viewNodeInCodePanel": "View {{inner}} in Code panel",
+    "openInCodePanel": "Open in Code panel • {{inner}}",
+    "waitForVectorIndex": "Wait a moment, vector index is being created."
+  },
+  "counts": {
+    "files_one": "{{count}} file",
+    "files_other": "{{count}} files",
+    "nodes_one": "{{count}} node",
+    "nodes_other": "{{count}} nodes",
+    "edges_one": "{{count}} edge",
+    "edges_other": "{{count}} edges",
+    "symbols_one": "{{count}} symbol",
+    "symbols_other": "{{count}} symbols",
+    "flows_one": "{{count}} flow",
+    "flows_other": "{{count}} flows"
+  },
+  "progress": {
+    "connecting": "Connecting to server...",
+    "connectingShort": "Connecting...",
+    "validatingServer": "Validating server",
+    "validatingServerEllipsis": "Validating server...",
+    "downloadingGraph": "Downloading graph...",
+    "downloadedMb": "{{mb}} MB downloaded",
+    "downloadingWithPercent": "Downloading graph... {{percent}}%",
+    "downloadingMb": "Downloading... {{mb}} MB",
+    "processing": "Processing...",
+    "processingGraph": "Processing graph...",
+    "extractingFileContents": "Extracting file contents",
+    "loadingGraph": "Loading graph...",
+    "starting": "Starting...",
+    "executing": "Executing...",
+    "truncated": "... (truncated)",
+    "ready": "Ready",
+    "switchingRepository": "Switching repository...",
+    "loadingRepository": "Loading {{repo}}",
+    "validating": "Validating",
+    "failedSwitchRepository": "Failed to switch repository",
+    "unknownError": "Unknown error"
+  },
+  "analyzePhases": {
+    "queued": "Queued",
+    "cloning": "Cloning repository",
+    "pulling": "Pulling latest",
+    "extracting": "Scanning files",
+    "structure": "Building structure",
+    "parsing": "Parsing code",
+    "imports": "Resolving imports",
+    "calls": "Tracing calls",
+    "heritage": "Extracting inheritance",
+    "scopeResolution": "Resolving types",
+    "communities": "Detecting communities",
+    "processes": "Detecting processes",
+    "complete": "Pipeline complete",
+    "lbug": "Loading into database",
+    "fts": "Creating search indexes",
+    "embeddings": "Generating embeddings",
+    "done": "Done",
+    "retrying": "Retrying after crash"
+  },
+  "units": {
+    "elapsedSeconds": "{{seconds}}s",
+    "elapsedMinutesSeconds": "{{minutes}}m {{seconds}}s"
+  }
+}

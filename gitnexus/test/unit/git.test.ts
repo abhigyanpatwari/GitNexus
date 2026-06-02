@@ -31,6 +31,7 @@ describe('git utilities', () => {
       expect(mockExecSync).toHaveBeenCalledWith('git rev-parse --is-inside-work-tree', {
         cwd: '/project',
         stdio: 'ignore',
+        windowsHide: true,
       });
     });
 

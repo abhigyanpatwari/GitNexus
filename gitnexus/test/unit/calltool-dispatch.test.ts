@@ -8,6 +8,9 @@
  * the dispatch and error handling logic in isolation.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import os from 'os';
+import path from 'path';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend.
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
@@ -37,11 +40,15 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   return { ...actual, ...lbugMocks };
 });
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
-  listRegisteredRepos: vi.fn().mockResolvedValue([]),
-  cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
-  findSiblingClones: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    listRegisteredRepos: vi.fn().mockResolvedValue([]),
+    cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+    findSiblingClones: vi.fn().mockResolvedValue([]),
+  };
+});
 
 // `core/git-staleness` is also imported by `local-backend.ts` (for
 // `checkStaleness` and `checkCwdMatch`). Stub it out here so unit
@@ -51,6 +58,14 @@ vi.mock('../../src/core/git-staleness.js', () => ({
   checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
   checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
 }));
+
+vi.mock('../../src/storage/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/git.js')>();
+  return {
+    ...actual,
+    getGitRoot: vi.fn().mockReturnValue(null),
+  };
+});
 
 vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
@@ -70,8 +85,9 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { LocalBackend, REPO_ID_HASH_LENGTH } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import {
   initLbug,
@@ -110,6 +126,56 @@ function setupMultipleRepos() {
 
 function setupNoRepos() {
   (listRegisteredRepos as any).mockResolvedValue([]);
+}
+
+const duplicateFixtureDirs: string[] = [];
+
+function makeDuplicateNameFixture() {
+  const mainDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-main-'));
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-wt-'));
+  duplicateFixtureDirs.push(mainDir, wtDir);
+  for (const dir of [mainDir, wtDir]) {
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(path.join(storagePath, 'meta.json'), '{}');
+  }
+  return {
+    mainDir,
+    wtDir,
+    entries: [
+      {
+        ...MOCK_REPO_ENTRY,
+        name: 'shared',
+        path: mainDir,
+        storagePath: path.join(mainDir, '.gitnexus'),
+      },
+      {
+        ...MOCK_REPO_ENTRY,
+        name: 'shared',
+        path: wtDir,
+        storagePath: path.join(wtDir, '.gitnexus'),
+      },
+    ],
+  };
+}
+
+function makeSharedPrefixFixture(nameA: string, nameB: string) {
+  const dirA = mkdtempSync(path.join(os.tmpdir(), `gnx-${nameA}-`));
+  const dirB = mkdtempSync(path.join(os.tmpdir(), `gnx-${nameB}-`));
+  duplicateFixtureDirs.push(dirA, dirB);
+  for (const dir of [dirA, dirB]) {
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(path.join(storagePath, 'meta.json'), '{}');
+  }
+  return {
+    dirA,
+    dirB,
+    entries: [
+      { ...MOCK_REPO_ENTRY, name: nameA, path: dirA, storagePath: path.join(dirA, '.gitnexus') },
+      { ...MOCK_REPO_ENTRY, name: nameB, path: dirB, storagePath: path.join(dirB, '.gitnexus') },
+    ],
+  };
 }
 
 // ─── LocalBackend lifecycle ──────────────────────────────────────────
@@ -203,7 +269,7 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('query', { query: 'ProcessActivity' });
 
     expect(result).toHaveProperty('warning');
-    expect((result as any).warning).toMatch(/gitnexus analyze --force/);
+    expect((result as any).warning).toMatch(/gitnexus analyze --repair-fts/);
   });
 
   it('does not include warning when ftsAvailable is true with zero results', async () => {
@@ -292,13 +358,14 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches cypher tool and blocks write queries', async () => {
+    (executeParameterized as any).mockRejectedValueOnce(new Error('read-only database'));
     const result = await backend.callTool('cypher', { query: 'CREATE (n:Test)' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Write operations');
   });
 
   it('dispatches cypher tool with valid read query', async () => {
-    (executeQuery as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
+    (executeParameterized as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
     });
@@ -580,6 +647,276 @@ describe('LocalBackend.callTool', () => {
     expect(result.target).toBeDefined();
   });
 
+  it('impact byDepth items include a processes field (default empty when no processes)', async () => {
+    // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/uses-main.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
+      // Symbol resolution.
+      return Promise.resolve([
+        { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      ]);
+    });
+    (executeQuery as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+    expect(d1.length).toBeGreaterThan(0);
+    for (const item of d1) {
+      expect(item).toHaveProperty('processes');
+      expect(Array.isArray(item.processes)).toBe(true);
+    }
+  });
+
+  it('impact populates byDepth processes when STEP_IN_PROCESS rows exist', async () => {
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/uses-main.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
+      // Symbol resolver name-lookup
+      if (cypher.includes('WHERE n.name =')) {
+        return Promise.resolve([
+          { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+        ]);
+      }
+      // Aggregation pass (must return at least one row so per-symbol pass is gated open)
+      if (cypher.includes('COUNT(DISTINCT s.id)')) {
+        return Promise.resolve([
+          {
+            pId: 'proc:cron_daily',
+            name: 'Daily cron',
+            heuristicLabel: 'Daily cron',
+            processType: 'cron',
+            entryPointId: 'func:cron_entry',
+            hits: 1,
+            minStep: 1,
+            stepCount: 5,
+            epName: 'cron_entry',
+            epType: 'Function',
+            epFilePath: 'src/cron.ts',
+          },
+        ]);
+      }
+      // New per-symbol pass added by this change
+      if (cypher.includes('RETURN s.id AS sid')) {
+        return Promise.resolve([
+          {
+            sid: 'func:caller',
+            pid: 'proc:cron_daily',
+            pName: 'Daily cron',
+            pType: 'cron',
+            step: 2,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/uses-main.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+    const caller = d1.find((it: any) => it.id === 'func:caller');
+    expect(caller).toBeDefined();
+    expect(caller.processes).toHaveLength(1);
+    expect(caller.processes[0]).toMatchObject({
+      id: 'proc:cron_daily',
+      label: 'Daily cron',
+      processType: 'cron',
+      step: 2,
+    });
+  });
+
+  it('impact summaryOnly:true skips the per-symbol STEP_IN_PROCESS enrichment pass', async () => {
+    // Resolver returns target; BFS returns one caller; aggregation returns one process row.
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3) — return a caller so
+      // the per-symbol-skip assertion below is meaningful (not vacuous).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/a.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
+      if (cypher.includes('WHERE n.name =')) {
+        return Promise.resolve([
+          { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+        ]);
+      }
+      if (cypher.includes('COUNT(DISTINCT s.id)')) {
+        return Promise.resolve([
+          {
+            pId: 'proc:daily',
+            name: 'Daily cron',
+            heuristicLabel: 'Daily cron',
+            processType: 'cron',
+            entryPointId: 'func:cron_entry',
+            hits: 1,
+            minStep: 1,
+            stepCount: 5,
+            epName: 'cron_entry',
+            epType: 'Function',
+            epFilePath: 'src/cron.ts',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      summaryOnly: true,
+    });
+
+    // summaryOnly should return base fields only, no byDepth
+    expect(result.summary).toBeDefined();
+    expect(result.byDepth).toBeUndefined();
+
+    // The per-symbol enrichment query contains 'RETURN s.id AS sid'; verify it
+    // was never called (the gate should have suppressed it).
+    const perSymbolCalls = (executeParameterized as any).mock.calls.filter(
+      ([, cypher]: [string, string]) =>
+        typeof cypher === 'string' && cypher.includes('RETURN s.id AS sid'),
+    );
+    expect(perSymbolCalls).toHaveLength(0);
+  });
+
+  it('impactByUid preserves byDepth while skipping per-symbol enrichment (group fan-out)', async () => {
+    // Regression guard for the cross-repo by_depth contract: impactByUid must
+    // suppress only the per-symbol STEP_IN_PROCESS pass, NOT the whole byDepth
+    // field. cross-impact.ts reads fan.byDepth to populate group `by_depth`;
+    // using summaryOnly here would silently empty it.
+    //
+    // impactByUid takes an explicit repoId and calls refreshRepos() internally.
+    // Use a fresh backend whose repo path is already absolute/resolved so the
+    // derived repoId stays stable across that refresh (an unresolved POSIX
+    // fixture path triggers the path-collision rehash and drops the key).
+    const resolvedRepoPath = path.resolve('/tmp/test-project');
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: resolvedRepoPath },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
+    (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
+      // BFS frontier query is now parameterized (#1907 U3).
+      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+        return Promise.resolve([
+          {
+            id: 'func:caller',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/uses-main.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ]);
+      }
+      // UID resolver
+      if (cypher.includes('WHERE n.id = $uid')) {
+        return Promise.resolve([
+          { id: 'func:main', name: 'main', filePath: 'src/index.ts', type: 'Function' },
+        ]);
+      }
+      // Aggregation pass (returns a process row so affectedProcesses > 0; if the
+      // per-symbol pass were not skipped, this would open its gate)
+      if (cypher.includes('COUNT(DISTINCT s.id)')) {
+        return Promise.resolve([
+          {
+            pId: 'proc:daily',
+            name: 'Daily cron',
+            heuristicLabel: 'Daily cron',
+            processType: 'cron',
+            entryPointId: 'func:cron_entry',
+            hits: 1,
+            minStep: 1,
+            stepCount: 5,
+            epName: 'cron_entry',
+            epType: 'Function',
+            epFilePath: 'src/cron.ts',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    (executeQuery as any).mockResolvedValue([
+      {
+        id: 'func:caller',
+        name: 'caller',
+        type: 'Function',
+        filePath: 'src/uses-main.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      },
+    ]);
+
+    const result = await backend.impactByUid('test-project', 'uid:main', 'upstream', {
+      maxDepth: 5,
+      relationTypes: ['CALLS'],
+      minConfidence: 0,
+      includeTests: true,
+    });
+
+    // byDepth must survive (Finding A regression guard)
+    expect(result).not.toBeNull();
+    expect(result.byDepth).toBeDefined();
+    const d1 = result.byDepth?.[1] || result.byDepth?.['1'] || [];
+    expect(d1.find((it: any) => it.id === 'func:caller')).toBeDefined();
+
+    // The per-symbol enrichment query must never fire under skipPerSymbolEnrichment
+    const perSymbolCalls = (executeParameterized as any).mock.calls.filter(
+      ([, cypher]: [string, string]) =>
+        typeof cypher === 'string' && cypher.includes('RETURN s.id AS sid'),
+    );
+    expect(perSymbolCalls).toHaveLength(0);
+  });
+
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path
@@ -782,7 +1119,14 @@ describe('LocalBackend.resolveRepo', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    (getGitRoot as any).mockReturnValue(null);
     backend = new LocalBackend();
+  });
+
+  afterEach(() => {
+    for (const dir of duplicateFixtureDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('resolves single repo without param', async () => {
@@ -826,6 +1170,95 @@ describe('LocalBackend.resolveRepo', () => {
     await expect(backend.callTool('query', { query: 'test', repo: 'nonexistent' })).rejects.toThrow(
       'not found',
     );
+  });
+
+  it('prefers duplicate-name repo matching process.cwd() git root (#1658)', async () => {
+    const { wtDir, entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(wtDir);
+    await backend.init();
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('query', { query: 'test', repo: 'shared' });
+    const resolved = await backend.resolveRepo('shared');
+    expect(resolved.repoPath).toBe(wtDir);
+  });
+
+  it('throws RegistryAmbiguousTargetError when duplicate name cannot be disambiguated (#1658)', async () => {
+    const { entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    await expect(backend.resolveRepo('shared')).rejects.toThrow(/Multiple registered repos match/);
+    await expect(backend.resolveRepo('shared')).rejects.toThrow(/absolute path/i);
+  });
+
+  it('resolves duplicate-name repos by absolute path before name (#1658)', async () => {
+    const { mainDir, wtDir, entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(mainDir);
+    await backend.init();
+    (executeParameterized as any).mockResolvedValue([]);
+    const resolved = await backend.resolveRepo(wtDir);
+    expect(resolved.repoPath).toBe(wtDir);
+  });
+
+  it('does not treat a bare duplicate alias as a relative path (#1658)', async () => {
+    const { entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    await expect(backend.resolveRepo('shared')).rejects.toThrow(/Multiple registered repos match/);
+  });
+
+  it('refreshes registry after ambiguity when duplicates are removed (#1658)', async () => {
+    const { mainDir, entries } = makeDuplicateNameFixture();
+    const singleEntry = [entries[0]];
+    (listRegisteredRepos as any).mockResolvedValueOnce(entries).mockResolvedValueOnce(singleEntry);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    const resolved = await backend.resolveRepo('shared');
+    expect(resolved.repoPath).toBe(mainDir);
+  });
+
+  it('detect_changes surfaces RegistryAmbiguousTargetError on duplicate repo name (#1658)', async () => {
+    const { entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    await expect(
+      backend.callTool('detect_changes', { scope: 'unstaged', repo: 'shared' }),
+    ).rejects.toThrow(/Multiple registered repos match/);
+  });
+
+  it('resolves second duplicate-name repo by its stable hashed id (#1658)', async () => {
+    const { wtDir, entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    // Couples this test to repoId's suffix formula on purpose — if repoId changes
+    // its suffix, this assertion should fail and force a re-review of the hashed-id
+    // resolution tier. Mirrors LocalBackend.repoId: base64url(repoPath) sliced to
+    // REPO_ID_HASH_LENGTH and lowercased so it survives the paramLower lookup in
+    // resolveRepoFromCache.
+    const wtId = `shared-${Buffer.from(wtDir)
+      .toString('base64url')
+      .slice(0, REPO_ID_HASH_LENGTH)
+      .toLowerCase()}`;
+    await backend.init();
+    const resolved = await backend.resolveRepo(wtId);
+    expect(resolved.repoPath).toBe(wtDir);
+  });
+
+  it('does not silently return first partial match for ambiguous prefix (#1658)', async () => {
+    const { dirA, entries } = makeSharedPrefixFixture('project-a', 'project-b');
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+
+    await expect(backend.resolveRepo('project')).rejects.toThrow(/Repository "project" not found/);
+
+    // Sanity: exact names still resolve unambiguously against the same fixture.
+    const exact = await backend.resolveRepo('project-a');
+    expect(exact.name).toBe('project-a');
+    expect(exact.repoPath).toBe(dirA);
   });
 
   it('resolves repo case-insensitively', async () => {
@@ -999,6 +1432,7 @@ describe('callTool cypher write blocking', () => {
 
   for (const query of writeQueries) {
     it(`blocks write query: ${query.slice(0, 30)}...`, async () => {
+      (executeParameterized as any).mockRejectedValueOnce(new Error('read-only database'));
       const result = await backend.callTool('cypher', { query });
       expect(result).toHaveProperty('error');
       expect(result.error).toContain('Write operations');
@@ -1006,7 +1440,7 @@ describe('callTool cypher write blocking', () => {
   }
 
   it('allows read query through callTool', async () => {
-    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 5',
     });
@@ -1105,7 +1539,7 @@ describe('cypher result formatting', () => {
   });
 
   it('formats tabular results as markdown table', async () => {
-    (executeQuery as any).mockResolvedValue([
+    (executeParameterized as any).mockResolvedValue([
       { name: 'main', filePath: 'src/index.ts' },
       { name: 'helper', filePath: 'src/utils.ts' },
     ]);
@@ -1119,7 +1553,7 @@ describe('cypher result formatting', () => {
   });
 
   it('returns empty array as-is', async () => {
-    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 0',
     });
@@ -1127,7 +1561,7 @@ describe('cypher result formatting', () => {
   });
 
   it('returns error object when cypher fails', async () => {
-    (executeQuery as any).mockRejectedValue(new Error('Syntax error'));
+    (executeParameterized as any).mockRejectedValue(new Error('Syntax error'));
     const result = await backend.callTool('cypher', {
       query: 'INVALID CYPHER SYNTAX',
     });

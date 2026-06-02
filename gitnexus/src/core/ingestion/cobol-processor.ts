@@ -25,6 +25,8 @@ import {
 import { expandCopies } from './cobol/cobol-copy-expander.js';
 import { processJclFiles } from './cobol/jcl-processor.js';
 
+import { logger } from '../logger.js';
+
 // ---------------------------------------------------------------------------
 // File detection
 // ---------------------------------------------------------------------------
@@ -60,6 +62,7 @@ export interface CobolProcessResult {
   sets: number;
   inspects: number;
   initializes: number;
+  arithmeticOps: number;
 }
 
 /** Returns true if the file is a COBOL or copybook file. */
@@ -114,6 +117,7 @@ export const processCobol = (
     sets: 0,
     inspects: 0,
     initializes: 0,
+    arithmeticOps: 0,
   };
 
   // ── 1. Separate programs, copybooks, and JCL ───────────────────────
@@ -150,16 +154,40 @@ export const processCobol = (
     const entry = copybookMap.get(name.toUpperCase());
     return entry ? entry.path : null;
   };
+  // Memoize preprocessed copybook content for the duration of this
+  // processCobol call. A single copybook is COPYed by many programs (and at
+  // many COPY sites within a program); without this cache
+  // preprocessCobolSource would re-run once per COPY site —
+  // O(programs × copybooks) preprocessing passes over the same content.
+  // Keyed by the resolved copybook path. REPLACING is applied later by the
+  // expander on the returned (pre-REPLACING) content (see
+  // cobol-copy-expander.ts readFile→applyReplacing), so caching the
+  // pre-REPLACING preprocessed text here is safe and per-call-scoped.
+  const preprocessedCopyCache = new Map<string, string>();
   const readCopy = (copyPath: string): string | null => {
+    const cached = preprocessedCopyCache.get(copyPath);
+    if (cached !== undefined) return cached;
     const content = copybookByPath.get(copyPath);
-    return content ? preprocessCobolSource(content) : null;
+    if (!content) return null; // preserves original falsy→null (missing/empty)
+    const preprocessed = preprocessCobolSource(content);
+    preprocessedCopyCache.set(copyPath, preprocessed);
+    return preprocessed;
   };
 
   // Track module names for cross-program CALL resolution
   const moduleNodeIds = new Map<string, string>(); // uppercase program name -> node id
 
   // ── 3. Process each COBOL program ──────────────────────────────────
+  const raw = parseInt(process.env.GITNEXUS_MAX_COBOL_FILE_SIZE_BYTES ?? '', 10);
+  const MAX_COBOL_FILE_SIZE = Number.isFinite(raw) && raw > 0 ? raw : 5 * 1024 * 1024;
   for (const file of programs) {
+    // File-size guard: skip excessively large files to prevent OOM
+    if (file.content.length > MAX_COBOL_FILE_SIZE) {
+      logger.warn(
+        `[cobol-processor] Skipping oversized file (${(file.content.length / 1024 / 1024).toFixed(1)}MB > ${(MAX_COBOL_FILE_SIZE / 1024 / 1024).toFixed(0)}MB): ${file.path}`,
+      );
+      continue;
+    }
     const fileNodeId = generateId('File', file.path);
     // Skip if file node doesn't exist (structure-processor creates it)
     if (!graph.getNode(fileNodeId)) continue;
@@ -199,6 +227,7 @@ export const processCobol = (
     result.sets += extracted.sets.length;
     result.inspects += extracted.inspects.length;
     result.initializes += extracted.initializes.length;
+    result.arithmeticOps += extracted.arithmeticOps.length;
   }
 
   // ── 4. Second pass: resolve cross-program CALL targets ─────────────
@@ -1211,7 +1240,9 @@ function mapToGraph(
 
   // ── MOVE data flow -> ACCESSES edges (read/write) ──────────────
   for (const move of extracted.moves) {
-    const fromPropId = dataItemMap.get(move.from.toUpperCase());
+    // Strip any subscript from the source name for data item lookup
+    const fromBase = stripMoveSubscript(move.from);
+    const fromPropId = dataItemMap.get(fromBase.toUpperCase());
     const callerId = scopedCallerLookup(move.caller, move.line);
 
     // One read edge per MOVE (regardless of number of targets)
@@ -1228,7 +1259,8 @@ function mapToGraph(
 
     // One write edge per target
     for (const target of move.targets) {
-      const toPropId = dataItemMap.get(target.toUpperCase());
+      const toBase = stripMoveSubscript(target);
+      const toPropId = dataItemMap.get(toBase.toUpperCase());
       if (toPropId) {
         graph.addRelationship({
           id: generateId('ACCESSES', `${callerId}->write->${target}:L${move.line}`),
@@ -1237,6 +1269,39 @@ function mapToGraph(
           targetId: toPropId,
           confidence: 0.9,
           reason: move.corresponding ? 'cobol-move-corresponding-write' : 'cobol-move-write',
+        });
+      }
+    }
+  }
+
+  // ── Arithmetic operations -> ACCESSES edges ──────────────────
+  for (const arith of extracted.arithmeticOps) {
+    const callerId = scopedCallerLookup(arith.caller, arith.line);
+    // Write edge to target variable
+    const targetBase = stripMoveSubscript(arith.target);
+    const targetPropId = dataItemMap.get(targetBase.toUpperCase());
+    if (targetPropId) {
+      graph.addRelationship({
+        id: generateId('ACCESSES', `${callerId}->arith-write->${arith.target}:L${arith.line}`),
+        type: 'ACCESSES',
+        sourceId: callerId,
+        targetId: targetPropId,
+        confidence: 0.9,
+        reason: 'cobol-arithmetic-write',
+      });
+    }
+    // Read edge for each source operand
+    for (const src of arith.sources) {
+      const srcBase = stripMoveSubscript(src);
+      const srcPropId = dataItemMap.get(srcBase.toUpperCase());
+      if (srcPropId) {
+        graph.addRelationship({
+          id: generateId('ACCESSES', `${callerId}->arith-read->${src}:L${arith.line}`),
+          type: 'ACCESSES',
+          sourceId: callerId,
+          targetId: srcPropId,
+          confidence: 0.9,
+          reason: 'cobol-arithmetic-read',
         });
       }
     }
@@ -1382,6 +1447,11 @@ function mapToGraph(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Strip parenthesized subscript/reference-modification suffixes */
+function stripMoveSubscript(name: string): string {
+  return name.replace(/\([^)]*\)/g, '').trim();
+}
 
 /** Find the enclosing program name for a given line number (innermost wins). */
 function findOwningProgramName(

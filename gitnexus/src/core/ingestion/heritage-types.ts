@@ -78,6 +78,27 @@ export interface HeritageExtractor {
 // Config interface (one per language / language group)
 // ---------------------------------------------------------------------------
 
+/**
+ * Declarative description of the supertype node-type shapes a language can
+ * place in a heritage position (extends / implements / trait / struct embed).
+ *
+ * The query builder (supertype-alternation.ts) turns the `shapes` list into a
+ * tree-sitter alternation fragment `[(shape1) (shape2) …] @<tag>` that is
+ * interpolated into the language's heritage query blocks in
+ * tree-sitter-queries.ts. The runtime name-normalizer
+ * (normalizeSupertypeName) walks whichever shape actually matched and reduces
+ * it to the innermost simple identifier so downstream `ctx.resolve(name)`
+ * keeps working.
+ *
+ * Shapes are bare tree-sitter node-type names (e.g. 'type_identifier',
+ * 'generic_type', 'scoped_type_identifier'). No language names appear here —
+ * the descriptor is parameterized data, consumed by language-agnostic code.
+ */
+export interface SupertypeShapeDescriptor {
+  /** Tree-sitter node-type names that may appear in a supertype position. */
+  readonly shapes: readonly string[];
+}
+
 export interface HeritageExtractionConfig {
   language: SupportedLanguages;
 

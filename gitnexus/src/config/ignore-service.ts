@@ -87,6 +87,7 @@ const DEFAULT_IGNORE_LIST = new Set([
   '.generated',
   'generated',
   'auto-generated',
+  'monaco-workers', // Monaco editor web-worker bundles generated for browser runtime
   '.terraform',
   '.serverless',
 
@@ -283,9 +284,19 @@ const IGNORED_FILES = new Set([
 // deterministic results independent of per-repo config.
 export const shouldIgnorePath = (filePath: string): boolean => {
   const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPathLower = normalizedPath.toLowerCase();
   const parts = normalizedPath.split('/');
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
+
+  // Laravel compiles Blade templates into generated PHP cache files under
+  // storage/framework/views.  Source templates live in resources/views and are
+  // handled separately; compiled cache should not become source-of-truth. Keep
+  // storage/framework/cache parseable unless a separate warning source is proven:
+  // Laravel route/config cache files are ordinary generated PHP, not Blade.
+  if (/(^|\/)storage\/framework\/views(\/|$)/.test(normalizedPathLower)) {
+    return true;
+  }
 
   // Check if any path segment is in the hardcoded ignore list.
   for (const part of parts) {
@@ -311,14 +322,6 @@ export const shouldIgnorePath = (filePath: string): boolean => {
       const compoundExt = fileNameLower.substring(secondLastDot);
       if (IGNORED_EXTENSIONS.has(compoundExt)) return true;
     }
-  }
-
-  // Ignore hidden files (starting with .)
-  if (fileName.startsWith('.') && fileName !== '.') {
-    // But allow some important config files
-    const allowedDotFiles = ['.env', '.gitignore']; // Already in IGNORED_FILES, so this is redundant
-    // Actually, let's NOT ignore all dot files - many are important configs
-    // Just rely on the explicit lists above
   }
 
   // Ignore files that look like generated/bundled code

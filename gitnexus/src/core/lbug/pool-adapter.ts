@@ -16,9 +16,61 @@
  */
 
 import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import lbug from '@ladybugdb/core';
-import { loadFTSExtension } from './lbug-adapter.js';
-import { createLbugDatabase, isWalCorruptionError } from './lbug-config.js';
+import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
+import {
+  createLbugDatabase,
+  isWalCorruptionError,
+  toNativeSafePath,
+  WAL_RECOVERY_SUGGESTION,
+} from './lbug-config.js';
+import {
+  isMissingFsError,
+  isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
+  preflightLbugSidecars,
+  quarantineWalForMissingShadow,
+  renameFailureMessage,
+  statIfExists,
+} from './sidecar-recovery.js';
+
+/**
+ * Probe whether a Windows FTS extension binary is locally installed under
+ * ~/.lbdb/extension/<any-version>/win_amd64/fts/. Returns true on the first
+ * version dir whose libfts.lbug_extension exists on disk; false if the
+ * extension root is missing or contains no FTS binary.
+ *
+ * Gates the Windows skip-FTS-load guard below so we only skip the load
+ * when no extension binary is present. When at least one binary exists,
+ * loadFTSExtension is called with policy: 'load-only' — LadybugDB resolves
+ * LOAD EXTENSION fts to its version-specific path internally, and the
+ * ExtensionManager's tryLoad try/catch handles version-mismatch errors
+ * cleanly without ever attempting dlopen of a stale binary. The install
+ * path that the #1199/#1217 SIGSEGV documented is never exercised at
+ * query time.
+ *
+ * Exported so unit tests can exercise the probe directly against a
+ * temp-dir plus spied `os.homedir()` — see lbug-pool-win-fts-probe.test.ts.
+ */
+export async function hasLocalWinFtsExtension(): Promise<boolean> {
+  try {
+    const extRoot = path.join(os.homedir(), '.lbdb', 'extension');
+    const versions = await fs.readdir(extRoot);
+    for (const v of versions) {
+      try {
+        await fs.stat(path.join(extRoot, v, 'win_amd64', 'fts', 'libfts.lbug_extension'));
+        return true;
+      } catch {
+        /* missing for this version, keep looking */
+      }
+    }
+  } catch {
+    /* no .lbdb/extension dir */
+  }
+  return false;
+}
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -262,16 +314,148 @@ const WAITER_TIMEOUT_MS = 15_000;
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
+const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
+
+const poolSidecarLogger = {
+  warn: (message: string): void => {
+    realStderrWrite(`${message}\n`);
+  },
+  debug: (_message: string): void => {},
+  info: (message: string): void => {
+    realStderrWrite(`${message}\n`);
+  },
+};
+
+type TryQuarantineResult = { kind: 'quarantined'; path: string } | { kind: 'peer-handled' };
+
+/**
+ * Pool-local quarantine guard that tolerates the concurrent-peer race the
+ * direct adapter does NOT face (the direct adapter holds `acquireInitLock`,
+ * a cross-process file lock, around its quarantine calls — so any ENOENT
+ * there is a real bug, not a benign race).
+ *
+ * On ENOENT from `fs.rename`, re-inspects via `statIfExists` to confirm the
+ * WAL really is gone. If gone, returns `{ kind: 'peer-handled' }`. If the
+ * WAL is somehow still present after the ENOENT (filesystem race we don't
+ * fully model), re-throws as a classified error rather than silently
+ * returning success — preserves the lock-invariant principle at the pool
+ * sites too.
+ *
+ * On any non-ENOENT failure, classifies through `renameFailureMessage`:
+ * EACCES/EPERM/EBUSY → permission-specific message; everything else
+ * (including the LadybugDB missing-shadow error if it ever propagates here)
+ * → `shadowSidecarRecoveryMessage`.
+ *
+ * See plan: docs/plans/2026-05-21-001-fix-pr-1747-quarantine-enoent-and-large-wal-plan.md (U2)
+ */
+async function tryQuarantineForMissingShadow(
+  dbPath: string,
+  opts: { reason: string },
+): Promise<TryQuarantineResult> {
+  try {
+    const quarantinePath = await quarantineWalForMissingShadow(dbPath, {
+      logger: poolSidecarLogger,
+      level: 'warn',
+      reason: opts.reason,
+    });
+    return { kind: 'quarantined', path: quarantinePath };
+  } catch (err) {
+    if (isMissingFsError(err)) {
+      const walStat = await statIfExists(`${dbPath}.wal`);
+      if (walStat === null) {
+        return { kind: 'peer-handled' };
+      }
+      // Defensive: ENOENT during rename but WAL still present afterwards.
+      // Don't silently swallow — surface a classified error. ENOENT falls
+      // through to shadowSidecarRecoveryMessage in renameFailureMessage.
+      throw new Error(renameFailureMessage(dbPath, err));
+    }
+    // Classify the rename failure itself — EACCES/EPERM/EBUSY get the
+    // permission-specific message; everything else falls through.
+    throw new Error(renameFailureMessage(dbPath, err));
+  }
+}
+
+async function probeDatabaseForShadowReplay(db: lbug.Database): Promise<void> {
+  const conn = createConnection(db);
+  try {
+    const queryResult = await conn.query(SHADOW_REPLAY_PROBE_QUERY);
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    await result.getAll();
+    result.close?.();
+  } finally {
+    await conn.close().catch(() => {});
+  }
+}
+
+async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> {
+  let db: lbug.Database | undefined;
+  try {
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: false });
+    await db.init();
+    await probeDatabaseForShadowReplay(db);
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      await tryQuarantineForMissingShadow(dbPath, {
+        reason: 'pool writable replay recovery',
+      });
+      return;
+    }
+    throw err;
+  } finally {
+    if (db) await db.close().catch(() => {});
+  }
+}
 
 async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
   let db: lbug.Database | undefined;
   silenceStdout();
   try {
-    db = createLbugDatabase(lbug, dbPath, {
+    await preflightLbugSidecars(dbPath, {
+      mode: 'read-only',
+      logger: poolSidecarLogger,
+      allowQuarantine: true,
+    });
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
       readOnly: true,
       throwOnWalReplayFailure: false,
     });
     await db.init();
+    try {
+      await probeDatabaseForShadowReplay(db);
+    } catch (err) {
+      if (isMissingShadowSidecarError(err)) {
+        await db.close().catch(() => {});
+        db = undefined;
+        await tryQuarantineForMissingShadow(dbPath, {
+          reason: 'pool read-only recovery',
+        });
+        await preflightLbugSidecars(dbPath, {
+          mode: 'read-only',
+          logger: poolSidecarLogger,
+          allowQuarantine: true,
+        });
+        db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
+          readOnly: true,
+          throwOnWalReplayFailure: false,
+        });
+        await db.init();
+        await probeDatabaseForShadowReplay(db);
+        return db;
+      }
+      if (!isReadOnlyShadowReplayError(err)) {
+        throw err;
+      }
+      await db.close().catch(() => {});
+      db = undefined;
+      await replayShadowPagesWithWritableOpen(dbPath);
+      db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
+        readOnly: true,
+        throwOnWalReplayFailure: false,
+      });
+      await db.init();
+      await probeDatabaseForShadowReplay(db);
+    }
     return db;
   } catch (err) {
     if (db) await db.close().catch(() => {});
@@ -375,15 +559,23 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             break;
           } catch (retryErr) {
             throw new Error(
-              `LadybugDB WAL corruption detected for ${repoId}. ` +
-                `Run \`gitnexus analyze\` to rebuild the index. ` +
+              `LadybugDB WAL corruption detected for ${repoId}. ${WAL_RECOVERY_SUGGESTION} ` +
                 `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
             );
           }
         }
 
+        if (
+          lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
+          lastError.message.startsWith('GitNexus could not move the LadybugDB WAL sidecar') ||
+          isMissingShadowSidecarError(lastError)
+        ) {
+          throw lastError;
+        }
+
         const isLockError =
-          lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
+          lastError.message.includes('Could not set lock') ||
+          /\block(\b|ed|ing)/i.test(lastError.message);
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
         await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
       }
@@ -420,14 +612,24 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // install; analyze owns extension installation. If LOAD fails, search
   // features degrade gracefully and the user-facing query path proceeds.
   if (!shared.ftsLoaded) {
-    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows when
-    // the FTS extension binary is not installed locally (@ladybugdb/core native
-    // bug — the extension loader hits an unhandled error path that signals SIGSEGV
-    // rather than throwing a JS exception, so try/catch cannot protect here).
-    // Skip the load on Windows; bm25-index.js catches the resulting Kuzu catalog
-    // errors and returns empty BM25 results gracefully. Graph queries are unaffected.
+    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows during
+    // *install* — the @ladybugdb/core out-of-process installer hits an unhandled
+    // error path that signals SIGSEGV instead of throwing (see #1199, #1217).
+    // The previous unconditional skip was over-broad: it also disabled FTS on
+    // hosts where the binary was already on disk and only needed LOAD, leaving
+    // BM25 silently degraded with no error path (see #1690).
+    //
+    // Probe ~/.lbdb/extension/*/win_amd64/fts/ first. If any binary is on disk
+    // we run loadFTSExtension(..., 'load-only'); the install path is never
+    // exercised, and LadybugDB's version-specific resolution + ExtensionManager
+    // try/catch handle stale/zero-byte siblings cleanly (verified empirically
+    // on Win10 + Node 22.19 + gitnexus 1.6.5 + @ladybugdb/core 0.16.1). With
+    // no binary at all, we fall back to the upstream skip so install-time
+    // SIGSEGV continues to be avoided.
     if (process.platform === 'win32') {
-      shared.ftsLoaded = true;
+      shared.ftsLoaded = (await hasLocalWinFtsExtension())
+        ? await loadFTSExtension(available[0], { policy: 'load-only' })
+        : true;
     } else {
       shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
     }
@@ -494,10 +696,12 @@ export async function initLbugWithDb(
   // Load FTS extension if not already loaded on this Database.
   // policy: 'load-only' — same contract as initLbug above; the read pool
   // must not block on a network install during query execution.
-  // Windows guard: same SIGSEGV risk as doInitLbug above — skip on Windows.
+  // Windows guard: same probe-then-load policy as doInitLbug above.
   if (!shared.ftsLoaded) {
     if (process.platform === 'win32') {
-      shared.ftsLoaded = true;
+      shared.ftsLoaded = (await hasLocalWinFtsExtension())
+        ? await loadFTSExtension(available[0], { policy: 'load-only' })
+        : true;
     } else {
       shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
     }
@@ -595,30 +799,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
-  const entry = pool.get(repoId);
-  if (!entry) {
-    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
-  }
-
-  if (isWriteQuery(cypher)) {
-    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
-  }
-
-  entry.lastUsed = Date.now();
-
-  const conn = await checkout(entry);
-  silenceStdout();
-  activeQueryCount++;
-  try {
-    const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
-    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    return rows;
-  } finally {
-    activeQueryCount--;
-    restoreStdout();
-    checkin(entry, conn);
-  }
+  return await executeParameterized(repoId, cypher, {});
 };
 
 /**
@@ -650,6 +831,11 @@ export const executeParameterized = async (
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
+  } catch (err) {
+    if (isReadOnlyDbError(err)) {
+      throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+    }
+    throw err;
   } finally {
     activeQueryCount--;
     restoreStdout();
@@ -682,15 +868,3 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
  * Check if a specific repo's pool is active
  */
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
-
-/** Regex to detect write operations in user-supplied Cypher queries.
- * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
- * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
-export const CYPHER_WRITE_RE =
-  /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
-
-/** Check if a Cypher query contains write operations */
-export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
-}

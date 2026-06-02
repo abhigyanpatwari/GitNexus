@@ -19,6 +19,7 @@ import {
   type CsharpResolveContext,
 } from './index.js';
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
+import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resolution-config.js';
 import { unwrapCsharpCollectionAccessor } from './accessor-unwrap.js';
 
 const csharpScopeResolver: ScopeResolver = {
@@ -26,8 +27,16 @@ const csharpScopeResolver: ScopeResolver = {
   languageProvider: csharpProvider,
   importEdgeReason: 'csharp-scope: using',
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: CsharpResolveContext = { fromFile, allFilePaths };
+  loadResolutionConfig: (repoPath) => loadCsharpResolutionConfig(repoPath),
+
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+    const config = resolutionConfig as CsharpResolutionConfig | undefined;
+    const ws: CsharpResolveContext = {
+      fromFile,
+      allFilePaths,
+      csharpConfigs: config?.csharpConfigs,
+      namespaces: config?.namespaces,
+    };
     // `WorkspaceIndex` is an opaque `unknown` placeholder in the
     // shared contract, so `ws` passes structurally without a cast.
     return resolveCsharpImportTarget(

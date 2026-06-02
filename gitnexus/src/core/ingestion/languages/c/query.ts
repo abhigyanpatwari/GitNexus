@@ -41,6 +41,12 @@ const C_SCOPE_QUERY = `
 (enum_specifier
   name: (type_identifier) @declaration.name) @declaration.enum
 
+;; Declarations — enum (typedef enum { ... } Name)
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @declaration.name) @declaration.enum
+
 ;; Declarations — function definition
 (function_definition
   declarator: (function_declarator
@@ -91,6 +97,15 @@ const C_SCOPE_QUERY = `
 ;; Declarations — variables (with initializer)
 (declaration
   declarator: (init_declarator
+    declarator: (identifier) @declaration.name)) @declaration.variable
+
+;; Declarations — variables (without initializer), including non-leading
+;; declarators in mixed declaration lists.
+(declaration
+  declarator: (identifier) @declaration.name) @declaration.variable
+
+(declaration
+  declarator: (pointer_declarator
     declarator: (identifier) @declaration.name)) @declaration.variable
 
 ;; Declarations — macro definitions

@@ -6,7 +6,13 @@
  */
 
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
-import { SystemMessage } from '@langchain/core/messages';
+import {
+  SystemMessage,
+  HumanMessage,
+  AIMessage,
+  ToolMessage,
+  type BaseMessage,
+} from '@langchain/core/messages';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
@@ -23,10 +29,17 @@ import type {
   OpenRouterConfig,
   MiniMaxConfig,
   GLMConfig,
+  DeepSeekConfig,
   AgentStreamChunk,
+  AgentHistoryMessage,
 } from './types';
 import { type CodebaseContext, buildDynamicSystemPrompt } from './context-builder';
 import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
+import {
+  DeepSeekChatOpenAI,
+  normalizeMessageContent,
+  normalizeToolCalls,
+} from './deepseek-chat-model';
 
 /**
  * System prompt for the Graph RAG agent
@@ -124,6 +137,7 @@ When generating diagrams:
 BAD:  A[User's Data] --> B(Process & Save)
 GOOD: A["User Data"] --> B["Process and Save"]
 `;
+
 export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
     case 'openai': {
@@ -264,6 +278,26 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
       });
     }
 
+    case 'deepseek': {
+      const deepseekConfig = config as DeepSeekConfig;
+
+      if (!deepseekConfig.apiKey || deepseekConfig.apiKey.trim() === '') {
+        throw new Error('DeepSeek API key is required but was not provided');
+      }
+
+      return new DeepSeekChatOpenAI({
+        apiKey: deepseekConfig.apiKey,
+        modelName: deepseekConfig.model,
+        temperature: deepseekConfig.temperature ?? 0.1,
+        maxTokens: deepseekConfig.maxTokens,
+        configuration: {
+          apiKey: deepseekConfig.apiKey,
+          baseURL: 'https://api.deepseek.com',
+        },
+        streaming: true,
+      });
+    }
+
     default:
       throw new Error(`Unsupported provider: ${(config as any).provider}`);
   }
@@ -324,10 +358,73 @@ export const createGraphRAGAgent = (
 /**
  * Message type for agent conversation
  */
-export interface AgentMessage {
-  role: 'user' | 'assistant';
-  content: string;
+export type AgentMessage = { role: 'user'; content: string } | AgentHistoryMessage;
+
+export interface AgentRuntimeOptions {
+  /** Capture assistant/tool messages for providers that require exact transcript replay. */
+  captureHistory?: boolean;
+  /** When aborted (e.g. user clicked Stop), the stream ends with a `cancelled` chunk. */
+  signal?: AbortSignal;
 }
+
+const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  if (signal?.aborted) return true;
+  return false;
+};
+
+export const buildLangChainMessages = (messages: AgentMessage[]): BaseMessage[] =>
+  messages.map((message) => {
+    if (message.role === 'user') {
+      return new HumanMessage(message.content);
+    }
+    if (message.role === 'tool') {
+      return new ToolMessage({
+        content: message.content,
+        tool_call_id: message.toolCallId,
+        ...(message.name ? { name: message.name } : {}),
+      });
+    }
+    return new AIMessage({
+      content: message.content,
+      ...(typeof message.reasoningContent === 'string'
+        ? { additional_kwargs: { reasoning_content: message.reasoningContent } }
+        : {}),
+      ...(message.toolCalls?.length ? { tool_calls: message.toolCalls } : {}),
+    } as any);
+  });
+
+export const serializeAgentHistoryMessages = (
+  messages: unknown[],
+  startIndex = 0,
+): AgentHistoryMessage[] => {
+  const serialized: AgentHistoryMessage[] = [];
+  for (const rawMessage of messages.slice(startIndex)) {
+    const msg: any = rawMessage;
+    const msgType = msg?._getType?.() || msg?.type || msg?.constructor?.name || 'unknown';
+    if (msgType === 'ai' || msgType === 'AIMessage') {
+      const reasoningContent = (msg.additional_kwargs || msg.kwargs)?.reasoning_content;
+      const toolCalls = normalizeToolCalls(msg.tool_calls);
+      serialized.push({
+        role: 'assistant',
+        content: normalizeMessageContent(msg.content),
+        ...(toolCalls?.length && typeof reasoningContent === 'string' ? { reasoningContent } : {}),
+        ...(toolCalls?.length ? { toolCalls } : {}),
+      });
+      continue;
+    }
+    if (msgType === 'tool' || msgType === 'ToolMessage') {
+      serialized.push({
+        role: 'tool',
+        content: normalizeMessageContent(msg.content),
+        toolCallId: String(msg.tool_call_id ?? ''),
+        ...(typeof msg.name === 'string' ? { name: msg.name } : {}),
+      });
+    }
+  }
+  return serialized;
+};
 
 /**
  * Stream a response from the agent
@@ -340,18 +437,17 @@ export interface AgentMessage {
 export async function* streamAgentResponse(
   agent: ReturnType<typeof createReactAgent>,
   messages: AgentMessage[],
+  options: AgentRuntimeOptions = {},
 ): AsyncGenerator<AgentStreamChunk> {
   try {
-    const formattedMessages = messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    const formattedMessages = buildLangChainMessages(messages);
 
     // Use BOTH modes: 'values' for structure, 'messages' for token streaming
     const stream = await agent.stream({ messages: formattedMessages }, {
       streamMode: ['values', 'messages'] as any,
       // Allow longer tool/reasoning loops (more Cursor-like persistence)
       recursionLimit: 50,
+      signal: options.signal,
     } as any);
 
     // Track what we've yielded to avoid duplicates
@@ -364,8 +460,15 @@ export async function* streamAgentResponse(
     // Anything before the first tool call should be treated as "reasoning/narration"
     // so the UI can show the Cursor-like loop: plan → tool → update → tool → answer.
     let hasSeenToolCallThisTurn = false;
+    // Track the last set of messages so we can persist the raw assistant/tool
+    // transcript for the next user turn.
+    let lastStepMessages: any[] | null = null;
 
     for await (const event of stream) {
+      if (options.signal?.aborted) {
+        break;
+      }
+
       // Events come as [streamMode, data] tuples when using multiple modes
       // or just data when using single mode
       let mode: string;
@@ -422,10 +525,11 @@ export async function* streamAgentResponse(
             // - After all tools are done: treat as final content
             const isReasoning =
               !hasSeenToolCallThisTurn || toolCalls.length > 0 || pendingToolCalls > 0;
-            yield {
-              type: isReasoning ? 'reasoning' : 'content',
-              [isReasoning ? 'reasoning' : 'content']: content,
-            };
+            if (isReasoning) {
+              yield { type: 'reasoning', reasoning: content };
+            } else {
+              yield { type: 'content', content };
+            }
           }
 
           // Track tool calls from message chunks
@@ -482,6 +586,9 @@ export async function* streamAgentResponse(
       // Handle 'values' mode - state snapshots for structure
       if (mode === 'values' && data?.messages) {
         const stepMessages = data.messages || [];
+        if (options.captureHistory) {
+          lastStepMessages = stepMessages;
+        }
 
         // Process new messages for tool calls/results we might have missed
         for (let i = lastProcessedMsgCount; i < stepMessages.length; i++) {
@@ -535,12 +642,28 @@ export async function* streamAgentResponse(
       }
     }
 
+    if (options.signal?.aborted) {
+      yield { type: 'cancelled' };
+      return;
+    }
+
     // DEBUG: Stream completed normally
     if (import.meta.env.DEV) {
       console.log('✅ Stream completed normally, yielding done');
     }
-    yield { type: 'done' };
+
+    yield {
+      type: 'done',
+      historyMessages:
+        options.captureHistory && lastStepMessages
+          ? serializeAgentHistoryMessages(lastStepMessages, formattedMessages.length)
+          : undefined,
+    };
   } catch (error) {
+    if (isAbortError(error, options.signal)) {
+      yield { type: 'cancelled' };
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     // DEBUG: Stream error
     if (import.meta.env.DEV) {
@@ -561,10 +684,7 @@ export const invokeAgent = async (
   agent: ReturnType<typeof createReactAgent>,
   messages: AgentMessage[],
 ): Promise<string> => {
-  const formattedMessages = messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  const formattedMessages = buildLangChainMessages(messages);
 
   const result = await agent.invoke({ messages: formattedMessages });
 

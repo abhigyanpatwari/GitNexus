@@ -13,6 +13,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
   loadGraphToLbug,
@@ -24,8 +25,14 @@ import {
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
   queryImporters,
+  loadFTSExtension,
 } from './lbug/lbug-adapter.js';
-import { createSearchFTSIndexes } from './search/fts-indexes.js';
+import { createSearchFTSIndexes, verifySearchFTSIndexes } from './search/fts-indexes.js';
+import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import {
+  startWalCheckpointDriver,
+  type WalCheckpointDriver,
+} from './lbug/wal-checkpoint-driver.js';
 import {
   getStoragePaths,
   saveMeta,
@@ -71,6 +78,10 @@ export interface AnalyzeOptions {
    * bypass. See `allowDuplicateName` below.
    */
   force?: boolean;
+  /** Repair only search indexes without re-running full parsing/indexing. */
+  repairFts?: boolean;
+  /** Emit per-index FTS create logs. */
+  verbose?: boolean;
   embeddings?: boolean;
   /**
    * Override the auto-skip node-count cap for embedding generation.
@@ -110,6 +121,14 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Worker pool size override, threaded from the CLI `--workers` flag.
+   * Forwarded to `PipelineOptions.workerPoolSize` so the parse phase
+   * sizes the pool without `analyzeCommand` mutating `process.env`.
+   * `0` disables the pool (sequential fallback); positive integer sets
+   * the count; `undefined` defers to the env / auto-formula fallback.
+   */
+  workerPoolSize?: number;
 }
 
 export interface AnalyzeResult {
@@ -126,7 +145,27 @@ export interface AnalyzeResult {
   alreadyUpToDate?: boolean;
   /** The raw pipeline result — only populated when needed by callers (e.g. skill generation). */
   pipelineResult?: any;
+  /** True when analyze only repaired FTS indexes and skipped pipeline re-analysis. */
+  ftsRepairedOnly?: boolean;
+  /**
+   * True when the FTS extension was unavailable so search-index creation was
+   * skipped (offline-first degradation). The graph is fully queryable; only
+   * full-text/BM25 search is disabled. Lets callers (CLI summary, server) and
+   * the persisted meta surface the degraded state instead of reporting healthy.
+   */
+  ftsSkipped?: boolean;
 }
+
+/**
+ * Logged when the optional FTS extension cannot be loaded or installed during
+ * a full analyze. Kept as a named constant so the env-var/command guidance
+ * stays in one place (mirrors the VECTOR message in embedding-pipeline.ts).
+ */
+const FTS_UNAVAILABLE_MESSAGE =
+  'FTS extension unavailable; skipping search-index creation. ' +
+  'Full-text/BM25 search will be disabled until the LadybugDB FTS extension is ' +
+  'installed once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) or ' +
+  'pre-installed for offline use. Run `gitnexus doctor` for details.';
 
 // Re-export the pure flag-derivation helper so external callers (and tests)
 // keep importing from this module's stable surface.
@@ -145,6 +184,7 @@ export const PHASE_LABELS: Record<string, string> = {
   imports: 'Resolving imports',
   calls: 'Tracing calls',
   heritage: 'Extracting inheritance',
+  scopeResolution: 'Resolving types',
   communities: 'Detecting communities',
   processes: 'Detecting processes',
   complete: 'Pipeline complete',
@@ -178,6 +218,14 @@ export async function runFullAnalysis(
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
+  // Scope the degraded-parse log throttle to this run. On a reused process
+  // (e.g. tests, or any host that calls runFullAnalysis more than once) the
+  // module-level counter would otherwise stay saturated and suppress every
+  // degraded-parse log after the first run. The per-parse worker holds its own
+  // counter in its own module instance and is process-scoped, so no separate
+  // worker-side reset is needed (see safe-parse.ts ParseTimeoutError contract).
+  resetDegradedParseCounter();
+
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
@@ -189,6 +237,78 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
+
+  // ── FTS-only repair path ────────────────────────────────────────────
+  if (options.repairFts) {
+    if (!existingMeta) {
+      throw new Error(
+        'Cannot repair FTS indexes because this repository has not been analyzed yet. ' +
+          'Run `gitnexus analyze` first to create the initial index, then retry `--repair-fts`.',
+      );
+    }
+    let lbugStat;
+    try {
+      lbugStat = await fs.lstat(lbugPath);
+    } catch {
+      throw new Error(
+        `Cannot repair FTS indexes: graph store at ${lbugPath} is missing. ` +
+          'Run `gitnexus analyze` (full) to rebuild from scratch.',
+      );
+    }
+    if (!lbugStat.isFile()) {
+      const foundType = lbugStat.isDirectory()
+        ? 'a directory'
+        : lbugStat.isSymbolicLink()
+          ? 'a symbolic link'
+          : lbugStat.isSocket()
+            ? 'a socket'
+            : lbugStat.isBlockDevice()
+              ? 'a block device'
+              : lbugStat.isCharacterDevice()
+                ? 'a character device'
+                : lbugStat.isFIFO()
+                  ? 'a FIFO'
+                  : 'not a regular file';
+      throw new Error(
+        `Cannot repair FTS indexes: graph store at ${lbugPath} is ${foundType} (expected a file). ` +
+          'Run `gitnexus analyze` (full) to rebuild from scratch.',
+      );
+    }
+    try {
+      await initLbug(lbugPath);
+      progress('fts', 85, 'Repairing search indexes...');
+      await createSearchFTSIndexes({
+        onIndexStart: options.verbose
+          ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
+          : undefined,
+        onIndexReady: options.verbose
+          ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
+          : undefined,
+      });
+      const missing = await verifySearchFTSIndexes(executeQuery);
+      if (missing.length > 0) {
+        throw new Error(
+          `FTS repair failed - missing indexes after rebuild: ${missing.join(', ')}. ` +
+            'Run `gitnexus analyze --force` to perform a full graph+FTS rebuild; ' +
+            'if that also fails, verify FTS extension availability via `gitnexus doctor`.',
+        );
+      }
+      await ensureGitNexusIgnored(repoPath);
+      progress('fts', 90, 'Search indexes ready');
+      progress('done', 100, 'Done');
+      return {
+        repoName:
+          options.registryName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath)),
+        repoPath,
+        stats: existingMeta.stats ?? {},
+        ftsRepairedOnly: true,
+      };
+    } finally {
+      await closeLbug().catch(() => {});
+    }
+  }
 
   // ── Crash recovery: dirty flag forces full rebuild ────────────────
   // If the previous incremental run set incrementalInProgress and didn't
@@ -242,6 +362,7 @@ export async function runFullAnalysis(
             {
               cwd: repoPath,
               stdio: ['ignore', 'pipe', 'ignore'],
+              windowsHide: true,
               encoding: 'utf8',
             },
           );
@@ -366,7 +487,10 @@ export async function runFullAnalysis(
         : p.message || phaseLabel;
       progress(p.phase, scaled, message);
     },
-    { parseCache },
+    {
+      parseCache,
+      workerPoolSize: options.workerPoolSize,
+    },
   );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
@@ -435,6 +559,16 @@ export async function runFullAnalysis(
   }
 
   await initLbug(lbugPath);
+
+  // Manual WAL checkpoint driver (#1741): periodically drain the WAL
+  // from JS so the un-retriable native auto-checkpoint almost never
+  // has work left to do. Failures of the manual CHECKPOINT are absorbed
+  // by the driver's bounded retry; the final un-recoverable error still
+  // surfaces via the surrounding write that follows the failed flush.
+  // Opt-out via `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` (the driver itself
+  // returns a no-op handle when disabled). Analyze-only: MCP and serve
+  // paths continue to rely on the close-time CHECKPOINT in `safeClose`.
+  const walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -582,9 +716,41 @@ export async function runFullAnalysis(
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
+    // The analyze (write) path owns building the search indexes, so it uses
+    // the `auto` install policy (LOAD-first, then one bounded INSTALL) —
+    // symmetric with the VECTOR/embeddings path below and consistent with the
+    // #726 contract. The global `load-only` default (PR #1161) governs the
+    // serve/query read paths, not this one. When the extension still cannot be
+    // loaded (genuinely offline + not pre-installed, or policy forced to
+    // load-only/never), degrade gracefully — exactly like the VECTOR path — so
+    // analyze still produces a fully queryable graph; only full-text/BM25
+    // search falls back. `--repair-fts` (whose sole job is FTS) still fails
+    // loudly on its own path above.
     progress('fts', 85, 'Creating search indexes...');
-    await createSearchFTSIndexes();
-    progress('fts', 90, 'Search indexes ready');
+    const ftsAvailable = await loadFTSExtension(undefined, {
+      policy: resolveAnalyzeInstallPolicy(),
+    });
+    if (ftsAvailable) {
+      await createSearchFTSIndexes({
+        onIndexStart: options.verbose
+          ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
+          : undefined,
+        onIndexReady: options.verbose
+          ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
+          : undefined,
+      });
+      const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
+      if (missingIndexNames.length > 0) {
+        throw new Error(
+          `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
+            'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
+        );
+      }
+      progress('fts', 90, 'Search indexes ready');
+    } else {
+      log(FTS_UNAVAILABLE_MESSAGE);
+      progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
+    }
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
@@ -773,7 +939,14 @@ export async function runFullAnalysis(
       },
       capabilities: {
         graph: { provider: 'ladybugdb', status: runtimeCapabilities.graph },
-        fts: { provider: 'ladybugdb-fts', status: runtimeCapabilities.fts },
+        // Reflect what this analyze run actually produced: when the FTS
+        // extension was unavailable the indexes were skipped, so record
+        // 'unavailable' rather than the static runtime default. Keeps
+        // meta.json / `gitnexus doctor` honest about degraded search.
+        fts: {
+          provider: 'ladybugdb-fts',
+          status: ftsAvailable ? runtimeCapabilities.fts : 'unavailable',
+        },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
           status: embeddingCount > 0 ? effectiveSemanticMode : 'unavailable',
@@ -861,6 +1034,9 @@ export async function runFullAnalysis(
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
+    // Stop the manual checkpoint driver before closeLbug so its
+    // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
+    await walCheckpointDriver.stop();
     await closeLbug();
 
     progress('done', 100, 'Done');
@@ -870,9 +1046,16 @@ export async function runFullAnalysis(
       repoPath,
       stats: meta.stats,
       pipelineResult,
+      ftsSkipped: !ftsAvailable,
     };
   } catch (err) {
-    // Ensure LadybugDB is closed even on error
+    // Ensure LadybugDB is closed even on error. Stop the driver first
+    // so its retry loop cannot extend an already-failing analyze.
+    try {
+      await walCheckpointDriver.stop();
+    } catch {
+      /* swallow — surface path is the rethrow below */
+    }
     try {
       await closeLbug();
     } catch {

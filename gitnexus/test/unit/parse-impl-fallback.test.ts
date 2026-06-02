@@ -141,10 +141,13 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       () => {},
       { skipWorkers: true },
     );
-    // Happy path — should return a BindingAccumulator and clear astCache at
-    // least once (per-chunk + finally).
+    // Happy path — should return a BindingAccumulator and clear astCache
+    // a deterministic number of times. The 2-file fixture goes through
+    // the chunk loop's clear (twice: one inside the chunk body, one in
+    // the chunk's finally), plus the outer pipeline finally (twice
+    // again for sequential's two-phase teardown). Total: 4.
     expect(result.bindingAccumulator).toBeDefined();
-    expect(spies.astCacheClearCalls).toBeGreaterThanOrEqual(1);
+    expect(spies.astCacheClearCalls).toBe(4);
     // finalize() on a BindingAccumulator makes it read-only; appending after
     // finalize throws. We use that to prove finalize actually ran.
     expect(() =>
@@ -175,8 +178,10 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       ),
     ).rejects.toThrow(/injected readFileContents failure/);
 
-    // Finally-block must have cleared astCache at least once on the error path.
-    expect(spies.astCacheClearCalls).toBeGreaterThan(clearsBefore);
+    // Error path 1 (readFileContents throws mid-fallback): the chunk's
+    // finally still fires (clears once) and the outer pipeline finally
+    // also fires (clears once). Delta from the happy path is exactly 2.
+    expect(spies.astCacheClearCalls - clearsBefore).toBe(2);
   });
 
   it('error path: processCalls throws in fallback loop — cleanup still runs', async () => {
@@ -198,7 +203,10 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       ),
     ).rejects.toThrow(/injected processCalls failure/);
 
-    // astCache.clear() must have run in the finally block.
-    expect(spies.astCacheClearCalls).toBeGreaterThan(clearsBefore);
+    // Error path 2 (processCalls throws in fallback loop): the chunk's
+    // body clear runs before processCalls throws, the chunk's finally
+    // clear also runs, and the outer pipeline finally clear runs.
+    // Delta from the happy path is exactly 3.
+    expect(spies.astCacheClearCalls - clearsBefore).toBe(3);
   });
 });

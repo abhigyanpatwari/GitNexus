@@ -9,7 +9,14 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
  * Config priority: CLI flags > env vars > defaults
  */
 
-export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+export type LLMProvider =
+  | 'openai'
+  | 'openrouter'
+  | 'azure'
+  | 'custom'
+  | 'cursor'
+  | 'claude'
+  | 'codex';
 
 export interface LLMConfig {
   apiKey: string;
@@ -18,12 +25,12 @@ export interface LLMConfig {
   maxTokens: number;
   temperature: number;
   /** Provider type — controls auth header behaviour */
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+  provider?: LLMProvider;
   /** Azure api-version query param (e.g. '2024-10-21'). Appended to URL when set. */
   apiVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
   isReasoningModel?: boolean;
-  /** Per-attempt fetch timeout in ms (default: 60_000). */
+  /** Per-attempt fetch timeout in ms. Omit to disable request timeouts. */
   requestTimeoutMs?: number;
   /** Max fetch attempts before giving up (default: 3). */
   maxAttempts?: number;
@@ -44,6 +51,17 @@ export interface LLMResponse {
 export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<LLMConfig> {
   const { loadCLIConfig } = await import('../../storage/repo-manager.js');
   const savedConfig = await loadCLIConfig();
+  const savedProvider = overrides?.provider ?? savedConfig.provider;
+  const savedLocalModel =
+    savedProvider === 'cursor'
+      ? savedConfig.cursorModel
+      : savedProvider === 'claude'
+        ? savedConfig.claudeModel
+        : savedProvider === 'codex'
+          ? savedConfig.codexModel
+          : undefined;
+  const localProvider =
+    savedProvider === 'cursor' || savedProvider === 'claude' || savedProvider === 'codex';
 
   const apiKey =
     overrides?.apiKey ||
@@ -61,13 +79,12 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       'https://openrouter.ai/api/v1',
     model:
       overrides?.model ||
-      process.env.GITNEXUS_MODEL ||
-      (savedConfig.provider === 'cursor' ? savedConfig.cursorModel : undefined) ||
-      savedConfig.model ||
-      'minimax/minimax-m2.5',
+      (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
+      savedLocalModel ||
+      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m2.5'),
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
-    provider: overrides?.provider ?? savedConfig.provider ?? 'openai',
+    provider: savedProvider ?? 'openai',
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
@@ -79,6 +96,19 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
  */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+function formatTimeoutDuration(timeoutMs: number): string {
+  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+    return `${timeoutMs / 1000}s`;
+  }
+  return `${timeoutMs}ms`;
+}
+
+function isTimeoutLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+  return /time(d)?\s*out|timeout/i.test(err.message);
 }
 
 /**
@@ -237,12 +267,13 @@ export async function callLLM(
           ...authHeaders,
         },
         body: JSON.stringify(body),
-        // Per-attempt timeout. Without this each retry can hang
-        // indefinitely on a frozen TCP connection — the per-call
-        // signal is the only timeout `resilientFetch` honors;
-        // `capDelayMs` only bounds the *backoff* between attempts.
-        // Default 60s; raise via --timeout for slow models or large pages.
-        signal: AbortSignal.timeout(config.requestTimeoutMs ?? 60_000),
+        // Request timeout is opt-in for wiki generation. Large local
+        // model runs can legitimately take well over a minute, so the
+        // default runtime path must not impose a hidden 60s ceiling.
+        signal:
+          config.requestTimeoutMs !== undefined
+            ? AbortSignal.timeout(config.requestTimeoutMs)
+            : undefined,
       },
       {
         breakerKey: `wiki-llm-${new URL(url).host}`,
@@ -259,6 +290,12 @@ export async function callLLM(
       const errorText = await err.response.text().catch(() => 'unknown error');
       throw new Error(
         `LLM API error (${err.response.status} after retries): ${errorText.slice(0, 500)}`,
+      );
+    }
+    if (config.requestTimeoutMs !== undefined && isTimeoutLikeError(err)) {
+      throw new Error(
+        `LLM request timed out after ${formatTimeoutDuration(config.requestTimeoutMs)}. ` +
+          'Increase --timeout or omit it to disable the request timeout.',
       );
     }
     throw err;

@@ -87,7 +87,7 @@ const extractJavaParameter: ParameterExtractor = (
     nameNode = node.childForFieldName('name');
   } else {
     // Generic fallback
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+    nameNode = node.childForFieldName('name');
     typeNode = node.childForFieldName('type');
   }
 
@@ -382,9 +382,10 @@ const extractKotlinDeclaration: TypeBindingExtractor = (
       if (varName && typeName) env.set(varName, typeName);
       return;
     }
-    // Fallback: try direct fields
-    const nameNode = node.childForFieldName('name') ?? findChild(node, 'simple_identifier');
-    const typeNode = node.childForFieldName('type') ?? findChild(node, 'user_type');
+    // Fallback: Kotlin property_declaration has no name/type fields (verified by
+    // real parse, #1920); the name/type are positional children.
+    const nameNode = findChild(node, 'simple_identifier');
+    const typeNode = findChild(node, 'user_type');
     if (!nameNode || !typeNode) return;
     const varName = extractVarName(nameNode);
     const typeName = extractSimpleTypeName(typeNode);
@@ -416,7 +417,7 @@ const extractKotlinParameter: ParameterExtractor = (
     typeNode = node.childForFieldName('type');
     nameNode = node.childForFieldName('name');
   } else {
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+    nameNode = node.childForFieldName('name');
     typeNode = node.childForFieldName('type');
   }
 

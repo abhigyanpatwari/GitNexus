@@ -4,6 +4,8 @@ import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
 import path from 'path';
+import os from 'os';
+import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
@@ -21,10 +23,23 @@ import {
   closeLbugConnection,
   isDbBusyError,
   isOpenRetryExhausted,
+  isWalCorruptionError,
   openLbugConnection,
+  toNativeSafePath,
+  WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
 } from './lbug-config.js';
+import {
+  finalizeLbugSidecarsAfterClose,
+  inspectLbugSidecars,
+  isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
+  preflightLbugSidecars,
+  quarantineWalForMissingShadow,
+  renameFailureMessage,
+  shadowSidecarRecoveryMessage,
+} from './sidecar-recovery.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 import { logger } from '../logger.js';
@@ -152,6 +167,7 @@ export const splitRelCsvByLabelPair = async (
 let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
+let currentDbReadOnly = false;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
@@ -373,7 +389,8 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
   }
 };
 
-const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+const normalizeCopyPath = (filePath: string): string =>
+  toNativeSafePath(filePath).replace(/\\/g, '/');
 
 const closeQueryResult = async (result: lbug.QueryResult): Promise<void> => {
   try {
@@ -434,6 +451,195 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
   await drainQueryResult(queryResult);
 };
 
+const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
+
+/**
+ * Reject the quarantine path when the orphan WAL is too large to safely
+ * discard (>TINY_ORPHAN_WAL_BYTES). Mirrors the preflight policy at
+ * sidecar-recovery.ts:153-160 ("warn, do not quarantine"). Symmetric across
+ * read-only and writable recovery paths (PR #1747 review D2).
+ *
+ * Throws shadowSidecarRecoveryMessage immediately when the WAL is large,
+ * preserving the uncheckpointed pages for explicit operator recovery.
+ * Returns silently when the WAL is absent, tiny, or in any other state
+ * where the existing recovery path is safe to proceed.
+ */
+const refuseLargeWalQuarantine = async (
+  dbPath: string,
+  mode: 'read-only' | 'writable',
+  triggeringErr: unknown,
+): Promise<void> => {
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind === 'orphan-wal') {
+    logger.warn(
+      `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
+        'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
+};
+
+const reopenReadOnlyAfterMissingShadow = async (
+  dbPath: string,
+  err: unknown,
+): Promise<LbugConnectionHandle> => {
+  await refuseLargeWalQuarantine(dbPath, 'read-only', err);
+  try {
+    await quarantineWalForMissingShadow(dbPath, {
+      logger,
+      level: 'warn',
+      reason: 'read-only recovery',
+    });
+  } catch (renameErr) {
+    throw new Error(renameFailureMessage(dbPath, renameErr));
+  }
+
+  const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+  try {
+    await queryAndDrain(reopened.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    return reopened;
+  } catch (retryErr) {
+    await closeLbugConnection(reopened);
+    if (isMissingShadowSidecarError(retryErr) || isReadOnlyShadowReplayError(retryErr)) {
+      throw new Error(shadowSidecarRecoveryMessage(dbPath, retryErr));
+    }
+    throw retryErr;
+  }
+};
+
+const reopenWritableAfterMissingShadow = async (
+  dbPath: string,
+  err: unknown,
+): Promise<LbugConnectionHandle> => {
+  await refuseLargeWalQuarantine(dbPath, 'writable', err);
+  try {
+    await quarantineWalForMissingShadow(dbPath, {
+      logger,
+      level: 'warn',
+      reason: 'writable recovery',
+    });
+  } catch (renameErr) {
+    throw new Error(renameFailureMessage(dbPath, renameErr));
+  }
+
+  return await openLbugConnection(lbug, dbPath);
+};
+
+const ensureReadOnlyConnectionUsable = async (
+  dbPath: string,
+  handle: LbugConnectionHandle,
+): Promise<LbugConnectionHandle> => {
+  let shadowReplayErr: unknown;
+  try {
+    await queryAndDrain(handle.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    return handle;
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      await closeLbugConnection(handle);
+      return await reopenReadOnlyAfterMissingShadow(dbPath, err);
+    }
+    if (!isReadOnlyShadowReplayError(err)) {
+      await closeLbugConnection(handle);
+      throw err;
+    }
+    shadowReplayErr = err;
+  }
+
+  await closeLbugConnection(handle);
+
+  let writable: LbugConnectionHandle;
+  try {
+    writable = await openLbugConnection(lbug, dbPath);
+  } catch (openErr) {
+    const code = extractErrnoCode(openErr);
+    if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
+      throw new Error(
+        shadowSidecarRecoveryMessage(dbPath, shadowReplayErr) +
+          '\n  The workspace appears to be read-only — mount it read-write to perform shadow replay recovery,' +
+          ' or re-run `gitnexus analyze` on a writable filesystem to rebuild the index.',
+      );
+    }
+    throw openErr;
+  }
+  let missingShadowError: unknown;
+  try {
+    await queryAndDrain(writable.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      missingShadowError = err;
+    } else {
+      throw err;
+    }
+  } finally {
+    await closeLbugConnection(writable);
+  }
+  if (missingShadowError) {
+    return await reopenReadOnlyAfterMissingShadow(dbPath, missingShadowError);
+  }
+
+  const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+  try {
+    await queryAndDrain(reopened.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    return reopened;
+  } catch (err) {
+    await closeLbugConnection(reopened);
+    if (isMissingShadowSidecarError(err)) {
+      throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+    }
+    throw err;
+  }
+};
+
+const resetOpenConnectionState = (): void => {
+  currentDbPath = null;
+  ftsLoaded = false;
+  vectorExtensionLoaded = false;
+  ensuredFTSIndexes.clear();
+};
+
+const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null> => {
+  for (const schemaQuery of SCHEMA_QUERIES) {
+    try {
+      await queryAndDrain(conn, schemaQuery);
+    } catch (err) {
+      if (isMissingShadowSidecarError(err)) {
+        return err;
+      }
+
+      const msg = err instanceof Error ? err.message : String(err);
+      // Suppression list:
+      //   - "already exists": expected idempotent re-create on existing DBs
+      //   - "could not set lock on file": LadybugDB v0.16.1 emits this on
+      //     Windows when CREATE NODE TABLE runs against a path that was
+      //     just opened (the WAL handle from a fresh Database briefly
+      //     contests the table's first-write lock). The table is created
+      //     anyway and any genuine cross-process lock contention surfaces
+      //     on the next operation via withLbugDb's retry. Logging it here
+      //     would just be noise in CI.
+      //
+      // WAL corruption: the first DDL write after DB open triggers WAL
+      // replay — if the WAL file was left in a corrupt state by an
+      // interrupted previous run, the native engine throws here. Rather
+      // than logging a WARN and continuing in a broken state, close the
+      // DB cleanly and surface an actionable error so the caller (serve,
+      // MCP, analyze) can exit with a clear recovery message.
+      if (isWalCorruptionError(err)) {
+        await safeClose();
+        resetOpenConnectionState();
+        throw new Error(
+          `LadybugDB WAL corruption detected at ${dbPath}. ${WAL_RECOVERY_SUGGESTION}\n` +
+            `  Original error: ${msg.slice(0, 200)}`,
+        );
+      }
+      if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
+        logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+      }
+    }
+  }
+
+  return null;
+};
+
 export const initLbug = async (dbPath: string) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath));
 };
@@ -446,12 +652,17 @@ export const initLbug = async (dbPath: string) => {
  * database is busy (e.g. `gitnexus analyze` holds the write lock).
  * Each retry waits DB_LOCK_RETRY_DELAY_MS * attempt milliseconds.
  */
-export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
+export const withLbugDb = async <T>(
+  dbPath: string,
+  operation: () => Promise<T>,
+  options: { readOnly?: boolean } = {},
+): Promise<T> => {
   let lastError: unknown;
+  const readOnly = options.readOnly === true;
   for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
     try {
       return await runWithSessionLock(async () => {
-        await ensureLbugInitialized(dbPath);
+        await ensureLbugInitialized(dbPath, readOnly);
         return operation();
       });
     } catch (err) {
@@ -481,15 +692,15 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string) => {
-  if (conn && currentDbPath === dbPath) {
+const ensureLbugInitialized = async (dbPath: string, readOnly: boolean = false) => {
+  if (conn && currentDbPath === dbPath && currentDbReadOnly === readOnly) {
     return { db, conn };
   }
-  await doInitLbug(dbPath);
+  await doInitLbug(dbPath, readOnly);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // Different database requested — close the old one first
   if (conn || db) {
     await safeClose();
@@ -499,110 +710,137 @@ const doInitLbug = async (dbPath: string) => {
     ensuredFTSIndexes.clear();
   }
 
-  // LadybugDB stores the database as a single file (not a directory).
-  // If the path already exists, it must be a valid LadybugDB database file.
-  // Remove stale empty directories or files from older versions.
-  try {
-    const stat = await fs.lstat(dbPath);
-    if (stat.isSymbolicLink()) {
-      // Never follow symlinks — just remove the link itself
-      await fs.unlink(dbPath);
-    } else if (stat.isDirectory()) {
-      // Verify path is within expected storage directory before deleting
-      const realPath = await fs.realpath(dbPath);
-      const parentDir = path.dirname(dbPath);
-      const realParent = await fs.realpath(parentDir);
-      if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
-        throw new Error(
-          `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
-        );
-      }
-      // Old-style directory database or empty leftover - remove it
-      await fs.rm(dbPath, { recursive: true, force: true });
-    }
-    // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
-  } catch (err) {
-    if (!isMissingFileError(err)) {
-      throw err;
-    }
-    // Path doesn't exist, which is what LadybugDB wants for a new database
-  }
+  // ---------------------------------------------------------------------------
+  // Read-only fast path: skip all filesystem mutations (path cleanup, init
+  // lock, orphan sidecar removal, mkdir) so the open succeeds on read-only
+  // filesystems such as Docker `:ro` bind mounts. The init lock exists to
+  // prevent a TOCTOU race during DB *creation* — read-only opens never
+  // create databases and don't need the lock.
+  // ---------------------------------------------------------------------------
+  if (readOnly) {
+    await preflightLbugSidecars(dbPath, {
+      mode: 'read-only',
+      logger,
+      allowQuarantine: false,
+    });
 
-  // ---------------------------------------------------------------------------
-  // Cross-process critical section: acquire init lock, clean orphan sidecars,
-  // and open the database. The lock prevents a TOCTOU race where another
-  // process could create a fresh DB between our access() check and the
-  // unlink() of stale sidecars.
-  // ---------------------------------------------------------------------------
-  const releaseInitLock = await acquireInitLock(dbPath);
-  try {
-    // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
-    // from an interrupted run can block fresh opens indefinitely.
+    const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+    const usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
+    db = usable.db;
+    conn = usable.conn;
+    currentDbReadOnly = true;
+  } else {
+    // LadybugDB stores the database as a single file (not a directory).
+    // If the path already exists, it must be a valid LadybugDB database file.
+    // Remove stale empty directories or files from older versions.
     try {
-      await fs.access(dbPath);
-    } catch (err) {
-      if (isMissingFileError(err)) {
-        // `.shadow` is documented by LadybugDB checkpointing and `.wal.checkpoint`
-        // was observed in the #1618 crash loop that motivated this recovery path.
-        const orphanSidecars = [`${dbPath}.shadow`, `${dbPath}.wal.checkpoint`];
-        for (const sidecar of orphanSidecars) {
-          try {
-            await fs.unlink(sidecar);
-            logger.warn(
-              `GitNexus: removed orphan sidecar ${path.basename(sidecar)} (no main DB file present)`,
-            );
-          } catch (err) {
-            if (isMissingFileError(err)) {
-              continue;
-            }
-            const code = extractErrnoCode(err);
-            logger.warn(
-              `GitNexus: failed to remove orphan sidecar ${path.basename(sidecar)} (${code ?? 'UNKNOWN'}) while main DB file is missing; LadybugDB open may still fail: ${summarizeError(err)}`,
-            );
-          }
+      const stat = await fs.lstat(dbPath);
+      if (stat.isSymbolicLink()) {
+        // Never follow symlinks — just remove the link itself
+        await fs.unlink(dbPath);
+      } else if (stat.isDirectory()) {
+        // Verify path is within expected storage directory before deleting
+        const realPath = await fs.realpath(dbPath);
+        const parentDir = path.dirname(dbPath);
+        const realParent = await fs.realpath(parentDir);
+        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+          throw new Error(
+            `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
+          );
         }
-      } else {
-        const code = extractErrnoCode(err);
-        logger.warn(
-          `GitNexus: unable to verify main DB file before orphan sidecar cleanup (${code ?? 'UNKNOWN'}); skipping cleanup: ${summarizeError(err)}`,
-        );
+        // Old-style directory database or empty leftover - remove it
+        await fs.rm(dbPath, { recursive: true, force: true });
       }
-    }
-
-    // Ensure parent directory exists
-    const parentDir = path.dirname(dbPath);
-    await fs.mkdir(parentDir, { recursive: true });
-
-    const opened = await openLbugConnection(lbug, dbPath);
-    db = opened.db;
-    conn = opened.conn;
-  } finally {
-    await releaseInitLock();
-  }
-
-  for (const schemaQuery of SCHEMA_QUERIES) {
-    try {
-      await queryAndDrain(conn, schemaQuery);
+      // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Suppression list:
-      //   - "already exists": expected idempotent re-create on existing DBs
-      //   - "could not set lock on file": LadybugDB v0.16.1 emits this on
-      //     Windows when CREATE NODE TABLE runs against a path that was
-      //     just opened (the WAL handle from a fresh Database briefly
-      //     contests the table's first-write lock). The table is created
-      //     anyway and any genuine cross-process lock contention surfaces
-      //     on the next operation via withLbugDb's retry. Logging it here
-      //     would just be noise in CI.
-      if (!msg.includes('already exists') && !isDbBusyError(err)) {
-        logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+      if (!isMissingFileError(err)) {
+        throw err;
+      }
+      // Path doesn't exist, which is what LadybugDB wants for a new database
+    }
+
+    // -------------------------------------------------------------------------
+    // Cross-process critical section: acquire init lock, clean orphan sidecars,
+    // and open the database. The lock prevents a TOCTOU race where another
+    // process could create a fresh DB between our access() check and the
+    // unlink() of stale sidecars.
+    // -------------------------------------------------------------------------
+    const releaseInitLock = await acquireInitLock(dbPath);
+    try {
+      // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
+      // from an interrupted run can block fresh opens indefinitely.
+      try {
+        await fs.access(dbPath);
+      } catch (err) {
+        if (isMissingFileError(err)) {
+          // `.shadow` is documented by LadybugDB checkpointing and `.wal.checkpoint`
+          // was observed in the #1618 crash loop that motivated this recovery path.
+          const orphanSidecars = [`${dbPath}.shadow`, `${dbPath}.wal.checkpoint`];
+          for (const sidecar of orphanSidecars) {
+            try {
+              await fs.unlink(sidecar);
+              logger.warn(
+                `GitNexus: removed orphan sidecar ${path.basename(sidecar)} (no main DB file present)`,
+              );
+            } catch (err) {
+              if (isMissingFileError(err)) {
+                continue;
+              }
+              const code = extractErrnoCode(err);
+              logger.warn(
+                `GitNexus: failed to remove orphan sidecar ${path.basename(sidecar)} (${code ?? 'UNKNOWN'}) while main DB file is missing; LadybugDB open may still fail: ${summarizeError(err)}`,
+              );
+            }
+          }
+        } else {
+          const code = extractErrnoCode(err);
+          logger.warn(
+            `GitNexus: unable to verify main DB file before orphan sidecar cleanup (${code ?? 'UNKNOWN'}); skipping cleanup: ${summarizeError(err)}`,
+          );
+        }
+      }
+
+      // Ensure parent directory exists
+      const parentDir = path.dirname(dbPath);
+      await fs.mkdir(parentDir, { recursive: true });
+      await preflightLbugSidecars(dbPath, {
+        mode: 'write',
+        logger,
+        allowQuarantine: true,
+      });
+
+      const opened = await openLbugConnection(lbug, dbPath);
+      db = opened.db;
+      conn = opened.conn;
+      currentDbReadOnly = false;
+    } finally {
+      await releaseInitLock();
+    }
+  }
+
+  if (!readOnly) {
+    const missingShadowError = await runSchemaCreationQueries(dbPath);
+    if (missingShadowError) {
+      await safeClose();
+      resetOpenConnectionState();
+      const reopened = await reopenWritableAfterMissingShadow(dbPath, missingShadowError);
+      db = reopened.db;
+      conn = reopened.conn;
+      currentDbReadOnly = false;
+
+      const retryMissingShadowError = await runSchemaCreationQueries(dbPath);
+      if (retryMissingShadowError) {
+        await safeClose();
+        resetOpenConnectionState();
+        throw new Error(shadowSidecarRecoveryMessage(dbPath, retryMissingShadowError));
       }
     }
   }
 
-  // FTS powers baseline search, so initialize it with the core DB. VECTOR is
-  // only required for semantic embeddings and is probed lazily there.
-  await loadFTSExtension();
+  // FTS powers baseline search, so initialize it with the core DB. Read-only
+  // serve/MCP paths must never run DDL or trigger network INSTALL; analyze owns
+  // schema/index creation and extension installation.
+  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : {});
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -622,7 +860,13 @@ export const loadGraphToLbug = async (
 
   const log = onProgress || (() => {});
 
-  const csvDir = path.join(storagePath, 'csv');
+  let csvDir: string;
+  if (process.platform === 'win32' && /[^\x00-\x7F]/.test(storagePath)) {
+    const hash = crypto.createHash('sha256').update(storagePath).digest('hex').slice(0, 16);
+    csvDir = toNativeSafePath(path.join(os.tmpdir(), `gitnexus-csv-${hash}`));
+  } else {
+    csvDir = path.join(storagePath, 'csv');
+  }
 
   log('Streaming CSVs to disk...');
   const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);
@@ -1038,12 +1282,7 @@ export const batchInsertNodesToLbug = async (
 };
 
 export const executeQuery = async (cypher: string): Promise<any[]> => {
-  if (!conn) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-
-  const queryResult = await conn.query(cypher);
-  return await readQueryRows(queryResult);
+  return await executePrepared(cypher, {});
 };
 
 export const streamQuery = async (
@@ -1324,9 +1563,32 @@ export const flushWAL = async (): Promise<void> => {
   try {
     const checkpointResult = await conn.query('CHECKPOINT');
     await drainQueryResult(checkpointResult);
-  } catch {
-    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  } catch (err) {
+    logger.debug(
+      `GitNexus: LadybugDB CHECKPOINT skipped/failed during WAL flush: ${summarizeError(err)}`,
+    );
   }
+};
+
+/**
+ * Issue a manual `CHECKPOINT` against the current connection and surface
+ * any engine error to the caller. Unlike {@link flushWAL}, this variant
+ * does NOT swallow Ladybug rename/remove IO failures — the manual
+ * checkpoint driver (`wal-checkpoint-driver.ts`) relies on the rejection
+ * to drive its bounded retry loop. Returns `false` when no connection is
+ * open (the caller treats this as a no-op success — there is no WAL to
+ * flush). Returns `true` after a successful CHECKPOINT + drain.
+ *
+ * The split from `flushWAL` is deliberate: every other CHECKPOINT site
+ * (server flush, safeClose) is best-effort and prefers a silent skip;
+ * the manual driver, by contrast, must observe failures to decide
+ * whether to retry.
+ */
+export const tryFlushWAL = async (): Promise<boolean> => {
+  if (!conn) return false;
+  const checkpointResult = await conn.query('CHECKPOINT');
+  await drainQueryResult(checkpointResult);
+  return true;
 };
 
 /**
@@ -1379,6 +1641,9 @@ export const safeClose = async (): Promise<void> => {
         '⚠️ LadybugDB file handle still locked after close (Windows). If this repeats, check antivirus/Defender exclusions for the GitNexus storage directory.',
       );
     }
+  }
+  if (closingDbPath) {
+    await finalizeLbugSidecarsAfterClose(closingDbPath, { logger });
   }
 };
 
@@ -1627,7 +1892,10 @@ export const createFTSIndex = async (
   if (ensuredFTSIndexes.has(key)) return;
 
   if (!(await loadFTSExtension())) {
-    return;
+    throw new Error(
+      `FTS extension unavailable - cannot create FTS index ${tableName}.${indexName}. ` +
+        'Run `gitnexus doctor` and ensure the LadybugDB FTS extension is installed and loadable on this machine.',
+    );
   }
 
   const propList = properties.map((p) => `'${p}'`).join(', ');
@@ -1706,19 +1974,15 @@ export const queryFTS = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  // Escape backslashes and single quotes to prevent Cypher injection
-  const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
-
   const cypher = `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := ${conjunctive})
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
     RETURN node, score
     ORDER BY score DESC
     LIMIT ${limit}
   `;
 
   try {
-    const queryResult = await conn.query(cypher);
-    const rows = await readQueryRows(queryResult);
+    const rows = await executePrepared(cypher, { query });
 
     return rows.map((row: any) => {
       const node = row.node || row[0] || {};

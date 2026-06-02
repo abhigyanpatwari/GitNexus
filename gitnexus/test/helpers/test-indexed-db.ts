@@ -9,7 +9,8 @@
  * Seed data is NOT included — each test provides its own via options.seed.
  */
 import path from 'path';
-import { describe, beforeAll, afterAll } from 'vitest';
+import { describe, beforeAll, beforeEach, afterAll } from 'vitest';
+import { resolveAnalyzeInstallPolicy } from '../../src/core/lbug/extension-loader.js';
 import { createTempDir, type TestDBHandle } from './test-db.js';
 import { NODE_TABLES, EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
 
@@ -73,6 +74,15 @@ export function withTestLbugDB(
   // init on Windows CI regularly exceeds 30s due to native resource setup.
   const timeout = options?.timeout ?? 120_000;
 
+  // Suites that seed FTS indexes need the optional FTS extension. It is not
+  // guaranteed on every machine (e.g. the macOS platform-sensitive CI runner,
+  // where it is neither pre-installed nor installable). Track availability so
+  // setup can skip FTS seeding instead of throwing, and so every test in the
+  // suite is skipped rather than failing against a missing index. (PR #1161.)
+  const ftsRequired = !!options?.ftsIndexes?.length;
+  let ftsAvailable = true;
+  let ftsSkipWarned = false;
+
   const setup = async () => {
     const tmpHandle = await createTempDir('gitnexus-lbug-');
     const dbPath = path.join(tmpHandle.dbPath, 'lbug');
@@ -83,6 +93,16 @@ export function withTestLbugDB(
     // 1. Init core adapter (writable) — reuses existing connection if
     //    already open for this dbPath (no new native objects created).
     await adapter.initLbug(dbPath);
+
+    // 1b. Probe the FTS extension for suites that need it, mirroring the
+    //     analyze write path (`auto`: LOAD-first, then one bounded INSTALL).
+    //     When it still cannot load, the suite is skipped (see beforeEach)
+    //     and FTS seeding below is bypassed so setup never throws.
+    if (ftsRequired) {
+      ftsAvailable = await adapter.loadFTSExtension(undefined, {
+        policy: resolveAnalyzeInstallPolicy(),
+      });
+    }
 
     // 2. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
@@ -108,8 +128,9 @@ export function withTestLbugDB(
       }
     }
 
-    // 5. Create FTS indexes on fresh data
-    if (options?.ftsIndexes?.length) {
+    // 5. Create FTS indexes on fresh data (only when the extension loaded;
+    //    otherwise the suite is skipped via beforeEach below).
+    if (options?.ftsIndexes?.length && ftsAvailable) {
       for (const idx of options.ftsIndexes) {
         await adapter.createFTSIndex(idx.table, idx.indexName, idx.columns);
       }
@@ -125,8 +146,9 @@ export function withTestLbugDB(
     //    LadybugDB enforces file locks — writable + read-only can't coexist
     //    on the same path, and db.close() segfaults on macOS due to N-API
     //    destructor issues.  Reusing the writable Database avoids both problems.
-    //    Write protection is enforced at the query validation layer (isWriteQuery)
-    //    rather than at the native DB level.
+    //    NOTE: This injected DB is writable by design for test setup.
+    //    Read-only enforcement tests must initialize a separate pool entry
+    //    via initLbug(...) so Ladybug native read-only mode is exercised.
     if (options?.poolAdapter) {
       const coreDb = adapter.getDatabase();
       if (!coreDb) throw new Error('withTestLbugDB: core adapter has no open Database');
@@ -165,6 +187,21 @@ export function withTestLbugDB(
   // collisions when multiple withTestLbugDB calls share the same file.
   describe(`withTestLbugDB(${prefix})`, () => {
     beforeAll(setup, timeout);
+    // Skip FTS-dependent suites when the extension could not be loaded or
+    // installed on this machine. Without this, tests would assert against a
+    // missing index and fail. Warn once so the skip is visible, not silent.
+    beforeEach((ctx) => {
+      if (ftsRequired && !ftsAvailable) {
+        if (!ftsSkipWarned) {
+          ftsSkipWarned = true;
+          console.warn(
+            `[withTestLbugDB(${prefix})] Skipping FTS-dependent tests — the LadybugDB ` +
+              `FTS extension is unavailable (not pre-installed and could not be installed).`,
+          );
+        }
+        ctx.skip();
+      }
+    });
     // Explicit timeout: KuzuDB's C++ destructor can hang on Windows during
     // native resource cleanup.  The vitest hookTimeout (120s) should apply
     // automatically, but some vitest versions fall back to testTimeout (30s)

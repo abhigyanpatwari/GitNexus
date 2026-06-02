@@ -55,22 +55,65 @@ export function lookupBindingsAt(
 ): readonly BindingRef[] {
   const finalized = scopes.bindings.get(scopeId)?.get(name);
   const augmented = scopes.bindingAugmentations.get(scopeId)?.get(name);
+  const workspace = scopes.workspaceFqnBindings?.get(name);
+  // Per-namespace channel (#1871 named-namespace generalization). Gated by
+  // accessibility: only a *module* scope carries an `accessibleNamespacesByScope`
+  // entry, so this collects nothing at child scopes and at module scopes only for
+  // the namespaces that file can see. Empty (no entry) for every non-C# bundle,
+  // so the behavior of the three pre-existing channels is unchanged.
+  const namespaceRefs = collectNamespaceFqnBindings(scopeId, name, scopes);
   const fLen = finalized?.length ?? 0;
   const aLen = augmented?.length ?? 0;
-  if (fLen === 0 && aLen === 0) return EMPTY_BINDINGS;
-  if (aLen === 0) return finalized!;
-  if (fLen === 0) return augmented!;
+  const wLen = workspace?.length ?? 0;
+  const nLen = namespaceRefs?.length ?? 0;
+  if (fLen === 0 && aLen === 0 && wLen === 0 && nLen === 0) return EMPTY_BINDINGS;
+  if (aLen === 0 && wLen === 0 && nLen === 0) return finalized!;
+  if (fLen === 0 && wLen === 0 && nLen === 0) return augmented!;
+  if (fLen === 0 && aLen === 0 && nLen === 0) return workspace!;
+  if (fLen === 0 && aLen === 0 && wLen === 0) return namespaceRefs!;
+  // Merge in precedence order, deduped by `def.nodeId` so the strongest source
+  // wins duplicate metadata. Named-namespace refs come BEFORE the flat global
+  // `workspace` channel: pre-#1871 these lived in `bindingAugmentations` (which
+  // `lookupBindingsAt` already ranks above `workspaceFqnBindings`), so a name in
+  // both an accessible named namespace and the global namespace must still
+  // resolve named-first. Order: finalized > augmented > namespace > workspace.
   const seen = new Set<string>();
   const out: BindingRef[] = [];
-  for (const r of finalized!) {
-    seen.add(r.def.nodeId);
-    out.push(r);
-  }
-  for (const r of augmented!) {
-    if (seen.has(r.def.nodeId)) continue;
-    out.push(r);
+  for (const src of [finalized, augmented, namespaceRefs, workspace]) {
+    if (src === undefined) continue;
+    for (const r of src) {
+      if (seen.has(r.def.nodeId)) continue;
+      seen.add(r.def.nodeId);
+      out.push(r);
+    }
   }
   return out;
+}
+
+/**
+ * Collect `BindingRef`s for `name` from the per-namespace channel
+ * (`namespaceFqnBindings`) across every namespace accessible from `scopeId`.
+ * Accessibility comes from `accessibleNamespacesByScope`, which is keyed by
+ * *module* scope id — so this returns `undefined` at non-module scopes and at
+ * every scope in a bundle that didn't populate the channel (all non-C# today).
+ * Language-neutral: keyed only by namespace strings and the index.
+ */
+function collectNamespaceFqnBindings(
+  scopeId: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] | undefined {
+  const namespaces = scopes.accessibleNamespacesByScope?.get(scopeId);
+  if (namespaces === undefined || namespaces.length === 0) return undefined;
+  let collected: BindingRef[] | undefined;
+  for (const ns of namespaces) {
+    const bucket = scopes.namespaceFqnBindings?.get(ns)?.get(name);
+    if (bucket !== undefined && bucket.length > 0) {
+      if (collected === undefined) collected = [];
+      for (const r of bucket) collected.push(r);
+    }
+  }
+  return collected;
 }
 
 const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
@@ -85,6 +128,14 @@ const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
  * Fast paths (zero allocation) when at most one channel is populated:
  * returns the underlying `Map.keys()` iterator directly. Only when both
  * channels carry names do we materialize a `Set` for deduplication.
+ *
+ * Scope: enumerates only the per-scope `bindings` and `bindingAugmentations`
+ * channels. It deliberately EXCLUDES the scope-independent
+ * `workspaceFqnBindings` channel (PHP FQN keys, C# global-namespace simple
+ * names). `lookupBindingsAt` consults that third channel when resolving a
+ * specific name, but name *enumeration* here does not — those names apply at
+ * every scope and would flood per-scope callers. Callers that need
+ * workspace-level names must read `workspaceFqnBindings` directly.
  */
 export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): Iterable<string> {
   const finalized = scopes.bindings.get(scopeId);
@@ -131,6 +182,7 @@ export function findReceiverTypeBinding(
 ): TypeRef | undefined {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
+  let moduleScopeId: ScopeId | null = null;
   while (currentId !== null) {
     if (visited.has(currentId)) return undefined;
     visited.add(currentId);
@@ -138,9 +190,65 @@ export function findReceiverTypeBinding(
     if (scope === undefined) return undefined;
     const typeRef = scope.typeBindings.get(receiverName);
     if (typeRef !== undefined) return typeRef;
+    if (scope.kind === 'Module') moduleScopeId = currentId;
     currentId = scope.parent;
   }
+  // Fallback 1 — named namespaces accessible from this file (own + `using`d),
+  // gated by `accessibleNamespacesByScope`. Consulted BEFORE the global channel
+  // so a more-specific named binding wins, matching the pre-#1871 order where
+  // these lived in the file's own `Scope.typeBindings` (the chain, above the
+  // global fallback). Shared-channel routing avoids the O(files × names) blow-up.
+  const named = namespaceTypeBindingFor(moduleScopeId, receiverName, scopes);
+  if (named !== undefined) return named;
+  // Fallback 2 — global/default namespace: C# global types are visible from
+  // every file (see `workspaceTypeBindings` doc), so this flat channel is the
+  // final, unconditional fallback (#1871).
+  return scopes.workspaceTypeBindings?.get(receiverName);
+}
+
+/**
+ * Resolve a typeBinding for `name` from the per-namespace channel
+ * (`namespaceTypeBindings`) across the namespaces accessible from `moduleScopeId`.
+ * First accessible-namespace hit wins. Returns `undefined` when the module has no
+ * accessibility entry (non-module scope id, or a bundle that didn't populate the
+ * channel — all non-C# today). Shared by the two typeBindings chain-walkers so
+ * the named-namespace fallback stays identical between them.
+ */
+export function namespaceTypeBindingFor(
+  moduleScopeId: ScopeId | null,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): TypeRef | undefined {
+  if (moduleScopeId === null) return undefined;
+  const namespaces = scopes.accessibleNamespacesByScope?.get(moduleScopeId);
+  if (namespaces === undefined) return undefined;
+  for (const ns of namespaces) {
+    const hit = scopes.namespaceTypeBindings?.get(ns)?.get(name);
+    if (hit !== undefined) return hit;
+  }
   return undefined;
+}
+
+/**
+ * Walk the scope chain from `startScope` to its enclosing Module scope id, or
+ * `null` if none is found. Used by chain-followers that need the module scope to
+ * consult the accessibility-gated per-namespace channels.
+ */
+export function moduleScopeIdOf(
+  startScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): ScopeId | null {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return null;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return null;
+    if (scope.kind === 'Module') return currentId;
+    currentId = scope.parent;
+  }
+  return null;
 }
 
 /**
@@ -165,28 +273,9 @@ export function findClassBindingInScope(
   receiverName: string,
   scopes: ScopeResolutionIndexes,
 ): SymbolDefinition | undefined {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return undefined;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return undefined;
+  const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
+  if (local !== undefined) return local;
 
-    const localBindings = scope.bindings.get(receiverName);
-    if (localBindings !== undefined) {
-      for (const b of localBindings) {
-        if (isClassLike(b.def.type)) return b.def;
-      }
-    }
-
-    const importedBindings = lookupBindingsAt(currentId, receiverName, scopes);
-    for (const b of importedBindings) {
-      if (isClassLike(b.def.type)) return b.def;
-    }
-
-    currentId = scope.parent;
-  }
   // Fallback for languages (Go) where namespace-style imports don't
   // create scope bindings: resolve via QualifiedNameIndex. Only fires
   // when the scope-chain walk found nothing; single-match wins.
@@ -207,6 +296,193 @@ export function findClassBindingInScope(
         if (def !== undefined && isClassLike(def.type)) return def;
       }
     }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a class-like inheritance target using the shared inheritance
+ * resolution chain. Keeps pre-emitted heritage edges and language-specific
+ * consumers of `inherits` sites aligned.
+ */
+export function resolveInheritanceBaseInScope(
+  startScope: ScopeId,
+  baseName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  return (
+    findClassBindingInScope(startScope, baseName, scopes) ??
+    resolveAmbiguousInheritanceBaseViaImports(startScope, baseName, scopes)
+  );
+}
+
+/**
+ * Import/include-aware disambiguation for an *ambiguous* class-like base
+ * name. Engages ONLY as a fallback after `findClassBindingInScope` has
+ * already returned `undefined` — i.e. the scope-chain walk and the
+ * single-match `qualifiedNames` fast paths could not pick a winner because
+ * several same-named class-like defs exist (e.g. two `class Handler`s in
+ * different headers/namespaces).
+ *
+ * Disambiguates by the referencing file's import graph: the enclosing
+ * module scope's finalized `ImportEdge[]` (C++ `#include`, C# `using`, etc.)
+ * each carry the exporting file in `targetFile`. A candidate whose defining
+ * file is brought in by one of those edges is preferred. Resolution is
+ * tiered, strictest first, and only commits when EXACTLY ONE candidate
+ * survives a tier — so a still-ambiguous name keeps the historical
+ * "return undefined" refusal:
+ *
+ *   1. Exact file match — candidate.filePath === an import's `targetFile`
+ *      (covers C++ `#include "handler_a.h"` → that header's class).
+ *   2. Same-directory match — candidate.filePath sits in the same directory
+ *      as some import target file (covers C# `using MyApp.Models;`, where the
+ *      namespace import resolves to ONE representative file in the namespace's
+ *      directory, not necessarily the file declaring the referenced type).
+ *
+ * Language-neutral: keyed only on the finalized import edges and the
+ * candidate defs' `filePath`. Returns `undefined` (preserving refusal) when
+ * the name is single-match-resolvable already (never reached — caller gates
+ * on `findClassBindingInScope` miss), when no import disambiguates, or when
+ * a tier leaves more than one survivor.
+ */
+export function resolveAmbiguousInheritanceBaseViaImports(
+  startScope: ScopeId,
+  baseName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  // Gather the class-like candidates that share this simple name. Defs are
+  // indexed by their `qualifiedName` in `qualifiedNames`; for languages whose
+  // class qualifiedName IS the simple name (C++, C#, etc.) this is the full
+  // candidate set. A single candidate is not "ambiguous" — leave it to the
+  // existing single-match fast path (this fallback shouldn't have been called).
+  const candidateIds = scopes.qualifiedNames.get(baseName);
+  if (candidateIds.length < 2) return undefined;
+  const candidates: SymbolDefinition[] = [];
+  for (const id of candidateIds) {
+    const def = scopes.defs.get(id);
+    if (def !== undefined && isClassLike(def.type)) candidates.push(def);
+  }
+  if (candidates.length < 2) return undefined;
+
+  // Collect the exporting files imported by the referencing file's enclosing
+  // module scope (the chain may carry function-local imports too, but the
+  // module scope is where `#include` / `using` land).
+  const moduleScopeId = moduleScopeIdOf(startScope, scopes);
+  if (moduleScopeId === null) return undefined;
+  const importEdges = scopes.imports.get(moduleScopeId);
+  if (importEdges === undefined || importEdges.length === 0) return undefined;
+  const importedFiles = new Set<string>();
+  const importedDirs = new Set<string>();
+  for (const edge of importEdges) {
+    if (edge.targetFile === null) continue;
+    importedFiles.add(edge.targetFile);
+    importedDirs.add(dirnameOf(edge.targetFile));
+  }
+  if (importedFiles.size === 0) return undefined;
+
+  // Tier 1 — exact file match (C++ `#include "handler_a.h"`).
+  const exact = candidates.filter((c) => importedFiles.has(c.filePath));
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return undefined; // still ambiguous → refuse
+
+  // Tier 2 — same-directory match (C# namespace `using`, where the namespace
+  // import resolves to one representative file in the namespace's directory).
+  const sameDir = candidates.filter((c) => importedDirs.has(dirnameOf(c.filePath)));
+  if (sameDir.length === 1) return sameDir[0];
+
+  return undefined;
+}
+
+/**
+ * Directory portion of a forward-slash workspace-relative path. Returns `''`
+ * for a bare filename (no directory). Workspace paths are always normalized to
+ * `/` separators upstream, so a simple `lastIndexOf('/')` is sufficient and
+ * keeps this dependency-free.
+ */
+function dirnameOf(filePath: string): string {
+  const idx = filePath.lastIndexOf('/');
+  return idx === -1 ? '' : filePath.slice(0, idx);
+}
+
+/**
+ * Predicate for value-receiver bridge: the labels for which
+ * `reconcileOwnership` registers methods/fields under the def's
+ * `nodeId` as the `ownerId`. Explicit allowlist so future NodeLabel
+ * additions (Module, Namespace, TypeAlias, EnumMember, etc.) do NOT
+ * silently widen the bridge — adding a new ownerable label requires
+ * touching both this predicate and `reconcileOwnership`.
+ *
+ * See: `scope-resolution/pipeline/reconcile-ownership.ts` Property /
+ * Variable / Const / Static registration block.
+ */
+export function isOwnableValueLabel(t: string): boolean {
+  return t === 'Const' || t === 'Variable' || t === 'Property' || t === 'Static';
+}
+
+/**
+ * Look up a value-binding (Const/Variable/Property/Static) by name in
+ * the given scope's chain. Used by the value-receiver-owner bridge
+ * for object-literal services such as:
+ *
+ *   export const fooService = { getUser(id) {...} };
+ *
+ * where `fooService` is a `Const`/`Variable` whose `nodeId` is the
+ * `ownerId` of the member method. Neither `findClassBindingInScope`
+ * (rejects non-class-like) nor `findReceiverTypeBinding` (no typeBinding
+ * for an unannotated literal) finds it.
+ *
+ * Mirrors `findClassBindingInScope` exactly; only the accepted def-type
+ * predicate differs.
+ */
+export function findValueBindingInScope(
+  startScope: ScopeId,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  return walkScopeChain(startScope, receiverName, scopes, (def) => isOwnableValueLabel(def.type));
+}
+
+/**
+ * Generic scope-chain walker. Walks from `startScope` toward the root,
+ * consulting both the local `scope.bindings` channel and the dual-source
+ * `lookupBindingsAt` view (finalized + augmented). At each scope, local
+ * bindings are exhausted BEFORE imported/augmented bindings — preserves
+ * JavaScript-style lexical scoping where a local `const x` shadows an
+ * imported `x` of the same name.
+ *
+ * Returns the first binding `def` matching `predicate`. Cycles in the
+ * scope graph terminate the walk (defensive — should not occur in
+ * well-formed inputs).
+ */
+function walkScopeChain(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+  predicate: (def: SymbolDefinition) => boolean,
+): SymbolDefinition | undefined {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return undefined;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return undefined;
+
+    // Local first: a `const x` in this scope shadows any imported `x`.
+    const localBindings = scope.bindings.get(name);
+    if (localBindings !== undefined) {
+      for (const b of localBindings) {
+        if (predicate(b.def)) return b.def;
+      }
+    }
+
+    // Then imported/augmented bindings — only consulted when no local match.
+    const importedBindings = lookupBindingsAt(currentId, name, scopes);
+    for (const b of importedBindings) {
+      if (predicate(b.def)) return b.def;
+    }
+
+    currentId = scope.parent;
   }
   return undefined;
 }

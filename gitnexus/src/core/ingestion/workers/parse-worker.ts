@@ -1,4 +1,4 @@
-import { parentPort } from 'node:worker_threads';
+import { parentPort, threadId } from 'node:worker_threads';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -20,9 +20,19 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
+import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
+import type {
+  ExtractedRouterInclude,
+  ExtractedRouterImport,
+  ExtractedRouterModuleAlias,
+} from '../route-extractors/fastapi-router-bindings.js';
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
@@ -47,15 +57,16 @@ try {
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
+  buildConcreteTypedefDefinitionRanges,
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findObjectLiteralBindingInfo,
   type EnclosingClassInfo,
   getLabelFromCaptures,
-  findDescendant,
-  extractStringContent,
   genericFuncName,
   inferFunctionLabel,
+  isSuppressedConcreteTypedefDuplicate,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
@@ -71,7 +82,7 @@ import {
   isVueSetupTopLevel,
 } from '../vue-sfc-extractor.js';
 import type { NamedBinding } from '../named-bindings/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
 import type { VariableExtractorContext } from '../variable-types.js';
@@ -81,13 +92,38 @@ import {
   typeTagForId,
   constTagForId,
   buildCollisionGroups,
+  parameterShapeIdTag,
 } from '../utils/method-props.js';
 import { extractTemplateArguments, templateArgumentsIdTag } from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../scope-extractor-bridge.js';
+import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
 
 import { logger } from '../../logger.js';
+export type { ExtractedRoute } from '../route-extractors/laravel.js';
+
+// ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
+// When GITNEXUS_WORKER_BOOTSTRAP=1 (or --verbose sets GITNEXUS_VERBOSE), each
+// worker reports its startup stage timings to stderr — which the pool tees
+// and captures (worker-pool.ts captureWorkerStderr). This makes a slow or
+// crashing startup diagnosable: you can see whether a worker reached
+// "grammars loaded", "ready sent", or never emitted a line at all (=> it
+// crashed in a native binding load before this code ran). The pool then
+// attaches whatever stderr it captured to its readiness-failure message,
+// so the operator sees the real cause instead of "did not report ready".
+const BOOTSTRAP_LOG =
+  process.env.GITNEXUS_WORKER_BOOTSTRAP === '1' || process.env.GITNEXUS_VERBOSE === '1';
+const bootstrapStart = performance.now();
+const bootstrapLog = (stage: string): void => {
+  if (!BOOTSTRAP_LOG) return;
+  const ms = Math.round(performance.now() - bootstrapStart);
+  process.stderr.write(`[parse-worker bootstrap] thread=${threadId} ${stage} (+${ms}ms)\n`);
+};
+// First line we can emit: every static import above (tree-sitter native
+// bindings, language grammars, helper modules) has already resolved by the
+// time this module-body statement runs.
+bootstrapLog('imports + grammars loaded');
 // ============================================================================
 // Types for serializable results
 // ============================================================================
@@ -128,6 +164,7 @@ interface ParsedSymbol {
   parameterCount?: number;
   requiredParameterCount?: number;
   parameterTypes?: string[];
+  parameterTypeClasses?: ParameterTypeClass[];
   returnType?: string;
   declaredType?: string;
   templateArguments?: string[];
@@ -190,21 +227,15 @@ export interface ExtractedAssignment {
 // `ExtractedHeritage` now lives in `../model/heritage-map.ts` and is
 // re-exported at the top of this file.
 
-export interface ExtractedRoute {
-  filePath: string;
-  httpMethod: string;
-  routePath: string | null;
-  controllerName: string | null;
-  methodName: string | null;
-  middleware: string[];
-  prefix: string | null;
-  lineNumber: number;
-}
-
 export interface ExtractedFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+}
+
+export interface FetchWrapperDef {
+  filePath: string;
+  functionName: string;
 }
 
 export interface ExtractedDecoratorRoute {
@@ -213,6 +244,19 @@ export interface ExtractedDecoratorRoute {
   httpMethod: string;
   decoratorName: string;
   lineNumber: number;
+  /**
+   * Decorator receiver identifier (e.g. `router` for `@router.get(...)`,
+   * `app` for `@app.get(...)`). Used by parse-impl to decide which routes
+   * participate in `include_router(prefix=...)` joining.
+   */
+  decoratorReceiver?: string;
+  /**
+   * FastAPI `app.include_router(prefix='/x')` prefix that applies to
+   * this route. Filled by parse-impl after cross-file aggregation; the
+   * routes phase joins it via `normalizeExtractedRoutePath`. `null` /
+   * absent ⇒ no prefix applies.
+   */
+  prefix?: string | null;
 }
 
 export interface ExtractedToolDef {
@@ -277,7 +321,20 @@ export interface ParseWorkerResult {
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
+  fetchWrapperDefs: FetchWrapperDef[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  routerIncludes: ExtractedRouterInclude[];
+  routerImports: ExtractedRouterImport[];
+  /**
+   * Optional. `from <pkg> import <module>` records from Python files
+   * where `<module>` is later used as a Shape-A include receiver
+   * (`<host>.include_router(<module>.router, prefix='/x')`). parse-impl
+   * uses these to promote Shape-A short-key entries to long keys, so
+   * same-named modules in different packages don't share prefixes.
+   * Optional for cache backward compatibility (older cache entries
+   * predate the field; consumers must guard with `if (… ?? [])`).
+   */
+  routerModuleAliases?: ExtractedRouterModuleAlias[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -300,10 +357,7 @@ export interface ParseWorkerInput {
   content: string;
 }
 
-type WorkerIncomingMessage =
-  | { type: 'sub-batch'; files: ParseWorkerInput[] }
-  | { type: 'flush' }
-  | ParseWorkerInput[];
+type WorkerIncomingMessage = { type: 'sub-batch'; files: ParseWorkerInput[] } | { type: 'flush' };
 
 // ============================================================================
 // Worker-local parser + language map
@@ -563,7 +617,7 @@ const findEnclosingFunctionId = (
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
       if (funcName) {
@@ -744,7 +798,11 @@ const processBatch = (
     heritage: [],
     routes: [],
     fetchCalls: [],
+    fetchWrapperDefs: [],
     decoratorRoutes: [],
+    routerIncludes: [],
+    routerImports: [],
+    routerModuleAliases: [],
     toolDefs: [],
     ormQueries: [],
     constructorBindings: [],
@@ -784,9 +842,34 @@ const processBatch = (
   for (const [language, langFiles] of byLanguage) {
     const provider = getProvider(language);
     const queryString = provider.treeSitterQueries;
-    if (!queryString) continue;
-
-    // Track if we need to handle tsx separately
+    if (!queryString) {
+      // Standalone providers (regex-based, no tree-sitter) that implement
+      // emitScopeCaptures feed into the scope-resolution pipeline via
+      // extractParsedFile directly — no tree-sitter involved.
+      if (provider.emitScopeCaptures) {
+        for (const file of langFiles) {
+          const parsedFile = extractParsedFile(
+            provider,
+            file.content,
+            file.path,
+            (message) => {
+              if (parentPort) {
+                parentPort.postMessage({ type: 'warning', message });
+              } else {
+                logger.warn(message);
+              }
+            },
+            undefined, // no cachedTree for standalone providers
+          );
+          if (parsedFile !== undefined) {
+            result.parsedFiles.push(parsedFile);
+            result.fileCount++;
+            onFileProcessed?.();
+          }
+        }
+      }
+      continue;
+    }
     const tsxFiles: ParseWorkerInput[] = [];
     const regularFiles: ParseWorkerInput[] = [];
 
@@ -842,29 +925,6 @@ const processBatch = (
   return result;
 };
 
-// ============================================================================
-// Laravel Route Extraction (procedural AST walk)
-// ============================================================================
-
-interface RouteGroupContext {
-  middleware: string[];
-  prefix: string | null;
-  controller: string | null;
-}
-
-const ROUTE_HTTP_METHODS = new Set([
-  'get',
-  'post',
-  'put',
-  'patch',
-  'delete',
-  'options',
-  'any',
-  'match',
-]);
-
-const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
-
 // Express/Hono method names that register routes
 const EXPRESS_ROUTE_METHODS = new Set([
   'get',
@@ -876,6 +936,23 @@ const EXPRESS_ROUTE_METHODS = new Set([
   'use',
   'route',
 ]);
+
+/**
+ * Walk a tree-sitter AST subtree looking for a call to the global `fetch()` function.
+ * Returns `true` if found within `maxDepth` levels of nesting — keeps the check
+ * lightweight so it doesn't slow down parse-worker on large function bodies.
+ */
+const checkForFetchCall = (node: SyntaxNode, depth = 0, maxDepth = 5): boolean => {
+  if (depth > maxDepth) return false;
+  if (node.type === 'call_expression') {
+    const fn = node.childForFieldName('function');
+    if (fn?.type === 'identifier' && fn.text === 'fetch') return true;
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    if (checkForFetchCall(node.child(i)!, depth + 1, maxDepth)) return true;
+  }
+  return false;
+};
 
 // HTTP client methods that are ONLY used by clients, not Express route registration.
 // Methods like get/post/put/delete/patch overlap with Express — those are captured by
@@ -925,402 +1002,6 @@ const ROUTE_DECORATOR_NAMES = new Set([
   'PutMapping',
   'DeleteMapping',
 ]);
-
-const RESOURCE_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
-const API_RESOURCE_ACTIONS = ['index', 'store', 'show', 'update', 'destroy'];
-
-/** Check if node is a scoped_call_expression with object 'Route' */
-function isRouteStaticCall(node: SyntaxNode): boolean {
-  if (node.type !== 'scoped_call_expression') return false;
-  const obj = node.childForFieldName?.('object') ?? node.children?.[0];
-  return obj?.text === 'Route';
-}
-
-/** Get the method name from a scoped_call_expression or member_call_expression */
-function getCallMethodName(node: SyntaxNode): string | null {
-  const nameNode =
-    node.childForFieldName?.('name') ?? node.children?.find((c: SyntaxNode) => c.type === 'name');
-  return nameNode?.text ?? null;
-}
-
-/** Get the arguments node from a call expression */
-function getArguments(node: SyntaxNode): SyntaxNode | null {
-  return node.children?.find((c: SyntaxNode) => c.type === 'arguments') ?? null;
-}
-
-/** Find the closure body inside arguments */
-function findClosureBody(argsNode: SyntaxNode | null): SyntaxNode | null {
-  if (!argsNode) return null;
-  for (const child of argsNode.children ?? []) {
-    if (child.type === 'argument') {
-      for (const inner of child.children ?? []) {
-        if (inner.type === 'anonymous_function' || inner.type === 'arrow_function') {
-          return (
-            inner.childForFieldName?.('body') ??
-            inner.children?.find((c: SyntaxNode) => c.type === 'compound_statement') ??
-            null
-          );
-        }
-      }
-    }
-    if (child.type === 'anonymous_function' || child.type === 'arrow_function') {
-      return (
-        child.childForFieldName?.('body') ??
-        child.children?.find((c: SyntaxNode) => c.type === 'compound_statement') ??
-        null
-      );
-    }
-  }
-  return null;
-}
-
-/** Extract first string argument from arguments node */
-function extractFirstStringArg(argsNode: SyntaxNode | null): string | null {
-  if (!argsNode) return null;
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (!target) continue;
-    if (target.type === 'string' || target.type === 'encapsed_string') {
-      return extractStringContent(target);
-    }
-  }
-  return null;
-}
-
-/** Extract middleware from arguments — handles string or array */
-function extractMiddlewareArg(argsNode: SyntaxNode | null): string[] {
-  if (!argsNode) return [];
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (!target) continue;
-    if (target.type === 'string' || target.type === 'encapsed_string') {
-      const val = extractStringContent(target);
-      return val ? [val] : [];
-    }
-    if (target.type === 'array_creation_expression') {
-      const items: string[] = [];
-      for (const el of target.children ?? []) {
-        if (el.type === 'array_element_initializer') {
-          const str = el.children?.find(
-            (c: SyntaxNode) => c.type === 'string' || c.type === 'encapsed_string',
-          );
-          const val = str ? extractStringContent(str) : null;
-          if (val) items.push(val);
-        }
-      }
-      return items;
-    }
-  }
-  return [];
-}
-
-/** Extract Controller::class from arguments */
-function extractClassArg(argsNode: SyntaxNode | null): string | null {
-  if (!argsNode) return null;
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (target?.type === 'class_constant_access_expression') {
-      return target.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-    }
-  }
-  return null;
-}
-
-/** Extract controller class name from arguments: [Controller::class, 'method'] or 'Controller@method' */
-function extractControllerTarget(argsNode: SyntaxNode | null): {
-  controller: string | null;
-  method: string | null;
-} {
-  if (!argsNode) return { controller: null, method: null };
-
-  const args: (SyntaxNode | undefined)[] = [];
-  for (const child of argsNode.children ?? []) {
-    if (child.type === 'argument') args.push(child.children?.[0]);
-    else if (child.type !== '(' && child.type !== ')' && child.type !== ',') args.push(child);
-  }
-
-  // Second arg is the handler
-  const handlerNode = args[1];
-  if (!handlerNode) return { controller: null, method: null };
-
-  // Array syntax: [UserController::class, 'index']
-  if (handlerNode.type === 'array_creation_expression') {
-    let controller: string | null = null;
-    let method: string | null = null;
-    const elements: SyntaxNode[] = [];
-    for (const el of handlerNode.children ?? []) {
-      if (el.type === 'array_element_initializer') elements.push(el);
-    }
-    if (elements[0]) {
-      const classAccess = findDescendant(elements[0], 'class_constant_access_expression');
-      if (classAccess) {
-        controller = classAccess.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-      }
-    }
-    if (elements[1]) {
-      const str = findDescendant(elements[1], 'string');
-      method = str ? extractStringContent(str) : null;
-    }
-    return { controller, method };
-  }
-
-  // String syntax: 'UserController@index'
-  if (handlerNode.type === 'string' || handlerNode.type === 'encapsed_string') {
-    const text = extractStringContent(handlerNode);
-    if (text?.includes('@')) {
-      const [controller, method] = text.split('@');
-      return { controller, method };
-    }
-  }
-
-  // Class reference: UserController::class (invokable controller)
-  if (handlerNode.type === 'class_constant_access_expression') {
-    const controller =
-      handlerNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-    return { controller, method: '__invoke' };
-  }
-
-  return { controller: null, method: null };
-}
-
-interface ChainedRouteCall {
-  isRouteFacade: boolean;
-  terminalMethod: string;
-  attributes: { method: string; argsNode: SyntaxNode | null }[];
-  terminalArgs: SyntaxNode | null;
-  node: SyntaxNode;
-}
-
-/**
- * Unwrap a chained call like Route::middleware('auth')->prefix('api')->group(fn)
- */
-function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
-  if (node.type !== 'member_call_expression') return null;
-
-  const terminalMethod = getCallMethodName(node);
-  if (!terminalMethod) return null;
-
-  const terminalArgs = getArguments(node);
-  const attributes: { method: string; argsNode: SyntaxNode | null }[] = [];
-
-  let current = node.children?.[0];
-
-  while (current) {
-    if (current.type === 'member_call_expression') {
-      const method = getCallMethodName(current);
-      const args = getArguments(current);
-      if (method) attributes.unshift({ method, argsNode: args });
-      current = current.children?.[0];
-    } else if (current.type === 'scoped_call_expression') {
-      const obj = current.childForFieldName?.('object') ?? current.children?.[0];
-      if (obj?.text !== 'Route') return null;
-
-      const method = getCallMethodName(current);
-      const args = getArguments(current);
-      if (method) attributes.unshift({ method, argsNode: args });
-
-      return { isRouteFacade: true, terminalMethod, attributes, terminalArgs, node };
-    } else {
-      break;
-    }
-  }
-
-  return null;
-}
-
-/** Parse Route::group(['middleware' => ..., 'prefix' => ...], fn) array syntax */
-function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
-  const ctx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
-  if (!argsNode) return ctx;
-
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (target?.type === 'array_creation_expression') {
-      for (const el of target.children ?? []) {
-        if (el.type !== 'array_element_initializer') continue;
-        const children = el.children ?? [];
-        const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
-        if (arrowIdx === -1) continue;
-        const key = extractStringContent(children[arrowIdx - 1]);
-        const val = children[arrowIdx + 1];
-        if (key === 'middleware') {
-          if (val?.type === 'string') {
-            const s = extractStringContent(val);
-            if (s) ctx.middleware.push(s);
-          } else if (val?.type === 'array_creation_expression') {
-            for (const item of val.children ?? []) {
-              if (item.type === 'array_element_initializer') {
-                const str = item.children?.find((c: SyntaxNode) => c.type === 'string');
-                const s = str ? extractStringContent(str) : null;
-                if (s) ctx.middleware.push(s);
-              }
-            }
-          }
-        } else if (key === 'prefix') {
-          ctx.prefix = extractStringContent(val) ?? null;
-        } else if (key === 'controller') {
-          if (val?.type === 'class_constant_access_expression') {
-            ctx.controller = val.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-          }
-        }
-      }
-    }
-  }
-  return ctx;
-}
-
-function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
-  const routes: ExtractedRoute[] = [];
-
-  function resolveStack(stack: RouteGroupContext[]): {
-    middleware: string[];
-    prefix: string | null;
-    controller: string | null;
-  } {
-    const middleware: string[] = [];
-    let prefix: string | null = null;
-    let controller: string | null = null;
-    for (const ctx of stack) {
-      middleware.push(...ctx.middleware);
-      if (ctx.prefix) prefix = prefix ? `${prefix}/${ctx.prefix}`.replace(/\/+/g, '/') : ctx.prefix;
-      if (ctx.controller) controller = ctx.controller;
-    }
-    return { middleware, prefix, controller };
-  }
-
-  function emitRoute(
-    httpMethod: string,
-    argsNode: SyntaxNode | null,
-    lineNumber: number,
-    groupStack: RouteGroupContext[],
-    chainAttrs: { method: string; argsNode: SyntaxNode | null }[],
-  ) {
-    const effective = resolveStack(groupStack);
-
-    for (const attr of chainAttrs) {
-      if (attr.method === 'middleware')
-        effective.middleware.push(...extractMiddlewareArg(attr.argsNode));
-      if (attr.method === 'prefix') {
-        const p = extractFirstStringArg(attr.argsNode);
-        if (p) effective.prefix = effective.prefix ? `${effective.prefix}/${p}` : p;
-      }
-      if (attr.method === 'controller') {
-        const cls = extractClassArg(attr.argsNode);
-        if (cls) effective.controller = cls;
-      }
-    }
-
-    const routePath = extractFirstStringArg(argsNode);
-
-    if (ROUTE_RESOURCE_METHODS.has(httpMethod)) {
-      const target = extractControllerTarget(argsNode);
-      const actions = httpMethod === 'apiResource' ? API_RESOURCE_ACTIONS : RESOURCE_ACTIONS;
-      for (const action of actions) {
-        routes.push({
-          filePath,
-          httpMethod,
-          routePath,
-          controllerName: target.controller ?? effective.controller,
-          methodName: action,
-          middleware: [...effective.middleware],
-          prefix: effective.prefix,
-          lineNumber,
-        });
-      }
-    } else {
-      const target = extractControllerTarget(argsNode);
-      routes.push({
-        filePath,
-        httpMethod,
-        routePath,
-        controllerName: target.controller ?? effective.controller,
-        methodName: target.method,
-        middleware: [...effective.middleware],
-        prefix: effective.prefix,
-        lineNumber,
-      });
-    }
-  }
-
-  // Iterative traversal using an explicit stack to avoid V8 call stack overflow
-  // on deeply nested ASTs (e.g. Go stdlib, large Grafana components).
-  // Each frame tracks the node and a snapshot of the group stack at that depth.
-  interface WalkFrame {
-    node: SyntaxNode;
-    groupSnapshot: RouteGroupContext[];
-  }
-
-  const walkStack: WalkFrame[] = [{ node: tree.rootNode, groupSnapshot: [] }];
-
-  while (walkStack.length > 0) {
-    const { node, groupSnapshot } = walkStack.pop()!;
-
-    // Case 1: Simple Route::get(...), Route::post(...), etc.
-    if (isRouteStaticCall(node)) {
-      const method = getCallMethodName(node);
-      if (method && (ROUTE_HTTP_METHODS.has(method) || ROUTE_RESOURCE_METHODS.has(method))) {
-        emitRoute(method, getArguments(node), node.startPosition.row, groupSnapshot, []);
-        continue;
-      }
-      if (method === 'group') {
-        const argsNode = getArguments(node);
-        const groupCtx = parseArrayGroupArgs(argsNode);
-        const body = findClosureBody(argsNode);
-        if (body) {
-          const childSnapshot = [...groupSnapshot, groupCtx];
-          const children = body.children ?? [];
-          for (let i = children.length - 1; i >= 0; i--) {
-            walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
-          }
-        }
-        continue;
-      }
-    }
-
-    // Case 2: Fluent chain — Route::middleware(...)->group(...) or Route::middleware(...)->get(...)
-    const chain = unwrapRouteChain(node);
-    if (chain) {
-      if (chain.terminalMethod === 'group') {
-        const groupCtx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
-        for (const attr of chain.attributes) {
-          if (attr.method === 'middleware')
-            groupCtx.middleware.push(...extractMiddlewareArg(attr.argsNode));
-          if (attr.method === 'prefix') groupCtx.prefix = extractFirstStringArg(attr.argsNode);
-          if (attr.method === 'controller') groupCtx.controller = extractClassArg(attr.argsNode);
-        }
-        const body = findClosureBody(chain.terminalArgs);
-        if (body) {
-          const childSnapshot = [...groupSnapshot, groupCtx];
-          const children = body.children ?? [];
-          for (let i = children.length - 1; i >= 0; i--) {
-            walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
-          }
-        }
-        continue;
-      }
-      if (
-        ROUTE_HTTP_METHODS.has(chain.terminalMethod) ||
-        ROUTE_RESOURCE_METHODS.has(chain.terminalMethod)
-      ) {
-        emitRoute(
-          chain.terminalMethod,
-          chain.terminalArgs,
-          node.startPosition.row,
-          groupSnapshot,
-          chain.attributes,
-        );
-        continue;
-      }
-    }
-
-    // Default: push children in reverse so leftmost is processed first
-    const children = node.children ?? [];
-    for (let i = children.length - 1; i >= 0; i--) {
-      walkStack.push({ node: children[i], groupSnapshot });
-    }
-  }
-  return routes;
-}
 
 // ============================================================================
 // ORM Query Detection (Prisma + Supabase)
@@ -1375,6 +1056,18 @@ export function extractORMQueries(
   }
 }
 
+// ============================================================================
+// FastAPI router prefix detection (Python)
+// ============================================================================
+//
+// The extraction lives in `../route-extractors/fastapi-router-bindings`
+// (a pure-function module — NOT a worker, no `worker_threads`, no
+// `parentPort`). It's imported here only so the worker entry can call it
+// per file; this module does not re-export it. Downstream consumers
+// import the function and its types directly from `route-extractors/`.
+
+import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
+
 const processFileGroup = (
   files: ParseWorkerInput[],
   language: SupportedLanguages,
@@ -1399,6 +1092,15 @@ const processFileGroup = (
   for (const file of files) {
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
+
+    // Authoritative in-flight signal for the pool: lets `WorkerPool` exclude
+    // exactly this file if the worker dies during parse/extract, instead of
+    // guessing from `items[lastProgress]` (which the language-grouped order
+    // here would defeat). The pool gracefully ignores this when running an
+    // older worker build that doesn't emit it.
+    if (parentPort) {
+      parentPort.postMessage({ type: 'starting-file', path: file.path });
+    }
 
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
@@ -1443,6 +1145,7 @@ const processFileGroup = (
       );
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     const provider = getProvider(language);
 
@@ -1457,8 +1160,11 @@ const processFileGroup = (
       parseContent,
       file.path,
       (message) => {
-        if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        else logger.warn(message);
+        if (parentPort) {
+          parentPort.postMessage({ type: 'warning', message });
+        } else {
+          logger.warn(message);
+        }
       },
       tree,
     );
@@ -1498,6 +1204,7 @@ const processFileGroup = (
     // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
     const typeEnv = buildTypeEnv(tree, language, {
+      filePath: file.path,
       parentMap,
       enclosingFunctionFinder: provider?.enclosingFunctionFinder,
       extractFunctionName: provider?.methodExtractor?.extractFunctionName,
@@ -1543,6 +1250,8 @@ const processFileGroup = (
       for (const c of match.captures) {
         captureMap[c.name] = c.node;
       }
+
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) continue;
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
@@ -1595,6 +1304,7 @@ const processFileGroup = (
       if (captureMap['decorator'] && captureMap['decorator.name']) {
         const decoratorName = captureMap['decorator.name'].text;
         const decoratorArg = captureMap['decorator.arg']?.text;
+        const decoratorReceiver = captureMap['decorator.receiver']?.text;
         const decoratorNode = captureMap['decorator'];
         // Store by the decorator's end line — the definition follows immediately after
         fileDecorators.set(decoratorNode.endPosition.row, {
@@ -1614,6 +1324,7 @@ const processFileGroup = (
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
+            ...(decoratorReceiver ? { decoratorReceiver } : {}),
           });
         }
         // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
@@ -1879,16 +1590,20 @@ const processFileGroup = (
                       ? { isReadonly: routedFieldInfo.isReadonly }
                       : {}),
                   });
-                  const fileId = generateId('File', file.path);
-                  const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-                  result.relationships.push({
-                    id: relId,
-                    sourceId: fileId,
-                    targetId: nodeId,
-                    type: 'DEFINES',
-                    confidence: 1.0,
-                    reason: '',
-                  });
+                  // Only emit File -> Property DEFINES for top-level properties
+                  // (issue #1944); class members are reached via HAS_PROPERTY.
+                  if (!propEnclosingClassId) {
+                    const fileId = generateId('File', file.path);
+                    const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+                    result.relationships.push({
+                      id: relId,
+                      sourceId: fileId,
+                      targetId: nodeId,
+                      type: 'DEFINES',
+                      confidence: 1.0,
+                      reason: '',
+                    });
+                  }
                   if (propEnclosingClassId) {
                     result.relationships.push({
                       id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
@@ -2035,9 +1750,47 @@ const processFileGroup = (
         processedDefinitionNodes.add(definitionNode.startIndex);
       }
 
+      const exportDefaultCall =
+        nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
+          ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
+          : undefined;
+      const defaultExportHocName = (() => {
+        if (exportDefaultCall === undefined) return null;
+        const argList = exportDefaultCall.childForFieldName?.('arguments');
+        const callback = argList?.namedChildren.find(
+          (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+        );
+        if (callback === undefined) return null;
+
+        const callee = exportDefaultCall.childForFieldName?.('function');
+        if (
+          callee?.type === 'identifier' &&
+          DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
+        )
+          return null;
+        if (callee?.type === 'member_expression') {
+          const property = callee.childForFieldName?.('property');
+          if (
+            property?.type === 'property_identifier' &&
+            ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+          )
+            return null;
+        }
+
+        return deriveDefaultExportHocName(file.path);
+      })();
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) continue;
-      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
+      if (
+        !nameNode &&
+        nodeLabel !== 'Constructor' &&
+        !extractedClassSymbol &&
+        !defaultExportHocName
+      )
+        continue;
+
+      const nodeName =
+        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
       const startLine = definitionNode
         ? definitionNode.startPosition.row + lineOffset
         : nameNode
@@ -2058,6 +1811,10 @@ const processFileGroup = (
           )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const objectLiteralOwnerInfo =
+        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          : null;
 
       // Qualify method/property IDs with enclosing class name to avoid collisions
       const qualifiedName = enclosingClassInfo
@@ -2133,6 +1890,13 @@ const processFileGroup = (
         );
         arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, groups);
       }
+      const parameterShapeTag =
+        nodeLabel === 'Function' || nodeLabel === 'Method'
+          ? parameterShapeIdTag(
+              methodProps.parameterTypes as string[] | undefined,
+              methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
+            )
+          : '';
       const classTemplateArguments =
         extractedClassSymbol?.templateArguments ??
         provider.classExtractor?.extractTemplateArgumentsFromCapture?.({
@@ -2156,7 +1920,7 @@ const processFileGroup = (
           : '';
       const nodeId = generateId(
         nodeLabel,
-        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}`,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${parameterShapeTag}`,
       );
       const classNodeForSymbol = definitionNode || nameNode;
       const qualifiedTypeName =
@@ -2296,6 +2060,7 @@ const processFileGroup = (
       });
 
       // enclosingClassId already computed above (before nodeId generation)
+      const ownerId = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId;
 
       result.symbols.push({
         filePath: file.path,
@@ -2306,12 +2071,13 @@ const processFileGroup = (
         parameterCount: methodProps.parameterCount as number | undefined,
         requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
+        parameterTypeClasses: methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
         returnType: methodProps.returnType as string | undefined,
         ...(declaredType !== undefined ? { declaredType } : {}),
         ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
           ? { templateArguments: classTemplateArguments }
           : {}),
-        ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
+        ...(ownerId !== undefined ? { ownerId } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,
@@ -2332,28 +2098,48 @@ const processFileGroup = (
           : {}),
       });
 
-      const fileId = generateId('File', file.path);
-      const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-      result.relationships.push({
-        id: relId,
-        sourceId: fileId,
-        targetId: nodeId,
-        type: 'DEFINES',
-        confidence: 1.0,
-        reason: '',
-      });
-
-      // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
-      if (enclosingClassId) {
-        const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
+      // Only emit File -> Symbol DEFINES for top-level symbols (issue #1944).
+      if (ownerId === undefined) {
+        const fileId = generateId('File', file.path);
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
         result.relationships.push({
-          id: generateId(memberEdgeType, `${enclosingClassId}->${nodeId}`),
-          sourceId: enclosingClassId,
+          id: relId,
+          sourceId: fileId,
           targetId: nodeId,
-          type: memberEdgeType,
+          type: 'DEFINES',
           confidence: 1.0,
           reason: '',
         });
+      }
+
+      // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
+      if (ownerId !== undefined) {
+        const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
+        result.relationships.push({
+          id: generateId(memberEdgeType, `${ownerId}->${nodeId}`),
+          sourceId: ownerId,
+          targetId: nodeId,
+          type: memberEdgeType,
+          confidence: 1.0,
+          reason: objectLiteralOwnerInfo
+            ? 'object literal method belongs to exported object binding'
+            : '',
+        });
+      }
+
+      // ── Fetch wrapper detection: record functions that call fetch() internally ──
+      if (
+        nodeLabel === 'Function' &&
+        definitionNode &&
+        nameNode &&
+        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
+      ) {
+        if (checkForFetchCall(definitionNode)) {
+          result.fetchWrapperDefs.push({
+            filePath: file.path,
+            functionName: nameNode.text,
+          });
+        }
       }
     }
 
@@ -2365,6 +2151,20 @@ const processFileGroup = (
 
     // Extract ORM queries (Prisma, Supabase)
     extractORMQueries(file.path, parseContent, result.ormQueries);
+
+    // Extract FastAPI include_router(prefix=...) and `from <mod> import router`
+    // sites. parse-impl aggregates these into a per-module prefix map and
+    // injects the resolved prefix onto each ExtractedDecoratorRoute that
+    // came from a `@router.<verb>` decorator. Python-only.
+    if (language === SupportedLanguages.Python) {
+      extractFastAPIRouterBindings(
+        file.path,
+        parseContent,
+        result.routerIncludes,
+        result.routerImports,
+        (result.routerModuleAliases ??= []),
+      );
+    }
 
     // Vue: emit CALLS edges for components used in <template>
     if (language === SupportedLanguages.Vue) {
@@ -2396,7 +2196,11 @@ let accumulated: ParseWorkerResult = {
   heritage: [],
   routes: [],
   fetchCalls: [],
+  fetchWrapperDefs: [],
   decoratorRoutes: [],
+  routerIncludes: [],
+  routerImports: [],
+  routerModuleAliases: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
@@ -2424,7 +2228,14 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.heritage, src.heritage);
   appendAll(target.routes, src.routes);
   appendAll(target.fetchCalls, src.fetchCalls);
+  appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
   appendAll(target.decoratorRoutes, src.decoratorRoutes);
+  if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
+  if (src.routerImports) appendAll(target.routerImports, src.routerImports);
+  if (src.routerModuleAliases) {
+    target.routerModuleAliases ??= [];
+    appendAll(target.routerModuleAliases, src.routerModuleAliases);
+  }
   appendAll(target.toolDefs, src.toolDefs);
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
@@ -2436,20 +2247,65 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.fileCount += src.fileCount;
 };
 
-parentPort!.on('message', (msg: WorkerIncomingMessage) => {
-  try {
-    // Legacy single-message mode (backward compat): array of files
-    if (Array.isArray(msg)) {
-      const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage({ type: 'progress', filesProcessed });
-      });
-      parentPort!.postMessage({ type: 'result', data: result });
-      return;
-    }
+// Signal the pool that worker-side initialization (parser imports, language
+// grammars, type-env setup, all helper modules) is complete and the message
+// handler below is about to be attached. The pool's `waitForWorkerReady`
+// resolves on this handshake — without it, a worker that crashes during
+// top-of-script init slips past pool startup (Node's `online` event fires
+// before the script body runs) and the pool only notices via the first
+// dispatch's idle timeout (~30s). Emit once; the dispatch handler treats
+// any subsequent `ready` message as a benign no-op.
+//
+// Native postMessage carries the ready handshake — Node's structured
+// clone delivers `{type:'ready'}` to the pool's waitForWorkerReady
+// listener directly. The pool drops the slot if this isn't seen within
+// `WORKER_READY_TIMEOUT_MS` (5s), so emitting it AFTER all top-of-script
+// init (imports, native binding loads, type-env setup) completes is the
+// load-bearing signal that this worker is ready for dispatch.
+bootstrapLog('ready sent');
+parentPort!.postMessage({ type: 'ready' });
 
+// Module-scope `TextDecoder` for sub-batch content. The pool sends each
+// file's content as a `Uint8Array` (zero-copy ArrayBuffer transfer); we
+// decode to string lazily here, once per file, before handing to
+// tree-sitter. Hoisted to module scope so we don't allocate a new
+// ICU-backed decoder per sub-batch — `TextDecoder.decode()` is
+// stateless across calls and safe to share.
+const sharedContentDecoder = new TextDecoder('utf-8');
+
+/**
+ * Convert the pool's sub-batch `files` array (content as `Uint8Array`,
+ * transferred zero-copy) into the `ParseWorkerInput[]` shape
+ * `processBatch` expects (content as `string`). This is the one place
+ * the UTF-8 decode happens — runs on the worker thread in parallel with
+ * continued main-thread work.
+ */
+function decodeSubBatchFiles(
+  files: Array<{ path: string; content: Uint8Array | string }>,
+): ParseWorkerInput[] {
+  return files.map((f) => ({
+    path: f.path,
+    // Test scaffolding (the writeReadyWorker preamble that wraps
+    // parentPort.on) may already convert content to string before
+    // calling here; tolerate both shapes so the same worker code
+    // exercises real and synthetic dispatches.
+    content: typeof f.content === 'string' ? f.content : sharedContentDecoder.decode(f.content),
+  }));
+}
+
+let firstTaskLogged = false;
+parentPort!.on('message', (msg: WorkerIncomingMessage) => {
+  if (!firstTaskLogged) {
+    firstTaskLogged = true;
+    bootstrapLog('first task received');
+  }
+  try {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
-      const result = processBatch(msg.files, (filesProcessed) => {
+      const files = decodeSubBatchFiles(
+        msg.files as Array<{ path: string; content: Uint8Array | string }>,
+      );
+      const result = processBatch(files, (filesProcessed) => {
         parentPort!.postMessage({
           type: 'progress',
           filesProcessed: cumulativeProcessed + filesProcessed,
@@ -2476,7 +2332,11 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         heritage: [],
         routes: [],
         fetchCalls: [],
+        fetchWrapperDefs: [],
         decoratorRoutes: [],
+        routerIncludes: [],
+        routerImports: [],
+        routerModuleAliases: [],
         toolDefs: [],
         ormQueries: [],
         constructorBindings: [],

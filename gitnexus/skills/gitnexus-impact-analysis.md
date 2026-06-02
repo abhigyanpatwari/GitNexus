@@ -23,7 +23,7 @@ description: "Use when the user wants to know what will break if they change som
 4. Assess risk and report to user
 ```
 
-> If "Index is stale" → run `npx gitnexus analyze` in terminal.
+> If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
 
 ## Checklist
 

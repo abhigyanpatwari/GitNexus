@@ -16,6 +16,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
 const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -77,6 +78,7 @@ function findCanonicalRepoRoot(cwd) {
       timeout: 2000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) return null;
     const commonDir = (result.stdout || '').trim();
@@ -218,6 +220,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       timeout,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   }
   // On Windows, invoke npx.cmd directly (no shell needed)
@@ -226,6 +229,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
     timeout: timeout + 5000,
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 
@@ -315,6 +319,7 @@ function handlePostToolUse(input) {
       timeout: 3000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     currentHead = (headResult.stdout || '').trim();
   } catch {
@@ -336,7 +341,7 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings });
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +

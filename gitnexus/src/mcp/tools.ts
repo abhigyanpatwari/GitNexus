@@ -187,6 +187,11 @@ TIPS:
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Cypher query to execute' },
+        params: {
+          type: 'object',
+          description:
+            'Optional query parameters for placeholders (e.g. $name) to execute via prepared statement binding.',
+        },
         repo: {
           type: 'string',
           description: 'Repository name or path. Omit if only one repo is indexed.',
@@ -253,6 +258,8 @@ Maps git diff hunks to indexed symbols, then traces which processes are impacted
 WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
+GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
+
 Returns: changed symbols, affected processes, and a risk summary.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
@@ -267,6 +274,11 @@ Returns: changed symbols, affected processes, and a risk summary.`,
         base_ref: {
           type: 'string',
           description: 'Branch/commit for "compare" scope (e.g., "main")',
+        },
+        worktree: {
+          type: 'string',
+          description:
+            'Absolute path to a linked git worktree. Pass this when your changes are in a worktree (the .git entry at that path is a file, not a directory). GitNexus will run git diff from that worktree so staged/unstaged changes are correctly detected.',
         },
         repo: {
           type: 'string',
@@ -324,12 +336,14 @@ Output includes:
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
-- byDepth: all affected symbols grouped by traversal depth
+- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list.
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
 - d=2: LIKELY AFFECTED (indirect)
 - d=3: MAY NEED TESTING (transitive)
+
+TIP: For hub symbols (base error classes, shared utilities) with many direct callers, use summaryOnly: true first to see counts and risk, then drill into specific depths with limit/offset. maxDepth alone does not bound output size when most dependents are at depth 1. limit and offset apply independently to each depth level, not to the total result set — use byDepthCounts to see totals per depth.
 
 TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
 
@@ -409,6 +423,27 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'string',
           description:
             'Optional group subgroup prefix (member repo paths) limiting which repos participate in cross fan-out.',
+        },
+        limit: {
+          type: 'integer',
+          description:
+            'Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.',
+          default: 100,
+          minimum: 1,
+          maximum: 10000,
+        },
+        offset: {
+          type: 'integer',
+          description:
+            'Skip this many symbols per depth level before applying limit. Single-repo only; ignored in group mode (@groupName). Use with limit for pagination.',
+          default: 0,
+          minimum: 0,
+        },
+        summaryOnly: {
+          type: 'boolean',
+          description:
+            'When true, returns target, summary, risk, byDepthCounts, affected_processes, and affected_modules — omits byDepth. Single-repo only; ignored in group mode (@groupName). Use for hub symbols to get actionable signal without output explosion.',
+          default: false,
         },
         timeoutMs: {
           type: 'number',

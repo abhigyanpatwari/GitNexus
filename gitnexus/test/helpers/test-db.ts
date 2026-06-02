@@ -4,7 +4,8 @@
  * Creates temporary directories for tests and provides cleanup that tolerates
  * LadybugDB's known Windows handle-release lag after retries.
  */
-import fs from 'fs/promises';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
 
@@ -13,22 +14,59 @@ export interface TestDBHandle {
   cleanup: () => Promise<void>;
 }
 
+const CLEANUP_MAX_ATTEMPTS = 5;
 const WINDOWS_NATIVE_LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY']);
 
-export async function cleanupTempDir(tmpDir: string): Promise<void> {
+const cleanupBackoffMs = (attempt: number): number => 100 * (attempt + 1);
+
+const shouldSwallowCleanupError = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  // ENOTEMPTY can race on any platform (macOS node-gyp cache, Linux
+  // parallel test teardown) — swallow after retries are exhausted.
+  if (code === 'ENOTEMPTY') return true;
+  return process.platform === 'win32' && WINDOWS_NATIVE_LOCK_CODES.has(code ?? '');
+};
+
+const sleepSync = (ms: number): void => {
+  const view = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(view, 0, 0, ms);
+};
+
+export function cleanupTempDirSync(tmpDir: string): void {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < CLEANUP_MAX_ATTEMPTS; attempt++) {
     try {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
       return;
     } catch (err) {
       lastError = err;
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      if (attempt < CLEANUP_MAX_ATTEMPTS - 1) {
+        sleepSync(cleanupBackoffMs(attempt));
+      }
     }
   }
 
-  const code = (lastError as NodeJS.ErrnoException | undefined)?.code;
-  if (process.platform === 'win32' && WINDOWS_NATIVE_LOCK_CODES.has(code ?? '')) {
+  if (shouldSwallowCleanupError(lastError)) {
+    return;
+  }
+  throw lastError;
+}
+
+export async function cleanupTempDir(tmpDir: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CLEANUP_MAX_ATTEMPTS; attempt++) {
+    try {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt < CLEANUP_MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, cleanupBackoffMs(attempt)));
+      }
+    }
+  }
+
+  if (shouldSwallowCleanupError(lastError)) {
     return;
   }
   throw lastError;
@@ -46,7 +84,7 @@ export async function cleanupTempDir(tmpDir: string): Promise<void> {
  * return.
  */
 export async function createTempDir(prefix: string = 'gitnexus-test-'): Promise<TestDBHandle> {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
   return {
     dbPath: tmpDir,
     cleanup: async () => {

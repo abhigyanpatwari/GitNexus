@@ -1,0 +1,2 @@
+class Derived: Outer.Inner {
+}

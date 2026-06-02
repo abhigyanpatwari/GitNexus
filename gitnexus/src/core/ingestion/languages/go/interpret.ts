@@ -28,7 +28,10 @@ export function interpretGoTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   let normalizedType: string;
   if (captures['@type-binding.self'] !== undefined) {
     source = 'self';
-    normalizedType = normalizeGoTypeName(type);
+    // Preserve pointer shape on receiver self-bindings (`*T` vs `T`).
+    // Method-owner enrichment consumes that raw shape to model Go value and
+    // pointer receiver method sets conservatively.
+    normalizedType = type.trim();
   } else if (captures['@type-binding.constructor'] !== undefined) {
     source = 'constructor-inferred';
     normalizedType = normalizeGoTypeName(type);

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import Parser from 'tree-sitter';
 import { extractGenericTypeArgs } from '../../src/core/ingestion/type-extractors/shared.js';
+import { getLanguageGrammar } from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 /**
@@ -112,19 +115,108 @@ describe('extractGenericTypeArgs', () => {
     });
   });
 
-  describe('parameterized_type (Java/Kotlin alternate node type)', () => {
-    it('extracts type arguments from parameterized_type', () => {
-      const baseNode = mockNode('type_identifier', { text: 'List' });
-      const argNode = mockNode('type_identifier', { text: 'User' });
-      const typeArgsNode = mockNode('type_arguments', {
-        namedChildren: [argNode],
+  // Ground the extractor against the REAL node types each shipped grammar emits
+  // for a generic — no mocks. This is what catches grammar drift / wrong guesses
+  // (e.g. the never-emitted `parameterized_type` the extractor used to special-
+  // case): Java/TypeScript/Rust → generic_type, C# → generic_name, Kotlin →
+  // user_type (List<User> → user_type > [type_identifier, type_arguments]). #1920
+  describe('real grammar generic types (parsed, not mocked)', () => {
+    // Return the smallest parsed node whose text is exactly `typeText`.
+    function parseTypeNode(
+      lang: SupportedLanguages,
+      file: string,
+      code: string,
+      typeText: string,
+    ): SyntaxNode {
+      const parser = new Parser();
+      parser.setLanguage(getLanguageGrammar(lang, file) as Parameters<Parser['setLanguage']>[0]);
+      const tree = parser.parse(code);
+      let best: SyntaxNode | null = null;
+      const walk = (n: SyntaxNode): void => {
+        if (n.text === typeText && (best === null || n.text.length <= best.text.length)) best = n;
+        for (let i = 0; i < n.childCount; i++) {
+          const c = n.child(i);
+          if (c) walk(c as unknown as SyntaxNode);
+        }
+      };
+      walk(tree.rootNode as unknown as SyntaxNode);
+      if (best === null) throw new Error(`no node with text "${typeText}" parsed for ${lang}`);
+      return best;
+    }
+
+    const cases: Array<{
+      lang: SupportedLanguages;
+      file: string;
+      code: string;
+      typeText: string;
+      expected: string[];
+    }> = [
+      {
+        lang: SupportedLanguages.Java,
+        file: 'C.java',
+        code: 'class C { List<User> f; }',
+        typeText: 'List<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.TypeScript,
+        file: 'c.ts',
+        code: 'let f: Array<User>;',
+        typeText: 'Array<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.CSharp,
+        file: 'C.cs',
+        code: 'class C { List<User> f; }',
+        typeText: 'List<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.Rust,
+        file: 'c.rs',
+        code: 'struct C { f: Vec<User> }',
+        typeText: 'Vec<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.Kotlin,
+        file: 'C.kt',
+        code: 'class C { val f: List<User> = x }',
+        typeText: 'List<User>',
+        expected: ['User'],
+      },
+      {
+        lang: SupportedLanguages.Java,
+        file: 'C.java',
+        code: 'class C { Map<String, User> f; }',
+        typeText: 'Map<String, User>',
+        expected: ['String', 'User'],
+      },
+      {
+        // Kotlin multi-arg through user_type > type_arguments > type_projection.
+        lang: SupportedLanguages.Kotlin,
+        file: 'C.kt',
+        code: 'class C { val f: Map<String, User> = x }',
+        typeText: 'Map<String, User>',
+        expected: ['String', 'User'],
+      },
+      {
+        // C# multi-arg through generic_name > type_argument_list.
+        lang: SupportedLanguages.CSharp,
+        file: 'C.cs',
+        code: 'class C { Dictionary<string, User> f; }',
+        typeText: 'Dictionary<string, User>',
+        expected: ['string', 'User'],
+      },
+    ];
+
+    for (const { lang, file, code, typeText, expected } of cases) {
+      it(`captures [${expected.join(', ')}] from a real ${lang} \`${typeText}\``, () => {
+        const node = parseTypeNode(lang, file, code, typeText);
+        expect(extractGenericTypeArgs(node)).toEqual(expected);
       });
-      const node = mockNode('parameterized_type', {
-        namedChildren: [baseNode, typeArgsNode],
-        fields: { name: baseNode },
-      });
-      expect(extractGenericTypeArgs(node)).toEqual(['User']);
-    });
+    }
   });
 
   describe('wrapper node unwrapping', () => {

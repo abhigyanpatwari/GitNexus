@@ -25,7 +25,7 @@ import { tryResolveWithExtensions } from './utils.js';
 export function resolvePythonImportInternal(
   currentFile: string,
   importPath: string,
-  allFiles: Set<string>,
+  allFiles: ReadonlySet<string>,
 ): string | null {
   // Relative import — PEP 328 (https://peps.python.org/pep-0328/)
   if (importPath.startsWith('.')) {

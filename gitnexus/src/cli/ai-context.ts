@@ -89,13 +89,17 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
   return hits;
 }
 
-function generateGitNexusContent(
+export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
   noStats?: boolean,
   skipSkills?: boolean,
+  // Project-relative path to the runner `gitnexus analyze` drops next to the
+  // index (#1945). Referenced by docs so a single CLI-neutral command resolves
+  // the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time.
+  runnerPath: string = '.gitnexus/run.cjs',
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -127,13 +131,22 @@ function generateGitNexusContent(
 |------|---------------------|
 ${tableBody}`
     : '';
+  // Docs reference the project-local runner `gitnexus analyze` writes (#1945):
+  // a single, CLI-neutral, machine-independent command (no per-machine churn,
+  // #1706) that auto-selects the available runner at call time. Kept terse to
+  // stay under the CLAUDE.md block token budget (#856); the cli skill carries the
+  // full bootstrap + npm-11 fallback (`node.target is null` npx install crash).
+  const runner = `node ${runnerPath}`;
+  const bootstrapNote =
+    `No \`${runnerPath}\` yet? \`npx gitnexus analyze\` ` +
+    '(npm 11 crash → `npm i -g gitnexus`; #1939).';
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
+> Index stale? Run \`${runner} analyze\` from the project root — it auto-selects an available runner. ${bootstrapNote}
 
 ## Always Do
 
@@ -163,7 +176,7 @@ ${
   groupNames && groupNames.length > 0
     ? `## Cross-Repo Groups
 
-This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the terminal: \`npx gitnexus group list\`, \`npx gitnexus group sync <name>\`, \`npx gitnexus group impact <name> --target <symbol> --repo <group-path>\`.
+This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the project root: \`${runner} group list\`, \`${runner} group sync <name>\`, \`${runner} group impact <name> --target <symbol> --repo <group-path>\` (the \`${runnerPath}\` path is repo-root-relative).
 
 `
     : ''
@@ -201,6 +214,7 @@ async function upsertGitNexusSection(
   content: string,
   projectName: string,
   stats: RepoStats,
+  noStats?: boolean,
 ): Promise<'created' | 'updated' | 'appended' | 'preserved'> {
   const exists = await fileExists(filePath);
 
@@ -246,14 +260,23 @@ async function upsertGitNexusSection(
       //       like `({target: "symbolName", direction: "upstream"})`
       //       when noStats is set
       // Passing projectName + stats explicitly makes the contract obvious.
-      // noStats controls template generation, not keep-section stat updates — the user opted into a stats line by keeping it.
+      // --no-stats wins in the keep path too (#1706): a lean block committed
+      // to git would otherwise churn the volatile counts on every analyze,
+      // producing no-value merge conflicts between branches. Under noStats we
+      // drop the parenthetical but still refresh the project name so renames
+      // propagate.
       const newStatsInner = `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`;
-      const statsLine = `Indexed as **${projectName}** (${newStatsInner})`;
+      const statsLine = noStats
+        ? `Indexed as **${projectName}**`
+        : `Indexed as **${projectName}** (${newStatsInner})`;
 
       // Match either canonical phrasing at line start (`^` with `m` flag) so we
       // cannot replace prose embedded mid-paragraph. Deliberately no `$`: text
-      // after the closing `)` on the same line (e.g. ". MCP tools.") stays intact.
-      const statsPattern = /^(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\* \([^)]+\)/m;
+      // after the line on the same line (e.g. ". MCP tools.") stays intact.
+      // The parenthetical is optional so a count-free line left by a prior
+      // --no-stats run still matches — letting the name refresh, and letting
+      // counts return if --no-stats is later dropped.
+      const statsPattern = /^(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\*(?: \([^)]+\))?/m;
 
       if (statsPattern.test(existingSection)) {
         const updatedSection = existingSection.replace(statsPattern, statsLine);
@@ -369,13 +392,36 @@ Use GitNexus tools to accomplish this task.
  */
 export async function generateAIContextFiles(
   repoPath: string,
-  _storagePath: string,
+  storagePath: string,
   projectName: string,
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
   const groupNames = await findGroupsContainingRegistryName(projectName);
+
+  // Drop a project-local runner next to the index (#1945) so the generated docs
+  // can reference one CLI-neutral command that resolves the available runner at
+  // call time. It is a copy of the canonical self-contained resolver, which the
+  // CLI and hooks already share; failure to copy is non-fatal (docs carry a
+  // bootstrap fallback). `runnerPath` is project-relative with POSIX separators
+  // so the emitted command is identical across platforms.
+  const runnerPath = path.relative(repoPath, path.join(storagePath, 'run.cjs')).replace(/\\/g, '/');
+  try {
+    const runnerSrc = path.join(
+      __dirname,
+      '..',
+      '..',
+      'hooks',
+      'claude',
+      'resolve-analyze-cmd.cjs',
+    );
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.copyFile(runnerSrc, path.join(storagePath, 'run.cjs'));
+  } catch (err) {
+    logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
+  }
+
   const content = generateGitNexusContent(
     projectName,
     stats,
@@ -383,18 +429,31 @@ export async function generateAIContextFiles(
     groupNames,
     options?.noStats,
     options?.skipSkills,
+    runnerPath,
   );
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
     // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
     const agentsPath = path.join(repoPath, 'AGENTS.md');
-    const agentsResult = await upsertGitNexusSection(agentsPath, content, projectName, stats);
+    const agentsResult = await upsertGitNexusSection(
+      agentsPath,
+      content,
+      projectName,
+      stats,
+      options?.noStats,
+    );
     createdFiles.push(`AGENTS.md (${agentsResult})`);
 
     // Create CLAUDE.md (for Claude Code)
     const claudePath = path.join(repoPath, 'CLAUDE.md');
-    const claudeResult = await upsertGitNexusSection(claudePath, content, projectName, stats);
+    const claudeResult = await upsertGitNexusSection(
+      claudePath,
+      content,
+      projectName,
+      stats,
+      options?.noStats,
+    );
     createdFiles.push(`CLAUDE.md (${claudeResult})`);
   } else {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');

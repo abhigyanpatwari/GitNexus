@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -72,6 +73,98 @@ describe('Rust trait implementation resolution', () => {
       expect(target).toBeDefined();
       expect(target!.label).not.toBe('Property');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-module collision (#1951 review): two `struct User` in separate modules,
+// each `impl Drawable`. The legacy global last-write-wins simple-name index
+// collapsed both impl sites onto ONE `User`, sourcing one (or both) edges from
+// the wrong module's struct. Scope-aware resolution sources each edge from the
+// `User` defined in that impl's own module, so BOTH edges are present and
+// correctly sourced.
+// ---------------------------------------------------------------------------
+
+describe('Rust cross-module trait-impl collision resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-cross-module-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects 2 User structs in separate modules and 1 Drawable trait', () => {
+    const structs: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Struct') structs.push(`${n.properties.name}@${n.properties.filePath}`);
+    });
+    const users = structs.filter((s) => s.startsWith('User@')).sort();
+    expect(users).toEqual(['User@src/a.rs', 'User@src/b.rs']);
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Drawable']);
+  });
+
+  it('emits one IMPLEMENTS edge per module, each sourced from its OWN User', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(2);
+    expect(edgeSet(implements_)).toEqual(['User → Drawable', 'User → Drawable']);
+    // The fix: each edge sources from the User in its own module — not a single
+    // last-write-wins struct. Before the fix, both edges collapsed onto one file.
+    const sourceFiles = implements_.map((e) => e.sourceFilePath).sort();
+    expect(sourceFiles).toEqual(['src/a.rs', 'src/b.rs']);
+    for (const edge of implements_) {
+      expect(edge.rel.reason).toBe('trait-impl');
+      expect(edge.targetFilePath).toBe('src/traits.rs');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Qualified/scoped trait paths (#1956 tri-review U1): `impl crate::traits::Foo
+// for S` and `impl crate::traits::Wrapped<T> for S`. The base is a
+// `scoped_type_identifier` (or a generic_type wrapping one). Both the synth
+// (registry leg, rust/captures.ts `bareTypeIdentifier`) and the legacy
+// `@heritage` query now resolve it by its trailing bare name (KTD-1). The traits
+// are unique, so both legs resolve identically — parity-tested. (Ambiguous
+// scoped bases reuse the same refuse-on-ambiguity path as bare names, already
+// covered by rust-cross-module-collision / rust-ambiguous; that path diverges
+// across legs by design and is intentionally not added to this parity fixture.)
+// ---------------------------------------------------------------------------
+
+describe('Rust qualified/scoped trait-impl resolution (#1956 U1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-qualified-trait'), () => {});
+  }, 60000);
+
+  it('detects the structs and traits', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Gadget', 'Widget']);
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Drawable', 'Wrapped']);
+  });
+
+  it('emits IMPLEMENTS edges for qualified and qualified-generic trait paths', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    // `impl crate::traits::Drawable for Widget` (scoped) and
+    // `impl crate::traits::Wrapped<u32> for Gadget` (generic-of-scoped) both
+    // resolve by their trailing bare name.
+    expect(edgeSet(implements_)).toEqual(['Gadget → Wrapped', 'Widget → Drawable']);
+    for (const edge of implements_) {
+      expect(edge.rel.reason).toBe('trait-impl');
+    }
+  });
+
+  it('sources each edge from its struct file and targets the trait module', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    for (const edge of implements_) {
+      expect(edge.sourceFilePath).toBe('src/widget.rs');
+      expect(edge.targetFilePath).toBe('src/traits.rs');
+    }
+  });
+
+  it('does not emit EXTENDS edges (Rust trait impls are IMPLEMENTS)', () => {
+    expect(getRelationships(result, 'EXTENDS').length).toBe(0);
   });
 });
 
@@ -1918,5 +2011,39 @@ describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
         c.target === 'trait_only' && c.source === 'run' && c.targetFilePath.includes('parent.rs'),
     );
     expect(traitCall).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped inherent impl targets — ownership + collision (issue #1975)
+//
+// `impl a::Inner { ... }` (scoped_type_identifier target) now materializes an
+// Impl node keyed by the full scoped text, so its methods own through a real
+// node. A same-tail target in another module (`impl b::Inner`) stays a DISTINCT
+// Impl node — no merge, no mis-attribution. (Trait impls on a scoped struct path
+// — `impl T for a::Inner` — need qualified struct-node identity, deferred to #1978.)
+// ---------------------------------------------------------------------------
+
+describe('Rust scoped inherent impl — ownership + collision (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-scoped-impl'), () => {});
+  }, 60000);
+
+  it('owns each scoped inherent-impl method with no dangling HAS_METHOD edges', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R3: a::Inner and b::Inner share a tail but must own through distinct Impl nodes.
+  it('keeps a::Inner and b::Inner impls distinct (no cross-wired methods)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromA = hasMethod.find((e) => e.target === 'from_a');
+    const fromB = hasMethod.find((e) => e.target === 'from_b');
+    expect(fromA).toBeDefined();
+    expect(fromB).toBeDefined();
+    expect(fromA!.source).toBe('a::Inner');
+    expect(fromB!.source).toBe('b::Inner');
+    expect(fromA!.source).not.toBe(fromB!.source);
   });
 });
