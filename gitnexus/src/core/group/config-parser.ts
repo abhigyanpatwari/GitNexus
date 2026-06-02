@@ -33,6 +33,7 @@ const DEFAULT_DETECT = {
   embedding_fallback: true,
   includes: false,
   workspace_deps: false,
+  sofa: false,
 };
 
 const DEFAULT_MATCHING = {

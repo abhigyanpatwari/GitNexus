@@ -8,6 +8,7 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
+import { SofaExtractor } from './extractors/sofa-extractor.js';
 import { IncludeExtractor } from './extractors/include-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
@@ -105,6 +106,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const grpcEx = new GrpcExtractor();
       const thriftEx = new ThriftExtractor();
       const topicEx = new TopicExtractor();
+      const sofaEx = new SofaExtractor();
       const includeEx = new IncludeExtractor();
       dbExecutors = new Map<string, CypherExecutor>();
 
@@ -163,6 +165,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.topics) {
             const extracted = await topicEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.sofa) {
+            const extracted = await sofaEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
                 ...c,
