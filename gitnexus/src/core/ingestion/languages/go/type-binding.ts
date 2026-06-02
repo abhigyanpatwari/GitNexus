@@ -249,6 +249,10 @@ function extractSimpleTypeNameText(node: SyntaxNode): string {
     const parts = node.text.split('.');
     return parts[parts.length - 1] ?? node.text;
   }
+  if (node.type === 'generic_type') {
+    const base = node.childForFieldName('type');
+    return base === null ? node.text : extractSimpleTypeNameText(base);
+  }
   return node.text;
 }
 
@@ -272,7 +276,9 @@ function extractTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) => ['type_identifier', 'qualified_type'].includes(c.type)) ??
+      expr.namedChildren.find((c) =>
+        ['type_identifier', 'qualified_type', 'generic_type'].includes(c.type),
+      ) ??
       null
     );
   }

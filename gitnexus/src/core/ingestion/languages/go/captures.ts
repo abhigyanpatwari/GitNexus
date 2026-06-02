@@ -82,6 +82,8 @@ export function emitGoScopeCaptures(
 
     if (isRawMultiAssignTypeBinding(nodeMap)) continue;
 
+    normalizeGenericConstructorCapture(nodeMap, grouped);
+
     const declAnchorNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'];
     if (declAnchorNode !== undefined) {
       // @declaration.function / @declaration.method are captured directly on
@@ -338,6 +340,49 @@ function nodeRangeEquals(a: SyntaxNode, b: SyntaxNode): boolean {
     a.endPosition.row === b.endPosition.row &&
     a.endPosition.column === b.endPosition.column
   );
+}
+
+function normalizeGenericConstructorCapture(
+  nodeMap: Record<string, SyntaxNode>,
+  grouped: Record<string, Capture>,
+): void {
+  const typeNode =
+    grouped['@type-binding.constructor'] !== undefined ? nodeMap['@type-binding.type'] : undefined;
+  if (typeNode !== undefined && typeNode.type === 'generic_type') {
+    const base = typeNode.childForFieldName('type');
+    if (base !== null) {
+      grouped['@type-binding.type'] = syntheticCapture(
+        '@type-binding.type',
+        base,
+        extractSimpleTypeNameText(base),
+      );
+    }
+  }
+
+  const referenceNode =
+    grouped['@reference.call.constructor'] !== undefined ? nodeMap['@reference.name'] : undefined;
+  if (referenceNode !== undefined && referenceNode.type === 'generic_type') {
+    const base = referenceNode.childForFieldName('type');
+    if (base !== null) {
+      grouped['@reference.name'] = syntheticCapture(
+        '@reference.name',
+        base,
+        extractSimpleTypeNameText(base),
+      );
+    }
+  }
+}
+
+function extractSimpleTypeNameText(node: SyntaxNode): string {
+  if (node.type === 'qualified_type') {
+    const parts = node.text.split('.');
+    return parts[parts.length - 1] ?? node.text;
+  }
+  if (node.type === 'generic_type') {
+    const base = node.childForFieldName('type');
+    return base === null ? node.text : extractSimpleTypeNameText(base);
+  }
+  return node.text;
 }
 
 function isRawMultiAssignTypeBinding(nodeMap: Record<string, SyntaxNode>): boolean {
