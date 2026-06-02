@@ -12,6 +12,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -1427,5 +1428,83 @@ describe('Ruby Child extends Parent — inherited method resolution (SM-9)', () 
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespaced class/module declarations — GRAPH NODE materialization (issue #1975)
+//
+// Follow-up to PR #1972 (F62): the scope query captures the tail constant for
+// `class Foo::Bar` / `module Baz::Qux`, but the legacy structure query never
+// matched the scope_resolution name, so no Class/Trait node was created and the
+// declaration's methods got dangling HAS_METHOD edges. These pipeline-level
+// tests assert the target behavior (a real node + a resolving HAS_METHOD edge).
+// They fail on the pre-fix base — see plan docs/plans/2026-06-02-002-*.
+// ---------------------------------------------------------------------------
+
+describe('Ruby namespaced class/module definitions — graph nodes (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-namespaced'), () => {});
+  }, 60000);
+
+  // R1/R3: a distinct Class node is materialized for the namespaced class,
+  // keyed by its full scoped name (so Foo::Bar and Baz::Bar never collide).
+  // The node id matches the HAS_METHOD owner id derived from the same name field;
+  // qualifiedName carries the dotted path (Foo.Bar).
+  pit('materializes a Class node for class Foo::Bar', () => {
+    const classes = getNodesByLabelFull(result, 'Class');
+    expect(classes.some((c) => c.properties.qualifiedName === 'Foo.Bar')).toBe(true);
+  });
+
+  // R1: deep chain Outer::Middle::Inner → qualifiedName Outer.Middle.Inner.
+  pit('materializes a Class node for class Outer::Middle::Inner', () => {
+    const classes = getNodesByLabelFull(result, 'Class');
+    expect(classes.some((c) => c.properties.qualifiedName === 'Outer.Middle.Inner')).toBe(true);
+  });
+
+  // R1: module → Trait (Ruby modules are relabeled Trait for class-like lookup).
+  pit('materializes a Trait node for module Baz::Qux', () => {
+    expect(getNodesByLabel(result, 'Trait')).toContain('Baz::Qux');
+  });
+
+  // R2: methods of namespaced declarations must not produce dangling HAS_METHOD edges.
+  pit('emits no dangling HAS_METHOD edges for namespaced declarations', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R2: the method resolves to a real owner node (not an 'unknown' dangling source).
+  pit('owns bar_method under a resolving namespaced class node', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find((e) => e.target === 'bar_method');
+    expect(edge).toBeDefined();
+    expect(edge!.sourceLabel).toBe('Class');
+  });
+});
+
+describe('Ruby cross-namespace tail collision — distinct nodes (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-tail-collision'), () => {});
+  }, 60000);
+
+  // R3: Foo::Bar and Baz::Bar share the tail `Bar` but must NOT merge — keying by
+  // the full scoped name keeps them two distinct Class nodes.
+  pit('keeps Foo::Bar and Baz::Bar as two distinct Class nodes', () => {
+    const qns = getNodesByLabelFull(result, 'Class')
+      .map((c) => c.properties.qualifiedName)
+      .filter((q) => q === 'Foo.Bar' || q === 'Baz.Bar')
+      .sort();
+    expect(qns).toEqual(['Baz.Bar', 'Foo.Bar']);
+  });
+
+  // R2/R3: each namespaced class owns its own method through a resolving node.
+  pit('owns each method under its own namespaced class (no dangling, no cross-wire)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    expect(hasMethod.some((e) => e.target === 'from_foo' && e.sourceLabel === 'Class')).toBe(true);
+    expect(hasMethod.some((e) => e.target === 'from_baz' && e.sourceLabel === 'Class')).toBe(true);
   });
 });

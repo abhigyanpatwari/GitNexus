@@ -295,6 +295,10 @@
     "captureGroups": 9,
     "digest": "73c8b1725670e841d01fefa807b6148017e181e6bb34d8f5110d970f4292eaff"
   },
+  "ruby-tail-collision/collision.rb": {
+    "captureGroups": 15,
+    "digest": "c071370701e4d8d4046ea2466192648cf72352cfb66e2e08ad15e320e850c683"
+  },
   "ruby-write-access/models.rb": {
     "captureGroups": 13,
     "digest": "106fe23a380801055a2ef642f0b92d4552ce074321ebe831601f2cb89a8d8529"

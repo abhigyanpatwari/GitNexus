@@ -10,6 +10,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   getResolutionOutcomes,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -3726,5 +3727,41 @@ describe('C++ SFINAE filter — arity gate runs before constraint filter', () =>
       (c) => c.source === 'run' && c.target === 'process',
     );
     expect(calls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Out-of-line nested definitions — method ownership + collision (issue #1975)
+//
+// `struct Outer::Inner { ... }` (name = qualified_identifier) now materializes a
+// node keyed by the full scoped text, so its methods own through a real node.
+// Crucially, a same-tail type in another scope (Other::Inner) stays a DISTINCT
+// node — no merge, no method mis-attribution. (A redundant forward-decl node
+// `Inner` also exists; the pre-existing inline same-tail node collision is
+// tracked separately in #1978.)
+// ---------------------------------------------------------------------------
+
+describe('C++ out-of-line nested definitions — ownership + collision (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-out-of-line-class'), () => {});
+  }, 60000);
+
+  it('owns each out-of-line method with no dangling HAS_METHOD edges', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R3: same-tail types in different scopes must NOT merge — each method owns
+  // through its own distinct node (positive owner-identity, not just dangle-free).
+  it('keeps Outer::Inner and Other::Inner distinct (no cross-wired methods)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const outer = hasMethod.find((e) => e.target === 'from_outer');
+    const other = hasMethod.find((e) => e.target === 'from_other');
+    expect(outer).toBeDefined();
+    expect(other).toBeDefined();
+    expect(outer!.source).toBe('Outer::Inner');
+    expect(other!.source).toBe('Other::Inner');
+    expect(outer!.source).not.toBe(other!.source);
   });
 });

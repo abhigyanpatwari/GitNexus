@@ -391,6 +391,10 @@
     "captureGroups": 17,
     "digest": "0e3826200f2e6f5b948313369e85ee3a08f18bc8d51fbd1f7283b19a8e01aac8"
   },
+  "rust-scoped-impl/lib.rs": {
+    "captureGroups": 17,
+    "digest": "7bae61e3bde8ce20eade29ce06b13f0a57b7da631d81604218bd07b881a7b754"
+  },
   "rust-scoped-multi-file/src/main.rs": {
     "captureGroups": 17,
     "digest": "cbb0ad90a6a6ddcb71afb98a98a172bede7f5c06b5c1d31484a11315a264b311"

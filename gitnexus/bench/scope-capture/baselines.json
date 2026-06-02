@@ -16,10 +16,11 @@
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
-    "fingerprint": "4022f436885d15fd2d419e38e0674115e1c5daa7dcb9578de2633160bed94446",
+    "fingerprint": "931bf7af55dc1480d1a5d3c479ea3803003a6a2e2c4406447bd96f3e312e88de",
     "scaling_budget": 1.5,
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
-    "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06)."
+    "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
+    "_note": "#1975: + cpp-out-of-line-class fixture (out-of-line struct Outer::Inner / Other::Inner). Pure fixture-corpus drift — the fix is the legacy structure-query qualified_identifier arm, NOT the cpp scope-extractor; existing fixtures' captures byte-identical. fixture_count 263->265."
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.)",
@@ -27,9 +28,10 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "2ffad4ba7b1d2eb1ac407cb6d75d0eb98cbc1878260dbdfe982c0fc925b2d00c",
+    "fingerprint": "3c4b8e0a707299cc5db0af2528c72a99457859104589a7ef3cd1f377da01793e",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04)."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04).",
+    "_note": "#1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls). Pure fixture-corpus drift — the fix is the legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target, NOT the rust scope-extractor; existing fixtures' captures byte-identical. fixture_count 120->121."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
@@ -37,10 +39,10 @@
     "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "c3e9eec6ed152eae1f7d9759c08041d7d6230a4c532ec07d33f3c9f1ff7b9588",
+    "fingerprint": "ee81145cf0af796878e8e048192b87c8c8dc445a3e3fcdff6c6e26c179e97232",
     "scaling_budget": 1.5,
     "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)",
-    "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected."
+    "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) — pure fixture-corpus drift, scope-extractor captures unchanged; 81→82."
   },
   "swift": {
     "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",

@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -2010,5 +2011,39 @@ describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
         c.target === 'trait_only' && c.source === 'run' && c.targetFilePath.includes('parent.rs'),
     );
     expect(traitCall).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped inherent impl targets — ownership + collision (issue #1975)
+//
+// `impl a::Inner { ... }` (scoped_type_identifier target) now materializes an
+// Impl node keyed by the full scoped text, so its methods own through a real
+// node. A same-tail target in another module (`impl b::Inner`) stays a DISTINCT
+// Impl node — no merge, no mis-attribution. (Trait impls on a scoped struct path
+// — `impl T for a::Inner` — need qualified struct-node identity, deferred to #1978.)
+// ---------------------------------------------------------------------------
+
+describe('Rust scoped inherent impl — ownership + collision (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-scoped-impl'), () => {});
+  }, 60000);
+
+  it('owns each scoped inherent-impl method with no dangling HAS_METHOD edges', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R3: a::Inner and b::Inner share a tail but must own through distinct Impl nodes.
+  it('keeps a::Inner and b::Inner impls distinct (no cross-wired methods)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromA = hasMethod.find((e) => e.target === 'from_a');
+    const fromB = hasMethod.find((e) => e.target === 'from_b');
+    expect(fromA).toBeDefined();
+    expect(fromB).toBeDefined();
+    expect(fromA!.source).toBe('a::Inner');
+    expect(fromB!.source).toBe('b::Inner');
+    expect(fromA!.source).not.toBe(fromB!.source);
   });
 });
