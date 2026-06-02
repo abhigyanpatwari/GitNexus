@@ -36,10 +36,88 @@ import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
+import { extractParsedFile } from '../../scope-extractor-bridge.js';
 
 import { logger } from '../../../logger.js';
+
+const VUE_SCOPE_CONTEXT_LANGUAGES = new Set<SupportedLanguages>([
+  SupportedLanguages.Vue,
+  SupportedLanguages.TypeScript,
+  SupportedLanguages.JavaScript,
+]);
+
+function isVueScopeContextLanguage(lang: SupportedLanguages | null): boolean {
+  return lang !== null && VUE_SCOPE_CONTEXT_LANGUAGES.has(lang);
+}
+
+function resolveImportTargets(
+  provider: ScopeResolver,
+  targetRaw: string,
+  fromFile: string,
+  allScannedPaths: ReadonlySet<string>,
+  resolutionConfig: unknown,
+): readonly string[] {
+  const resolved = provider.resolveImportTarget(
+    targetRaw,
+    fromFile,
+    allScannedPaths,
+    resolutionConfig,
+  );
+  if (resolved === null) return [];
+  if (typeof resolved === 'string') return [resolved];
+  return resolved;
+}
+
+function collectVueScopeFilePaths(options: {
+  readonly vueEntryPaths: readonly string[];
+  readonly provider: ScopeResolver;
+  readonly preExtractedByPath: ReadonlyMap<string, import('gitnexus-shared').ParsedFile>;
+  readonly entryFileContents: ReadonlyMap<string, string>;
+  readonly allScannedPaths: ReadonlySet<string>;
+  readonly resolutionConfig: unknown;
+}): Set<string> {
+  const visited = new Set<string>(options.vueEntryPaths);
+  const queue = [...options.vueEntryPaths];
+  const fallbackParsed = new Map<string, import('gitnexus-shared').ParsedFile>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) break;
+    let parsed =
+      options.preExtractedByPath.get(current) ?? fallbackParsed.get(current) ?? undefined;
+    if (parsed === undefined) {
+      const source = options.entryFileContents.get(current);
+      if (source !== undefined) {
+        parsed = extractParsedFile(options.provider.languageProvider, source, current);
+        if (parsed !== undefined) fallbackParsed.set(current, parsed);
+      }
+    }
+    if (parsed === undefined) continue;
+
+    for (const parsedImport of parsed.parsedImports) {
+      if (parsedImport.targetRaw.trim().length === 0) continue;
+      const targets = resolveImportTargets(
+        options.provider,
+        parsedImport.targetRaw,
+        current,
+        options.allScannedPaths,
+        options.resolutionConfig,
+      );
+      for (const targetPath of targets) {
+        if (!options.allScannedPaths.has(targetPath)) continue;
+        if (!isVueScopeContextLanguage(getLanguageFromFilename(targetPath))) continue;
+        if (visited.has(targetPath)) continue;
+        visited.add(targetPath);
+        queue.push(targetPath);
+      }
+    }
+  }
+
+  return visited;
+}
 export interface ScopeResolutionOutput {
   /** True when at least one language ran. */
   readonly ran: boolean;
@@ -148,9 +226,16 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // a frozen progress bar during long scope-resolution runs (#1741).
     let totalScopeFiles = 0;
     let totalScopeLangs = 0;
+    const allScannedPaths = new Set(scannedFiles.map((f) => f.path));
     for (const [lang] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
-      const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
+      const count = scannedFiles.filter((f) => {
+        const fileLang = getLanguageFromFilename(f.path);
+        if (lang === SupportedLanguages.Vue) {
+          return isVueScopeContextLanguage(fileLang);
+        }
+        return fileLang === lang;
+      }).length;
       if (count > 0) {
         totalScopeLangs++;
         totalScopeFiles += count;
@@ -180,16 +265,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // SCOPE_RESOLVERS.
       if (provider.languageProvider.parseStrategy === 'standalone') continue;
 
-      const langFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
-      if (langFiles.length === 0) continue;
-
-      const filePaths = langFiles.map((f) => f.path);
-      const contents = await readFileContents(ctx.repoPath, filePaths);
-      const files: { path: string; content: string }[] = [];
-      for (const fp of filePaths) {
-        const content = contents.get(fp);
-        if (content !== undefined) files.push({ path: fp, content });
-      }
+      const primaryLangFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
+      if (primaryLangFiles.length === 0) continue;
+      const primaryFilePaths = primaryLangFiles.map((f) => f.path);
 
       // Load per-language import-resolution config (tsconfig paths,
       // composer.json autoload, go.mod, ...). One I/O round trip per
@@ -199,6 +277,25 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         provider.loadResolutionConfig !== undefined
           ? await provider.loadResolutionConfig(ctx.repoPath)
           : undefined;
+
+      const scopeFilePaths =
+        lang === SupportedLanguages.Vue
+          ? collectVueScopeFilePaths({
+              vueEntryPaths: primaryFilePaths,
+              provider,
+              preExtractedByPath,
+              entryFileContents: await readFileContents(ctx.repoPath, primaryFilePaths),
+              allScannedPaths,
+              resolutionConfig,
+            })
+          : new Set(primaryFilePaths);
+      const filePaths = [...scopeFilePaths];
+      const contents = await readFileContents(ctx.repoPath, filePaths);
+      const files: { path: string; content: string }[] = [];
+      for (const fp of filePaths) {
+        const content = contents.get(fp);
+        if (content !== undefined) files.push({ path: fp, content });
+      }
 
       const langFileCount = files.length;
       const langLabel = lang.charAt(0).toUpperCase() + lang.slice(1);
@@ -281,7 +378,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // See: https://github.com/abhigyanpatwari/GitNexus/issues/1741
       files.length = 0;
       contents.clear();
-      for (const fp of filePaths) {
+      for (const fp of primaryFilePaths) {
         preExtractedByPath.delete(fp);
       }
 

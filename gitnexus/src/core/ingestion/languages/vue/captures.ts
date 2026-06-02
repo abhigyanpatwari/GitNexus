@@ -26,7 +26,7 @@ import { emitTsScopeCaptures } from '../typescript/captures.js';
 /**
  * Emit scope captures for a Vue SFC.
  *
- * Handles two call-site shapes:
+ * Handles three call-site shapes:
  *
  *   1. **Full SFC content** (sequential path, <15 files): `sourceText`
  *      contains the whole `.vue` file with `<template>`, `<script>`, etc.
@@ -36,30 +36,32 @@ import { emitTsScopeCaptures } from '../typescript/captures.js';
  *   2. **Already-extracted script content** (worker-mode path, ≥15 files):
  *      the parse worker calls `extractVueScript` itself before calling
  *      `extractParsedFile`, so `sourceText` is already the bare TypeScript
- *      text with no `<script>` tags.  `extractVueScript` returns `null`
- *      here.  We detect this case by the absence of any SFC block-level
- *      markers (`<template`, `<style`) and delegate directly.
+ *      text with no `<script>` tags. The caller marks this explicitly via
+ *      `sourceMeta.sourceKind === 'pre-extracted-script'`.
  *
- * Returns an empty array for render-function-only components (SFC without
- * a `<script>` block, which still have `<template>` or `<style>` markers).
+ *   3. **Supporting TS/JS files** included in Vue scope-resolution runs:
+ *      when `filePath` is not `.vue`, delegate straight to TypeScript captures.
+ *
+ * Returns an empty array for render-function-only SFCs (no `<script>` block).
  */
 export function emitVueScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: { sourceKind?: 'full-file' | 'pre-extracted-script' },
 ): readonly CaptureMatch[] {
+  // Vue resolver may include supporting TS/JS files in the same run to
+  // preserve cross-file import/type context for `.vue` callers. These are
+  // already plain script files, so no SFC extraction is needed.
+  if (!filePath.endsWith('.vue')) {
+    return emitTsScopeCaptures(sourceText, filePath, cachedTree);
+  }
+
+  if (sourceMeta?.sourceKind === 'pre-extracted-script') {
+    return emitTsScopeCaptures(sourceText, filePath, cachedTree);
+  }
+
   const extracted = extractVueScript(sourceText);
-  if (extracted !== null) {
-    return emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
-  }
-  // extractVueScript returned null: either a render-function-only SFC (has
-  // <template> / <style> but no <script>) or already-extracted script text.
-  // Distinguish by looking for SFC block-level tags in the raw source.
-  const hasSfcMarkers = /<(?:template|style)\b/i.test(sourceText);
-  if (hasSfcMarkers) {
-    // Real SFC with no script block — genuinely nothing to capture.
-    return [];
-  }
-  // Pre-extracted script content from the parse worker — delegate directly.
-  return emitTsScopeCaptures(sourceText, filePath, cachedTree);
+  if (extracted === null) return [];
+  return emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
 }

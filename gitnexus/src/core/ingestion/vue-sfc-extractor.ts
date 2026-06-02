@@ -42,10 +42,22 @@ interface ScriptBlock {
 // attribute axes; this expression closes both at once.
 const SCRIPT_RE = /<script(\s[^>]*)?>([^]*?)<\/script[^>]*>/gi;
 const TEMPLATE_COMPONENT_RE = /<([A-Z][A-Za-z0-9]+)/g;
+const TEMPLATE_KEBAB_COMPONENT_RE = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b/g;
 // Greedy: matches from the first <template> to the *last* </template>.
 // This is intentional — nested <template v-slot:...> tags are valid Vue
 // syntax and we want the entire outermost template body.
 const TEMPLATE_RE = /<template(\s[^>]*)?>([^]*)<\/template>/;
+const VUE_BUILTIN_KEBAB_TAGS = new Set<string>([
+  'router-view',
+  'router-link',
+  'transition',
+  'transition-group',
+  'keep-alive',
+  'teleport',
+  'suspense',
+  'component',
+  'slot',
+]);
 
 function countNewlines(text: string): number {
   let count = 0;
@@ -53,6 +65,139 @@ function countNewlines(text: string): number {
     if (text.charCodeAt(i) === 10) count++;
   }
   return count;
+}
+
+function kebabToPascal(name: string): string {
+  return name
+    .split('-')
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+}
+
+function isBuiltinKebabTag(tagName: string): boolean {
+  return VUE_BUILTIN_KEBAB_TAGS.has(tagName);
+}
+
+/**
+ * Extract bare `emit('event')` / `$emit('event')` calls from script text.
+ *
+ * Uses a lightweight lexer state-machine (code vs comments/strings), so:
+ * - ignores `emit(...)` in comments and string literals
+ * - ignores property calls like `socket.emit(...)` / `this.$emit(...)`
+ * - captures only literal-string event names
+ */
+function collectBareEmitEventNames(input: string): string[] {
+  enum Mode {
+    Code,
+    SingleQuote,
+    DoubleQuote,
+    Template,
+    LineComment,
+    BlockComment,
+  }
+
+  const events: string[] = [];
+  const seen = new Set<string>();
+  let mode = Mode.Code;
+
+  const isIdentChar = (c: string): boolean => /[A-Za-z0-9_$]/.test(c);
+  const skipSpaces = (idx: number): number => {
+    let i = idx;
+    while (i < input.length && /\s/.test(input[i])) i++;
+    return i;
+  };
+
+  const tryConsumeEmitCall = (idx: number): number => {
+    const hasDollar = input[idx] === '$';
+    const name = hasDollar ? '$emit' : 'emit';
+    if (!input.startsWith(name, idx)) return idx;
+    const prev = idx > 0 ? input[idx - 1] : '';
+    if (prev.length > 0 && (isIdentChar(prev) || prev === '.')) return idx;
+    const afterName = idx + name.length;
+    const next = afterName < input.length ? input[afterName] : '';
+    if (next.length > 0 && isIdentChar(next)) return idx;
+
+    let i = skipSpaces(afterName);
+    if (input[i] !== '(') return idx;
+    i = skipSpaces(i + 1);
+    const quote = input[i];
+    if (quote !== "'" && quote !== '"') return idx;
+
+    let eventName = '';
+    i++;
+    while (i < input.length) {
+      const ch = input[i];
+      if (ch === '\\') {
+        i += 2;
+        continue;
+      }
+      if (ch === quote) break;
+      eventName += ch;
+      i++;
+    }
+    if (i >= input.length) return idx;
+    if (/^[A-Za-z][A-Za-z0-9-]*$/.test(eventName) && !seen.has(eventName)) {
+      seen.add(eventName);
+      events.push(eventName);
+    }
+    return i;
+  };
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = i + 1 < input.length ? input[i + 1] : '';
+
+    if (mode === Mode.Code) {
+      const consumedAt = tryConsumeEmitCall(i);
+      if (consumedAt !== i) {
+        i = consumedAt;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        mode = ch === "'" ? Mode.SingleQuote : ch === '"' ? Mode.DoubleQuote : Mode.Template;
+        continue;
+      }
+      if (ch === '/' && next === '/') {
+        mode = Mode.LineComment;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        mode = Mode.BlockComment;
+        i++;
+      }
+      continue;
+    }
+
+    if (mode === Mode.LineComment) {
+      if (ch === '\n') {
+        mode = Mode.Code;
+      }
+      continue;
+    }
+
+    if (mode === Mode.BlockComment) {
+      if (ch === '*' && next === '/') {
+        i++;
+        mode = Mode.Code;
+      }
+      continue;
+    }
+
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+
+    if (
+      (mode === Mode.SingleQuote && ch === "'") ||
+      (mode === Mode.DoubleQuote && ch === '"') ||
+      (mode === Mode.Template && ch === '`')
+    ) {
+      mode = Mode.Code;
+    }
+  }
+
+  return events;
 }
 
 function parseScriptBlock(
@@ -138,6 +283,12 @@ export function extractTemplateComponents(vueContent: string): string[] {
     components.add(componentMatch[1]);
   }
 
+  TEMPLATE_KEBAB_COMPONENT_RE.lastIndex = 0;
+  while ((componentMatch = TEMPLATE_KEBAB_COMPONENT_RE.exec(templateContent)) !== null) {
+    if (isBuiltinKebabTag(componentMatch[1])) continue;
+    components.add(kebabToPascal(componentMatch[1]));
+  }
+
   return [...components];
 }
 
@@ -150,7 +301,8 @@ export function extractTemplateComponents(vueContent: string): string[] {
 // whose attribute block contains a literal `>` are documented as a known
 // limitation (#1647).
 const COMPONENT_TAG_RE = /<([A-Z][A-Za-z0-9]+)([^>]*?)(?:\/>|>)/g;
-const NATIVE_TAG_RE = /<([a-z][a-z0-9-]*)([^>]*?)(?:\/>|>)/g;
+const KEBAB_COMPONENT_TAG_RE = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)([^>]*?)(?:\/>|>)/g;
+const NATIVE_TAG_RE = /<([a-z][a-z0-9]*)([^>]*?)(?:\/>|>)/g;
 
 // Within any tag's attribute block: matches Vue event bindings.
 //   @action="handleAction"
@@ -159,11 +311,6 @@ const NATIVE_TAG_RE = /<([a-z][a-z0-9-]*)([^>]*?)(?:\/>|>)/g;
 const TAG_EVENT_RE = /(?:@|v-on:)([\w:.]+)\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
 
 // ── Script emit() call extraction ─────────────────────────────────────────
-//
-// Matches `emit('eventName', ...)` and `emit("eventName", ...)` calls.
-// Only extracts the event name — the payload and context are not needed for
-// graph edge attribution.
-const EMIT_CALL_RE = /\bemit\s*\(\s*['"]([A-Za-z][A-Za-z0-9-]*)["']/g;
 
 // ── All-event-handler regex (native + component elements) ─────────────────
 // Matches simple method-name references in Vue event-handler attributes.
@@ -243,6 +390,7 @@ export function extractComponentEventBindings(vueContent: string): ComponentEven
 
   const templateContent = templateMatch[2];
   const bindings: ComponentEventBinding[] = [];
+  const seen = new Set<string>();
 
   COMPONENT_TAG_RE.lastIndex = 0;
   let tagMatch: RegExpExecArray | null;
@@ -253,11 +401,30 @@ export function extractComponentEventBindings(vueContent: string): ComponentEven
     TAG_EVENT_RE.lastIndex = 0;
     let eventMatch: RegExpExecArray | null;
     while ((eventMatch = TAG_EVENT_RE.exec(attrs)) !== null) {
-      bindings.push({
-        componentName,
-        eventName: eventMatch[1],
-        handlerName: eventMatch[2],
-      });
+      const eventName = eventMatch[1];
+      const handlerName = eventMatch[2];
+      const key = `${componentName}::${eventName}::${handlerName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      bindings.push({ componentName, eventName, handlerName });
+    }
+  }
+
+  KEBAB_COMPONENT_TAG_RE.lastIndex = 0;
+  while ((tagMatch = KEBAB_COMPONENT_TAG_RE.exec(templateContent)) !== null) {
+    if (isBuiltinKebabTag(tagMatch[1])) continue;
+    const componentName = kebabToPascal(tagMatch[1]);
+    const attrs = tagMatch[2];
+
+    TAG_EVENT_RE.lastIndex = 0;
+    let eventMatch: RegExpExecArray | null;
+    while ((eventMatch = TAG_EVENT_RE.exec(attrs)) !== null) {
+      const eventName = eventMatch[1];
+      const handlerName = eventMatch[2];
+      const key = `${componentName}::${eventName}::${handlerName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      bindings.push({ componentName, eventName, handlerName });
     }
   }
 
@@ -303,6 +470,15 @@ export interface ScriptEmitCall {
   eventName: string;
 }
 
+export interface ExtractScriptEmitCallsOptions {
+  /**
+   * How to interpret the input text.
+   * - `full-sfc` (default): input is a full `.vue` SFC string.
+   * - `pre-extracted-script`: input is already the bare script text.
+   */
+  sourceKind?: 'full-sfc' | 'pre-extracted-script';
+}
+
 /**
  * Extract `emit('eventName', ...)` calls from a Vue SFC's `<script>` block.
  *
@@ -312,31 +488,17 @@ export interface ScriptEmitCall {
  *
  * Returns deduplicated emit declarations.
  */
-export function extractScriptEmitCalls(vueContent: string): ScriptEmitCall[] {
-  const extracted = extractVueScript(vueContent);
-  // Also handle already-extracted script content (worker-mode path)
+export function extractScriptEmitCalls(
+  vueContent: string,
+  options: ExtractScriptEmitCallsOptions = {},
+): ScriptEmitCall[] {
+  const sourceKind = options.sourceKind ?? 'full-sfc';
   const scriptText =
-    extracted !== null
-      ? extracted.scriptContent
-      : /<(?:template|style)\b/i.test(vueContent)
-        ? null
-        : vueContent;
+    sourceKind === 'pre-extracted-script'
+      ? vueContent
+      : (extractVueScript(vueContent)?.scriptContent ?? null);
   if (!scriptText) return [];
-
-  const seen = new Set<string>();
-  const calls: ScriptEmitCall[] = [];
-
-  EMIT_CALL_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = EMIT_CALL_RE.exec(scriptText)) !== null) {
-    const eventName = match[1];
-    if (!seen.has(eventName)) {
-      seen.add(eventName);
-      calls.push({ eventName });
-    }
-  }
-
-  return calls;
+  return collectBareEmitEventNames(scriptText).map((eventName) => ({ eventName }));
 }
 
 /**

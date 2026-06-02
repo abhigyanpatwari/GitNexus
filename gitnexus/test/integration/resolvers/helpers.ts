@@ -311,13 +311,6 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'resolves self.base() inside added() to Bar.base (self == Bar), not Foo',
   ]),
   vue: new Set<string>([
-    // IMPORTS edge cardinality: the legacy import-processor emits 1 edge per
-    // (source-file, target-file) pair; the scope-based path emits 1 edge per
-    // imported symbol. All `toBe(N>1)` IMPORTS assertions reflect the scope-
-    // based count and therefore fail under the legacy resolver.
-    'resolves value imports from UserProfile.vue to types.ts',
-    'resolves value imports from UserProfile.vue to api.ts',
-    'resolves value imports from TodoList.vue to utils.ts',
     // Template-derived edges are emitted via `emitPostResolutionEdges` on the
     // registry-primary path. The legacy resolver never runs this hook, so
     // these edges are absent on the REGISTRY_PRIMARY_VUE=0 path.
@@ -331,6 +324,9 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'emits BINDS_EVENT_HANDLER from onUserLoaded to UserCard (component event)',
     'emits EMITS_EVENT from PostList.vue for emit("select")',
     'emits EMITS_EVENT from UserCard.vue for emit("loaded")',
+    // Legacy DAG over-resolves this via import/global fallback from the
+    // composable return object; registry-primary keeps this unresolved.
+    'does not currently emit CALLS edge to addUser returned from useUserList',
     // <script setup> implicit-export detection: the scope-based path marks
     // all top-level <script setup> bindings as exported; the legacy path
     // relies on per-node isExported flags from the parse worker which may

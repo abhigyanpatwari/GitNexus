@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   extractVueScript,
   extractTemplateComponents,
+  extractScriptEmitCalls,
+  extractComponentEventBindings,
 } from '../../src/core/ingestion/vue-sfc-extractor.js';
 
 describe('extractVueScript', () => {
@@ -184,6 +186,50 @@ const x = 1;
 `;
     const components = extractTemplateComponents(vue);
     expect(components).toEqual(['MyComponent']);
+  });
+
+  it('treats kebab-case component tags as component candidates', () => {
+    const vue = `<template>
+  <div>
+    <post-list />
+    <user-card />
+  </div>
+</template>`;
+    const components = extractTemplateComponents(vue);
+    expect(components).toContain('PostList');
+    expect(components).toContain('UserCard');
+  });
+});
+
+describe('extractScriptEmitCalls', () => {
+  it('extracts bare emit() event names', () => {
+    const vue = `<script setup lang="ts">
+const emit = defineEmits(['select']);
+emit('select', { id: 1 });
+</script>`;
+    expect(extractScriptEmitCalls(vue).map((c) => c.eventName)).toEqual(['select']);
+  });
+
+  it('ignores property emits and commented/string emit text', () => {
+    const vue = `<script setup lang="ts">
+const socket = createSocket();
+socket.emit('message');
+// emit('commented')
+const text = "emit('inside-string')";
+emit('actual');
+</script>`;
+    expect(extractScriptEmitCalls(vue).map((c) => c.eventName)).toEqual(['actual']);
+  });
+});
+
+describe('extractComponentEventBindings', () => {
+  it('captures kebab-case component event bindings', () => {
+    const vue = `<template>
+  <post-list @select="onPostSelected" />
+</template>`;
+    expect(extractComponentEventBindings(vue)).toEqual([
+      { componentName: 'PostList', eventName: 'select', handlerName: 'onPostSelected' },
+    ]);
   });
 });
 

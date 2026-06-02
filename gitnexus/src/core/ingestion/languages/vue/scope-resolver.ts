@@ -208,7 +208,7 @@ const vueScopeResolver: ScopeResolver = {
       }
 
       // 5 — emit() calls → EMITS_EVENT (self-referential annotation)
-      for (const { eventName } of extractScriptEmitCalls(content)) {
+      for (const { eventName } of extractScriptEmitCalls(content, { sourceKind: 'full-sfc' })) {
         graph.addRelationship({
           id: generateId('EMITS_EVENT', `${fileId}:emit:${eventName}`),
           sourceId: fileId,
