@@ -471,14 +471,27 @@ export const findEnclosingClassInfo = (
         ) {
           label = 'Interface';
         }
-        const templateArguments = extractTemplateArguments(nameNode.text);
+        // C++ out-of-line definitions name the container with a qualified_identifier
+        // (e.g. `struct Outer::Inner { ... }`). The type itself is keyed by its
+        // trailing name — the nested `Inner` node from its in-class declaration —
+        // exactly as an inline nested definition would be. Reduce the owner to that
+        // tail segment so member edges resolve to the real node instead of a
+        // `Outer::Inner` owner id that was never materialized (#1975).
+        // Ruby's `scope_resolution` name is intentionally left full: a compact
+        // `class Foo::Bar` has no in-class declaration, so its node IS keyed by the
+        // full scoped name (and must stay distinct from a separate `Baz::Bar`).
+        const ownerNameNode =
+          nameNode.type === 'qualified_identifier'
+            ? (nameNode.childForFieldName?.('name') ?? nameNode)
+            : nameNode;
+        const templateArguments = extractTemplateArguments(ownerNameNode.text);
         const classIdName =
           templateArguments !== undefined
-            ? `${stripTemplateArguments(nameNode.text)}${templateArgumentsIdTag(templateArguments)}`
-            : nameNode.text;
+            ? `${stripTemplateArguments(ownerNameNode.text)}${templateArgumentsIdTag(templateArguments)}`
+            : ownerNameNode.text;
         return {
           classId: generateId(label, `${filePath}:${classIdName}`),
-          className: nameNode.text,
+          className: ownerNameNode.text,
         };
       }
     }

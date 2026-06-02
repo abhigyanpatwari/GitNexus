@@ -10,6 +10,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   getResolutionOutcomes,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -3726,5 +3727,38 @@ describe('C++ SFINAE filter — arity gate runs before constraint filter', () =>
       (c) => c.source === 'run' && c.target === 'process',
     );
     expect(calls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Out-of-line nested definitions — HAS_METHOD owner resolution (issue #1975)
+//
+// `struct Outer::Inner { ... }` names its container with a qualified_identifier.
+// The type is keyed by its in-class declaration (the nested `Inner` node), so
+// the out-of-line definition's methods must own through that node — not a
+// `Outer::Inner` owner id that is never materialized. Pre-fix this produced a
+// dangling HAS_METHOD edge.
+// ---------------------------------------------------------------------------
+
+describe('C++ out-of-line nested class/struct definitions (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-out-of-line-class'), () => {});
+  }, 60000);
+
+  it('keeps the nested type as a single node (no Outer::Inner duplicate)', () => {
+    const inners = getNodesByLabelFull(result, 'Struct').filter(
+      (n) => n.properties.qualifiedName === 'Outer.Inner',
+    );
+    expect(inners.length).toBe(1);
+  });
+
+  it('owns the out-of-line method through the nested struct node (no dangling edge)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find((e) => e.target === 'inner_method');
+    expect(edge).toBeDefined();
+    expect(edge!.sourceLabel).toBe('Struct');
   });
 });
