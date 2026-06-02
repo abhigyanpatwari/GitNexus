@@ -33,7 +33,10 @@ if (typeof _pkg.version !== 'string' || !_pkg.version) {
     'gitnexus/package.json#version is missing or not a string — cannot generate MCP fallback config.',
   );
 }
-const NPX_REF = `gitnexus@${_pkg.version}`;
+// Version-pinned ref for the persisted MCP entry — deliberately distinct from
+// the cjs's exported `gitnexus@latest` hint ref (resolve-analyze-cmd.cjs); the
+// two are not unified (see the comment above and that file's MCP_PINNED_REF).
+const MCP_PINNED_REF = `gitnexus@${_pkg.version}`;
 
 /**
  * Build the `command` string written into an editor's hook settings, which the
@@ -133,12 +136,12 @@ function getMcpEntry() {
   if (process.platform === 'win32') {
     return {
       command: 'cmd',
-      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
+      args: ['/c', 'npx', '-y', MCP_PINNED_REF, 'mcp'],
     };
   }
   return {
     command: 'npx',
-    args: ['-y', NPX_REF, 'mcp'],
+    args: ['-y', MCP_PINNED_REF, 'mcp'],
   };
 }
 
@@ -154,9 +157,9 @@ function getOpenCodeMcpEntry() {
   }
 
   if (process.platform === 'win32') {
-    return { type: 'local', command: ['cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'] };
+    return { type: 'local', command: ['cmd', '/c', 'npx', '-y', MCP_PINNED_REF, 'mcp'] };
   }
-  return { type: 'local', command: ['npx', '-y', NPX_REF, 'mcp'] };
+  return { type: 'local', command: ['npx', '-y', MCP_PINNED_REF, 'mcp'] };
 }
 
 /**

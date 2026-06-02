@@ -32,7 +32,10 @@ interface InvocationResolver {
 
 const { resolveInvocationMode, formatDocumentationDlxCommand, NPX_REF } = createRequire(
   import.meta.url,
-)('../../hooks/claude/resolve-analyze-cmd.cjs') as InvocationResolver;
+  // `require()` returns `any`; go through `unknown` so the cast reads as an
+  // explicit narrowing to the subset this module uses, not a claim that the
+  // cjs's full export shape is known here. The drift guard below verifies it.
+)('../../hooks/claude/resolve-analyze-cmd.cjs') as unknown as InvocationResolver;
 
 // Fail loud at module load if the canonical cjs export shape drifts (e.g. a
 // renamed export), rather than as a late TypeError inside warnIfNpm11NpxRisk.
