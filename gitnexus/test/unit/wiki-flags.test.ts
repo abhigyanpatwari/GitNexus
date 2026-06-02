@@ -196,7 +196,7 @@ describe('resolveLLMConfig', () => {
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({
         provider: 'openai',
-        model: 'minimax/minimax-m2.5',
+        model: 'minimax/minimax-m3',
       }),
     }));
 
@@ -216,7 +216,7 @@ describe('resolveLLMConfig', () => {
     const config = await resolveLLMConfig();
 
     expect(config.provider).toBe('openai');
-    expect(config.model).toBe('minimax/minimax-m2.5');
+    expect(config.model).toBe('minimax/minimax-m3');
     expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
   });
 

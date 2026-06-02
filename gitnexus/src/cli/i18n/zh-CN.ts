@@ -179,7 +179,7 @@ export const zhCN = {
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：openai、openrouter、azure、custom、cursor、claude 或 codex（默认：openai）',
-  'help.option.wiki.model': 'LLM 模型或 Azure deployment 名称（默认：minimax/minimax-m2.5）',
+  'help.option.wiki.model': 'LLM 模型或 Azure deployment 名称（默认：minimax/minimax-m3）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key 或 Azure api-key（保存到 ~/.gitnexus/config.json）',

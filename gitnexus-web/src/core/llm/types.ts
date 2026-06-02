@@ -94,7 +94,7 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 export interface MiniMaxConfig extends BaseProviderConfig {
   provider: 'minimax';
   apiKey: string;
-  model: string; // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
+  model: string; // e.g., 'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'
 }
 
 /**
@@ -200,7 +200,7 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   },
   minimax: {
     apiKey: '',
-    model: 'MiniMax-M2.5',
+    model: 'MiniMax-M3',
     temperature: 0.1,
   },
   glm: {

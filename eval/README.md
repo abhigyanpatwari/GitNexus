@@ -19,7 +19,7 @@ Evaluate whether GitNexus code intelligence improves AI agent performance on rea
 **Models supported:**
 
 - Claude 3.5 Haiku, Claude Sonnet 4, Claude Opus 4
-- MiniMax M1 2.5
+- MiniMax M3, M2.7
 - GLM 4.7, GLM 5
 - Any model supported by litellm (add a YAML config)
 

@@ -190,7 +190,7 @@ export const en = {
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: openai, openrouter, azure, custom, cursor, claude, or codex (default: openai)',
-  'help.option.wiki.model': 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)',
+  'help.option.wiki.model': 'LLM model or Azure deployment name (default: minimax/minimax-m3)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key or Azure api-key (saved to ~/.gitnexus/config.json)',

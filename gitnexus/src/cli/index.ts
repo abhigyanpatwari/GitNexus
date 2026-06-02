@@ -152,7 +152,7 @@ program
     '--provider <provider>',
     'LLM provider: openai, openrouter, azure, custom, cursor, claude, or codex (default: openai)',
   )
-  .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
+  .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m3)')
   .option(
     '--base-url <url>',
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',

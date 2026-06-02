@@ -59,7 +59,7 @@ Generates repository documentation from the knowledge graph using an LLM. Requir
 | Flag                | Effect                                    |
 | ------------------- | ----------------------------------------- |
 | `--force`           | Force full regeneration                   |
-| `--model <model>`   | LLM model (default: minimax/minimax-m2.5) |
+| `--model <model>`   | LLM model (default: minimax/minimax-m3) |
 | `--base-url <url>`  | LLM API base URL                          |
 | `--api-key <key>`   | LLM API key                               |
 | `--concurrency <n>` | Parallel LLM calls (default: 3)           |

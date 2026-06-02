@@ -81,7 +81,7 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       overrides?.model ||
       (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
       savedLocalModel ||
-      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m2.5'),
+      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m3'),
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider ?? 'openai',

@@ -437,7 +437,7 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     case 'minimax':
-      return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
+      return ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'];
     case 'glm':
       return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
     case 'deepseek':

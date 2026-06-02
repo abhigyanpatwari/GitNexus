@@ -65,8 +65,8 @@
       "apiKeyPlaceholder": "Enter your MiniMax API key",
       "helperText": "Get your API key from",
       "helperLinkLabel": "MiniMax Platform",
-      "modelPlaceholder": "e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed",
-      "helperModel": "Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)"
+      "modelPlaceholder": "e.g., MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed",
+      "helperModel": "Available: MiniMax-M3 (default), MiniMax-M2.7, MiniMax-M2.7-highspeed (faster)"
     },
     "glm": {
       "apiKeyPlaceholder": "Enter your Z.AI API key"

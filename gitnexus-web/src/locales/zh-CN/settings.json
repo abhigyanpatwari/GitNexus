@@ -65,8 +65,8 @@
       "apiKeyPlaceholder": "输入 MiniMax API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "MiniMax Platform",
-      "modelPlaceholder": "例如：MiniMax-M2.5、MiniMax-M2.5-highspeed",
-      "helperModel": "可用：MiniMax-M2.5（默认）、MiniMax-M2.5-highspeed（更快）"
+      "modelPlaceholder": "例如：MiniMax-M3、MiniMax-M2.7、MiniMax-M2.7-highspeed",
+      "helperModel": "可用：MiniMax-M3（默认）、MiniMax-M2.7、MiniMax-M2.7-highspeed（更快）"
     },
     "glm": {
       "apiKeyPlaceholder": "输入 Z.AI API Key"

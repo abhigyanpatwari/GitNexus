@@ -847,7 +847,7 @@ export const SettingsPanel = ({
                 onToggleVisibility: () => toggleApiKeyVisibility('minimax'),
               }}
               model={{
-                value: settings.minimax?.model ?? 'MiniMax-M2.5',
+                value: settings.minimax?.model ?? 'MiniMax-M3',
                 placeholder: t('settings:providers.minimax.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
