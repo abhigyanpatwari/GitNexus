@@ -449,8 +449,7 @@ export const findEnclosingClassInfo = (
         // scoped arm — so methods own through a node that exists and stays
         // distinct from a same-tail type in another module (#1975).
         const firstType = children.find(
-          (c: SyntaxNode) =>
-            c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+          (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
         );
         if (firstType) {
           return {

@@ -574,7 +574,12 @@ export function getResolutionOutcomes(result: PipelineResult) {
 export function findDanglingEdges(
   result: PipelineResult,
   types?: string[],
-): Array<{ type: string; sourceId: string; targetId: string; missing: 'source' | 'target' | 'both' }> {
+): Array<{
+  type: string;
+  sourceId: string;
+  targetId: string;
+  missing: 'source' | 'target' | 'both';
+}> {
   const out: Array<{
     type: string;
     sourceId: string;
