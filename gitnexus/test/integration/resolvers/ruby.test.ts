@@ -1482,3 +1482,29 @@ describe('Ruby namespaced class/module definitions — graph nodes (issue #1975)
     expect(edge!.sourceLabel).toBe('Class');
   });
 });
+
+describe('Ruby cross-namespace tail collision — distinct nodes (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-tail-collision'), () => {});
+  }, 60000);
+
+  // R3: Foo::Bar and Baz::Bar share the tail `Bar` but must NOT merge — keying by
+  // the full scoped name keeps them two distinct Class nodes.
+  pit('keeps Foo::Bar and Baz::Bar as two distinct Class nodes', () => {
+    const qns = getNodesByLabelFull(result, 'Class')
+      .map((c) => c.properties.qualifiedName)
+      .filter((q) => q === 'Foo.Bar' || q === 'Baz.Bar')
+      .sort();
+    expect(qns).toEqual(['Baz.Bar', 'Foo.Bar']);
+  });
+
+  // R2/R3: each namespaced class owns its own method through a resolving node.
+  pit('owns each method under its own namespaced class (no dangling, no cross-wire)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    expect(hasMethod.some((e) => e.target === 'from_foo' && e.sourceLabel === 'Class')).toBe(true);
+    expect(hasMethod.some((e) => e.target === 'from_baz' && e.sourceLabel === 'Class')).toBe(true);
+  });
+});
