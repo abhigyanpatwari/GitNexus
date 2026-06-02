@@ -272,12 +272,12 @@
     "digest": "c2f2241a4e31ad1b003c1649d7511437f3884815412aeac65754cf3cfb9b6dc1"
   },
   "go-qualified-base/consumers/local.go": {
-    "captureGroups": 21,
-    "digest": "b2299f18656c85c33fc8df655b16a5a4762c8b1c6259aa61a5257a8b5c9c74d8"
+    "captureGroups": 20,
+    "digest": "923a41030b83b854118c12cb6f99ca02a8347b1db72ec8304904d3a99284f5f4"
   },
   "go-qualified-base/consumers/qualified.go": {
-    "captureGroups": 15,
-    "digest": "3206c6c0061cfc3f7b83fb87af85eac96dae0fd8af66ea38ef34cff912dc57ee"
+    "captureGroups": 14,
+    "digest": "01fe99cadcdf3ce6f00cafce8db0474ad152983f766c8dee9b9da42c9256ae2f"
   },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,
@@ -348,12 +348,20 @@
     "digest": "16f0d425b25bdc7eaaf331bd47ce1ece6d476ae0e24e72110ce96c1f315bd314"
   },
   "go-structural-interface-cross-package/api/repository.go": {
-    "captureGroups": 9,
-    "digest": "1db7a323e898c73b735cda04710e4a1bbffa357379282d4e3f7687552c8d60b9"
+    "captureGroups": 12,
+    "digest": "b5ef588c11391fa93237260baae4c4bb67ee4dfc381651444a9925c3f52adec3"
   },
   "go-structural-interface-cross-package/cmd/main.go": {
+    "captureGroups": 27,
+    "digest": "b44adcfaa2b965479abe17b406c6c74ddd51bb54e7d129e8a99a26a2a3f2fc16"
+  },
+  "go-structural-interface-cross-package/contracts/read_closer.go": {
+    "captureGroups": 6,
+    "digest": "0813deb9e72bfb1e07d0e9399c4d4537dc40181f0c5c43cff5580b91d4ed3605"
+  },
+  "go-structural-interface-cross-package/impl/file.go": {
     "captureGroups": 20,
-    "digest": "3e01decd9f10f143ca1d137baa50498442566723193f046add0f34396ff5400a"
+    "digest": "950002bd5dfc126d13355f317944a509253fe6dd81f12638af1d5f0fe37d04db"
   },
   "go-structural-interface-cross-package/other/user.go": {
     "captureGroups": 5,
@@ -364,8 +372,8 @@
     "digest": "9a497524610994e9a47555cd5874074b278d3e12850e3ee62a1afadb25fcabe8"
   },
   "go-structural-interface-dispatch/repository.go": {
-    "captureGroups": 113,
-    "digest": "abfa8dbebbe72f2e13aa433702c9bb682d71aaf4d5ea8ce01952a79a3037e431"
+    "captureGroups": 129,
+    "digest": "f31bc522991e59527834bb7dcd45b8738490c622c3d25181a8148cc85d27844b"
   },
   "go-type-assertion/main.go": {
     "captureGroups": 11,

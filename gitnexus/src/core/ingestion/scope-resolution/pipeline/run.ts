@@ -42,11 +42,7 @@ import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
-import {
-  findClassBindingInScope,
-  findEnclosingClassDef,
-  resolveAmbiguousInheritanceBaseViaImports,
-} from '../scope/walkers.js';
+import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 
@@ -135,14 +131,7 @@ function preEmitInheritanceEdges(
       handledSites.add(siteKey);
     }
 
-    const targetDef =
-      findClassBindingInScope(site.inScope, site.name, scopes) ??
-      // Import-aware disambiguation fallback (#1951). Only engages when the
-      // scope-chain + single-match lookups above returned undefined because
-      // the simple name is ambiguous (multiple same-named class-like defs).
-      // Picks the candidate whose defining file is imported/included by the
-      // referencing file. Never changes behavior for single-match cases.
-      resolveAmbiguousInheritanceBaseViaImports(site.inScope, site.name, scopes);
+    const targetDef = resolveInheritanceBaseInScope(site.inScope, site.name, scopes);
     if (targetDef === undefined) continue;
 
     const callerClass = findEnclosingClassDef(site.inScope, scopes);

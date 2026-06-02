@@ -366,6 +366,7 @@ describe('Go structural interface dispatch', () => {
     expect(edgeSet(implementsEdges)).toEqual([
       'File → ReadCloser',
       'File → Reader',
+      'FileBase → Reader',
       'MemoryRepository → Repository',
       'SqlRepository → Repository',
     ]);
@@ -403,6 +404,14 @@ describe('Go structural interface dispatch', () => {
     const implementsEdges = getRelationships(result, 'IMPLEMENTS');
     expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
     expect(edgeSet(implementsEdges)).not.toContain('CloseOnly → ReadCloser');
+  });
+
+  it('includes promoted embedded struct methods before emitting structural IMPLEMENTS edges', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toContain('File → Reader');
+    expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
+    expect(edgeSet(implementsEdges)).not.toContain('ShadowReadFile → Reader');
+    expect(edgeSet(implementsEdges)).not.toContain('ShadowReadFile → ReadCloser');
   });
 
   it('does not emit value-type IMPLEMENTS for pointer-receiver-only methods', () => {
@@ -447,6 +456,14 @@ describe('Go cross-package structural interface dispatch', () => {
     expect(edgeSet(implementsEdges)).not.toContain('WrongStore → Saver');
   });
 
+  it('merges methods from package-qualified embedded interfaces before matching implementors', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
+      (edge) => edge.rel.reason === 'go-structural-implements',
+    );
+    expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
+    expect(edgeSet(implementsEdges)).not.toContain('CloseOnly → ReadCloser');
+  });
+
   it('fans out cross-package interface receivers only to valid implementors', () => {
     const saveCalls = getRelationships(result, 'CALLS').filter(
       (edge) => edge.source === 'fallback' && edge.target === 'Save',
@@ -456,6 +473,17 @@ describe('Go cross-package structural interface dispatch', () => {
       .map((edge) => owningTypeName(edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['GoodStore']);
+  });
+
+  it('dispatches package-qualified embedded-interface receivers only to complete implementors', () => {
+    const closeCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'fallbackReadCloser' && edge.target === 'Close',
+    );
+    const dispatchTargets = closeCalls
+      .filter((edge) => edge.rel.reason === 'interface-dispatch')
+      .map((edge) => owningTypeName(edge.rel.targetId))
+      .sort();
+    expect(dispatchTargets).toEqual(['File']);
   });
 });
 

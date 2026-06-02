@@ -301,6 +301,22 @@ export function findClassBindingInScope(
 }
 
 /**
+ * Resolve a class-like inheritance target using the shared inheritance
+ * resolution chain. Keeps pre-emitted heritage edges and language-specific
+ * consumers of `inherits` sites aligned.
+ */
+export function resolveInheritanceBaseInScope(
+  startScope: ScopeId,
+  baseName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  return (
+    findClassBindingInScope(startScope, baseName, scopes) ??
+    resolveAmbiguousInheritanceBaseViaImports(startScope, baseName, scopes)
+  );
+}
+
+/**
  * Import/include-aware disambiguation for an *ambiguous* class-like base
  * name. Engages ONLY as a fallback after `findClassBindingInScope` has
  * already returned `undefined` — i.e. the scope-chain walk and the

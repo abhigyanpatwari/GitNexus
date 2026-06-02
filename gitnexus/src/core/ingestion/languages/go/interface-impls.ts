@@ -1,7 +1,8 @@
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
+import { resolveInheritanceBaseInScope } from '../../scope-resolution/scope/walkers.js';
 
 type MethodSet = ReadonlyMap<string, readonly SymbolDefinition[]>;
 type MutableMethodSet = Map<string, SymbolDefinition[]>;
@@ -14,11 +15,14 @@ type DetectionIndexes = {
   readonly interfaces: readonly SymbolDefinition[];
   readonly structsById: ReadonlyMap<string, SymbolDefinition>;
   readonly methodsByOwner: ReadonlyMap<string, MethodSet>;
+  readonly effectiveMethodsByStructId: ReadonlyMap<string, MethodSet>;
   readonly interfaceById: ReadonlyMap<string, SymbolDefinition>;
   readonly interfaceOwnMethodsById: ReadonlyMap<string, MethodSet>;
-  readonly embeddedSitesByInterfaceId: ReadonlyMap<string, readonly string[]>;
+  readonly embeddedSitesByInterfaceId: ReadonlyMap<string, readonly ReferenceSite[]>;
+  readonly parentStructIdsByStructId: ReadonlyMap<string, readonly string[]>;
   readonly structIdsByMethodName: ReadonlyMap<string, ReadonlySet<string>>;
   readonly signatureContextByDefId: ReadonlyMap<string, SignatureContext>;
+  readonly scopeIndexes: ScopeResolutionIndexes;
 };
 
 export function detectGoInterfaceImplementations(
@@ -36,12 +40,15 @@ function buildDetectionIndexes(
   const interfaces: SymbolDefinition[] = [];
   const structsById = new Map<string, SymbolDefinition>();
   const methodsByOwner = new Map<string, Map<string, SymbolDefinition[]>>();
+  const effectiveMethodsByStructId = new Map<string, MethodSet>();
   const interfaceById = new Map<string, SymbolDefinition>();
   const interfaceOwnMethodsById = new Map<string, MethodSet>();
-  const embeddedSitesByInterfaceId = new Map<string, string[]>();
+  const embeddedSitesByInterfaceId = new Map<string, ReferenceSite[]>();
+  const parentStructIdsByStructId = new Map<string, string[]>();
   const structIdsByMethodName = new Map<string, Set<string>>();
   const signatureContextByDefId = new Map<string, SignatureContext>();
   const interfaceIdByScopeId = new Map<string, string>();
+  const structIdByScopeId = new Map<string, string>();
 
   for (const parsed of parsedFiles) {
     const signatureContext = signatureContextForFile(parsed, indexes);
@@ -66,17 +73,12 @@ function buildDetectionIndexes(
     }
   }
 
-  for (const [ownerId, methods] of methodsByOwner) {
-    if (!structsById.has(ownerId)) continue;
-    for (const methodName of methods.keys()) {
-      addStructMethodCandidate(structIdsByMethodName, methodName, ownerId);
-    }
-  }
-
   for (const parsed of parsedFiles) {
     for (const scope of parsed.scopes) {
       const iface = scope.ownedDefs.find((def) => def.type === 'Interface');
       if (iface !== undefined) interfaceIdByScopeId.set(scope.id, iface.nodeId);
+      const struct = scope.ownedDefs.find((def) => def.type === 'Struct');
+      if (struct !== undefined) structIdByScopeId.set(scope.id, struct.nodeId);
     }
   }
 
@@ -107,10 +109,36 @@ function buildDetectionIndexes(
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'inherits') continue;
       const ifaceId = interfaceIdByScopeId.get(site.inScope);
-      if (ifaceId === undefined) continue;
-      const sites = embeddedSitesByInterfaceId.get(ifaceId) ?? [];
-      sites.push(site.name);
-      embeddedSitesByInterfaceId.set(ifaceId, sites);
+      if (ifaceId !== undefined) {
+        const sites = embeddedSitesByInterfaceId.get(ifaceId) ?? [];
+        sites.push(site);
+        embeddedSitesByInterfaceId.set(ifaceId, sites);
+        continue;
+      }
+
+      const structId = structIdByScopeId.get(site.inScope);
+      if (structId === undefined) continue;
+      const parent = resolveInheritanceBaseInScope(site.inScope, site.name, indexes);
+      if (parent === undefined || parent.type !== 'Struct') continue;
+      addParentStruct(parentStructIdsByStructId, structId, parent.nodeId);
+    }
+  }
+
+  const structMethodSetCache = new Map<string, MutableMethodSet>();
+  for (const structId of structsById.keys()) {
+    const effective = collectStructMethodSet(
+      structId,
+      {
+        parentStructIdsByStructId,
+        methodsByOwner,
+      },
+      new Set(),
+      structMethodSetCache,
+    );
+    if (effective === undefined) continue;
+    effectiveMethodsByStructId.set(structId, effective);
+    for (const methodName of effective.keys()) {
+      addStructMethodCandidate(structIdsByMethodName, methodName, structId);
     }
   }
 
@@ -118,11 +146,14 @@ function buildDetectionIndexes(
     interfaces,
     structsById,
     methodsByOwner,
+    effectiveMethodsByStructId,
     interfaceById,
     interfaceOwnMethodsById,
     embeddedSitesByInterfaceId,
+    parentStructIdsByStructId,
     structIdsByMethodName,
     signatureContextByDefId,
+    scopeIndexes: indexes,
   };
 }
 
@@ -138,7 +169,7 @@ function detectGoInterfaceImplementationsFromIndexes(
 
     const implementors: string[] = [];
     for (const structId of candidateStructIdsFor(required, indexes)) {
-      const actual = indexes.methodsByOwner.get(structId);
+      const actual = indexes.effectiveMethodsByStructId.get(structId);
       if (actual === undefined) continue;
       if (methodSetSatisfies(actual, required, indexes.signatureContextByDefId)) {
         implementors.push(structId);
@@ -184,6 +215,57 @@ function addStructMethodCandidate(
   structIdsByMethodName.set(methodName, structIds);
 }
 
+function addParentStruct(
+  parentStructIdsByStructId: Map<string, string[]>,
+  structId: string,
+  parentStructId: string,
+): void {
+  const parents = parentStructIdsByStructId.get(structId) ?? [];
+  parents.push(parentStructId);
+  parentStructIdsByStructId.set(structId, parents);
+}
+
+function collectStructMethodSet(
+  structId: string,
+  indexes: Pick<DetectionIndexes, 'methodsByOwner' | 'parentStructIdsByStructId'>,
+  visiting: Set<string>,
+  cache: Map<string, MutableMethodSet>,
+): MutableMethodSet | undefined {
+  const cached = cache.get(structId);
+  if (cached !== undefined) return cloneMethodSet(cached);
+  if (visiting.has(structId)) return undefined;
+  visiting.add(structId);
+
+  const merged = cloneMethodSet(indexes.methodsByOwner.get(structId));
+  const promoted = new Map<string, SymbolDefinition[]>();
+  const ambiguousPromoted = new Set<string>();
+
+  for (const parentStructId of indexes.parentStructIdsByStructId.get(structId) ?? []) {
+    const parentMethods = collectStructMethodSet(parentStructId, indexes, visiting, cache);
+    if (parentMethods === undefined) {
+      visiting.delete(structId);
+      return undefined;
+    }
+    for (const [methodName, overloads] of parentMethods) {
+      if (merged.has(methodName) || ambiguousPromoted.has(methodName)) continue;
+      if (promoted.has(methodName)) {
+        promoted.delete(methodName);
+        ambiguousPromoted.add(methodName);
+        continue;
+      }
+      promoted.set(methodName, [...overloads]);
+    }
+  }
+
+  for (const [methodName, overloads] of promoted) {
+    merged.set(methodName, overloads);
+  }
+
+  visiting.delete(structId);
+  cache.set(structId, cloneMethodSet(merged));
+  return merged;
+}
+
 function collectInterfaceMethodSet(
   iface: SymbolDefinition,
   indexes: DetectionIndexes,
@@ -224,8 +306,8 @@ function embeddedInterfacesFor(
   indexes: DetectionIndexes,
 ): SymbolDefinition[] | undefined {
   const embedded: SymbolDefinition[] = [];
-  for (const name of indexes.embeddedSitesByInterfaceId.get(iface.nodeId) ?? []) {
-    const resolved = resolveEmbeddedInterface(name, indexes.interfaceById);
+  for (const site of indexes.embeddedSitesByInterfaceId.get(iface.nodeId) ?? []) {
+    const resolved = resolveEmbeddedInterface(site, indexes);
     if (resolved === undefined) return undefined;
     embedded.push(resolved);
   }
@@ -243,13 +325,16 @@ function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): 
 }
 
 function resolveEmbeddedInterface(
-  name: string,
-  interfaceById: ReadonlyMap<string, SymbolDefinition>,
+  site: ReferenceSite,
+  indexes: DetectionIndexes,
 ): SymbolDefinition | undefined {
-  const simpleName = simpleTypeName(name);
+  const bound = resolveInheritanceBaseInScope(site.inScope, site.name, indexes.scopeIndexes);
+  if (bound !== undefined) return bound.type === 'Interface' ? bound : undefined;
+
+  const simpleName = simpleTypeName(site.name);
   const matches: SymbolDefinition[] = [];
-  for (const iface of interfaceById.values()) {
-    if (iface.qualifiedName === name || iface.qualifiedName === simpleName) {
+  for (const iface of indexes.interfaceById.values()) {
+    if (iface.qualifiedName === site.name || iface.qualifiedName === simpleName) {
       matches.push(iface);
     }
   }

@@ -57,13 +57,29 @@ type ReadCloser interface {
 	Close() error
 }
 
-type File struct{}
+type FileBase struct{}
 
-func (f File) Read() error {
+func (f FileBase) Read() error {
 	return nil
 }
 
+type File struct {
+	FileBase
+}
+
 func (f File) Close() error {
+	return nil
+}
+
+type ShadowReadFile struct {
+	FileBase
+}
+
+func (s ShadowReadFile) Read(path string) error {
+	return nil
+}
+
+func (s ShadowReadFile) Close() error {
 	return nil
 }
 

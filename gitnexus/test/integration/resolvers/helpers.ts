@@ -51,9 +51,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'prefers the concrete local assignment over interface fan-out',
     'fans out interface-typed receiver calls to all known implementors',
     'includes embedded interface methods before emitting structural IMPLEMENTS edges',
+    'includes promoted embedded struct methods before emitting structural IMPLEMENTS edges',
     'fans out embedded-interface receivers only to complete implementors',
     'matches local interface types against package-qualified implementation signatures',
+    'merges methods from package-qualified embedded interfaces before matching implementors',
     'fans out cross-package interface receivers only to valid implementors',
+    'dispatches package-qualified embedded-interface receivers only to complete implementors',
   ]),
   java: new Set([
     // Duplicate-FQN same-module path-affinity ordering is implemented in the

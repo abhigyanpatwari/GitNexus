@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type {
   BindingRef,
   Callsite,
+  ImportEdge,
   ReferenceSite,
   Scope,
   ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import {
   goArityCompatibility,
   goMergeBindings,
@@ -183,7 +185,46 @@ function parsedGoDefs(
   ] as any;
 }
 
-const emptyIndexes = {} as any;
+function scopeIndexes(
+  defs: readonly SymbolDefinition[],
+  scopes: readonly Scope[] = [],
+  options: {
+    readonly bindingAugmentations?: ReadonlyMap<
+      ScopeId,
+      ReadonlyMap<string, readonly BindingRef[]>
+    >;
+    readonly imports?: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
+  } = {},
+): ScopeResolutionIndexes {
+  const defsById = new Map(defs.map((def) => [def.nodeId, def]));
+  const qualifiedNames = new Map<string, string[]>();
+  for (const def of defs) {
+    const ids = qualifiedNames.get(def.qualifiedName) ?? [];
+    ids.push(def.nodeId);
+    qualifiedNames.set(def.qualifiedName, ids);
+  }
+  const scopesById = new Map(scopes.map((s) => [s.id, s]));
+  return {
+    defs: { get: (id: string) => defsById.get(id) },
+    qualifiedNames: { get: (name: string) => qualifiedNames.get(name) ?? [] },
+    scopeTree: { getScope: (id: ScopeId) => scopesById.get(id) },
+    bindings: new Map(),
+    bindingAugmentations: options.bindingAugmentations ?? new Map(),
+    imports: options.imports ?? new Map(),
+    workspaceFqnBindings: new Map(),
+    namespaceFqnBindings: new Map(),
+    accessibleNamespacesByScope: new Map(),
+    methodDispatch: {} as any,
+    moduleScopes: {} as any,
+    workspaceTypeBindings: new Map(),
+    namespaceTypeBindings: new Map(),
+    referenceSites: [],
+    sccs: [],
+    stats: {} as any,
+  } as ScopeResolutionIndexes;
+}
+
+const emptyIndexes = scopeIndexes([]);
 
 function scope(
   id: ScopeId,
@@ -478,6 +519,219 @@ describe('Go structural interface detection', () => {
     );
 
     expect(result.get(readCloser.nodeId)).toEqual([struct.nodeId]);
+  });
+
+  it('accepts structs implementing interface methods through promoted embedded struct methods', () => {
+    const reader = goDef('iface:Reader', 'Interface', 'Reader');
+    const base = goDef('struct:Base', 'Struct', 'Base');
+    const file = goDef('struct:File', 'Struct', 'File');
+    const readerRead = goDef('iface:Reader.Read', 'Method', 'Reader.Read', reader.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const baseRead = goDef('struct:Base.Read', 'Method', 'Base.Read', base.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const defs = [reader, base, file, readerRead, baseRead];
+    const scopes = [scope('scope:Base', 'Class', [base]), scope('scope:File', 'Class', [file])];
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs(defs, {
+        scopes,
+        referenceSites: [inheritsSite('Base', 'scope:File')],
+      }),
+      scopeIndexes(defs, scopes),
+      {} as any,
+    );
+
+    expect(result.get(reader.nodeId)).toEqual([base.nodeId, file.nodeId]);
+  });
+
+  it('lets direct struct methods shadow promoted embedded struct methods', () => {
+    const reader = goDef('iface:Reader', 'Interface', 'Reader');
+    const base = goDef('struct:Base', 'Struct', 'Base');
+    const shadowFile = goDef('struct:ShadowFile', 'Struct', 'ShadowFile');
+    const readerRead = goDef('iface:Reader.Read', 'Method', 'Reader.Read', reader.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const baseRead = goDef('struct:Base.Read', 'Method', 'Base.Read', base.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const shadowRead = goDef(
+      'struct:ShadowFile.Read',
+      'Method',
+      'ShadowFile.Read',
+      shadowFile.nodeId,
+      {
+        parameterCount: 1,
+        requiredParameterCount: 1,
+        parameterTypes: ['string'],
+        returnType: 'error',
+      },
+    );
+    const defs = [reader, base, shadowFile, readerRead, baseRead, shadowRead];
+    const scopes = [
+      scope('scope:Base', 'Class', [base]),
+      scope('scope:ShadowFile', 'Class', [shadowFile]),
+    ];
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs(defs, {
+        scopes,
+        referenceSites: [inheritsSite('Base', 'scope:ShadowFile')],
+      }),
+      scopeIndexes(defs, scopes),
+      {} as any,
+    );
+
+    expect(result.get(reader.nodeId)).toEqual([base.nodeId]);
+  });
+
+  it('does not use ambiguous promoted embedded struct methods for interface matching', () => {
+    const reader = goDef('iface:Reader', 'Interface', 'Reader');
+    const baseA = goDef('struct:BaseA', 'Struct', 'BaseA');
+    const baseB = goDef('struct:BaseB', 'Struct', 'BaseB');
+    const file = goDef('struct:File', 'Struct', 'File');
+    const readerRead = goDef('iface:Reader.Read', 'Method', 'Reader.Read', reader.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const baseARead = goDef('struct:BaseA.Read', 'Method', 'BaseA.Read', baseA.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const baseBRead = goDef('struct:BaseB.Read', 'Method', 'BaseB.Read', baseB.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const defs = [reader, baseA, baseB, file, readerRead, baseARead, baseBRead];
+    const scopes = [
+      scope('scope:BaseA', 'Class', [baseA]),
+      scope('scope:BaseB', 'Class', [baseB]),
+      scope('scope:File', 'Class', [file]),
+    ];
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs(defs, {
+        scopes,
+        referenceSites: [inheritsSite('BaseA', 'scope:File'), inheritsSite('BaseB', 'scope:File')],
+      }),
+      scopeIndexes(defs, scopes),
+      {} as any,
+    );
+
+    expect(result.get(reader.nodeId)).toEqual([baseA.nodeId, baseB.nodeId]);
+  });
+
+  it('resolves ambiguous embedded interfaces through imported scope context', () => {
+    const readerA = goDef('iface:a.Reader', 'Interface', 'Reader', undefined, {
+      filePath: 'a/reader.go',
+    });
+    const readerB = goDef('iface:b.Reader', 'Interface', 'Reader', undefined, {
+      filePath: 'b/reader.go',
+    });
+    const readCloser = goDef('iface:ReadCloser', 'Interface', 'ReadCloser', undefined, {
+      filePath: 'contracts/read_closer.go',
+    });
+    const file = goDef('struct:File', 'Struct', 'File');
+    const closeOnly = goDef('struct:CloseOnly', 'Struct', 'CloseOnly');
+    const readerARead = goDef('iface:a.Reader.Read', 'Method', 'Reader.Read', readerA.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const readerBReadWrong = goDef('iface:b.Reader.Read', 'Method', 'Reader.Read', readerB.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'error',
+    });
+    const readCloserClose = goDef(
+      'iface:ReadCloser.Close',
+      'Method',
+      'ReadCloser.Close',
+      readCloser.nodeId,
+      {
+        parameterCount: 0,
+        requiredParameterCount: 0,
+        returnType: 'error',
+      },
+    );
+    const fileRead = goDef('struct:File.Read', 'Method', 'File.Read', file.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const fileClose = goDef('struct:File.Close', 'Method', 'File.Close', file.nodeId, {
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'error',
+    });
+    const closeOnlyClose = goDef(
+      'struct:CloseOnly.Close',
+      'Method',
+      'CloseOnly.Close',
+      closeOnly.nodeId,
+      {
+        parameterCount: 0,
+        requiredParameterCount: 0,
+        returnType: 'error',
+      },
+    );
+    const defs = [
+      readerA,
+      readerB,
+      readCloser,
+      file,
+      closeOnly,
+      readerARead,
+      readerBReadWrong,
+      readCloserClose,
+      fileRead,
+      fileClose,
+      closeOnlyClose,
+    ];
+    const scopes = [
+      scope('scope:module', 'Module', []),
+      scope('scope:ReaderA', 'Class', [readerA], 'scope:module'),
+      scope('scope:ReaderB', 'Class', [readerB], 'scope:module'),
+      scope('scope:ReadCloser', 'Class', [readCloser], 'scope:module'),
+    ];
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs(defs, {
+        scopes,
+        referenceSites: [inheritsSite('Reader', 'scope:ReadCloser')],
+      }),
+      scopeIndexes(defs, scopes, {
+        imports: new Map([
+          [
+            'scope:module',
+            [
+              {
+                kind: 'namespace',
+                localName: 'a',
+                targetExportedName: 'a',
+                targetFile: 'a/reader.go',
+              },
+            ],
+          ],
+        ]),
+      }),
+      {} as any,
+    );
+
+    expect(result.get(readCloser.nodeId)).toEqual([file.nodeId]);
   });
 
   it('does not emit implementations for cyclic embedded interfaces', () => {
