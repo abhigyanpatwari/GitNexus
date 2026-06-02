@@ -13,7 +13,7 @@
   "c": {
     "fingerprint": "0de009bdbfe095f530fa87eb32bce6ab83092c904f26b3c8fe8d8ab587cf6dc9",
     "scaling_budget": 1.5,
-    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance — flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
+    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
     "fingerprint": "4022f436885d15fd2d419e38e0674115e1c5daa7dcb9578de2633160bed94446",
@@ -45,7 +45,13 @@
   "swift": {
     "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable — extends + protocol conformance); linear (~1.03)."
+    "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable \u2014 extends + protocol conformance); linear (~1.03)."
+  },
+  "dart": {
+    "fingerprint": "a9e882b537765e8fd0ddfcd33b38b253dd86fc5ddffa6e4bf5a85ed8ee615eaa",
+    "scaling_budget": 1.5,
+    "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
+    "_rebaselined": "#1970 review + tri-review follow-ups: constructor-call retag, cascade calls, built-in suppression, enum scope, #1926 F24/F25, named-ctor dedup (crash fix), container-name binding suppression; heritage file-affinity resolution. Fixtures: member-call-contexts, constructor-body, named-constructor-body, heritage-name-collision, construct-cascade."
   },
   "java": {
     "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",
@@ -55,8 +61,8 @@
   "typescript": {
     "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures — fingerprint drift expected.",
-    "_note": "#1968: F44, F85, F87 — fingerprint drift expected."
+    "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures \u2014 fingerprint drift expected.",
+    "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected."
   },
   "javascript": {
     "fingerprint": "a8ddfb15620ae55e50651fc21ab14c4a1f874d9b19e208cc6cbf0a8daac8ec5b",
