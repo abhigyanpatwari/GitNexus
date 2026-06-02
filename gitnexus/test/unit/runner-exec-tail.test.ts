@@ -11,9 +11,11 @@ import path from 'node:path';
 // against the canonical run.cjs with GITNEXUS_INVOCATION forcing a mode (so no
 // live PATH probe) and a fake `gitnexus` on PATH.
 //
-// POSIX-only: the fake runner is a shebang shell script. The Windows-specific
-// branch (shell:true so cmd.exe resolves `.cmd`/`.ps1` shims) is exercised by
-// CI's windows-latest job, not here.
+// The POSIX cases stage a shebang shell script; the Windows case below stages a
+// `.cmd` shim to exercise the Windows-specific branch (shell:true so cmd.exe
+// resolves `.cmd`/`.ps1` shims via PATHEXT). This file is registered in
+// scripts/cross-platform-tests.ts (SPAWN_CLI) so the windows-latest CI job
+// actually runs the Windows case; the POSIX cases self-skip there.
 const CANONICAL_CJS = path.resolve(
   __dirname,
   '..',
@@ -60,6 +62,30 @@ describe('run.cjs direct-exec entrypoint (#1945)', () => {
 
       expect(res.status).toBe(1);
       expect(res.stderr).toContain('could not launch');
+    },
+  );
+
+  it.skipIf(onPosix)(
+    'resolves a .cmd shim via the Windows shell branch, passing args and exit code',
+    () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'gn-runner-win-'));
+      const fake = path.join(dir, 'gitnexus.cmd');
+      // Fake global `gitnexus` .cmd shim: echoes its argv and exits 42. The exec
+      // tail's `shell: process.platform === 'win32'` routes through cmd.exe,
+      // which resolves bare `gitnexus` → `gitnexus.cmd` via PATHEXT.
+      writeFileSync(fake, '@echo off\r\necho fake-gitnexus %*\r\nexit /b 42\r\n');
+
+      const res = spawnSync(process.execPath, [CANONICAL_CJS, 'analyze', '--foo'], {
+        env: {
+          ...process.env,
+          GITNEXUS_INVOCATION: 'gitnexus',
+          PATH: `${dir};${process.env.PATH}`,
+        },
+        encoding: 'utf-8',
+      });
+
+      expect(res.status).toBe(42); // exit code propagated through the shell
+      expect(res.stdout).toContain('fake-gitnexus analyze --foo'); // args passthrough
     },
   );
 });
