@@ -451,15 +451,18 @@ describe('Go cross-package structural interface dispatch', () => {
   }
 
   it('matches local interface types against package-qualified implementation signatures', () => {
-    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implementsEdges)).toContain('GoodStore → Saver');
-    expect(edgeSet(implementsEdges)).not.toContain('WrongStore → Saver');
-  });
-
-  it('merges methods from package-qualified embedded interfaces before matching implementors', () => {
     const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
       (edge) => edge.rel.reason === 'go-structural-implements',
     );
+    expect(edgeSet(implementsEdges)).toEqual([
+      'File → ReadCloser',
+      'File → Reader',
+      'GoodStore → Saver',
+    ]);
+  });
+
+  it('merges methods from package-qualified embedded interfaces before matching implementors', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
     expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
     expect(edgeSet(implementsEdges)).not.toContain('CloseOnly → ReadCloser');
   });

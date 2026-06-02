@@ -6,6 +6,12 @@ import { resolveInheritanceBaseInScope } from '../../scope-resolution/scope/walk
 
 type MethodSet = ReadonlyMap<string, readonly SymbolDefinition[]>;
 type MutableMethodSet = Map<string, SymbolDefinition[]>;
+type MethodSetEntry = {
+  readonly overloads: readonly SymbolDefinition[];
+  readonly depth: number;
+  readonly ambiguous: boolean;
+};
+type MutableMethodSetEntries = Map<string, MethodSetEntry>;
 type GoMethodDefinition = SymbolDefinition & { readonly goReceiverKind?: 'value' | 'pointer' };
 type SignatureContext = {
   readonly packageQualifier: string | undefined;
@@ -124,7 +130,7 @@ function buildDetectionIndexes(
     }
   }
 
-  const structMethodSetCache = new Map<string, MutableMethodSet>();
+  const structMethodSetCache = new Map<string, MutableMethodSetEntries>();
   for (const structId of structsById.keys()) {
     const effective = collectStructMethodSet(
       structId,
@@ -229,40 +235,43 @@ function collectStructMethodSet(
   structId: string,
   indexes: Pick<DetectionIndexes, 'methodsByOwner' | 'parentStructIdsByStructId'>,
   visiting: Set<string>,
-  cache: Map<string, MutableMethodSet>,
+  cache: Map<string, MutableMethodSetEntries>,
 ): MutableMethodSet | undefined {
+  const entries = collectStructMethodEntries(structId, indexes, visiting, cache);
+  return entries === undefined ? undefined : methodEntriesToMethodSet(entries);
+}
+
+function collectStructMethodEntries(
+  structId: string,
+  indexes: Pick<DetectionIndexes, 'methodsByOwner' | 'parentStructIdsByStructId'>,
+  visiting: Set<string>,
+  cache: Map<string, MutableMethodSetEntries>,
+): MutableMethodSetEntries | undefined {
   const cached = cache.get(structId);
-  if (cached !== undefined) return cloneMethodSet(cached);
+  if (cached !== undefined) return cloneMethodEntries(cached);
   if (visiting.has(structId)) return undefined;
   visiting.add(structId);
 
-  const merged = cloneMethodSet(indexes.methodsByOwner.get(structId));
-  const promoted = new Map<string, SymbolDefinition[]>();
-  const ambiguousPromoted = new Set<string>();
+  const merged = directMethodEntries(indexes.methodsByOwner.get(structId));
 
   for (const parentStructId of indexes.parentStructIdsByStructId.get(structId) ?? []) {
-    const parentMethods = collectStructMethodSet(parentStructId, indexes, visiting, cache);
-    if (parentMethods === undefined) {
+    const parentEntries = collectStructMethodEntries(parentStructId, indexes, visiting, cache);
+    if (parentEntries === undefined) {
       visiting.delete(structId);
       return undefined;
     }
-    for (const [methodName, overloads] of parentMethods) {
-      if (merged.has(methodName) || ambiguousPromoted.has(methodName)) continue;
-      if (promoted.has(methodName)) {
-        promoted.delete(methodName);
-        ambiguousPromoted.add(methodName);
-        continue;
-      }
-      promoted.set(methodName, [...overloads]);
+    for (const [methodName, entry] of parentEntries) {
+      if (entry.ambiguous) continue;
+      mergePromotedMethodEntry(merged, methodName, {
+        overloads: entry.overloads,
+        depth: entry.depth + 1,
+        ambiguous: false,
+      });
     }
   }
 
-  for (const [methodName, overloads] of promoted) {
-    merged.set(methodName, overloads);
-  }
-
   visiting.delete(structId);
-  cache.set(structId, cloneMethodSet(merged));
+  cache.set(structId, cloneMethodEntries(merged));
   return merged;
 }
 
@@ -355,6 +364,46 @@ function cloneMethodSet(methods: MethodSet | undefined): MutableMethodSet {
   return clone;
 }
 
+function directMethodEntries(methods: MethodSet | undefined): MutableMethodSetEntries {
+  const entries = new Map<string, MethodSetEntry>();
+  if (methods === undefined) return entries;
+  for (const [name, overloads] of methods) {
+    entries.set(name, { overloads: [...overloads], depth: 0, ambiguous: false });
+  }
+  return entries;
+}
+
+function cloneMethodEntries(entries: ReadonlyMap<string, MethodSetEntry>): MutableMethodSetEntries {
+  const clone = new Map<string, MethodSetEntry>();
+  for (const [name, entry] of entries) {
+    clone.set(name, { ...entry, overloads: [...entry.overloads] });
+  }
+  return clone;
+}
+
+function methodEntriesToMethodSet(entries: ReadonlyMap<string, MethodSetEntry>): MutableMethodSet {
+  const methods = new Map<string, SymbolDefinition[]>();
+  for (const [name, entry] of entries) {
+    if (entry.ambiguous) continue;
+    methods.set(name, [...entry.overloads]);
+  }
+  return methods;
+}
+
+function mergePromotedMethodEntry(
+  target: MutableMethodSetEntries,
+  methodName: string,
+  candidate: MethodSetEntry,
+): void {
+  const existing = target.get(methodName);
+  if (existing === undefined || candidate.depth < existing.depth) {
+    target.set(methodName, candidate);
+    return;
+  }
+  if (candidate.depth > existing.depth) return;
+  target.set(methodName, { overloads: [], depth: candidate.depth, ambiguous: true });
+}
+
 function mergeMethodSet(target: MutableMethodSet, source: MethodSet): void {
   for (const [name, overloads] of source) {
     const existing = target.get(name) ?? [];
@@ -443,11 +492,11 @@ function parameterTypesCompatible(
 ): boolean {
   if (actual === undefined || required === undefined) return true;
   if (actual.length !== required.length) return false;
-  return actual.every(
-    (type, index) =>
-      normalizeSignatureType(type, actualContext) ===
-      normalizeSignatureType(required[index]!, requiredContext),
-  );
+  return actual.every((type, index) => {
+    const actualType = normalizeSignatureType(type, actualContext);
+    const requiredType = normalizeSignatureType(required[index]!, requiredContext);
+    return actualType !== undefined && requiredType !== undefined && actualType === requiredType;
+  });
 }
 
 function returnTypesCompatible(
@@ -458,13 +507,12 @@ function returnTypesCompatible(
 ): boolean {
   if (required === undefined) return actual === undefined;
   if (actual === undefined) return false;
-  return (
-    normalizeSignatureType(actual, actualContext) ===
-    normalizeSignatureType(required, requiredContext)
-  );
+  const actualType = normalizeSignatureType(actual, actualContext);
+  const requiredType = normalizeSignatureType(required, requiredContext);
+  return actualType !== undefined && requiredType !== undefined && actualType === requiredType;
 }
 
-function normalizeSignatureType(typeName: string, context?: SignatureContext): string {
+function normalizeSignatureType(typeName: string, context?: SignatureContext): string | undefined {
   // Go type identity includes pointer/slice/map/variadic shape and package
   // qualifiers. Only erase whitespace and qualify bare local type names; stripping
   // `*`, `[]`, `...`, or `pkg.` would make non-identical signatures compare equal.
@@ -473,16 +521,25 @@ function normalizeSignatureType(typeName: string, context?: SignatureContext): s
   return qualifyGoSignatureTypes(compact, context);
 }
 
-function qualifyGoSignatureTypes(typeName: string, context: SignatureContext): string {
-  return typeName.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (token, offset, source) => {
+function qualifyGoSignatureTypes(typeName: string, context: SignatureContext): string | undefined {
+  let unresolvedQualifier = false;
+  const qualified = typeName.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (token, offset, source) => {
     if (GO_BUILTIN_TYPES.has(token)) return token;
-    if (source[offset - 1] === '.') return token;
+    if (hasPackageQualifierDot(source, offset)) return token;
     if (source[offset + token.length] === '.') {
-      return context.importQualifiers.get(token) ?? token;
+      const qualifier = context.importQualifiers.get(token);
+      if (qualifier !== undefined) return qualifier;
+      unresolvedQualifier = true;
+      return token;
     }
     if (context.packageQualifier === undefined) return token;
     return `${context.packageQualifier}.${token}`;
   });
+  return unresolvedQualifier ? undefined : qualified;
+}
+
+function hasPackageQualifierDot(source: string, offset: number): boolean {
+  return source[offset - 1] === '.' && source[offset - 2] !== '.';
 }
 
 function signatureContextForFile(
