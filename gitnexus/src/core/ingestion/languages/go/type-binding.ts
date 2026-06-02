@@ -244,7 +244,7 @@ function synthesizeElementAccessBindings(rootNode: SyntaxNode, out: CaptureMatch
   }
 }
 
-function extractSimpleTypeNameText(node: SyntaxNode): string {
+export function extractSimpleTypeNameText(node: SyntaxNode): string {
   if (node.type === 'qualified_type') {
     const parts = node.text.split('.');
     return parts[parts.length - 1] ?? node.text;
@@ -261,7 +261,9 @@ function extractCompositeLiteralTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) => ['type_identifier', 'qualified_type'].includes(c.type)) ??
+      expr.namedChildren.find((c) =>
+        ['type_identifier', 'qualified_type', 'generic_type'].includes(c.type),
+      ) ??
       null
     );
   }

@@ -10,7 +10,7 @@ import { recordGoCacheHit, recordGoCacheMiss } from './cache-stats.js';
 import { computeGoCallArity, computeGoDeclarationArity } from './arity-metadata.js';
 import { splitGoImportStatement } from './import-decomposer.js';
 import { synthesizeGoReceiverBinding } from './receiver-binding.js';
-import { synthesizeGoTypeBindings } from './type-binding.js';
+import { synthesizeGoTypeBindings, extractSimpleTypeNameText } from './type-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
@@ -371,18 +371,6 @@ function normalizeGenericConstructorCapture(
       );
     }
   }
-}
-
-function extractSimpleTypeNameText(node: SyntaxNode): string {
-  if (node.type === 'qualified_type') {
-    const parts = node.text.split('.');
-    return parts[parts.length - 1] ?? node.text;
-  }
-  if (node.type === 'generic_type') {
-    const base = node.childForFieldName('type');
-    return base === null ? node.text : extractSimpleTypeNameText(base);
-  }
-  return node.text;
 }
 
 function isRawMultiAssignTypeBinding(nodeMap: Record<string, SyntaxNode>): boolean {
