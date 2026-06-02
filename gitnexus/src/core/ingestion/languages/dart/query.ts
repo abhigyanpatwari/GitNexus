@@ -31,6 +31,7 @@ const DART_SCOPE_QUERY = `
 (class_definition) @scope.class
 (mixin_declaration) @scope.class
 (extension_declaration) @scope.class
+(enum_declaration) @scope.class
 
 ; ── Declarations — types ─────────────────────────────────────────────────────
 (class_definition name: (identifier) @declaration.name) @declaration.class

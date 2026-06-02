@@ -579,3 +579,29 @@ describe.skipIf(!dartAvailable)('Dart widget-tree call resolution', () => {
     expect(edge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Implicit-constructor construction edge (PR #1970 review regression)
+// build() { return Widget(); } where Widget has only an implicit constructor.
+// Both the legacy DAG and the registry-primary path must emit a CALLS edge
+// from the enclosing function to the constructed Class.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart implicit-constructor construction', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-construct-cascade'), () => {});
+  }, 60000);
+
+  it('detects the Widget class and the build function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Widget');
+    expect(getNodesByLabel(result, 'Function')).toContain('build');
+  });
+
+  it('emits a CALLS edge build → Widget for the implicit-constructor call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find((c) => c.source === 'build' && c.target === 'Widget');
+    expect(ctorCall).toBeDefined();
+  });
+});

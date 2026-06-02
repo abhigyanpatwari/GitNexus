@@ -42,6 +42,7 @@ import {
   dartMergeBindings,
   dartArityCompatibility,
 } from './dart/index.js';
+import { DART_BUILT_INS } from './dart/built-ins.js';
 
 /**
  * Resolve the enclosing function from a `function_body` node by looking at its
@@ -75,31 +76,6 @@ const dartEnclosingFunctionFinder = (
   const funcName = target.childForFieldName?.('name')?.text ?? null;
   return funcName ? { funcName, label } : null;
 };
-
-const BUILT_INS: ReadonlySet<string> = new Set([
-  'setState',
-  'mounted',
-  'debugPrint',
-  'runApp',
-  'showDialog',
-  'showModalBottomSheet',
-  'Navigator',
-  'push',
-  'pushNamed',
-  'pushReplacement',
-  'pop',
-  'maybePop',
-  'ScaffoldMessenger',
-  'showSnackBar',
-  'deactivate',
-  'reassemble',
-  'debugDumpApp',
-  'debugDumpRenderTree',
-  'then',
-  'catchError',
-  'whenComplete',
-  'listen',
-]);
 
 export const dartProvider = defineLanguage({
   id: SupportedLanguages.Dart,
@@ -152,7 +128,7 @@ export const dartProvider = defineLanguage({
   classExtractor: createClassExtractor(dartClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Dart),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
-  builtInNames: BUILT_INS,
+  builtInNames: DART_BUILT_INS,
 
   // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #939) ──────────────
   // Parsing-side surface consumed by `ScopeExtractor` once per file. The

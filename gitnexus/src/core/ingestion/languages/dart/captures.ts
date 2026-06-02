@@ -42,6 +42,7 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { DART_HERITAGE_PREFIX } from './interpret.js';
+import { DART_BUILT_INS } from './built-ins.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -130,6 +131,10 @@ export function emitDartScopeCaptures(
   walkNamedTree(root, (node) => {
     if (node.type === 'selector') {
       emitSelectorReference(node, out, seenReadSpans);
+      return;
+    }
+    if (node.type === 'cascade_section') {
+      emitCascadeReference(node, out);
       return;
     }
     if (node.type === 'initialized_variable_definition') {
@@ -271,9 +276,15 @@ function emitSelectorReference(
     const arity = countArgs(inner);
 
     if (prev.type === 'identifier') {
-      // Free call (or no-`new` constructor call): name = the identifier.
+      const name = prev.text;
+      if (DART_BUILT_INS.has(name)) return; // legacy suppresses built-in-named calls
+      // Dart has no `new`: an UpperCamelCase callee is a constructor call by
+      // convention (types are UpperCamelCase) — tag it so `constructorCallTargetsClass`
+      // links `Foo()` to the Class node (the legacy DAG emits that edge even for an
+      // implicit constructor). A lowercase callee is an ordinary free function call.
+      const tag = /^[A-Z]/.test(name) ? '@reference.call.constructor' : '@reference.call.free';
       out.push({
-        '@reference.call.free': nodeToCapture('@reference.call.free', prev),
+        [tag]: nodeToCapture(tag, prev),
         '@reference.name': nodeToCapture('@reference.name', prev),
         '@reference.arity': syntheticCapture('@reference.arity', prev, String(arity)),
       });
@@ -285,6 +296,7 @@ function emitSelectorReference(
       if (ASSIGNABLE_SELECTORS.has(prevInner.type)) {
         const nameId = selectorName(prevInner);
         if (nameId === null) return;
+        if (DART_BUILT_INS.has(nameId.text)) return; // legacy suppresses built-in-named calls
         const recv = computeReceiverText(prev);
         const cm: CaptureMatch = {
           '@reference.call.member': nodeToCapture('@reference.call.member', nameId),
@@ -295,17 +307,6 @@ function emitSelectorReference(
             : {}),
         };
         out.push(cm);
-      } else if (prevInner.type === 'cascade_selector') {
-        // Cascade calls have no assignable-selector wrapper; the legacy DAG
-        // classifies them as free calls — mirror that for parity.
-        const nameId = selectorName(prevInner);
-        if (nameId !== null) {
-          out.push({
-            '@reference.call.free': nodeToCapture('@reference.call.free', nameId),
-            '@reference.name': nodeToCapture('@reference.name', nameId),
-            '@reference.arity': syntheticCapture('@reference.arity', nameId, String(arity)),
-          });
-        }
       }
     }
     return;
@@ -334,6 +335,34 @@ function emitSelectorReference(
       '@reference.receiver': syntheticCapture('@reference.receiver', selector, recv),
     });
   }
+}
+
+/**
+ * Cascade call `receiver..method(args)` — Dart's `cascade_section` holds a
+ * `cascade_selector` + `argument_part` as DIRECT children (no `selector`
+ * wrapper, so `emitSelectorReference` never sees it). The legacy DAG matches
+ * `(cascade_section (cascade_selector (identifier)) (argument_part))` and
+ * classifies cascade calls as FREE calls — mirror that for parity. A property
+ * cascade (`..field = x`, no `argument_part`) is not a call and is skipped.
+ */
+function emitCascadeReference(cascade: SyntaxNode, out: CaptureMatch[]): void {
+  let selectorNode: SyntaxNode | null = null;
+  let argPart: SyntaxNode | null = null;
+  for (let i = 0; i < cascade.namedChildCount; i++) {
+    const c = cascade.namedChild(i);
+    if (c === null) continue;
+    if (c.type === 'cascade_selector') selectorNode = c;
+    else if (c.type === 'argument_part') argPart = c;
+  }
+  if (selectorNode === null || argPart === null) return;
+  const nameId = selectorName(selectorNode);
+  if (nameId === null || DART_BUILT_INS.has(nameId.text)) return;
+  const arity = countArgs(argPart);
+  out.push({
+    '@reference.call.free': nodeToCapture('@reference.call.free', nameId),
+    '@reference.name': nodeToCapture('@reference.name', nameId),
+    '@reference.arity': syntheticCapture('@reference.arity', nameId, String(arity)),
+  });
 }
 
 // ─── Local-variable constructor / call-result type inference ────────────────
