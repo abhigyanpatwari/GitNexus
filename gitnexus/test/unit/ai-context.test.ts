@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateAIContextFiles } from '../../src/cli/ai-context.js';
+import { generateAIContextFiles, generateGitNexusContent } from '../../src/cli/ai-context.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -93,6 +93,80 @@ describe('generateAIContextFiles', () => {
     }
   });
 
+  it('emits the project-local runner command and drops .gitnexus/run.cjs regardless of mode (#1945)', async () => {
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-analyze-cmd-test-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    const prior = process.env.GITNEXUS_INVOCATION;
+    try {
+      // Force a mode whose machine-resolved command (`gitnexus analyze`) differs
+      // from the emitted string, so this fails loudly if generation ever goes
+      // back to resolving the command per-machine instead of pointing at the
+      // fixed, CLI-neutral project-local runner.
+      process.env.GITNEXUS_INVOCATION = 'gitnexus';
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(subDir, subStorage, 'CmdProject', stats);
+
+      // The runner is copied next to the index so the emitted command resolves.
+      const runner = await fs.readFile(path.join(subStorage, 'run.cjs'), 'utf-8');
+      expect(runner).toContain('buildRunnerArgv'); // it's the real resolver copy
+
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        // Primary command is the fixed project-local runner, not machine-resolved.
+        expect(content).toContain('`node .gitnexus/run.cjs analyze`');
+        expect(content).not.toContain('run `gitnexus analyze`'); // no machine-resolved leak
+        // Bootstrap path (for a not-yet-analyzed checkout) + npm-11 escape hatch.
+        expect(content).toContain('npx gitnexus analyze');
+        expect(content).toContain('1939');
+      }
+    } finally {
+      if (prior === undefined) delete process.env.GITNEXUS_INVOCATION;
+      else process.env.GITNEXUS_INVOCATION = prior;
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits Cross-Repo Groups commands through the project-local runner (#1945)', () => {
+    // Exercise the groupNames>0 branch directly — the no-group path cannot
+    // catch a group-command regression because the block is not emitted.
+    const content = generateGitNexusContent(
+      'TestProject',
+      { nodes: 50, edges: 100, processes: 5 },
+      undefined,
+      ['TeamGroup'],
+    );
+    expect(content).toContain('## Cross-Repo Groups');
+    expect(content).toContain('node .gitnexus/run.cjs group list');
+    expect(content).toContain('node .gitnexus/run.cjs group sync');
+    expect(content).toContain('node .gitnexus/run.cjs group impact');
+    // Group commands must not hardcode a package manager.
+    expect(content).not.toMatch(/dlx gitnexus@latest group/);
+    expect(content).not.toMatch(/npx gitnexus group/);
+  });
+
+  it('degrades gracefully when the runner copy fails (#1945)', async () => {
+    // A read-only/full-disk storage dir must not abort generation. The copy is
+    // best-effort + logged; the generated docs still carry the inline bootstrap
+    // (`npx gitnexus analyze`) so a reader hitting the absent runner has a path.
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copyfail-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    const spy = vi.spyOn(fs, 'copyFile').mockRejectedValueOnce(new Error('EACCES: read-only'));
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      // Must not throw despite the copy failure.
+      await generateAIContextFiles(subDir, subStorage, 'CopyFail', stats);
+      const content = await fs.readFile(path.join(subDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).toContain('npx gitnexus analyze'); // bootstrap survives
+      // The runner was not written, so the file is absent.
+      await expect(fs.access(path.join(subStorage, 'run.cjs'))).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
     // The trimmed block must still contain everything that is genuinely
     // unique per repo or load-bearing for the agent: the freshness warning,
@@ -104,7 +178,7 @@ describe('generateAIContextFiles', () => {
 
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-    expect(content).toContain('If any GitNexus tool warns the index is stale');
+    expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze`');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');

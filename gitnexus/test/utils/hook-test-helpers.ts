@@ -14,7 +14,7 @@ export function runHook(
     encoding: 'utf-8',
     timeout: 10000,
     cwd,
-    env: options.env,
+    env: options.env ? { ...process.env, ...options.env } : process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   return {

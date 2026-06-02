@@ -104,6 +104,14 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
+> **On npm 11.x?** `npx` can crash during install with `Cannot destructure property 'package' of 'node.target'` (an npm/arborist bug, before GitNexus runs). Use pnpm instead — it builds the native deps explicitly:
+>
+> ```bash
+> pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze
+> ```
+>
+> Or install globally (`npm install -g gitnexus@latest`) and run `gitnexus analyze`. See [#1939](https://github.com/abhigyanpatwari/GitNexus/issues/1939).
+
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 > **Faster install (no C++ toolchain needed):** set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before `npm install -g gitnexus` to skip vendored grammar materialize/build (`tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`). Dart/Proto/Swift files won't be parsed, but install completes in seconds without `python3`/`make`/`g++`. Strict `=1` only — any other value falls through to the rebuild.
