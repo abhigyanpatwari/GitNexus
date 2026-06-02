@@ -30,21 +30,21 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Editor Support
 
-| Editor | MCP | Skills | Hooks (auto-augment) | Support |
-|--------|-----|--------|---------------------|---------|
-| **Claude Code** | Yes | Yes | Yes (PreToolUse) | **Full** |
-| **Cursor** | Yes | Yes | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full** |
-| **Antigravity** (Google) | Yes | Yes | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/)) | **Full** |
-| **Codex** | Yes | Yes | — | MCP + Skills |
-| **Windsurf** | Yes | — | — | MCP |
-| **OpenCode** | Yes | Yes | — | MCP + Skills |
+| Editor                   | MCP | Skills | Hooks (auto-augment)                                                                       | Support      |
+| ------------------------ | --- | ------ | ------------------------------------------------------------------------------------------ | ------------ |
+| **Claude Code**          | Yes | Yes    | Yes (PreToolUse)                                                                           | **Full**     |
+| **Cursor**               | Yes | Yes    | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
+| **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))    | **Full**     |
+| **Codex**                | Yes | Yes    | —                                                                                          | MCP + Skills |
+| **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
+| **OpenCode**             | Yes | Yes    | —                                                                                          | MCP + Skills |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
 
 ### Community Integrations
 
-| Agent | Install | Source |
-|-------|---------|--------|
+| Agent                | Install                      | Source                                                  |
+| -------------------- | ---------------------------- | ------------------------------------------------------- |
 | [pi](https://pi.dev) | `pi install npm:pi-gitnexus` | [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus) |
 
 ## MCP Setup (manual)
@@ -116,36 +116,36 @@ The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with
 
 Your AI agent gets these tools automatically:
 
-| Tool | What It Does | `repo` Param |
-|------|-------------|--------------|
-| `list_repos` | Discover all indexed repositories | — |
-| `query` | Process-grouped hybrid search (BM25 + semantic + RRF) | Optional |
-| `context` | 360-degree symbol view — categorized refs, process participation | Optional |
-| `impact` | Blast radius analysis with depth grouping and confidence | Optional |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes | Optional |
-| `rename` | Multi-file coordinated rename with graph + text search | Optional |
-| `cypher` | Raw Cypher graph queries | Optional |
+| Tool             | What It Does                                                     | `repo` Param |
+| ---------------- | ---------------------------------------------------------------- | ------------ |
+| `list_repos`     | Discover all indexed repositories                                | —            |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
+| `context`        | 360-degree symbol view — categorized refs, process participation | Optional     |
+| `impact`         | Blast radius analysis with depth grouping and confidence         | Optional     |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional     |
+| `rename`         | Multi-file coordinated rename with graph + text search           | Optional     |
+| `cypher`         | Raw Cypher graph queries                                         | Optional     |
 
 > With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({query: "auth", repo: "my-app"})`.
 
 ## MCP Resources
 
-| Resource | Purpose |
-|----------|---------|
-| `gitnexus://repos` | List all indexed repositories (read first) |
-| `gitnexus://repo/{name}/context` | Codebase stats, staleness check, and available tools |
-| `gitnexus://repo/{name}/clusters` | All functional clusters with cohesion scores |
-| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details |
-| `gitnexus://repo/{name}/processes` | All execution flows |
-| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps |
-| `gitnexus://repo/{name}/schema` | Graph schema for Cypher queries |
+| Resource                                | Purpose                                              |
+| --------------------------------------- | ---------------------------------------------------- |
+| `gitnexus://repos`                      | List all indexed repositories (read first)           |
+| `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
+| `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
+| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details                          |
+| `gitnexus://repo/{name}/processes`      | All execution flows                                  |
+| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps                        |
+| `gitnexus://repo/{name}/schema`         | Graph schema for Cypher queries                      |
 
 ## MCP Prompts
 
-| Prompt | What It Does |
-|--------|-------------|
-| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level |
-| `generate_map` | Architecture documentation from the knowledge graph with mermaid diagrams |
+| Prompt          | What It Does                                                              |
+| --------------- | ------------------------------------------------------------------------- |
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
+| `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
 ## CLI Commands
 
@@ -212,21 +212,21 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 
 ### Language Feature Matrix
 
-| Language | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
-|----------|---------|----------------|---------|----------|-----------------|---------------------|--------|------------|-------------|
-| TypeScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| JavaScript | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Java | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| Kotlin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| C# | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Go | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| PHP | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ruby | ✓ | — | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
-| Swift | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| C | — | — | ✓ | — | ✓ | ✓ | — | ✓ | ✓ |
-| C++ | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| Language   | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
+| ---------- | ------- | -------------- | ------- | -------- | ---------------- | --------------------- | ------ | ---------- | ------------ |
+| TypeScript | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| JavaScript | ✓       | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | ✓          | ✓            |
+| Python     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Java       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Kotlin     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C#         | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Go         | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Rust       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| PHP        | ✓       | ✓              | ✓       | —        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Ruby       | ✓       | —              | ✓       | ✓        | —                | ✓                     | —      | ✓          | ✓            |
+| Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
@@ -308,15 +308,18 @@ Options that run install scripts:
 ```bash
 # pnpm dlx with explicit build permission (one-off, no global install required)
 pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \
-  dlx gitnexus@latest analyze
+  dlx gitnexus@latest serve
 
-# npx/npm (run install scripts by default)
-npx gitnexus@latest analyze
+# npm: global install (recommended on npm 11+; bare npx may crash — see section above)
+npm install -g gitnexus@latest
+gitnexus serve
 
-# pnpm: install non-ephemerally and approve the build
-pnpm add -g gitnexus
-pnpm approve-builds -g      # approve @ladybugdb/core's build script
-gitnexus analyze
+# npx (npm < 11, or after upgrading npm)
+npx gitnexus@latest serve
+
+# pnpm: global install with build scripts allowed (pnpm 10.2+; no approve-builds -g on pnpm 11+)
+pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus
+gitnexus serve
 ```
 
 ### Installation fails with native module errors
@@ -340,11 +343,11 @@ GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnex
 
 Configure the behavior with two environment variables:
 
-| Variable | Values | Default | Effect |
-|----------|--------|---------|--------|
-| `GITNEXUS_LBUG_EXTENSION_INSTALL` | `auto`, `load-only`, `never` | `auto` | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely. |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer | `15000` | Wall-clock budget for the out-of-process `INSTALL` child before it is killed. |
-| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD` | integer `>= -1` | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments. |
+| Variable                                     | Values                       | Default             | Effect                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------- | ---------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never` | `auto`              | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                       |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer             | `15000`             | Wall-clock budget for the out-of-process `INSTALL` child before it is killed.                                                                                                                                                                                                            |
+| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`              | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments. |
 
 ```bash
 # Offline/airgapped: never reach the network for extensions
@@ -401,11 +404,11 @@ For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BY
 
 Three env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
 
-| Variable                                          | Default                   | Effect                                                                                                                            |
-| ------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`            | `3`                       | Max replacement spawns per slot before the slot is dropped from the active rotation.                                              |
-| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`        | `5 × subBatchTimeoutMs`   | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                              |
-| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD`    | `max(3, poolSize)`        | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.            |
+| Variable                                        | Default                 | Effect                                                                                                                |
+| ----------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                     | Max replacement spawns per slot before the slot is dropped from the active rotation.                                  |
+| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                   |
+| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool. |
 
 ## Privacy
 
