@@ -86,13 +86,25 @@ function probeVersion(command) {
       timeout: PROBE_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
+      // On Windows, npm/pnpm resolve to `.cmd` shims; execFileSync does no
+      // PATHEXT resolution and Node refuses to spawn `.cmd`/`.bat` without a
+      // shell (CVE-2024-27980), so a bare `<command> --version` ENOENTs and the
+      // probe would wrongly report a present tool as absent. A shell lets the OS
+      // resolve the shim. POSIX needs no shell (direct PATH lookup works).
+      shell: process.platform === 'win32',
     });
-    const [rawMajor, rawMinor] = output.trim().split('.');
-    const major = parseInt(rawMajor ?? '', 10);
-    const minor = parseInt(rawMinor ?? '', 10);
+    // Find the first line that starts with a version token (`MAJOR.MINOR`,
+    // optional `v` prefix) rather than splitting the whole output — pnpm/npm
+    // under Corepack or with an update notice can print a banner line on stdout
+    // before the version (stderr is already dropped via the stdio config).
+    const versionLine = output
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => /^v?\d+\.\d+/.test(l));
+    const match = versionLine ? versionLine.match(/^v?(\d+)\.(\d+)/) : null;
     return {
-      major: Number.isFinite(major) ? major : null,
-      minor: Number.isFinite(minor) ? minor : null,
+      major: match ? Number(match[1]) : null,
+      minor: match ? Number(match[2]) : null,
     };
   } catch {
     return { major: null, minor: null };
@@ -142,19 +154,25 @@ function formatDocumentationDlxCommand(gitnexusArgs, options = {}) {
  * inject `{ npmMajor, pnpmMajor }` for tests.
  */
 function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
-  const pathProbe = probe ?? resolveOnPath;
   const forced = process.env.GITNEXUS_INVOCATION?.trim().toLowerCase();
   if (forced === 'gitnexus' || forced === 'pnpm' || forced === 'npx') {
     return forced;
   }
-  if (pathProbe('gitnexus', true)) return 'gitnexus';
+  if (probe('gitnexus', true)) return 'gitnexus';
 
   const npmMajor = getNpmMajorVersion(deps);
-  // pnpm presence: an injected pnpm version (a successful `pnpm --version`
-  // proves presence) short-circuits the separate `which pnpm` probe so the
-  // stale-index hook path spawns pnpm at most once. Falls back to the PATH
-  // probe only when no version was injected/captured.
-  const hasPnpm = 'pnpmMajor' in deps ? deps.pnpmMajor !== null : Boolean(pathProbe('pnpm'));
+  // pnpm presence: prefer an explicit `pnpmPresent` flag (set by
+  // formatAnalyzeCommand, which falls back to a PATH probe when the version is
+  // unreadable) so a present-but-unparseable pnpm — slow probe, Corepack
+  // banner — still selects pnpm instead of the npx crash path. Otherwise an
+  // injected version (a successful `pnpm --version` proves presence)
+  // short-circuits the `which pnpm` probe; failing both, fall back to PATH.
+  const hasPnpm =
+    'pnpmPresent' in deps
+      ? deps.pnpmPresent
+      : 'pnpmMajor' in deps
+        ? deps.pnpmMajor !== null
+        : Boolean(probe('pnpm'));
 
   // npm 11+ npx install crash (#1939) — prefer pnpm dlx when available.
   if (hasPnpm && npmMajor !== null && npmMajor >= 11) return 'pnpm';
@@ -195,7 +213,12 @@ function formatAnalyzeCommand(options = {}, deps = {}) {
     const mightUsePnpm = forced === 'pnpm' || (forced !== 'gitnexus' && forced !== 'npx');
     if (mightUsePnpm && (forced === 'pnpm' || !probe('gitnexus', true))) {
       const { major, minor } = probeVersion('pnpm');
-      resolved = { ...deps, pnpmMajor: major, pnpmMinor: minor };
+      // Carry presence separately from version: when the version probe fails
+      // (timeout, Corepack banner) but pnpm is on PATH, still treat it as
+      // present so mode resolution picks pnpm over the npx crash path. The
+      // PATH probe is memoized and only runs when the version is unreadable.
+      const pnpmPresent = major !== null || Boolean(probe('pnpm'));
+      resolved = { ...deps, pnpmMajor: major, pnpmMinor: minor, pnpmPresent };
     }
   }
   const mode = resolveInvocationMode(probe, resolved);

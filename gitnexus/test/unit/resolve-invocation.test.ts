@@ -47,7 +47,7 @@ interface CjsModule {
   ) => string[];
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
-    deps?: { npmMajor?: number | null; pnpmMajor?: number | null },
+    deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmPresent?: boolean },
   ) => 'gitnexus' | 'pnpm' | 'npx';
   pickPathMatch: (
     output: string,
@@ -129,6 +129,18 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
 
   it('falls back to npx when neither global gitnexus nor pnpm is available', () => {
     expect(cjs.resolveInvocationMode(() => null, { npmMajor: 11 })).toBe('npx');
+  });
+
+  it('honors pnpmPresent:true — a present-but-unparseable pnpm selects pnpm, not the npx crash path', () => {
+    // Windows headline regression guard: when probeVersion cannot read the
+    // version (timeout / Corepack banner) but pnpm is on PATH, formatAnalyzeCommand
+    // sets pnpmPresent:true so npm-11 users still get pnpm rather than the npx crash.
+    expect(cjs.resolveInvocationMode(() => null, { npmMajor: 11, pnpmPresent: true })).toBe('pnpm');
+  });
+
+  it('honors pnpmPresent:false as explicit absence (overrides a PATH hit)', () => {
+    const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, pnpmPresent: false })).toBe('npx');
   });
 
   it('omits --allow-build on pnpm 9 (scripts run by default)', () => {
@@ -266,6 +278,45 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
     expect(getNpmMajorVersion()).toBeNull();
     mockedExec.mockReturnValue('not-a-version\n');
     expect(getNpmMajorVersion()).toBeNull();
+  });
+
+  it('tolerates a Corepack/notice banner line before the version', () => {
+    mockedExec.mockReturnValue(
+      'Corepack is about to download https://registry.npmjs.org/npm/-/npm-11.0.0.tgz\n11.0.0\n',
+    );
+    expect(getNpmMajorVersion()).toBe(11);
+  });
+
+  it('passes a shell on Windows so the .cmd npm shim resolves (load-bearing for the warning)', () => {
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      mockedExec.mockReturnValue('11.0.0\n');
+      getNpmMajorVersion();
+      expect(mockedExec).toHaveBeenCalledWith(
+        'npm',
+        ['--version'],
+        expect.objectContaining({ shell: true }),
+      );
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+    }
+  });
+
+  it('uses no shell on POSIX (direct PATH lookup)', () => {
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      mockedExec.mockReturnValue('11.0.0\n');
+      getNpmMajorVersion();
+      expect(mockedExec).toHaveBeenCalledWith(
+        'npm',
+        ['--version'],
+        expect.objectContaining({ shell: false }),
+      );
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+    }
   });
 
   it('warns on the npm 11+ npx path', () => {

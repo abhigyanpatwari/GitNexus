@@ -28,6 +28,23 @@ import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
 
 const CJS_HOOK = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'gitnexus-hook.cjs');
 const CJS_HOOK_LOCK = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-lock.cjs');
+const RESOLVE_CJS = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'hooks',
+  'claude',
+  'resolve-analyze-cmd.cjs',
+);
+const RESOLVE_PLUGIN_CJS = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'gitnexus-claude-plugin',
+  'hooks',
+  'resolve-analyze-cmd.cjs',
+);
 const PLUGIN_HOOK = path.resolve(
   __dirname,
   '..',
@@ -202,6 +219,8 @@ describe('Shell injection regression', () => {
   for (const [label, hookPath] of [
     ['CJS', CJS_HOOK],
     ['Plugin', PLUGIN_HOOK],
+    ['Resolve CJS', RESOLVE_CJS],
+    ['Resolve Plugin', RESOLVE_PLUGIN_CJS],
   ] as const) {
     it(`${label} hook has no shell: true in spawnSync calls`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
@@ -254,6 +273,8 @@ describe('windowsHide regression', () => {
   // Hook-layer files. Adding a new hook file MUST be reflected here.
   const HOOK_FILES: Array<readonly [string, string]> = [
     ['gitnexus/hooks/claude/gitnexus-hook.cjs', CJS_HOOK],
+    ['gitnexus/hooks/claude/resolve-analyze-cmd.cjs', RESOLVE_CJS],
+    ['gitnexus-claude-plugin/hooks/resolve-analyze-cmd.cjs', RESOLVE_PLUGIN_CJS],
     [
       'gitnexus/hooks/antigravity/gitnexus-antigravity-hook.cjs',
       path.resolve(__dirname, '..', '..', 'hooks', 'antigravity', 'gitnexus-antigravity-hook.cjs'),

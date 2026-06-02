@@ -60,9 +60,19 @@ export function getNpmMajorVersion(): number | null {
       timeout: 1000,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
+      // Windows `npm` is a `.cmd` shim; without a shell execFileSync ENOENTs
+      // (CVE-2024-27980) and the npm-11 npx-crash warning below would never
+      // fire on Windows. Mirrors probeVersion in resolve-analyze-cmd.cjs.
+      shell: process.platform === 'win32',
     });
-    const major = parseInt(output.trim().split('.')[0] ?? '', 10);
-    return Number.isFinite(major) ? major : null;
+    // Read the first version-shaped line so a Corepack/update banner on stdout
+    // doesn't defeat the parse (mirrors the cjs probeVersion hardening).
+    const major = output
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => /^v?\d+\./.test(l))
+      ?.match(/^v?(\d+)\./);
+    return major ? Number(major[1]) : null;
   } catch {
     return null;
   }
