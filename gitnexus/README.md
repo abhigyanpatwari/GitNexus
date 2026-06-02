@@ -30,7 +30,7 @@ That's it. This indexes the codebase, installs agent skills, registers Claude Co
 > pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze
 > ```
 >
-> See [Troubleshooting → `npx gitnexus` crashes with `node.target is null` (npm 11)](#npx-gitnexus-crashes-with-nodetarget-is-null-npm-11) for the full matrix (global install, npm downgrade).
+> See [Troubleshooting → `npx gitnexus` crashes with `node.target is null` (npm 11)](#cannot-destructure-property-package-of-nodetarget-as-it-is-null) for the full matrix (global install, npm downgrade).
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
