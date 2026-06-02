@@ -5,6 +5,9 @@
  * missing namespaced forms like class Foo::Bar and module Baz::Qux where the
  * name field is a scope_resolution node.
  */
+// NOTE: Tests are capture-level only. Graph-node modeling for namespaced
+// class/module definitions is a tracked follow-up — the scope-extractor
+// doesn't yet handle scope_resolution names end-to-end.
 import { describe, it, expect } from 'vitest';
 import { emitRubyScopeCaptures } from '../../../src/core/ingestion/languages/ruby/index.js';
 import type { CaptureMatch } from 'gitnexus-shared';
