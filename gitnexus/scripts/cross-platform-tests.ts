@@ -30,6 +30,7 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
+  'test/unit/resolve-invocation.test.ts',
   'test/unit/platform-capabilities.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-win-fts-probe.test.ts',
@@ -84,6 +85,7 @@ const SPAWN_CLI = [
   'test/integration/setup-antigravity.test.ts',
   'test/integration/antigravity-hook-e2e.test.ts',
   'test/unit/local-cli-subprocess.test.ts',
+  'test/unit/runner-exec-tail.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have
