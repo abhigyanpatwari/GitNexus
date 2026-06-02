@@ -233,7 +233,12 @@ function formatAnalyzeCommand(options = {}, deps = {}) {
  * spawn) so it is unit-testable. `--embeddings` widens the pnpm allow-build set.
  */
 function buildRunnerArgv(mode, gitnexusArgs, deps = {}) {
-  const embeddings = gitnexusArgs.includes('--embeddings');
+  // Match both the space form (`--embeddings`) and the equals form
+  // (`--embeddings=5000`) Commander accepts, so the pnpm allow-build set still
+  // widens to onnxruntime-node when a user hand-types the equals form.
+  const embeddings = gitnexusArgs.some(
+    (a) => a === '--embeddings' || a.startsWith('--embeddings='),
+  );
   if (mode === 'gitnexus') return { program: 'gitnexus', args: [...gitnexusArgs] };
   if (mode === 'pnpm') {
     return {

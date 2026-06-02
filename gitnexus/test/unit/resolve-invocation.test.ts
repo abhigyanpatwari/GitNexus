@@ -411,6 +411,19 @@ describe('buildRunnerArgv (project-local runner exec, #1945)', () => {
     });
     expect(args).toContain('--allow-build=onnxruntime-node');
   });
+
+  it('widens the allow-build set for the --embeddings=N equals form too', () => {
+    const { args } = cjs.buildRunnerArgv('pnpm', ['analyze', '--embeddings=5000'], {
+      pnpmMajor: 10,
+      pnpmMinor: 14,
+    });
+    expect(args).toContain('--allow-build=onnxruntime-node');
+  });
+
+  it('omits onnxruntime-node when --embeddings is absent', () => {
+    const { args } = cjs.buildRunnerArgv('pnpm', ['analyze'], { pnpmMajor: 10, pnpmMinor: 14 });
+    expect(args).not.toContain('--allow-build=onnxruntime-node');
+  });
 });
 
 describe('resolve-analyze-cmd.cjs parity', () => {
