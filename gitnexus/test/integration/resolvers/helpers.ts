@@ -536,6 +536,38 @@ export function getResolutionOutcomes(result: PipelineResult) {
   return result.resolutionOutcomes ?? [];
 }
 
+/**
+ * Relationships whose source or target id does not resolve to a live graph node.
+ * A non-empty result means the graph has dangling edges (an endpoint that was
+ * never materialized) — e.g. a HAS_METHOD edge owned by a class node that the
+ * structure phase failed to create. Pass `types` to scope the check to specific
+ * relationship types (e.g. `['HAS_METHOD']`).
+ */
+export function findDanglingEdges(
+  result: PipelineResult,
+  types?: string[],
+): Array<{ type: string; sourceId: string; targetId: string; missing: 'source' | 'target' | 'both' }> {
+  const out: Array<{
+    type: string;
+    sourceId: string;
+    targetId: string;
+    missing: 'source' | 'target' | 'both';
+  }> = [];
+  for (const rel of result.graph.iterRelationships()) {
+    if (types && !types.includes(rel.type)) continue;
+    const src = result.graph.getNode(rel.sourceId);
+    const tgt = result.graph.getNode(rel.targetId);
+    if (src && tgt) continue;
+    out.push({
+      type: rel.type,
+      sourceId: rel.sourceId,
+      targetId: rel.targetId,
+      missing: !src && !tgt ? 'both' : !src ? 'source' : 'target',
+    });
+  }
+  return out;
+}
+
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {
   const names: string[] = [];
   result.graph.forEachNode((n) => {

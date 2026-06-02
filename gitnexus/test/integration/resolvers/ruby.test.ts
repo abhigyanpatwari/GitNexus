@@ -12,6 +12,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -1427,5 +1428,52 @@ describe('Ruby Child extends Parent — inherited method resolution (SM-9)', () 
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespaced class/module declarations — GRAPH NODE materialization (issue #1975)
+//
+// Follow-up to PR #1972 (F62): the scope query captures the tail constant for
+// `class Foo::Bar` / `module Baz::Qux`, but the legacy structure query never
+// matched the scope_resolution name, so no Class/Trait node was created and the
+// declaration's methods got dangling HAS_METHOD edges. These pipeline-level
+// tests assert the target behavior (a real node + a resolving HAS_METHOD edge).
+// They fail on the pre-fix base — see plan docs/plans/2026-06-02-002-*.
+// ---------------------------------------------------------------------------
+
+describe('Ruby namespaced class/module definitions — graph nodes (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-namespaced'), () => {});
+  }, 60000);
+
+  // R1: a Class node is materialized for the namespaced class.
+  pit('materializes a Class node for class Foo::Bar', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Bar');
+  });
+
+  // R1: deep chain resolves to the trailing constant.
+  pit('materializes a Class node for class Outer::Middle::Inner', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Inner');
+  });
+
+  // R1: module → Trait (Ruby modules are relabeled Trait for class-like lookup).
+  pit('materializes a Trait node for module Baz::Qux', () => {
+    expect(getNodesByLabel(result, 'Trait')).toContain('Qux');
+  });
+
+  // R2: methods of namespaced declarations must not produce dangling HAS_METHOD edges.
+  pit('emits no dangling HAS_METHOD edges for namespaced declarations', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R2: the method resolves to a real owner node (not an 'unknown' dangling source).
+  pit('owns bar_method under a resolving namespaced class node', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find((e) => e.target === 'bar_method');
+    expect(edge).toBeDefined();
+    expect(edge!.sourceLabel).toBe('Class');
   });
 });
