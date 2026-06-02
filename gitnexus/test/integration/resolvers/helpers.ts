@@ -47,6 +47,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Both require a structure-phase / shared-pipeline change, out of scope for
     // the scope-resolution path (tracked by #1926's legacy parsing-layer fix).
     'attributes a call inside a constructor body to the constructor',
+    'attributes a call inside a named-constructor body to the constructor',
   ]),
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',

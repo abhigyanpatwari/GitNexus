@@ -7,14 +7,15 @@
  * synthesizes the Dart-specific streams the grammar can't express as a single
  * query node:
  *
- *   1. Function/method SCOPES — `function_signature`/`function_body` are
- *      SIBLINGS, so each Function scope is synthesized to span
- *      `signature.start .. body.end` (composed range).
+ *   1. Function/method/constructor SCOPES — `function_signature`/`function_body`
+ *      are SIBLINGS, so each Function scope is synthesized to span
+ *      `signature.start .. body.end` (composed range); a constructor's body is
+ *      a sibling of the wrapping `method_signature`.
  *   2. Receiver (`this`/`super`) + parameter + return type bindings, anchored
  *      inside the body so they land in the Function scope.
  *   3. Arity metadata on function-like declarations.
  *   4. Field type bindings (for receiver-chain resolution).
- *   5. References — calls (free/member) and member reads — from Dart's
+ *   5. References — calls (free/member/cascade) and member reads — from Dart's
  *      postfix `identifier (selector …)` chains, which have no
  *      `call_expression` node.
  *   6. Local-variable constructor/call-result type inference.
@@ -69,6 +70,14 @@ export function emitDartScopeCaptures(
   const root = tree.rootNode;
   const out: CaptureMatch[] = [];
 
+  // A named constructor (`A.named()`) parses as ONE `constructor_signature`
+  // carrying multiple `name:` fields, so the `@declaration.constructor` query
+  // pattern matches it more than once. Each match would synthesize an
+  // identical-range `@scope.function`, producing duplicate scope ids that make
+  // `buildScopeTree` throw and the whole file get dropped. Dedup function-like
+  // declarations by their statement node so each is emitted exactly once.
+  const seenFnDeclNodes = new Set<string>();
+
   // ── Pass A: query-driven scopes / declarations / imports ────────────────
   for (const match of getDartScopeQuery().matches(root)) {
     const grouped: Record<string, Capture> = {};
@@ -83,6 +92,9 @@ export function emitDartScopeCaptures(
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
       const declNode = nodeMap[declTag]!;
+      const declKey = `${declNode.startIndex}:${declNode.endIndex}`;
+      if (seenFnDeclNodes.has(declKey)) continue; // dedup named-ctor double-match
+      seenFnDeclNodes.add(declKey);
       const bodyNode = findFunctionBody(declNode);
 
       attachArityMetadata(grouped, declNode);

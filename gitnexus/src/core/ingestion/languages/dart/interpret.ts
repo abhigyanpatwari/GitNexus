@@ -44,6 +44,21 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
  *  type a receiver resolves against (`Future<User>` → `User`). */
 const SINGLE_ARG_CONTAINERS = /^(?:Future|FutureOr|List|Iterable|Set|Stream|Optional)<(.+)>$/;
 
+/** Bare container names. When a type normalizes to one of these (e.g. the
+ *  generic args were stripped upstream so `Future<User>` arrived as `Future`),
+ *  binding to it would let a same-named user class capture the receiver — a
+ *  wrong edge. We suppress the binding instead (leaving the call unresolved,
+ *  matching the legacy DAG) rather than bind to the container name. */
+const BARE_CONTAINER_TYPES: ReadonlySet<string> = new Set([
+  'Future',
+  'FutureOr',
+  'List',
+  'Iterable',
+  'Set',
+  'Stream',
+  'Optional',
+]);
+
 export function normalizeDartType(text: string): string {
   let s = text.trim();
   // Strip nullable suffix (`User?` → `User`).
@@ -63,7 +78,14 @@ export function interpretDartTypeBinding(captures: CaptureMatch): ParsedTypeBind
   if (nameCap === undefined || typeCap === undefined) return null;
 
   const rawType = normalizeDartType(typeCap.text);
-  if (rawType === '' || rawType === 'void' || rawType === 'dynamic') return null;
+  if (
+    rawType === '' ||
+    rawType === 'void' ||
+    rawType === 'dynamic' ||
+    BARE_CONTAINER_TYPES.has(rawType)
+  ) {
+    return null;
+  }
 
   let source: TypeRef['source'] = 'annotation';
   if (captures['@type-binding.self'] !== undefined) source = 'self';

@@ -679,3 +679,36 @@ describe.skipIf(!dartAvailable)('Dart constructor body call attribution (F25)', 
     expect(edge!.source).toBe('Vector');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Named constructor with a body (PR #1970 tri-review P0 regression).
+// `class A { A.named() { ... } }` parses as a constructor_signature with
+// multiple name: fields, double-matching the scope query. Without dedup, two
+// identical-range Function scopes throw ScopeTreeInvariantError and the WHOLE
+// file is dropped from registry-primary resolution. Test 1 (parity) guards
+// against the file-drop in both modes; test 2 is the F25 constructor-attribution
+// win (registry-only, like the dart-constructor-body case).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart named-constructor body (no file drop)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'dart-named-constructor-body'),
+      () => {},
+    );
+  }, 60000);
+
+  it('still resolves other calls in a class that has a named constructor with a body', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find((c) => c.source === 'greet' && c.target === 'setup');
+    expect(greetCall).toBeDefined();
+  });
+
+  it('attributes a call inside a named-constructor body to the constructor', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find((c) => c.target === 'setup' && c.sourceLabel === 'Constructor');
+    expect(ctorCall).toBeDefined();
+  });
+});
