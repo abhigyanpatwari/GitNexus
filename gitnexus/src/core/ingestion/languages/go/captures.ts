@@ -88,7 +88,8 @@ export function emitGoScopeCaptures(
       // the function_declaration / method_declaration node.
       const fnNode =
         declAnchorNode.type === 'function_declaration' ||
-        declAnchorNode.type === 'method_declaration'
+        declAnchorNode.type === 'method_declaration' ||
+        declAnchorNode.type === 'method_elem'
           ? declAnchorNode
           : null;
       if (fnNode !== null) {
@@ -112,6 +113,13 @@ export function emitGoScopeCaptures(
             '@declaration.parameter-types',
             fnNode,
             JSON.stringify(arity.parameterTypes),
+          );
+        }
+        if (arity.returnType !== undefined) {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNode,
+            arity.returnType,
           );
         }
       }
