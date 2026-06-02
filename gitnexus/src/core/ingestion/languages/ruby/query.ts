@@ -54,10 +54,20 @@ const RUBY_SCOPE_QUERY = `
 (class
   name: (constant) @declaration.name) @declaration.class
 
+;; class Foo::Bar — namespaced class definition
+(class
+  name: (scope_resolution
+    name: (constant) @declaration.name)) @declaration.class
+
 ;; ── Declarations — module (labeled Trait for class-like registry lookup) ─
 
 (module
   name: (constant) @declaration.name) @declaration.trait
+
+;; module Baz::Qux — namespaced module definition
+(module
+  name: (scope_resolution
+    name: (constant) @declaration.name)) @declaration.trait
 
 ;; ── Declarations — method (instance) ─────────────────────────────────────
 
