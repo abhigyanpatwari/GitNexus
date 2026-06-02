@@ -27,7 +27,7 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "357cc5b2cefb4dd40e2790966a52134d6bc9f63a967ba221190248b6bc0eaeef",
+    "fingerprint": "27c1fac675f3ccdf76ff9b9094b7b93df797f6a62428c1078ed047cc3b060c1e",
     "scaling_budget": 1.5,
     "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04).",
     "_note": "PR #1934: F66/F68 pattern wildcards, F71 union, F72 macro, F73 variadic — fixture count 117→124, fingerprint drift expected."
