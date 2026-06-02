@@ -13,10 +13,34 @@ const PYTHON_SCOPE_QUERY = `
 (module) @scope.module
 (class_definition) @scope.class
 (function_definition) @scope.function
+(lambda) @scope.function
 
 ;; Declarations
 (class_definition
   name: (identifier) @declaration.name) @declaration.class
+
+;; Heritage — bare identifier
+;; NOTE: captures.ts on main already synthesizes @reference.inherits for
+;; qualified bases via #1951/#1956. These @heritage.* patterns are redundant
+;; with that synthesis but kept as documentation and a safety net for the
+;; generic heritage extractor path. They produce topicOf edges that the
+;; resolution pipeline ignores when the synthesis path wins.
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (identifier) @heritage.extends)) @heritage
+
+;; Heritage — qualified base (module.Class)
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (attribute) @heritage.extends)) @heritage
+
+;; Heritage — subscripted/generic base (Generic[T])
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (subscript) @heritage.extends)) @heritage
 
 (function_definition
   name: (identifier) @declaration.name) @declaration.function
@@ -233,6 +257,22 @@ const PYTHON_SCOPE_QUERY = `
 (function_definition
   name: (identifier) @type-binding.name
   return_type: (type) @type-binding.type) @type-binding.return
+
+;; Decorators — simple @decorator
+(decorator
+  (identifier) @reference.name) @reference.call.free
+
+;; Decorators — @obj.decorator (single attribute, identifier receiver)
+(decorator
+  (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.call.member
+
+;; Decorators — @a.b.decorator (nested attributes)
+(decorator
+  (attribute
+    object: (attribute) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.call.member
 
 ;; References — calls
 (call
