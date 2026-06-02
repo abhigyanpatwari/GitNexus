@@ -165,6 +165,7 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
+import { extractTrpcRoutes } from '../route-extractors/trpc.js';
 import type { SharedSpringType } from '../route-extractors/spring-shared.js';
 import {
   collectFunctionCfgs,
@@ -3178,6 +3179,17 @@ const processFileGroup = (
     if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
       for (const r of extractedRoutes) result.routes.push(r);
+    }
+
+    // Extract tRPC procedure routes from TS/JS router files
+    if (
+      (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) &&
+      (file.path.includes('/routers/') ||
+        file.path.includes('/trpc/') ||
+        file.path.includes('/server/'))
+    ) {
+      const trpcRoutes = extractTrpcRoutes(file.path, file.content);
+      for (const r of trpcRoutes) result.routes.push(r);
     }
 
     // Extract ORM queries (Prisma, Supabase)

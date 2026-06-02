@@ -118,6 +118,14 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'express', entryPointMultiplier: 2.5, reason: 'routes-folder' };
   }
 
+  // tRPC router files
+  if (
+    (p.includes('/routers/') || p.includes('/trpc/routers/')) &&
+    (p.endsWith('.ts') || p.endsWith('.tsx'))
+  ) {
+    return { framework: 'trpc', entryPointMultiplier: 3.0, reason: 'trpc-router' };
+  }
+
   // Generic controllers (MVC pattern)
   if (p.includes('/controllers/') && (p.endsWith('.ts') || p.endsWith('.js'))) {
     return { framework: 'mvc', entryPointMultiplier: 2.5, reason: 'controllers-folder' };

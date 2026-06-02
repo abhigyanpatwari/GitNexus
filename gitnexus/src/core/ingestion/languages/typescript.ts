@@ -268,6 +268,22 @@ const tsExtractFunctionName = (
       return { funcName: null, label: 'Function' };
     }
 
+    // HOC-wrapped pair: `create: procedure.mutation(async ({ input }) => { ... })`.
+    // tRPC and similar frameworks wrap callbacks inside .mutation()/.query() calls
+    // that are themselves pair values. The arrow's parent is `arguments`,
+    // grandparent is `call_expression`, great-grandparent is `pair`.
+    if (declarator?.type === 'pair' || declarator?.type === 'property_assignment') {
+      const keyNode = declarator.childForFieldName?.('key');
+      if (keyNode?.type === 'property_identifier' || keyNode?.type === 'identifier') {
+        return { funcName: keyNode.text, label: 'Function' };
+      }
+      if (keyNode?.type === 'string') {
+        const fragment = keyNode.children?.find((c: SyntaxNode) => c.type === 'string_fragment');
+        return { funcName: fragment?.text ?? null, label: 'Function' };
+      }
+      return { funcName: null, label: 'Function' };
+    }
+
     return { funcName: null, label: 'Function' };
   }
 
@@ -408,6 +424,12 @@ export const typescriptProvider = defineLanguage({
         'expo-router',
       ],
     },
+    {
+      framework: 'trpc',
+      entryPointMultiplier: 3.0,
+      reason: 'trpc-procedure',
+      patterns: ['initTRPC', 'createTRPCRouter', '.mutation(', '.query(', '.subscription('],
+    },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
@@ -481,6 +503,12 @@ export const javascriptProvider = defineLanguage({
       entryPointMultiplier: 3.2,
       reason: 'nestjs-decorator',
       patterns: ['@Controller', '@Get', '@Post', '@Put', '@Delete', '@Patch'],
+    },
+    {
+      framework: 'trpc',
+      entryPointMultiplier: 3.0,
+      reason: 'trpc-procedure',
+      patterns: ['initTRPC', 'createTRPCRouter', '.mutation(', '.query(', '.subscription('],
     },
     {
       framework: 'expo-router',

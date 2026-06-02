@@ -321,6 +321,54 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   key: (string (string_fragment) @declaration.name)
   value: (function_expression) @declaration.function)
 
+;; HOC-wrapped pair values: create: procedure.mutation(async ({ input }) => { ... }).
+;; tRPC, Express route definitions, and similar frameworks use this pattern where
+;; an object property's value is a call_expression (like .mutation()/.query()) that
+;; wraps an arrow_function or function_expression as a callback argument.
+;; Without these patterns, tRPC procedures are invisible — the arrow registers as
+;; anonymous and all calls inside fall back to file-level attribution.
+;;
+;; AST shape:
+;;   pair
+;;     key: property_identifier "create"
+;;     value: call_expression
+;;       function: identifier | member_expression
+;;       arguments: arguments
+;;         arrow_function | function_expression
+;;
+;; Anchor discipline: same as direct pairs — on the inner arrow/function, not
+;; the outer call_expression. The arrow's range matches its @scope.function range,
+;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
+(pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+
+(pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+
+(pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+
+(pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+
 ;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ;;
 ;; Covers the dominant React UI idiom (\`React.forwardRef\`, \`React.memo\`,
@@ -1194,6 +1242,21 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 (call_expression
   function: (await_expression
     (identifier) @reference.name)) @reference.call.free
+
+;; Curried/chained call: f(x)(y) — call_expression whose function is a call_expression.
+;; Common in patterns like workflow(db)(input) where a factory returns a closure.
+;; The inner call is already captured by the plain free-call pattern above; this
+;; pattern captures the outer application. Dedup in free-call-fallback collapses
+;; both to a single CALLS edge per (caller, target) pair.
+(call_expression
+  function: (call_expression
+    function: (identifier) @reference.name)) @reference.call.free
+
+;; Awaited curried call: await f(x)(y)
+(call_expression
+  function: (await_expression
+    (call_expression
+      function: (identifier) @reference.name))) @reference.call.free
 
 ;; References — member calls: \`obj.method()\` (includes optional chain).
 ;; The (_) wildcard matches any named receiver including \`this\` /

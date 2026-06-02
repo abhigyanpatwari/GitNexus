@@ -187,6 +187,40 @@ export const TYPESCRIPT_QUERIES = `
   key: (string (string_fragment) @name)
   value: (function_expression)) @definition.function
 
+; HOC-wrapped pair values: procedure.mutation(async ({ input }) => { ... }).
+; tRPC, Express route definitions, and similar frameworks use this pattern where
+; an object property's value is a call_expression wrapping an arrow/function callback.
+; Mirrors the registry-primary patterns in languages/typescript/query.ts.
+(pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
 ; so the legacy Call-Resolution DAG and the registry-primary pipeline
@@ -394,6 +428,19 @@ export const TYPESCRIPT_QUERIES = `
   function: (await_expression
     (member_expression
       property: (property_identifier) @call.name))
+  (type_arguments)) @call
+
+; Curried/chained call: f(x)(y) — call_expression whose function is a call_expression.
+; Common in patterns like workflow(db)(input) where a factory returns a closure.
+(call_expression
+  function: (call_expression
+    function: (identifier) @call.name)) @call
+
+; Awaited curried call: await f(x)(y)
+(call_expression
+  function: (await_expression
+    (call_expression
+      function: (identifier) @call.name))
   (type_arguments)) @call
 
 ; Constructor calls: new Foo()
