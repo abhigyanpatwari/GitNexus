@@ -113,15 +113,17 @@ describe('sequential native parser availability', () => {
   it('warns when processCalls skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
+    const previousDart = process.env.REGISTRY_PRIMARY_DART;
     process.env.GITNEXUS_VERBOSE = '1';
+    // call-processor gates registry-primary languages (Swift, Dart, etc.) via
+    // the isRegistryPrimary gate BEFORE the parser-availability skip counter.
+    // Dart is now in MIGRATED_LANGUAGES, so force it onto the legacy call path
+    // (REGISTRY_PRIMARY_DART=0) to exercise the skip/warn branch this test
+    // covers — without disturbing any other language's mode.
+    process.env.REGISTRY_PRIMARY_DART = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-      // Use Dart, a non-registry-primary language. call-processor gates
-      // registry-primary languages (Swift, etc.) via the isRegistryPrimary
-      // gate before the parser-availability skip counter, so a Dart file
-      // exercises the skip/warn branch without forcing any language out of
-      // registry-primary mode (Swift must stay scope-based).
       await processCalls(
         createKnowledgeGraph(),
         [{ path: 'App.dart', content: 'void demo() {}' }],
@@ -143,6 +145,11 @@ describe('sequential native parser availability', () => {
         delete process.env.GITNEXUS_VERBOSE;
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
+      }
+      if (previousDart === undefined) {
+        delete process.env.REGISTRY_PRIMARY_DART;
+      } else {
+        process.env.REGISTRY_PRIMARY_DART = previousDart;
       }
     }
   });
@@ -171,16 +178,18 @@ describe('sequential native parser availability', () => {
   it('warns when processHeritage skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
+    const previousDart = process.env.REGISTRY_PRIMARY_DART;
     process.env.GITNEXUS_VERBOSE = '1';
+    // processHeritage skips registry-primary languages (Swift, Dart, etc.) via
+    // the isRegistryPrimary gate — scope-based resolution owns their
+    // inheritance (#1951) — BEFORE the legacy parser-availability skip this
+    // test exercises. Dart is now in MIGRATED_LANGUAGES, so force it onto the
+    // legacy heritage path (REGISTRY_PRIMARY_DART=0) to fire the skip/warn
+    // branch, without disturbing any other language's mode.
+    process.env.REGISTRY_PRIMARY_DART = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-      // Use Dart, a non-registry-primary language. processHeritage skips
-      // registry-primary languages (Swift, etc.) via the isRegistryPrimary gate
-      // — scope-based resolution owns their inheritance (#1951) — BEFORE the
-      // legacy parser-availability skip this test exercises. Dart still flows
-      // through the legacy heritage path, so the skip/warn branch fires without
-      // forcing any language out of registry-primary mode.
       await processHeritage(
         createKnowledgeGraph(),
         [{ path: 'App.dart', content: 'class Widget extends StatelessWidget {}' }],
@@ -202,6 +211,11 @@ describe('sequential native parser availability', () => {
         delete process.env.GITNEXUS_VERBOSE;
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
+      }
+      if (previousDart === undefined) {
+        delete process.env.REGISTRY_PRIMARY_DART;
+      } else {
+        process.env.REGISTRY_PRIMARY_DART = previousDart;
       }
     }
   });

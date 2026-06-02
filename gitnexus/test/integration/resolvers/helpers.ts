@@ -21,6 +21,34 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // isFileLocalDef filtering of static functions.
     'caller.c calls b:helper via include, NOT a:static helper',
   ]),
+  dart: new Set([
+    // The legacy DAG DART_QUERIES capture member calls (obj.method()) only
+    // under expression_statement / initialized_variable_definition contexts
+    // (issue #1926 F24). The registry-primary scope path walks every postfix
+    // chain, so it resolves member calls in return / list-literal / named-arg /
+    // arrow-body contexts too. Scope-resolver-only correctness wins.
+    'resolves a member call in a return statement (svc.compute())',
+    'resolves member calls inside a list literal',
+    'resolves a member call in a named argument',
+    'resolves a member call in an arrow body',
+    // Calls inside constructor bodies are mis-attributed by the legacy
+    // enclosing-function finder (issue #1926 F25 — it only unwraps
+    // function_signature, not constructor_signature). The registry-primary
+    // scope path synthesizes a Function scope for the constructor body (whose
+    // body is a sibling of the wrapping method_signature) and the def is a
+    // Constructor (a valid caller anchor), so the call attributes to the
+    // constructor. Scope-resolver-only correctness win.
+    //
+    // Getter/setter and operator bodies are NOT covered (F25 partial):
+    //   - getter/setter defs are Property, which resolveCallerGraphId excludes
+    //     as a caller anchor (graph-bridge/ids.ts);
+    //   - the structure phase emits no Method node for operators, so there is
+    //     no node to attribute to.
+    // Both require a structure-phase / shared-pipeline change, out of scope for
+    // the scope-resolution path (tracked by #1926's legacy parsing-layer fix).
+    'attributes a call inside a constructor body to the constructor',
+    'attributes a call inside a named-constructor body to the constructor',
+  ]),
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
     // Generic type-argument USES edges are emitted by the registry-primary

@@ -40,6 +40,7 @@ import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotl
 import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/index.ts';
 import { emitCScopeCaptures } from '../../src/core/ingestion/languages/c/index.ts';
 import { emitCppScopeCaptures } from '../../src/core/ingestion/languages/cpp/index.ts';
+import { emitDartScopeCaptures } from '../../src/core/ingestion/languages/dart/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'lang-resolution');
@@ -230,6 +231,23 @@ const LANGS = [
       `  var id: Int64 = 0\n  var name: String = ""\n` +
       `  func getId() -> Int64 { return self.id }\n` +
       `  func serve() -> String { return self.name }\n}\n\n`,
+  },
+  {
+    name: 'dart',
+    emit: emitDartScopeCaptures,
+    fixturePrefix: 'dart',
+    exts: ['.dart'],
+    file: 'bench.dart',
+    // Heritage-bearing: `extends Base` (generic @reference.inherits pre-pass)
+    // + `implements Marker` (Dart `implements <class>` → IMPLEMENTS marker) so
+    // both heritage paths and the postfix-chain reference walk run at scale.
+    header:
+      'class Base {\n  String ping() { return "base"; }\n}\n\nabstract class Marker {\n  String mark();\n}\n\n',
+    unit: (n) =>
+      `class Entity${n} extends Base implements Marker {\n` +
+      `  int id = 0;\n  String name = '';\n` +
+      `  int getId() { return this.id; }\n` +
+      `  String mark() { return this.name; }\n}\n\n`,
   },
   {
     name: 'java',

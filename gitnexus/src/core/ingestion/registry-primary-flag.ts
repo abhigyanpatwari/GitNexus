@@ -83,6 +83,7 @@ export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<Suppo
   SupportedLanguages.Ruby,
   SupportedLanguages.Cobol,
   SupportedLanguages.Swift,
+  SupportedLanguages.Dart,
 ]);
 
 /**
