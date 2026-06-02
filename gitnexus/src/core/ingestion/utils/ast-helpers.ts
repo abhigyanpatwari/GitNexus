@@ -424,6 +424,16 @@ export const findEnclosingClassInfo = (
       // If modifying this block, update the other location too.
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
+        // A scoped impl target (`impl path::Type` / `impl Trait for path::Type`)
+        // names the type with a scoped_type_identifier, but the type's own
+        // declaration is keyed by its trailing name — reduce to that tail so the
+        // method owns through the real node instead of a `path::Type` id that was
+        // never materialized (#1975). Mirrors the qualified_identifier handling
+        // above and rust.ts:extractOwnerName.
+        const implTargetName = (n: SyntaxNode): string =>
+          n.type === 'scoped_type_identifier'
+            ? (n.childForFieldName?.('name')?.text ?? n.text)
+            : n.text;
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
           const nameNode = children
@@ -435,17 +445,22 @@ export const findEnclosingClassInfo = (
                 c.type === 'identifier',
             );
           if (nameNode) {
+            const name = implTargetName(nameNode);
             return {
-              classId: generateId('Struct', `${filePath}:${nameNode.text}`),
-              className: nameNode.text,
+              classId: generateId('Struct', `${filePath}:${name}`),
+              className: name,
             };
           }
         }
-        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
+        const firstType = children.find(
+          (c: SyntaxNode) =>
+            c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+        );
         if (firstType) {
+          const name = implTargetName(firstType);
           return {
-            classId: generateId('Impl', `${filePath}:${firstType.text}`),
-            className: firstType.text,
+            classId: generateId('Impl', `${filePath}:${name}`),
+            className: name,
           };
         }
       }

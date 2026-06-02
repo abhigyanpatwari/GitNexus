@@ -28,9 +28,10 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "2ffad4ba7b1d2eb1ac407cb6d75d0eb98cbc1878260dbdfe982c0fc925b2d00c",
+    "fingerprint": "9e387d0801fe76faee92e0394f6d4dda75b5e59d12090d51fb8a92d89572ee7a",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04)."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04).",
+    "_note": "#1975: + rust-scoped-impl fixture (impl path::Type + impl Trait for path::Type). Pure fixture-corpus drift — the fix is the @definition.impl scoped arm + findEnclosingClassInfo owner reduction (legacy path), NOT the rust scope-extractor; existing fixtures' captures byte-identical. fixture_count 120->121."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
