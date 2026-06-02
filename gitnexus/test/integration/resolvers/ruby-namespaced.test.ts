@@ -8,12 +8,6 @@
 import { describe, it, expect } from 'vitest';
 import { emitRubyScopeCaptures } from '../../../src/core/ingestion/languages/ruby/index.js';
 import type { CaptureMatch } from 'gitnexus-shared';
-import {
-  getNodesByLabel,
-  getRelationships,
-  runPipelineFromRepo,
-  type PipelineResult,
-} from './helpers.js';
 
 describe('Ruby namespaced class/module definitions (F62) — capture-level', () => {
   it('class Foo::Bar captures @declaration.class with tail constant (Bar)', () => {
