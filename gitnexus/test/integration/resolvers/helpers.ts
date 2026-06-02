@@ -43,6 +43,20 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // fixture). This requires scope-based cross-file package-sibling resolution
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
+    // Go structural interface implementation inference is a registry-primary
+    // scope-resolution feature. The legacy DAG does not synthesize structural
+    // IMPLEMENTS / METHOD_IMPLEMENTS edges or feed them into interface dispatch.
+    'emits signature-checked structural IMPLEMENTS edges only for valid implementors',
+    'feeds structural IMPLEMENTS into METHOD_IMPLEMENTS edges',
+    'prefers the concrete local assignment over interface fan-out',
+    'fans out interface-typed receiver calls to all known implementors',
+    'includes embedded interface methods before emitting structural IMPLEMENTS edges',
+    'includes promoted embedded struct methods before emitting structural IMPLEMENTS edges',
+    'fans out embedded-interface receivers only to complete implementors',
+    'matches local interface types against package-qualified implementation signatures',
+    'merges methods from package-qualified embedded interfaces before matching implementors',
+    'fans out cross-package interface receivers only to valid implementors',
+    'dispatches package-qualified embedded-interface receivers only to complete implementors',
   ]),
   java: new Set([
     // Duplicate-FQN same-module path-affinity ordering is implemented in the

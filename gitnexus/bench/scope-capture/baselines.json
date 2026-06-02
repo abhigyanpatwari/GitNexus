@@ -1,9 +1,9 @@
 {
   "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. The synthetic source is now HERITAGE-BEARING for every language (each Entity extends/implements/embeds/uses-trait/conforms-to a shared base) so the #1951 @reference.inherits synth is gated at scale, not just the base capture loop. All languages thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp #1951, java #1956).",
   "go": {
-    "fingerprint": "976bfd17cee048db11e06a27298e48919b7d45d5277d11923faeb61b138737dd",
+    "fingerprint": "a909c197b07921f974de1a8a47cc997b9580153db2d400ef13d205b6c1de5865",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 synth-widening: + go-qualified-base fixture; synthesizeGoInheritanceReferences now emits embeds for qualified_type (pkg.Base), generic_type (Box[T]), pointer, AND interface_type embeds (matching the #1940 legacy leg), reduced to bare names at parity. go-ambiguous gains an embed inherits capture. Linear (~1.01). (Earlier #1956: heritage-bearing scale source so the synth is gated at scale.)"
+    "_rebaselined": "#1966: Go structural interface implementation detection changes capture output (method_elem, return-type, pointer receiver raw form, struct_type/interface_type containers)."
   },
   "cobol": {
     "fingerprint": "68ee0e95eb9f86f2d92ca35f730f4c2d4d83abc1b5241ae767ff3437780ec8d1",

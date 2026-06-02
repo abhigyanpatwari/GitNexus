@@ -4,6 +4,27 @@ import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 export function synthesizeGoTypeBindings(rootNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
 
+  for (const node of rootNode.descendantsOfType('var_spec')) {
+    const name = node.childForFieldName('name');
+    const value = node.childForFieldName('value');
+    if (name?.type !== 'identifier' || value === null) continue;
+
+    const rhsExpr = value.namedChildren[0];
+    if (rhsExpr === undefined) continue;
+    const typeNode = extractCompositeLiteralTypeNode(rhsExpr);
+    if (typeNode === null) continue;
+
+    out.push({
+      '@type-binding.constructor': syntheticCapture('@type-binding.constructor', node, node.text),
+      '@type-binding.name': syntheticCapture('@type-binding.name', name, name.text),
+      '@type-binding.type': syntheticCapture(
+        '@type-binding.type',
+        typeNode,
+        extractSimpleTypeNameText(typeNode),
+      ),
+    });
+  }
+
   for (const node of rootNode.descendantsOfType('short_var_declaration')) {
     const right = node.childForFieldName('right');
     if (right === null) continue;
@@ -232,6 +253,21 @@ function extractSimpleTypeNameText(node: SyntaxNode): string {
 }
 
 /** Extract the type/signature node from a RHS expression. */
+function extractCompositeLiteralTypeNode(expr: SyntaxNode): SyntaxNode | null {
+  if (expr.type === 'composite_literal') {
+    return (
+      expr.childForFieldName('type') ??
+      expr.namedChildren.find((c) => ['type_identifier', 'qualified_type'].includes(c.type)) ??
+      null
+    );
+  }
+  if (expr.type === 'unary_expression') {
+    const operand = expr.childForFieldName('operand');
+    return operand === null ? null : extractCompositeLiteralTypeNode(operand);
+  }
+  return null;
+}
+
 function extractTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (

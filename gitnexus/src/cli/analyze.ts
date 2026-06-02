@@ -35,6 +35,7 @@ import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -616,6 +617,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // async error that escapes the try/catch below (#1169) surfaces with
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
+
+  // npm-11 npx-crash nudge (#1939). Runs here, after the heap re-exec guard,
+  // so it fires once in the working process and never on the lazy-startup path
+  // of other commands (e.g. `gitnexus mcp`).
+  warnIfNpm11NpxRisk();
 
   // Snapshot the GITNEXUS_* env vars that the impl writes for downstream
   // consumption, so they don't leak across `analyzeCommand` invocations in
