@@ -9,7 +9,6 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
-  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -2011,38 +2010,5 @@ describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
         c.target === 'trait_only' && c.source === 'run' && c.targetFilePath.includes('parent.rs'),
     );
     expect(traitCall).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Scoped impl targets — method ownership (issue #1975)
-//
-// `impl path::Type { ... }` and `impl Trait for path::Type { ... }` name the
-// target with a scoped_type_identifier. The owner is reduced to the trailing
-// type name (matching the type's own declaration), and an inherent scoped impl
-// now materializes its Impl node — so methods own through a real node instead
-// of a dangling `path::Type` owner id.
-// ---------------------------------------------------------------------------
-
-describe('Rust scoped impl targets (issue #1975)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-scoped-impl'), () => {});
-  }, 60000);
-
-  it('owns inherent + trait-impl methods of a scoped target with no dangling edges', () => {
-    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    // inherent impl: impl outer::Inner { fn inner_method }
-    expect(hasMethod.some((e) => e.target === 'inner_method' && e.sourceLabel !== 'unknown')).toBe(
-      true,
-    );
-    // trait impl: impl Speak for outer::Inner — speak owned by the Inner struct node
-    expect(
-      hasMethod.some(
-        (e) => e.target === 'speak' && e.source === 'Inner' && e.sourceLabel === 'Struct',
-      ),
-    ).toBe(true);
   });
 });

@@ -1213,10 +1213,6 @@ export const RUST_QUERIES = `
 (trait_item name: (type_identifier) @name) @definition.trait
 (impl_item type: (type_identifier) @name !trait) @definition.impl
 (impl_item type: (generic_type type: (type_identifier) @name) !trait) @definition.impl
-; Scoped inherent impl: impl path::Type { ... }. Key the Impl node by the
-; trailing type name so the method owner (reduced to the same tail in
-; findEnclosingClassInfo) resolves instead of dangling (#1975).
-(impl_item type: (scoped_type_identifier name: (type_identifier) @name) !trait) @definition.impl
 (mod_item name: (identifier) @name) @definition.module
 
 ; Type aliases, const, static, macros

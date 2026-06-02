@@ -424,16 +424,6 @@ export const findEnclosingClassInfo = (
       // If modifying this block, update the other location too.
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
-        // A scoped impl target (`impl path::Type` / `impl Trait for path::Type`)
-        // names the type with a scoped_type_identifier, but the type's own
-        // declaration is keyed by its trailing name — reduce to that tail so the
-        // method owns through the real node instead of a `path::Type` id that was
-        // never materialized (#1975). Mirrors the qualified_identifier handling
-        // above and rust.ts:extractOwnerName.
-        const implTargetName = (n: SyntaxNode): string =>
-          n.type === 'scoped_type_identifier'
-            ? (n.childForFieldName?.('name')?.text ?? n.text)
-            : n.text;
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
           const nameNode = children
@@ -445,22 +435,17 @@ export const findEnclosingClassInfo = (
                 c.type === 'identifier',
             );
           if (nameNode) {
-            const name = implTargetName(nameNode);
             return {
-              classId: generateId('Struct', `${filePath}:${name}`),
-              className: name,
+              classId: generateId('Struct', `${filePath}:${nameNode.text}`),
+              className: nameNode.text,
             };
           }
         }
-        const firstType = children.find(
-          (c: SyntaxNode) =>
-            c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
-        );
+        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
         if (firstType) {
-          const name = implTargetName(firstType);
           return {
-            classId: generateId('Impl', `${filePath}:${name}`),
-            className: name,
+            classId: generateId('Impl', `${filePath}:${firstType.text}`),
+            className: firstType.text,
           };
         }
       }
@@ -486,27 +471,14 @@ export const findEnclosingClassInfo = (
         ) {
           label = 'Interface';
         }
-        // C++ out-of-line definitions name the container with a qualified_identifier
-        // (e.g. `struct Outer::Inner { ... }`). The type itself is keyed by its
-        // trailing name — the nested `Inner` node from its in-class declaration —
-        // exactly as an inline nested definition would be. Reduce the owner to that
-        // tail segment so member edges resolve to the real node instead of a
-        // `Outer::Inner` owner id that was never materialized (#1975).
-        // Ruby's `scope_resolution` name is intentionally left full: a compact
-        // `class Foo::Bar` has no in-class declaration, so its node IS keyed by the
-        // full scoped name (and must stay distinct from a separate `Baz::Bar`).
-        const ownerNameNode =
-          nameNode.type === 'qualified_identifier'
-            ? (nameNode.childForFieldName?.('name') ?? nameNode)
-            : nameNode;
-        const templateArguments = extractTemplateArguments(ownerNameNode.text);
+        const templateArguments = extractTemplateArguments(nameNode.text);
         const classIdName =
           templateArguments !== undefined
-            ? `${stripTemplateArguments(ownerNameNode.text)}${templateArgumentsIdTag(templateArguments)}`
-            : ownerNameNode.text;
+            ? `${stripTemplateArguments(nameNode.text)}${templateArgumentsIdTag(templateArguments)}`
+            : nameNode.text;
         return {
           classId: generateId(label, `${filePath}:${classIdName}`),
-          className: ownerNameNode.text,
+          className: nameNode.text,
         };
       }
     }
