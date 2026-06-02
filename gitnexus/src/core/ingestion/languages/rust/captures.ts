@@ -274,7 +274,7 @@ function computeRustDeclarationArity(fnNode: SyntaxNode): {
     const child = params.namedChild(i);
     if (child === null) continue;
     if (child.type === 'self_parameter') continue;
-    if (child.type === 'parameter') count++;
+    if (child.type === 'parameter' || child.type === 'variadic_parameter') count++;
   }
   // Rust has no default parameters or overloading
   return { parameterCount: count, requiredParameterCount: count };

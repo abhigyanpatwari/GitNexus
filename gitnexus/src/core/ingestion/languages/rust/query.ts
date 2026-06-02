@@ -8,6 +8,7 @@ const RUST_SCOPE_QUERY = `
 (trait_item) @scope.class
 (impl_item) @scope.class
 (enum_item) @scope.class
+(union_item) @scope.class
 (function_item) @scope.function
 (closure_expression) @scope.function
 (block) @scope.block
@@ -30,6 +31,10 @@ const RUST_SCOPE_QUERY = `
 (enum_item
   name: (type_identifier) @declaration.name) @declaration.enum
 
+;; Declarations — union
+(union_item
+  name: (type_identifier) @declaration.name) @declaration.struct
+
 ;; Declarations — function (top-level or inside mod)
 (function_item
   name: (identifier) @declaration.name) @declaration.function
@@ -40,8 +45,12 @@ const RUST_SCOPE_QUERY = `
   type: (_) @declaration.field-type) @declaration.field
 
 ;; Declarations — variables (let bindings)
+;; Uses pattern: (_) to match any pattern shape — bare identifier, tuple,
+;; struct, ref, captured patterns. tree-sitter-rust puts mutable_specifier
+;; and ref as siblings of the pattern child, not wrappers, so the pattern
+;; node is directly accessible even with let mut x / let ref x.
 (let_declaration
-  pattern: (identifier) @declaration.name) @declaration.variable
+  pattern: (_) @declaration.name) @declaration.variable
 
 ;; Declarations — const
 (const_item
@@ -59,33 +68,37 @@ const RUST_SCOPE_QUERY = `
   pattern: (identifier) @type-binding.name
   type: (_) @type-binding.type) @type-binding.parameter
 
+;; Type bindings — variadic parameter annotations
+(variadic_parameter
+  pattern: (_) @type-binding.name) @type-binding.parameter
+
 ;; Type bindings — let with type annotation
 (let_declaration
-  pattern: (identifier) @type-binding.name
+  pattern: (_) @type-binding.name
   type: (_) @type-binding.type) @type-binding.assignment
 
 ;; Type bindings — struct literal constructor inference
 (let_declaration
-  pattern: (identifier) @type-binding.name
+  pattern: (_) @type-binding.name
   value: (struct_expression
     name: (_) @type-binding.type)) @type-binding.constructor
 
 ;; Type bindings — call-return inference (let x = Foo::new())
 (let_declaration
-  pattern: (identifier) @type-binding.name
+  pattern: (_) @type-binding.name
   value: (call_expression
     function: (_) @type-binding.type)) @type-binding.call-return
 
 ;; Type bindings — call-return inference through .await (let x = foo().await)
 (let_declaration
-  pattern: (identifier) @type-binding.name
+  pattern: (_) @type-binding.name
   value: (await_expression
     (call_expression
       function: (_) @type-binding.type))) @type-binding.call-return
 
 ;; Type bindings — variable alias (let x = y)
 (let_declaration
-  pattern: (identifier) @type-binding.name
+  pattern: (_) @type-binding.name
   value: (identifier) @type-binding.type) @type-binding.alias
 
 ;; Type bindings — return type annotation
@@ -109,8 +122,18 @@ const RUST_SCOPE_QUERY = `
     name: (identifier) @reference.name)) @reference.call.free
 
 ;; References — constructor calls (struct literal)
+;; Covers bare names (Foo {}), scoped (foo::bar::Baz {}), and turbofish
+;; (Foo::<T> {}) — the name: field resolves to the trailing identifier
+;; in all cases through tree-sitter-rust's grammar.
 (struct_expression
   name: (_) @reference.name) @reference.call.constructor
+
+;; References — macro invocations
+(macro_invocation
+  macro: (identifier) @reference.name) @reference.call.free
+
+(macro_invocation
+  macro: (scoped_identifier) @reference.name) @reference.call.free
 
 ;; References — field reads
 (field_expression
