@@ -16,9 +16,10 @@
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance — flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
-    "fingerprint": "a571d260559fa48994d12970965b4f9df93efd087541ca31dc7818ac4cd2a2a6",
+    "fingerprint": "4022f436885d15fd2d419e38e0674115e1c5daa7dcb9578de2633160bed94446",
     "scaling_budget": 1.5,
-    "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12."
+    "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
+    "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06)."
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.)",

@@ -273,6 +273,15 @@ const CPP_SCOPE_QUERY = `
   declarator: (init_declarator
     declarator: (identifier) @declaration.name)) @declaration.variable
 
+;; ─── Declarations — variables (without initializer) ─────────────────
+;; Covers non-leading declarators in mixed declaration lists.
+(declaration
+  declarator: (identifier) @declaration.name) @declaration.variable
+
+(declaration
+  declarator: (pointer_declarator
+    declarator: (identifier) @declaration.name)) @declaration.variable
+
 ;; ─── Declarations — macro definitions ───────────────────────────────
 (preproc_def
   name: (identifier) @declaration.name) @declaration.macro

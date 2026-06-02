@@ -198,6 +198,14 @@ describe('emitCScopeCaptures — other declarations', () => {
     expect(m!['@declaration.name'].text).toBe('x');
   });
 
+  it('captures all names in mixed initialized and uninitialized declarations', () => {
+    const matches = allMatches('void f(void) { int a = 1, b, *p, c = 3, d; }', (t) =>
+      t.includes('@declaration.variable'),
+    );
+    const names = matches.map((m) => m['@declaration.name'].text).sort();
+    expect(names).toEqual(['a', 'b', 'c', 'd', 'p']);
+  });
+
   it('captures macro as @declaration.macro', () => {
     const m = findMatch('#define MAX 100', (t) => t.includes('@declaration.macro'));
     expect(m).toBeDefined();
