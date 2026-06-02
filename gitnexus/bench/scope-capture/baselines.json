@@ -46,10 +46,10 @@
     "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable \u2014 extends + protocol conformance); linear (~1.03)."
   },
   "dart": {
-    "fingerprint": "003b42737d7d48d14d293041c1c3c7866d45398e01c3ff932017ec1ab2c97c05",
+    "fingerprint": "a9e882b537765e8fd0ddfcd33b38b253dd86fc5ddffa6e4bf5a85ed8ee615eaa",
     "scaling_budget": 1.5,
     "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
-    "_rebaselined": "#1970 review: UpperCamelCase free-calls re-tagged to constructor calls; cascade calls emitted; built-in-named calls suppressed; enum class-like scope. #1926 F24/F25: member-call contexts + constructor-body attribution. tri-review: dedup named-constructor double-match (crash fix); + dart-named-constructor-body fixture; suppress bare-container type bindings."
+    "_rebaselined": "#1970 review + tri-review follow-ups: constructor-call retag, cascade calls, built-in suppression, enum scope, #1926 F24/F25, named-ctor dedup (crash fix), container-name binding suppression; heritage file-affinity resolution. Fixtures: member-call-contexts, constructor-body, named-constructor-body, heritage-name-collision, construct-cascade."
   },
   "java": {
     "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",

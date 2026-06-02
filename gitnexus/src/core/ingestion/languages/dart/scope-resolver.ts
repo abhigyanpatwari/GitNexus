@@ -44,31 +44,66 @@ import {
 } from './index.js';
 import { expandDartWildcardNames } from './expand-wildcards.js';
 
+interface ClassDefRef {
+  readonly graphId: string;
+  readonly filePath: string;
+}
+
+/**
+ * Resolve a class simple name to a graph id with FILE AFFINITY: prefer a
+ * definition in `preferredFile`, then a workspace-unique match, otherwise
+ * refuse to guess (return undefined). This avoids the cross-file simple-name
+ * collision a global last-write-wins map produces — two files each declaring
+ * `Logger` where one `implements Logger` must bind its OWN file's `Logger`.
+ */
+function pickClassByName(
+  name: string,
+  preferredFile: string,
+  defsByName: ReadonlyMap<string, readonly ClassDefRef[]>,
+): string | undefined {
+  const cands = defsByName.get(name);
+  if (cands === undefined || cands.length === 0) return undefined;
+  const sameFile = cands.find((c) => c.filePath === preferredFile);
+  if (sameFile !== undefined) return sameFile.graphId;
+  if (cands.length === 1) return cands[0]!.graphId;
+  return undefined; // ambiguous across files, none same-file — don't emit a wrong edge
+}
+
 /**
  * Emit IMPLEMENTS edges for Dart `implements`/`with` clauses, carried from
  * `captures.ts` as `__heritage__:<kind>:<base>:<child>` side-effect imports.
- * Resolved by simple name across the workspace (mirror of Ruby's
- * `emitRubyMixinEdges`).
+ * The marker lives in the implementing class's `ParsedFile`, so both the child
+ * and base names are resolved with same-file affinity (see `pickClassByName`),
+ * which keeps cross-file same-name classes from collapsing (mirror of Ruby's
+ * `emitRubyMixinEdges`, with the #1951-style file-affinity hardening).
  */
 function emitDartHeritageEdges(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
 ): void {
-  const graphIdByName = new Map<string, string>();
+  const defsByName = new Map<string, ClassDefRef[]>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (!isClassLike(def.type)) continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
       if (graphId === undefined) continue;
       const simpleName = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-      if (simpleName !== '') graphIdByName.set(simpleName, graphId);
+      if (simpleName === '') continue;
+      let list = defsByName.get(simpleName);
+      if (list === undefined) {
+        list = [];
+        defsByName.set(simpleName, list);
+      }
+      list.push({ graphId, filePath: parsed.filePath });
     }
   }
 
+  // Pre-seed with existing IMPLEMENTS edges (reason-qualified) so a class that
+  // both `implements X` and `with X` keeps both distinct edges.
   const emitted = new Set<string>();
   for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
-    emitted.add(`${rel.sourceId}->${rel.targetId}`);
+    emitted.add(`${rel.sourceId}->${rel.targetId}:${rel.reason}`);
   }
 
   for (const parsed of parsedFiles) {
@@ -78,14 +113,14 @@ function emitDartHeritageEdges(
       const parts = raw.slice(DART_HERITAGE_PREFIX.length).split(':');
       if (parts.length < 3) continue;
       const [kind, baseName, childName] = parts;
-      const childId = graphIdByName.get(childName!);
-      const baseId = graphIdByName.get(baseName!);
+      const childId = pickClassByName(childName!, parsed.filePath, defsByName);
+      const baseId = pickClassByName(baseName!, parsed.filePath, defsByName);
       if (childId === undefined || baseId === undefined || childId === baseId) continue;
-      const key = `${childId}->${baseId}`;
+      const key = `${childId}->${baseId}:${kind}`;
       if (emitted.has(key)) continue;
       emitted.add(key);
       graph.addRelationship({
-        id: generateId('IMPLEMENTS', `${key}:${kind}`),
+        id: generateId('IMPLEMENTS', key),
         sourceId: childId,
         targetId: baseId,
         type: 'IMPLEMENTS',
@@ -119,23 +154,29 @@ function buildDartMro(
     }
   }
 
-  const implsByChild = new Map<string, string[]>();
+  const implsByChild = new Map<string, Set<string>>();
   for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
     const child = defIdByGraphId.get(rel.sourceId);
     const base = defIdByGraphId.get(rel.targetId);
     if (child === undefined || base === undefined) continue;
-    let list = implsByChild.get(child);
-    if (list === undefined) {
-      list = [];
-      implsByChild.set(child, list);
+    let set = implsByChild.get(child);
+    if (set === undefined) {
+      set = new Set();
+      implsByChild.set(child, set);
     }
-    if (!list.includes(base)) list.push(base);
+    set.add(base);
   }
 
   for (const [childDefId, impls] of implsByChild) {
     const extendsChain = mro.get(childDefId) ?? [];
+    const seen = new Set(extendsChain);
     const merged = [...extendsChain];
-    for (const base of impls) if (!merged.includes(base)) merged.push(base);
+    for (const base of impls) {
+      if (!seen.has(base)) {
+        seen.add(base);
+        merged.push(base);
+      }
+    }
     mro.set(childDefId, merged);
   }
 

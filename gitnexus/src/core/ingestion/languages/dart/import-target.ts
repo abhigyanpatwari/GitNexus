@@ -15,10 +15,6 @@
 
 import { DART_HERITAGE_PREFIX } from './interpret.js';
 
-function stripQuotes(s: string): string {
-  return s.replace(/^['"]|['"]$/g, '');
-}
-
 /** Resolve a relative path against the importer's directory, normalizing
  *  `.`/`..` segments, then confirm it exists in the workspace file set. */
 function resolveRelative(
@@ -49,18 +45,17 @@ export function resolveDartImportTarget(
   allFilePaths: ReadonlySet<string>,
 ): string | readonly string[] | null {
   if (targetRaw.startsWith(DART_HERITAGE_PREFIX)) return null;
-
-  const stripped = stripQuotes(targetRaw);
-  if (stripped === '') return null;
+  // `targetRaw` already arrives quote-stripped from `interpretDartImport`.
+  if (targetRaw === '') return null;
 
   // Dart SDK imports never resolve to a repo file.
-  if (stripped.startsWith('dart:')) return null;
+  if (targetRaw.startsWith('dart:')) return null;
 
   // `package:pkg/path.dart` → `lib/path.dart` (or bare `path.dart`).
-  if (stripped.startsWith('package:')) {
-    const slash = stripped.indexOf('/');
+  if (targetRaw.startsWith('package:')) {
+    const slash = targetRaw.indexOf('/');
     if (slash === -1) return null;
-    const relPath = stripped.slice(slash + 1);
+    const relPath = targetRaw.slice(slash + 1);
     for (const candidate of [`lib/${relPath}`, relPath]) {
       for (const fp of allFilePaths) {
         if (fp === candidate || fp.endsWith('/' + candidate)) return fp;
@@ -70,5 +65,5 @@ export function resolveDartImportTarget(
   }
 
   // Relative import.
-  return resolveRelative(stripped, fromFile, allFilePaths);
+  return resolveRelative(targetRaw, fromFile, allFilePaths);
 }

@@ -712,3 +712,33 @@ describe.skipIf(!dartAvailable)('Dart named-constructor body (no file drop)', ()
     expect(ctorCall).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Heritage cross-file simple-name collision (PR #1970 tri-review P2).
+// console_logger.dart and file_logger.dart each declare `class Logger`; each
+// file's service `implements Logger`. emitDartHeritageEdges resolves the base
+// with same-file affinity, so each IMPLEMENTS edge must target its OWN file's
+// Logger (not a globally last-written one). Parity — both modes resolve same-file.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart heritage cross-file name collision', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'dart-heritage-name-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves implements to the same-file class on a name collision', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const consoleEdge = impl.find((e) => e.source === 'ConsoleService' && e.target === 'Logger');
+    expect(consoleEdge).toBeDefined();
+    expect(consoleEdge!.targetFilePath).toContain('console_logger.dart');
+
+    const fileEdge = impl.find((e) => e.source === 'FileService' && e.target === 'Logger');
+    expect(fileEdge).toBeDefined();
+    expect(fileEdge!.targetFilePath).toContain('file_logger.dart');
+  });
+});

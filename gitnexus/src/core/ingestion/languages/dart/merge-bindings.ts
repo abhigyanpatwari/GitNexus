@@ -9,18 +9,24 @@
 
 import type { BindingRef } from 'gitnexus-shared';
 
+// Named tiers (lower = stronger), matching `languages/swift/merge-bindings.ts`.
+const TIER_LOCAL = 0;
+const TIER_IMPORT = 1;
+const TIER_WILDCARD = 2;
+const TIER_UNKNOWN = 3;
+
 function tierOf(b: BindingRef): number {
   switch (b.origin) {
     case 'local':
-      return 0;
+      return TIER_LOCAL;
     case 'import':
     case 'namespace':
     case 'reexport':
-      return 1;
+      return TIER_IMPORT;
     case 'wildcard':
-      return 2;
+      return TIER_WILDCARD;
     default:
-      return 3;
+      return TIER_UNKNOWN;
   }
 }
 
