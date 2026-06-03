@@ -13,21 +13,42 @@ import { generateId } from '../../../../lib/utils.js';
 const HERITAGE_PREFIX = '__heritage__:';
 const PROPERTY_PREFIX = '__property__:';
 
+/**
+ * #1991: resolve a BARE mixin reference (`include Loggable`) to a nested module by
+ * the INCLUDING class's lexical scope — Ruby looks up a constant in the innermost
+ * enclosing scope first. For owner `App.S`, try `App.Loggable`, then walk outward.
+ * Returns undefined if no enclosing-scope-qualified module exists.
+ */
+function qualifyMixinByOwnerScope(
+  mixinName: string,
+  ownerName: string,
+  graphIdByName: ReadonlyMap<string, string>,
+): string | undefined {
+  let prefix = ownerName;
+  let dot = prefix.lastIndexOf('.');
+  while (dot !== -1) {
+    prefix = prefix.slice(0, dot);
+    const g = graphIdByName.get(`${prefix}.${mixinName}`);
+    if (g !== undefined) return g;
+    dot = prefix.lastIndexOf('.');
+  }
+  return undefined;
+}
+
 function emitRubyMixinEdges(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
 ): void {
   const graphIdByName = new Map<string, string>();
-  // Secondary tail -> graphId map (first-wins). The `__heritage__` marker carries
-  // the mixin TARGET as the bare written name (`arg.text`, e.g. `Loggable`), not
-  // its full qualifiedName, so a nested mixin module included by its short name
-  // (`include Loggable` where it is `App::Loggable`) misses the full-qn map and
-  // its IMPLEMENTS edge is silently dropped (#1982 follow-up). The tail fallback
-  // recovers it. OWNER (`className`) lookups stay full-qn only, preserving
-  // same-tail owner disambiguation; only the under-qualified mixin reference
-  // falls back, and a genuine same-tail mixin tie there resolves first-wins.
-  const graphIdByTail = new Map<string, string>();
+  // Secondary tail -> graphId map. The `__heritage__` marker carries the mixin
+  // TARGET as the bare written name (`arg.text`, e.g. `Loggable`), not its full
+  // qualifiedName, so a nested mixin module included by its short name misses the
+  // full-qn map. We first resolve it lexically by the including class's enclosing
+  // scope (`qualifyMixinByOwnerScope`); this tail map is the last resort. A genuine
+  // same-tail collision is mapped to `null` so we REFUSE to guess (#1991) rather
+  // than the old first-wins, which cross-wired App::Loggable / Web::Loggable.
+  const graphIdByTail = new Map<string, string | null>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (!isClassLike(def.type)) continue;
@@ -43,7 +64,12 @@ function emitRubyMixinEdges(
           graphIdByName.set(fullName, graphId);
           const dot = fullName.lastIndexOf('.');
           const tail = dot === -1 ? fullName : fullName.slice(dot + 1);
-          if (tail.length > 0 && !graphIdByTail.has(tail)) graphIdByTail.set(tail, graphId);
+          if (tail.length > 0) {
+            const existingTail = graphIdByTail.get(tail);
+            if (existingTail === undefined) graphIdByTail.set(tail, graphId);
+            else if (existingTail !== null && existingTail !== graphId)
+              graphIdByTail.set(tail, null); // same-tail collision — refuse to guess
+          }
         }
       }
     }
@@ -64,9 +90,15 @@ function emitRubyMixinEdges(
       if (parts.length < 3) continue;
       const [kind, mixinName, className] = parts;
       const classGraphId = graphIdByName.get(className!);
-      // Owner stays full-qn; the mixin target may be written by short name and
-      // miss the full-qn map, so fall back to the simple-tail map (#1982).
-      const mixinGraphId = graphIdByName.get(mixinName!) ?? graphIdByTail.get(mixinName!);
+      // Owner stays full-qn. The mixin target may be written by short name and miss
+      // the full-qn map; resolve it lexically by the including class's enclosing
+      // scope (`App::S` + `Loggable` -> `App::Loggable`), then fall back to the tail
+      // map ONLY when unambiguous — never first-wins on a collision (#1982/#1991).
+      const mixinGraphId =
+        graphIdByName.get(mixinName!) ??
+        qualifyMixinByOwnerScope(mixinName!, className!, graphIdByName) ??
+        graphIdByTail.get(mixinName!) ??
+        undefined;
       if (classGraphId === undefined || mixinGraphId === undefined) continue;
       const edgeKey = `${classGraphId}->${mixinGraphId}:${kind}`;
       if (emitted.has(edgeKey)) continue;
