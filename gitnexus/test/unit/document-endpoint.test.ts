@@ -548,6 +548,133 @@ describe('documentEndpoint', () => {
       expect(asContextResult(result).result.codeDiagram).toContain('graph TB');
     });
   });
+
+  describe('logicFlow dedup (#38)', () => {
+    function chainWith(names: string[]) {
+      return {
+        chain: names.map((n, i) => ({
+          uid: `Method:src/C.java:${n}`,
+          name: n,
+          kind: 'Method',
+          filePath: 'src/C.java',
+          depth: i,
+          content: '',
+          metadata: emptyMetadata(),
+          callees: [],
+        })),
+        root: names[0],
+        summary: emptySummary(),
+      };
+    }
+
+    beforeEach(() => {
+      vi.mocked(endpointQuery.queryEndpoints).mockResolvedValue({
+        endpoints: [{
+          method: 'GET',
+          path: '/api/test',
+          controller: 'C',
+          handler: 'getBondById',
+          filePath: 'src/C.java',
+          line: 10,
+        }],
+      });
+    });
+
+    it('collapses consecutive duplicate method names (#38)', async () => {
+      // (#38) The reproduction in the issue was:
+      //   getBondbyId → getBondById → getBondById → getCode → getProductBondInfo → IssuerDto → getProductBondInfo
+      // The two `getBondById` entries came from overload resolution —
+      // the chain walked the @RequestParam overload, then the
+      // @RequestBody overload, then the real body. They were the
+      // "same" method (same name) and the user reads the flow as a
+      // loop. After dedup, the consecutive duplicate is gone.
+      vi.mocked(traceExecutor.executeTrace).mockResolvedValue(
+        chainWith(['getBondById', 'getBondById', 'getBondById', 'getCode', 'getProductBondInfo', 'IssuerDto', 'getProductBondInfo']),
+      );
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/bonds/{id}',
+        mode: 'ai_context',
+      });
+
+      expect(asContextResult(result).result.logicFlow).toBe(
+        'getBondById → getCode → getProductBondInfo → IssuerDto → getProductBondInfo',
+      );
+      // The trailing `getProductBondInfo` is NOT collapsed — it is
+      // separated from the prior `getProductBondInfo` by `IssuerDto`
+      // (a class name in the chain — the BFS walks types as well as
+      // methods). Only consecutive duplicates collapse; distinct
+      // occurrences separated by other nodes are real call paths.
+    });
+
+    it('preserves non-consecutive duplicate method names (#38)', async () => {
+      // Real call-graph paths can legitimately re-visit a method.
+      // E.g., A → B → A is meaningful (a function calls back into an
+      // upstream helper). Dedup must not collapse those.
+      vi.mocked(traceExecutor.executeTrace).mockResolvedValue(
+        chainWith(['validate', 'loadConfig', 'validate']),
+      );
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/validate',
+        mode: 'ai_context',
+      });
+
+      expect(asContextResult(result).result.logicFlow).toBe(
+        'validate → loadConfig → validate',
+      );
+    });
+
+    it('preserves distinct method names unchanged', async () => {
+      vi.mocked(traceExecutor.executeTrace).mockResolvedValue(
+        chainWith(['getBondById', 'getCode', 'getProductBondInfo']),
+      );
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/bonds/{id}',
+        mode: 'ai_context',
+      });
+
+      expect(asContextResult(result).result.logicFlow).toBe(
+        'getBondById → getCode → getProductBondInfo',
+      );
+    });
+
+    it('handles a single-node chain without injecting artifacts', async () => {
+      vi.mocked(traceExecutor.executeTrace).mockResolvedValue(
+        chainWith(['handler']),
+      );
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/x',
+        mode: 'ai_context',
+      });
+
+      expect(asContextResult(result).result.logicFlow).toBe('handler');
+    });
+
+    it('uses TODO_AI_ENRICH for empty chain', async () => {
+      vi.mocked(traceExecutor.executeTrace).mockResolvedValue({
+        chain: [],
+        root: 'handler',
+        summary: emptySummary(),
+      });
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/x',
+        mode: 'ai_context',
+      });
+
+      // Empty chain falls through to the existing TODO_AI_ENRICH
+      // placeholder so consumers can detect the missing signal.
+      expect(asContextResult(result).result.logicFlow).toBe('TODO_AI_ENRICH');
+    });
+  });
 });
 
 describe('metadata populated regardless of include_context', () => {

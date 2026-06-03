@@ -1405,7 +1405,20 @@ async function buildDocumentation(params: BuildDocumentationParams): Promise<Doc
 
   // Generate logic flow from chain
   if (chain.length > 0) {
-    result.logicFlow = chain.map(n => n.name).join(' → ');
+    // (#38) Collapse consecutive duplicate method names. The chain can
+    // include the same name twice in a row when:
+    //  - an overload is resolved iteratively (e.g., `getBondById` →
+    //    `getBondById` overload that adds @RequestBody), and
+    //  - a method calls itself transitively through re-exports.
+    // The resulting flow string was misleading: e.g.
+    // `getBondById → getBondById → getBondById → getCode` suggests
+    // the method calls itself in a loop, which is inaccurate. We
+    // collapse only consecutive duplicates — distinct occurrences of
+    // the same method separated by other calls are preserved (they
+    // are real call-graph paths).
+    const names = chain.map(n => n.name);
+    const dedupedNames = names.filter((name, i) => i === 0 || name !== names[i - 1]);
+    result.logicFlow = dedupedNames.join(' → ');
   } else {
     result.logicFlow = TODO_AI_ENRICH;
   }
