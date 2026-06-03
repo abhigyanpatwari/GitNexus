@@ -7,6 +7,7 @@ import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction, createLbugLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
+import { registerCoverageCommands } from './coverage.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
 
@@ -265,6 +266,7 @@ program
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
 registerGroupCommands(program);
+registerCoverageCommands(program);
 localizeCliHelp(program);
 
 program.parse(process.argv);
