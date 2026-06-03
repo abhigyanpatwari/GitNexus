@@ -150,11 +150,29 @@ func main() {
   it('normalizes pointer, slice, map, qualified, generic type names', () => {
     expect(normalizeGoTypeName('*User')).toBe('User');
     expect(normalizeGoTypeName('[]string')).toBe('string');
+    expect(normalizeGoTypeName('[]*User')).toBe('User');
+    expect(normalizeGoTypeName('[3]User')).toBe('User');
+    expect(normalizeGoTypeName('[3]*User')).toBe('User');
     expect(normalizeGoTypeName('map[string]int')).toBe('int');
     expect(normalizeGoTypeName('chan int')).toBe('int');
     expect(normalizeGoTypeName('func() error')).toBe('error');
     expect(normalizeGoTypeName('models.User')).toBe('User');
     expect(normalizeGoTypeName('List[User]')).toBe('List');
+  });
+
+  it('captures and normalizes fixed-array parameter type bindings', () => {
+    const src = 'package main\ntype User struct{}\nfunc Save(xs [3]User) {}';
+    const binding = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@type-binding.parameter'] && m['@type-binding.name']?.text === 'xs',
+    );
+
+    expect(binding?.['@type-binding.type']?.text).toBe('[3]User');
+    const parsed = interpretGoTypeBinding(binding!);
+    expect(parsed).toEqual({
+      boundName: 'xs',
+      rawTypeName: 'User',
+      source: 'parameter-annotation',
+    });
   });
 });
 

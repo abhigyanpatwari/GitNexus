@@ -81,8 +81,13 @@ export function interpretGoTypeBinding(captures: CaptureMatch): ParsedTypeBindin
 
 export function normalizeGoTypeName(text: string): string {
   let t = text.trim();
-  while (t.startsWith('*')) t = t.slice(1).trim();
-  if (t.startsWith('[]')) t = t.slice(2).trim();
+  let previous: string;
+  do {
+    previous = t;
+    while (t.startsWith('*')) t = t.slice(1).trim();
+    if (t.startsWith('[]')) t = t.slice(2).trim();
+    t = t.replace(/^\[[^\]]+\]\s*/, '');
+  } while (t !== previous);
   const mapMatch = t.match(/^map\[[^\]]+\]\s*(.+)$/);
   if (mapMatch) t = mapMatch[1].trim();
   t = t.replace(/^(?:<-)?chan\s+/, '');
