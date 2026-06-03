@@ -279,16 +279,13 @@ const REQUESTS_GENERIC_PATTERNS = compilePatterns({
 //   obj.fetch(uri="api/v1/camera/info/")
 //   obj.get(url="api/v1/camera/info/")
 //   obj.post(uri="api/v1/config/update/")
-// Also handles variable propagation:
-//   uri = "api/v1/endpoint/"
-//   obj.fetch(uri=uri, body=body)
 const WRAPPER_URI_PATTERNS = compilePatterns({
   name: 'python-http-wrapper-uri',
   language: Python,
   patterns: [
     {
       meta: {},
-      // Match any method call where keyword argument is `uri` or `url` with string value
+      // Match any method call where keyword argument is `uri` or `url`
       query: `
         (call
           function: (attribute
@@ -302,58 +299,6 @@ const WRAPPER_URI_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
-
-// Track local string constants: uri = "api/v1/endpoint/"
-const LOCAL_STRING_ASSIGNMENTS = compilePatterns({
-  name: 'python-local-string-assign',
-  language: Python,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (assignment
-          left: (identifier) @var_name
-          right: (string) @var_value)
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
-
-// Match method calls where uri=/url= keyword value is a variable (identifier)
-// that was previously assigned a string literal
-const WRAPPER_URI_VAR_PATTERNS = compilePatterns({
-  name: 'python-http-wrapper-uri-var',
-  language: Python,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (call
-          function: (attribute
-            object: (_) @client
-            attribute: (identifier) @method)
-          arguments: (argument_list
-            (keyword_argument
-              name: (identifier) @kw (#match? @kw "^(uri|url)$")
-              value: (identifier) @path_var)))
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
-
-// Track direct uri = "..." assignments for consumption by fetch(uri=uri)
-function buildLocalStringMap(tree) {
-  const map = new Map();
-  for (const match of runCompiledPatterns(LOCAL_STRING_ASSIGNMENTS, tree)) {
-    const varNode = match.captures.var_name;
-    const valNode = match.captures.var_value;
-    if (!varNode || !valNode) continue;
-    const val = unquoteLiteral(valNode.text);
-    if (val === null) continue;
-    map.set(varNode.text, val);
-  }
-  return map;
-}
 
 // Map wrapper method names to HTTP verbs
 const WRAPPER_METHOD_TO_HTTP: Record<string, string> = {
@@ -1142,7 +1087,8 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (path === null) continue;
 
       // Deduplicate: the two pattern branches can match the same call
-      const dedupKey = `${pathNode.startPosition.row}:${methodNode.startPosition.row}`;
+      const lineNum = pathNode.startPosition.row;
+      const dedupKey = lineNum * 1000 + methodNode.startPosition.row;
       if (seenUriDetections.has(dedupKey)) continue;
       seenUriDetections.add(dedupKey);
 
@@ -1157,56 +1103,6 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
         path,
         name: null,
         confidence: 0.65,
-      });
-    }
-
-    // Pre-scan: collect local string assignments (uri = "api/v1/endpoint/")
-    // Then resolve `requests.post(url=uri)` where uri is a variable
-    const localStrings = buildLocalStringMap(tree);
-
-    // Consumers: requests.<verb>(url="literal") keyword
-    for (const match of runCompiledPatterns(REQUESTS_KEYWORD_URL_PATTERNS, tree)) {
-      const methodNode = match.captures.method;
-      const pathNode = match.captures.path;
-      if (!methodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
-      if (path === null) continue;
-      out.push({
-        role: 'consumer',
-        framework: 'python-requests',
-        method: methodNode.text.toUpperCase(),
-        path,
-        name: null,
-        confidence: 0.7,
-      });
-    }
-
-    // Consumers: wrapper classes with uri=url_var (variable propagation)
-    // uri = "api/v1/endpoint/"
-    // obj.fetch(uri=uri, body=body)
-    const seenVarDetections = new Set<string>();
-    for (const match of runCompiledPatterns(WRAPPER_URI_VAR_PATTERNS, tree)) {
-      const methodNode = match.captures.method;
-      const pathVarNode = match.captures.path_var;
-      if (!methodNode || !pathVarNode) continue;
-      const dedupKey = `${pathVarNode.startPosition.row}:${methodNode.startPosition.row}`;
-      if (seenVarDetections.has(dedupKey)) continue;
-      seenVarDetections.add(dedupKey);
-
-      const resolvedPath = localStrings.get(pathVarNode.text);
-      if (!resolvedPath) continue;
-      const normalized = normalizeConsumerPath(resolvedPath);
-      if (normalized === '/') continue;
-
-      const methodName = methodNode.text.toLowerCase();
-      const httpMethod = WRAPPER_METHOD_TO_HTTP[methodName] ?? 'GET';
-      out.push({
-        role: 'consumer',
-        framework: 'python-http-wrapper',
-        method: httpMethod,
-        path: normalized,
-        name: null,
-        confidence: 0.6,
       });
     }
 

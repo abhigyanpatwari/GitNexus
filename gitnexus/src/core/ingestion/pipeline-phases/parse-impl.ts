@@ -631,7 +631,7 @@ export async function runChunkedParseAndResolve(
           // parser, which masked this exact regression as a 2-hour "stuck" run
           // in #1741. The failed (zero-worker) pool is torn down by the outer
           // finally. `--workers 0` is the explicit opt-in to sequential.
-          rawResults.length = 0;
+          let workerPoolDisabled = false;
           workerPoolDisabled = true;
           const failedPool = workerPool;
           workerPool = undefined;
