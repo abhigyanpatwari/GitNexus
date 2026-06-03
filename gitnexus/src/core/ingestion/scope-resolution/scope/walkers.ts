@@ -780,6 +780,64 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
 }
 
 /**
+ * Tag every def declared inside one or more `Namespace` scopes with its
+ * enclosing-namespace path (`NS`, `Outer.Inner`) on a sidecar `namespacePrefix`
+ * field — WITHOUT touching `qualifiedName`.
+ *
+ * Some scope-extractors qualify a nested type by its enclosing CLASS chain
+ * (`A.Inner`) but drop the enclosing NAMESPACE, while the structure phase keys
+ * the graph node by the full path (`NS.A.Inner`). `resolveDefGraphId` reads this
+ * tag to retry the node lookup with the namespace-prefixed key before the
+ * simple-name fallback, so same-tail nested bases don't collapse across sibling
+ * namespace members (#1982). `qualifiedName` is deliberately left unchanged, so
+ * the `qualifiedName`-keyed resolution index and existing namespace resolution
+ * (brace-init, UDC ranking, two-phase lookup) are untouched.
+ *
+ * Language-agnostic: it acts only on `Namespace`-kind scopes (a namespace-free
+ * language is a no-op) and is opt-in per provider (call after `populateOwners`).
+ * Namespace segments are taken as each namespace def's own tail, so it composes
+ * for nested namespaces regardless of whether the inner namespace's name is
+ * stored simple or already dotted. Skips defs already carrying the prefix.
+ */
+export function tagNamespacePrefixes(parsed: ParsedFile): void {
+  const scopesById = new Map<ScopeId, ParsedFile['scopes'][number]>();
+  for (const scope of parsed.scopes) scopesById.set(scope.id, scope);
+
+  // Enclosing-namespace prefix for a scope: the dotted path of each ancestor
+  // Namespace scope's name, outermost-first (`['Outer','Inner'] → 'Outer.Inner'`).
+  const namespacePrefixOf = (scope: ParsedFile['scopes'][number]): string => {
+    const segments: string[] = [];
+    let parentId = scope.parent;
+    while (parentId !== null) {
+      const parent = scopesById.get(parentId);
+      if (parent === undefined) break;
+      if (parent.kind === 'Namespace') {
+        const nsDef = parent.ownedDefs.find((d) => d.type === 'Namespace');
+        const nsQ = nsDef?.qualifiedName;
+        if (nsQ !== undefined && nsQ.length > 0) {
+          const dot = nsQ.lastIndexOf('.');
+          segments.unshift(dot === -1 ? nsQ : nsQ.slice(dot + 1));
+        }
+      }
+      parentId = parent.parent;
+    }
+    return segments.join('.');
+  };
+
+  for (const scope of parsed.scopes) {
+    if (scope.kind === 'Namespace') continue;
+    const prefix = namespacePrefixOf(scope);
+    if (prefix.length === 0) continue;
+    for (const def of scope.ownedDefs) {
+      const q = def.qualifiedName;
+      if (q === undefined || q.length === 0) continue;
+      if (q === prefix || q.startsWith(`${prefix}.`)) continue; // already namespaced
+      (def as { namespacePrefix?: string }).namespacePrefix = prefix;
+    }
+  }
+}
+
+/**
  * Walk a scope chain upward looking for the innermost enclosing
  * Class scope and return that class's def. Used by per-language
  * `super` receiver branches to discover the dispatch base.

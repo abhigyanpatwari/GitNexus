@@ -5,7 +5,10 @@ import {
 } from '../../scope-resolution/scope/walkers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  populateClassOwnedMembers,
+  tagNamespacePrefixes,
+} from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cppProvider } from '../c-cpp.js';
 import { cppArityCompatibility } from './arity.js';
@@ -102,6 +105,11 @@ export const cppScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => {
     populateClassOwnedMembers(parsed);
+    // #1982: tag namespace-nested defs with their enclosing-namespace prefix so
+    // resolveDefGraphId can map them to the namespace-qualified structure-phase
+    // node (`NS.A.Inner`) instead of collapsing same-tail nested bases via the
+    // simpleKey fallback. Does NOT change qualifiedName (resolution unaffected).
+    tagNamespacePrefixes(parsed);
     // Resolve inline- and anonymous-namespace ranges (recorded at capture
     // time) to ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so
     // both exemptions see the populated Sets.

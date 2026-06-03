@@ -538,6 +538,14 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'resolves DerivedA : Outer::Inner → EXTENDS the Outer.Inner node',
     'resolves DerivedB : Other::Inner → EXTENDS the Other.Inner node (not Outer.Inner)',
     'resolves DerivedB : Other::Inner → EXTENDS Other.Inner on the worker path (#1982: rawQualifiedName survives worker serialization)',
+    // #1982 follow-up: namespaced same-tail nested heritage. The fix
+    // (tagNamespacePrefixes + the resolveDefGraphId namespace-prefixed retry)
+    // lives in the registry-primary scope-resolution bridge; the legacy DAG does
+    // not use it, so these are registry-primary-only by design.
+    'resolves NS::DA : A::Inner → EXTENDS the NS.A.Inner node',
+    'resolves NS::DB : B::Inner → EXTENDS the NS.B.Inner node (not NS.A.Inner)',
+    'genuinely used the worker pool for the namespaced fixture',
+    'resolves NS::DA / NS::DB to their own namespaced base on the worker path',
   ]),
 };
 

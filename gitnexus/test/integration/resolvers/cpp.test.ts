@@ -3910,3 +3910,81 @@ describe('C++ inline nested same-tail heritage — qualified base (issue #1982)'
     expect(tid).not.toContain('Outer.Inner');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Namespaced same-tail nested heritage — qualified base resolution (issue #1982)
+//
+// `namespace NS { struct A{struct Inner{};}; struct B{struct Inner{};};
+// struct DA:A::Inner{}; struct DB:B::Inner{}; }` — the bases NS::A::Inner and
+// NS::B::Inner are namespace-nested. The structure phase materializes distinct
+// NS.A.Inner / NS.B.Inner nodes, but the scope-model def.qualifiedName dropped
+// the namespace (`A.Inner` not `NS.A.Inner`), so resolveDefGraphId missed the
+// namespaced node key and the simpleKey('Inner') fallback collapsed both bases —
+// DB's EXTENDS pointed at NS.A.Inner. Asserts each Derived EXTENDS its own
+// namespaced base by NODE ID (KTD3). Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('C++ namespaced same-tail nested heritage — qualified base (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-namespaced-collision'), () => {});
+  }, 60000);
+
+  const extendsTargetIdOf = (childQn: string): string | undefined => {
+    const ext = getRelationships(result, 'EXTENDS');
+    const e = ext.find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === childQn,
+    );
+    return e?.rel.targetId;
+  };
+
+  it('resolves NS::DA : A::Inner → EXTENDS the NS.A.Inner node', () => {
+    const tid = extendsTargetIdOf('NS.DA');
+    expect(tid, 'NS.DA EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('NS.A.Inner');
+    expect(tid).not.toContain('NS.B.Inner');
+  });
+
+  it('resolves NS::DB : B::Inner → EXTENDS the NS.B.Inner node (not NS.A.Inner)', () => {
+    const tid = extendsTargetIdOf('NS.DB');
+    expect(tid, 'NS.DB EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('NS.B.Inner');
+    expect(tid).not.toContain('NS.A.Inner');
+  });
+});
+
+// Same namespaced fixture through the WORKER pool — the namespacePrefix tag is
+// applied during main-process scope-resolution (after worker parse/merge), so
+// the fix must hold on both paths. Registry-primary only.
+describe('C++ namespaced same-tail nested heritage — worker path parity (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-namespaced-collision'), () => {}, {
+      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+      workerPoolSize: 2,
+    });
+  }, 120000);
+
+  it('genuinely used the worker pool for the namespaced fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('resolves NS::DA / NS::DB to their own namespaced base on the worker path', () => {
+    const extendsTargetIdOf = (childQn: string): string | undefined => {
+      const ext = getRelationships(result, 'EXTENDS');
+      const e = ext.find(
+        (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === childQn,
+      );
+      return e?.rel.targetId;
+    };
+    const da = extendsTargetIdOf('NS.DA');
+    const db = extendsTargetIdOf('NS.DB');
+    expect(da, 'NS.DA EXTENDS (worker)').toBeDefined();
+    expect(db, 'NS.DB EXTENDS (worker)').toBeDefined();
+    expect(da).toContain('NS.A.Inner');
+    expect(db).toContain('NS.B.Inner');
+    expect(db).not.toContain('NS.A.Inner');
+  });
+});
