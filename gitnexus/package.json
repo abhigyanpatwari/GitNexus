@@ -59,6 +59,7 @@
     "@ladybugdb/core": "^0.16.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
+    "better-sqlite3": "^12.10.0",
     "cli-progress": "^3.12.0",
     "commander": "^14.0.3",
     "cors": "^2.8.5",
@@ -97,6 +98,7 @@
     "tree-sitter-kotlin": "^0.3.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",
