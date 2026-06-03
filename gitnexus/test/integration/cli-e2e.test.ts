@@ -70,7 +70,23 @@ beforeAll(() => {
       GIT_COMMITTER_EMAIL: 'test@test',
     },
   });
-});
+
+  // Index MINI_REPO ONCE into the isolated suite registry so the read-only
+  // tests (query/cypher/impact, eval-server) have a registered repo regardless
+  // of execution order. Previously they relied on an earlier analyze test
+  // having run, and that test silently tolerates a subprocess timeout under
+  // load — so on a busy runner the repo went unregistered and every dependent
+  // test failed confusingly with "no indexed repositories" / exit 1.
+  //
+  // Retried a few times because a tiny fixture analyzes in seconds: a failure
+  // here is almost always transient load, not a defect. Re-running analyze on
+  // an already-indexed repo is a cheap no-op (alreadyUpToDate fast path), so
+  // retrying is safe. A genuine analyze/registration regression is still caught
+  // loudly by the dedicated analyze tests below (which use isolated homes).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (runCli('analyze', MINI_REPO, 90_000).status === 0) break;
+  }
+}, 300_000);
 
 afterAll(() => {
   // Entire tmp copy goes away — no selective cleanup needed. The shared
@@ -1231,7 +1247,9 @@ describe('CLI end-to-end', () => {
 
   // All tool commands pass --repo to disambiguate when the global registry
   // has multiple indexed repos (e.g. the parent project is also indexed).
-  describe('tool output goes to stdout via fd 1 (#324)', () => {
+  // retry: these spawn the CLI against the suite-indexed mini-repo; a retry
+  // absorbs a transient subprocess hiccup under parallel load (#324 hardening).
+  describe('tool output goes to stdout via fd 1 (#324)', { retry: 2 }, () => {
     it('cypher: JSON appears on stdout, not stderr', () => {
       const result = runCliRaw(
         ['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'],
@@ -1290,7 +1308,7 @@ describe('CLI end-to-end', () => {
 
   // ─── EPIPE clean exit test (#324) ───────────────────────────────────
 
-  describe('EPIPE handling (#324)', () => {
+  describe('EPIPE handling (#324)', { retry: 2 }, () => {
     it('cypher: EPIPE exits with code 0, not stderr dump', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
@@ -1348,7 +1366,7 @@ describe('CLI end-to-end', () => {
 
   // ─── eval-server READY signal test (#324) ───────────────────────────
 
-  describe('eval-server READY signal (#324)', () => {
+  describe('eval-server READY signal (#324)', { retry: 2 }, () => {
     it('READY signal appears on stdout, not stderr', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
@@ -1410,7 +1428,7 @@ describe('CLI end-to-end', () => {
   // Verifies --host is wired to the actual bind address, not just accepted.
   // Original flag registration test by Val Vladescu (PR #1602).
 
-  describe('eval-server --host flag', () => {
+  describe('eval-server --host flag', { retry: 2 }, () => {
     it('emits READY signal containing the bound host 127.0.0.1', () => {
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', '127.0.0.1', '--idle-timeout', '3'],

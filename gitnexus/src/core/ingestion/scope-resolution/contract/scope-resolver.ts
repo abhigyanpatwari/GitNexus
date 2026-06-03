@@ -916,6 +916,72 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional hook to expand the set of file paths handed to the scope-
+   * resolution run for this language.
+   *
+   * Called once per language with:
+   *   - `primaryFilePaths`      — files whose `getLanguageFromFilename` === this
+   *                               resolver's `language` (e.g. all `.vue` files).
+   *   - `preExtractedByPath`    — ParsedFile cache from the parse phase.
+   *   - `entryFileContents`     — raw source text of the primary files.
+   *   - `allScannedPaths`       — complete set of paths in the repository.
+   *   - `resolutionConfig`      — language-specific config (tsconfig paths, …).
+   *
+   * Return value: the full set of paths to include in the scope-resolution
+   * run.  May be a superset of `primaryFilePaths`.
+   *
+   * Vue uses this hook to collect the transitive TS/JS import closure of
+   * every `.vue` file so that cross-file imports (`import { fn } from './api'`)
+   * resolve correctly within a single Vue scope-resolution pass.
+   *
+   * This hook keeps language-specific scope-context policy inside the language
+   * module, preventing shared pipeline code (`phase.ts`) from naming individual
+   * languages.
+   *
+   * Default: undefined (use only `primaryFilePaths`).
+   */
+  readonly collectScopeContextPaths?: (options: {
+    readonly primaryFilePaths: readonly string[];
+    readonly preExtractedByPath: ReadonlyMap<string, import('gitnexus-shared').ParsedFile>;
+    readonly entryFileContents: ReadonlyMap<string, string>;
+    readonly allScannedPaths: ReadonlySet<string>;
+    readonly resolutionConfig: unknown;
+  }) => Set<string>;
+
+  /**
+   * Optional post-resolution hook for emitting language-specific graph edges
+   * that cannot be derived from scope captures or import resolution alone.
+   *
+   * Runs AFTER all standard edge-emission passes (receiver-bound CALLS,
+   * free-call fallback, references-via-lookup, and import edges). Receives
+   * the fully-resolved graph, all ParsedFiles, the node lookup, the finalized
+   * scope indexes, and the raw file-content map.
+   *
+   * Vue uses this hook to emit:
+   *   - `CALLS` (`vue-template-component`) for PascalCase component elements
+   *   - `BINDS_EVENT_HANDLER` for `@event="handler"` on component elements
+   *   - `EMITS_EVENT` for `emit('eventName', …)` calls in script blocks
+   *   - `ACCESSES` (`vue-template-attribute`) for `:prop="var"` bindings
+   *
+   * Unlike `emitImplicitImportEdges` and `emitHeritageEdges` (which run
+   * before MRO construction), this hook runs last, after the full graph is
+   * populated, so it can safely query node existence and resolved import
+   * targets via `indexes.imports`.
+   *
+   * Default: undefined (no supplementary edges needed).
+   */
+  readonly emitPostResolutionEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    indexes: ScopeResolutionIndexes,
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly resolutionConfig?: unknown;
+    },
+  ) => void;
+
+  /**
    * Optional post-resolution pass: emit CALLS edges for member-call sites
    * whose receiver cannot be typed by the scope chain (no `TypeRef`).
    * Dynamically-typed languages with untyped/`mixed`/`Any` parameters use
