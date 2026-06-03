@@ -18,6 +18,15 @@ function emitRubyMixinEdges(
   nodeLookup: GraphNodeLookup,
 ): void {
   const graphIdByName = new Map<string, string>();
+  // Secondary tail -> graphId map (first-wins). The `__heritage__` marker carries
+  // the mixin TARGET as the bare written name (`arg.text`, e.g. `Loggable`), not
+  // its full qualifiedName, so a nested mixin module included by its short name
+  // (`include Loggable` where it is `App::Loggable`) misses the full-qn map and
+  // its IMPLEMENTS edge is silently dropped (#1982 follow-up). The tail fallback
+  // recovers it. OWNER (`className`) lookups stay full-qn only, preserving
+  // same-tail owner disambiguation; only the under-qualified mixin reference
+  // falls back, and a genuine same-tail mixin tie there resolves first-wins.
+  const graphIdByTail = new Map<string, string>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (!isClassLike(def.type)) continue;
@@ -29,7 +38,12 @@ function emitRubyMixinEdges(
         // attr_accessor owners (#1982). The `__heritage__`/`__property__` markers
         // carry the full qualified owner name in lockstep (see ruby/captures.ts).
         const fullName = def.qualifiedName ?? '';
-        if (fullName.length > 0) graphIdByName.set(fullName, graphId);
+        if (fullName.length > 0) {
+          graphIdByName.set(fullName, graphId);
+          const dot = fullName.lastIndexOf('.');
+          const tail = dot === -1 ? fullName : fullName.slice(dot + 1);
+          if (tail.length > 0 && !graphIdByTail.has(tail)) graphIdByTail.set(tail, graphId);
+        }
       }
     }
   }
@@ -49,7 +63,9 @@ function emitRubyMixinEdges(
       if (parts.length < 3) continue;
       const [kind, mixinName, className] = parts;
       const classGraphId = graphIdByName.get(className!);
-      const mixinGraphId = graphIdByName.get(mixinName!);
+      // Owner stays full-qn; the mixin target may be written by short name and
+      // miss the full-qn map, so fall back to the simple-tail map (#1982).
+      const mixinGraphId = graphIdByName.get(mixinName!) ?? graphIdByTail.get(mixinName!);
       if (classGraphId === undefined || mixinGraphId === undefined) continue;
       const edgeKey = `${classGraphId}->${mixinGraphId}:${kind}`;
       if (emitted.has(edgeKey)) continue;

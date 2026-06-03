@@ -1640,3 +1640,41 @@ describe('Ruby inline module-nested same-tail collision — worker path parity (
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Nested mixin included by SHORT name — IMPLEMENTS edge must not drop (#1982).
+//
+// `module App; module Loggable; end; class Service; include Loggable; end; end`
+// — `Loggable` is nested (qn App.Loggable) but included by its bare short name.
+// The structure phase materializes a distinct App.Loggable node, but
+// emitRubyMixinEdges keys graphIdByName by FULL qualifiedName while the
+// __heritage__ marker carries the bare arg.text ('Loggable'), so the
+// mixin-target lookup missed and the IMPLEMENTS edge was silently dropped
+// (0 dangling, undetectable). The shipped same-tail fixture only uses TOP-LEVEL
+// mixin modules (full qn == bare name), so it cannot catch this. Asserts the
+// edge exists and resolves by NODE ID (KTD3 — not the normalized qualifiedName
+// property). Registry-primary only (emitRubyMixinEdges is the registry bridge).
+// ---------------------------------------------------------------------------
+
+describe('Ruby nested mixin by short name — IMPLEMENTS not dropped (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-mixin-shortname'), () => {});
+  }, 60000);
+
+  pit('emits App.Service -IMPLEMENTS-> App.Loggable for a short-name nested mixin (R1)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const e = impl.find((x) => x.target === 'Loggable');
+    expect(e, 'IMPLEMENTS -> Loggable (nested mixin by short name)').toBeDefined();
+    // KTD3: discriminate on the resolved node id, not the normalized property.
+    // The owner resolves to the QUALIFIED `App.Service` class node — the pre-fix
+    // bug dropped the edge entirely, so its presence + qualified owner is the
+    // discriminator. (The mixin module is a Trait node keyed by its simple name
+    // `Loggable`; Trait-node qualification under same-tail modules is a separate
+    // structure-phase concern, deferred.)
+    expect(e!.rel.sourceId).toContain('App.Service');
+    expect(e!.rel.targetId).toContain('Loggable');
+  });
+});
