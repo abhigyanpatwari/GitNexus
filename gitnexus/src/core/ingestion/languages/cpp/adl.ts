@@ -49,13 +49,18 @@
  *
  * ## State lifecycle
  *
- * Three module-level maps populated per pipeline invocation, cleared via
- * `clearCppAdlState()` (called from `clearFileLocalNames`):
+ * Five pieces of module-level state populated per pipeline invocation, all
+ * reset together by `clearCppAdlState()` (called from
+ * `cppScopeResolver.loadResolutionConfig`, alongside `clearFileLocalNames` —
+ * NOT from `clearFileLocalNames` itself), grouped by when they fill:
  *
  *   - `argInfoBySite` — per-call-site argument shape (capture-time)
  *   - `noAdlSites` — call sites with parenthesized function (capture-time)
  *   - `classToNamespaceQualifiedName` — class def → its enclosing namespace
  *     qualified name (`populateCppAssociatedNamespaces` time)
+ *   - `adlIndex` / `adlIndexSource` — the lazily-built candidate index and the
+ *     `parsedFiles` reference it was built from (first-`pickCppAdlCandidates`
+ *     time; see `ensureAdlIndex`)
  *
  * The class→namespace map uses qualified names (not scope IDs) because
  * C++ namespaces are open: `namespace N { ... }` in file A and
@@ -297,7 +302,20 @@ function buildAdlIndex(
 
 /** Build the ADL index on first use of a given `parsedFiles` set; reuse it for
  *  all subsequent call sites in the same pipeline run. Reset by
- *  `clearCppAdlState`. */
+ *  `clearCppAdlState`.
+ *
+ *  Staleness is keyed on `parsedFiles` reference identity ONLY, but the index
+ *  is a function of THREE inputs: `parsedFiles` (namespace/friend candidates),
+ *  `scopes` (`classDefsBySimple`, read from `scopes.defs.byId`), and the
+ *  module-level `classToNamespaceQualifiedName` (friend-candidate keys). This
+ *  is sound for the current pipeline because all three are built together once
+ *  per `runScopeResolution` pass and `clearCppAdlState` runs in
+ *  `loadResolutionConfig` at the start of every pass. Callers MUST call
+ *  `clearCppAdlState` between any two passes that change `scopes` or
+ *  `classToNamespaceQualifiedName` while reusing the same `parsedFiles` array
+ *  reference — otherwise a stale index would be served. (No such caller exists
+ *  today; widening the guard to also key on `scopes` is deferred until one
+ *  does.) */
 function ensureAdlIndex(scopes: ScopeResolutionIndexes, parsedFiles: readonly ParsedFile[]): void {
   if (adlIndex !== undefined && adlIndexSource === parsedFiles) return;
   adlIndex = buildAdlIndex(scopes, parsedFiles);
@@ -321,8 +339,9 @@ export function markCppAdlSiteNoAdl(filePath: string, line: number, col: number)
   noAdlSites.add(siteKey(filePath, line, col));
 }
 
-/** Clear ADL state. Called from `clearFileLocalNames` so all C++ resolver
- *  per-pipeline state is reset together. */
+/** Clear ADL state. Called from `cppScopeResolver.loadResolutionConfig`
+ *  (alongside `clearFileLocalNames`) so all C++ resolver per-pipeline state is
+ *  reset together at the start of each resolution pass. */
 export function clearCppAdlState(): void {
   argInfoBySite.clear();
   noAdlSites.clear();
