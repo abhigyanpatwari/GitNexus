@@ -74,7 +74,9 @@ describe('BASE_SYSTEM_PROMPT tool parity', () => {
     // Reword-proof, registry-level guarantee: the load-bearing fact is that
     // highlight_in_graph is not a registered tool, regardless of prompt phrasing.
     expect(GRAPH_RAG_TOOL_NAMES).not.toContain('highlight_in_graph');
-    // And the prompt still addresses it explicitly so the model is told not to call it.
+    // The prompt still addresses it explicitly...
     expect(BASE_SYSTEM_PROMPT).toContain('highlight_in_graph');
+    // ...and must never instruct the model to call it (guards an affirmative reword).
+    expect(BASE_SYSTEM_PROMPT).not.toMatch(/\b(?:use|call|invoke)\s+`?highlight_in_graph/i);
   });
 });
