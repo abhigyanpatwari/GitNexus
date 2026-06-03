@@ -721,6 +721,28 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
     }
   }
 
+  // Java: `public Order getOrder()` — tree-sitter-java exposes the return
+  // type via the `type` field on method_declaration, and the actual node
+  // is `type_identifier` (or `generic_type` for `List<Order>`,
+  // `array_type` for `Order[]`, `void_type` for `void`).
+  // The generic `type_annotation`/`return_type` loop above does NOT match
+  // Java's child layout (Java doesn't wrap the return type in either
+  // node). Without this, Java methods silently lose their return type
+  // and downstream consumers (document-endpoint) can't resolve the
+  // response shape — they fall back to `type: string` for an entity
+  // return (#14).
+  //
+  // Note: this block is also reached for C++ `function_definition`
+  // (which shares the `type` field shape) and would clobber the C++
+  // void filter above, so we mirror that filter and skip `void`
+  // return types. (#14)
+  if (!returnType) {
+    const javaReturn = node.childForFieldName?.('type');
+    if (javaReturn && javaReturn.text !== 'void') {
+      returnType = javaReturn.text;
+    }
+  }
+
   if (isVariadic) parameterCount = undefined;
 
   // Only include parameterTypes when at least one type was successfully extracted.

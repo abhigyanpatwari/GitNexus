@@ -163,6 +163,59 @@ describe('extractMethodSignature', () => {
       expect(sig2.parameterCount).toBe(2);
       expect(sig2.parameterTypes).toEqual(['int', 'String']);
     });
+
+    it('extracts return type for a Java entity method (#14)', () => {
+      // (#14) Java method return types were silently dropped because
+      // tree-sitter-java exposes the return type via the `type` field
+      // on `method_declaration`, but the existing extractor only
+      // matched `type_annotation` (TS/Python) and `return_type`
+      // (Rust/TS) child types — neither of which Java uses. Without
+      // a captured return type, document-endpoint could not resolve
+      // the response body and Spring entity endpoints reported
+      // `type: string`.
+      parser.setLanguage(Java);
+      const code = `class OrderController {
+  public Order getOrder(Long id) { return null; }
+}`;
+      const tree = parser.parse(code);
+      const classBody = tree.rootNode.child(0)!.childForFieldName('body')!;
+      const sig = extractMethodSignature(classBody.namedChild(0)!);
+
+      expect(sig.returnType).toBe('Order');
+    });
+
+    it('extracts generic return type for a Java entity method (#14)', () => {
+      // (#14) `ResponseEntity<List<Order>>` is a common Spring pattern.
+      // The `type` field returns the full `ResponseEntity<List<Order>>`
+      // text — the wrapper unwrapping in document-endpoint handles the
+      // rest. We just need the captured `returnType` to be present.
+      parser.setLanguage(Java);
+      const code = `class OrderController {
+  public ResponseEntity<List<Order>> getOrder(Long id) { return null; }
+}`;
+      const tree = parser.parse(code);
+      const classBody = tree.rootNode.child(0)!.childForFieldName('body')!;
+      const sig = extractMethodSignature(classBody.namedChild(0)!);
+
+      expect(sig.returnType).toBe('ResponseEntity<List<Order>>');
+    });
+
+    it('returns undefined for a void Java method', () => {
+      // Mirrors the C++ contract at line ~457: void return types are
+      // filtered out. Callers (document-endpoint) treat undefined the
+      // same as a missing return type and skip response-body
+      // construction, which is the right behavior for a controller
+      // method that returns nothing.
+      parser.setLanguage(Java);
+      const code = `class C {
+  public void run() {}
+}`;
+      const tree = parser.parse(code);
+      const classBody = tree.rootNode.child(0)!.childForFieldName('body')!;
+      const sig = extractMethodSignature(classBody.namedChild(0)!);
+
+      expect(sig.returnType).toBeUndefined();
+    });
   });
 
   describe('Kotlin', () => {
