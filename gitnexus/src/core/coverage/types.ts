@@ -14,6 +14,8 @@ export interface CoverageRunMeta {
   command?: string;
   durationMs?: number;
   totalExecs?: number;
+  totalLines?: number;
+  coveredLines?: number;
 }
 
 export interface FileCoverage {
