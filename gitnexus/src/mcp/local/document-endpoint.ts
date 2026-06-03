@@ -304,7 +304,7 @@ export interface ResponseCode {
 
 export interface BodySchema {
   typeName: string;
-  source: 'indexed' | 'external' | 'primitive';
+  source: 'indexed' | 'external' | 'primitive' | 'container';
   fields?: BodySchemaField[];
   /** Attribution for cross-repo resolution — repoId where the type was found */
   repoId?: string;
@@ -3363,8 +3363,20 @@ async function resolveTypeSchema(
     if (COLLECTION_TYPES.has(baseType)) {
       const innerSchema = await resolveTypeSchema(innerType, executeQuery, repoId, visited, crossRepo);
       // Preserve the original generic type name (e.g., 'Map<String, Object>')
-      // so the OpenAPI converter can distinguish Map from List
-      return { ...innerSchema, typeName, isContainer: true };
+      // so the OpenAPI converter can distinguish Map from List.
+      // (#39) The outer source must reflect "container" — not inherit
+      // the inner type's source. `Map<String, Object>` was being
+      // reported as `source: 'primitive'` because the inner Object is
+      // in SKIP_SCHEMA_TYPES, and we used to spread `innerSchema`
+      // verbatim, so the inner's `source: 'primitive'` clobbered the
+      // outer container status. A Map is not a primitive — it's a
+      // key-value container that wraps whatever the inner type is.
+      return {
+        ...innerSchema,
+        typeName,
+        isContainer: true,
+        source: 'container',
+      };
     }
 
     // Generic DTOs (e.g., PageDataDto<TransactionViewDto>): resolve the outer type
@@ -5236,6 +5248,18 @@ export function bodySchemaToJsonExample(
   // Primitive types - return null (no body)
   if (schema.source === 'primitive') {
     return null;
+  }
+
+  // Container types wrapping a primitive/skip-schema inner (e.g.,
+  // `Map<String, Object>`): return an empty-map/object placeholder so
+  // the example is still visible in the generated docs. (#39) Before
+  // this fix, the source was incorrectly 'primitive' so this branch
+  // never executed and the whole response body came out as null.
+  if (schema.source === 'container') {
+    if (schema.typeName.startsWith('Map') || schema.typeName.startsWith('HashMap') || schema.typeName.startsWith('TreeMap') || schema.typeName.startsWith('LinkedHashMap')) {
+      return { _type: schema.typeName, _example: {} };
+    }
+    return [{}];
   }
 
   // Indexed type with fields - generate example

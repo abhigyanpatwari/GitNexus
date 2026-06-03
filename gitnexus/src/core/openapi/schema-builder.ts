@@ -10,7 +10,7 @@ export interface BodySchemaField {
   name: string;
   type: string;
   annotations: string[];
-  source?: 'indexed' | 'external' | 'primitive';
+  source?: 'indexed' | 'external' | 'primitive' | 'container';
   fields?: BodySchemaField[];
   isContainer?: boolean;
 }
@@ -18,7 +18,7 @@ export interface BodySchemaField {
 /** Source types from document-endpoint.ts */
 export interface BodySchema {
   typeName: string;
-  source: 'indexed' | 'external' | 'primitive';
+  source: 'indexed' | 'external' | 'primitive' | 'container';
   fields?: BodySchemaField[];
   repoId?: string;
   isContainer?: boolean;
