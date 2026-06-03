@@ -800,7 +800,15 @@ export async function documentEndpoint(
   repo: RepoHandle,
   options: DocumentEndpointOptions
 ): Promise<{ result?: DocumentEndpointResult; error?: string } | OpenApiModeResult> {
-  const { method, path, depth = 10, mode, include_context = false, compact = false, crossRepo } = options;
+  // (#44) Default depth lowered from 10 → 5. Real Spring Boot endpoints
+  // with deeply nested service / repository / utility chains produce
+  // 150KB+ outputs at depth=10 (e.g. tcbs-bond-trading's
+  // `POST /i/v1/orders` had 85 validation rules, 32 persistence tables,
+  // and a 15K-character logic flow). That output is impractical for LLM
+  // context consumption. depth=3 already captures the meaningful
+  // downstream shape; depth=5 is the new ceiling for the default path.
+  // Callers that explicitly pass `depth` are unaffected.
+  const { method, path, depth = 5, mode, include_context = false, compact = false, crossRepo } = options;
   // Default mode is 'openapi' when neither mode nor include_context is set.
   // mode takes precedence over include_context; include_context only
   // applies when mode is not explicitly set (undefined).

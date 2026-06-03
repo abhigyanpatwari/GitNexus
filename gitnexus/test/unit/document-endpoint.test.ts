@@ -674,6 +674,98 @@ describe('documentEndpoint', () => {
       // placeholder so consumers can detect the missing signal.
       expect(asContextResult(result).result.logicFlow).toBe('TODO_AI_ENRICH');
     });
+
+    it('uses depth=5 as the default for the trace (#44)', async () => {
+      // (#44) Real Spring Boot endpoints with deeply nested service
+      // / repository / utility chains produced 150KB+ outputs at the
+      // old default (depth=10). depth=5 captures the meaningful
+      // downstream shape; depth=3 is the previous sweet spot and
+      // depth=5 is the new ceiling. Callers that pass an explicit
+      // depth are unaffected.
+      vi.mocked(endpointQuery.queryEndpoints).mockResolvedValue({
+        endpoints: [{
+          method: 'GET',
+          path: '/api/users',
+          controller: 'UserController',
+          handler: 'getUser',
+          filePath: 'src/controllers/UserController.java',
+          line: 10,
+        }],
+      });
+
+      const traceSpy = vi.mocked(traceExecutor.executeTrace);
+      traceSpy.mockClear();
+      traceSpy.mockResolvedValue({
+        chain: [{
+          uid: 'Method:src/controllers/UserController.java:getUser',
+          name: 'getUser',
+          kind: 'Method',
+          filePath: 'src/controllers/UserController.java',
+          depth: 0,
+          content: '',
+          metadata: emptyMetadata(),
+          callees: [],
+        }],
+        root: 'getUser',
+        summary: emptySummary(),
+      });
+
+      await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/users',
+        mode: 'ai_context',
+      });
+
+      // executeTrace is invoked with maxDepth from the depth option.
+      // When the caller does NOT pass depth, the default must be 5
+      // (the bug fix), not 10 (the old default).
+      expect(traceSpy).toHaveBeenCalled();
+      const callArgs = traceSpy.mock.calls[0]?.[2] as { maxDepth?: number };
+      expect(callArgs?.maxDepth).toBe(5);
+    });
+
+    it('respects explicit depth=10 when caller asks for it (#44)', async () => {
+      // Backward compat: callers that explicitly want a deep trace
+      // (e.g. offline docs generation, batch backfills) can still
+      // pass depth=10. We do not cap the explicit value.
+      vi.mocked(endpointQuery.queryEndpoints).mockResolvedValue({
+        endpoints: [{
+          method: 'GET',
+          path: '/api/users',
+          controller: 'UserController',
+          handler: 'getUser',
+          filePath: 'src/controllers/UserController.java',
+          line: 10,
+        }],
+      });
+
+      const traceSpy = vi.mocked(traceExecutor.executeTrace);
+      traceSpy.mockClear();
+      traceSpy.mockResolvedValue({
+        chain: [{
+          uid: 'Method:src/controllers/UserController.java:getUser',
+          name: 'getUser',
+          kind: 'Method',
+          filePath: 'src/controllers/UserController.java',
+          depth: 0,
+          content: '',
+          metadata: emptyMetadata(),
+          callees: [],
+        }],
+        root: 'getUser',
+        summary: emptySummary(),
+      });
+
+      await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/users',
+        mode: 'ai_context',
+        depth: 10,
+      });
+
+      const callArgs = traceSpy.mock.calls[0]?.[2] as { maxDepth?: number };
+      expect(callArgs?.maxDepth).toBe(10);
+    });
   });
 });
 
