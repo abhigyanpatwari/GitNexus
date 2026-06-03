@@ -85,6 +85,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'merges methods from package-qualified embedded interfaces before matching implementors',
     'fans out cross-package interface receivers only to valid implementors',
     'dispatches package-qualified embedded-interface receivers only to complete implementors',
+    // F33 generic composite literal constructor inference normalizes generic_type
+    // nodes via the scope-resolution capture path (normalizeGenericConstructorCapture).
+    // The legacy DAG does not normalize generic_type in composite_literal patterns,
+    // so it cannot resolve Box[User]{} to the Box struct. Scope-resolver-only.
+    'resolves Box[models.User]{} as a generic composite-literal constructor call',
   ]),
   java: new Set([
     // Duplicate-FQN same-module path-affinity ordering is implemented in the

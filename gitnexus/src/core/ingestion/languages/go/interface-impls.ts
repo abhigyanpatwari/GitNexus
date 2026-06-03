@@ -282,7 +282,12 @@ function collectInterfaceMethodSet(
   cache: Map<string, MutableMethodSet>,
 ): MutableMethodSet | undefined {
   const cached = cache.get(iface.nodeId);
-  if (cached !== undefined) return cloneMethodSet(cached);
+  // NOTE: Returns a direct reference to the cached map. Callers (the detection
+  // loop in detectGoInterfaceImplementationsFromIndexes) only READ the result
+  // (keys/values passed to candidateStructIdsFor and methodSetSatisfies). If a
+  // future caller needs to mutate the returned map, it must clone first — the
+  // cache entry is shared and must remain immutable after this function returns.
+  if (cached !== undefined) return cached;
   if (visiting.has(iface.nodeId)) return undefined;
   visiting.add(iface.nodeId);
 
@@ -306,6 +311,8 @@ function collectInterfaceMethodSet(
   }
 
   visiting.delete(iface.nodeId);
+  // Store a clone in the cache so the returned `merged` reference is independent.
+  // This protects the cache from mutation if a caller modifies the return value.
   cache.set(iface.nodeId, cloneMethodSet(merged));
   return merged;
 }
@@ -323,14 +330,27 @@ function embeddedInterfacesFor(
   return embedded;
 }
 
-function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): readonly string[] {
-  let best: ReadonlySet<string> | undefined;
+function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): Iterable<string> {
+  let result: Set<string> | undefined;
   for (const name of required.keys()) {
     const candidates = indexes.structIdsByMethodName.get(name);
     if (candidates === undefined) return [];
-    if (best === undefined || candidates.size < best.size) best = candidates;
+    if (result === undefined) {
+      // First method name: start with its full candidate set (copy to avoid
+      // corrupting the shared index).
+      result = new Set(candidates);
+    } else {
+      // Intersect: keep only struct IDs present in this method's candidate set.
+      // Iterate a snapshot to avoid mutating while iterating.
+      const toDelete: string[] = [];
+      for (const id of result) {
+        if (!candidates.has(id)) toDelete.push(id);
+      }
+      for (const id of toDelete) result.delete(id);
+    }
+    if (result.size === 0) return []; // Early exit: no struct has all required methods
   }
-  return best === undefined ? [...indexes.structsById.keys()] : [...best];
+  return result === undefined ? indexes.structsById.keys() : result;
 }
 
 function resolveEmbeddedInterface(
@@ -421,6 +441,14 @@ function methodSetSatisfies(
     const actualOverloads = actual.get(name);
     if (actualOverloads === undefined) return false;
     for (const requiredMethod of requiredOverloads) {
+      // Fast arity pre-filter: if the required method has a known parameter
+      // count, reject immediately when no actual overload matches it. This
+      // avoids the expensive signature normalization loop for obvious mismatches.
+      if (requiredMethod.parameterCount !== undefined) {
+        if (!actualOverloads.some((a) => a.parameterCount === requiredMethod.parameterCount)) {
+          return false;
+        }
+      }
       if (!hasCompatibleMethod(actualOverloads, requiredMethod, signatureContextByDefId)) {
         return false;
       }

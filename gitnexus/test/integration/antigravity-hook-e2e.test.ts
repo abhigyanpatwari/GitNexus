@@ -22,7 +22,12 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { cleanupTempDir, cleanupTempDirSync } from '../helpers/test-db.js';
 import os from 'os';
-import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
+import {
+  runHook,
+  parseHookOutput,
+  createGitNexusPathEntry,
+  envWithPath,
+} from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
 
 let tempHome: string;
@@ -124,6 +129,39 @@ describe('antigravity hook adapter e2e', () => {
       // Mirror to stderr so terminal users see the hint even when the agent
       // discards additionalContext
       expect(result.stderr).toContain('[GitNexus] index is stale');
+    });
+
+    it('auto-detects a PATH-installed gitnexus and suggests `gitnexus analyze` (no npx)', () => {
+      // No GITNEXUS_INVOCATION forcing — exercises the installed hook's real PATH
+      // probe (#1938). The installed adapter resolves the analyze command through
+      // the copied resolve-analyze-cmd.cjs, so a launcher on PATH yields
+      // `gitnexus analyze` rather than the npm-11 npx crash path.
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'a'.repeat(39) + 'b', stats: {} }),
+      );
+      const gn = createGitNexusPathEntry();
+      try {
+        const result = runHook(
+          installedHook,
+          {
+            hook_event_name: 'AfterTool',
+            tool_name: 'run_shell_command',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_response: { llmContent: '[committed]' },
+            cwd: tmpDir,
+          },
+          tmpDir,
+          { env: envWithPath(gn.pathValue) },
+        );
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+        expect(output!.additionalContext).not.toContain('npx gitnexus');
+      } finally {
+        gn.cleanup();
+      }
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {

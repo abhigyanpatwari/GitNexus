@@ -10,9 +10,10 @@ import {
   warnIfNpm11NpxRisk,
   NPX_REF,
 } from '../../src/cli/resolve-invocation.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import os from 'node:os';
 
 const mockedExec = vi.mocked(execFileSync);
 
@@ -49,9 +50,10 @@ interface CjsModule {
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
     deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmPresent?: boolean },
   ) => 'gitnexus' | 'pnpm' | 'npx';
-  pickPathMatch: (
-    output: string,
-    opts?: { isWin?: boolean; gitnexusWrapper?: boolean },
+  resolveOnPath: (
+    command: string,
+    preferExecExt?: boolean,
+    opts?: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv },
   ) => string | null;
   buildRunnerArgv: (
     mode: 'gitnexus' | 'pnpm' | 'npx',
@@ -65,10 +67,11 @@ interface CjsModule {
 // the tests exercise production code, not a TypeScript mirror of it.
 //
 // Determinism invariant: createRequire bypasses vitest's node:child_process mock,
-// so this module's resolveOnPath() would spawn a real `which`/`where`. Every test
-// below avoids the live probe — by forcing GITNEXUS_INVOCATION, injecting a fake
-// `probe`, or calling the pure pickPathMatch() — so results never depend on the
-// host PATH. Keep new tests on one of those three paths.
+// so the only live subprocess this module can run is probeVersion (`npm`/`pnpm
+// --version`). resolveOnPath is now spawn-free — a pure PATH scan — so tests pin
+// it by passing an injected `{ platform, env }` (never the host PATH). Mode tests
+// inject a fake `probe` or force GITNEXUS_INVOCATION; version tests inject `deps`.
+// Keep new tests on one of those paths so results never depend on the host.
 const cjs = cjsRequire(CANONICAL_CJS) as CjsModule;
 
 describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
@@ -201,54 +204,6 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     const probe = vi.fn(() => '/usr/local/bin/gitnexus');
     expect(cjs.resolveInvocationMode(probe)).toBe('pnpm');
     expect(probe).not.toHaveBeenCalled();
-  });
-});
-
-describe('pickPathMatch — Windows global-shim detection', () => {
-  it('detects a .exe-only shim (Volta/scoop)', () => {
-    expect(
-      cjs.pickPathMatch('C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe\r\n', {
-        isWin: true,
-        gitnexusWrapper: true,
-      }),
-    ).toBe('C:\\Users\\me\\AppData\\Local\\Volta\\bin\\gitnexus.exe');
-  });
-
-  it('detects an extensionless shim', () => {
-    expect(
-      cjs.pickPathMatch('C:\\tools\\gitnexus\r\n', { isWin: true, gitnexusWrapper: true }),
-    ).toBe('C:\\tools\\gitnexus');
-  });
-
-  it('prefers a .cmd over an extensionless sibling', () => {
-    expect(
-      cjs.pickPathMatch('C:\\npm\\gitnexus\r\nC:\\npm\\gitnexus.cmd\r\n', {
-        isWin: true,
-        gitnexusWrapper: true,
-      }),
-    ).toBe('C:\\npm\\gitnexus.cmd');
-  });
-
-  it('strips the CRLF carriage return from the chosen path', () => {
-    const bin = cjs.pickPathMatch('C:\\npm\\gitnexus.cmd\r\n', {
-      isWin: true,
-      gitnexusWrapper: true,
-    });
-    expect(bin).not.toMatch(/\r/);
-    expect(bin).toBe('C:\\npm\\gitnexus.cmd');
-  });
-
-  it('returns the first hit on non-Windows / non-wrapper lookups, null on empty', () => {
-    expect(cjs.pickPathMatch('/usr/local/bin/pnpm\n', { isWin: false })).toBe(
-      '/usr/local/bin/pnpm',
-    );
-    expect(cjs.pickPathMatch('', { isWin: true, gitnexusWrapper: true })).toBeNull();
-  });
-
-  it('returns the first hit for a Windows non-wrapper lookup (pnpm probe)', () => {
-    expect(
-      cjs.pickPathMatch('C:\\npm\\pnpm.cmd\r\n', { isWin: true, gitnexusWrapper: false }),
-    ).toBe('C:\\npm\\pnpm.cmd');
   });
 });
 
@@ -423,6 +378,159 @@ describe('buildRunnerArgv (project-local runner exec, #1945)', () => {
   it('omits onnxruntime-node when --embeddings is absent', () => {
     const { args } = cjs.buildRunnerArgv('pnpm', ['analyze'], { pnpmMajor: 10, pnpmMinor: 14 });
     expect(args).not.toContain('--allow-build=onnxruntime-node');
+  });
+});
+
+describe('resolveOnPath — pure-Node PATH scan (#1938, all-OS, spawn-free)', () => {
+  const tmpDirs: string[] = [];
+  const mkBinDir = (): string => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'resolve-path-'));
+    tmpDirs.push(dir);
+    return dir;
+  };
+  afterEach(() => {
+    while (tmpDirs.length) rmSync(tmpDirs.pop() as string, { recursive: true, force: true });
+  });
+
+  it('finds an executable launcher on a POSIX PATH', () => {
+    const dir = mkBinDir();
+    const bin = path.join(dir, 'gitnexus');
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+    chmodSync(bin, 0o755);
+    expect(cjs.resolveOnPath('gitnexus', true, { platform: 'linux', env: { PATH: dir } })).toBe(
+      bin,
+    );
+  });
+
+  // X_OK is meaningless on Windows (every file reads as accessible), so this
+  // POSIX-only guarantee can only be asserted on a POSIX host.
+  it.skipIf(process.platform === 'win32')(
+    'skips a non-executable file on POSIX (requires X_OK)',
+    () => {
+      const dir = mkBinDir();
+      writeFileSync(path.join(dir, 'gitnexus'), 'not executable'); // intentionally no chmod +x
+      expect(
+        cjs.resolveOnPath('gitnexus', true, { platform: 'linux', env: { PATH: dir } }),
+      ).toBeNull();
+    },
+  );
+
+  it('returns null when the launcher is absent or PATH is empty', () => {
+    const dir = mkBinDir();
+    expect(
+      cjs.resolveOnPath('gitnexus', true, { platform: 'linux', env: { PATH: dir } }),
+    ).toBeNull();
+    expect(cjs.resolveOnPath('gitnexus', true, { platform: 'linux', env: {} })).toBeNull();
+  });
+
+  it('honors PATHEXT on Windows (a .cmd shim is detected)', () => {
+    const dir = mkBinDir();
+    const bin = path.join(dir, 'gitnexus.cmd');
+    writeFileSync(bin, '@echo off\r\n');
+    // The PATHEXT entry case matches the fixture so the assertion is deterministic
+    // on case-sensitive CI filesystems; real Windows is case-insensitive, so the
+    // casing of PATHEXT vs the on-disk shim never matters there.
+    expect(
+      cjs.resolveOnPath('gitnexus', true, {
+        platform: 'win32',
+        env: { PATH: dir, PATHEXT: '.COM;.EXE;.BAT;.cmd' },
+      }),
+    ).toBe(bin);
+  });
+
+  it('does not treat a .ps1-only shim as on PATH when PATHEXT excludes .PS1', () => {
+    // A .ps1 is not launchable as `gitnexus` without a shell and is absent from
+    // default PATHEXT, so mirroring `where`/cmd.exe (PATHEXT-driven) avoids a hint
+    // that would fail when run.
+    const dir = mkBinDir();
+    writeFileSync(path.join(dir, 'gitnexus.ps1'), 'exit 0');
+    expect(
+      cjs.resolveOnPath('gitnexus', true, {
+        platform: 'win32',
+        env: { PATH: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+      }),
+    ).toBeNull();
+  });
+
+  it('on Windows ignores a bare extensionless file and returns the PATHEXT shim', () => {
+    // Windows matches PATHEXT extensions only — an extensionless `gitnexus` is not
+    // launchable as `gitnexus` from a shell, so when both exist the .cmd shim wins
+    // and the bare file is never the result (it would be an un-spawnable hint).
+    const dir = mkBinDir();
+    writeFileSync(path.join(dir, 'gitnexus'), 'not a shim');
+    const cmd = path.join(dir, 'gitnexus.cmd');
+    writeFileSync(cmd, '@echo off\r\n');
+    expect(
+      cjs.resolveOnPath('gitnexus', true, {
+        platform: 'win32',
+        env: { PATH: dir, PATHEXT: '.COM;.EXE;.BAT;.cmd' },
+      }),
+    ).toBe(cmd);
+  });
+
+  it('on Windows returns null for an extensionless-only file (not in PATHEXT)', () => {
+    const dir = mkBinDir();
+    writeFileSync(path.join(dir, 'gitnexus'), 'not a shim');
+    expect(
+      cjs.resolveOnPath('gitnexus', true, {
+        platform: 'win32',
+        env: { PATH: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+      }),
+    ).toBeNull();
+  });
+
+  it('with preferExecExt, prefers a .cmd/.exe shim over an exotic .COM hit, but accepts .COM alone', () => {
+    // preferExecExt mirrors the old `where` wrapper preference: a recognized
+    // .cmd/.bat/.exe wins over a .COM, yet a lone .COM is still detected (better a
+    // resolvable hint than none). Fixture/PATHEXT cases match for CI determinism.
+    const both = mkBinDir();
+    writeFileSync(path.join(both, 'gitnexus.com'), 'x');
+    const cmd = path.join(both, 'gitnexus.cmd');
+    writeFileSync(cmd, '@echo off\r\n');
+    expect(
+      cjs.resolveOnPath('gitnexus', true, {
+        platform: 'win32',
+        env: { PATH: both, PATHEXT: '.com;.cmd' },
+      }),
+    ).toBe(cmd);
+
+    const comOnly = mkBinDir();
+    const com = path.join(comOnly, 'gitnexus.com');
+    writeFileSync(com, 'x');
+    expect(
+      cjs.resolveOnPath('gitnexus', true, {
+        platform: 'win32',
+        env: { PATH: comOnly, PATHEXT: '.com;.cmd' },
+      }),
+    ).toBe(com);
+  });
+});
+
+describe('formatAnalyzeCommand end-to-end via the pure scan (#1938)', () => {
+  // Exercises the public entry through resolveOnPath against a real PATH (no
+  // mocks, no GITNEXUS_INVOCATION): with a launcher on PATH the hint resolves to
+  // `gitnexus analyze`. Because resolveOnPath is now spawn-free, this works
+  // identically on every OS — there is no `where`/`which` reachability caveat.
+  const savedPath = process.env.PATH;
+  let binDir: string | undefined;
+  afterEach(() => {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    if (binDir) rmSync(binDir, { recursive: true, force: true });
+    binDir = undefined;
+    delete process.env.GITNEXUS_INVOCATION;
+  });
+
+  it('resolves `gitnexus analyze` when a launcher is the only thing on PATH', () => {
+    binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-e2e-'));
+    const isWin = process.platform === 'win32';
+    const launcher = path.join(binDir, isWin ? 'gitnexus.cmd' : 'gitnexus');
+    writeFileSync(launcher, isWin ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+    if (!isWin) chmodSync(launcher, 0o755);
+    // PATH reduced to just the launcher dir — the former `where`/`which` resolver
+    // would have ENOENT'd here; the pure scan finds the launcher directly.
+    process.env.PATH = binDir;
+    expect(cjs.formatAnalyzeCommand()).toBe('gitnexus analyze');
   });
 });
 

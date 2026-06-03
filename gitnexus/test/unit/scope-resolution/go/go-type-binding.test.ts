@@ -88,6 +88,30 @@ func main() {
     expect(concreteMatch).toBeDefined();
   });
 
+  it('supplements generic type constructor: Box[User]{}', () => {
+    const src = `package main
+type User struct{}
+type Box[T any] struct{}
+func main() {
+  b := Box[User]{}
+  p := &Box[User]{}
+}`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    const constructorRefs = matches
+      .filter((m) => m['@reference.call.constructor'])
+      .map((m) => m['@reference.name']?.text);
+    const constructorBindings = matches
+      .filter((m) => m['@type-binding.constructor'])
+      .map((m) => ({
+        name: m['@type-binding.name']?.text,
+        type: m['@type-binding.type']?.text,
+      }));
+
+    expect(constructorRefs).toEqual(['Box', 'Box']);
+    expect(constructorBindings).toContainEqual({ name: 'b', type: 'Box' });
+    expect(constructorBindings).toContainEqual({ name: 'p', type: 'Box' });
+  });
+
   it('keeps multi-assignment constructor bindings aligned with RHS positions', () => {
     const src = 'package main\nfunc main() {\n  a, b := 42, X{}\n}';
     const bindings = emitGoScopeCaptures(src, 'main.go')

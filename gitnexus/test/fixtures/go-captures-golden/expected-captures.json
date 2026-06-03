@@ -84,16 +84,16 @@
     "digest": "a1f9453bd71926d60e3f148f43b9af813cbd1cccc11b323896a55bdb443f8931"
   },
   "go-constructor-type-inference/cmd/main.go": {
-    "captureGroups": 15,
-    "digest": "4c496bf5ebaebae8c7480b1826b3285752a79ce50562756ded3b7fe0c6d6b325"
+    "captureGroups": 18,
+    "digest": "849606bb6f94982923de95a9cacc2eeae567b1eb473937cc635dcc7789cc1c01"
   },
   "go-constructor-type-inference/models/repo.go": {
     "captureGroups": 8,
     "digest": "63cb96d06478f4b2039d6eaeab1468a8af3c503ec45e5785ff3e4de5aabe9240"
   },
   "go-constructor-type-inference/models/user.go": {
-    "captureGroups": 8,
-    "digest": "fcee44ed373eda2ff00778ff951fc2fa1503c5187b9e7d43dea3ee8b63656907"
+    "captureGroups": 12,
+    "digest": "bf814d4db5d2b0026caab6aa5ade9c173abd96fdf2c1e127b57a854d0203f9a5"
   },
   "go-deep-field-chain/cmd/main.go": {
     "captureGroups": 13,
