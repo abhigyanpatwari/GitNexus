@@ -18,12 +18,13 @@
  * ## Known limitations
  *
  *   1. **Template expressions** — Full template AST parsing is not performed.
- *      `vueScopeResolver.emitPostResolutionEdges` extracts four categories of
+ *      `vueScopeResolver.emitPostResolutionEdges` extracts five categories of
  *      template-derived edges via lightweight regex, all emitted after standard
  *      scope-resolution passes complete:
- *        - PascalCase component references → `vue-template-component` `CALLS`
+ *        - PascalCase/kebab-case component references → `vue-template-component` `CALLS`
  *        - `@event="handler"` on **native** elements → `vue-template-callback` `CALLS`
  *        - `@event="handler"` on **component** elements → `vue-event: @<name>` `BINDS_EVENT_HANDLER`
+ *        - `emit(...)` / `this.$emit(...)` in script → `vue-emit: <name>` `EMITS_EVENT`
  *        - `:prop="varName"` single-identifier bindings → `vue-template-attribute` `ACCESSES`
  *      `BINDS_EVENT_HANDLER` and `EMITS_EVENT` are complementary "hanging" edges:
  *      a Cypher query joining on the shared component File node reveals which

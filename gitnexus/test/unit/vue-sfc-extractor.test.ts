@@ -4,6 +4,7 @@ import {
   extractTemplateComponents,
   extractScriptEmitCalls,
   extractComponentEventBindings,
+  extractNativeElementEventHandlers,
 } from '../../src/core/ingestion/vue-sfc-extractor.js';
 
 describe('extractVueScript', () => {
@@ -230,6 +231,96 @@ describe('extractComponentEventBindings', () => {
     expect(extractComponentEventBindings(vue)).toEqual([
       { componentName: 'PostList', eventName: 'select', handlerName: 'onPostSelected' },
     ]);
+  });
+
+  it('captures hyphenated event names (@user-loaded)', () => {
+    const vue = `<template>
+  <UserCard @user-loaded="onUserLoaded" />
+</template>`;
+    const bindings = extractComponentEventBindings(vue);
+    expect(bindings).toContainEqual({
+      componentName: 'UserCard',
+      eventName: 'user-loaded',
+      handlerName: 'onUserLoaded',
+    });
+  });
+
+  it('captures update:model-value style event names', () => {
+    const vue = `<template>
+  <MyInput @update:model-value="onChange" />
+</template>`;
+    const bindings = extractComponentEventBindings(vue);
+    expect(bindings).toContainEqual({
+      componentName: 'MyInput',
+      eventName: 'update:model-value',
+      handlerName: 'onChange',
+    });
+  });
+});
+
+describe('extractNativeElementEventHandlers', () => {
+  it('captures handlers from native elements', () => {
+    const vue = `<template>
+  <button @click="handleSave" />
+  <form @submit.prevent="onSubmit" />
+</template>`;
+    const handlers = extractNativeElementEventHandlers(vue);
+    expect(handlers).toContain('handleSave');
+    expect(handlers).toContain('onSubmit');
+  });
+
+  it('does not emit handlers for kebab-case component tags', () => {
+    // <post-list> is a Vue component, not a native element.
+    // The NATIVE_TAG_RE negative lookahead must prevent matching `post` as a native tag.
+    const vue = `<template>
+  <post-list @select="onSelect" />
+  <button @click="handleClick" />
+</template>`;
+    const handlers = extractNativeElementEventHandlers(vue);
+    expect(handlers).not.toContain('onSelect');
+    expect(handlers).toContain('handleClick');
+  });
+});
+
+describe('extractScriptEmitCalls — Options API this.$emit', () => {
+  it('captures this.$emit() in Options API components', () => {
+    const vue = `<script lang="ts">
+export default {
+  methods: {
+    save() {
+      this.$emit('save');
+      this.$emit('update:modelValue', this.value);
+    },
+  },
+};
+</script>`;
+    const events = extractScriptEmitCalls(vue).map((c) => c.eventName);
+    expect(events).toContain('save');
+    expect(events).toContain('update:modelValue');
+  });
+
+  it('does NOT capture socket.emit() or eventBus.emit() as component events', () => {
+    const vue = `<script setup lang="ts">
+const socket = getSocket();
+socket.emit('message');
+eventBus.emit('data');
+emit('actual');
+</script>`;
+    const events = extractScriptEmitCalls(vue).map((c) => c.eventName);
+    expect(events).toEqual(['actual']);
+    expect(events).not.toContain('message');
+    expect(events).not.toContain('data');
+  });
+
+  it('captures update:modelValue style event names with colon', () => {
+    const vue = `<script setup lang="ts">
+const emit = defineEmits(['update:modelValue', 'user-loaded']);
+emit('update:modelValue', newVal);
+emit('user-loaded');
+</script>`;
+    const events = extractScriptEmitCalls(vue).map((c) => c.eventName);
+    expect(events).toContain('update:modelValue');
+    expect(events).toContain('user-loaded');
   });
 });
 

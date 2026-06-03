@@ -108,12 +108,31 @@ function collectBareEmitEventNames(input: string): string[] {
     return i;
   };
 
+  /**
+   * Return true if the token immediately before the `.` at `dotIdx` is the
+   * keyword `this` and is not itself a property access (e.g. not `foo.this`).
+   * Used to allow `this.$emit(...)` while blocking `socket.emit(...)`.
+   */
+  const lookbackIsThis = (dotIdx: number): boolean => {
+    let j = dotIdx - 1; // step past the '.'
+    while (j >= 0 && /\s/.test(input[j])) j--;
+    if (j < 3) return false;
+    if (input.slice(j - 3, j + 1) !== 'this') return false;
+    // Ensure 'this' is not itself a property target (e.g. foo.this)
+    const prevOfThis = j >= 4 ? input[j - 4] : '';
+    return !(prevOfThis.length > 0 && (isIdentChar(prevOfThis) || prevOfThis === '.'));
+  };
+
   const tryConsumeEmitCall = (idx: number): number => {
     const hasDollar = input[idx] === '$';
     const name = hasDollar ? '$emit' : 'emit';
     if (!input.startsWith(name, idx)) return idx;
     const prev = idx > 0 ? input[idx - 1] : '';
-    if (prev.length > 0 && (isIdentChar(prev) || prev === '.')) return idx;
+    if (prev.length > 0 && isIdentChar(prev)) return idx;
+    if (prev === '.') {
+      // Allow `this.$emit(...)` / `this.emit(...)` but block `socket.emit(...)`.
+      if (!lookbackIsThis(idx - 1)) return idx;
+    }
     const afterName = idx + name.length;
     const next = afterName < input.length ? input[afterName] : '';
     if (next.length > 0 && isIdentChar(next)) return idx;
@@ -137,7 +156,9 @@ function collectBareEmitEventNames(input: string): string[] {
       i++;
     }
     if (i >= input.length) return idx;
-    if (/^[A-Za-z][A-Za-z0-9-]*$/.test(eventName) && !seen.has(eventName)) {
+    // Allow simple names ("save"), hyphenated names ("user-loaded"), and
+    // update modifier patterns ("update:modelValue", "update:model-value").
+    if (/^[A-Za-z$_][A-Za-z0-9:_$-]*$/.test(eventName) && !seen.has(eventName)) {
       seen.add(eventName);
       events.push(eventName);
     }
@@ -294,61 +315,30 @@ export function extractTemplateComponents(vueContent: string): string[] {
 
 // ── Per-element event binding extraction ──────────────────────────────────
 //
-// Two sibling regexes capture opening tags distinguished by PascalCase
-// (Vue components) vs lowercase (native HTML elements). Both stop their
-// attribute-block capture at the first unescaped `>` — which handles the
-// common single-line case without a full template AST. Multi-line tags
-// whose attribute block contains a literal `>` are documented as a known
-// limitation (#1647).
-const COMPONENT_TAG_RE = /<([A-Z][A-Za-z0-9]+)([^>]*?)(?:\/>|>)/g;
-const KEBAB_COMPONENT_TAG_RE = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)([^>]*?)(?:\/>|>)/g;
-const NATIVE_TAG_RE = /<([a-z][a-z0-9]*)([^>]*?)(?:\/>|>)/g;
+// Three sibling regexes capture opening tags distinguished by PascalCase
+// (Vue components), kebab-case (Vue components in kebab form), and simple
+// lowercase (native HTML elements). All stop their attribute-block capture
+// at the first `>` with a bounded span of at most 512 characters to avoid
+// pathological backtracking on large template files (ReDoS mitigation).
+// Multi-line tags whose attribute block contains a literal `>` are documented
+// as a known limitation (#1647).
+//
+// NATIVE_TAG_RE uses `(?![A-Za-z0-9-])` to prevent matching the `post` prefix
+// of a kebab-case component tag like `<post-list>` — such tags are handled by
+// KEBAB_COMPONENT_TAG_RE, not NATIVE_TAG_RE.
+const COMPONENT_TAG_RE = /<([A-Z][A-Za-z0-9]+)([^>]{0,512}?)(?:\/>|>)/g;
+const KEBAB_COMPONENT_TAG_RE = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)([^>]{0,512}?)(?:\/>|>)/g;
+const NATIVE_TAG_RE = /<([a-z][a-z0-9]*)(?![A-Za-z0-9-])([^>]{0,512}?)(?:\/>|>)/g;
 
 // Within any tag's attribute block: matches Vue event bindings.
 //   @action="handleAction"
 //   @keyup.enter="submit"
+//   @user-loaded="onLoaded"        — hyphenated event names
+//   @update:model-value="onChange" — update modifier with colon
 //   v-on:click="onClick"
-const TAG_EVENT_RE = /(?:@|v-on:)([\w:.]+)\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
+const TAG_EVENT_RE = /(?:@|v-on:)([\w:.-]+)\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
 
 // ── Script emit() call extraction ─────────────────────────────────────────
-
-// ── All-event-handler regex (native + component elements) ─────────────────
-// Matches simple method-name references in Vue event-handler attributes.
-// Captures only bare identifiers — not inline expressions with arguments,
-// arrow functions, or compound expressions.
-//
-//   @click="handleSave"          → "handleSave"
-//   @keyup.enter="addTodo"       → "addTodo"
-//   v-on:submit.prevent="onSave" → "onSave"
-//   @click="toggle(item)"        — skipped (has parens)
-//   @click="() => count++"       — skipped (arrow function)
-const EVENT_HANDLER_RE = /(?:@|v-on:)[\w:.]+\s*=\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g;
-
-/**
- * Extract method names from Vue template event-handler bindings.
- *
- * Only captures single-identifier handlers (`@click="handleSave"`).
- * Inline expressions with arguments or operators are intentionally ignored
- * — they cannot be resolved to a single call target without parsing the
- * full template AST.
- *
- * Returns deduplicated method names.
- */
-export function extractTemplateEventHandlers(vueContent: string): string[] {
-  const templateMatch = TEMPLATE_RE.exec(vueContent);
-  if (!templateMatch) return [];
-
-  const templateContent = templateMatch[2];
-  const handlers = new Set<string>();
-  let match: RegExpExecArray | null;
-
-  EVENT_HANDLER_RE.lastIndex = 0;
-  while ((match = EVENT_HANDLER_RE.exec(templateContent)) !== null) {
-    handlers.add(match[1]);
-  }
-
-  return [...handlers];
-}
 
 // Matches simple variable references in Vue bound-attribute values.
 // Captures only bare identifiers — not member-access (":key=\"post.id\""),

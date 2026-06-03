@@ -916,6 +916,39 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional hook to expand the set of file paths handed to the scope-
+   * resolution run for this language.
+   *
+   * Called once per language with:
+   *   - `primaryFilePaths`      — files whose `getLanguageFromFilename` === this
+   *                               resolver's `language` (e.g. all `.vue` files).
+   *   - `preExtractedByPath`    — ParsedFile cache from the parse phase.
+   *   - `entryFileContents`     — raw source text of the primary files.
+   *   - `allScannedPaths`       — complete set of paths in the repository.
+   *   - `resolutionConfig`      — language-specific config (tsconfig paths, …).
+   *
+   * Return value: the full set of paths to include in the scope-resolution
+   * run.  May be a superset of `primaryFilePaths`.
+   *
+   * Vue uses this hook to collect the transitive TS/JS import closure of
+   * every `.vue` file so that cross-file imports (`import { fn } from './api'`)
+   * resolve correctly within a single Vue scope-resolution pass.
+   *
+   * This hook keeps language-specific scope-context policy inside the language
+   * module, preventing shared pipeline code (`phase.ts`) from naming individual
+   * languages.
+   *
+   * Default: undefined (use only `primaryFilePaths`).
+   */
+  readonly collectScopeContextPaths?: (options: {
+    readonly primaryFilePaths: readonly string[];
+    readonly preExtractedByPath: ReadonlyMap<string, import('gitnexus-shared').ParsedFile>;
+    readonly entryFileContents: ReadonlyMap<string, string>;
+    readonly allScannedPaths: ReadonlySet<string>;
+    readonly resolutionConfig: unknown;
+  }) => Set<string>;
+
+  /**
    * Optional post-resolution hook for emitting language-specific graph edges
    * that cannot be derived from scope captures or import resolution alone.
    *

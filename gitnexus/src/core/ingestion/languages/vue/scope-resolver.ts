@@ -52,7 +52,7 @@
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
@@ -69,6 +69,19 @@ import {
   extractScriptEmitCalls,
   extractTemplateAttributeBindings,
 } from '../../vue-sfc-extractor.js';
+import { extractParsedFile } from '../../scope-extractor-bridge.js';
+
+// Languages whose files may be pulled into the Vue scope-resolution pass
+// as import-closure context (`.vue` → `.ts` / `.js` cross-file resolution).
+const VUE_SCOPE_CONTEXT_LANGUAGES = new Set<SupportedLanguages>([
+  SupportedLanguages.Vue,
+  SupportedLanguages.TypeScript,
+  SupportedLanguages.JavaScript,
+]);
+
+function isVueScopeContextLanguage(lang: SupportedLanguages | null): boolean {
+  return lang !== null && VUE_SCOPE_CONTEXT_LANGUAGES.has(lang);
+}
 
 const vueScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Vue,
@@ -110,28 +123,98 @@ const vueScopeResolver: ScopeResolver = {
   allowGlobalFreeCallFallback: false,
 
   /**
+   * Expand the scope-resolution file universe for Vue by performing a
+   * transitive closure over imports starting from the primary `.vue` files.
+   *
+   * Vue SFCs import TypeScript/JavaScript modules (`import { fn } from './api'`),
+   * and those modules must be included in the Vue resolution pass for cross-file
+   * IMPORTS/CALLS edges to resolve correctly.  Without this expansion, only
+   * `.vue` files would be processed and all TS/JS imports would remain
+   * unresolved.
+   *
+   * Keeping this logic here (rather than hard-coding it in `phase.ts`) ensures
+   * that shared pipeline code remains language-agnostic.
+   */
+  collectScopeContextPaths({
+    primaryFilePaths,
+    preExtractedByPath,
+    entryFileContents,
+    allScannedPaths,
+    resolutionConfig,
+  }) {
+    const resolveTargets = (targetRaw: string, fromFile: string): readonly string[] => {
+      const resolved = vueScopeResolver.resolveImportTarget(
+        targetRaw,
+        fromFile,
+        allScannedPaths,
+        resolutionConfig,
+      );
+      if (resolved === null) return [];
+      if (typeof resolved === 'string') return [resolved];
+      return resolved;
+    };
+
+    const visited = new Set<string>(primaryFilePaths);
+    const queue = [...primaryFilePaths];
+    const fallbackParsed = new Map<string, ParsedFile>();
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (current === undefined) break;
+      let parsed = preExtractedByPath.get(current) ?? fallbackParsed.get(current) ?? undefined;
+      if (parsed === undefined) {
+        const source = entryFileContents.get(current);
+        if (source !== undefined) {
+          parsed = extractParsedFile(vueProvider, source, current);
+          if (parsed !== undefined) fallbackParsed.set(current, parsed);
+        }
+      }
+      if (parsed === undefined) continue;
+
+      for (const parsedImport of parsed.parsedImports) {
+        if (parsedImport.targetRaw.trim().length === 0) continue;
+        for (const targetPath of resolveTargets(parsedImport.targetRaw, current)) {
+          if (!allScannedPaths.has(targetPath)) continue;
+          if (!isVueScopeContextLanguage(getLanguageFromFilename(targetPath))) continue;
+          if (visited.has(targetPath)) continue;
+          visited.add(targetPath);
+          queue.push(targetPath);
+        }
+      }
+    }
+
+    return visited;
+  },
+
+  /**
    * Emit template-derived edges after standard scope-resolution passes.
    *
-   * Four categories (all scoped to `.vue` files only):
+   * Six edge categories (all scoped to `.vue` files only):
    *
    *   1. **CALLS** (`vue-template-component`)
    *      PascalCase component elements → the imported component's File node.
    *      Source = the parent file (File node).
    *
-   *   2. **BINDS_EVENT_HANDLER** (`vue-event: @<eventName>`)
-   *      `@event="handler"` on a PascalCase component element.
+   *   2. **CALLS** (`vue-template-callback`) — reserved for future use
+   *      (see category 3 below).
+   *
+   *   3. **CALLS** (`vue-template-callback`)
+   *      `@event="handler"` on a **native** HTML element (`<button>`, `<input>`).
+   *      Source = the parent file (File node). Target = handler Function/Method.
+   *
+   *   4. **BINDS_EVENT_HANDLER** (`vue-event: @<eventName>`)
+   *      `@event="handler"` on a **component** element.
    *      Source = the handler Function/Method node in the parent file.
    *      Target = the child component's File node.
    *
-   *   3. **EMITS_EVENT** (`vue-emit: <eventName>`)
-   *      `emit('eventName', …)` call inside the script block.
-   *      Source = the file's own File node.
-   *      Target = the same File node (self-referential annotation).
-   *      These are "hanging" edges: a Cypher query joins them with
-   *      BINDS_EVENT_HANDLER edges on the shared component File node to
-   *      reveal which handlers receive which component's emitted events.
+   *   5. **EMITS_EVENT** (`vue-emit: <eventName>`)
+   *      `emit('eventName', …)` / `this.$emit('eventName', …)` in script block.
+   *      Source = the file's own File node (self-referential annotation).
+   *      Target = the same File node.
+   *      These "hanging" edges join with BINDS_EVENT_HANDLER via Cypher query
+   *      on the shared component File node to reveal handler/emitter pairs.
    *
-   *   4. **ACCESSES** (`vue-template-attribute`)
+   *   6. **ACCESSES** (`vue-template-attribute`)
    *      `:prop="varName"` bound-attribute references.
    *      Source = the file's File node. Target = resolved variable node.
    */
@@ -171,7 +254,7 @@ const vueScopeResolver: ScopeResolver = {
         });
       }
 
-      // 2 — Native-element event-handler CALLS (@click="method" on <button> etc.)
+      // 3 — Native-element event-handler CALLS (@click="method" on <button> etc.)
       for (const handlerName of extractNativeElementEventHandlers(content)) {
         const handlerNodeId = nodeLookup.get(simpleKey(parsedFile.filePath, handlerName));
         if (!handlerNodeId) continue;
@@ -185,7 +268,7 @@ const vueScopeResolver: ScopeResolver = {
         });
       }
 
-      // 4 — Component event bindings → BINDS_EVENT_HANDLER
+      // 4 — BINDS_EVENT_HANDLER: component event bindings (@event="handler" on component elements)
       for (const { componentName, eventName, handlerName } of extractComponentEventBindings(
         content,
       )) {
@@ -207,7 +290,7 @@ const vueScopeResolver: ScopeResolver = {
         });
       }
 
-      // 5 — emit() calls → EMITS_EVENT (self-referential annotation)
+      // 5 — EMITS_EVENT: emit() / this.$emit() calls (self-referential annotation)
       for (const { eventName } of extractScriptEmitCalls(content, { sourceKind: 'full-sfc' })) {
         graph.addRelationship({
           id: generateId('EMITS_EVENT', `${fileId}:emit:${eventName}`),
@@ -219,7 +302,7 @@ const vueScopeResolver: ScopeResolver = {
         });
       }
 
-      // 6 — Bound-attribute ACCESSES (:prop="varName")
+      // 6 — ACCESSES: bound-attribute references (:prop="varName")
       for (const varName of extractTemplateAttributeBindings(content)) {
         const varNodeId = nodeLookup.get(simpleKey(parsedFile.filePath, varName));
         if (!varNodeId) continue;
