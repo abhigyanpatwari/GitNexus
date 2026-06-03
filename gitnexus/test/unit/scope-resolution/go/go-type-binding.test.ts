@@ -174,6 +174,66 @@ func main() {
       source: 'parameter-annotation',
     });
   });
+
+  it('captures and normalizes fixed-array return type bindings', () => {
+    const src = 'package main\ntype User struct{}\nfunc Load() [3]User { return [3]User{} }';
+    const binding = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@type-binding.return'] && m['@type-binding.name']?.text === 'Load',
+    );
+
+    expect(binding?.['@type-binding.type']?.text).toBe('[3]User');
+    const parsed = interpretGoTypeBinding(binding!);
+    expect(parsed).toEqual({
+      boundName: 'Load',
+      rawTypeName: 'User',
+      source: 'return-annotation',
+    });
+  });
+
+  it('captures and normalizes generic and channel parameter type bindings', () => {
+    const src = `package main
+type User struct{}
+type Box[T any] struct{}
+func Process(b Box[int], recv chan *User, send chan<- *User) {}`;
+    const parsed = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@type-binding.parameter'])
+      .map((m) => interpretGoTypeBinding(m));
+
+    expect(parsed).toContainEqual({
+      boundName: 'b',
+      rawTypeName: 'Box',
+      source: 'parameter-annotation',
+    });
+    expect(parsed).toContainEqual({
+      boundName: 'recv',
+      rawTypeName: 'User',
+      source: 'parameter-annotation',
+    });
+    expect(parsed).toContainEqual({
+      boundName: 'send',
+      rawTypeName: 'User',
+      source: 'parameter-annotation',
+    });
+  });
+
+  it('documents dormant anonymous interface and multi-return function parameter bindings', () => {
+    const src = `package main
+func Use(cb func() (int, error), v interface{ Foo() }) {}`;
+    const parsed = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@type-binding.parameter'])
+      .map((m) => interpretGoTypeBinding(m));
+
+    expect(parsed).toContainEqual({
+      boundName: 'cb',
+      rawTypeName: '(int, error)',
+      source: 'parameter-annotation',
+    });
+    expect(parsed).toContainEqual({
+      boundName: 'v',
+      rawTypeName: 'interface{ Foo() }',
+      source: 'parameter-annotation',
+    });
+  });
 });
 
 describe('Go type binding — null guard (#1346, #1366)', () => {
