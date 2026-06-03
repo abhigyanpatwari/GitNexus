@@ -3270,9 +3270,14 @@ export class LocalBackend {
     relationTypes?: string[];
     includeTests?: boolean;
     minConfidence?: number;
+    // (#53) Disambiguate overloaded methods (interface vs impl) by file path,
+    // matching the `context` tool's `file_path` parameter contract. Forwarded
+    // to the name-resolution sub-queries so the candidate whose filePath
+    // contains the suffix is preferred.
+    file_path?: string;
   }): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const { target, direction } = params;
     const isQualified = target.includes(':') || target.includes('/');
     // For uid-format targets (e.g. "Class:UserController"), extract the name
@@ -3330,10 +3335,28 @@ export class LocalBackend {
         `, { targetName }).catch(() => []);
 
         if (rows.length > 0) {
-          // Pick the row with the lowest priority value (Class wins over Constructor)
-          const best = rows.reduce((a: any, b: any) =>
-            (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
-          );
+          // (#53) If `file_path` is supplied, prefer the row whose filePath
+          // contains it as a suffix. This disambiguates interface-vs-impl
+          // overloading (e.g., `unholdMoney` defined in both
+          // CashService.java and CashServiceV2Impl.java). Falls back to
+          // priority-based selection if no file path matches.
+          const filePathFilter = params.file_path;
+          let best: any;
+          if (filePathFilter) {
+            const fpLower = filePathFilter.toLowerCase();
+            const matched = rows.find((r: any) => {
+              const fp = (r.filePath ?? r[2] ?? '') as string;
+              return fp && fp.toLowerCase().endsWith(fpLower);
+            });
+            best = matched ?? rows.reduce((a: any, b: any) =>
+              (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
+            );
+          } else {
+            // Pick the row with the lowest priority value (Class wins over Constructor)
+            best = rows.reduce((a: any, b: any) =>
+              (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
+            );
+          }
           sym = best;
           const priorityToLabel = ['Class', 'Interface', 'Function', 'Method', 'Constructor'];
           symType = priorityToLabel[best.priority ?? best[3]] ?? '';
@@ -3348,7 +3371,19 @@ export class LocalBackend {
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 1
         `, { targetName });
-        if (rows.length > 0) { sym = rows[0]; symType = sym.type || sym[2] || ''; }
+        if (rows.length > 0) {
+          // (#53) Honor `file_path` for disambiguation if a filePath matches
+          // the supplied suffix; otherwise pick the first row as before.
+          const fpLower = params.file_path?.toLowerCase();
+          const matched = fpLower
+            ? rows.find((r: any) => {
+                const fp = (r.filePath ?? r[3] ?? '') as string;
+                return fp && fp.toLowerCase().endsWith(fpLower);
+              })
+            : undefined;
+          sym = matched ?? rows[0];
+          symType = sym.type || sym[2] || '';
+        }
       }
     }
 

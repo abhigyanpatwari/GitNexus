@@ -244,6 +244,13 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).target).toBeDefined();
   });
 
+  // WI-J3: regression for #53 — impact tool must accept a `file_path` parameter
+  // and prefer the symbol whose filePath ends with that suffix (mirrors the
+  // `context` tool's disambiguation contract). Needs a harness that exposes
+  // the resolution sub-query's full UNION ALL result set so the filter can
+  // be observed.
+  it.todo('impact tool disambiguates symbols via file_path parameter (#53)');
+
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path
