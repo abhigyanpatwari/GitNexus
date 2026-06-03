@@ -2103,6 +2103,87 @@ describe('Rust inline mod-nested same-tail collision — distinct nodes (issue #
 });
 
 // ---------------------------------------------------------------------------
+// #1992: GENERIC inherent-impl ownership — `impl<T> Inner<T>` methods own through
+// the mod-qualified Impl node, not orphaned to File.
+//
+// PR #1981 / `bc4a560d` qualified the UNSCOPED bare `impl Inner` target. A GENERIC
+// inherent-impl target (`impl<T> Inner<T>`) is a `generic_type` node, which the
+// inherent-impl owner walk (ast-helpers `findEnclosingClassInfo`) did not match —
+// so the walk returned null and the method got `File -> DEFINES` with NO HAS_METHOD
+// (orphaned; invisible to findDanglingEdges). The Impl NODE was already correctly
+// mod-qualified (the @name capture drills into the inner type_identifier,
+// tree-sitter-queries.ts), so the fix is owner-walk-only and the owner id == the
+// node id (`a.Inner` / `b.Inner`) by construction. Holds on both resolver legs
+// (structure-phase).
+// ---------------------------------------------------------------------------
+
+describe('Rust generic inherent-impl same-tail ownership — distinct nodes (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
+      () => {},
+    );
+  }, 60000);
+
+  it('owns fa / fb through distinct mod-qualified Impl nodes (generic impl, no orphan)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'fa');
+    const b = hm.find((e) => e.target === 'fb');
+    // Pre-fix the generic-impl owner walk returns null, so fa/fb orphan to File
+    // (File -> DEFINES, no HAS_METHOD) — toBeDefined() fails on the pre-fix base.
+    expect(a, 'HAS_METHOD -> fa').toBeDefined();
+    expect(b, 'HAS_METHOD -> fb').toBeDefined();
+    // Owner id is the mod-qualified Impl node, byte-identical to the node id.
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('a.Inner');
+    expect(b!.rel.sourceId).toContain('b.Inner');
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R6: scoped-generic `impl<T> crate::c::Scoped<T>` materializes no Impl node, so
+  // `fd` must NOT own through a phantom `c.Scoped` node — it stays orphaned
+  // (deferred). Guards against the owner walk minting an owner id for an
+  // unmaterialized node.
+  it('does not mint a phantom owner for a scoped-generic impl (fd orphaned, deferred)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    expect(hm.find((e) => e.target === 'fd')).toBeUndefined();
+  });
+});
+
+// Same fixture forced through the WORKER pool (parse-worker.ts). The inherent-impl
+// owner walk is shared structure-phase logic, so generic-impl ownership must hold
+// on BOTH the sequential and worker paths.
+describe('Rust generic inherent-impl ownership — worker path parity (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('owns fa / fb through distinct mod-qualified Impl nodes on the worker path', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'fa');
+    const b = hm.find((e) => e.target === 'fb');
+    expect(a, 'HAS_METHOD -> fa').toBeDefined();
+    expect(b, 'HAS_METHOD -> fb').toBeDefined();
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('a.Inner');
+    expect(b!.rel.sourceId).toContain('b.Inner');
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // F71 — union declarations resolve as Struct nodes (issue #1934)
 //
 // A `union` is deliberately captured as a Struct-labeled node (see the

@@ -319,6 +319,10 @@
     "captureGroups": 18,
     "digest": "3326eb4f82b1559b6afec497dc52cab734e6f3209501a4bd982bf5eab9ec6dba"
   },
+  "rust-nested-tail-collision-generic/lib.rs": {
+    "captureGroups": 29,
+    "digest": "1bfdaaf207a83924fc25d2eec0a47e5807754bbd0de499b81adea48342c6e687"
+  },
   "rust-nested-tail-collision/lib.rs": {
     "captureGroups": 17,
     "digest": "2fc1fe1eb4e8727a89ab283ae34a0ae8df0c421551a7bd5e6e7ffb9d4aa54189"
