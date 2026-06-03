@@ -1,6 +1,7 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
+import { getLocalEmbeddingRuntimeBlocker } from '../core/embeddings/runtime-support.js';
 import { checkLbugNative } from '../core/lbug/native-check.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
@@ -49,6 +50,33 @@ export function padDisplayEnd(value: string, columns: number): string {
 }
 
 const label = (key: Parameters<typeof t>[0], width: number): string => padDisplayEnd(t(key), width);
+
+/**
+ * Embedding-runtime support status for the `doctor` Embeddings section.
+ * Pure and DI-friendly so it can be unit-tested without running the whole
+ * command. Delegates the platform decision to
+ * {@link getLocalEmbeddingRuntimeBlocker} so the wording stays in one place.
+ *
+ * - HTTP mode: always supported (never touches the native runtime).
+ * - Local mode on an unsupported platform (macOS Intel, #1515): reports the
+ *   blocker as `detail` so the caller can surface the full guidance.
+ */
+export function localEmbeddingDoctorStatus(opts: {
+  httpMode: boolean;
+  platform?: NodeJS.Platform;
+  arch?: NodeJS.Architecture;
+}): { status: string; detail: string | null } {
+  if (opts.httpMode) {
+    return { status: '✓ http endpoint configured', detail: null };
+  }
+  const platform = opts.platform ?? process.platform;
+  const arch = opts.arch ?? process.arch;
+  const blocker = getLocalEmbeddingRuntimeBlocker({ platform, arch });
+  if (blocker) {
+    return { status: `✗ local embeddings unavailable on ${platform}/${arch}`, detail: blocker };
+  }
+  return { status: '✓ local embeddings supported', detail: null };
+}
 
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
@@ -102,4 +130,13 @@ export const doctorCommand = async () => {
   console.log(
     `  ${label('doctor.labels.subBatch', 12)}${t('doctor.chunks', { count: embeddingConfig.subBatchSize })}`,
   );
+  // Surface local-runtime support so macOS Intel users see up front that local
+  // embeddings can't load here (the bundled ONNX Runtime ships no darwin/x64
+  // native binding, #1515) — rather than discovering it only when
+  // `analyze --embeddings` fails. Literal label like the 'native' line above.
+  const support = localEmbeddingDoctorStatus({ httpMode: isHttpMode() });
+  console.log(`  ${padDisplayEnd('Support:', 12)}${support.status}`);
+  if (support.detail) {
+    process.stderr.write(`\n${support.detail.replace(/^/gm, '  ')}\n\n`);
+  }
 };

@@ -67,6 +67,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   isSuppressedConcreteTypedefDuplicate,
+  qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
@@ -753,11 +754,17 @@ const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
 
-  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
+  const result = findEnclosingClassInfo(
+    node,
+    filePath,
+    resolveEnclosingOwner,
+    getQualifiedOwnerName,
+  );
   classIdCache.set(node, result);
   return result;
 };
@@ -1517,12 +1524,23 @@ const processFileGroup = (
               }
 
               if (routed.kind === 'properties') {
+                // #1978: thread the qualifier so a routed property's owner edge
+                // points at the *qualified* nested-class node (Outer.Inner) rather
+                // than a now-nonexistent simple `Class:file:Inner` id. Gated on the
+                // flag → byte-identical when off. Mirrors the main owner path.
+                const propGetQualifiedOwnerName =
+                  provider.classExtractor?.qualifiedNodeId === true
+                    ? (node: SyntaxNode, simpleName: string): string | null =>
+                        provider.classExtractor!.extractQualifiedName(node, simpleName)
+                    : undefined;
                 const propEnclosingInfo = cachedFindEnclosingClassInfo(
                   captureMap['call'],
                   file.path,
                   provider.resolveEnclosingOwner,
+                  propGetQualifiedOwnerName,
                 );
-                const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
+                const propEnclosingClassId =
+                  propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
                 let routedFieldMap: Map<string, FieldInfo> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
@@ -1803,23 +1821,63 @@ const processFileGroup = (
         nodeLabel === 'Constructor' ||
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
+      // #1978: thread the class-extractor's qualifier into the owner walk when the
+      // language opts into qualified node ids, so a nested member's owner resolves
+      // to the *qualified* class id (Outer.Inner). Gated on the flag → byte-identical
+      // when off. Mirrors parsing-processor.ts.
+      const getQualifiedOwnerName =
+        provider.classExtractor?.qualifiedNodeId === true
+          ? (node: SyntaxNode, simpleName: string): string | null =>
+              provider.classExtractor!.extractQualifiedName(node, simpleName)
+          : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
             nameNode || definitionNode,
             file.path,
             provider.resolveEnclosingOwner,
+            getQualifiedOwnerName,
           )
         : null;
-      const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const enclosingClassId =
+        enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
       const objectLiteralOwnerInfo =
         !enclosingClassId && nodeLabel === 'Method' && definitionNode
           ? findObjectLiteralBindingInfo(definitionNode, file.path)
           : null;
 
-      // Qualify method/property IDs with enclosing class name to avoid collisions
-      const qualifiedName = enclosingClassInfo
-        ? `${enclosingClassInfo.className}.${nodeName}`
-        : nodeName;
+      // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
+      // class-like node can key its id by its fully-qualified path. Derived from
+      // the SAME extractQualifiedName the owner edge uses → owner id == node id.
+      const classNodeForSymbol = definitionNode || nameNode;
+      const qualifiedTypeName =
+        extractedClassSymbol?.qualifiedName ??
+        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
+          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
+          : undefined);
+
+      // Qualify method/property IDs with enclosing class name to avoid collisions.
+      // Class-like nodes use their own fully-qualified path as the id key when the
+      // language enables qualifiedNodeId (#1978); everything else is unchanged.
+      // #1982: LOCKSTEP with parsing-processor.ts — a Rust inherent-impl with an
+      // UNSCOPED bare target is keyed by the enclosing `mod_item` scope so the
+      // worker-path Impl node id matches the sequential path and the owner walk.
+      const rustImplQualifiedName =
+        nodeLabel === 'Impl' &&
+        definitionNode?.type === 'impl_item' &&
+        nameNode?.type === 'type_identifier'
+          ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
+          : undefined;
+
+      const qualifiedName =
+        rustImplQualifiedName !== undefined
+          ? rustImplQualifiedName
+          : isClassLikeLabel &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              qualifiedTypeName !== undefined
+            ? qualifiedTypeName
+            : enclosingClassInfo
+              ? `${enclosingClassInfo.className}.${nodeName}`
+              : nodeName;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
@@ -1922,12 +1980,6 @@ const processFileGroup = (
         nodeLabel,
         `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${parameterShapeTag}`,
       );
-      const classNodeForSymbol = definitionNode || nameNode;
-      const qualifiedTypeName =
-        extractedClassSymbol?.qualifiedName ??
-        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
-          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
 
       const description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
 

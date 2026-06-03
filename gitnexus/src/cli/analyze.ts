@@ -35,6 +35,7 @@ import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -1187,6 +1188,20 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           `    (Try 33554432 = 32 MiB on small-disk / CI runners.)\n`,
         { recoveryHint: 'wal-checkpoint-threshold' },
       );
+      process.exitCode = 1;
+      return;
+    }
+
+    // Local embedding runtime unsupported on this platform (macOS Intel ships no
+    // darwin/x64 ONNX native binding, #1515). The guard threw before importing
+    // transformers.js, so this is a clean, actionable GitNexus message. Checked
+    // before the network-heuristic isHfDownloadFailure branch below (and before
+    // the generic module-not-found "installation may be corrupt" hint) so the
+    // explicit platform message always takes priority.
+    if (isLocalEmbeddingRuntimeBlockerMessage(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
       process.exitCode = 1;
       return;
     }
