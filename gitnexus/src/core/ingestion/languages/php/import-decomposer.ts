@@ -56,10 +56,39 @@ export function splitNamespaceUseDeclaration(stmtNode: SyntaxNode): CaptureMatch
     return decomposeGrouped(stmtNode, groupNode, qualifier);
   }
 
-  // Single use clause (possibly aliased).
-  const spec = parseSingleUseClause(stmtNode, qualifier);
-  if (spec === null) return [];
-  return [buildImportMatch(stmtNode, spec)];
+  // Non-grouped: iterate all children. The grammar puts the first import path
+  // as a `namespace_name` child, with additional comma-separated imports as
+  // `namespace_use_clause` children. Handle `use A, B, C;` and `use A, B as C;`.
+  const out: CaptureMatch[] = [];
+
+  // First child: namespace_name (the primary import path, before any comma).
+  // Build a PhpImportSpec from it directly (no clause wrapper in the grammar).
+  const firstName = findNamedChild(stmtNode, 'namespace_name');
+  if (firstName !== null) {
+    const source = firstName.text.trim();
+    if (source !== '') {
+      out.push(
+        buildImportMatch(stmtNode, {
+          kind: qualifier,
+          source,
+          name: lastSegment(source),
+          atNode: stmtNode,
+        }),
+      );
+    }
+  }
+
+  // Additional children: namespace_use_clause (one per comma-separated import).
+  for (let i = 0; i < stmtNode.namedChildCount; i++) {
+    const child = stmtNode.namedChild(i);
+    if (child === null || child.type !== 'namespace_use_clause') continue;
+    const spec = parseUseClause(child, qualifier);
+    if (spec !== null) {
+      out.push(buildImportMatch(stmtNode, spec));
+    }
+  }
+
+  return out;
 }
 
 // ── Qualifier detection ────────────────────────────────────────────────────
