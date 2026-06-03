@@ -85,6 +85,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'merges methods from package-qualified embedded interfaces before matching implementors',
     'fans out cross-package interface receivers only to valid implementors',
     'dispatches package-qualified embedded-interface receivers only to complete implementors',
+    // F33 generic composite literal constructor inference normalizes generic_type
+    // nodes via the scope-resolution capture path (normalizeGenericConstructorCapture).
+    // The legacy DAG does not normalize generic_type in composite_literal patterns,
+    // so it cannot resolve Box[User]{} to the Box struct. Scope-resolver-only.
+    'resolves Box[models.User]{} as a generic composite-literal constructor call',
   ]),
   java: new Set([
     // Duplicate-FQN same-module path-affinity ordering is implemented in the
@@ -562,6 +567,43 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
 
 export function getResolutionOutcomes(result: PipelineResult) {
   return result.resolutionOutcomes ?? [];
+}
+
+/**
+ * Relationships whose source or target id does not resolve to a live graph node.
+ * A non-empty result means the graph has dangling edges (an endpoint that was
+ * never materialized) — e.g. a HAS_METHOD edge owned by a class node that the
+ * structure phase failed to create. Pass `types` to scope the check to specific
+ * relationship types (e.g. `['HAS_METHOD']`).
+ */
+export function findDanglingEdges(
+  result: PipelineResult,
+  types?: string[],
+): Array<{
+  type: string;
+  sourceId: string;
+  targetId: string;
+  missing: 'source' | 'target' | 'both';
+}> {
+  const out: Array<{
+    type: string;
+    sourceId: string;
+    targetId: string;
+    missing: 'source' | 'target' | 'both';
+  }> = [];
+  for (const rel of result.graph.iterRelationships()) {
+    if (types && !types.includes(rel.type)) continue;
+    const src = result.graph.getNode(rel.sourceId);
+    const tgt = result.graph.getNode(rel.targetId);
+    if (src && tgt) continue;
+    out.push({
+      type: rel.type,
+      sourceId: rel.sourceId,
+      targetId: rel.targetId,
+      missing: !src && !tgt ? 'both' : !src ? 'source' : 'target',
+    });
+  }
+  return out;
 }
 
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {

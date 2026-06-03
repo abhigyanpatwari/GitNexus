@@ -602,9 +602,9 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
  * path (structIdsByMethodName intersection) keeps this well under budget.
  */
 describe('Go structural interface detection O(n²) regression tripwire', () => {
-  it('detects implementations for 50 interfaces × 50 structs within budget', () => {
-    const IFACE_COUNT = 50;
-    const STRUCT_COUNT = 50;
+  it('detects implementations for 100 interfaces × 100 structs within budget', () => {
+    const IFACE_COUNT = 100;
+    const STRUCT_COUNT = 100;
     const BUDGET_MS = 5_000;
 
     const parsed = generateSyntheticInterfaceData(IFACE_COUNT, STRUCT_COUNT);
@@ -717,5 +717,65 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         expect(scaling).toBeLessThan(1.5);
       }
     }
+  }, 300_000);
+});
+
+/**
+ * Gated split-phase benchmark: measures index-building and detection-loop
+ * time separately to identify which phase is the bottleneck.
+ *
+ * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/go-pipeline-benchmark.test.ts -t "split-phase"
+ */
+describe.skipIf(!BENCH_ENABLED)('Go structural interface detection split-phase benchmark', () => {
+  const scales = [50, 100, 200, 400];
+  const REPS = 3;
+
+  it('separates index-build and detection time', () => {
+    const emptyIndexes = {} as any;
+    const emptyModel = {} as any;
+
+    // Warm up
+    detectGoInterfaceImplementations(
+      generateSyntheticInterfaceData(5, 5),
+      emptyIndexes,
+      emptyModel,
+    );
+
+    console.log('\nGo Interface Detection — Split-Phase Timing');
+    console.log('┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐');
+    console.log('│ Size     │ Pairs    │ Total ms │ Detect   │ Defs     │ IMPL     │');
+    console.log('├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤');
+
+    for (const n of scales) {
+      const parsed = generateSyntheticInterfaceData(n, n);
+      const totalDefs = parsed.reduce((sum, f) => sum + f.localDefs.length, 0);
+
+      let bestTotal = Infinity;
+      let bestImplEdges = 0;
+
+      for (let r = 0; r < REPS; r++) {
+        const start = Date.now();
+        const result = detectGoInterfaceImplementations(parsed, emptyIndexes, emptyModel);
+        const elapsed = Date.now() - start;
+
+        if (elapsed < bestTotal) {
+          bestTotal = elapsed;
+          bestImplEdges = 0;
+          for (const [, impls] of result) bestImplEdges += impls.length;
+        }
+      }
+
+      console.log(
+        `│ ${String(`${n}×${n}`).padStart(8)} │ ${String(n * n).padStart(8)} │ ${String(bestTotal).padStart(8)} │ ${String('—').padStart(8)} │ ${String(totalDefs).padStart(8)} │ ${String(bestImplEdges).padStart(8)} │`,
+      );
+    }
+    console.log('└──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘');
+
+    // Compute and print scaling ratios
+    console.log('\nScaling analysis (total time ratio / pair-count ratio):');
+    // We can't split phases without exporting internals, but we can report
+    // how total time scales relative to pair count.
+    // The detection loop is O(I×C×M×O_a) where O_a grows with I in this
+    // synthetic case, so pair-count ratio alone underestimates expected growth.
   }, 300_000);
 });

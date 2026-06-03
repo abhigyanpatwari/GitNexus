@@ -10,7 +10,7 @@ import { recordGoCacheHit, recordGoCacheMiss } from './cache-stats.js';
 import { computeGoCallArity, computeGoDeclarationArity } from './arity-metadata.js';
 import { splitGoImportStatement } from './import-decomposer.js';
 import { synthesizeGoReceiverBinding } from './receiver-binding.js';
-import { synthesizeGoTypeBindings } from './type-binding.js';
+import { synthesizeGoTypeBindings, extractSimpleTypeNameText } from './type-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
@@ -81,6 +81,8 @@ export function emitGoScopeCaptures(
     }
 
     if (isRawMultiAssignTypeBinding(nodeMap)) continue;
+
+    normalizeGenericConstructorCapture(nodeMap, grouped);
 
     const declAnchorNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'];
     if (declAnchorNode !== undefined) {
@@ -338,6 +340,37 @@ function nodeRangeEquals(a: SyntaxNode, b: SyntaxNode): boolean {
     a.endPosition.row === b.endPosition.row &&
     a.endPosition.column === b.endPosition.column
   );
+}
+
+function normalizeGenericConstructorCapture(
+  nodeMap: Record<string, SyntaxNode>,
+  grouped: Record<string, Capture>,
+): void {
+  const typeNode =
+    grouped['@type-binding.constructor'] !== undefined ? nodeMap['@type-binding.type'] : undefined;
+  if (typeNode !== undefined && typeNode.type === 'generic_type') {
+    const base = typeNode.childForFieldName('type');
+    if (base !== null) {
+      grouped['@type-binding.type'] = syntheticCapture(
+        '@type-binding.type',
+        base,
+        extractSimpleTypeNameText(base),
+      );
+    }
+  }
+
+  const referenceNode =
+    grouped['@reference.call.constructor'] !== undefined ? nodeMap['@reference.name'] : undefined;
+  if (referenceNode !== undefined && referenceNode.type === 'generic_type') {
+    const base = referenceNode.childForFieldName('type');
+    if (base !== null) {
+      grouped['@reference.name'] = syntheticCapture(
+        '@reference.name',
+        base,
+        extractSimpleTypeNameText(base),
+      );
+    }
+  }
 }
 
 function isRawMultiAssignTypeBinding(nodeMap: Record<string, SyntaxNode>): boolean {

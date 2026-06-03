@@ -420,8 +420,8 @@ export const findEnclosingClassInfo = (
       }
 
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
-      // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
-      // If modifying this block, update the other location too.
+      // NOTE: This impl_item ownership logic is mirrored in
+      // method-extractors/configs/rust.ts (extractOwnerName, metadata only).
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
@@ -435,13 +435,22 @@ export const findEnclosingClassInfo = (
                 c.type === 'identifier',
             );
           if (nameNode) {
+            // `for` target keeps its raw text. A scoped path (impl T for a::Inner)
+            // therefore owns through `a::Inner`, which only resolves once the
+            // referenced struct is keyed by its qualified path — deferred to #1978.
             return {
               classId: generateId('Struct', `${filePath}:${nameNode.text}`),
               className: nameNode.text,
             };
           }
         }
-        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
+        // Inherent impl target. Accept a scoped path (`impl a::Inner { ... }`) and
+        // key the Impl node by its FULL text — matching the @definition.impl
+        // scoped arm — so methods own through a node that exists and stays
+        // distinct from a same-tail type in another module (#1975).
+        const firstType = children.find(
+          (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+        );
         if (firstType) {
           return {
             classId: generateId('Impl', `${filePath}:${firstType.text}`),
