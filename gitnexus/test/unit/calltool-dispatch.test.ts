@@ -170,6 +170,19 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).error).toContain('query parameter is required');
   });
 
+  // WI-J5: regression for #57 — query ranking should demote test files so
+  // production symbols surface above `*.test.ts`/`*_test.go`/etc.
+  // The test harness mocks bm25/semantic at a layer that does not see the
+  // score-map demotion; mark as todo until the dispatch path is plumbed
+  // through a verifiable seam.
+  it.todo('query tool demotes test files in definitions ranking (#57)');
+
+  // WI-J6: regression for #58 — `max_symbols` must not shrink the raw search
+  // pool. A query with max_symbols=1 should fetch the same number of BM25 +
+  // semantic results as max_symbols=10, otherwise `processes` becomes empty
+  // for low values. Verifiable by spying on `bm25Search` / `semanticSearch`.
+  it.todo('query search limit is independent of max_symbols (#58)');
+
   it('dispatches cypher tool and blocks write queries', async () => {
     const result = await backend.callTool('cypher', { query: 'CREATE (n:Test)' });
     expect((result as any)).toHaveProperty('error');

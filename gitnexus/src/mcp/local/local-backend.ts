@@ -809,21 +809,32 @@ export class LocalBackend {
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
     const searchQuery = params.query.trim();
-    
+
     // Step 1: Run hybrid search to get matching symbols
-    const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
+    // (#58) Decouple search quality from `max_symbols`. The previous formula
+    // `processLimit * maxSymbolsPerProcess` made `max_symbols=1` shrink the
+    // raw result set to 2*1=2 per channel — missing entire processes. Use a
+    // fixed floor so results are stable regardless of output density settings.
+    const searchLimit = Math.max(100, processLimit * 20);
     const [bm25Results, semanticResults] = await Promise.all([
       this.bm25Search(repo, searchQuery, searchLimit),
       this.semanticSearch(repo, searchQuery, searchLimit),
     ]);
     
     // Merge via reciprocal rank fusion
+    // (#57) Apply test-file demotion: multiply RRF scores from test/fixture
+    // files by TEST_FILE_DEMOTION so production code naturally ranks higher.
+    // This mirrors how `impacted_endpoints` already uses `isTestFilePath`.
+    const TEST_FILE_DEMOTION = 0.5;
     const scoreMap = new Map<string, { score: number; data: any }>();
-    
+
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
       const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
+      let rrfScore = 1 / (60 + i);
+      if (result.filePath && isTestFilePath(result.filePath)) {
+        rrfScore *= TEST_FILE_DEMOTION;
+      }
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
@@ -831,11 +842,14 @@ export class LocalBackend {
         scoreMap.set(key, { score: rrfScore, data: result });
       }
     }
-    
+
     for (let i = 0; i < semanticResults.length; i++) {
       const result = semanticResults[i];
       const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
+      let rrfScore = 1 / (60 + i);
+      if (result.filePath && isTestFilePath(result.filePath)) {
+        rrfScore *= TEST_FILE_DEMOTION;
+      }
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
