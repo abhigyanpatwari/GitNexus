@@ -118,11 +118,28 @@ export class CoverageStore {
   }
 
   getRun(id: string): CoverageRunRecord | undefined {
-    return this.db.prepare('SELECT * FROM coverage_runs WHERE id = ?').get(id) as CoverageRunRecord | undefined;
+    const row = this.db.prepare('SELECT * FROM coverage_runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return this.mapRunRow(row);
   }
 
   listRuns(): CoverageRunRecord[] {
-    return this.db.prepare('SELECT * FROM coverage_runs ORDER BY timestamp DESC').all() as CoverageRunRecord[];
+    const rows = this.db.prepare('SELECT * FROM coverage_runs ORDER BY timestamp DESC').all() as Record<string, unknown>[];
+    return rows.map((r) => this.mapRunRow(r));
+  }
+
+  private mapRunRow(row: Record<string, unknown>): CoverageRunRecord {
+    return {
+      id: row.id as string,
+      timestamp: row.timestamp as string,
+      label: row.label as string | undefined,
+      command: row.command as string | undefined,
+      durationMs: row.duration_ms as number | undefined,
+      totalExecs: row.total_execs as number | undefined,
+      totalLines: row.total_lines as number,
+      coveredLines: row.covered_lines as number,
+      coverageRatio: row.coverage_ratio as number,
+    };
   }
 
   deleteRun(id: string): void {
@@ -163,7 +180,19 @@ export class CoverageStore {
 
   insertSymbolCoverage(records: SymbolCoverageRecord[]): void {
     const tx = this.db.transaction(() => {
-      for (const r of records) this.insertSymbolCovStmt.run(r);
+      for (const r of records) {
+        this.insertSymbolCovStmt.run({
+          runId: r.runId,
+          nodeId: r.nodeId,
+          symbolName: r.symbolName ?? null,
+          filePath: r.filePath ?? null,
+          startLine: r.startLine ?? null,
+          endLine: r.endLine ?? null,
+          totalLines: r.totalLines,
+          coveredLines: r.coveredLines,
+          coverageRatio: r.coverageRatio,
+        });
+      }
     });
     tx();
   }
@@ -176,17 +205,39 @@ export class CoverageStore {
   }
 
   getLineHits(runId: string): LineHitRecord[] {
-    return this.db.prepare('SELECT * FROM line_hits WHERE run_id = ?').all(runId) as LineHitRecord[];
+    const rows = this.db.prepare('SELECT * FROM line_hits WHERE run_id = ?').all(runId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      runId: r.run_id as string,
+      filePath: r.file_path as string,
+      lineNumber: r.line_number as number,
+      hitCount: r.hit_count as number,
+    }));
   }
 
   getSymbolCoverage(runId: string): SymbolCoverageRecord[] {
-    return this.db.prepare('SELECT * FROM symbol_coverage WHERE run_id = ?').all(runId) as SymbolCoverageRecord[];
+    const rows = this.db.prepare('SELECT * FROM symbol_coverage WHERE run_id = ?').all(runId) as Record<string, unknown>[];
+    return rows.map((r) => this.mapSymbolRow(r));
   }
 
   getUncoveredSymbols(runId: string, limit = 10): SymbolCoverageRecord[] {
-    return this.db.prepare(
+    const rows = this.db.prepare(
       'SELECT * FROM symbol_coverage WHERE run_id = ? AND coverage_ratio < 1.0 ORDER BY coverage_ratio ASC LIMIT ?',
-    ).all(runId, limit) as SymbolCoverageRecord[];
+    ).all(runId, limit) as Record<string, unknown>[];
+    return rows.map((r) => this.mapSymbolRow(r));
+  }
+
+  private mapSymbolRow(row: Record<string, unknown>): SymbolCoverageRecord {
+    return {
+      runId: row.run_id as string,
+      nodeId: row.node_id as string,
+      symbolName: row.symbol_name as string | undefined,
+      filePath: row.file_path as string | undefined,
+      startLine: row.start_line as number | undefined,
+      endLine: row.end_line as number | undefined,
+      totalLines: row.total_lines as number,
+      coveredLines: row.covered_lines as number,
+      coverageRatio: row.coverage_ratio as number,
+    };
   }
 
   getMergedLineHits(runIds: string[]): Map<string, Map<number, number>> {

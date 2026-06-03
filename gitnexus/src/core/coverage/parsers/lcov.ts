@@ -39,7 +39,7 @@ export function parseLcov(input: string, meta: CoverageRunMeta): CanonicalCovera
     }
 
     if (trimmed.startsWith('DA:') && currentCoverage) {
-      const [, lineNum, hits] = trimmed.slice(3).split(',');
+      const [lineNum, hits] = trimmed.slice(3).split(',');
       const hitsNum = parseInt(hits, 10);
       currentCoverage.lines[lineNum] = hitsNum;
       totalLines++;
