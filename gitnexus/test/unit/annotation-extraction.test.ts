@@ -208,53 +208,67 @@ describe('extractAnnotations', () => {
     });
   });
 
-  describe.skip('Kotlin', () => {
+  // TODO(#55): deep Kotlin annotation assertions pending Kotlin annotation extractor fix.
+  // Smoke-only — verifies the parser is wired and `extractAnnotations` doesn't throw on minimal input.
+  describe('Kotlin (smoke — #55)', () => {
     beforeEach(() => {
       parser.setLanguage(Kotlin);
     });
 
-    it('extracts marker annotation (@Transactional)', () => {
-      const code = `
-        @Transactional
-        fun process() {}
-      `;
+    it('parses a minimal annotation sample without throwing', () => {
+      const code = `@JvmInline value class Foo(val x: Int)`;
       const tree = parser.parse(code);
-      const funcNode = tree.rootNode.child(0);
-
-      const annotations = extractAnnotations(funcNode!);
-
-      expect(annotations).toHaveLength(1);
-      expect(annotations[0].name).toBe('@Transactional');
+      const declNode = tree.rootNode.child(0);
+      expect(() => extractAnnotations(declNode!)).not.toThrow();
     });
 
-    it('extracts annotation with argument (@GetMapping("/users"))', () => {
-      const code = `
-        @GetMapping("/users")
-        fun getUsers(): List<User> {}
-      `;
-      const tree = parser.parse(code);
-      const funcNode = tree.rootNode.child(0);
+    // TODO(#55): deeper Kotlin annotation assertions pending a real Kotlin extractor fix.
+    // Verified red on 2026-06-03: extractAnnotations returns [] for @Transactional / @GetMapping
+    // / @Transactional(readOnly = true) on Kotlin AST nodes. Keep skipped until extractor fix lands.
+    describe.skip('deep Kotlin annotation assertions (pending #55)', () => {
+      it('extracts marker annotation (@Transactional)', () => {
+        const code = `
+          @Transactional
+          fun process() {}
+        `;
+        const tree = parser.parse(code);
+        const funcNode = tree.rootNode.child(0);
 
-      const annotations = extractAnnotations(funcNode!);
+        const annotations = extractAnnotations(funcNode!);
 
-      expect(annotations).toHaveLength(1);
-      expect(annotations[0].name).toBe('@GetMapping');
-      expect(annotations[0].attrs).toEqual({ '0': '/users' });
-    });
+        expect(annotations).toHaveLength(1);
+        expect(annotations[0].name).toBe('@Transactional');
+      });
 
-    it('extracts @Transactional with named arguments', () => {
-      const code = `
-        @Transactional(readOnly = true)
-        fun getUser(): User {}
-      `;
-      const tree = parser.parse(code);
-      const funcNode = tree.rootNode.child(0);
+      it('extracts annotation with argument (@GetMapping("/users"))', () => {
+        const code = `
+          @GetMapping("/users")
+          fun getUsers(): List<User> {}
+        `;
+        const tree = parser.parse(code);
+        const funcNode = tree.rootNode.child(0);
 
-      const annotations = extractAnnotations(funcNode!);
+        const annotations = extractAnnotations(funcNode!);
 
-      expect(annotations).toHaveLength(1);
-      expect(annotations[0].name).toBe('@Transactional');
-      expect(annotations[0].attrs).toEqual({ readOnly: 'true' });
+        expect(annotations).toHaveLength(1);
+        expect(annotations[0].name).toBe('@GetMapping');
+        expect(annotations[0].attrs).toEqual({ '0': '/users' });
+      });
+
+      it('extracts @Transactional with named arguments', () => {
+        const code = `
+          @Transactional(readOnly = true)
+          fun getUser(): User {}
+        `;
+        const tree = parser.parse(code);
+        const funcNode = tree.rootNode.child(0);
+
+        const annotations = extractAnnotations(funcNode!);
+
+        expect(annotations).toHaveLength(1);
+        expect(annotations[0].name).toBe('@Transactional');
+        expect(annotations[0].attrs).toEqual({ readOnly: 'true' });
+      });
     });
   });
 

@@ -9,7 +9,10 @@ import {
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
-// TODO: Go struct field type resolution not yet producing nodes — skip until fixed (#102)
+// TODO(#102): Go field-extractor fix from 5a92e58/#97 is in main-afk ancestry but the
+// fixture pipeline still produces zero Struct/Method nodes for the `go-handler-service-field`
+// fixture. Re-test gate from triage v2 caught this. Keep .skip until Batch D-go re-extracts
+// the fix or the fixture is updated. Verified red on 2026-06-03 (4/4 cases fail).
 describe.skip('Go handler → service field chain resolution (Issue #19)', () => {
   let result: PipelineResult;
 

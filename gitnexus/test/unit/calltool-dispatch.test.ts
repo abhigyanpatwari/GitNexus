@@ -1634,6 +1634,14 @@ describe('impacted_endpoints auto-expand to consumers', () => {
     expect(result).toBeDefined();
     expect(typeof (result as any).summary.changed_files).toBe('object');
   });
+
+  // WI-A3 (Batch A — #21): cross-repo `changed_files` leak.
+  // Triage expected PR #99 to have fixed this. Stage-2 RCA found #99 was reverted by #101
+  // and the leak still reproduces. This test captures the bug as a regression — it is
+  // currently `it.todo` (pending) so main-afk CI stays green; a developer fixing #21 in a
+  // follow-up PR should convert it to `it(...)` and run it as the accept-gate. When the
+  // test passes, #21 can be closed. Do not close #21 until this test passes on `main-afk`.
+  it.todo('WI-A3: single-repo call with auto-expanded consumer does not leak consumer into changed_files');
 });
 
 // ──────────────────────────────────────────────────────────────────────
