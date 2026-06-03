@@ -21,7 +21,7 @@ export {
 } from './settings-service';
 
 // Tools
-export { createGraphRAGTools, GRAPH_RAG_TOOL_NAMES } from './tools';
+export { createGraphRAGTools } from './tools';
 
 // Context Builder
 export {
