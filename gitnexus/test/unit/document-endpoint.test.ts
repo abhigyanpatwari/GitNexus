@@ -195,12 +195,65 @@ describe('documentEndpoint', () => {
       });
 
       expect(asContextResult(result).result.specs.response.codes).toContainEqual({
-        code: 200,
-        description: 'Success',
+        code: 201,
+        description: 'Created',
       });
       expect(asContextResult(result).result.specs.response.codes).toContainEqual(
         expect.objectContaining({ code: 400, description: expect.stringContaining('BusinessException') }),
       );
+    });
+
+    // (#22) Default success code should follow REST conventions per method:
+    //   POST   → 201 Created
+    //   DELETE → 204 No Content
+    //   GET    → 200 OK
+    // Previously all methods defaulted to 200, producing misleading OpenAPI.
+    it('uses REST-conventional default success codes (#22)', async () => {
+      const makeChain = () => ({
+        chain: [{
+          uid: 'Method:src/controllers/Test.java:handler',
+          name: 'handler',
+          kind: 'Method' as const,
+          filePath: 'src/controllers/Test.java',
+          depth: 0,
+          content: 'public void handler() {}',
+          metadata: emptyMetadata(),
+          callees: [],
+        }],
+        root: 'handler',
+        summary: emptySummary(),
+      });
+
+      const cases: Array<{ method: string; expectedCode: number; expectedDesc: string }> = [
+        { method: 'GET', expectedCode: 200, expectedDesc: 'Success' },
+        { method: 'POST', expectedCode: 201, expectedDesc: 'Created' },
+        { method: 'PUT', expectedCode: 200, expectedDesc: 'Success' },
+        { method: 'PATCH', expectedCode: 200, expectedDesc: 'Success' },
+        { method: 'DELETE', expectedCode: 204, expectedDesc: 'No Content' },
+      ];
+
+      for (const c of cases) {
+        vi.mocked(endpointQuery.queryEndpoints).mockResolvedValue({
+          endpoints: [{
+            method: c.method,
+            path: '/api/test',
+            controller: 'Test',
+            handler: 'handler',
+            filePath: 'src/controllers/Test.java',
+            line: 1,
+          }],
+        });
+        vi.mocked(traceExecutor.executeTrace).mockResolvedValue(makeChain());
+        const result = await documentEndpoint(mockRepo, {
+          method: c.method,
+          path: '/test',
+          mode: 'ai_context',
+        });
+        expect(asContextResult(result).result.specs.response.codes).toContainEqual({
+          code: c.expectedCode,
+          description: c.expectedDesc,
+        });
+      }
     });
   });
 
