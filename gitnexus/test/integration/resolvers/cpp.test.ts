@@ -10,6 +10,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   getResolutionOutcomes,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -2629,6 +2630,41 @@ describe('C++ ADL — merges with non-empty ordinary lookup', () => {
   });
 });
 
+describe('C++ ADL — hidden friend and namespace callable in one namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-ns-plus-hidden-friend-same-name'),
+      () => {},
+    );
+  }, 60000);
+
+  // pickCppAdlCandidates merges two buckets for one associated namespace:
+  // friendCandidates (hidden friends of associated classes) and nsCandidates
+  // (namespace-owned callables). This fixture reaches exactly one callable
+  // through each bucket — `combine` only as a hidden friend, `process` only as
+  // a namespace member — so a regression that stopped consulting either bucket
+  // would drop the corresponding edge. (Candidate ORDER is not observable —
+  // overload narrowing resolves a unique survivor or suppresses — so the guard
+  // is on the SET: both edges must be present.)
+  it('combine(a, b) resolves to the hidden friend via friendCandidates', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'call_friend' && c.target === 'combine',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toContain('lib.h');
+  });
+
+  it('process(t) resolves to the namespace callable via nsCandidates', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'call_ns' && c.target === 'process',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
 describe('C++ ADL — base-class associated namespaces', () => {
   let result: PipelineResult;
 
@@ -3726,5 +3762,41 @@ describe('C++ SFINAE filter — arity gate runs before constraint filter', () =>
       (c) => c.source === 'run' && c.target === 'process',
     );
     expect(calls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Out-of-line nested definitions — method ownership + collision (issue #1975)
+//
+// `struct Outer::Inner { ... }` (name = qualified_identifier) now materializes a
+// node keyed by the full scoped text, so its methods own through a real node.
+// Crucially, a same-tail type in another scope (Other::Inner) stays a DISTINCT
+// node — no merge, no method mis-attribution. (A redundant forward-decl node
+// `Inner` also exists; the pre-existing inline same-tail node collision is
+// tracked separately in #1978.)
+// ---------------------------------------------------------------------------
+
+describe('C++ out-of-line nested definitions — ownership + collision (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-out-of-line-class'), () => {});
+  }, 60000);
+
+  it('owns each out-of-line method with no dangling HAS_METHOD edges', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R3: same-tail types in different scopes must NOT merge — each method owns
+  // through its own distinct node (positive owner-identity, not just dangle-free).
+  it('keeps Outer::Inner and Other::Inner distinct (no cross-wired methods)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const outer = hasMethod.find((e) => e.target === 'from_outer');
+    const other = hasMethod.find((e) => e.target === 'from_other');
+    expect(outer).toBeDefined();
+    expect(other).toBeDefined();
+    expect(outer!.source).toBe('Outer::Inner');
+    expect(other!.source).toBe('Other::Inner');
+    expect(outer!.source).not.toBe(other!.source);
   });
 });

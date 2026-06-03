@@ -182,6 +182,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Go
+  'struct_type',
+  'interface_type',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -214,7 +217,31 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
+  struct_type: 'Struct',
+  interface_type: 'Interface',
 };
+
+/**
+ * Pre-order walk over a node and all its named descendants, invoking `cb` on
+ * each. Replaces the per-language `visit`/`visitGo`/`visitRust`/`visitSwift`
+ * clones that every language's capture-synthesis walker re-implemented (#1956
+ * tri-review U6).
+ *
+ * Iterates by index with a null guard: `node.namedChild(i)` is typed
+ * `SyntaxNode | null`, and most callers already guarded it. The Go and C#
+ * callers previously iterated `node.namedChildren`; the Go one had no null
+ * guard, so this standardizes them onto the guarded indexed form — a deliberate,
+ * strictly-safer behavior addition (the traversal *sequence* is identical, so
+ * capture output stays byte-identical on well-formed trees; the guard only
+ * matters for a null named child, which the fixture corpus never produces).
+ */
+export function walkNamedTree(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) walkNamedTree(child, cb);
+  }
+}
 
 /** Return the first matching ancestor unless a boundary ancestor is reached first. */
 export function findAncestorBeforeBoundary(
@@ -393,8 +420,8 @@ export const findEnclosingClassInfo = (
       }
 
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
-      // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
-      // If modifying this block, update the other location too.
+      // NOTE: This impl_item ownership logic is mirrored in
+      // method-extractors/configs/rust.ts (extractOwnerName, metadata only).
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
@@ -408,13 +435,22 @@ export const findEnclosingClassInfo = (
                 c.type === 'identifier',
             );
           if (nameNode) {
+            // `for` target keeps its raw text. A scoped path (impl T for a::Inner)
+            // therefore owns through `a::Inner`, which only resolves once the
+            // referenced struct is keyed by its qualified path — deferred to #1978.
             return {
               classId: generateId('Struct', `${filePath}:${nameNode.text}`),
               className: nameNode.text,
             };
           }
         }
-        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
+        // Inherent impl target. Accept a scoped path (`impl a::Inner { ... }`) and
+        // key the Impl node by its FULL text — matching the @definition.impl
+        // scoped arm — so methods own through a node that exists and stays
+        // distinct from a same-tail type in another module (#1975).
+        const firstType = children.find(
+          (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+        );
         if (firstType) {
           return {
             classId: generateId('Impl', `${filePath}:${firstType.text}`),

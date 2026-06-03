@@ -16,7 +16,9 @@ describe('Go receiver binding', () => {
     const result = synthesizeGoReceiverBinding(methodNode as any)!;
     expect(result['@type-binding.self']).toBeDefined();
     expect(result['@type-binding.name']!.text).toBe('u');
-    expect(result['@type-binding.type']!.text).toBe('User');
+    expect(result['@type-binding.type']!.text).toBe('*User');
+    const parsed = interpretGoTypeBinding(result);
+    expect(parsed?.rawTypeName).toBe('*User');
   });
 
   it('returns null for free function', () => {
@@ -65,6 +67,49 @@ describe('Go type binding synthesis — 7 patterns', () => {
       (m) => m['@type-binding.constructor'] && m['@type-binding.type']?.text === 'models.User',
     );
     expect(qMatch).toBeDefined();
+  });
+
+  it('prefers concrete RHS composite literal type for explicit interface var declarations', () => {
+    const src = `package main
+type Repository interface{ Save(User) error }
+type User struct{}
+type SqlRepository struct{}
+func main() {
+  var repo Repository = SqlRepository{}
+  _ = repo
+}`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    const concreteMatch = matches.find(
+      (m) =>
+        m['@type-binding.constructor'] !== undefined &&
+        m['@type-binding.name']?.text === 'repo' &&
+        m['@type-binding.type']?.text === 'SqlRepository',
+    );
+    expect(concreteMatch).toBeDefined();
+  });
+
+  it('supplements generic type constructor: Box[User]{}', () => {
+    const src = `package main
+type User struct{}
+type Box[T any] struct{}
+func main() {
+  b := Box[User]{}
+  p := &Box[User]{}
+}`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    const constructorRefs = matches
+      .filter((m) => m['@reference.call.constructor'])
+      .map((m) => m['@reference.name']?.text);
+    const constructorBindings = matches
+      .filter((m) => m['@type-binding.constructor'])
+      .map((m) => ({
+        name: m['@type-binding.name']?.text,
+        type: m['@type-binding.type']?.text,
+      }));
+
+    expect(constructorRefs).toEqual(['Box', 'Box']);
+    expect(constructorBindings).toContainEqual({ name: 'b', type: 'Box' });
+    expect(constructorBindings).toContainEqual({ name: 'p', type: 'Box' });
   });
 
   it('keeps multi-assignment constructor bindings aligned with RHS positions', () => {

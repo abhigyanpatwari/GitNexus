@@ -49,6 +49,7 @@ export type RecoveryHint =
   | 'heap-oom-respawn'
   | 'native-worker-abort'
   | 'hf-endpoint-unreachable'
+  | 'local-embedding-unsupported'
   | 'large-repo'
   | 'npm-resolution'
   | 'module-not-found';

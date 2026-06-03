@@ -48,8 +48,8 @@ export const goScopeResolver: ScopeResolver = {
 
   populateNamespaceSiblings: populateGoPackageSiblings,
   mirrorNamespaceTypeBindings: mirrorGoNamespaceTypeBindings,
-  // Staged/V2: registered but not yet wired in run.ts — method-name-only
-  // matching produces false IMPLEMENTS edges; awaits signature-level comparison.
+  // Go has structural interfaces: implementations are inferred by signature,
+  // then fed into generic MRO/interface-dispatch.
   detectInterfaceImplementations: detectGoInterfaceImplementations,
   populateRangeBindings: populateGoRangeBindings,
 };

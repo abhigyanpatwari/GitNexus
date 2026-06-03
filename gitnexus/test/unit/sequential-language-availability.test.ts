@@ -89,7 +89,13 @@ describe('sequential native parser availability', () => {
     }
   });
 
-  it('skips Swift files in processCalls when the native parser is unavailable', async () => {
+  it('skips Swift files in processCalls (registry-primary: scope-resolution owns call resolution)', async () => {
+    // Swift is registry-primary, so processCalls skips it via the
+    // isRegistryPrimary gate (call-processor.ts) BEFORE the parser-availability
+    // check — the registry-primary scope-resolution path owns its call edges
+    // (#1951). The unavailable-parser mock is therefore moot: the file is skipped
+    // (no loadLanguage) regardless. The legacy availability-skip path itself is
+    // exercised by the Dart verbose test below (Dart is not registry-primary).
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
     await expect(
@@ -107,19 +113,20 @@ describe('sequential native parser availability', () => {
   it('warns when processCalls skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
-    // Swift is now registry-primary (MIGRATED_LANGUAGES), and
-    // call-processor gates registry-primary languages before the skip
-    // counter — so force the legacy path off here to exercise the
-    // skip/warn branch. (We do NOT edit the processor.)
-    const previousFlag = process.env.REGISTRY_PRIMARY_SWIFT;
+    const previousDart = process.env.REGISTRY_PRIMARY_DART;
     process.env.GITNEXUS_VERBOSE = '1';
-    process.env.REGISTRY_PRIMARY_SWIFT = '0';
+    // call-processor gates registry-primary languages (Swift, Dart, etc.) via
+    // the isRegistryPrimary gate BEFORE the parser-availability skip counter.
+    // Dart is now in MIGRATED_LANGUAGES, so force it onto the legacy call path
+    // (REGISTRY_PRIMARY_DART=0) to exercise the skip/warn branch this test
+    // covers — without disturbing any other language's mode.
+    process.env.REGISTRY_PRIMARY_DART = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
       await processCalls(
         createKnowledgeGraph(),
-        [{ path: 'App.swift', content: 'func demo() {}' }],
+        [{ path: 'App.dart', content: 'void demo() {}' }],
         createASTCache(),
         createResolutionContext(),
       );
@@ -130,7 +137,7 @@ describe('sequential native parser availability', () => {
           .some(
             (r) =>
               r.msg ===
-              '[ingestion] Skipped 1 swift file(s) in call processing — swift parser not available.',
+              '[ingestion] Skipped 1 dart file(s) in call processing — dart parser not available.',
           ),
       ).toBe(true);
     } finally {
@@ -139,15 +146,21 @@ describe('sequential native parser availability', () => {
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
       }
-      if (previousFlag === undefined) {
-        delete process.env.REGISTRY_PRIMARY_SWIFT;
+      if (previousDart === undefined) {
+        delete process.env.REGISTRY_PRIMARY_DART;
       } else {
-        process.env.REGISTRY_PRIMARY_SWIFT = previousFlag;
+        process.env.REGISTRY_PRIMARY_DART = previousDart;
       }
     }
   });
 
-  it('skips Swift files in processHeritage when the native parser is unavailable', async () => {
+  it('skips Swift files in processHeritage (registry-primary: scope-resolution owns heritage)', async () => {
+    // Swift is registry-primary, so processHeritage skips it via the
+    // isRegistryPrimary gate (heritage-processor.ts) BEFORE the parser-availability
+    // check — scope-resolution (#1951) owns its EXTENDS/IMPLEMENTS edges. The
+    // unavailable-parser mock is therefore moot: the file is skipped (no
+    // loadLanguage) regardless. The legacy availability-skip path itself is
+    // exercised by the Dart verbose test below (Dart is not registry-primary).
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
     await expect(
@@ -165,13 +178,21 @@ describe('sequential native parser availability', () => {
   it('warns when processHeritage skips files in verbose mode', async () => {
     cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
+    const previousDart = process.env.REGISTRY_PRIMARY_DART;
     process.env.GITNEXUS_VERBOSE = '1';
+    // processHeritage skips registry-primary languages (Swift, Dart, etc.) via
+    // the isRegistryPrimary gate — scope-based resolution owns their
+    // inheritance (#1951) — BEFORE the legacy parser-availability skip this
+    // test exercises. Dart is now in MIGRATED_LANGUAGES, so force it onto the
+    // legacy heritage path (REGISTRY_PRIMARY_DART=0) to fire the skip/warn
+    // branch, without disturbing any other language's mode.
+    process.env.REGISTRY_PRIMARY_DART = '0';
     try {
       vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
       await processHeritage(
         createKnowledgeGraph(),
-        [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
+        [{ path: 'App.dart', content: 'class Widget extends StatelessWidget {}' }],
         createASTCache(),
         createResolutionContext(),
       );
@@ -182,7 +203,7 @@ describe('sequential native parser availability', () => {
           .some(
             (r) =>
               r.msg ===
-              '[ingestion] Skipped 1 swift file(s) in heritage processing — swift parser not available.',
+              '[ingestion] Skipped 1 dart file(s) in heritage processing — dart parser not available.',
           ),
       ).toBe(true);
     } finally {
@@ -190,6 +211,11 @@ describe('sequential native parser availability', () => {
         delete process.env.GITNEXUS_VERBOSE;
       } else {
         process.env.GITNEXUS_VERBOSE = previous;
+      }
+      if (previousDart === undefined) {
+        delete process.env.REGISTRY_PRIMARY_DART;
+      } else {
+        process.env.REGISTRY_PRIMARY_DART = previousDart;
       }
     }
   });

@@ -146,3 +146,43 @@ describe('emitJsScopeCaptures — #1876 array-method-callback narrowing', () => 
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// JSX-element-as-call-argument arity (#1956 tri-review U3): a JSX component used
+// as a call argument, e.g. `render(<Foo a={1} b={2} />)`, must NOT inherit the
+// enclosing call's arity. The JSX element is itself a `@reference.call.*` anchor;
+// the call-arity walk-up would ascend from it into the enclosing call_expression
+// and mis-attribute that call's arity. An early guard skips arity synthesis when
+// the call anchor is a JSX element (restoring the pre-#1951 range-based behavior).
+// ---------------------------------------------------------------------------
+
+/** Arity text for the call-site match whose callee `@reference.name` is `name`;
+ *  `'NONE'` when no such call-site match exists, `undefined` when it exists with
+ *  no `@reference.arity`. */
+function callArity(src: string, name: string, file = 'test.jsx'): string | undefined | 'NONE' {
+  const matches = emitJsScopeCaptures(src, file).filter(
+    (m) =>
+      Object.keys(m).some((k) => k.startsWith('@reference.call')) &&
+      m['@reference.name']?.text === name,
+  );
+  if (matches.length === 0) return 'NONE';
+  return matches[0]['@reference.arity']?.text;
+}
+
+describe('emitJsScopeCaptures — JSX-as-call-arg arity (#1956 U3)', () => {
+  it('does not attribute the enclosing call arity to a JSX component reference', () => {
+    const src = 'render(<Foo a={1} b={2} />);';
+    // The Foo JSX component ref must carry NO arity (was wrongly 1 before the fix).
+    expect(callArity(src, 'Foo')).toBeUndefined();
+    // The enclosing render() call keeps its real arity (1 argument: the element).
+    expect(callArity(src, 'render')).toBe('1');
+  });
+
+  it('keeps arity on a plain (non-JSX) call (regression guard)', () => {
+    expect(callArity('foo(1, 2);', 'foo', 'test.js')).toBe('2');
+  });
+
+  it('emits no arity for a standalone JSX element not used as a call argument', () => {
+    expect(callArity('const x = <Foo />;', 'Foo')).toBeUndefined();
+  });
+});
