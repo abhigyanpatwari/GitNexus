@@ -16,8 +16,9 @@
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
-    "fingerprint": "2f517381e8b03db221d13f65d5e485d021c17a2f7fa684446e09f33d78c3adb9",
+    "fingerprint": "7feac8cb58cf69d313271b9412954c9da2c7a31b16caaa287f963c61dc6af88c",
     "scaling_budget": 1.5,
+    "_followup": "#1982 review: + cpp-namespaced-collision (namespaced same-tail heritage) + cpp-global-base-anchor (root-anchored base) fixtures. Purely additive corpus drift — verified by fixture-removal that the cpp fingerprint reverts to the prior baseline (2f517381) without them, so existing fixtures' captures are byte-identical (the U3 tagNamespacePrefixes / U6 shared-normalizer / U8 root-anchor changes are scope-resolution / behavior-preserving, not capture-emission). fixture_count 266->268.",
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
     "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
     "_note": "#1975: + cpp-out-of-line-class fixture (out-of-line struct Outer::Inner / Other::Inner). Pure fixture-corpus drift — the fix is the legacy structure-query qualified_identifier arm, NOT the cpp scope-extractor; existing fixtures' captures byte-identical. fixture_count 263->265. #1982: cpp-nested-tail-collision gains qualified heritage (struct DerivedA : Outer::Inner, struct DerivedB : Other::Inner) AND emitCppInheritanceCaptures now emits an ADDITIVE @reference.qualified-name capture on QUALIFIED bases (drives the qualified-first inheritance resolver). Purely additive — existing captures unchanged; same fixture file, no new fixture."
@@ -39,8 +40,9 @@
     "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "011c0533318ff61d99267d501866af8a616b1c212050628339064d8c149aafbf",
+    "fingerprint": "bf6b13a366e4116da3772f9a9fdd50517eb11da73918451392e014a2c905b2dd",
     "scaling_budget": 1.5,
+    "_followup": "#1982 review: + ruby-nested-mixin-shortname (nested mixin by short name) + ruby-qualified-mixin (include Outer::Mixin) fixtures. Additive corpus drift — the regenerated captures golden shows ONLY the two new fixtures added, all existing ruby fixtures byte-identical. fixture_count 83->85.",
     "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)",
     "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) — pure fixture-corpus drift, scope-extractor captures unchanged; 81→82. #1978: + ruby-nested-tail-collision (same-tail Inner under Outer/Other modules + Shapes.Circle attr_accessor) — pure fixture-corpus drift, scope-extractor captures unchanged; 82→83. #1982: that fixture gains same-tail include + attr_accessor, AND emitRubyScopeCaptures now emits the FULL qualified owner in __heritage__/__property__ markers (buildEnclosingQualifiedName) — a CODE change LOCALIZED to nested owners: the golden shows ONLY this fixture drifts (+10 capture groups), all other ruby fixtures byte-identical, and 142/142 resolver tests pass. fixture_count 83 (same file)."
   },
