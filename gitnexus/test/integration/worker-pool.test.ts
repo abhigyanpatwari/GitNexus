@@ -135,6 +135,24 @@ describe('worker pool integration', () => {
     expect(names).toContain('validateInput');
   });
 
+  it.skipIf(!hasDistWorker)('parses Objective-C file through worker', async () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    pool = createWorkerPool(workerUrl, 1);
+
+    const fixtureFile = path.resolve(__dirname, '..', 'fixtures', 'sample-code', 'simple.m');
+    const content = fs.readFileSync(fixtureFile, 'utf-8');
+
+    const results = await pool.dispatch<any, any>([{ path: 'sample-code/simple.m', content }]);
+
+    expect(results).toHaveLength(1);
+    const result = results[0];
+    expect(result.fileCount).toBe(1);
+
+    const names = result.nodes.map((n: any) => n.properties.name);
+    expect(names).toContain('Calculator');
+    expect(names).toContain('sharedCalculator');
+  });
+
   it.skipIf(!hasDistWorker)('parses multiple files across workers', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 2);

@@ -111,6 +111,12 @@ const SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'Vue parsing piggybacks on `tree-sitter-typescript`. Check the install and native binding.',
   },
+  [SupportedLanguages.ObjectiveC]: {
+    load: () => _require('tree-sitter-objc'),
+    unavailableNote:
+      'Objective-C parsing requires `tree-sitter-objc`. ' +
+      'Check that the package and its native binding installed cleanly (`npm ci`).',
+  },
 
   // tree-sitter-c is a required dependency, but its native binding has
   // historically been ABI-incompatible with the bundled tree-sitter@0.21.1

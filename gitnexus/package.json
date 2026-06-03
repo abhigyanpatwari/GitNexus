@@ -84,6 +84,7 @@
     "tree-sitter-go": "^0.23.0",
     "tree-sitter-java": "^0.23.5",
     "tree-sitter-javascript": "^0.23.0",
+    "tree-sitter-objc": "^3.0.2",
     "tree-sitter-php": "^0.23.0",
     "tree-sitter-python": "0.23.4",
     "tree-sitter-ruby": "^0.23.1",
@@ -105,6 +106,7 @@
     "@types/uuid": "^11.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",
+    "graphology-types": "^0.24.8",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
     "vitest": "^4.0.18"

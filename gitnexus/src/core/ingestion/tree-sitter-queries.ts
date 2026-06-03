@@ -1569,6 +1569,82 @@ export const KOTLIN_QUERIES = `
 
 `;
 
+// Objective-C queries - works with tree-sitter-objc
+export const OBJ_C_QUERIES = `
+; Class declarations - use anchor to capture only the first identifier (class name)
+; . anchor ensures we get the FIRST identifier (class name), not superclass or others
+(class_interface
+  .
+  (identifier) @name) @definition.class
+
+; Class implementations - @implementation MyClass (methods only, no heritage)
+(class_implementation
+  .
+  (identifier) @name) @definition.class
+
+; Protocol declarations - anchor to first identifier (protocol name)
+(protocol_declaration
+  .
+  (identifier) @name) @definition.interface
+
+; Categories - class extension (anonymous category = extension)
+(class_interface
+  .
+  (identifier) @name
+  category: (identifier) @category) @definition.class
+
+; Heritage - superclass (e.g., @interface Foo : Bar)
+; . matches the FIRST identifier (Foo = class name); then explicit superclass identifier
+(class_interface
+  .
+  (identifier) @heritage.class
+  (identifier) @heritage.extends) @heritage
+
+; Heritage - protocol adoptions (e.g., @interface Foo <Proto1, Proto2>)
+; . anchors to class name identifier; parameterized_arguments follows as sibling
+(class_interface
+  .
+  (identifier) @heritage.class
+  (parameterized_arguments
+    (type_name
+      (type_identifier) @heritage.implements))) @heritage.impl
+
+; Method definitions - capture only the first identifier after +/- and method_type
+; Use ["+" "-"] to match both class (+) and instance (-) methods
+(method_declaration
+  ["+" "-"]
+  (method_type)
+  (identifier) @name) @definition.method
+
+; Calls - ObjC message expressions (e.g., [self doSomething], [calc add:5 to:3])
+; Use method: field to capture the method selector name(s)
+(message_expression
+  method: (identifier) @call.name) @call
+
+; Calls - C-style function calls (e.g., NSLog(...))
+(call_expression
+  (identifier) @call.name) @call
+
+; Property declarations (e.g., @property (nonatomic, strong) NSString *name)
+(property_declaration
+  (struct_declaration
+    (_)
+    (struct_declarator
+      (pointer_declarator
+        declarator: (identifier) @name)))) @definition.property
+
+; Instance variable declarations inside @interface { } block
+(instance_variable
+  (struct_declaration
+    (_)
+    (struct_declarator
+      (pointer_declarator
+        declarator: (identifier) @name)))) @definition.property
+
+; Imports - #import "path" or #import <path> (preproc_include is used by tree-sitter-objc for #import)
+(preproc_include path: (_) @import.source) @import
+`;
+
 // Swift queries - works with tree-sitter-swift
 export const SWIFT_QUERIES = `
 ; Classes
@@ -1870,4 +1946,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.ObjectiveC]: OBJ_C_QUERIES,
 };
