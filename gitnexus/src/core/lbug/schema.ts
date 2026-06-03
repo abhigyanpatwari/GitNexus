@@ -121,6 +121,25 @@ CREATE NODE TABLE Community (
 )`;
 
 // ============================================================================
+// COVERAGE RUN NODE TABLE (for fuzz coverage sessions)
+// ============================================================================
+
+const COVERAGE_RUN_SCHEMA = `
+CREATE NODE TABLE \`CoverageRun\` (
+  id STRING,
+  name STRING,
+  timestamp STRING,
+  label STRING,
+  command STRING,
+  durationMs INT64,
+  totalExecs INT64,
+  totalLines INT64,
+  coveredLines INT64,
+  coverageRatio DOUBLE,
+  PRIMARY KEY (id)
+)`;
+
+// ============================================================================
 // PROCESS NODE TABLE (for execution flow detection)
 // ============================================================================
 
@@ -431,6 +450,14 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM CodeElement TO Process,
   FROM Route TO Process,
   FROM Tool TO Process,
+  FROM Function TO \`CoverageRun\`,
+  FROM Method TO \`CoverageRun\`,
+  FROM Class TO \`CoverageRun\`,
+  FROM Interface TO \`CoverageRun\`,
+  FROM \`Struct\` TO \`CoverageRun\`,
+  FROM \`Enum\` TO \`CoverageRun\`,
+  FROM CodeElement TO \`CoverageRun\`,
+  FROM File TO \`CoverageRun\`,
   type STRING,
   confidence DOUBLE,
   reason STRING,
@@ -494,6 +521,7 @@ export const NODE_SCHEMA_QUERIES = [
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,
   COMMUNITY_SCHEMA,
+  COVERAGE_RUN_SCHEMA,
   PROCESS_SCHEMA,
   // Multi-language support
   STRUCT_SCHEMA,
