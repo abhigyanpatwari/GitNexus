@@ -1306,8 +1306,25 @@ async function buildDocumentation(params: BuildDocumentationParams): Promise<Doc
 
   // Extract exceptions for response codes
   const exceptionCodes = extractExceptionCodes(chain);
+  // (#22) Default success code by HTTP method, following REST conventions:
+  //   POST   → 201 Created
+  //   DELETE → 204 No Content
+  //   PUT/PATCH → 200 OK (resource updated, body returned)
+  //   GET/HEAD/OPTIONS → 200 OK
+  // Previously all methods defaulted to 200, which produced misleading
+  // OpenAPI docs (a POST that should be 201 was documented as 200, etc.).
+  const defaultSuccessCode = (() => {
+    switch (method.toUpperCase()) {
+      case 'POST': return 201;
+      case 'DELETE': return 204;
+      default: return 200; // GET, PUT, PATCH, HEAD, OPTIONS
+    }
+  })();
+  const defaultSuccessDescription =
+    defaultSuccessCode === 201 ? 'Created' :
+    defaultSuccessCode === 204 ? 'No Content' : 'Success';
   result.specs.response.codes = [
-    { code: 200, description: 'Success' },
+    { code: defaultSuccessCode, description: defaultSuccessDescription },
     ...exceptionCodes,
   ];
 
