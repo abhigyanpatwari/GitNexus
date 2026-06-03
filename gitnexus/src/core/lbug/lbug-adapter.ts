@@ -1037,6 +1037,7 @@ const BACKTICK_TABLES = new Set([
   'Constructor',
   'Template',
   'Module',
+  'CoverageRun',
 ]);
 
 const escapeTableName = (table: string): string => {
@@ -1121,6 +1122,9 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Property') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'CoverageRun') {
+    return `COPY ${t}(id, name, timestamp, label, command, durationMs, totalExecs, totalLines, coveredLines, coverageRatio) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -1167,6 +1171,8 @@ export const insertNodeToLbug = async (
         ? `, description: ${escapeValue(properties.description)}`
         : '';
       query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+    } else if (label === 'CoverageRun') {
+      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, timestamp: ${escapeValue(properties.timestamp)}, label: ${escapeValue(properties.label)}, command: ${escapeValue(properties.command)}, durationMs: ${properties.durationMs || 0}, totalExecs: ${properties.totalExecs || 0}, totalLines: ${properties.totalLines || 0}, coveredLines: ${properties.coveredLines || 0}, coverageRatio: ${properties.coverageRatio || 0}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${escapeValue(properties.description)}`

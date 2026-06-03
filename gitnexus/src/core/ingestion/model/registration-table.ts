@@ -170,6 +170,7 @@ const LABEL_BEHAVIOR = {
   Type: 'inert',
   CodeElement: 'inert',
   Community: 'inert',
+  CoverageRun: 'inert',
   Process: 'inert',
   Typedef: 'inert',
   Union: 'inert',

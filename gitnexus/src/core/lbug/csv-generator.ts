@@ -260,6 +260,11 @@ export const streamAllCSVsToDisk = async (
     'id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId',
   );
 
+  const coverageRunWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'coveragerun.csv'),
+    'id,name,timestamp,label,command,durationMs,totalExecs,totalLines,coveredLines,coverageRatio',
+  );
+
   // Section nodes have an extra 'level' column
   const sectionWriter = new BufferedCSVWriter(
     path.join(csvDir, 'section.csv'),
@@ -451,6 +456,22 @@ export const streamAllCSVsToDisk = async (
           ].join(','),
         );
         break;
+      case 'CoverageRun':
+        await coverageRunWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(node.properties.name ?? ''),
+            escapeCSVField(node.properties.timestamp ?? ''),
+            escapeCSVField(node.properties.label ?? ''),
+            escapeCSVField(node.properties.command ?? ''),
+            escapeCSVNumber(node.properties.durationMs ?? 0),
+            escapeCSVNumber(node.properties.totalExecs ?? 0),
+            escapeCSVNumber(node.properties.totalLines ?? 0),
+            escapeCSVNumber(node.properties.coveredLines ?? 0),
+            escapeCSVNumber(node.properties.coverageRatio ?? 0),
+          ].join(','),
+        );
+        break;
       default: {
         // Code element nodes (Function, Class, Interface, CodeElement)
         const writer = codeWriterMap[node.label];
@@ -505,6 +526,7 @@ export const streamAllCSVsToDisk = async (
     codeElemWriter,
     communityWriter,
     processWriter,
+    coverageRunWriter,
     sectionWriter,
     routeWriter,
     toolWriter,
@@ -541,6 +563,7 @@ export const streamAllCSVsToDisk = async (
     ['CodeElement', codeElemWriter],
     ['Community', communityWriter],
     ['Process', processWriter],
+    ['CoverageRun', coverageRunWriter],
     ['Section' as NodeTableName, sectionWriter],
     ['Route' as NodeTableName, routeWriter],
     ['Tool' as NodeTableName, toolWriter],
