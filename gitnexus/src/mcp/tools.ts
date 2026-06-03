@@ -582,4 +582,38 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  {
+    name: 'coverage_status',
+    description:
+      'Get the current fuzz coverage status for an indexed repository. ' +
+      'Returns overall coverage ratio, top uncovered symbols, and available runs. ' +
+      'Use this before modifying code to understand which areas lack fuzz coverage.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: 'Indexed repository name. If omitted and only one repo is indexed, that repo is used.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'coverage_diff',
+    description:
+      'Compare coverage between two fuzz runs. Returns newly covered symbols, regressions, and coverage delta. ' +
+      'Use this to track coverage improvement over time or verify that a change increased fuzz coverage.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Indexed repository name.' },
+        runId1: { type: 'string', description: 'First (baseline) run ID.' },
+        runId2: { type: 'string', description: 'Second (comparison) run ID.' },
+      },
+      required: ['runId1', 'runId2'],
+    },
+  },
 ];

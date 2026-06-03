@@ -97,6 +97,12 @@ export function getResourceTemplates(): ResourceTemplate[] {
       description: 'Per-repo index and contract-registry staleness for a repository group',
       mimeType: 'text/yaml',
     },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/coverage',
+      name: 'Coverage Status',
+      description: 'Current fuzz coverage summary for the repository including overall ratio and available runs',
+      mimeType: 'application/json',
+    },
   ];
 }
 
@@ -255,6 +261,8 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
       return getProcessesResource(backend, repoName);
     case 'schema':
       return getSchemaResource();
+    case 'coverage':
+      return getCoverageResource(backend, repoName);
     case 'cluster':
       return getClusterDetailResource(parsed.param!, backend, repoName);
     case 'process':
@@ -487,6 +495,27 @@ example_queries:
     RETURN s.name, r.step
     ORDER BY r.step
 `;
+}
+
+/**
+ * Coverage resource — returns a pointer to the coverage_status MCP tool.
+ */
+async function getCoverageResource(backend: LocalBackend, repoName?: string): Promise<string> {
+  try {
+    const repo = await backend.resolveRepo(repoName);
+    return JSON.stringify(
+      {
+        repo: repo.name,
+        coverageStatus: 'Use the coverage_status MCP tool to retrieve current fuzz coverage data.',
+        coverageDiff: 'Use the coverage_diff MCP tool with two run IDs to compare coverage.',
+        hint: 'Run `gitnexus coverage import <file>` in the terminal if no coverage data exists.',
+      },
+      null,
+      2,
+    );
+  } catch (err: any) {
+    return JSON.stringify({ error: err.message });
+  }
 }
 
 /**

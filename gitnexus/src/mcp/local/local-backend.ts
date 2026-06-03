@@ -900,6 +900,10 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'coverage_status':
+        return this.coverageStatus(repo, params);
+      case 'coverage_diff':
+        return this.coverageDiff(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -4373,6 +4377,101 @@ export class LocalBackend {
         filePath: s.filePath || s[2],
       })),
     };
+  }
+
+  /**
+   * Coverage status — returns current fuzz coverage overview.
+   */
+  private async coverageStatus(repo: RepoHandle, params: any): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    const { openCoverageStore } = await import('../../core/coverage/store.js');
+    const store = openCoverageStore(repo.repoPath);
+
+    try {
+      const runs = store.listRuns();
+      const latestRun = runs[0];
+
+      if (!latestRun) {
+        return {
+          status: 'no_data',
+          message: 'No coverage data found. Import coverage with: gitnexus coverage import <file>',
+          runs: [],
+        };
+      }
+
+      const uncovered = store.getUncoveredSymbols(latestRun.id, 20);
+
+      return {
+        status: 'ok',
+        overallCoverage: latestRun.coverageRatio,
+        coveredSymbols: latestRun.coveredLines,
+        totalSymbols: latestRun.totalLines,
+        latestRun: {
+          id: latestRun.id,
+          timestamp: latestRun.timestamp,
+          label: latestRun.label,
+        },
+        topUncovered: uncovered.map((s) => ({
+          symbolName: s.symbolName,
+          nodeId: s.nodeId,
+          filePath: s.filePath,
+          coverageRatio: s.coverageRatio,
+        })),
+        availableRuns: runs.map((r) => ({ id: r.id, timestamp: r.timestamp, label: r.label, coverageRatio: r.coverageRatio })),
+      };
+    } finally {
+      store.close();
+    }
+  }
+
+  /**
+   * Coverage diff — compare two fuzz runs and report added/removed coverage.
+   */
+  private async coverageDiff(repo: RepoHandle, params: any): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    const { openCoverageStore } = await import('../../core/coverage/store.js');
+    const store = openCoverageStore(repo.repoPath);
+
+    try {
+      const run1 = store.getRun(params.runId1);
+      const run2 = store.getRun(params.runId2);
+
+      if (!run1 || !run2) {
+        throw new Error(`Run not found: ${!run1 ? params.runId1 : params.runId2}`);
+      }
+
+      const syms1 = new Map(store.getSymbolCoverage(params.runId1).map((s) => [s.nodeId, s]));
+      const syms2 = new Map(store.getSymbolCoverage(params.runId2).map((s) => [s.nodeId, s]));
+
+      const added: { nodeId: string; symbolName?: string; filePath?: string }[] = [];
+      const removed: { nodeId: string; symbolName?: string; filePath?: string }[] = [];
+
+      for (const [nodeId, s2] of syms2) {
+        const s1 = syms1.get(nodeId);
+        if (!s1) { added.push({ nodeId, symbolName: s2.symbolName, filePath: s2.filePath }); continue; }
+        if (s2.coverageRatio > s1.coverageRatio) { added.push({ nodeId, symbolName: s2.symbolName, filePath: s2.filePath }); }
+        else if (s2.coverageRatio < s1.coverageRatio) { removed.push({ nodeId, symbolName: s2.symbolName, filePath: s2.filePath }); }
+      }
+      for (const nodeId of syms1.keys()) {
+        if (!syms2.has(nodeId)) {
+          removed.push({ nodeId, symbolName: syms1.get(nodeId)!.symbolName, filePath: syms1.get(nodeId)!.filePath });
+        }
+      }
+
+      return {
+        baseline: { id: run1.id, coverageRatio: run1.coverageRatio },
+        comparison: { id: run2.id, coverageRatio: run2.coverageRatio },
+        delta: run2.coverageRatio - run1.coverageRatio,
+        added: added.slice(0, 20),
+        removed: removed.slice(0, 20),
+        summary: {
+          newlyCovered: added.length,
+          regressions: removed.length,
+        },
+      };
+    } finally {
+      store.close();
+    }
   }
 
   async disconnect(): Promise<void> {
