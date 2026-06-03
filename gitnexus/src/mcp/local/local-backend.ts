@@ -385,7 +385,23 @@ export class LocalBackend {
     // When called without explicit repos, discover dependents via CrossRepoRegistry
     // and route to multi-repo handler. Falls back to single-repo if no consumers found.
     if (method === 'impacted_endpoints') {
+      // (#21) Respect explicit `repo` parameter as a hard scope. Without
+      // this guard, `expandToConsumers` would silently fan out to consumer
+      // repos and the response would include changes from those other
+      // repos — making the `repo` parameter appear to be ignored. Only
+      // auto-expand when the caller did NOT pin a specific repo.
       const repo = await this.resolveRepo(params?.repo);
+      const explicitScope = !!params?.repo;
+      if (explicitScope) {
+        // Single-repo path — strict scope, no auto-expansion.
+        const result = await this._impactedEndpointsImpl(repo, params);
+        if (!result.error) {
+          assertObjectType(result.summary?.changed_files, 'changed_files');
+        }
+        return result as T;
+      }
+      // No explicit repo: try to expand to consumer repos. Falls back to
+      // single-repo if no consumers found or registry not available.
       const expanded = await this.expandToConsumers(repo.id);
       if (expanded) {
         return this.callToolMultiRepo(method, { ...params, repos: expanded }) as T;

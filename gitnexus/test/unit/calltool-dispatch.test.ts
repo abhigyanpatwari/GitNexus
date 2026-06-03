@@ -1502,7 +1502,7 @@ describe('impacted_endpoints auto-expand to consumers', () => {
     expect((backend as any).crossRepoRegistry.findConsumers).toHaveBeenCalledWith('test-project');
   });
 
-  it('T-CR-25: single repo with one consumer auto-expands to include consumer', async () => {
+  it('T-CR-25: explicit repo param scopes to that repo (skips auto-expand #21)', async () => {
     // Register 2 repos so resolveRepo works for both source and consumer
     (listRegisteredRepos as any).mockResolvedValue([
       MOCK_REPO_ENTRY,
@@ -1523,18 +1523,20 @@ describe('impacted_endpoints auto-expand to consumers', () => {
       return [];
     });
 
-    // Specify repo param since multiple repos are registered
+    // (#21) When the caller pins a specific repo, the response must be
+    // scoped to that repo only — auto-expand to consumers is skipped to
+    // prevent the consumer's changed_files from leaking into the result.
     const result = await backend.callTool('impacted_endpoints', { scope: 'unstaged', repo: 'test-project' });
 
-    // Multi-repo result has per-repo changed_files (Record<string, number>)
     expect(result).toBeDefined();
     expect((result as any)).toHaveProperty('summary');
     expect((result as any).summary.changed_files).toBeDefined();
-    // findConsumers called with the source repo id
-    expect((backend as any).crossRepoRegistry.findConsumers).toHaveBeenCalledWith('test-project');
+    // findConsumers MUST NOT be called when repo is explicit — auto-expand
+    // is suppressed so the user gets the repo they asked for.
+    expect((backend as any).crossRepoRegistry.findConsumers).not.toHaveBeenCalled();
   });
 
-  it('T-CR-26: single repo with multiple consumers auto-expands to include all', async () => {
+  it('T-CR-26: explicit repo param scopes even with multiple consumers (#21)', async () => {
     (listRegisteredRepos as any).mockResolvedValue([
       MOCK_REPO_ENTRY,
       { ...MOCK_REPO_ENTRY, name: 'consumer-a', path: '/tmp/consumer-a', storagePath: '/tmp/.gitnexus/consumer-a' },
@@ -1560,7 +1562,9 @@ describe('impacted_endpoints auto-expand to consumers', () => {
     expect(result).toBeDefined();
     expect((result as any)).toHaveProperty('summary');
     expect((result as any).summary.changed_files).toBeDefined();
-    expect((backend as any).crossRepoRegistry.findConsumers).toHaveBeenCalledWith('test-project');
+    // (#21) findConsumers MUST NOT be called when repo is explicit, even
+    // when multiple consumers are registered.
+    expect((backend as any).crossRepoRegistry.findConsumers).not.toHaveBeenCalled();
   });
 
   it('T-CR-27: explicit repos param overrides auto-discovery', async () => {
@@ -1657,11 +1661,46 @@ describe('impacted_endpoints auto-expand to consumers', () => {
 
   // WI-A3 (Batch A — #21): cross-repo `changed_files` leak.
   // Triage expected PR #99 to have fixed this. Stage-2 RCA found #99 was reverted by #101
-  // and the leak still reproduces. This test captures the bug as a regression — it is
-  // currently `it.todo` (pending) so main-afk CI stays green; a developer fixing #21 in a
-  // follow-up PR should convert it to `it(...)` and run it as the accept-gate. When the
-  // test passes, #21 can be closed. Do not close #21 until this test passes on `main-afk`.
-  it.todo('WI-A3: single-repo call with auto-expanded consumer does not leak consumer into changed_files');
+  // and the leak still reproduces. This test captures the bug as a regression — the
+  // earlier it.todo was promoted to a real test once #21 was fixed: when the caller
+  // passes `repo=`, auto-expand to consumers MUST be suppressed, so the consumer
+  // repo's changed_files cannot leak into the response.
+  it('WI-A3: single-repo call with auto-expanded consumer does not leak consumer into changed_files (#21)', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([
+      MOCK_REPO_ENTRY,
+      { ...MOCK_REPO_ENTRY, name: 'consumer-a', path: '/tmp/consumer-a', storagePath: '/tmp/.gitnexus/consumer-a' },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
+    // Consumer is registered — but since the caller pins `repo=`,
+    // findConsumers must NOT be called and the response must not include
+    // consumer-a's changes.
+    (backend as any).crossRepoRegistry = mockRegistry({
+      findConsumers: vi.fn().mockReturnValue(['consumer-a']),
+    });
+
+    (executeParameterized as any).mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('n.filePath CONTAINS')) {
+        return [{ id: 'sym-1', name: 'Service', type: 'Class', filePath: 'src/Service.java' }];
+      }
+      return [];
+    });
+
+    const result = await backend.callTool('impacted_endpoints', { scope: 'unstaged', repo: 'test-project' });
+
+    expect(result).toBeDefined();
+    expect((result as any)).toHaveProperty('summary');
+    const cf = (result as any).summary.changed_files;
+    // Single-repo result: changed_files is keyed by the pinned repo only.
+    // The consumer repo 'consumer-a' must NOT appear in the result.
+    const keys = Object.keys(cf);
+    expect(keys).toEqual(['test-project']);
+    expect(keys).not.toContain('consumer-a');
+    // findConsumers was NOT called — auto-expand suppressed.
+    expect((backend as any).crossRepoRegistry.findConsumers).not.toHaveBeenCalled();
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────
