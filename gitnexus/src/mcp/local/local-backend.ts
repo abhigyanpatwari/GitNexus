@@ -3758,7 +3758,7 @@ export class LocalBackend {
   /**
    * Document Endpoint tool — Generate API documentation JSON.
    */
-  private async documentEndpoint(repo: RepoHandle, params: any): Promise<{ result: DocumentEndpointResult; error?: string } | OpenApiModeResult> {
+  private async documentEndpoint(repo: RepoHandle, params: any): Promise<{ result?: DocumentEndpointResult; error?: string } | OpenApiModeResult> {
     await this.ensureInitialized(repo.id);
     
     // Ensure cross-registry is initialized (lazy init on first access)

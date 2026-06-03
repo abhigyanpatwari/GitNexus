@@ -799,7 +799,7 @@ export async function findHandlerByPathPattern(
 export async function documentEndpoint(
   repo: RepoHandle,
   options: DocumentEndpointOptions
-): Promise<{ result: DocumentEndpointResult; error?: string } | OpenApiModeResult> {
+): Promise<{ result?: DocumentEndpointResult; error?: string } | OpenApiModeResult> {
   const { method, path, depth = 10, mode, include_context = false, compact = false, crossRepo } = options;
   // Default mode is 'openapi' when neither mode nor include_context is set.
   // mode takes precedence over include_context; include_context only
@@ -814,7 +814,6 @@ export async function documentEndpoint(
   const upperMethod = method.toUpperCase();
   if (!VALID_METHODS.has(upperMethod)) {
     return {
-      result: createEmptyResult(method, path),
       error: `Invalid HTTP method: ${method}`
     };
   }
@@ -840,7 +839,6 @@ export async function documentEndpoint(
       route = fallbackResult;
     } else {
       return {
-        result: createEmptyResult(method, path),
         error: `No endpoint found for ${method} ${path}`,
       };
     }
@@ -854,7 +852,6 @@ export async function documentEndpoint(
 
   if (!handlerUid) {
     return {
-      result: createEmptyResult(method, path),
       error: `Could not construct handler UID for route at ${route.filePath}:${route.line}`,
     };
   }
@@ -1034,13 +1031,11 @@ export async function documentEndpoint(
         route = fallbackResult;
       } else {
         return {
-          result: createEmptyResult(method, path),
           error: `Could not construct handler UID from fallback for ${method} ${path}`,
         };
       }
     } else {
       return {
-        result: createEmptyResult(method, path),
         error: `No handler found for ${method} ${path} (Route UID had no matching Method)`,
       };
     }
@@ -1055,7 +1050,6 @@ export async function documentEndpoint(
 
   if (traceResult.error) {
     return {
-      result: createEmptyResult(method, path),
       error: traceResult.error,
     };
   }

@@ -106,10 +106,11 @@ describe('documentEndpoint', () => {
         mode: 'ai_context',
       });
 
+      // (#71) When no endpoint matches, the tool must return ONLY the error —
+      // no phantom `result` object with TODO_AI_ENRICH placeholders. Clients
+      // checking only `result` would otherwise process a non-existent route.
       expect(asContextResult(result).error).toContain('No endpoint found');
-      expect(asContextResult(result).result.method).toBe('GET');
-      expect(asContextResult(result).result.path).toBe('/nonexistent');
-      expect(asContextResult(result).result.summary).toBe('TODO_AI_ENRICH');
+      expect(asContextResult(result).result).toBeUndefined();
     });
 
     it('returns valid JSON structure for found endpoint', async () => {
