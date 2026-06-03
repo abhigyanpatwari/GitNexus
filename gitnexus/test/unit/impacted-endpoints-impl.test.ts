@@ -3739,6 +3739,11 @@ describe('_impactedEndpointsImpl', () => {
         indexedAt: '2025-01-01',
         schemaVersion: 29,
       });
+      // Align the registry's lastCommit with meta so the commit_drift check stays clean.
+      // The makeBackend helper defaults to 'c'; without this override the diagnostics
+      // block would flag drift between 'abc' (meta) and 'c' (registry).
+      const repo = (backend as any).repos.get('repo-ie');
+      repo.lastCommit = 'abc';
 
       const result = await (backend as any)._impactedEndpointsImpl(
         (backend as any).repos.get('repo-ie'),

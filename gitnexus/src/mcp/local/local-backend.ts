@@ -1979,6 +1979,7 @@ export class LocalBackend {
       index_health: 'stale' | 'healthy';
       missing_tables?: string[];
       schema_version?: { current: number; indexed: number | null };
+      commit_drift?: { indexed: string; current: string };
       low_node_count?: boolean;
       recommendation: string;
     }
@@ -2010,6 +2011,18 @@ export class LocalBackend {
           diagnostics.index_health = 'stale';
           isStale = true;
         }
+        // Check 2b: Commit drift (indexed commit vs registry's last-known commit).
+        // The registry's `repo.lastCommit` is updated by every analyze run; if meta.json
+        // disagrees with the registry, the index is at a different commit than the
+        // registry thinks — i.e. a stale write or a manual `analyze` on a different branch.
+        // We deliberately avoid `git rev-parse HEAD` here: the index's freshness story
+        // is about *what was indexed*, not *what the working tree currently looks like*,
+        // and the registry is the source of truth for the former.
+        if (meta?.lastCommit && repo.lastCommit && meta.lastCommit !== repo.lastCommit) {
+          diagnostics.commit_drift = { indexed: meta.lastCommit, current: repo.lastCommit };
+          diagnostics.index_health = 'stale';
+          isStale = true;
+        }
       } catch { /* meta.json read failure is non-blocking */ }
 
       // Check 3: Low node count
@@ -2028,6 +2041,9 @@ export class LocalBackend {
         }
         if (diagnostics.schema_version) {
           parts.push(`Schema version mismatch: indexed=${diagnostics.schema_version.indexed}, current=${diagnostics.schema_version.current}`);
+        }
+        if (diagnostics.commit_drift) {
+          parts.push(`Index is at commit ${diagnostics.commit_drift.indexed.slice(0, 7)} but HEAD is ${diagnostics.commit_drift.current.slice(0, 7)}`);
         }
         if (diagnostics.low_node_count) {
           parts.push(`Low node count (${nodeCount}) for ${fileCount} files — index may be incomplete`);
