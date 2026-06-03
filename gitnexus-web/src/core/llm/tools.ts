@@ -16,6 +16,17 @@ import { z } from 'zod';
 import { NODE_TABLES, REL_TYPES } from 'gitnexus-shared';
 import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
 
+/** Registered LangChain tool names — keep in sync with BASE_SYSTEM_PROMPT. */
+export const GRAPH_RAG_TOOL_NAMES = [
+  'search',
+  'cypher',
+  'grep',
+  'read',
+  'overview',
+  'explore',
+  'impact',
+] as const;
+
 const validLabel = (label: string): boolean => (NODE_TABLES as readonly string[]).includes(label);
 
 const validRelType = (t: string): boolean => (REL_TYPES as readonly string[]).includes(t);
