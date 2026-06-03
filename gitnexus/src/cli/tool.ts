@@ -144,14 +144,30 @@ export async function queryCommand(queryText: string, options?: {
     process.exit(1);
   }
 
-  const backend = await getBackend();
-  const result = await backend.callTool('query', {
-    query: queryText,
-    limit: options?.limit ? parseInt(options.limit) : undefined,
-    include_content: options?.content ?? false,
-    repo: options?.repo,
-  });
-  output(result);
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('query', {
+      query: queryText,
+      limit: options?.limit ? parseInt(options.limit) : undefined,
+      include_content: options?.content ?? false,
+      repo: options?.repo,
+    });
+    output(result);
+  } catch (err: unknown) {
+    // (#47) Catch infrastructure failures (getBackend, callTool
+    // transport) — the most common case is the
+    // `Multiple repositories indexed` error from resolveRepo. The
+    // JSON shape mirrors `impact` for consistency. The user gets
+    // a clean message + suggestion instead of a Node.js stack
+    // trace.
+    const message = (err instanceof Error ? err.message : String(err)) || 'Query failed unexpectedly';
+    const isMultiRepo = /Multiple repositories indexed/i.test(message);
+    output({
+      error: message,
+      ...(isMultiRepo && { suggestion: 'Pass --repo <name> to disambiguate' }),
+    });
+    process.exit(1);
+  }
 }
 
 export async function contextCommand(name: string, options?: {
@@ -165,15 +181,26 @@ export async function contextCommand(name: string, options?: {
     process.exit(1);
   }
 
-  const backend = await getBackend();
-  const result = await backend.callTool('context', {
-    name: name || undefined,
-    uid: options?.uid,
-    file_path: options?.file,
-    include_content: options?.content ?? false,
-    repo: options?.repo,
-  });
-  output(result);
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('context', {
+      name: name || undefined,
+      uid: options?.uid,
+      file_path: options?.file,
+      include_content: options?.content ?? false,
+      repo: options?.repo,
+    });
+    output(result);
+  } catch (err: unknown) {
+    // (#47) Same multi-repo error handling as queryCommand.
+    const message = (err instanceof Error ? err.message : String(err)) || 'Context lookup failed unexpectedly';
+    const isMultiRepo = /Multiple repositories indexed/i.test(message);
+    output({
+      error: message,
+      ...(isMultiRepo && { suggestion: 'Pass --repo <name> to disambiguate' }),
+    });
+    process.exit(1);
+  }
 }
 
 export async function impactCommand(target: string, options?: {
