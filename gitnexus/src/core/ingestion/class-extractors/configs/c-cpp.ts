@@ -45,7 +45,17 @@ export const cClassConfig: ClassExtractionConfig = {
 export const cppClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.CPlusPlus,
   typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'enum_specifier'],
-  ancestorScopeNodeTypes: ['namespace_definition', 'class_specifier', 'struct_specifier'],
+  // #1995: `union_specifier` is included so a type nested in a NAMED union
+  // (`union U1 { struct Inner {...} }`) qualifies as `U1.Inner`. Anonymous unions
+  // have no `name` child → extractScopeSegmentsFromNode returns [] → they correctly
+  // contribute nothing (members inject into the enclosing scope). C uses the
+  // separate cClassConfig (no qualifiedNodeId), so it is intentionally untouched.
+  ancestorScopeNodeTypes: [
+    'namespace_definition',
+    'class_specifier',
+    'struct_specifier',
+    'union_specifier',
+  ],
   // #1978: key nested-type nodes by their fully-qualified path (Outer.Inner) so
   // same-tail nested types in one TU stay distinct instead of silently merging.
   qualifiedNodeId: true,
