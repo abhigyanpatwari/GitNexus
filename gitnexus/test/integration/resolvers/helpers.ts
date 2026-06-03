@@ -160,6 +160,55 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // propagation in the legacy DAG.
     'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
     'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
+    // HOC-wrapped variable declarations (typescript-hoc-wrapped.test.ts).
+    // The legacy DAG's `tsExtractFunctionName` only walks `pair` /
+    // `variable_declarator` parents — `arguments` parents fall through with
+    // `funcName = null`, so HOC-wrapped const declarations (forwardRef, memo,
+    // useCallback, useMemo, observer, debounce) are anonymous in legacy and
+    // their inner calls are attributed to the File node or not at all.
+    // The scope-resolver names these via `@declaration.function` matching on
+    // `lexical_declaration > variable_declarator > call_expression > arguments
+    // > arrow_function`. Scope-resolver-only correctness wins; backporting the
+    // HOC-wrapping traversal to the legacy DAG is out of scope.
+    'React.forwardRef: Button → cn and Button → helper (member-expression callee)',
+    'memo (bare identifier): Card → cn and Card → helper',
+    'useCallback: handleClick → doStuff and handleClick → fmt',
+    'useCallback: handleSubmit → doStuff (sibling const, separate caller)',
+    'useMemo: computed → doStuff (returns-a-value variant)',
+    'observer (MobX): Item → helper',
+    'debounce: debouncedSearch → doStuff (utility-HOC form)',
+    'bare statement-level HOC calls do not produce phantom Functions',
+    'handleClick and handleSubmit do not cross-attribute (no first-sibling-wins)',
+    'nested HOCs: helper() call inside the deepest arrow does NOT source from Function:Wrapped',
+    'export default HOC: calls attribute to the file-derived function name',
+    // HOF-callback CALLS edges (typescript-hof-callbacks.test.ts).
+    // The legacy DAG attributed calls inside pair-arrow / executor / .map
+    // callbacks to the outermost module scope instead of the named arrow
+    // function. The scope-resolver uses `pass2AttachDeclarations` to place
+    // the Function def on the inner arrow, correctly attributing inner calls.
+    // Scope-resolver-only correctness wins; backporting the pair-arrow / HOF
+    // attribution fix to the legacy DAG is out of scope.
+    'control: direct (x) => transform(x) emits direct → transform',
+    'Promise.all(map(...)) emits fanOut → transform (call inside .map callback)',
+    'new Promise((resolve) => { ... }) emits wrap → transform (call inside executor)',
+    'useQuery({ queryFn: () => fetchData() }) emits queryFn → fetchData (call inside named pair-arrow)',
+    'useQuery({ queryFn: () => fetchData() }) emits useFeature → useQuery (direct call in body)',
+    'Zustand module-level calls source from the File node (not a sibling Function)',
+    'transform is reachable from at least 3 of {direct, fanOut, wrap}',
+    'multi-action store: addItem → doA (calls inside addItem attribute to addItem, not first sibling)',
+    'multi-action store: removeItem → doB (NOT addItem → doB)',
+    'multi-action store: fetchData → doC (third action also attributes correctly)',
+    'multi-action store: each action attributes calls to itself (no cross-sibling leakage)',
+    // JSX-as-call CALLS edges (typescript-jsx-as-call.test.ts).
+    // The legacy DAG had no `jsx_*` patterns in the TS scope query, so
+    // `<Foo />` / `<Foo>...</Foo>` produced no CALLS edges. The scope-resolver
+    // added `jsx_self_closing_element` and `jsx_opening_element` captures.
+    // Scope-resolver-only correctness wins; backporting JSX capture to the
+    // legacy DAG query is out of scope.
+    'self-closing <Foo /> emits useFoo → Foo',
+    'paired <Bar>...</Bar> emits useBar → Bar (closing tag does NOT double-count)',
+    'nested <Outer><Inner /></Outer> emits both useNested → Outer AND useNested → Inner',
+    'combined HOF + JSX: const Wrapped = () => <Foo /> emits exactly one Wrapped → Foo',
   ]),
   javascript: new Set([
     // Mirrors the TypeScript class-instance and factory-pattern singleton
