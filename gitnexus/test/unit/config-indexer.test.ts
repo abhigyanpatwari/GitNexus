@@ -175,11 +175,55 @@ serverTimezone=UTC`;
     
     it('should handle values with equals sign', () => {
       const content = `app.url=https://example.com?key=value`;
-      
+
       const result = parsePropertiesFile(content, 'application.properties');
-      
+
       expect(result[0].key).toBe('app.url');
       expect(result[0].value).toBe('https://example.com?key=value');
+    });
+
+    it('should not include subsequent lines in property value (#74)', async () => {
+      // (#74) The reproduction from the issue: tcbs-bond-trading
+      // application.properties. The `logging.file` value was observed
+      // to include the entire remainder of the file (#=====, INFO,
+      // DEBUG, ...) instead of just `bond-trading`. The current
+      // parser correctly truncates each property's value at the end
+      // of its line — this test pins the behavior with the exact
+      // multi-property file from the issue so it cannot regress.
+      const content = `spring.datasource.url=jdbc:oracle:thin:@10.7.2.201:1521:tcbssit
+spring.datasource.username=app_bond
+spring.datasource.password=appbond1
+spring.datasource.driverClassName=oracle.jdbc.driver.OracleDriver
+#===========================================================================================
+logging.file=bond-trading
+logging.level.org.springframework.web=INFO
+logging.level.com.tcbs=DEBUG`;
+
+      const result = parsePropertiesFile(content, 'application.properties');
+      const { propertyToGraphNode } = await import('../../src/core/ingestion/config-indexer.js');
+
+      // Every value must be a single line — no embedded newlines, no
+      // subsequent properties leaking in, no comment lines.
+      for (const p of result) {
+        expect(p.value).not.toContain('\n');
+        expect(p.value).not.toContain('#===');
+        // The value must not contain the start of any other property
+        // key in the file.
+        for (const other of result) {
+          if (other.key !== p.key) {
+            expect(p.value).not.toContain(other.key);
+          }
+        }
+        // The graph node's content field must mirror the value exactly.
+        const node = propertyToGraphNode(p);
+        expect((node.properties as any).content).toBe(p.value);
+      }
+
+      // Spot check the specific values from the issue.
+      const loggingFile = result.find(p => p.key === 'logging.file');
+      expect(loggingFile?.value).toBe('bond-trading');
+      const datasourceUrl = result.find(p => p.key === 'spring.datasource.url');
+      expect(datasourceUrl?.value).toBe('jdbc:oracle:thin:@10.7.2.201:1521:tcbssit');
     });
     
     it('should handle whitespace around equals', () => {
