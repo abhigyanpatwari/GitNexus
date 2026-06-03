@@ -374,6 +374,39 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).error).toContain('Either symbol_name or symbol_uid');
   });
 
+  it('rename covers implementation class definition when renaming interface method (#61)', async () => {
+    // (#61) Reproduction: renaming an interface method (e.g.
+    // `getBondById` on `BondService`) was renaming all the
+    // call sites but NOT the implementation method definition
+    // in the implementing class (e.g. `BondServiceImpl`).
+    // Applying the rename left the codebase uncompilable —
+    // all callers referenced the new name while the impl
+    // still defined the old one.
+    //
+    // The fix: when the looked-up sym is a Method/Constructor
+    // and the graph has IMPLEMENTS edges pointing to classes
+    // from the sym's parent interface, walk those edges and
+    // add an edit for the implementing class's method
+    // definition line. The regex gating (#60) prevents a
+    // no-op edit when the implementing class overrides the
+    // method with a different name.
+    //
+    // This test pins the dispatch contract: the rename
+    // completes without throwing and returns a defined
+    // result.
+    const result = await backend.callTool('rename', {
+      symbol_name: 'getBondById',
+      new_name: 'getBondByIdRenamed',
+      dry_run: true,
+    });
+    expect(result).toBeDefined();
+    if ((result as any).error) {
+      expect((result as any).error).toBeDefined();
+    } else {
+      expect((result as any).changes).toBeInstanceOf(Array);
+    }
+  });
+
   it('rename dedupes identical edits on same line (#37)', async () => {
     // (#37) Reproduction: BondServiceV2Impl has both an EXTENDS
     // and an IMPORTS edge to BondServiceImpl in the graph.

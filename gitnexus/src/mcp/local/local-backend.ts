@@ -3286,6 +3286,59 @@ export class LocalBackend {
       } catch (e) { logQueryError('rename:read-definition', e); }
     }
 
+    // (#61) Implementation walk: when the user renames a method
+    // declared on an interface, the lookup returns the interface
+    // method's node — the definition edit above covers the
+    // interface file. But callers reference the method via the
+    // implementing class (e.g. BondServiceImpl.getBondById),
+    // and that class's method definition would still use the
+    // old name after the rename, leaving the codebase broken.
+    //
+    // We walk the IMPLEMENTS edge: for each class that
+    // implements the method's parent interface, find the
+    // matching method on the class and add an edit for its
+    // definition line. This ensures the rename covers both
+    // the interface declaration and the implementation.
+    //
+    // We use `lookupResult.incoming.implements` (already
+    // collected below) to find candidate implementing files,
+    // then verify each contains a real word-boundary match
+    // for `oldName` before producing an edit. If `sym` is
+    // not a method, or if the implementing class's method
+    // has a different name (rare but possible via explicit
+    // overrides), the regex test prevents a no-op edit.
+    const symKind = sym.kind || '';
+    if (symKind === 'Method' || symKind === 'Constructor') {
+      try {
+        const implEdges = lookupResult.incoming?.implements || [];
+        for (const implEdge of implEdges) {
+          if (!implEdge.filePath) continue;
+          try {
+            const implContent = await fs.readFile(assertSafePath(implEdge.filePath), 'utf-8');
+            const implLines = implContent.split('\n');
+            for (let i = 0; i < implLines.length; i++) {
+              const line = implLines[i];
+              if (!line.includes(oldName)) continue;
+              if (line.trimStart().startsWith('//') || line.trimStart().startsWith('*')) continue;
+              const implRegex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+              implRegex.lastIndex = 0;
+              if (implRegex.test(line)) {
+                implRegex.lastIndex = 0;
+                addEdit(
+                  implEdge.filePath,
+                  i + 1,
+                  line.trim(),
+                  line.replace(implRegex, new_name).trim(),
+                  'graph',
+                );
+                break;
+              }
+            }
+          } catch (e) { logQueryError('rename:read-impl-definition', e); }
+        }
+      } catch (e) { logQueryError('rename:impl-walk', e); }
+    }
+
     // All incoming refs from graph (callers, importers, etc.)
     const allIncoming = [
       ...(lookupResult.incoming.calls || []),
