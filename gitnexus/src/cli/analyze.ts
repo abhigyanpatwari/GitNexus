@@ -56,6 +56,38 @@ export interface AnalyzeOptions {
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
 const EMBEDDING_NODE_LIMIT = 50_000;
 
+/**
+ * (#109) Decide whether existing embeddings should be auto-preserved into
+ * the rebuilt index. Returns true when:
+ *   - an existing index is present
+ *   - that index had at least one embedding
+ *   - the user did NOT pass --force (which is an explicit data-loss signal)
+ *
+ * `options.embeddings` does NOT affect this — auto-preserve runs even when
+ * the user is not requesting a fresh embedding pass. That is the whole
+ * point: silently dropping the slowest, most expensive artifact in the
+ * index on every re-index is the bug we are closing.
+ */
+export function shouldPreserveExistingEmbeddings(
+  existingMeta: { stats?: { embeddings?: number } } | null | undefined,
+  options: { force?: boolean; embeddings?: boolean } | undefined,
+): boolean {
+  const count = existingMeta?.stats?.embeddings ?? 0;
+  return !!(existingMeta && count > 0 && !options?.force);
+}
+
+/**
+ * (#109) Total decision: should the cache loader run? Either the user
+ * explicitly asked for a fresh embedding pass, OR we are auto-preserving
+ * the existing ones.
+ */
+export function shouldCacheEmbeddings(
+  existingMeta: { stats?: { embeddings?: number } } | null | undefined,
+  options: { force?: boolean; embeddings?: boolean } | undefined,
+): boolean {
+  return shouldPreserveExistingEmbeddings(existingMeta, options) || !!options?.embeddings;
+}
+
 const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
   structure: 'Building structure',
@@ -204,7 +236,27 @@ export const analyzeCommand = async (
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
 
-  if (options?.embeddings && existingMeta && !options?.force) {
+  // (#109) Auto-preserve existing embeddings unless --force. Without this,
+  // every `gitnexus analyze` (incl. the post-commit hook) silently drops
+  // them when --embeddings is omitted, even though they are the slowest
+  // and most expensive artifact in the index. With this, "off by default"
+  // still means off for *new* embedding generation — we just carry the
+  // existing ones over to the rebuilt index.
+  const existingEmbeddingCount = existingMeta?.stats?.embeddings ?? 0;
+  const preserveExistingEmbeddings = shouldPreserveExistingEmbeddings(existingMeta, options);
+  const shouldCache = shouldCacheEmbeddings(existingMeta, options);
+
+  if (options?.force && existingEmbeddingCount > 0) {
+    // Loud warning — user explicitly opted into data loss.
+    bar.stop();
+    console.log(
+      `\n  ⚠️  --force will drop ${existingEmbeddingCount.toLocaleString()} existing embedding${existingEmbeddingCount === 1 ? '' : 's'}. ` +
+        `Pass --embeddings to regenerate, or omit --force to preserve.\n`,
+    );
+    bar.start(100, 0, { phase: 'Initializing...' });
+  }
+
+  if (shouldCache) {
     try {
       updateBar(0, 'Caching embeddings...');
       await initLbug(lbugPath);
@@ -289,7 +341,12 @@ export const analyzeCommand = async (
   const stats = await getLbugStats();
   let embeddingTime = '0.0';
   let embeddingSkipped = true;
-  let embeddingSkipReason = 'off (use --embeddings to enable)';
+  // (#109) If existing embeddings were auto-preserved, the "off" framing is
+  // misleading — surface a label that distinguishes "no new generation" from
+  // "no embeddings at all". The cached count is reported by the summary line.
+  let embeddingSkipReason = preserveExistingEmbeddings
+    ? 'off (existing embeddings preserved)'
+    : 'off (use --embeddings to enable)';
 
   if (options?.embeddings) {
     if (stats.nodes > EMBEDDING_NODE_LIMIT) {
@@ -412,8 +469,13 @@ export const analyzeCommand = async (
   bar.stop();
 
   // ── Summary ───────────────────────────────────────────────────────
+  // (#109) Distinguish "auto-preserved from a prior index" from "carried
+  // through a --embeddings rebuild" in the user-visible summary.
   const embeddingsCached = cachedEmbeddings.length > 0;
-  console.log(`\n  Repository indexed successfully (${totalTime}s)${embeddingsCached ? ` [${cachedEmbeddings.length} embeddings cached]` : ''}\n`);
+  const cachedLabel = preserveExistingEmbeddings && !options?.embeddings
+    ? 'preserved'
+    : 'cached';
+  console.log(`\n  Repository indexed successfully (${totalTime}s)${embeddingsCached ? ` [${cachedEmbeddings.length} embeddings ${cachedLabel}]` : ''}\n`);
   console.log(`  ${stats.nodes.toLocaleString()} nodes | ${stats.edges.toLocaleString()} edges | ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters | ${pipelineResult.processResult?.stats.totalProcesses || 0} flows`);
   console.log(`  LadybugDB ${lbugTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
   console.log(`  ${repoPath}`);
