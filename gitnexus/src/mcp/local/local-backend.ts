@@ -1654,7 +1654,22 @@ export class LocalBackend {
       symbol: {
         uid: sym.id || sym[0],
         name: sym.name || sym[1],
-        kind: isClassLike ? (resolvedLabel || 'Class') : (sym.type || sym[2]),
+        // (#30) When isClassLike is true but sym.type is empty
+        // (LadybugDB limitation on `labels(n)[0]` for some Cypher
+        // projections) and the disambiguation path did not set
+        // resolvedLabel, the kind defaulted to 'Class' even for
+        // nodes whose uid prefix is `Interface:`. The disambiguation
+        // query at line 1517 also only checks one label at a time
+        // and prefers Class, so a node with both a Class and
+        // Interface label in the graph (e.g. a Spring @Repository
+        // interface that Spring auto-generates a class for) would
+        // resolve as Class even when the user is asking about the
+        // interface. We now derive kind from the uid prefix when
+        // resolvedLabel is empty and sym.type is empty, so the
+        // kind always matches the uid.
+        kind: isClassLike
+          ? (resolvedLabel || (symId.startsWith('Interface:') ? 'Interface' : 'Class'))
+          : (sym.type || sym[2]),
         filePath: sym.filePath || sym[3],
         startLine: sym.startLine || sym[4],
         endLine: sym.endLine || sym[5],

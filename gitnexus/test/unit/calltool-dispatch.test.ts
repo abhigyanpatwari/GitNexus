@@ -232,6 +232,53 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).candidates).toHaveLength(2);
   });
 
+  it('context tool kind matches uid prefix when sym.type is empty (#30)', async () => {
+    // (#30) Reproduction: `UserRepository` is a Spring @Repository
+    // interface extending `JpaRepository`. The graph stores a single
+    // node with the `Interface` label and an `id` prefix of
+    // `Interface:UserRepository`. The Cypher projection
+    // `RETURN labels(n)[0] AS type` can return an empty string in
+    // some LadybugDB projections (e.g. when the node has multiple
+    // labels and `labels(n)[0]` ordering is unstable). The previous
+    // fallback defaulted `kind` to `Class` whenever `isClassLike`
+    // was true and `resolvedLabel` was empty, producing a
+    // `kind: "Class"` / `uid: "Interface:UserRepository"`
+    // contradiction.
+    //
+    // The fix: when `resolvedLabel` is empty and `sym.type` is
+    // empty, derive `kind` from the `uid` prefix so the two fields
+    // cannot disagree. The `Interface:` prefix → `Interface`,
+    // otherwise `Class`.
+    (executeParameterized as any).mockImplementation(async (_repoId: string, query: string, params: Record<string, any>) => {
+      // Initial name lookup returns the symbol with an empty `type`.
+      if (query.includes('n.name = $symName') || query.includes('n.id = $symName')) {
+        return [{
+          id: 'Interface:UserRepository',
+          name: 'UserRepository',
+          type: '',  // labels(n)[0] returned empty (LadybugDB limitation)
+          filePath: 'src/main/java/com/example/UserRepository.java',
+          startLine: 5,
+          endLine: 10,
+        }];
+      }
+      // The disambiguation typeCheck (line 1561) probes both Class
+      // and Interface labels with a UNION. We mock the result to
+      // yield exactly one row (Interface) so isClassLike becomes
+      // true. The Class probe returns empty and the Interface
+      // probe returns a row.
+      if (query.includes('UNION ALL') && query.includes('MATCH (n:Interface)')) {
+        return [{ label: 'Interface' }];
+      }
+      return [];
+    });
+
+    const result = await backend.callTool('context', { name: 'UserRepository' });
+    expect((result as any).status).toBe('found');
+    // Both the uid prefix and the kind must agree: Interface.
+    expect((result as any).symbol.uid).toBe('Interface:UserRepository');
+    expect((result as any).symbol.kind).toBe('Interface');
+  });
+
   it('dispatches impact tool', async () => {
     // impact() calls executeParameterized to find target, then executeQuery for traversal
     (executeParameterized as any).mockResolvedValue([
