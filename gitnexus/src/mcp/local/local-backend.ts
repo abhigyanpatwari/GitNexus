@@ -289,7 +289,34 @@ export class LocalBackend {
       return this.repos.values().next().value!;
     }
 
-    return null; // Multiple repos, no param — ambiguous
+    // Multiple repos, no param — try to resolve from cwd
+    const cwd = process.cwd();
+    const cwdMatch = this.resolveRepoFromCwd(cwd);
+    if (cwdMatch) {
+      console.error(`GitNexus: auto-resolved repo "${cwdMatch.name}" from working directory`);
+      return cwdMatch;
+    }
+
+    return null; // Ambiguous — resolveRepo will throw
+  }
+
+  /**
+   * Returns the indexed repo whose repoPath contains cwd (longest-prefix wins).
+   * Guards with path.sep so /foo does NOT match /foo-bar.
+   */
+  private resolveRepoFromCwd(cwd: string): RepoHandle | null {
+    let best: RepoHandle | null = null;
+    let bestLen = -1;
+    for (const handle of this.repos.values()) {
+      const root = handle.repoPath;
+      if (cwd === root || cwd.startsWith(root + path.sep)) {
+        if (root.length > bestLen) {
+          best = handle;
+          bestLen = root.length;
+        }
+      }
+    }
+    return best;
   }
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────

@@ -45,6 +45,7 @@ vi.mock('child_process', () => ({
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import { initLbug, executeQuery, executeParameterized, isLbugReady, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
+import { searchFTSFromLbug } from '../../src/core/search/bm25-index.js';
 import { execFileSync as mockedExecFileSync } from 'child_process';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -456,8 +457,14 @@ describe('LocalBackend.resolveRepo', () => {
   it('throws for ambiguous repos without param', async () => {
     setupMultipleRepos();
     await backend.init();
-    await expect(backend.callTool('query', { query: 'test' }))
-      .rejects.toThrow('Multiple repositories indexed');
+    // Stub cwd to a non-matching path so the test is deterministic regardless of where the suite runs
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/var/empty');
+    try {
+      await expect(backend.callTool('query', { query: 'test' }))
+        .rejects.toThrow('Multiple repositories indexed');
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 
   it('resolves repo by name parameter', async () => {
@@ -1891,5 +1898,127 @@ describe('impacted_endpoints multi-repo dispatch — detailed scenarios', () => 
     expect(callArgs[2]).toBeUndefined();
 
     await singleBackend.disconnect();
+  });
+});
+
+// ─── cwd-based auto-resolution ───────────────────────────────────────
+
+describe('LocalBackend.resolveRepoFromCache — cwd resolution', () => {
+  let backend: LocalBackend;
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+  const REPO_A = MOCK_REPO_ENTRY; // path: '/tmp/test-project'
+  const REPO_B = {
+    ...MOCK_REPO_ENTRY,
+    name: 'other-project',
+    path: '/tmp/other-project',
+    storagePath: '/tmp/.gitnexus/other-project',
+  };
+  const REPO_MONO = {
+    ...MOCK_REPO_ENTRY,
+    name: 'mono',
+    path: '/tmp/mono',
+    storagePath: '/tmp/.gitnexus/mono',
+  };
+  const REPO_NESTED = {
+    ...MOCK_REPO_ENTRY,
+    name: 'nested-pkg',
+    path: '/tmp/mono/packages/x',
+    storagePath: '/tmp/.gitnexus/nested-pkg',
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    // clearAllMocks wipes the module-level mockResolvedValue — restore it so query() doesn't throw
+    (searchFTSFromLbug as any).mockResolvedValue([]);
+    backend = new LocalBackend();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Case 1: cwd exactly equals an indexed repo's path → resolves that repo
+  it('resolves repo when cwd exactly equals repoPath', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_A, REPO_B]);
+    await backend.init();
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project');
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('query', { query: 'test' });
+    expect(result).toHaveProperty('processes');
+  });
+
+  // Case 2: cwd is a subdirectory of a repo's path → resolves that repo
+  it('resolves repo when cwd is a subdirectory of repoPath', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_A, REPO_B]);
+    await backend.init();
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src/utils');
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('query', { query: 'test' });
+    expect(result).toHaveProperty('processes');
+  });
+
+  // Case 3: cwd inside none of the repos → still throws 'Multiple repositories indexed'
+  it('throws when cwd does not match any indexed repo', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_A, REPO_B]);
+    await backend.init();
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/home/user/unrelated');
+    await expect(backend.callTool('query', { query: 'test' }))
+      .rejects.toThrow('Multiple repositories indexed');
+  });
+
+  // Case 4: nested repos — nearest ancestor wins
+  it('resolves nearest ancestor when cwd is inside a nested repo', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_MONO, REPO_NESTED]);
+    await backend.init();
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/mono/packages/x/src');
+    (executeParameterized as any).mockResolvedValue([]);
+    // Should resolve /tmp/mono/packages/x (REPO_NESTED), not /tmp/mono (REPO_MONO)
+    const result = await backend.callTool('query', { query: 'test', repo: 'nested-pkg' });
+    expect(result).toHaveProperty('processes');
+    // Spy on console.error to prove cwd-based resolution picks the NEAREST repo (nested-pkg),
+    // not the shallower ancestor (mono). Both repos contain the cwd, so a longest-prefix bug
+    // would silently pick the wrong one — this assertion catches that regression.
+    const errSpy = vi.spyOn(console, 'error');
+    (executeParameterized as any).mockResolvedValue([]);
+    const cwdResult = await backend.callTool('query', { query: 'no-param' });
+    expect(cwdResult).toHaveProperty('processes');
+    // Must have logged auto-resolution for "nested-pkg", NOT for "mono"
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('auto-resolved repo "nested-pkg"'),
+    );
+    const loggedMessages = errSpy.mock.calls.map((c) => c[0] as string);
+    expect(loggedMessages.every((m) => !m.includes('auto-resolved repo "mono"'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  // Case 5: boundary — sep guard; '/tmp/test-project-extra' must NOT match '/tmp/test-project'
+  it('does not match repo when cwd shares a path prefix but not a path separator boundary', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_A, REPO_B]);
+    await backend.init();
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project-extra');
+    await expect(backend.callTool('query', { query: 'test' }))
+      .rejects.toThrow('Multiple repositories indexed');
+  });
+
+  // Case 6: explicit repo param takes precedence over cwd
+  it('uses explicit repo param even when cwd is inside a different repo', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_A, REPO_B]);
+    await backend.init();
+    // cwd is inside REPO_A (/tmp/test-project), but we explicitly request REPO_B
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('query', { query: 'test', repo: 'other-project' });
+    expect(result).toHaveProperty('processes');
+  });
+
+  // Case 7: single indexed repo, no param, any cwd → resolves the one repo (unchanged behavior)
+  it('resolves single repo without param regardless of cwd', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([REPO_A]);
+    await backend.init();
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/home/user/completely-unrelated');
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('query', { query: 'test' });
+    expect(result).toHaveProperty('processes');
   });
 });
