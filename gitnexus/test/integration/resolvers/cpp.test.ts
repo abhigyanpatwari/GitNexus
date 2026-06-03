@@ -2630,6 +2630,41 @@ describe('C++ ADL — merges with non-empty ordinary lookup', () => {
   });
 });
 
+describe('C++ ADL — hidden friend and namespace callable in one namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-ns-plus-hidden-friend-same-name'),
+      () => {},
+    );
+  }, 60000);
+
+  // pickCppAdlCandidates merges two buckets for one associated namespace:
+  // friendCandidates (hidden friends of associated classes) and nsCandidates
+  // (namespace-owned callables). This fixture reaches exactly one callable
+  // through each bucket — `combine` only as a hidden friend, `process` only as
+  // a namespace member — so a regression that stopped consulting either bucket
+  // would drop the corresponding edge. (Candidate ORDER is not observable —
+  // overload narrowing resolves a unique survivor or suppresses — so the guard
+  // is on the SET: both edges must be present.)
+  it('combine(a, b) resolves to the hidden friend via friendCandidates', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'call_friend' && c.target === 'combine',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toContain('lib.h');
+  });
+
+  it('process(t) resolves to the namespace callable via nsCandidates', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'call_ns' && c.target === 'process',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
 describe('C++ ADL — base-class associated namespaces', () => {
   let result: PipelineResult;
 
