@@ -3869,6 +3869,15 @@ describe('C++ inline nested same-tail collision — worker path parity (issue #1
     expect(e!.rel.targetId).toContain('Other.Inner');
     expect(e!.rel.targetId).not.toContain('Outer.Inner');
   });
+
+  it('resolves DerivedA : Outer::Inner → EXTENDS Outer.Inner on the worker path (parity + no duplicate)', () => {
+    const edges = getRelationships(result, 'EXTENDS').filter(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === 'DerivedA',
+    );
+    expect(edges, 'DerivedA EXTENDS edges (worker path)').toHaveLength(1);
+    expect(edges[0]!.rel.targetId).toContain('Outer.Inner');
+    expect(edges[0]!.rel.targetId).not.toContain('Other.Inner');
+  });
 });
 
 // ---------------------------------------------------------------------------

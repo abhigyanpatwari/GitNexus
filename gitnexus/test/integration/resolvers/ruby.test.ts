@@ -1639,6 +1639,24 @@ describe('Ruby inline module-nested same-tail collision — worker path parity (
       expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
     },
   );
+
+  // Worker-path parity for the MIXIN (IMPLEMENTS) path — the __heritage__ marker
+  // owner must survive worker serialization (not only attr_accessor / HAS_PROPERTY).
+  pit(
+    'routes include OuterMix / OtherMix to their OWN qualified Inner owner on the worker path (IMPLEMENTS, R7)',
+    () => {
+      const impl = getRelationships(result, 'IMPLEMENTS');
+      const ownerQnOfMixin = (mixinName: string) => {
+        const e = impl.find((x) => x.target === mixinName);
+        expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
+      expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
+      expect(impl.filter((x) => x.target === 'OuterMix')).toHaveLength(1);
+      expect(impl.filter((x) => x.target === 'OtherMix')).toHaveLength(1);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

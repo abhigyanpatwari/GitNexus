@@ -295,6 +295,8 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // #1982 follow-up: a qualified mixin arg (`include Outer::Mixin`) must not be
     // corrupted by the ':'-delimited __heritage__ marker. Registry-primary only.
     'emits Consumer -IMPLEMENTS-> Outer.Mixin for include Outer::Mixin (R2)',
+    // #1982 follow-up: worker-path mixin (IMPLEMENTS) parity. Registry-primary only.
+    'routes include OuterMix / OtherMix to their OWN qualified Inner owner on the worker path (IMPLEMENTS, R7)',
   ]),
   swift: new Set<string>([
     // Swift scope-resolution achieves 77/77 baseline parity. The tests
@@ -546,6 +548,8 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'resolves NS::DB : B::Inner → EXTENDS the NS.B.Inner node (not NS.A.Inner)',
     'genuinely used the worker pool for the namespaced fixture',
     'resolves NS::DA / NS::DB to their own namespaced base on the worker path',
+    // #1982 follow-up: C++ worker-path DerivedA parity + duplicate guard.
+    'resolves DerivedA : Outer::Inner → EXTENDS Outer.Inner on the worker path (parity + no duplicate)',
   ]),
 };
 
