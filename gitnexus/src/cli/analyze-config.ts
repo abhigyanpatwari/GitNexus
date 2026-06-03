@@ -161,6 +161,17 @@ export function validateBranchName(value: string, source: string): string {
   if (trimmed.includes('..')) {
     throw new GitNexusRcError(`${source}: branch name must not contain "..".`);
   }
+  // Git permits a backtick in a ref, but the branch is embedded inside a
+  // Markdown inline-code span in the generated AGENTS.md/CLAUDE.md regression
+  // example, where a backtick would close the span early and let the rest of
+  // the template render as instruction text. Reject it at this single
+  // chokepoint so all three tiers (CLI flag, .gitnexusrc, auto-detect via
+  // sanitizeDetectedBranch) are covered (#1996 tri-review P1).
+  if (trimmed.includes('`')) {
+    throw new GitNexusRcError(
+      `${source}: branch name must not contain a backtick (it would break the generated Markdown).`,
+    );
+  }
   return trimmed;
 }
 
@@ -205,6 +216,18 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         throw new GitNexusRcError(`${source} must not be empty.`);
       }
       assertNoHiddenChars(trimmed, source);
+      // `name` flows into the generated AGENTS.md/CLAUDE.md as `**${name}**` and
+      // inside `gitnexus://repo/${name}/…` code spans, so a Markdown-significant
+      // character would break those spans or inject emphasis/links/HTML into
+      // agent-instruction content (#1996 tri-review P1). `_` is intentionally
+      // allowed (legitimate in repo names; intraword `_` is not emphasis).
+      // embeddingDevice (the other `string`-kind option) only ever holds a
+      // fixed device token, so this guard never rejects a valid value there.
+      if (/[`*[\]<>]/.test(trimmed)) {
+        throw new GitNexusRcError(
+          `${source} must not contain Markdown-significant characters (\` * [ ] < >).`,
+        );
+      }
       return trimmed;
     }
     case 'numeric-string': {
@@ -263,12 +286,16 @@ const normalizeLevel = (
 
   for (const [key, value] of Object.entries(obj)) {
     if (allowNestedKey && key === NESTED_KEY) continue; // handled separately
-    const spec = KEY_SPECS[key];
-    if (!spec) {
+    // `Object.hasOwn`, not a truthiness check: a plain-object lookup like
+    // `KEY_SPECS["__proto__"]` returns an inherited member (Object.prototype,
+    // truthy) and would slip past `if (!spec)`, hitting the wrong error branch
+    // instead of the documented "Unknown key" message (#1996 tri-review P3).
+    if (!Object.hasOwn(KEY_SPECS, key)) {
       throw new GitNexusRcError(
         `Unknown key "${key}" in ${GITNEXUS_RC_FILENAME}. ${ALLOWED_KEYS_HINT}`,
       );
     }
+    const spec = KEY_SPECS[key];
     const prev = setBy.get(spec.target);
     if (prev && prev !== key) {
       throw new GitNexusRcError(
@@ -298,6 +325,12 @@ export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | u
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
+
+  // Strip a leading UTF-8 BOM: Node's 'utf-8' decode keeps it, and JSON.parse
+  // then fails with a confusing "Unexpected token" on an otherwise-valid file
+  // (#1996 tri-review). Only one leading BOM is stripped; in-string control
+  // rejection still applies to the parsed values.
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
 
   let parsed: unknown;
   try {

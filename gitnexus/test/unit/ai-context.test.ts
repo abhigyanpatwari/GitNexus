@@ -2,7 +2,12 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateAIContextFiles, generateGitNexusContent } from '../../src/cli/ai-context.js';
+import {
+  generateAIContextFiles,
+  generateGitNexusContent,
+  refreshBaseRefLine,
+  markdownSafeBranch,
+} from '../../src/cli/ai-context.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -921,6 +926,93 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
       'we"ird',
     );
     expect(content).toContain('base_ref: "we\\"ird"');
+  });
+
+  it('a backtick branch cannot break the generated Markdown code span (#1996 P1)', () => {
+    // The branch is embedded inside a backtick inline-code span; a stray
+    // backtick would close it early. markdownSafeBranch strips it at the sink.
+    const content = generateGitNexusContent(
+      'P',
+      { nodes: 1 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'main`evil',
+    );
+    const line = content.split('\n').find((l) => l.includes('base_ref'))!;
+    // Even backtick count ⇒ every span is balanced (the regression line opens
+    // and closes exactly one).
+    expect((line.match(/`/g) || []).length % 2).toBe(0);
+    expect(line).not.toContain('main`evil');
+    expect(markdownSafeBranch('a`b`c')).toBe('abc');
+  });
+
+  it('refreshBaseRefLine updates base_ref in place, preserving the rest of the block (#1996 P2)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-baseref-'));
+    try {
+      // Seed a realistic block: a configured base_ref "main" plus a community
+      // skill row that a prior --skills run would have written.
+      const seed = `# Project
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+- run \`gitnexus_detect_changes({scope: "compare", base_ref: "main"})\`.
+
+| Task | Read this skill file |
+|------|---------------------|
+| Work in the Auth area (40 symbols) | \`.claude/skills/generated/auth/SKILL.md\` |
+<!-- gitnexus:end -->
+`;
+      for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+        await fs.writeFile(path.join(dir, f), seed, 'utf-8');
+      }
+
+      const res = await refreshBaseRefLine(dir, 'develop');
+      expect(res.files.sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+
+      for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+        const after = await fs.readFile(path.join(dir, f), 'utf-8');
+        expect(after).toContain('base_ref: "develop"');
+        expect(after).not.toContain('base_ref: "main"');
+        // The community-skill row (and everything else) is preserved.
+        expect(after).toContain('.claude/skills/generated/auth/SKILL.md');
+      }
+
+      // Idempotent: a second run with the same branch writes nothing.
+      const again = await refreshBaseRefLine(dir, 'develop');
+      expect(again.files).toEqual([]);
+
+      // skipAgentsMd short-circuits entirely.
+      const skipped = await refreshBaseRefLine(dir, 'master', { skipAgentsMd: true });
+      expect(skipped.files).toEqual([]);
+      expect(await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8')).toContain(
+        'base_ref: "develop"',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshBaseRefLine is a no-op when there is no base_ref line or no file (#1996 P2)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-baseref-noop-'));
+    try {
+      // No AGENTS.md/CLAUDE.md at all → no files updated, no throw.
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+      // A keep-style block with no base_ref line is left untouched.
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **P**. Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(seed);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('threads defaultBranch through generateAIContextFiles into AGENTS.md and CLAUDE.md (#243)', async () => {

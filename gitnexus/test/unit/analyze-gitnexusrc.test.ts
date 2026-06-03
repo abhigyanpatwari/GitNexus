@@ -16,12 +16,14 @@ import os from 'os';
 const {
   runFullAnalysisMock,
   generateAIContextFilesMock,
+  refreshBaseRefLineMock,
   generateSkillFilesMock,
   cliErrorMock,
   getDefaultBranchMock,
 } = vi.hoisted(() => ({
   runFullAnalysisMock: vi.fn(),
   generateAIContextFilesMock: vi.fn(async () => ({ files: [] as string[] })),
+  refreshBaseRefLineMock: vi.fn(async () => ({ files: [] as string[] })),
   generateSkillFilesMock: vi.fn(async () => ({
     skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
     outputPath: '/repo/.claude/skills/generated',
@@ -33,6 +35,7 @@ const {
 vi.mock('../../src/core/run-analyze.js', () => ({ runFullAnalysis: runFullAnalysisMock }));
 vi.mock('../../src/cli/ai-context.js', () => ({
   generateAIContextFiles: generateAIContextFilesMock,
+  refreshBaseRefLine: refreshBaseRefLineMock,
 }));
 vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: generateSkillFilesMock }));
 vi.mock('../../src/cli/cli-message.js', () => ({ cliError: cliErrorMock }));
@@ -76,6 +79,8 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     runFullAnalysisMock.mockResolvedValue(upToDate);
     generateAIContextFilesMock.mockReset();
     generateAIContextFilesMock.mockResolvedValue({ files: [] });
+    refreshBaseRefLineMock.mockReset();
+    refreshBaseRefLineMock.mockResolvedValue({ files: [] });
     generateSkillFilesMock.mockReset();
     generateSkillFilesMock.mockResolvedValue({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
@@ -190,5 +195,42 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     } finally {
       exitSpy.mockRestore();
     }
+  });
+
+  // ── #1996 tri-review hardening ─────────────────────────────────────
+
+  it('rejects an invalid --default-branch up front with a CLI-specific hint (#1996)', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { defaultBranch: 'bad branch' });
+
+    expect(process.exitCode).toBe(1);
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    expect(cliErrorMock).toHaveBeenCalledWith(
+      expect.stringMatching(/--default-branch/),
+      expect.objectContaining({ recoveryHint: 'default-branch-invalid' }),
+    );
+  });
+
+  it('does not auto-detect the branch when config skips context generation (#1996)', async () => {
+    await writeRc({ skipAgentsMd: true });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, {});
+
+    // willGenerateContext=false ⇒ no git call for the (unused) branch.
+    expect(getDefaultBranchMock).not.toHaveBeenCalled();
+    expect(runFullAnalysisMock.mock.calls[0][1].skipAgentsMd).toBe(true);
+  });
+
+  it('refreshes base_ref in place on the alreadyUpToDate fast path (#1996 P2)', async () => {
+    await writeRc({ defaultBranch: 'develop' });
+    // Default mock returns alreadyUpToDate:true.
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, {});
+
+    expect(refreshBaseRefLineMock).toHaveBeenCalledTimes(1);
+    expect(refreshBaseRefLineMock).toHaveBeenCalledWith(dir, 'develop', expect.any(Object));
   });
 });

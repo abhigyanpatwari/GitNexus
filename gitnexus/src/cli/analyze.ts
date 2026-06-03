@@ -31,6 +31,7 @@ import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
   resolveDefaultBranch,
+  validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
@@ -695,6 +696,21 @@ const analyzeCommandImpl = async (
     );
   }
 
+  // Validate an explicit `--default-branch` up front so its errors are
+  // attributed to the flag (with a CLI-specific recovery hint) rather than to
+  // `.gitnexusrc`, which the user may not even have (#1996 tri-review).
+  if (cliOptions?.defaultBranch !== undefined) {
+    try {
+      validateBranchName(cliOptions.defaultBranch, '--default-branch');
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`, {
+        recoveryHint: 'default-branch-invalid',
+      });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   // ── Load .gitnexusrc and merge: CLI flags override config (#243) ───
   // Parse/validate before the progress bar so a malformed config produces an
   // actionable error and exits before any expensive analysis starts.
@@ -728,7 +744,6 @@ const analyzeCommandImpl = async (
       }
     }
     resolvedDefaultBranch = resolveDefaultBranch({ cliBranch, configBranch, detectedBranch });
-    options.defaultBranch = resolvedDefaultBranch;
   } catch (err) {
     const msg =
       err instanceof GitNexusRcError
@@ -739,15 +754,15 @@ const analyzeCommandImpl = async (
     return;
   }
 
-  if (options?.verbose) {
+  if (options.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
 
-  if (options?.maxFileSize) {
+  if (options.maxFileSize) {
     process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
   }
 
-  if (options?.workerTimeout) {
+  if (options.workerTimeout) {
     const workerTimeoutSeconds = Number(options.workerTimeout);
     if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
       cliError('  --worker-timeout must be at least 1 second.\n');
@@ -759,7 +774,7 @@ const analyzeCommandImpl = async (
     );
   }
 
-  if (options?.walCheckpointThreshold !== undefined) {
+  if (options.walCheckpointThreshold !== undefined) {
     const parsed = parseWalCheckpointThreshold(options.walCheckpointThreshold);
     if (parsed === undefined) {
       cliError('  --wal-checkpoint-threshold must be an integer >= -1.\n');
@@ -776,7 +791,7 @@ const analyzeCommandImpl = async (
   // values back-to-back and observe the value they passed, not whatever the
   // previous call leaked.
   let workerPoolSize: number | undefined;
-  if (options?.workers !== undefined) {
+  if (options.workers !== undefined) {
     const parsedWorkers = Number(options.workers);
     if (!Number.isInteger(parsedWorkers) || parsedWorkers < 0) {
       cliError(
@@ -794,7 +809,7 @@ const analyzeCommandImpl = async (
   // sibling-validation pattern (exit before bar.start() — otherwise
   // process.exit() leaves the progress bar's hidden cursor uncleared).
   let embeddingsNodeLimit: number | undefined;
-  if (typeof options?.embeddings === 'string') {
+  if (typeof options.embeddings === 'string') {
     const parsed = Number(options.embeddings);
     if (!Number.isInteger(parsed) || parsed < 0) {
       cliError(
@@ -806,7 +821,7 @@ const analyzeCommandImpl = async (
     }
     embeddingsNodeLimit = parsed;
   }
-  const embeddingsEnabled = !!options?.embeddings;
+  const embeddingsEnabled = !!options.embeddings;
 
   const setPositiveEnv = (
     optionName: string,
@@ -828,23 +843,23 @@ const analyzeCommandImpl = async (
     !setPositiveEnv(
       '--embedding-threads',
       'GITNEXUS_EMBEDDING_THREADS',
-      options?.embeddingThreads,
+      options.embeddingThreads,
     ) ||
     !setPositiveEnv(
       '--embedding-batch-size',
       'GITNEXUS_EMBEDDING_BATCH_SIZE',
-      options?.embeddingBatchSize,
+      options.embeddingBatchSize,
     ) ||
     !setPositiveEnv(
       '--embedding-sub-batch-size',
       'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
-      options?.embeddingSubBatchSize,
+      options.embeddingSubBatchSize,
     )
   ) {
     return;
   }
 
-  if (options?.embeddingDevice) {
+  if (options.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
       cliError('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
@@ -854,7 +869,7 @@ const analyzeCommandImpl = async (
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
   }
 
-  if (options?.repairFts && options?.force) {
+  if (options.repairFts && options.force) {
     cliError(
       '  Cannot combine `--repair-fts` with `--force`. ' +
         'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
@@ -867,9 +882,9 @@ const analyzeCommandImpl = async (
   // injection, including community skill writes that `--skills` would normally
   // produce. Surface the override explicitly so users don't wonder why a
   // pipeline re-index ran but no skill files appeared. The pipeline still
-  // re-runs (see `force: options?.force || options?.skills` below); the warning
+  // re-runs (see `force: options.force || options.skills` below); the warning
   // is purely about the dropped post-index write step.
-  if (options?.indexOnly && options?.skills) {
+  if (options.indexOnly && options.skills) {
     console.log(
       '  Note: --index-only overrides --skills; community skill files will not be written.\n',
     );
@@ -1004,22 +1019,22 @@ const analyzeCommandImpl = async (
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
-    const skipAll = options?.indexOnly;
-    const skipAgentsMd = skipAll || options?.skipAgentsMd;
-    const skipSkills = skipAll || options?.skipSkills;
+    const skipAll = options.indexOnly;
+    const skipAgentsMd = skipAll || options.skipAgentsMd;
+    const skipSkills = skipAll || options.skipSkills;
     const result = await runFullAnalysis(
       repoPath,
       {
         // Pipeline re-index — OR'd with --skills because skill generation
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
-        force: options?.force || options?.skills,
-        repairFts: options?.repairFts,
+        force: options.force || options.skills,
+        repairFts: options.repairFts,
         embeddings: embeddingsEnabled,
         embeddingsNodeLimit,
-        dropEmbeddings: options?.dropEmbeddings,
-        verbose: options?.verbose,
-        skipGit: options?.skipGit,
+        dropEmbeddings: options.dropEmbeddings,
+        verbose: options.verbose,
+        skipGit: options.skipGit,
         skipAgentsMd,
         skipSkills,
         // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
@@ -1027,16 +1042,16 @@ const analyzeCommandImpl = async (
         defaultBranch: resolvedDefaultBranch,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
-        // passed --no-stats). Reading `options?.noStats` here returns
+        // passed --no-stats). Reading `options.noStats` here returns
         // undefined every time, so the flag was a no-op on the markdown
         // rewrite path before this fix. See #1477.
-        noStats: options?.stats === false,
-        registryName: options?.name,
+        noStats: options.stats === false,
+        registryName: options.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
         // be able to accept the duplicate name without also paying the
         // cost of a full pipeline re-index. See #829 review round 2.
-        allowDuplicateName: options?.allowDuplicateName,
+        allowDuplicateName: options.allowDuplicateName,
         // Worker pool size threaded from --workers, replacing the previous
         // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
         // env / auto-formula fallback inside the pipeline.
@@ -1056,6 +1071,21 @@ const analyzeCommandImpl = async (
       // that half-finalized state, runFullAnalysis returns alreadyUpToDate
       // on the next invocation unless we check the registry here too.
       await assertAnalysisFinalized(repoPath);
+      // The fast path skips context regeneration, but a changed `.gitnexusrc`
+      // defaultBranch / `--default-branch` must still take effect. Surgically
+      // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
+      // preserving the rest of the block (incl. --skills community rows). No-op
+      // when the value already matches, so a routine up-to-date run is silent
+      // (#1996 tri-review P2).
+      let baseRefRefreshed: string[] = [];
+      try {
+        const { refreshBaseRefLine } = await import('./ai-context.js');
+        baseRefRefreshed = (
+          await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+        ).files;
+      } catch {
+        /* best-effort — never fail the fast path over a context refresh */
+      }
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
       console.log = origLog;
@@ -1065,6 +1095,11 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (baseRefRefreshed.length > 0) {
+        console.log(
+          `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
+        );
+      }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
       return;
@@ -1144,7 +1179,7 @@ const analyzeCommandImpl = async (
               defaultBranch: resolvedDefaultBranch,
               // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
-              noStats: options?.stats === false,
+              noStats: options.stats === false,
             },
           );
         }

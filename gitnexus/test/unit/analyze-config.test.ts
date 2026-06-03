@@ -226,4 +226,51 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     // No config stats → CLI value preserved.
     expect(mergeAnalyzeOptions({ stats: true }, { skipSkills: true }).stats).toBe(true);
   });
+
+  it('mergeAnalyzeOptions: does NOT forward defaultBranch (resolver owns it) (#1996)', () => {
+    // Pins the deliberate exclusion: defaultBranch is resolved via
+    // resolveDefaultBranch (CLI > config > detect > main), not the generic merge.
+    const merged = mergeAnalyzeOptions({}, { defaultBranch: 'develop', skipSkills: true });
+    expect(merged.skipSkills).toBe(true);
+    expect(merged.defaultBranch).toBeUndefined();
+  });
+
+  // ── #1996 tri-review hardening ─────────────────────────────────────
+
+  it('validateBranchName rejects a backtick (breaks generated Markdown) (#1996)', () => {
+    expect(() => validateBranchName('main`evil', 'src')).toThrow(/backtick/);
+    expect(() => validateBranchName('a`b', 'src')).toThrow(GitNexusRcError);
+    // sanitizeDetectedBranch swallows it → falls back via the resolver chain.
+    expect(sanitizeDetectedBranch('main`evil')).toBeUndefined();
+  });
+
+  it('validateBranchName enforces the 255-char max (#1996)', () => {
+    expect(validateBranchName('a'.repeat(255), 'src')).toBe('a'.repeat(255));
+    expect(() => validateBranchName('a'.repeat(256), 'src')).toThrow(/too long/);
+  });
+
+  it('rejects Markdown-significant characters in a config name, allows real names (#1996)', async () => {
+    await writeRc(JSON.stringify({ name: '**evil**' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/Markdown-significant/);
+    await writeRc(JSON.stringify({ name: 'repo`x' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/Markdown-significant/);
+    // Underscores, dots, dashes, slashes are legitimate in repo names.
+    await writeRc(JSON.stringify({ name: 'my_org/my-repo.v2' }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ name: 'my_org/my-repo.v2' });
+  });
+
+  it('reports inherited keys (__proto__, constructor) as Unknown key, not a kind error (#1996)', async () => {
+    for (const key of ['__proto__', 'constructor', 'toString']) {
+      await writeRc(`{"${key}": true}`);
+      expect(() => loadAnalyzeConfig(dir), key).toThrow(/Unknown key/);
+    }
+    // And no prototype pollution leaked from the attempt.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('strips a leading UTF-8 BOM before parsing (#1996)', async () => {
+    const BOM = String.fromCharCode(0xfeff);
+    await writeRc(BOM + JSON.stringify({ defaultBranch: 'develop' }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ defaultBranch: 'develop' });
+  });
 });

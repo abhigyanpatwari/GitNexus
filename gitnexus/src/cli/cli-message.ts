@@ -53,7 +53,8 @@ export type RecoveryHint =
   | 'large-repo'
   | 'npm-resolution'
   | 'module-not-found'
-  | 'gitnexusrc-invalid';
+  | 'gitnexusrc-invalid'
+  | 'default-branch-invalid';
 
 /**
  * Common shape for the optional structured-field bag passed to
