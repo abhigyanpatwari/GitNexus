@@ -966,12 +966,23 @@ export const processCalls = async (
       const routed = callRouter(callNameNode.text, captureMap['call']);
       if (!routed || routed.kind !== 'properties') return;
 
+      // #1978: thread the qualifier so a routed property's owner edge points at
+      // the *qualified* nested-class node (Shapes.Circle) instead of a now-nonexistent
+      // simple `Class:file:Circle` id. Gated on the flag → byte-identical when off.
+      // MUST stay in lockstep with the worker `kind === 'properties'` block.
+      const propGetQualifiedOwnerName =
+        provider.classExtractor?.qualifiedNodeId === true
+          ? (node: SyntaxNode, simpleName: string): string | null =>
+              provider.classExtractor!.extractQualifiedName(node, simpleName)
+          : undefined;
       const propEnclosingInfo = findEnclosingClassInfo(
         captureMap['call'],
         file.path,
         provider.resolveEnclosingOwner,
+        propGetQualifiedOwnerName,
       );
-      const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
+      const propEnclosingClassId =
+        propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
 
       // Enrich routed properties with FieldExtractor metadata so types
       // discovered from constructor assignments (e.g. `@address = Address.new`)

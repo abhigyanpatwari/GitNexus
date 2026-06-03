@@ -993,6 +993,11 @@ function pass5CollectReferences(
     if (kind === undefined) continue;
 
     const nameCap = match['@reference.name'] ?? anchor;
+    // Optional qualified form of the reference (e.g. a C++ base `Other::Inner`),
+    // threaded to resolution so a same-tail nested base resolves to the correct
+    // sibling via the full-path QualifiedNameIndex before the simple-tail walk
+    // (#1982). Absent for unqualified references — resolution stays unchanged.
+    const qualifiedCap = match['@reference.qualified-name'];
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -1016,6 +1021,9 @@ function pass5CollectReferences(
       atRange: anchor.range,
       inScope: inScopeId,
       kind,
+      ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
+        ? { rawQualifiedName: qualifiedCap.text }
+        : {}),
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
@@ -1137,6 +1145,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.name',
   '@type-binding.type',
   '@reference.name',
+  '@reference.qualified-name',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

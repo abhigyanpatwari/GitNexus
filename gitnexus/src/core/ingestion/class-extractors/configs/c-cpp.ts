@@ -46,6 +46,9 @@ export const cppClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.CPlusPlus,
   typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'enum_specifier'],
   ancestorScopeNodeTypes: ['namespace_definition', 'class_specifier', 'struct_specifier'],
+  // #1978: key nested-type nodes by their fully-qualified path (Outer.Inner) so
+  // same-tail nested types in one TU stay distinct instead of silently merging.
+  qualifiedNodeId: true,
   extractName: (node) => {
     const nameNode = node.childForFieldName?.('name');
     if (!nameNode) return undefined;

@@ -2055,6 +2055,54 @@ describe('Rust scoped inherent impl — ownership + collision (issue #1975)', ()
 });
 
 // ---------------------------------------------------------------------------
+// Inline mod-nested same-tail collision — distinct nodes (issue #1978)
+//
+// `mod outer { struct Inner; impl Inner }` + `mod other { struct Inner; impl Inner }`
+// must own their methods through TWO distinct nodes. On the pre-fix base both
+// `Inner` structs merge into one simple-keyed node and from_outer/from_other
+// cross-wire onto it (dangling:0 but wrong). Asserts the two methods resolve to
+// DISTINCT owner node ids (R7), not just dangle-free.
+//
+// DEFERRED (skip): the generic qualifiedNodeId mechanism (#1978) qualifies
+// class-like *type declarations* via the class-extractor. Rust methods live in
+// `impl Inner` blocks, and the inherent-impl owner branch in ast-helpers keys
+// the Impl node by the impl target's RAW text ("Inner") and returns BEFORE the
+// generic qualified-owner path — so it can't reuse `extractQualifiedName` (an
+// `impl_item` isn't a typeDeclaration). Qualifying the impl target by its
+// enclosing `mod` scope, plus matching it on the registry-primary graph bridge,
+// is separate machinery tracked as a follow-up. C++/Ruby land first (KTD-6).
+// ---------------------------------------------------------------------------
+
+// #1982: Rust same-tail nested-mod inherent-impl methods now own through DISTINCT
+// Impl nodes — mod outer's `impl Inner` → `Impl:...:outer.Inner`, mod other's →
+// `other.Inner`. The inherent-impl owner walk (ast-helpers `findEnclosingClassInfo`)
+// and the Impl-node materialization (parsing-processor / parse-worker) both qualify
+// an UNSCOPED impl target by its enclosing `mod_item` scope, byte-identically, so
+// the HAS_METHOD owner edge stays anchored. Structure-phase, so it holds on both
+// resolver legs. (Scoped `impl a::Inner` is unchanged — #1975.)
+describe('Rust inline mod-nested same-tail collision — distinct nodes (issue #1978/#1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-nested-tail-collision'), () => {});
+  }, 60000);
+
+  it('owns from_outer / from_other through distinct mod-qualified Impl nodes (no merge)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'from_outer');
+    const b = hm.find((e) => e.target === 'from_other');
+    expect(a, 'HAS_METHOD -> from_outer').toBeDefined();
+    expect(b, 'HAS_METHOD -> from_other').toBeDefined();
+    // Pre-fix the two same-tail `Inner` impls merged onto one `Impl:...:Inner`
+    // node. KTD3: discriminate on the node id — each now carries its mod path.
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('outer.Inner');
+    expect(b!.rel.sourceId).toContain('other.Inner');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // F71 — union declarations resolve as Struct nodes (issue #1934)
 //
 // A `union` is deliberately captured as a Struct-labeled node (see the

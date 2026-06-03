@@ -16,7 +16,7 @@
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
-    "fingerprint": "e21e05c92870b82468b5d73f04d205b6aafad4143331cf718131f0517ba34e0a",
+    "fingerprint": "538e8beebf0a69f6170dff452da3f98046a08cbe8b098b3c9943c4a8a79d2e22",
     "scaling_budget": 1.5,
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
     "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
@@ -28,7 +28,7 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "a5fdff2cf427504e33e66d0221b3ad62739c64bd0898e1dafedc15dbbe347b4d",
+    "fingerprint": "56ffc1c069af10cac3c82a32f3d148322ea570e116ebaae67315445f05407fef",
     "scaling_budget": 1.5,
     "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) — legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical.",
     "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED — @declaration.macro/@reference.macro + MacroRegistry → USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126)."
@@ -39,7 +39,7 @@
     "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "ee81145cf0af796878e8e048192b87c8c8dc445a3e3fcdff6c6e26c179e97232",
+    "fingerprint": "bf6b13a366e4116da3772f9a9fdd50517eb11da73918451392e014a2c905b2dd",
     "scaling_budget": 1.5,
     "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)",
     "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) — pure fixture-corpus drift, scope-extractor captures unchanged; 81→82."

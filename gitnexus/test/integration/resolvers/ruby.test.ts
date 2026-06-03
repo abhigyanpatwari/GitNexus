@@ -1508,3 +1508,223 @@ describe('Ruby cross-namespace tail collision — distinct nodes (issue #1975)',
     expect(hasMethod.some((e) => e.target === 'from_baz' && e.sourceLabel === 'Class')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline module-nested same-tail collision — distinct nodes (issue #1978)
+//
+// `module Outer; class Inner; end; end` + `module Other; class Inner; end; end`
+// must own their methods through TWO distinct Class nodes (qn Outer.Inner vs
+// Other.Inner). On the pre-fix base both Inner classes merge into one
+// simple-keyed node and from_outer/from_other cross-wire (dangling:0 but wrong).
+// Asserts positive owner-identity by the resolved node's qualifiedName (R7).
+// (Distinct from the compact `Foo::Bar` collision block above, which #1977 fixed.)
+// ---------------------------------------------------------------------------
+
+describe('Ruby inline module-nested same-tail collision — distinct nodes (issue #1978)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-tail-collision'), () => {});
+  }, 60000);
+
+  pit('owns from_outer / from_other through distinct Outer.Inner / Other.Inner nodes (R7)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const ownerQn = (target: string) => {
+      const e = hm.find((x) => x.target === target);
+      expect(e, `HAS_METHOD -> ${target}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQn('from_outer')).toBe('Outer.Inner');
+    expect(ownerQn('from_other')).toBe('Other.Inner');
+  });
+
+  // attr_accessor routes through the property-registration pre-pass — a SEPARATE
+  // code path from `def` methods: call-processor.ts (sequential/legacy) and the
+  // parse-worker `kind === 'properties'` block (worker). Under qualifiedNodeId the
+  // owner must resolve to the QUALIFIED class node (Shapes.Circle); the pre-fix
+  // simple `Class:f.rb:Circle` no longer exists and would dangle. Exercised here
+  // on an UNAMBIGUOUS nested class (no same-tail sibling) so the assertion is
+  // exact on both legs.
+  //
+  // NOTE: exact owner identity for a routed property under SAME-TAIL nested types
+  // (e.g. two `Inner` classes) is a separate resolution-side concern — the
+  // registry-primary `emitRubyMixinEdges` bridge resolves the owner by simple
+  // tail name (last-wins) and the worker path can emit a duplicate cross-wired
+  // edge. That is deferred to the #1978 resolution-side follow-up; the
+  // structure-phase HAS_METHOD ownership above is already exact on both legs.
+  pit(
+    'owns radius (attr_accessor) under the qualified Shapes.Circle node, no dangling (R7)',
+    () => {
+      expect(findDanglingEdges(result, ['HAS_PROPERTY'])).toEqual([]);
+      const hp = getRelationships(result, 'HAS_PROPERTY');
+      const e = hp.find((x) => x.target === 'radius');
+      expect(e, 'HAS_PROPERTY -> radius').toBeDefined();
+      expect(result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName).toBe('Shapes.Circle');
+    },
+  );
+
+  // #1982 resolution-side: SAME-TAIL routed-property owner identity. The
+  // pre-fix emitRubyMixinEdges keys its owner map by simple tail (last-wins),
+  // so outer_attr / other_attr both attach to whichever `Inner` was processed
+  // last. Asserts each routes to its OWN qualified node by qualifiedName, with
+  // exactly one (non-duplicated) edge. Registry-primary only.
+  pit(
+    'owns outer_attr / other_attr under their OWN qualified Inner node (same-tail attr_accessor, R7)',
+    () => {
+      const hp = getRelationships(result, 'HAS_PROPERTY');
+      const ownerQnOf = (prop: string) => {
+        const e = hp.find((x) => x.target === prop);
+        expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
+      expect(ownerQnOf('other_attr')).toBe('Other.Inner');
+      expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
+      expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
+    },
+  );
+
+  // #1982 resolution-side: SAME-TAIL mixin owner identity (IMPLEMENTS).
+  pit(
+    'routes include OuterMix / OtherMix to their OWN qualified Inner owner (same-tail mixin, R7)',
+    () => {
+      const impl = getRelationships(result, 'IMPLEMENTS');
+      const ownerQnOfMixin = (mixinName: string) => {
+        const e = impl.find((x) => x.target === mixinName);
+        expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
+      expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
+    },
+  );
+});
+
+// Same fixture through the WORKER pool. The deferred note flagged that the worker
+// path could emit a DUPLICATE cross-wired same-tail owner edge (the worker emits
+// the __property__/__heritage__ markers, which must now carry the full qualified
+// owner). Asserts worker == sequential: each attr owns its OWN qualified node with
+// exactly one edge (#1982 R7). Registry-primary only.
+describe('Ruby inline module-nested same-tail collision — worker path parity (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-tail-collision'),
+      () => {},
+      {
+        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+        workerPoolSize: 2,
+      },
+    );
+  }, 120000);
+
+  pit('genuinely used the worker pool for the same-tail Ruby fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  pit(
+    'owns outer_attr / other_attr under their OWN qualified Inner node on the worker path (no duplicate, R7)',
+    () => {
+      const hp = getRelationships(result, 'HAS_PROPERTY');
+      const ownerQnOf = (prop: string) => {
+        const e = hp.find((x) => x.target === prop);
+        expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
+      expect(ownerQnOf('other_attr')).toBe('Other.Inner');
+      expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
+      expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
+    },
+  );
+
+  // Worker-path parity for the MIXIN (IMPLEMENTS) path — the __heritage__ marker
+  // owner must survive worker serialization (not only attr_accessor / HAS_PROPERTY).
+  pit(
+    'routes include OuterMix / OtherMix to their OWN qualified Inner owner on the worker path (IMPLEMENTS, R7)',
+    () => {
+      const impl = getRelationships(result, 'IMPLEMENTS');
+      const ownerQnOfMixin = (mixinName: string) => {
+        const e = impl.find((x) => x.target === mixinName);
+        expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
+      expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
+      expect(impl.filter((x) => x.target === 'OuterMix')).toHaveLength(1);
+      expect(impl.filter((x) => x.target === 'OtherMix')).toHaveLength(1);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Nested mixin included by SHORT name — IMPLEMENTS edge must not drop (#1982).
+//
+// `module App; module Loggable; end; class Service; include Loggable; end; end`
+// — `Loggable` is nested (qn App.Loggable) but included by its bare short name.
+// The structure phase materializes a distinct App.Loggable node, but
+// emitRubyMixinEdges keys graphIdByName by FULL qualifiedName while the
+// __heritage__ marker carries the bare arg.text ('Loggable'), so the
+// mixin-target lookup missed and the IMPLEMENTS edge was silently dropped
+// (0 dangling, undetectable). The shipped same-tail fixture only uses TOP-LEVEL
+// mixin modules (full qn == bare name), so it cannot catch this. Asserts the
+// edge exists and resolves by NODE ID (KTD3 — not the normalized qualifiedName
+// property). Registry-primary only (emitRubyMixinEdges is the registry bridge).
+// ---------------------------------------------------------------------------
+
+describe('Ruby nested mixin by short name — IMPLEMENTS not dropped (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-shortname'),
+      () => {},
+    );
+  }, 60000);
+
+  pit('emits App.Service -IMPLEMENTS-> App.Loggable for a short-name nested mixin (R1)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const e = impl.find((x) => x.target === 'Loggable');
+    expect(e, 'IMPLEMENTS -> Loggable (nested mixin by short name)').toBeDefined();
+    // KTD3: discriminate on the resolved node id, not the normalized property.
+    // The owner resolves to the QUALIFIED `App.Service` class node — the pre-fix
+    // bug dropped the edge entirely, so its presence + qualified owner is the
+    // discriminator. (The mixin module is a Trait node keyed by its simple name
+    // `Loggable`; Trait-node qualification under same-tail modules is a separate
+    // structure-phase concern, deferred.)
+    expect(e!.rel.sourceId).toContain('App.Service');
+    expect(e!.rel.targetId).toContain('Loggable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Qualified mixin argument — `::` must not corrupt the __heritage__ marker (#1982).
+//
+// `class Consumer; include Outer::Mixin; end` — the `::` in `arg.text`
+// (`Outer::Mixin`) collided with the ':'-delimited __heritage__ marker field
+// separator (`__heritage__:include:Outer::Mixin:Consumer`), so emitRubyMixinEdges
+// mis-split it and dropped the edge. The marker now embeds the dotted form
+// (`Outer.Mixin`), which both parses correctly and matches the mixin def's
+// qualifiedName. Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('Ruby qualified mixin arg — IMPLEMENTS not corrupted by :: (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-qualified-mixin'), () => {});
+  }, 60000);
+
+  pit('emits Consumer -IMPLEMENTS-> Outer.Mixin for include Outer::Mixin (R2)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const e = impl.find((x) => x.target === 'Mixin');
+    expect(e, 'IMPLEMENTS -> Mixin (qualified mixin arg)').toBeDefined();
+    // KTD3: discriminate on the resolved node id (the pre-fix bug dropped the edge).
+    expect(e!.rel.sourceId).toContain('Consumer');
+    expect(e!.rel.targetId).toContain('Mixin');
+  });
+});
