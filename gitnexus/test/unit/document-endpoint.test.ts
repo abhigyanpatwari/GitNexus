@@ -1040,6 +1040,84 @@ describe('body schema extraction', () => {
     // External types (not in graph) return minimal BodySchema
     expect(asContextResult(result).result.specs.request.body).toEqual({ typeName: 'UserDTO', source: 'external', fields: undefined });
   });
+
+  it('preserves indexed DTO fields on request body (#16)', async () => {
+    // (#16) The reproduction: `document-endpoint` for `POST /api/orders`
+    // returned `{ schema: { type: 'object' }, example: { _type: 'OrderDto' } }`
+    // even though `OrderDto` was fully indexed with fields. The contract
+    // for the OpenAPI converter needs the `BodySchema` (so it can render
+    // `properties`), not the JSON example. The response path already
+    // used `embedNestedSchemas`; the request path now mirrors it.
+    vi.mocked(endpointQuery.queryEndpoints).mockResolvedValue({
+      endpoints: [{
+        method: 'POST',
+        path: '/api/orders',
+        controller: 'OrderController',
+        handler: 'createOrder',
+        filePath: 'src/controllers/OrderController.java',
+        line: 25,
+      }],
+    });
+
+    vi.mocked(traceExecutor.executeTrace).mockResolvedValue({
+      chain: [{
+        uid: 'Method:src/controllers/OrderController.java:createOrder',
+        name: 'createOrder',
+        kind: 'Method',
+        filePath: 'src/controllers/OrderController.java',
+        depth: 0,
+        content: 'public Order createOrder(@RequestBody OrderDto orderDto) { ... }',
+        metadata: emptyMetadata(),
+        callees: [],
+        parameterAnnotations: '[{"name":"orderDto","type":"OrderDto","annotations":["@RequestBody"]}]',
+        returnType: 'Order',
+      }],
+      root: 'testHandler',
+      summary: emptySummary(),
+    });
+
+    // Mock the Class lookup for `OrderDto` so it resolves as an indexed
+    // type with fields. The query in `resolveTypeSchema` is:
+    //   MATCH (c:Class) WHERE c.name = $typeName OR c.name ENDS WITH $typePattern
+    //   RETURN c.name AS name, c.fields AS fields LIMIT 1
+    //
+    // We chain on top of the top-level mock so the verification queries
+    // (Method-by-id, parameterAnnotations, routePath) still return the
+    // values the rest of the documentEndpoint machinery needs.
+    const origImpl = vi.mocked(executeParameterized).getMockImplementation();
+    (vi.mocked(executeParameterized) as any).mockImplementation(async (repoId: string, query: string, params: Record<string, any>) => {
+      // OrderDto resolution: return indexed fields
+      if (query.includes('MATCH (c:Class)') && params?.typeName === 'OrderDto') {
+        return [{
+          name: 'OrderDto',
+          fields: JSON.stringify([
+            { name: 'id', type: 'Long', annotations: [] },
+            { name: 'amount', type: 'BigDecimal', annotations: [] },
+            { name: 'productCode', type: 'String', annotations: [] },
+          ]),
+        }];
+      }
+      // Fall through to the original top-level implementation for the
+      // verification queries (Method-by-id etc.).
+      if (origImpl) return origImpl(repoId, query, params);
+      return [];
+    });
+
+    const result = await documentEndpoint(mockRepo, {
+      method: 'POST',
+      path: '/orders',
+      mode: 'ai_context',
+    });
+
+    // ai_context mode keeps the BodySchema. The request body must be
+    // the indexed OrderDto with its fields, not a placeholder example.
+    const body = asContextResult(result).result.specs.request.body as any;
+    expect(body).toBeDefined();
+    expect(body.typeName).toBe('OrderDto');
+    expect(body.source).toBe('indexed');
+    expect(body.fields).toBeDefined();
+    expect(body.fields.map((f: any) => f.name)).toEqual(['id', 'amount', 'productCode']);
+  });
 });
 
 describe('extractLocalVariableAssignments', () => {

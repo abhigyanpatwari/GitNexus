@@ -1380,9 +1380,23 @@ async function buildDocumentation(params: BuildDocumentationParams): Promise<Doc
     result.specs.request.body = embedNestedSchemas(requestBody, nestedSchemas);
     result.specs.response.body = embedNestedSchemas(responseBody, nestedSchemas);
   } else {
-    const requestExample = bodySchemaToJsonExample(requestBody, nestedSchemas);
-    // Keep BodySchema for primitive-sourced request bodies so the converter generates proper schemas
-    result.specs.request.body = requestExample ?? requestBody;
+    // (#16) The request body used to be JSON-serialized via
+    // bodySchemaToJsonExample, which collapses the schema to a plain
+    // example object. The OpenAPI converter then sees no `fields` and
+    // emits `type: object` with the example — even when the DTO was
+    // fully resolved with field metadata. The contrast in the issue
+    // (`POST /api/users` correctly resolves the response to `User`
+    // with fields, but `POST /api/orders` shows the request body as
+    // `{_type: 'OrderDto'}`) was because the response path used
+    // `embedNestedSchemas` (which preserves the BodySchema) while the
+    // request path used the JSON example.
+    //
+    // The right contract for the converter is the BodySchema itself:
+    // it has the field list needed to render `properties`, plus the
+    // source/annotations needed to decide whether to extract to
+    // `components.schemas`. The example is a derived value. We now
+    // mirror the response path.
+    result.specs.request.body = embedNestedSchemas(requestBody, nestedSchemas) ?? requestBody;
     // Keep BodySchema for response so the converter can generate properties from fields.
     // Previously bodySchemaToJsonExample was used here, but it produces a plain JSON object
     // that the converter can only represent as `type: object` with an example — no properties.
