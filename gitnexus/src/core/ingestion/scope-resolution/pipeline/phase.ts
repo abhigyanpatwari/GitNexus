@@ -200,18 +200,30 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // primary-language files via the `collectScopeContextPaths` hook.
       // The hook receives raw source contents of the primary files so it
       // can trace import closures without a second tree-sitter parse.
-      const scopeFilePaths =
-        provider.collectScopeContextPaths !== undefined
-          ? provider.collectScopeContextPaths({
-              primaryFilePaths,
-              preExtractedByPath,
-              entryFileContents: await readFileContents(ctx.repoPath, primaryFilePaths),
-              allScannedPaths,
-              resolutionConfig,
-            })
-          : new Set(primaryFilePaths);
+      //
+      // To avoid reading primary files twice (once for the hook, once for
+      // the resolution pass), we read them upfront and merge with the
+      // extra context paths the hook may add.
+      let scopeFilePaths: Set<string>;
+      let contents: Map<string, string>;
+      if (provider.collectScopeContextPaths !== undefined) {
+        const entryFileContents = await readFileContents(ctx.repoPath, primaryFilePaths);
+        scopeFilePaths = provider.collectScopeContextPaths({
+          primaryFilePaths,
+          preExtractedByPath,
+          entryFileContents,
+          allScannedPaths,
+          resolutionConfig,
+        });
+        // Read only the extra context files (TS/JS etc.) not already loaded.
+        const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
+        const extraContents = await readFileContents(ctx.repoPath, extraPaths);
+        contents = new Map([...entryFileContents, ...extraContents]);
+      } else {
+        scopeFilePaths = new Set(primaryFilePaths);
+        contents = await readFileContents(ctx.repoPath, primaryFilePaths);
+      }
       const filePaths = [...scopeFilePaths];
-      const contents = await readFileContents(ctx.repoPath, filePaths);
       const files: { path: string; content: string }[] = [];
       for (const fp of filePaths) {
         const content = contents.get(fp);

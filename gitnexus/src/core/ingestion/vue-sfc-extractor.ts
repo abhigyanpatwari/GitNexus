@@ -515,3 +515,107 @@ export function extractTemplateAttributeBindings(vueContent: string): string[] {
 
   return [...vars];
 }
+
+export interface VueTemplateEdgeData {
+  /** PascalCase component names referenced in the template. */
+  readonly templateComponents: readonly string[];
+  /** Handler names on native elements (@click="fn"). */
+  readonly nativeEventHandlers: readonly string[];
+  /** Component event bindings (@event="handler" on component elements). */
+  readonly componentEventBindings: readonly ComponentEventBinding[];
+  /** Event names from emit() / this.$emit() calls in the script block. */
+  readonly scriptEmitCalls: readonly ScriptEmitCall[];
+  /** Bound attribute variable names (:prop="varName"). */
+  readonly templateAttributeBindings: readonly string[];
+}
+
+/**
+ * Extract all template-derived edge data from a Vue SFC in a single pass.
+ *
+ * Parses the `<template>` block once and the `<script>` block once, then
+ * runs all five extractors on the pre-parsed content rather than repeating
+ * the regex on every individual call.  Used by `emitPostResolutionEdges`
+ * to avoid multiple full-file scans per `.vue` file.
+ */
+export function extractVueTemplateEdgeData(
+  vueContent: string,
+  options: ExtractScriptEmitCallsOptions = {},
+): VueTemplateEdgeData {
+  // Extract template content once.
+  const templateMatch = TEMPLATE_RE.exec(vueContent);
+  const tmpl = templateMatch ? templateMatch[2] : '';
+
+  // Template components (PascalCase + kebab-case).
+  const componentSet = new Set<string>();
+  if (tmpl) {
+    TEMPLATE_COMPONENT_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = TEMPLATE_COMPONENT_RE.exec(tmpl)) !== null) componentSet.add(m[1]);
+    TEMPLATE_KEBAB_COMPONENT_RE.lastIndex = 0;
+    while ((m = TEMPLATE_KEBAB_COMPONENT_RE.exec(tmpl)) !== null) {
+      if (!isBuiltinKebabTag(m[1])) componentSet.add(kebabToPascal(m[1]));
+    }
+  }
+
+  // Native element event handlers.
+  const nativeHandlers: string[] = [];
+  if (tmpl) {
+    NATIVE_TAG_RE.lastIndex = 0;
+    let tagM: RegExpExecArray | null;
+    while ((tagM = NATIVE_TAG_RE.exec(tmpl)) !== null) {
+      TAG_EVENT_RE.lastIndex = 0;
+      let evM: RegExpExecArray | null;
+      while ((evM = TAG_EVENT_RE.exec(tagM[2])) !== null) nativeHandlers.push(evM[2]);
+    }
+  }
+
+  // Component event bindings.
+  const componentBindings: ComponentEventBinding[] = [];
+  const bindingSeen = new Set<string>();
+  const processComponentAttrs = (componentName: string, attrs: string): void => {
+    TAG_EVENT_RE.lastIndex = 0;
+    let evM: RegExpExecArray | null;
+    while ((evM = TAG_EVENT_RE.exec(attrs)) !== null) {
+      const key = `${componentName}::${evM[1]}::${evM[2]}`;
+      if (!bindingSeen.has(key)) {
+        bindingSeen.add(key);
+        componentBindings.push({ componentName, eventName: evM[1], handlerName: evM[2] });
+      }
+    }
+  };
+  if (tmpl) {
+    COMPONENT_TAG_RE.lastIndex = 0;
+    let tagM: RegExpExecArray | null;
+    while ((tagM = COMPONENT_TAG_RE.exec(tmpl)) !== null) processComponentAttrs(tagM[1], tagM[2]);
+    KEBAB_COMPONENT_TAG_RE.lastIndex = 0;
+    while ((tagM = KEBAB_COMPONENT_TAG_RE.exec(tmpl)) !== null) {
+      if (!isBuiltinKebabTag(tagM[1])) processComponentAttrs(kebabToPascal(tagM[1]), tagM[2]);
+    }
+  }
+
+  // Script emit() calls.
+  const sourceKind = options.sourceKind ?? 'full-sfc';
+  const scriptText =
+    sourceKind === 'pre-extracted-script'
+      ? vueContent
+      : (extractVueScript(vueContent)?.scriptContent ?? null);
+  const scriptEmitCalls: ScriptEmitCall[] = scriptText
+    ? collectBareEmitEventNames(scriptText).map((eventName) => ({ eventName }))
+    : [];
+
+  // Bound attribute bindings.
+  const attrVars = new Set<string>();
+  if (tmpl) {
+    BOUND_ATTR_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = BOUND_ATTR_RE.exec(tmpl)) !== null) attrVars.add(m[1]);
+  }
+
+  return {
+    templateComponents: [...componentSet],
+    nativeEventHandlers: nativeHandlers,
+    componentEventBindings: componentBindings,
+    scriptEmitCalls,
+    templateAttributeBindings: [...attrVars],
+  };
+}

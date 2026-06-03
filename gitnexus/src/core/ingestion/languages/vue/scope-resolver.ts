@@ -62,13 +62,7 @@ import { vueProvider } from '../vue.js';
 import { loadTsconfigPaths } from '../../language-config.js';
 import { typescriptArityCompatibility, typescriptMergeBindings } from '../typescript/index.js';
 import { makeVueResolveImportTarget } from './import-target.js';
-import {
-  extractTemplateComponents,
-  extractComponentEventBindings,
-  extractNativeElementEventHandlers,
-  extractScriptEmitCalls,
-  extractTemplateAttributeBindings,
-} from '../../vue-sfc-extractor.js';
+import { extractVueTemplateEdgeData } from '../../vue-sfc-extractor.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 
 // Languages whose files may be pulled into the Vue scope-resolution pass
@@ -238,8 +232,18 @@ const vueScopeResolver: ScopeResolver = {
         }
       }
 
+      // Extract all template/script edge data in a single pass — avoids
+      // re-running TEMPLATE_RE for each individual extractor call.
+      const {
+        templateComponents,
+        nativeEventHandlers,
+        componentEventBindings,
+        scriptEmitCalls,
+        templateAttributeBindings,
+      } = extractVueTemplateEdgeData(content, { sourceKind: 'full-sfc' });
+
       // 1 — Component-reference CALLS
-      for (const componentName of extractTemplateComponents(content)) {
+      for (const componentName of templateComponents) {
         const targetFile = importTargetByName.get(componentName);
         if (!targetFile) continue;
         const targetFileId = generateId('File', targetFile);
@@ -255,7 +259,7 @@ const vueScopeResolver: ScopeResolver = {
       }
 
       // 3 — Native-element event-handler CALLS (@click="method" on <button> etc.)
-      for (const handlerName of extractNativeElementEventHandlers(content)) {
+      for (const handlerName of nativeEventHandlers) {
         const handlerNodeId = nodeLookup.get(simpleKey(parsedFile.filePath, handlerName));
         if (!handlerNodeId) continue;
         graph.addRelationship({
@@ -269,9 +273,7 @@ const vueScopeResolver: ScopeResolver = {
       }
 
       // 4 — BINDS_EVENT_HANDLER: component event bindings (@event="handler" on component elements)
-      for (const { componentName, eventName, handlerName } of extractComponentEventBindings(
-        content,
-      )) {
+      for (const { componentName, eventName, handlerName } of componentEventBindings) {
         const targetFile = importTargetByName.get(componentName);
         if (!targetFile) continue;
         const targetFileId = generateId('File', targetFile);
@@ -291,7 +293,7 @@ const vueScopeResolver: ScopeResolver = {
       }
 
       // 5 — EMITS_EVENT: emit() / this.$emit() calls (self-referential annotation)
-      for (const { eventName } of extractScriptEmitCalls(content, { sourceKind: 'full-sfc' })) {
+      for (const { eventName } of scriptEmitCalls) {
         graph.addRelationship({
           id: generateId('EMITS_EVENT', `${fileId}:emit:${eventName}`),
           sourceId: fileId,
@@ -303,7 +305,7 @@ const vueScopeResolver: ScopeResolver = {
       }
 
       // 6 — ACCESSES: bound-attribute references (:prop="varName")
-      for (const varName of extractTemplateAttributeBindings(content)) {
+      for (const varName of templateAttributeBindings) {
         const varNodeId = nodeLookup.get(simpleKey(parsedFile.filePath, varName));
         if (!varNodeId) continue;
         graph.addRelationship({
