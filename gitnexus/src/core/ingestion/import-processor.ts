@@ -69,13 +69,9 @@ export interface NamedImportBinding { sourcePath: string; exportedName: string }
  * Used to flag imports that reference symbols from external repositories.
  * 
  * @property target - The resolved import target (file path or module identifier)
- * @property isExternal - True if the import is from an external dependency
- * @property externalRepo - Repository ID (e.g., "bond-exception-handler") if known
  */
 export interface ImportEntry {
   target: string;
-  isExternal?: boolean;
-  externalRepo?: string;
 }
 export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
 

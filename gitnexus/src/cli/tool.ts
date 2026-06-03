@@ -136,8 +136,6 @@ function output(data: any): void {
 
 export async function queryCommand(queryText: string, options?: {
   repo?: string;
-  context?: string;
-  goal?: string;
   limit?: string;
   content?: boolean;
 }): Promise<void> {
@@ -149,8 +147,6 @@ export async function queryCommand(queryText: string, options?: {
   const backend = await getBackend();
   const result = await backend.callTool('query', {
     query: queryText,
-    task_context: options?.context,
-    goal: options?.goal,
     limit: options?.limit ? parseInt(options.limit) : undefined,
     include_content: options?.content ?? false,
     repo: options?.repo,

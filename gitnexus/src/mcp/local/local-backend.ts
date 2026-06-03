@@ -795,8 +795,6 @@ export class LocalBackend {
    */
   private async query(repo: RepoHandle, params: {
     query: string;
-    task_context?: string;
-    goal?: string;
     limit?: number;
     max_symbols?: number;
     include_content?: boolean;

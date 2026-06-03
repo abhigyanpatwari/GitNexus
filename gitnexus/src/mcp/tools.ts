@@ -60,8 +60,6 @@ Results from multi-repo queries include '_repoId' attribution for each item.`,
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Natural language or keyword search query' },
-        task_context: { type: 'string', description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.' },
-        goal: { type: 'string', description: 'What you want to find (e.g., "existing auth validation logic"). Helps ranking.' },
         limit: { type: 'number', description: 'Max processes to return (default: 5)', default: 5 },
         max_symbols: { type: 'number', description: 'Max symbols per process (default: 10)', default: 10 },
         include_content: { type: 'boolean', description: 'Include full symbol source code (default: false)', default: false },
