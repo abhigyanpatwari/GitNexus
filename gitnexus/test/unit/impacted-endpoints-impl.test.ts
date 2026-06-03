@@ -245,7 +245,9 @@ describe('_impactedEndpointsImpl', () => {
 
     expect(result.summary).toBeDefined();
     expect(result.summary.changed_files).toEqual({ 'repo-ie': 2 });
-    expect(result.summary.changed_symbols).toBe(2);
+    // (#28, #49) summary.changed_symbols is now per-repo Record like
+    // changed_files, not a bare number.
+    expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 2 });
     expect(result.summary.impacted_endpoints).toEqual({ 'repo-ie': expect.any(Number) });
     expect((result.summary.impacted_endpoints as Record<string, number>)['repo-ie']).toBeGreaterThanOrEqual(1);
     expect(result.impacted_endpoints).toBeDefined();
@@ -265,7 +267,7 @@ describe('_impactedEndpointsImpl', () => {
     );
 
     expect(result.summary.changed_files).toEqual({ 'repo-ie': 0 });
-    expect(result.summary.changed_symbols).toBe(0);
+    expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 0 });
     expect(result.summary.impacted_endpoints).toEqual({ 'repo-ie': 0 });
     expect(result.summary.risk_level).toBe('none');
     expect(result.impacted_endpoints.WILL_BREAK).toEqual([]);
@@ -285,7 +287,7 @@ describe('_impactedEndpointsImpl', () => {
     );
 
     expect(result.summary.changed_files).toEqual({ 'repo-ie': 1 });
-    expect(result.summary.changed_symbols).toBe(0);
+    expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 0 });
     expect(result.summary.risk_level).toBe('none');
   });
 
@@ -1283,7 +1285,7 @@ describe('_impactedEndpointsImpl', () => {
       expect(result).toBeDefined();
       expect(result.summary.changed_files).toEqual({ 'repo-ie': 1 });
       // changed_symbols includes only the initial changed file symbol
-      expect(result.summary.changed_symbols).toBeGreaterThanOrEqual(1);
+      expect((result.summary.changed_symbols as Record<string, number>)['repo-ie']).toBeGreaterThanOrEqual(1);
     });
 
     // U-IMPL01: IMPLEMENTS resolution discovers interface callers in BFS
@@ -1442,7 +1444,7 @@ describe('_impactedEndpointsImpl', () => {
       expect(result).toBeDefined();
       expect(result.summary.changed_files).toEqual({ 'repo-ie': 1 });
       // Direct caller is still found via normal BFS
-      expect(result.summary.changed_symbols).toBeGreaterThanOrEqual(1);
+      expect((result.summary.changed_symbols as Record<string, number>)['repo-ie']).toBeGreaterThanOrEqual(1);
     });
 
     // U-IMPL03: Depth cap prevents IMPLEMENTS resolution beyond depth 2
@@ -2750,7 +2752,7 @@ describe('_impactedEndpointsImpl', () => {
       // No changed symbols → no BFS → no cross-repo query
       expect(mockCrossRepo.listDepRepos).not.toHaveBeenCalled();
       expect(mockCrossRepo.queryMultipleRepos).not.toHaveBeenCalled();
-      expect(result.summary.changed_symbols).toBe(0);
+      expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 0 });
     });
 
     it('works without crossRepo (backward compatible)', async () => {
@@ -3523,7 +3525,7 @@ describe('_impactedEndpointsImpl', () => {
       expect(result).not.toHaveProperty('error');
       expect(result.summary.risk_level).toBe('none');
       expect(result.summary.changed_files).toEqual({ 'repo-ie': 0 });
-      expect(result.summary.changed_symbols).toBe(0);
+      expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 0 });
     });
 
     // U-E03: scope=compare without base_ref
@@ -3641,7 +3643,7 @@ describe('_impactedEndpointsImpl', () => {
       );
 
       expect(result.summary.changed_files).toEqual({ 'repo-ie': 3 });
-      expect(result.summary.changed_symbols).toBe(0);
+      expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 0 });
       expect(result.summary.risk_level).toBe('none');
     });
 
@@ -3664,7 +3666,7 @@ describe('_impactedEndpointsImpl', () => {
 
       expect(result).not.toHaveProperty('error');
       expect(result.summary.changed_files).toEqual({ 'repo-ie': 1 });
-      expect(result.summary.changed_symbols).toBe(1);
+      expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 1 });
       expect(result.changed_symbols[0].filePath).toBe(longPath);
     });
   });
@@ -3810,9 +3812,39 @@ describe('_impactedEndpointsImpl', () => {
       // Pipeline should still produce results even if health check errors
       expect(result.summary).toBeDefined();
       expect(result.summary.changed_files).toEqual({ 'repo-ie': 1 });
-      expect(result.summary.changed_symbols).toBe(1);
+      expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 1 });
       // Health check error was caught silently — diagnostics may or may not be present
       // depending on which checks failed before the catch, but result is never blocked
+    });
+
+    // (#28, #49) The single-repo summary now uses per-repo Record for ALL
+    // count fields. This test pins the contract so a future "optimization"
+    // doesn't regress it back to a bare number.
+    it('summary uses per-repo Record for changed_files, changed_symbols, AND impacted_endpoints', async () => {
+      setupGitDiff(['Single.java']);
+      setupFileSymbols({
+        'Single.java': [
+          { id: 'sym-single', name: 'doWork', type: 'Method', filePath: 'Single.java' },
+        ],
+      });
+
+      // Empty BFS — all counts end up at 0/1
+      executeQueryMock.mockImplementation(async () => []);
+
+      const result = await (backend as any)._impactedEndpointsImpl(
+        (backend as any).repos.get('repo-ie'),
+        { scope: 'unstaged' },
+      );
+
+      // Every count field must be a Record (not a bare number)
+      expect(typeof result.summary.changed_files).toBe('object');
+      expect(result.summary.changed_files).toEqual({ 'repo-ie': 1 });
+      expect(typeof result.summary.changed_symbols).toBe('object');
+      expect(result.summary.changed_symbols).toEqual({ 'repo-ie': 1 });
+      expect(typeof result.summary.impacted_endpoints).toBe('object');
+      expect(result.summary.impacted_endpoints).toEqual({ 'repo-ie': 0 });
+      // risk_level stays a scalar
+      expect(typeof result.summary.risk_level).toBe('string');
     });
   });
 

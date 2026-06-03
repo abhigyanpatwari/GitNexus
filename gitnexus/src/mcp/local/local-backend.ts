@@ -119,9 +119,9 @@ export interface RepoHandle {
 /** Summary shape for impacted_endpoints — always uses Record<string, number> for per-repo counts. */
 interface ImpactedEndpointsSummary {
   changed_files: Record<string, number>;
+  changed_symbols: Record<string, number>;
   impacted_endpoints: Record<string, number>;
   risk_level: string;
-  changed_symbols?: number;
 }
 
 /** Asserts that a value is a non-null object (Record<string, number>), not a bare number. */
@@ -670,7 +670,17 @@ export class LocalBackend {
         );
 
         const aggregated: any = {
-          summary: { changed_files: {} as Record<string, number>, impacted_endpoints: {} as Record<string, number> },
+          // (#28, #49) Every count field is a per-repo Record so the
+          // single-repo and multi-repo shapes are identical. `changed_symbols`
+          // was previously omitted from the multi-repo summary entirely
+          // (issue #49) and `changed_files` could be a number in the
+          // single-repo path (issue #28). Now both are uniformly
+          // Record<string, number>.
+          summary: {
+            changed_files: {} as Record<string, number>,
+            changed_symbols: {} as Record<string, number>,
+            impacted_endpoints: {} as Record<string, number>,
+          },
           impacted_endpoints: { WILL_BREAK: [] as any[], LIKELY_AFFECTED: [] as any[], MAY_NEED_TESTING: [] as any[] },
           changed_symbols: [] as any[],
           affected_processes: [] as any[],
@@ -688,6 +698,16 @@ export class LocalBackend {
               Object.assign(aggregated.summary.changed_files, cf);
             } else if (typeof cf === 'number') {
               aggregated.summary.changed_files[repoId] = cf;
+            }
+            // (#49) Aggregate changed_symbols into the per-repo summary
+            // Record. Tolerate both the new Record shape and the legacy
+            // bare number for backward compatibility with single-repo
+            // callers that may still return the old shape.
+            const cs = result.summary?.changed_symbols;
+            if (typeof cs === 'object' && cs !== null && !Array.isArray(cs)) {
+              Object.assign(aggregated.summary.changed_symbols, cs);
+            } else if (typeof cs === 'number') {
+              aggregated.summary.changed_symbols[repoId] = cs;
             }
             // Merge impacted_endpoints: Record format or coerce bare number (backward compat)
             const ie = result.summary?.impacted_endpoints;
@@ -1901,7 +1921,10 @@ export class LocalBackend {
       fileLineRanges = new Map(); // empty = whole-file resolution
     } else if (lineDiffResult.length === 0) {
       return {
-        summary: { changed_files: { [repo.id]: 0 }, changed_symbols: 0, impacted_endpoints: { [repo.id]: 0 }, risk_level: 'none' },
+        // (#28, #49) summary fields use per-repo Record<string, number>
+        // consistently — both in the single-repo and multi-repo aggregator
+        // paths, so consumers can rely on a uniform shape.
+        summary: { changed_files: { [repo.id]: 0 }, changed_symbols: { [repo.id]: 0 }, impacted_endpoints: { [repo.id]: 0 }, risk_level: 'none' },
         impacted_endpoints: { WILL_BREAK: [], LIKELY_AFFECTED: [], MAY_NEED_TESTING: [] },
         changed_symbols: [], affected_processes: [], affected_modules: [],
         _meta: { version: '1.0', generated_at: new Date().toISOString() },
@@ -1915,7 +1938,8 @@ export class LocalBackend {
 
     if (changedFiles.length === 0) {
       return {
-        summary: { changed_files: { [repo.id]: 0 }, changed_symbols: 0, impacted_endpoints: { [repo.id]: 0 }, risk_level: 'none' },
+        // (#28, #49) see comment on the lineDiffResult.length === 0 branch
+        summary: { changed_files: { [repo.id]: 0 }, changed_symbols: { [repo.id]: 0 }, impacted_endpoints: { [repo.id]: 0 }, risk_level: 'none' },
         impacted_endpoints: { WILL_BREAK: [], LIKELY_AFFECTED: [], MAY_NEED_TESTING: [] },
         changed_symbols: [], affected_processes: [], affected_modules: [],
         _meta: { version: '1.0', generated_at: new Date().toISOString() },
@@ -1973,9 +1997,10 @@ export class LocalBackend {
 
     if (changedSymbols.length === 0) {
       return {
+        // (#28, #49) see comment on the lineDiffResult.length === 0 branch
         summary: {
           changed_files: { [repo.id]: changedFiles.length },
-          changed_symbols: 0,
+          changed_symbols: { [repo.id]: 0 },
           impacted_endpoints: { [repo.id]: 0 },
           risk_level: 'none',
         },
@@ -2730,9 +2755,13 @@ export class LocalBackend {
 
     // ── 8. Return shape ─────────────────────────────────────────────
     return {
+      // (#28, #49) per-repo Record<string, number> for ALL count fields,
+      // matching the multi-repo aggregator shape. Consumers no longer need
+      // to type-check whether `changed_files` is a number or an object —
+      // it is always an object keyed by repoId.
       summary: {
         changed_files: { [repo.id]: changedFiles.length },
-        changed_symbols: changedSymbols.length,
+        changed_symbols: { [repo.id]: changedSymbols.length },
         impacted_endpoints: { [repo.id]: endpointCount },
         risk_level: risk,
       },
