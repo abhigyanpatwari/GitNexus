@@ -1,6 +1,12 @@
 import type { CaptureMatch } from 'gitnexus-shared';
 import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
+const COMPOSITE_LITERAL_TYPE_NODE_TYPES = new Set([
+  'type_identifier',
+  'qualified_type',
+  'generic_type',
+]);
+
 export function synthesizeGoTypeBindings(rootNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
 
@@ -244,10 +250,14 @@ function synthesizeElementAccessBindings(rootNode: SyntaxNode, out: CaptureMatch
   }
 }
 
-function extractSimpleTypeNameText(node: SyntaxNode): string {
+export function extractSimpleTypeNameText(node: SyntaxNode): string {
   if (node.type === 'qualified_type') {
     const parts = node.text.split('.');
     return parts[parts.length - 1] ?? node.text;
+  }
+  if (node.type === 'generic_type') {
+    const base = node.childForFieldName('type');
+    return base === null ? node.text : extractSimpleTypeNameText(base);
   }
   return node.text;
 }
@@ -257,7 +267,7 @@ function extractCompositeLiteralTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) => ['type_identifier', 'qualified_type'].includes(c.type)) ??
+      expr.namedChildren.find((c) => COMPOSITE_LITERAL_TYPE_NODE_TYPES.has(c.type)) ??
       null
     );
   }
@@ -272,7 +282,7 @@ function extractTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) => ['type_identifier', 'qualified_type'].includes(c.type)) ??
+      expr.namedChildren.find((c) => COMPOSITE_LITERAL_TYPE_NODE_TYPES.has(c.type)) ??
       null
     );
   }

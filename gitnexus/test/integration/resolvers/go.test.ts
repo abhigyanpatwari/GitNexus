@@ -547,6 +547,7 @@ describe('Go constructor-inferred type resolution', () => {
   it('detects User and Repo structs, both with Save methods', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Box');
     const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'Save');
     expect(saveMethods.length).toBe(2);
   });
@@ -567,6 +568,17 @@ describe('Go constructor-inferred type resolution', () => {
     );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
+  });
+
+  it('resolves Box[models.User]{} as a generic composite-literal constructor call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const boxCtor = calls.find(
+      (c) =>
+        c.target === 'Box' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath === 'models/user.go',
+    );
+    expect(boxCtor).toBeDefined();
   });
 
   it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {

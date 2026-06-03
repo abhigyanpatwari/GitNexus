@@ -1215,6 +1215,11 @@ export const RUST_QUERIES = `
 (function_item name: (identifier) @name) @definition.function
 (function_signature_item name: (identifier) @name) @definition.function
 (struct_item name: (type_identifier) @name) @definition.struct
+; A union is materialized as a Struct node (same rationale as the
+; scope-resolution @declaration.struct in languages/rust/query.ts: every
+; registry-primary resolution gate includes Struct but excludes Union, so a
+; Union-labeled node would be an unresolvable orphan). #1934 F71.
+(union_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait
 (impl_item type: (type_identifier) @name !trait) @definition.impl

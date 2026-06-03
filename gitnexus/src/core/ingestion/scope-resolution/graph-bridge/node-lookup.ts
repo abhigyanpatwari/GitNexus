@@ -186,6 +186,11 @@ export function isLinkableLabel(label: NodeLabel): boolean {
     // `Variable` def for `export const fooService = {...}` to the canonical
     // `Const:filePath:name` graph node id, against which object-literal
     // method symbols register their `ownerId` (PR #1718 / issue #1358).
-    label === 'Const'
+    label === 'Const' ||
+    // Macro nodes are linkable so a macro invocation (`log!(…)`) resolved
+    // via `MacroRegistry` can bridge its scope-resolution `Macro` def to
+    // the legacy `@definition.macro` graph node and emit the `USES` edge
+    // (Rust #1934 F72; also covers C/C++ `#define` macro defs).
+    label === 'Macro'
   );
 }

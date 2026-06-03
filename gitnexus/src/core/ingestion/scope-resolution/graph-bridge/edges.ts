@@ -39,6 +39,11 @@ export function mapReferenceKindToEdgeType(
       return 'EXTENDS';
     case 'type-reference':
       return 'USES';
+    // Macro invocations resolve to a `Macro` node (never a function), so
+    // they emit `USES` — kept out of the `CALLS` keyspace which denotes
+    // function/method dispatch (#1934 review).
+    case 'macro':
+      return 'USES';
     case 'import-use':
       return undefined;
     default:
