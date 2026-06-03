@@ -1678,7 +1678,10 @@ describe('Ruby nested mixin by short name — IMPLEMENTS not dropped (issue #198
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-mixin-shortname'), () => {});
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-shortname'),
+      () => {},
+    );
   }, 60000);
 
   pit('emits App.Service -IMPLEMENTS-> App.Loggable for a short-name nested mixin (R1)', () => {
