@@ -56,29 +56,12 @@ export function splitNamespaceUseDeclaration(stmtNode: SyntaxNode): CaptureMatch
     return decomposeGrouped(stmtNode, groupNode, qualifier);
   }
 
-  // Non-grouped: iterate all children. The grammar puts the first import path
-  // as a `namespace_name` child, with additional comma-separated imports as
-  // `namespace_use_clause` children. Handle `use A, B, C;` and `use A, B as C;`.
+  // Non-grouped: iterate namespace_use_clause children (one per comma-separated
+  // import in `use A, B, C;`). The first import is also a namespace_use_clause
+  // in the grammar version used by the monorepo; namespace_name child handling
+  // was removed after confirming the clause wrapper covers all positions.
   const out: CaptureMatch[] = [];
 
-  // First child: namespace_name (the primary import path, before any comma).
-  // Build a PhpImportSpec from it directly (no clause wrapper in the grammar).
-  const firstName = findNamedChild(stmtNode, 'namespace_name');
-  if (firstName !== null) {
-    const source = firstName.text.trim();
-    if (source !== '') {
-      out.push(
-        buildImportMatch(stmtNode, {
-          kind: qualifier,
-          source,
-          name: lastSegment(source),
-          atNode: stmtNode,
-        }),
-      );
-    }
-  }
-
-  // Additional children: namespace_use_clause (one per comma-separated import).
   for (let i = 0; i < stmtNode.namedChildCount; i++) {
     const child = stmtNode.namedChild(i);
     if (child === null || child.type !== 'namespace_use_clause') continue;
@@ -108,29 +91,6 @@ function detectQualifier(node: SyntaxNode): PhpImportKind {
   if (/^\s*use\s+function\s/i.test(raw)) return 'function';
   if (/^\s*use\s+const\s/i.test(raw)) return 'const';
   return 'namespace';
-}
-
-// ── Single clause parsing ──────────────────────────────────────────────────
-
-function parseSingleUseClause(node: SyntaxNode, qualifier: PhpImportKind): PhpImportSpec | null {
-  // A plain `namespace_use_declaration` has one or more
-  // `namespace_use_clause` named children (each clause is one import,
-  // comma-separated for multiple).  For the single case there is one.
-  const clause = findNamedChild(node, 'namespace_use_clause');
-  if (clause !== null) return parseUseClause(clause, qualifier);
-
-  // Older grammar versions may put the qualified_name directly under
-  // the declaration node. Check for a qualified_name or name child.
-  const qualName = findNamedChild(node, 'qualified_name') ?? findNamedChild(node, 'name');
-  if (qualName === null) return null;
-  const source = qualName.text.trim();
-  if (source === '') return null;
-  return {
-    kind: qualifier,
-    source,
-    name: lastSegment(source),
-    atNode: node,
-  };
 }
 
 function parseUseClause(clause: SyntaxNode, qualifier: PhpImportKind): PhpImportSpec | null {
@@ -191,8 +151,10 @@ function decomposeGrouped(
   groupNode: SyntaxNode,
   outerQualifier: PhpImportKind,
 ): CaptureMatch[] {
-  // The prefix is the qualified_name that precedes the `{...}` group.
-  const prefixNode = findNamedChild(stmtNode, 'qualified_name') ?? findNamedChild(stmtNode, 'name');
+  // The prefix is the namespace_name that precedes the `{...}` group.
+  // tree-sitter-php emits the leading path as a namespace_name child,
+  // not qualified_name.
+  const prefixNode = findNamedChild(stmtNode, 'namespace_name') ?? findNamedChild(stmtNode, 'name');
   const prefix = prefixNode?.text.trim() ?? '';
 
   const out: CaptureMatch[] = [];

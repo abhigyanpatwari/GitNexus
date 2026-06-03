@@ -78,14 +78,14 @@ describe('F55 — anonymous class scope', () => {
     const src = `<?php\n$s = new class { public function run() {} };\n`;
     const matches = emitPhpScopeCaptures(src, 'test.php') as CaptureMatch[];
     const classScopes = matches.filter((m) => m['@scope.class']);
-    // Should have at least one @scope.class from the anonymous class
-    expect(classScopes.length).toBeGreaterThanOrEqual(1);
+    expect(classScopes.length).toBe(1);
   });
 
   it('method inside anonymous class has @scope.function', () => {
     const src = `<?php\n$s = new class { public function run() {} };\n`;
     const matches = emitPhpScopeCaptures(src, 'test.php') as CaptureMatch[];
     const fnScopes = matches.filter((m) => m['@scope.function']);
+    // Method-scoping regression guard — pre-existing, not F55-specific.
     expect(fnScopes.length).toBeGreaterThanOrEqual(1);
   });
 });
