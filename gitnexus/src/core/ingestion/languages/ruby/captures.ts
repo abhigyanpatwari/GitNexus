@@ -41,6 +41,10 @@ function buildEnclosingQualifiedName(callNode: SyntaxNode): string | undefined {
       const nameNode = current.childForFieldName('name');
       if (nameNode !== null) segments.unshift(...splitQualifiedName(nameNode.text));
     }
+    // Stop at the file root — nothing above `program` contributes a Ruby
+    // class/module scope segment (#1982 perf; avoids walking to the very top
+    // for every heritage/attr call).
+    if (current.type === 'program') break;
     current = current.parent;
   }
   return segments.length > 0 ? segments.join('.') : undefined;

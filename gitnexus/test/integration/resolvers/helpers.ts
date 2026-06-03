@@ -550,6 +550,9 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'resolves NS::DA / NS::DB to their own namespaced base on the worker path',
     // #1982 follow-up: C++ worker-path DerivedA parity + duplicate guard.
     'resolves DerivedA : Outer::Inner → EXTENDS Outer.Inner on the worker path (parity + no duplicate)',
+    // #1982 follow-up: root-anchored base must not bind to an enclosing-relative
+    // type (resolveQualifiedInheritanceBase leading-:: guard). Registry-primary only.
+    'resolves Outer::Wrap::D : ::A::Inner → EXTENDS the GLOBAL A.Inner (not Wrap.A.Inner)',
   ]),
 };
 

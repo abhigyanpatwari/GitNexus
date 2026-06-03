@@ -311,6 +311,7 @@ export function resolveInheritanceBaseInScope(
   baseName: string,
   scopes: ScopeResolutionIndexes,
   rawQualifiedName?: string,
+  enclosingClassDef?: SymbolDefinition,
 ): SymbolDefinition | undefined {
   // #1982: when the source wrote a qualified base (`Other::Inner`), resolve it
   // against the full-path QualifiedNameIndex FIRST, so a same-tail nested base
@@ -318,9 +319,15 @@ export function resolveInheritanceBaseInScope(
   // simple-tail scope walk picks. Falls through to the existing walk when the
   // base is unqualified, unknown, or the qualified lookup can't pick a unique
   // winner — so unqualified bases and the cross-file single-candidate case are
-  // unchanged.
+  // unchanged. `enclosingClassDef` (the deriving class) is threaded from the
+  // caller to skip a redundant enclosing-class walk (#1982 perf).
   if (rawQualifiedName !== undefined) {
-    const qualified = resolveQualifiedInheritanceBase(startScope, rawQualifiedName, scopes);
+    const qualified = resolveQualifiedInheritanceBase(
+      startScope,
+      rawQualifiedName,
+      scopes,
+      enclosingClassDef,
+    );
     if (qualified !== undefined) return qualified;
   }
   return (
@@ -344,12 +351,20 @@ function resolveQualifiedInheritanceBase(
   startScope: ScopeId,
   rawQualifiedName: string,
   scopes: ScopeResolutionIndexes,
+  enclosingClassDef?: SymbolDefinition,
 ): SymbolDefinition | undefined {
   const normalized = normalizeQualifiedName(rawQualifiedName);
   // No qualifier after normalization → nothing the simple-tail walk doesn't do.
   if (normalized.length === 0 || !normalized.includes('.')) return undefined;
 
-  const enclosing = enclosingScopeSegments(startScope, scopes);
+  // #1982: a root-anchored base (`::Net::X`) names the GLOBAL scope, so it must
+  // NOT be prefixed with the referencing site's enclosing segments — try only
+  // the root-anchored key. normalizeQualifiedName strips the leading `::`, so
+  // detect the anchor on the raw text (after leading whitespace).
+  const isRootAnchored = /^\s*::/.test(rawQualifiedName);
+  const enclosing = isRootAnchored
+    ? []
+    : enclosingScopeSegments(startScope, scopes, enclosingClassDef);
   // Candidate keys: longest enclosing prefix first, then the root-anchored form.
   const keys: string[] = [];
   for (let i = enclosing.length; i >= 1; i--) {
@@ -381,8 +396,14 @@ function resolveQualifiedInheritanceBase(
  * `NS.Other.Derived` this is `['NS', 'Other']`; empty for a file-scope child.
  * Used to build progressive-prefix lookup keys for relative qualified bases.
  */
-function enclosingScopeSegments(startScope: ScopeId, scopes: ScopeResolutionIndexes): string[] {
-  const child = findEnclosingClassDef(startScope, scopes);
+function enclosingScopeSegments(
+  startScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  enclosingClassDef?: SymbolDefinition,
+): string[] {
+  // Reuse the caller-provided deriving class when available (#1982 perf); only
+  // walk the scope chain when it wasn't threaded in.
+  const child = enclosingClassDef ?? findEnclosingClassDef(startScope, scopes);
   const q = child?.qualifiedName;
   if (q === undefined || q.length === 0) return [];
   const segs = q.split('.').filter(Boolean);

@@ -3997,3 +3997,33 @@ describe('C++ namespaced same-tail nested heritage — worker path parity (issue
     expect(db).not.toContain('NS.A.Inner');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Root-anchored base must not pick up enclosing-relative segments (issue #1982)
+//
+// `namespace Outer { struct Wrap { struct A{struct Inner{};}; struct D : ::A::Inner {}; }; }`
+// with a GLOBAL `struct A { struct Inner {}; }` — the leading `::` names the
+// global type. Without the root-anchor guard, resolveQualifiedInheritanceBase
+// prepends the deriving class's enclosing segments and tries `Wrap.A.Inner`
+// first, mis-binding D to the inner type. With it, only the root-anchored
+// `A.Inner` key is tried → the global type. Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('C++ root-anchored base ignores enclosing-relative type (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-global-base-anchor'), () => {});
+  }, 60000);
+
+  it('resolves Outer::Wrap::D : ::A::Inner → EXTENDS the GLOBAL A.Inner (not Wrap.A.Inner)', () => {
+    const e = getRelationships(result, 'EXTENDS').find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === 'Outer.Wrap.D',
+    );
+    expect(e, 'Outer.Wrap.D EXTENDS endpoint').toBeDefined();
+    // Global node id is `Struct:main.cpp:A.Inner`; the enclosing-relative type
+    // is `Struct:main.cpp:Outer.Wrap.A.Inner`. KTD3: discriminate on the node id.
+    expect(e!.rel.targetId).toContain('A.Inner');
+    expect(e!.rel.targetId).not.toContain('Wrap');
+  });
+});
