@@ -91,11 +91,13 @@ gitnexus/vendor/**/node_modules/
 
 .claude-flow/
 
-.claude/agents/
+.claude/agents/*
+!.claude/agents/gitnexus-*.md
 .claude/commands/
 .claude/helpers
-.claude/skills/
+.claude/skills/*
 !.claude/skills/gitnexus/
+!.claude/skills/gitnexus-pr-swarm-review/
 
 .history/
 

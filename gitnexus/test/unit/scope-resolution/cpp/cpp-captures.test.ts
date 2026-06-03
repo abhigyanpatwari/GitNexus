@@ -107,6 +107,16 @@ describe('emitCppScopeCaptures — class declarations', () => {
     expect(m!['@declaration.name'].text).toBe('Point');
   });
 
+  it('captures typedef anonymous struct with @declaration.struct (not typedef)', () => {
+    const src = 'typedef struct { int x; int y; } Point;';
+    const m = findMatch(src, (t) => t.includes('@declaration.struct'));
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('Point');
+
+    const typedefs = allMatches(src, (t) => t.includes('@declaration.typedef'));
+    expect(typedefs).toHaveLength(0);
+  });
+
   it('captures template class with @declaration.class', () => {
     const m = findMatch('template <typename T> class Container { T val; };', (t) =>
       t.includes('@declaration.class'),
@@ -212,6 +222,21 @@ describe('emitCppScopeCaptures — variable declarations', () => {
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('x');
   });
+
+  it('captures all names in mixed initialized and uninitialized declarations', () => {
+    const matches = allMatches('void f() { int a = 1, b, *p, c = 3, d; }', (t) =>
+      t.includes('@declaration.variable'),
+    );
+    const names = matches.map((m) => m['@declaration.name'].text).sort();
+    expect(names).toEqual(['a', 'b', 'c', 'd', 'p']);
+  });
+
+  it('captures qualified-type multi-declarator variables', () => {
+    const src = 'namespace data { struct Pair {}; } void f() { data::Pair a, b; }';
+    const matches = allMatches(src, (t) => t.includes('@declaration.variable'));
+    const names = matches.map((m) => m['@declaration.name'].text).sort();
+    expect(names).toEqual(['a', 'b']);
+  });
 });
 
 // ── Declarations — enums ────────────────────────────────────────────────────
@@ -230,6 +255,16 @@ describe('emitCppScopeCaptures — enum declarations', () => {
     expect(matches.length).toBe(3);
     const names = matches.map((m) => m['@declaration.name'].text).sort();
     expect(names).toEqual(['Blue', 'Green', 'Red']);
+  });
+
+  it('captures typedef anonymous enum with @declaration.enum (not typedef)', () => {
+    const src = 'typedef enum { Red, Green, Blue } Color;';
+    const m = findMatch(src, (t) => t.includes('@declaration.enum'));
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('Color');
+
+    const typedefs = allMatches(src, (t) => t.includes('@declaration.typedef'));
+    expect(typedefs).toHaveLength(0);
   });
 });
 

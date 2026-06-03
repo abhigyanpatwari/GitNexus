@@ -28,6 +28,8 @@ const ICON_MAP: Record<string, string> = {
   Decorator: 'AtSign',
   Import: 'FileCode',
   Variable: 'Variable',
+  Property: 'Variable',
+  Const: 'Target',
 };
 
 describe('filter panel icon mappings', () => {

@@ -49,7 +49,11 @@ import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared'
 import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { createWorkerPool, WorkerPoolInitializationError } from '../workers/worker-pool.js';
+import {
+  createWorkerPool,
+  workerPoolDisabledByEnv,
+  WorkerPoolInitializationError,
+} from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
@@ -61,7 +65,13 @@ import type {
   ExtractedRoute,
   ExtractedToolDef,
   FileConstructorBindings,
+  FetchWrapperDef,
 } from '../workers/parse-worker.js';
+import type {
+  ExtractedRouterImport,
+  ExtractedRouterInclude,
+  ExtractedRouterModuleAlias,
+} from '../route-extractors/fastapi-router-bindings.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
@@ -119,6 +129,76 @@ type ScannedFile = { path: string; size: number };
 type ProgressFn = (progress: PipelineProgress) => void;
 
 /**
+ * Handle a worker-pool startup failure by FAILING FAST with the captured cause
+ * (#1741). The pool self-heals *transient* worker crashes on its own — a
+ * bounded, jittered startup restart loop (see worker-pool.ts) — so this is
+ * reached only when that self-heal is EXHAUSTED, or a deterministic crash-loop
+ * was detected, or the pool could not even be constructed. In every such case
+ * the workers genuinely cannot start.
+ *
+ * Rather than silently degrade to the ~10× slower sequential parser — which
+ * masked a worker-startup regression as a 2-hour "stuck" run in #1741 (rc99:
+ * the failure was a dropped `logger.warn` and an unbounded sequential grind) —
+ * GitNexus surfaces the real crash and aborts. An operator who genuinely wants
+ * sequential parsing asks for it explicitly with `--workers 0`.
+ *
+ * The decision is automatic: NO `--allow-sequential-fallback` or pool-sizing
+ * flag participates. The pool's own crash classification (`crashClass` on
+ * WorkerPoolInitializationError) only sharpens the message.
+ *
+ * @throws always — an actionable Error carrying the captured worker crash.
+ * @internal Exported for unit tests; production callers are the parse loop's
+ *           two worker-startup catch sites below.
+ */
+export function handleWorkerStartupFailure(err: Error): never {
+  const isInit = err instanceof WorkerPoolInitializationError;
+  const readinessFailures = isInit ? err.readinessFailures : [];
+  const crashClass = isInit ? err.crashClass : undefined;
+  // Surface the real cause verbatim: readiness failures for an init crash, or
+  // the construction error message (e.g. "Worker script not found: …") when the
+  // pool never got to spawn workers.
+  const failureDetail =
+    readinessFailures.length > 0
+      ? ` Underlying worker failure(s): ${readinessFailures.join(' | ')}`
+      : isInit
+        ? ''
+        : ` Underlying error: ${err.message}`;
+
+  // Always surface the real crash — never let a startup failure pass silently.
+  logger.error(
+    { err: err.message, readinessFailures, crashClass },
+    'Worker pool failed to start — workers could not start (bounded self-heal exhausted).',
+  );
+
+  const cause =
+    crashClass === 'deterministic-startup'
+      ? `every worker crashed identically during startup (a deterministic ` +
+        `crash-loop — retrying cannot help), so the pool has no usable workers.`
+      : isInit
+        ? `workers exhausted the bounded startup retry budget without reporting ` +
+          `ready, so the pool has no usable workers.`
+        : `the worker pool could not be constructed.`;
+
+  // Class-aware fix hint: a missing/broken native binding is the likely cause
+  // when workers crashed during init, but it is the WRONG guess for a pool that
+  // never constructed (commonly a missing build / unresolvable worker path).
+  const fixHint = isInit
+    ? `Fix the worker startup failure shown above (often a missing/broken native ` +
+      `binding or a top-of-script import error in parse-worker).`
+    : `Fix the worker pool construction error shown above (commonly a missing ` +
+      `build, so dist/ has no parse-worker, or an unresolvable worker path).`;
+
+  throw new Error(
+    `Worker pool failed to start: ${cause}${failureDetail}\n\n` +
+      `GitNexus will NOT silently fall back to the (much slower) sequential ` +
+      `parser and hide this crash — that masked a worker-startup regression as ` +
+      `a 2-hour "stuck" run in #1741. Options:\n` +
+      `  • ${fixHint}\n` +
+      `  • Re-run with --workers 0 to parse sequentially without the worker pool.`,
+  );
+}
+
+/**
  * Chunked parse + resolve loop.
  *
  * Reads source in byte-budget chunks (~20MB each). For each chunk:
@@ -141,6 +221,7 @@ export async function runChunkedParseAndResolve(
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
+  allFetchWrapperDefs: FetchWrapperDef[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];
@@ -267,14 +348,30 @@ export async function runChunkedParseAndResolve(
   // intentionally NOT created before parse-cache lookup: a warm-cache
   // all-hit run should replay cached worker output without loading
   // parse-worker.js or any tree-sitter/N-API native bindings.
+  // `--workers 0` (workerPoolSize === 0) and `GITNEXUS_WORKER_POOL_SIZE=0` both
+  // mean "no pool, parse sequentially". The env channel is consulted ONLY when
+  // no explicit `--workers <N>` was given, so an explicit positive size always
+  // wins over an ambient env=0 (#1741). Without this, env=0 built a size-0 pool
+  // that failed fast with a fabricated "retry budget exhausted" crash.
+  const envDisablesWorkers = options?.workerPoolSize === undefined && workerPoolDisabledByEnv();
+  const meetsWorkerThreshold =
+    totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS;
+  // Log only when env=0 actually skips a pool we'd otherwise have used, so the
+  // undocumented (possibly accidental) env=0 case is observable instead of a
+  // silent degrade — small repos go sequential anyway and need no notice.
+  if (envDisablesWorkers && meetsWorkerThreshold) {
+    logger.warn(
+      'GITNEXUS_WORKER_POOL_SIZE=0 → parsing sequentially; unset it or pass --workers <N> to use the worker pool.',
+    );
+  }
   const shouldUseWorkers =
     !options?.skipWorkers &&
     options?.workerPoolSize !== 0 &&
-    (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS);
+    !envDisablesWorkers &&
+    meetsWorkerThreshold;
   let workerPool: WorkerPool | undefined;
-  let workerPoolDisabled = false;
   const getOrCreateWorkerPool = (): WorkerPool | undefined => {
-    if (!shouldUseWorkers || workerPoolDisabled) return undefined;
+    if (!shouldUseWorkers) return undefined;
     if (workerPool) return workerPool;
     try {
       // U20.U3 test-only injection: integration tests pass a custom
@@ -308,12 +405,11 @@ export async function runChunkedParseAndResolve(
       workerPool = createWorkerPool(workerUrl, options?.workerPoolSize);
       return workerPool;
     } catch (err) {
-      workerPoolDisabled = true;
-      logger.warn(
-        { err: (err as Error).message },
-        'Worker pool creation failed, using sequential fallback:',
-      );
-      return undefined;
+      // Pool *construction* failed (e.g. the worker script is missing — a
+      // broken install). Fail fast with the cause rather than silently
+      // degrading to the slow sequential parser (#1741); `--workers 0` is the
+      // explicit opt-out for anyone who genuinely wants sequential parsing.
+      handleWorkerStartupFailure(err as Error);
     }
   };
 
@@ -352,8 +448,12 @@ export async function runChunkedParseAndResolve(
   // it, and later wildcard chunks re-run it themselves.
   let hasSynthesized = false;
   const allFetchCalls: ExtractedFetchCall[] = [];
+  const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouterIncludes: ExtractedRouterInclude[] = [];
+  const allRouterImports: ExtractedRouterImport[] = [];
+  const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const deferredWorkerCalls: ExtractedCall[] = [];
@@ -525,28 +625,15 @@ export async function runChunkedParseAndResolve(
           );
         } catch (err) {
           if (!(err instanceof WorkerPoolInitializationError)) throw err;
-          logger.warn(
-            {
-              err: err.message,
-              readinessFailures: err.readinessFailures,
-            },
-            'Worker pool initialization failed, using sequential fallback:',
-          );
+          // Every worker crashed during startup and the pool's bounded
+          // self-heal (jittered restart, deterministic crash-loop detection —
+          // see worker-pool.ts) was exhausted. Fail fast with the captured
+          // cause rather than silently degrading to the ~10× slower sequential
+          // parser, which masked this exact regression as a 2-hour "stuck" run
+          // in #1741. The failed (zero-worker) pool is torn down by the outer
+          // finally. `--workers 0` is the explicit opt-in to sequential.
           rawResults.length = 0;
-          workerPoolDisabled = true;
-          const failedPool = workerPool;
-          workerPool = undefined;
-          await failedPool?.terminate().catch(() => undefined);
-          chunkWorkerData = await processParsing(
-            graph,
-            chunkFiles,
-            symbolTable,
-            astCache,
-            scopeTreeCache,
-            progressForChunk,
-            undefined,
-            undefined,
-          );
+          handleWorkerStartupFailure(err); // always throws
         }
         // Persist the raw results for this chunk hash. Sequential path
         // doesn't populate rawResults (it writes directly to graph), so
@@ -663,11 +750,23 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.fetchCalls?.length) {
           for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
         }
+        if (chunkWorkerData.fetchWrapperDefs?.length) {
+          for (const item of chunkWorkerData.fetchWrapperDefs) allFetchWrapperDefs.push(item);
+        }
         if (chunkWorkerData.routes?.length) {
           for (const item of chunkWorkerData.routes) allExtractedRoutes.push(item);
         }
         if (chunkWorkerData.decoratorRoutes?.length) {
           for (const item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(item);
+        }
+        if (chunkWorkerData.routerIncludes?.length) {
+          for (const item of chunkWorkerData.routerIncludes) allRouterIncludes.push(item);
+        }
+        if (chunkWorkerData.routerImports?.length) {
+          for (const item of chunkWorkerData.routerImports) allRouterImports.push(item);
+        }
+        if (chunkWorkerData.routerModuleAliases?.length) {
+          for (const item of chunkWorkerData.routerModuleAliases) allRouterModuleAliases.push(item);
         }
         if (chunkWorkerData.toolDefs?.length) {
           for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
@@ -1079,9 +1178,161 @@ export async function runChunkedParseAndResolve(
   importCtx.index = EMPTY_INDEX;
   importCtx.normalizedFileList = [];
 
+  // FastAPI router-prefix resolution (cross-file).
+  //
+  // Workers emit two kinds of records per Python file:
+  //   • `routerIncludes` — every `app.include_router(<routerExpr>, prefix='/x')`
+  //     site, where `routerExpr` is either `<module>.router` (Shape A) or a
+  //     bare local name (Shape B).
+  //   • `routerImports`  — every `from <module> import router [as <alias>]`,
+  //     mapping a local name to a module key (the basename of the source
+  //     module). These let us resolve Shape-B router includes back to the
+  //     module that defines the router.
+  //
+  // We build `module-basename → Set<prefix>` and then walk
+  // `allDecoratorRoutes`: any decorator route emitted from a `router.<verb>`
+  // decorator inherits its file-basename's prefix. When a router is mounted
+  // under multiple prefixes we duplicate the route entry, mirroring FastAPI's
+  // runtime behaviour.
+  if (allRouterIncludes.length > 0 && allDecoratorRoutes.length > 0) {
+    // Group `routerImports` by file so we can resolve Shape-B locals against
+    // imports declared in the SAME file as the include_router call. We carry
+    // both the short module key (file basename) and, when available, the long
+    // key (`<dir>/<basename>`) so cross-package same-name modules don't blur
+    // their prefixes together. `routerModuleAliases` lifts the same long-key
+    // information for Shape-A includes whose receiving module was imported
+    // via `from <pkg> import <module>`.
+    interface LocalImport {
+      moduleKey: string;
+      moduleKeyLong: string | undefined;
+    }
+    const importsByFile = new Map<string, Map<string, LocalImport>>();
+    for (const imp of allRouterImports) {
+      let m = importsByFile.get(imp.filePath);
+      if (!m) {
+        m = new Map();
+        importsByFile.set(imp.filePath, m);
+      }
+      m.set(imp.localName, {
+        moduleKey: imp.moduleKey,
+        moduleKeyLong: imp.moduleKeyLong,
+      });
+    }
+    // Module-alias map keyed by file: `localName` (the imported module
+    // identifier in this file) → long key. Shape-A receivers like
+    // `users.router` are matched against this map; the long key, when
+    // present, scopes the prefix to the precise source file.
+    const moduleAliasesByFile = new Map<string, Map<string, string>>();
+    for (const alias of allRouterModuleAliases) {
+      let m = moduleAliasesByFile.get(alias.filePath);
+      if (!m) {
+        m = new Map();
+        moduleAliasesByFile.set(alias.filePath, m);
+      }
+      m.set(alias.localName, alias.moduleKeyLong);
+    }
+
+    // Two parallel maps: long-key (precise) and short-key (basename
+    // fallback). Long-key entries are preferred when the file's own long
+    // key matches; short-key entries match any file with that basename and
+    // remain the fallback when no long key is known (e.g. Shape A includes
+    // without a corresponding import statement).
+    const prefixesByLongKey = new Map<string, Set<string>>();
+    const prefixesByShortKey = new Map<string, Set<string>>();
+
+    const recordPrefix = (target: Map<string, Set<string>>, key: string, prefix: string): void => {
+      let set = target.get(key);
+      if (!set) {
+        set = new Set();
+        target.set(key, set);
+      }
+      set.add(prefix);
+    };
+
+    for (const inc of allRouterIncludes) {
+      // Shape A: `<module>.router`. The worker emits `routerExpr` already
+      // including `.router`, so split it back. We only know a short module
+      // key here — the call site doesn't carry the dotted package path. If
+      // the same file imports `<module>` via `from <pkg> import <module>`
+      // (recorded in `allRouterModuleAliases`) we promote to a long key.
+      const dotIdx = inc.routerExpr.indexOf('.router');
+      if (dotIdx > 0) {
+        const moduleShort = inc.routerExpr.slice(0, dotIdx);
+        const aliasLong = moduleAliasesByFile.get(inc.filePath)?.get(moduleShort);
+        if (aliasLong) {
+          recordPrefix(prefixesByLongKey, aliasLong, inc.prefix);
+        } else {
+          recordPrefix(prefixesByShortKey, moduleShort, inc.prefix);
+        }
+        continue;
+      }
+
+      // Shape B: bare local name. Resolve through this file's imports. The
+      // import line gives us a long key whenever the module path was multi-
+      // segment, so cross-package collisions are eliminated for Shape B.
+      const localImp = importsByFile.get(inc.filePath)?.get(inc.routerExpr);
+      if (!localImp) continue;
+      if (localImp.moduleKeyLong) {
+        recordPrefix(prefixesByLongKey, localImp.moduleKeyLong, inc.prefix);
+      } else {
+        recordPrefix(prefixesByShortKey, localImp.moduleKey, inc.prefix);
+      }
+    }
+
+    if (prefixesByLongKey.size > 0 || prefixesByShortKey.size > 0) {
+      const fileLongKey = (rel: string): string => {
+        // Strip `.py`, then take the last two path segments. `api/users.py`
+        // → `api/users`. Files at the repo root return the empty string,
+        // which can never match a long-key entry (those always include a
+        // parent directory) and so fall through to the short-key lookup.
+        const noExt = rel.endsWith('.py') ? rel.slice(0, -3) : rel;
+        const lastSlash = noExt.lastIndexOf('/');
+        if (lastSlash < 0) return '';
+        const beforeLast = noExt.slice(0, lastSlash);
+        const stem = noExt.slice(lastSlash + 1);
+        const prevSlash = beforeLast.lastIndexOf('/');
+        const parent = prevSlash >= 0 ? beforeLast.slice(prevSlash + 1) : beforeLast;
+        return `${parent}/${stem}`;
+      };
+
+      const fileShortKey = (rel: string): string => {
+        const slash = rel.lastIndexOf('/');
+        const file = slash >= 0 ? rel.slice(slash + 1) : rel;
+        return file.endsWith('.py') ? file.slice(0, -3) : file;
+      };
+
+      const expanded: ExtractedDecoratorRoute[] = [];
+      for (const dr of allDecoratorRoutes) {
+        if (dr.decoratorReceiver !== 'router' || !dr.filePath.endsWith('.py')) {
+          expanded.push(dr);
+          continue;
+        }
+        // Long-key lookup first; only fall back to the short key when no
+        // long-key prefix targets this file. This avoids prefix leakage
+        // between e.g. `api/users.py` and `admin/users.py`.
+        const longKey = fileLongKey(dr.filePath);
+        const longPrefixes = longKey ? prefixesByLongKey.get(longKey) : undefined;
+        const shortPrefixes = longPrefixes
+          ? undefined
+          : prefixesByShortKey.get(fileShortKey(dr.filePath));
+        const prefixes = longPrefixes ?? shortPrefixes;
+        if (!prefixes || prefixes.size === 0) {
+          expanded.push(dr);
+          continue;
+        }
+        for (const prefix of prefixes) {
+          expanded.push({ ...dr, prefix });
+        }
+      }
+      allDecoratorRoutes.length = 0;
+      for (const dr of expanded) allDecoratorRoutes.push(dr);
+    }
+  }
+
   return {
     exportedTypeMap,
     allFetchCalls,
+    allFetchWrapperDefs,
     allExtractedRoutes,
     allDecoratorRoutes,
     allToolDefs,

@@ -48,6 +48,12 @@ const CPP_SCOPE_QUERY = `
     (template_argument_list) @declaration.template-arguments)
   body: (field_declaration_list)) @declaration.struct
 
+;; Declarations — struct (typedef struct { ... } Name)
+(type_definition
+  type: (struct_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @declaration.name) @declaration.struct
+
 ;; ─── Declarations — class / struct inside template_declaration ───────
 (template_declaration
   (class_specifier
@@ -76,6 +82,12 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Declarations — enum ─────────────────────────────────────────────
 (enum_specifier
   name: (type_identifier) @declaration.name) @declaration.enum
+
+;; ─── Declarations — enum (typedef enum { ... } Name) ─────────────────
+(type_definition
+  type: (enum_specifier
+    body: (enumerator_list))
+  declarator: (type_identifier) @declaration.name) @declaration.enum
 
 ;; ─── Declarations — enum constants ───────────────────────────────────
 (enumerator
@@ -225,6 +237,12 @@ const CPP_SCOPE_QUERY = `
     declarator: (function_declarator
       declarator: (field_identifier) @declaration.name))) @declaration.method
 
+;; Constructor prototype in class body: User(int id);
+(field_declaration_list
+  (declaration
+    declarator: (function_declarator
+      declarator: (identifier) @declaration.name)) @declaration.method)
+
 ;; Method prototype with reference return: User& getRef();
 (field_declaration
   declarator: (reference_declarator
@@ -253,6 +271,15 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Declarations — variables (with initializer) ────────────────────
 (declaration
   declarator: (init_declarator
+    declarator: (identifier) @declaration.name)) @declaration.variable
+
+;; ─── Declarations — variables (without initializer) ─────────────────
+;; Covers non-leading declarators in mixed declaration lists.
+(declaration
+  declarator: (identifier) @declaration.name) @declaration.variable
+
+(declaration
+  declarator: (pointer_declarator
     declarator: (identifier) @declaration.name)) @declaration.variable
 
 ;; ─── Declarations — macro definitions ───────────────────────────────

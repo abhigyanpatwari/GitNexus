@@ -1,0 +1,74 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CUSTUPDT.
+       AUTHOR. TEST.
+
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT CUSTOMER-FILE ASSIGN TO 'CUSTFILE'
+               ORGANIZATION IS INDEXED
+               ACCESS IS DYNAMIC
+               RECORD KEY IS CUST-ID
+               FILE STATUS IS WS-FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD CUSTOMER-FILE.
+       01 CUSTOMER-RECORD.
+           05 CUST-ID              PIC 9(8).
+           05 CUST-NAME            PIC X(30).
+           05 CUST-BALANCE         PIC 9(7)V99.
+
+       WORKING-STORAGE SECTION.
+       01 WS-FILE-STATUS           PIC XX.
+       01 WS-CUSTOMER-NAME         PIC X(30).
+       01 WS-AMOUNT                PIC 9(7)V99.
+       01 WS-EOF                   PIC 9 VALUE 0.
+           88 END-OF-FILE          VALUE 1.
+       01 WS-AMT                   PIC 9(5)V99.
+       01 WS-PROG-NAME             PIC X(8).
+       01 FIELD-A                  PIC 9(5)V99.
+       01 FIELD-B                  PIC 9(5)V99.
+           COPY COPYLIB REPLACING ==PREFIX-== BY ==WS-==.
+
+       LINKAGE SECTION.
+       01 LS-PARAM                 PIC X(20).
+
+       PROCEDURE DIVISION.
+       INIT-SECTION SECTION.
+       MAIN-PARAGRAPH.
+           PERFORM INIT-PARAGRAPH
+           PERFORM PROCESS-PARAGRAPH
+           PERFORM CLEANUP-PARAGRAPH
+           STOP RUN.
+
+       INIT-PARAGRAPH.
+           OPEN I-O CUSTOMER-FILE
+           MOVE SPACES TO WS-CUSTOMER-NAME.
+
+       PROCESSING-SECTION SECTION.
+       PROCESS-PARAGRAPH.
+           PERFORM READ-CUSTOMER THRU WRITE-CUSTOMER
+           CALL "AUDITLOG" USING CUST-ID WS-AMOUNT
+           CALL WS-PROG-NAME.
+
+       READ-CUSTOMER.
+           READ CUSTOMER-FILE
+               NOT AT END
+                   MOVE CUST-NAME TO WS-CUSTOMER-NAME
+           END-READ.
+
+       UPDATE-BALANCE.
+           ADD WS-AMOUNT TO CUST-BALANCE
+           MOVE WS-AMOUNT TO CUST-BALANCE
+           MOVE WS-AMT TO FIELD-A FIELD-B.
+
+       WRITE-CUSTOMER.
+           REWRITE CUSTOMER-RECORD.
+
+       CLEANUP-PARAGRAPH.
+           CLOSE CUSTOMER-FILE.
+
+       ENTRY 'ALTENTRY' USING LS-PARAM.
+           DISPLAY 'ALTERNATE ENTRY POINT'
+           GOBACK.

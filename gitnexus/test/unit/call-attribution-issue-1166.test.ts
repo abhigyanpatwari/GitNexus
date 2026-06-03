@@ -534,31 +534,16 @@ describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
 
   // ─── Documented trade-offs: pin behaviour so future readers aren't surprised ───
 
-  it('accepted false-positive: `const x = arr.find((y) => p(y))` attributes p to "x"', () => {
-    // The HOC-wrapped pattern (arrow's parent is `arguments`, grandparent is
-    // `call_expression`, great-grandparent is `variable_declarator`) is broad
-    // enough to also match chained array-method callbacks like Array#find /
-    // Array#some / Array#every — where `x` is a *value* (the result of the
-    // method), not a function. The arrow inside borrows the const's name and
-    // its inner calls attribute to it.
-    //
-    // This is documented in `languages/typescript/query.ts` as an accepted
-    // trade-off because:
-    //   1. `x` is never invoked as a function, so no incoming CALLS edge is
-    //      ever created — the spurious `Function:x` is graph-isolated on the
-    //      incoming side.
-    //   2. The outgoing edge `Function:x → predicate` is a minor mis-attribution
-    //      (the call IS happening, just not from a "function called x"), and
-    //      the alternative — narrowing the pattern to known HOC names — would
-    //      require maintaining a wrapper allowlist that breaks for every new
-    //      HOC factory.
-    //
-    // We pin this here so a future change that tightens the pattern is forced
-    // to update this test and re-evaluate the trade-off explicitly.
+  it('does not attribute array-method callbacks to the result binding', () => {
+    // Array-method callbacks used to borrow the surrounding const name via the
+    // HOC-wrapped-function path. That produced phantom callers like
+    // `Function:found -> predicate` even though `found` is the Array#find
+    // result value, not a callable. The array-method blocklist now suppresses
+    // that synthetic Function anchor, so inner calls stay anonymous here.
     const sites = collectCallAttributions(`
       const found = items.find((item) => predicate(item));
     `);
-    expect(findCall(sites, 'predicate')?.attributedTo).toBe('found');
+    expect(findCall(sites, 'predicate')?.attributedTo ?? null).toBeNull();
   });
 
   it('multi-arrow argument: both arrows resolve to the same const name (legacy DAG path)', () => {

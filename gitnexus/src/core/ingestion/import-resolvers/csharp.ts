@@ -7,11 +7,16 @@
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-import type { CSharpProjectConfig } from '../language-config.js';
+import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../language-config.js';
+import { csharpSuffixFallbackAllowed } from '../csharp-namespace-gate.js';
 
 /**
  * Resolve a C# using-directive import path to matching .cs files (low-level helper).
  * Tries single-file match first, then directory match for namespace imports.
+ *
+ * The final unanchored suffix fallback is gated on `evidence` so BCL usings
+ * (e.g. `System.Threading.Tasks`) can't match a coincidentally-named local
+ * file (#1881). When `evidence` is omitted the fallback stays permissive.
  */
 export function resolveCSharpImportInternal(
   importPath: string,
@@ -19,6 +24,7 @@ export function resolveCSharpImportInternal(
   normalizedFileList: string[],
   allFileList: string[],
   index?: SuffixIndex,
+  evidence?: CSharpNamespaceEvidence,
 ): string[] {
   const namespacePath = importPath.replace(/\./g, '/');
   const results: string[] = [];
@@ -86,7 +92,11 @@ export function resolveCSharpImportInternal(
     }
   }
 
-  // Fallback: suffix matching without namespace stripping (single file)
+  // Fallback: suffix matching without namespace stripping (single file).
+  // Gated on in-repo declared-namespace evidence (#1881).
+  if (!csharpSuffixFallbackAllowed(importPath, evidence)) {
+    return [];
+  }
   const pathParts = namespacePath.split('/').filter(Boolean);
   const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, index);
   return fallback ? [fallback] : [];

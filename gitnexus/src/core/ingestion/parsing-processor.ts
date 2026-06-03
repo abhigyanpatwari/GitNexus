@@ -12,10 +12,12 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
+  buildConcreteTypedefDefinitionRanges,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
+  isSuppressedConcreteTypedefDuplicate,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
   type EnclosingClassInfo,
@@ -30,6 +32,7 @@ import {
   typeTagForId,
   constTagForId,
   buildCollisionGroups,
+  parameterShapeIdTag,
 } from './utils/method-props.js';
 import {
   extractTemplateArguments,
@@ -53,12 +56,23 @@ import type {
   FileConstructorBindings,
   FileScopeBindings,
   ExtractedORMQuery,
+  FetchWrapperDef,
 } from './workers/parse-worker.js';
+import type {
+  ExtractedRouterImport,
+  ExtractedRouterInclude,
+  ExtractedRouterModuleAlias,
+} from './route-extractors/fastapi-router-bindings.js';
 import {
   getTreeSitterBufferSize,
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
+import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from './ts-js-hoc-utils.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -69,7 +83,11 @@ export interface WorkerExtractedData {
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
+  fetchWrapperDefs: FetchWrapperDef[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  routerIncludes: ExtractedRouterInclude[];
+  routerImports: ExtractedRouterImport[];
+  routerModuleAliases: ExtractedRouterModuleAlias[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -110,7 +128,11 @@ export const mergeChunkResults = (
   const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
+  const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouterIncludes: ExtractedRouterInclude[] = [];
+  const allRouterImports: ExtractedRouterImport[] = [];
+  const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
@@ -147,7 +169,11 @@ export const mergeChunkResults = (
     for (const item of result.heritage) allHeritage.push(item);
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
+    for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
+    for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
+    for (const item of result.routerImports ?? []) allRouterImports.push(item);
+    for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     for (const item of result.constructorBindings) allConstructorBindings.push(item);
@@ -163,7 +189,11 @@ export const mergeChunkResults = (
     heritage: allHeritage,
     routes: allRoutes,
     fetchCalls: allFetchCalls,
+    fetchWrapperDefs: allFetchWrapperDefs,
     decoratorRoutes: allDecoratorRoutes,
+    routerIncludes: allRouterIncludes,
+    routerImports: allRouterImports,
+    routerModuleAliases: allRouterModuleAliases,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
@@ -203,7 +233,11 @@ const processParsingWithWorkers = async (
       heritage: [],
       routes: [],
       fetchCalls: [],
+      fetchWrapperDefs: [],
       decoratorRoutes: [],
+      routerIncludes: [],
+      routerImports: [],
+      routerModuleAliases: [],
       toolDefs: [],
       ormQueries: [],
       constructorBindings: [],
@@ -454,6 +488,7 @@ const processParsingSequential = async (
       logger.warn({ queryError }, `Query error for ${file.path}:`);
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor).
     //
@@ -465,6 +500,7 @@ const processParsingSequential = async (
     // lifecycle and flush-site ownership rules.
     const typeEnv = provider.fieldExtractor
       ? buildTypeEnv(tree, language, {
+          filePath: file.path,
           enclosingFunctionFinder: provider.enclosingFunctionFinder,
           extractFunctionName: provider.methodExtractor?.extractFunctionName,
         })
@@ -476,6 +512,8 @@ const processParsingSequential = async (
       match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
+
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) return;
 
       const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
@@ -508,9 +546,49 @@ const processParsingSequential = async (
       ) {
         return;
       }
+      const exportDefaultCall =
+        nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
+          ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
+          : undefined;
+      const defaultExportHocName = (() => {
+        if (exportDefaultCall === undefined) return null;
+        const argList = exportDefaultCall.childForFieldName?.('arguments');
+        const callback = argList?.namedChildren.find(
+          (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+        );
+        if (callback === undefined) return null;
+
+        const callee = exportDefaultCall.childForFieldName?.('function');
+        if (
+          callee?.type === 'identifier' &&
+          DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
+        ) {
+          return null;
+        }
+        if (callee?.type === 'member_expression') {
+          const property = callee.childForFieldName?.('property');
+          if (
+            property?.type === 'property_identifier' &&
+            ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+          ) {
+            return null;
+          }
+        }
+
+        return deriveDefaultExportHocName(file.path);
+      })();
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) return;
-      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
+      if (
+        !nameNode &&
+        nodeLabel !== 'Constructor' &&
+        !extractedClassSymbol &&
+        !defaultExportHocName
+      ) {
+        return;
+      }
+      const nodeName =
+        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
 
       const startLine = definitionNodeForRange
         ? definitionNodeForRange.startPosition.row + lineOffset
@@ -639,6 +717,13 @@ const processParsingSequential = async (
           cached.groups,
         );
       }
+      const parameterShapeTag =
+        nodeLabel === 'Function' || nodeLabel === 'Method'
+          ? parameterShapeIdTag(
+              methodProps.parameterTypes as string[] | undefined,
+              methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
+            )
+          : '';
       const classTemplateArguments =
         extractedClassSymbol?.templateArguments ??
         provider.classExtractor?.extractTemplateArgumentsFromCapture?.({
@@ -691,7 +776,7 @@ const processParsingSequential = async (
       }
       const nodeId = generateId(
         nodeLabel,
-        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${constraintsTag}`,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${constraintsTag}${parameterShapeTag}`,
       );
       const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
       const qualifiedTypeName =
@@ -794,23 +879,28 @@ const processParsingSequential = async (
         qualifiedName: qualifiedTypeName,
       });
 
-      const fileId = generateId('File', file.path);
-
-      const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-
-      const relationship: GraphRelationship = {
-        id: relId,
-        sourceId: fileId,
-        targetId: nodeId,
-        type: 'DEFINES',
-        confidence: 1.0,
-        reason: '',
-      };
-
-      graph.addRelationship(relationship);
-
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
       const ownerIdForMemberEdge = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? null;
+
+      // Only emit File -> Symbol DEFINES for top-level symbols. Class members
+      // are reachable via Class -> Member (HAS_METHOD / HAS_PROPERTY), so a
+      // direct File -> Member edge would bypass the class in the graph and
+      // produce a flat radial layout instead of the correct File->Class->Member
+      // hierarchy (issue #1944).
+      if (!ownerIdForMemberEdge) {
+        const fileId = generateId('File', file.path);
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+        const relationship: GraphRelationship = {
+          id: relId,
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        };
+        graph.addRelationship(relationship);
+      }
+
       if (ownerIdForMemberEdge) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         graph.addRelationship({

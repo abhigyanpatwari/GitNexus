@@ -201,7 +201,10 @@ const getNodeTypeIcon = (label: NodeLabel) => {
     case 'Import':
       return FileCode;
     case 'Variable':
+    case 'Property':
       return Variable;
+    case 'Const':
+      return Target;
     default:
       return Variable;
   }

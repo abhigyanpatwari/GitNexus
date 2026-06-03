@@ -32,7 +32,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import {
+  nodeIfType,
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+} from '../../utils/ast-helpers.js';
 import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import { computePhpArityMetadata } from './arity-metadata.js';
 import { synthesizePhpReceiverBinding } from './receiver-binding.js';
@@ -102,9 +107,16 @@ export function emitPhpScopeCaptures(
     // Group captures by their tag name. Tree-sitter strips the leading
     // `@`; we put it back so the central extractor's prefix lookups work.
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map: the query hands us each matched
+    // node as c.node, so anchors resolve via a type-guarded lookup (nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -175,12 +187,7 @@ export function emitPhpScopeCaptures(
     // Decompose each `namespace_use_declaration` so `interpretPhpImport`
     // sees the kind/source/name/alias markers it consumes.
     if (grouped['@import.statement'] !== undefined) {
-      const stmtCapture = grouped['@import.statement'];
-      const stmtNode = findNodeAtRange(
-        tree.rootNode,
-        stmtCapture.range,
-        'namespace_use_declaration',
-      );
+      const stmtNode = nodeIfType(nodeMap['@import.statement'], 'namespace_use_declaration');
       if (stmtNode !== null) {
         const decomposed = splitNamespaceUseDeclaration(stmtNode);
         if (decomposed.length > 0) {
@@ -197,8 +204,7 @@ export function emitPhpScopeCaptures(
     // non-static method-like. Mirrors C#'s `this` / `base` synthesis.
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const anchor = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         for (const synth of synthesizePhpReceiverBinding(fnNode)) {
           out.push(synth);
@@ -219,8 +225,7 @@ export function emitPhpScopeCaptures(
     // registry can narrow overloads.
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
-      const anchor = grouped[declTag]!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const arity = computePhpArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -255,13 +260,14 @@ export function emitPhpScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'function_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'member_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'nullsafe_member_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'scoped_call_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
+      const callNode = nodeIfType(
+        nodeMap[callTag],
+        'function_call_expression',
+        'member_call_expression',
+        'nullsafe_member_call_expression',
+        'scoped_call_expression',
+        'object_creation_expression',
+      );
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
         const args: SyntaxNode[] = [];
@@ -290,18 +296,133 @@ export function emitPhpScopeCaptures(
     out.push(grouped);
   }
 
+  out.push(...synthesizePhpInheritanceReferences(tree.rootNode));
+
   return out;
 }
 
-/** Find the first PHP function-like node at the given range. */
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n as SyntaxNode;
+// ─── PHP inheritance synthesis ───────────────────────────────────────────────
+
+/**
+ * Synthesize `@reference.inherits` captures from PHP class/trait heritage so
+ * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
+ * (mirrors C# `synthesizeCsharpInheritanceReferences` / C++
+ * `emitCppInheritanceCaptures`). Without this, PHP inheritance edges came only
+ * from the legacy `@heritage.*` path, which the worker pipeline drops for
+ * registry-primary languages (issue #1951).
+ *
+ * Scope matches the legacy PHP heritage query (tree-sitter-queries.ts
+ * PHP_QUERIES @heritage.extends / @heritage.implements / @heritage.trait):
+ *
+ *   1. `class_declaration` > `base_clause` > [(name) (qualified_name)] — extends
+ *   2. `class_declaration` > `class_interface_clause` > [(name) (qualified_name)] — implements
+ *   3. `class_declaration` body `use_declaration` > [(name) (qualified_name)] — trait use
+ *   4. `trait_declaration` body `use_declaration` > [(name) (qualified_name)] — trait use
+ *
+ * The EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved
+ * target's symbol kind (`preEmitInheritanceEdges`: `Interface` → IMPLEMENTS,
+ * else EXTENDS), so all bases emit the same `inherits` kind here. The base
+ * lookup name is normalized to its bare simple identifier (`Foo\Bar\Base` →
+ * `Base`) to match the V1 simple-name `findClassBindingInScope` contract.
+ *
+ * NOTE (#1951 trait-use parity): legacy emits trait-use as an IMPLEMENTS edge
+ * (`heritage.trait` → `trait-impl` → IMPLEMENTS in heritage-processor.ts), and
+ * the central pass matches it — `preEmitInheritanceEdges` (run.ts) maps a
+ * resolved `Interface` OR `Trait` target to IMPLEMENTS (`type === 'Interface'
+ * || type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS'`), so `use Trait` resolves to
+ * IMPLEMENTS on both the legacy and registry-primary paths.
+ */
+function synthesizePhpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (node.type === 'class_declaration') {
+      // extends: single base_clause child carrying one base name.
+      const baseClause = findNamedChild(node, 'base_clause');
+      if (baseClause !== null) emitPhpBaseNames(baseClause, out);
+      // implements: class_interface_clause may list several interfaces.
+      const ifaceClause = findNamedChild(node, 'class_interface_clause');
+      if (ifaceClause !== null) emitPhpBaseNames(ifaceClause, out);
+      // trait use: `use TraitName;` inside the class body.
+      emitPhpTraitUses(node, out);
+    } else if (node.type === 'trait_declaration') {
+      // trait-uses-trait: `use OtherTrait;` inside a trait body.
+      emitPhpTraitUses(node, out);
+    }
+  });
+  return out;
+}
+
+/**
+ * Emit `@reference.inherits` for every `use_declaration` (trait use) in the
+ * declaration body of `node` (a class_declaration or trait_declaration).
+ * Class-body `use_declaration` is the trait-use node (distinct from the
+ * top-level `namespace_use_declaration` import node).
+ */
+function emitPhpTraitUses(node: SyntaxNode, out: CaptureMatch[]): void {
+  const body = node.childForFieldName('body');
+  if (body === null || body.type !== 'declaration_list') return;
+  for (let i = 0; i < body.namedChildCount; i++) {
+    const child = body.namedChild(i);
+    if (child !== null && child.type === 'use_declaration') {
+      emitPhpBaseNames(child, out);
+    }
+  }
+}
+
+/**
+ * Walk the named children of a heritage clause (`base_clause`,
+ * `class_interface_clause`, or `use_declaration`) and emit one
+ * `@reference.inherits` match per `name` / `qualified_name` base. The lookup
+ * name is the bare tail identifier so `findClassBindingInScope` resolves it.
+ */
+function emitPhpBaseNames(clause: SyntaxNode, out: CaptureMatch[]): void {
+  for (let i = 0; i < clause.namedChildCount; i++) {
+    const base = clause.namedChild(i);
+    if (base === null) continue;
+    if (base.type !== 'name' && base.type !== 'qualified_name') continue;
+    const bareName = phpBareBaseName(base);
+    if (bareName === '') continue;
+    out.push({
+      '@reference.inherits': nodeToCapture('@reference.inherits', base),
+      '@reference.name': syntheticCapture('@reference.name', base, bareName),
+    });
+  }
+}
+
+/**
+ * Normalize a PHP base node to its bare simple identifier:
+ *   `Base`            (name)          → `Base`
+ *   `Foo\Bar\Base`    (qualified_name)→ `Base`  (last `name` child)
+ *   `\Foo\Base`       (qualified_name)→ `Base`
+ * Mirrors C#'s `terminalTypeNameNode`: strip the qualifier tail so the V1
+ * simple-name scope-chain lookup resolves the target def.
+ */
+function phpBareBaseName(base: SyntaxNode): string {
+  if (base.type === 'name') return base.text;
+  if (base.type === 'qualified_name') {
+    // qualified_name holds one or more `name` children (plus `\` separators);
+    // the bare class is the last `name` child.
+    for (let i = base.namedChildCount - 1; i >= 0; i--) {
+      const child = base.namedChild(i);
+      if (child !== null && child.type === 'name') return child.text;
+    }
+    // Fallback: split the raw text on the namespace separator.
+    const segs = base.text.split('\\').filter((s) => s.length > 0);
+    return segs.length > 0 ? segs[segs.length - 1]! : '';
+  }
+  return '';
+}
+
+/** Find the first named child of `node` with the given type. */
+function findNamedChild(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null && child.type === type) return child;
   }
   return null;
 }
 
+/** Pre-order walk over named children, invoking `cb` on each node. */
 // ─── PHP receiver normalization ──────────────────────────────────────────────
 
 /**

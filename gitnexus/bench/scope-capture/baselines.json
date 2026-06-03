@@ -1,0 +1,81 @@
+{
+  "_comment": "Per-language baselines for bench/scope-capture/measure.mjs --check. fingerprint = order-independent sha256 over the lang-resolution/<lang>-* fixture corpus + a 20-entity synthetic source (correctness gate; re-baseline intentionally on a legitimate capture change). scaling_budget = max allowed (t800/t250)/(800/250); ~1.0 is linear, ~3.2 is quadratic. The synthetic source is now HERITAGE-BEARING for every language (each Entity extends/implements/embeds/uses-trait/conforms-to a shared base) so the #1951 @reference.inherits synth is gated at scale, not just the base capture loop. All languages thread the tree-sitter captured node instead of re-deriving it with findNodeAtRange(tree.rootNode,...) per match, so all are linear (go #1915, python #1918, ruby/php/rust/csharp #1951, java #1956).",
+  "go": {
+    "fingerprint": "09ecd94911b830f52fa8807560abcbd79f163d02a2072870c1a59297e9a326e1",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1976: F33 generic composite literal constructor inference adds generic_type captures in composite_literal patterns; fingerprint drift expected."
+  },
+  "cobol": {
+    "fingerprint": "68ee0e95eb9f86f2d92ca35f730f4c2d4d83abc1b5241ae767ff3437780ec8d1",
+    "scaling_budget": 1.5,
+    "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
+  },
+  "c": {
+    "fingerprint": "0de009bdbfe095f530fa87eb32bce6ab83092c904f26b3c8fe8d8ab587cf6dc9",
+    "scaling_budget": 1.5,
+    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
+  },
+  "cpp": {
+    "fingerprint": "931bf7af55dc1480d1a5d3c479ea3803003a6a2e2c4406447bd96f3e312e88de",
+    "scaling_budget": 1.5,
+    "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
+    "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
+    "_note": "#1975: + cpp-out-of-line-class fixture (out-of-line struct Outer::Inner / Other::Inner). Pure fixture-corpus drift — the fix is the legacy structure-query qualified_identifier arm, NOT the cpp scope-extractor; existing fixtures' captures byte-identical. fixture_count 263->265."
+  },
+  "csharp": {
+    "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.)",
+    "fingerprint": "68ef32c126d5c6de5d8184c6ad0a6104043036daf9805947db8b21741b883f43",
+    "scaling_budget": 1.5
+  },
+  "rust": {
+    "fingerprint": "3c4b8e0a707299cc5db0af2528c72a99457859104589a7ef3cd1f377da01793e",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04).",
+    "_note": "#1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls). Pure fixture-corpus drift — the fix is the legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target, NOT the rust scope-extractor; existing fixtures' captures byte-identical. fixture_count 120->121."
+  },
+  "php": {
+    "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
+  },
+  "ruby": {
+    "fingerprint": "ee81145cf0af796878e8e048192b87c8c8dc445a3e3fcdff6c6e26c179e97232",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)",
+    "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) — pure fixture-corpus drift, scope-extractor captures unchanged; 81→82."
+  },
+  "swift": {
+    "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable \u2014 extends + protocol conformance); linear (~1.03)."
+  },
+  "dart": {
+    "fingerprint": "a9e882b537765e8fd0ddfcd33b38b253dd86fc5ddffa6e4bf5a85ed8ee615eaa",
+    "scaling_budget": 1.5,
+    "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
+    "_rebaselined": "#1970 review + tri-review follow-ups: constructor-call retag, cascade calls, built-in suppression, enum scope, #1926 F24/F25, named-ctor dedup (crash fix), container-name binding suppression; heritage file-affinity resolution. Fixtures: member-call-contexts, constructor-body, named-constructor-body, heritage-name-collision, construct-cascade."
+  },
+  "java": {
+    "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.)"
+  },
+  "typescript": {
+    "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
+    "scaling_budget": 1.5,
+    "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures \u2014 fingerprint drift expected.",
+    "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected."
+  },
+  "javascript": {
+    "fingerprint": "a8ddfb15620ae55e50651fc21ab14c4a1f874d9b19e208cc6cbf0a8daac8ec5b",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
+    "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05)."
+  },
+  "kotlin": {
+    "fingerprint": "5121a11855cd9cc44a357ae3ff50953de80cdd743f00e8924c31503b132bcd84",
+    "scaling_budget": 1.5,
+    "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
+    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87)."
+  }
+}

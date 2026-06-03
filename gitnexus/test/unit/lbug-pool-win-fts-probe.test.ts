@@ -37,6 +37,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   createLbugDatabase: vi.fn(),
+  toNativeSafePath: vi.fn((p: string) => p),
   isWalCorruptionError: vi.fn(() => false),
   WAL_RECOVERY_SUGGESTION: '',
 }));

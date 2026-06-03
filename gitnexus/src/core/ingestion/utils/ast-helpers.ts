@@ -51,6 +51,51 @@ export const getDefinitionNodeFromCaptures = (
   return null;
 };
 
+type QueryMatchLike = {
+  captures: Array<{ name: string; node: SyntaxNode }>;
+};
+
+const nodeRangeKey = (node: SyntaxNode): string =>
+  `${node.startPosition.row}:${node.startPosition.column}:${node.endPosition.row}:${node.endPosition.column}`;
+
+const isConcreteTypedefCapture = (captureMap: Record<string, SyntaxNode>): boolean => {
+  const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+  return (
+    definitionNode?.type === 'type_definition' &&
+    (captureMap['definition.struct'] !== undefined || captureMap['definition.enum'] !== undefined)
+  );
+};
+
+export const buildConcreteTypedefDefinitionRanges = (
+  matches: readonly QueryMatchLike[],
+): Set<string> => {
+  const ranges = new Set<string>();
+  for (const match of matches) {
+    const captureMap: Record<string, SyntaxNode> = {};
+    for (const capture of match.captures) {
+      captureMap[capture.name] = capture.node;
+    }
+
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    if (definitionNode && isConcreteTypedefCapture(captureMap)) {
+      ranges.add(nodeRangeKey(definitionNode));
+    }
+  }
+  return ranges;
+};
+
+export const isSuppressedConcreteTypedefDuplicate = (
+  captureMap: Record<string, SyntaxNode>,
+  concreteTypedefRanges: ReadonlySet<string>,
+): boolean => {
+  const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+  return (
+    definitionNode?.type === 'type_definition' &&
+    captureMap['definition.typedef'] !== undefined &&
+    concreteTypedefRanges.has(nodeRangeKey(definitionNode))
+  );
+};
+
 /**
  * Node types that represent function/method definitions across languages.
  * Used by parent-walk in call-processor, parse-worker, and type-env to detect
@@ -137,6 +182,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Go
+  'struct_type',
+  'interface_type',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -169,7 +217,31 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
+  struct_type: 'Struct',
+  interface_type: 'Interface',
 };
+
+/**
+ * Pre-order walk over a node and all its named descendants, invoking `cb` on
+ * each. Replaces the per-language `visit`/`visitGo`/`visitRust`/`visitSwift`
+ * clones that every language's capture-synthesis walker re-implemented (#1956
+ * tri-review U6).
+ *
+ * Iterates by index with a null guard: `node.namedChild(i)` is typed
+ * `SyntaxNode | null`, and most callers already guarded it. The Go and C#
+ * callers previously iterated `node.namedChildren`; the Go one had no null
+ * guard, so this standardizes them onto the guarded indexed form — a deliberate,
+ * strictly-safer behavior addition (the traversal *sequence* is identical, so
+ * capture output stays byte-identical on well-formed trees; the guard only
+ * matters for a null named child, which the fixture corpus never produces).
+ */
+export function walkNamedTree(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) walkNamedTree(child, cb);
+  }
+}
 
 /** Return the first matching ancestor unless a boundary ancestor is reached first. */
 export function findAncestorBeforeBoundary(
@@ -197,7 +269,11 @@ export function getLabelFromCaptures(
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
-  if (!captureMap['name'] && !captureMap['definition.constructor']) return null;
+  const hasDefaultExportHocNameSeed =
+    captureMap['definition.function'] !== undefined &&
+    (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
+  if (!captureMap['name'] && !captureMap['definition.constructor'] && !hasDefaultExportHocNameSeed)
+    return null;
 
   if (captureMap['definition.function']) {
     if (provider.labelOverride) {
@@ -344,8 +420,8 @@ export const findEnclosingClassInfo = (
       }
 
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
-      // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
-      // If modifying this block, update the other location too.
+      // NOTE: This impl_item ownership logic is mirrored in
+      // method-extractors/configs/rust.ts (extractOwnerName, metadata only).
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
@@ -359,13 +435,22 @@ export const findEnclosingClassInfo = (
                 c.type === 'identifier',
             );
           if (nameNode) {
+            // `for` target keeps its raw text. A scoped path (impl T for a::Inner)
+            // therefore owns through `a::Inner`, which only resolves once the
+            // referenced struct is keyed by its qualified path — deferred to #1978.
             return {
               classId: generateId('Struct', `${filePath}:${nameNode.text}`),
               className: nameNode.text,
             };
           }
         }
-        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
+        // Inherent impl target. Accept a scoped path (`impl a::Inner { ... }`) and
+        // key the Impl node by its FULL text — matching the @definition.impl
+        // scoped arm — so methods own through a node that exists and stays
+        // distinct from a same-tail type in another module (#1975).
+        const firstType = children.find(
+          (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+        );
         if (firstType) {
           return {
             classId: generateId('Impl', `${filePath}:${firstType.text}`),
@@ -724,4 +809,24 @@ export function findNodeAtRange(
     }
   }
   return null;
+}
+
+/**
+ * Return the captured node if its type is one of `types`, else null.
+ *
+ * The threaded-node equivalent of `findNodeAtRange(root, capture.range, type)`
+ * for the common case where a tree-sitter query already hands you the matched
+ * node (`c.node`): the captured node IS the node at that range, so a type check
+ * is exact and there is no need to re-walk from the tree root (the
+ * O(matches × rootChildren) hot path #1848 hit). Unlike `findNodeAtRange`, this
+ * does NOT traverse — the caller must already hold the node; for a multi-type
+ * call the node must literally be one of `types` (no fallback search).
+ *
+ * Used by every language's scope-capture path (go/python/ruby/php/rust/csharp).
+ */
+export function nodeIfType<T extends SyntaxNode>(
+  node: T | undefined,
+  ...types: readonly string[]
+): T | null {
+  return node !== undefined && types.includes(node.type) ? node : null;
 }

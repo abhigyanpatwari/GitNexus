@@ -21,11 +21,49 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // isFileLocalDef filtering of static functions.
     'caller.c calls b:helper via include, NOT a:static helper',
   ]),
+  dart: new Set([
+    // The legacy DAG DART_QUERIES capture member calls (obj.method()) only
+    // under expression_statement / initialized_variable_definition contexts
+    // (issue #1926 F24). The registry-primary scope path walks every postfix
+    // chain, so it resolves member calls in return / list-literal / named-arg /
+    // arrow-body contexts too. Scope-resolver-only correctness wins.
+    'resolves a member call in a return statement (svc.compute())',
+    'resolves member calls inside a list literal',
+    'resolves a member call in a named argument',
+    'resolves a member call in an arrow body',
+    // Calls inside constructor bodies are mis-attributed by the legacy
+    // enclosing-function finder (issue #1926 F25 — it only unwraps
+    // function_signature, not constructor_signature). The registry-primary
+    // scope path synthesizes a Function scope for the constructor body (whose
+    // body is a sibling of the wrapping method_signature) and the def is a
+    // Constructor (a valid caller anchor), so the call attributes to the
+    // constructor. Scope-resolver-only correctness win.
+    //
+    // Getter/setter and operator bodies are NOT covered (F25 partial):
+    //   - getter/setter defs are Property, which resolveCallerGraphId excludes
+    //     as a caller anchor (graph-bridge/ids.ts);
+    //   - the structure phase emits no Method node for operators, so there is
+    //     no node to attribute to.
+    // Both require a structure-phase / shared-pipeline change, out of scope for
+    // the scope-resolution path (tracked by #1926's legacy parsing-layer fix).
+    'attributes a call inside a constructor body to the constructor',
+    'attributes a call inside a named-constructor body to the constructor',
+  ]),
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
     // Generic type-argument USES edges are emitted by the registry-primary
     // resolver only; the legacy DAG path does not synthesize these references.
     'emits USES edges for generic type arguments',
+    // Ambiguous same-named base (Handler/IProcessor declared in both Models/
+    // and Other/) is disambiguated to the Models/ definitions by the
+    // registry-primary import-aware resolver: `using MyApp.Models;` emits the
+    // file-level import edge that `resolveAmbiguousInheritanceBaseViaImports`
+    // keys on. The legacy DAG does not emit the C# namespace using-import edge
+    // (same root cause as the using-import-edge expected-failure above), so it
+    // cannot disambiguate and `resolveHeritageId` refuses to a synthetic
+    // Class:/Interface: target. Scope-resolver-only correctness win; backporting
+    // is out of scope per the migration policy.
+    'resolves both ambiguous bases to the imported Models namespace via import-aware disambiguation',
   ]),
   go: new Set([
     // The legacy DAG path does not resolve method calls when the method is
@@ -33,6 +71,25 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // fixture). This requires scope-based cross-file package-sibling resolution
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
+    // Go structural interface implementation inference is a registry-primary
+    // scope-resolution feature. The legacy DAG does not synthesize structural
+    // IMPLEMENTS / METHOD_IMPLEMENTS edges or feed them into interface dispatch.
+    'emits signature-checked structural IMPLEMENTS edges only for valid implementors',
+    'feeds structural IMPLEMENTS into METHOD_IMPLEMENTS edges',
+    'prefers the concrete local assignment over interface fan-out',
+    'fans out interface-typed receiver calls to all known implementors',
+    'includes embedded interface methods before emitting structural IMPLEMENTS edges',
+    'includes promoted embedded struct methods before emitting structural IMPLEMENTS edges',
+    'fans out embedded-interface receivers only to complete implementors',
+    'matches local interface types against package-qualified implementation signatures',
+    'merges methods from package-qualified embedded interfaces before matching implementors',
+    'fans out cross-package interface receivers only to valid implementors',
+    'dispatches package-qualified embedded-interface receivers only to complete implementors',
+    // F33 generic composite literal constructor inference normalizes generic_type
+    // nodes via the scope-resolution capture path (normalizeGenericConstructorCapture).
+    // The legacy DAG does not normalize generic_type in composite_literal patterns,
+    // so it cannot resolve Box[User]{} to the Box struct. Scope-resolver-only.
+    'resolves Box[models.User]{} as a generic composite-literal constructor call',
   ]),
   java: new Set([
     // Duplicate-FQN same-module path-affinity ordering is implemented in the
@@ -200,6 +257,48 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build',
     'useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create',
   ]),
+  ruby: new Set<string>([
+    // Ruby scope-resolution currently achieves 89/127 parity.
+    // Tests listed here are scope-resolver-only correctness wins
+    // (pass under registry-primary, fail under legacy). Currently
+    // empty — all 127 tests pass under legacy mode.
+  ]),
+  swift: new Set<string>([
+    // Swift scope-resolution achieves 77/77 baseline parity. The tests
+    // listed here are scope-resolver-only correctness wins from the U4
+    // remediation (PR #1948): they PASS under registry-primary but FAIL
+    // under the legacy DAG, which has no equivalent mechanism. Backporting
+    // to legacy is out of scope per the migration policy. Each entry below
+    // states the registry-primary mechanism and why legacy can't match.
+    //
+    // BUG1 read-edge: the legacy DAG emits a `read` ACCESSES edge only for
+    // a field-access CHAIN that feeds a call (e.g. `user.address.save()`);
+    // a STANDALONE field read (`let current = self.balance`) produces no
+    // read ACCESSES under legacy. The scope-resolver emits it from the
+    // reference-site `read` kind. (The write-edge and no-spurious-read
+    // assertions DO pass both legs and are not skipped.)
+    'still emits a read ACCESSES for a genuine standalone field read (not the write LHS)',
+    // BUG2 class-func: the observable signal is the RESOLUTION PROVENANCE of
+    // a `self.<property>` read inside a `class func` vs `static func` vs an
+    // instance method. The legacy DAG cannot resolve these self-property
+    // reads at all (it emits no ACCESSES for this fixture), so the
+    // provenance-parity check is a scope-resolver-only correctness check.
+    'a class func gets no instance self-binding (parity with static func; instance method differs)',
+    // BUG3 second-binding: the second `if let` / `guard let` clause binding
+    // (`b: makeB() -> B`) is inferred only by the scope-resolver's
+    // per-clause `@type-binding.constructor` synthesis. The colliding
+    // `B.shared` / `Decoy.shared` defeats a unique-name global fallback, so
+    // legacy leaves `b.shared()` unresolved.
+    'resolves b.shared() to B.shared via the SECOND if-let clause binding',
+    'resolves b.shared() to B.shared via the SECOND guard-let clause binding',
+    // BUG4 nested-extension self-call: `added` hoists onto Bar in both legs
+    // (the HAS_METHOD assertion is NOT skipped), but resolving the
+    // `self.base()` call to `Bar.base` (self == Bar, the trailing identifier
+    // of `Foo.Bar`) depends on the scope-resolver's extension `self`
+    // type-binding plus its cross-file self-dispatch; the legacy DAG leaves
+    // the `self.base()` call unresolved for this fixture.
+    'resolves self.base() inside added() to Bar.base (self == Bar), not Foo',
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class
@@ -307,6 +406,19 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
     "h(1, 'a') resolves to h(int, double), not h(int, ...)",
     'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
+    // Pack-expanded dependent bases (`struct Mix : B...`) are suppressed
+    // at C++ scope-capture time in the registry-primary path. The legacy
+    // DAG still sees same-file class-owned methods by simple name and
+    // over-emits `Mix::run -> B::inherited`.
+    'does not bind unqualified member lookup through a pack-expanded dependent base',
+    // User-defined conversion ranking (#1631) builds on the C++
+    // conversion-rank hook and the registry-primary C++ owner sidecars.
+    // Legacy DAG has no user-defined-conversion sidecar or ranking path.
+    'f(42) resolves to f(double) because standard conversion beats constructor UDC',
+    'g(42) keeps a single constructor UDC viable when no standard conversion overload exists',
+    'h(42) emits zero CALLS edges when two single-step constructor UDCs tie',
+    'e(42) ignores the explicit-constructor overload and keeps the implicit UDC viable',
+    'does not let beta::Token(int) tie the valid alpha::Other(int) conversion',
     // The legacy DAG path lacks the SFINAE / `requires`-clause aware
     // overload filter (issue #1579). The two `process<T>` overloads
     // guarded by mutually-exclusive `enable_if_t` predicates collapse
@@ -349,6 +461,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Scope-resolver-only correctness wins; backporting is out of scope.
     'process(data::value) emits zero CALLS edges \u2014 data::value is a variable, not a function',
     'run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference',
+    // PR #1633: strict function-type ADL no longer contributes the referenced
+    // function's enclosing namespace. The legacy DAG still resolves these via
+    // simple-name global fallback.
+    'with_callback(utils::worker) emits zero CALLS edges when worker has no class parameter or return type',
+    'with_callback(utils::worker) with overloaded utils::worker still emits zero CALLS edges',
     // PR #1599 adversarial review findings: nearest-scope ADL blocker
     // semantics and block-scope function declaration ADL suppression are
     // scope-resolver-only. The legacy DAG has no scope-aware ADL blocker
@@ -358,6 +475,17 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'records a structured suppression reason for ADL blocker lookup',
     'swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable',
     'record(e) emits zero CALLS when a block-scope function declaration exists',
+    // PR #1634: sibling-namespace dependent-base suppression. The scope-resolver
+    // correctly suppresses when detail::Inner and public_api::Inner share the
+    // same simple name. The legacy DAG picks an arbitrary match.
+    'Derived<T>::g() -> this->f_a() emits zero CALLS when detail::Inner and public_api::Inner are sibling namespaces (ambiguity suppressed)',
+    // PR #1634: deep-nesting suppression. The scope-resolver enforces a
+    // one-level cap on namespace walking. The legacy DAG picks arbitrarily.
+    'Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced',
+    // Template partial ordering (#1635) relies on C++ parameter type-class
+    // sidecars and scope-resolver overload narrowing. The legacy DAG does not
+    // rank function-template shapes, so it leaves the call unresolved.
+    'pick(T*) wins over pick(T) for pointer arguments',
   ]),
 };
 
@@ -439,6 +567,43 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
 
 export function getResolutionOutcomes(result: PipelineResult) {
   return result.resolutionOutcomes ?? [];
+}
+
+/**
+ * Relationships whose source or target id does not resolve to a live graph node.
+ * A non-empty result means the graph has dangling edges (an endpoint that was
+ * never materialized) — e.g. a HAS_METHOD edge owned by a class node that the
+ * structure phase failed to create. Pass `types` to scope the check to specific
+ * relationship types (e.g. `['HAS_METHOD']`).
+ */
+export function findDanglingEdges(
+  result: PipelineResult,
+  types?: string[],
+): Array<{
+  type: string;
+  sourceId: string;
+  targetId: string;
+  missing: 'source' | 'target' | 'both';
+}> {
+  const out: Array<{
+    type: string;
+    sourceId: string;
+    targetId: string;
+    missing: 'source' | 'target' | 'both';
+  }> = [];
+  for (const rel of result.graph.iterRelationships()) {
+    if (types && !types.includes(rel.type)) continue;
+    const src = result.graph.getNode(rel.sourceId);
+    const tgt = result.graph.getNode(rel.targetId);
+    if (src && tgt) continue;
+    out.push({
+      type: rel.type,
+      sourceId: rel.sourceId,
+      targetId: rel.targetId,
+      missing: !src && !tgt ? 'both' : !src ? 'source' : 'target',
+    });
+  }
+  return out;
 }
 
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {

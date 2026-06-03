@@ -33,7 +33,9 @@ import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
+import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -616,6 +618,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
 
+  // npm-11 npx-crash nudge (#1939). Runs here, after the heap re-exec guard,
+  // so it fires once in the working process and never on the lazy-startup path
+  // of other commands (e.g. `gitnexus mcp`).
+  warnIfNpm11NpxRisk();
+
   // Snapshot the GITNEXUS_* env vars that the impl writes for downstream
   // consumption, so they don't leak across `analyzeCommand` invocations in
   // programmatic callers (tests, long-running hosts). `process.exit(0)` on
@@ -916,14 +923,14 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       phaseStart = Date.now();
     }
     const elapsed = Math.round((Date.now() - phaseStart) / 1000);
-    const display = elapsed >= 3 ? `${phaseLabel} (${elapsed}s)` : phaseLabel;
+    const display = elapsed >= 3 ? `${phaseLabel} (${formatElapsed(elapsed)})` : phaseLabel;
     bar.update(value, { phase: display });
   };
 
   const elapsedTimer = setInterval(() => {
     const elapsed = Math.round((Date.now() - phaseStart) / 1000);
     if (elapsed >= 3) {
-      bar.update({ phase: `${lastPhaseLabel} (${elapsed}s)` });
+      bar.update({ phase: `${lastPhaseLabel} (${formatElapsed(elapsed)})` });
     }
   }, 1000);
 
@@ -1094,6 +1101,17 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
     );
     console.log(`  ${repoPath}`);
+
+    // Persistent (non-scrolling) warning when FTS indexing was skipped — the
+    // progress-bar log() that fired mid-run has already scrolled away, so the
+    // degraded-search state must also appear in the final summary (#1161).
+    if (result.ftsSkipped) {
+      console.log(
+        `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
+          `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
+          `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
+      );
+    }
 
     try {
       await fs.access(getGlobalRegistryPath());

@@ -13,6 +13,7 @@ import {
   Check,
   Loader2,
   AlertCircle,
+  Square,
 } from '@/lib/lucide-icons';
 import type { ToolCallInfo } from '../core/llm/types';
 import type { TFunction } from 'i18next';
@@ -76,6 +77,13 @@ const getStatusDisplay = (status: ToolCallInfo['status']) => {
         color: 'text-rose-400',
         bgColor: 'bg-rose-500/10',
         borderColor: 'border-rose-500/30',
+      };
+    case 'stopped':
+      return {
+        icon: <Square className="h-3.5 w-3.5 fill-current" />,
+        color: 'text-amber-300',
+        bgColor: 'bg-amber-500/10',
+        borderColor: 'border-amber-500/30',
       };
     default:
       return {

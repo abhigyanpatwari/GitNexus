@@ -21,6 +21,9 @@ const cleanupBackoffMs = (attempt: number): number => 100 * (attempt + 1);
 
 const shouldSwallowCleanupError = (err: unknown): boolean => {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  // ENOTEMPTY can race on any platform (macOS node-gyp cache, Linux
+  // parallel test teardown) — swallow after retries are exhausted.
+  if (code === 'ENOTEMPTY') return true;
   return process.platform === 'win32' && WINDOWS_NATIVE_LOCK_CODES.has(code ?? '');
 };
 

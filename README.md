@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 > _Like DeepWiki, but deeper._ DeepWiki helps you _understand_ code. GitNexus lets you _analyze_ it — because a knowledge graph tracks every relationship, not just descriptions.
 
-**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
+**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Antigravity, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
 ---
 
@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 |             | **CLI + MCP**                                                         | **Web UI**                                                           |
 | ----------- | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | **What**    | Index repos locally, connect AI agents via MCP                        | Visual graph explorer + AI chat in browser                           |
-| **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                           |
+| **For**     | Daily development with Cursor, Claude Code, Antigravity, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                           |
 | **Scale**   | Full repos, any size                                                  | Limited by browser memory (~5k files), or unlimited via backend mode |
 | **Install** | `npm install -g gitnexus`                                             | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app)      |
 | **Storage** | LadybugDB native (fast, persistent)                                   | LadybugDB WASM (in-memory, per session)                              |
@@ -104,6 +104,14 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
+> **On npm 11.x?** `npx` can crash during install with `Cannot destructure property 'package' of 'node.target'` (an npm/arborist bug, before GitNexus runs). Use pnpm instead — it builds the native deps explicitly:
+>
+> ```bash
+> pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze
+> ```
+>
+> Or install globally (`npm install -g gitnexus@latest`) and run `gitnexus analyze`. See [#1939](https://github.com/abhigyanpatwari/GitNexus/issues/1939).
+
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 > **Faster install (no C++ toolchain needed):** set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before `npm install -g gitnexus` to skip vendored grammar materialize/build (`tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`). Dart/Proto/Swift files won't be parsed, but install completes in seconds without `python3`/`make`/`g++`. Strict `=1` only — any other value falls through to the rebuild.
@@ -114,15 +122,19 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Editor Support
 
-| Editor          | MCP | Skills | Hooks (auto-augment)                                                                    | Support      |
-| --------------- | --- | ------ | --------------------------------------------------------------------------------------- | ------------ |
-| **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                          | **Full**     |
-| **Cursor**      | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
-| **Codex**       | Yes | Yes    | —                                                                                       | MCP + Skills |
-| **Windsurf**    | Yes | —      | —                                                                                       | MCP          |
-| **OpenCode**    | Yes | Yes    | —                                                                                       | MCP + Skills |
+| Editor               | MCP | Skills | Hooks (auto-augment)                                                                    | Support      |
+| -------------------- | --- | ------ | --------------------------------------------------------------------------------------- | ------------ |
+| **Claude Code**      | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                          | **Full**     |
+| **Cursor**           | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
+| **Antigravity** (Google) | Yes | Yes | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))[¹](#fn-antigravity-hooks) | **Full**     |
+| **Codex**            | Yes | Yes    | —                                                                                       | MCP + Skills |
+| **Windsurf**         | Yes | —      | —                                                                                       | MCP          |
+| **OpenCode**         | Yes | Yes    | —                                                                                       | MCP + Skills |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+
+<a id="fn-antigravity-hooks"></a>
+> ¹ **Antigravity hooks** follow the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/) (Antigravity 2.0 is the documented successor to Gemini CLI). Augmentation runs in `AfterTool` because `BeforeTool` has no context-injection channel in the Gemini contract — the agent sees graph context appended to the tool result via `hookSpecificOutput.additionalContext`. Stale-index hints land in the same channel after a successful `git commit/merge/rebase/cherry-pick/pull`. The schema may evolve if Antigravity-specific hook docs diverge from Gemini CLI's; the implementation will track those changes.
 
 ## Community Integrations
 
@@ -168,6 +180,21 @@ codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 }
 ```
 
+**Antigravity** (Google) — `~/.gemini/antigravity/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+> `gitnexus setup` also merges an `AfterTool` entry into `~/.gemini/settings.json` (under the canonical [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/)) and installs skills to `~/.gemini/antigravity/skills/`. Existing user hooks are preserved. The hook adapter's path is rewritten at install time, so run `gitnexus setup` rather than hand-editing.
+
 **OpenCode** (`~/.config/opencode/config.json`):
 
 ```json
@@ -200,7 +227,7 @@ gitnexus analyze --skills        # Generate repo-specific skill files from detec
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
-gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
+gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
@@ -228,6 +255,23 @@ gitnexus group status <name>     # Check staleness of repos in a group
 ```
 
 If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `gitnexus analyze --worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
+
+#### Embeddings node limit
+
+`gitnexus analyze --embeddings` generates semantic search vectors with a default 50,000-node safety cap to protect memory on large repositories. Override the cap when you know the host has enough memory for a larger graph, or disable it entirely for a one-off full embeddings run.
+
+```bash
+# Generate embeddings with the default 50,000 node safety cap
+gitnexus analyze --embeddings
+
+# Disable the safety cap entirely
+gitnexus analyze --embeddings 0
+
+# Use a custom cap
+gitnexus analyze --embeddings 100000
+```
+
+If embeddings are skipped on a large repository, the indexed graph likely exceeds the default safety cap. Re-run with `gitnexus analyze --embeddings 0` to remove the cap, or `gitnexus analyze --embeddings <n>` to choose a higher limit while still keeping memory bounded.
 
 #### Environment variables
 
@@ -639,7 +683,15 @@ UPSTREAM (what depends on this):
     authRouter [IMPORTS] -> src/routes/auth.ts
 ```
 
-Options: `maxDepth`, `minConfidence`, `relationTypes` (`CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`), `includeTests`
+Options: `maxDepth`, `minConfidence`, `relationTypes` (`CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`), `includeTests`, `limit` (max symbols per depth, default 100), `offset` (pagination start per depth), `summaryOnly` (counts and risk only, omits symbol list)
+
+**Disambiguation** — when several symbols share the target name, `impact` returns a ranked `ambiguous` candidate list instead of guessing. Narrow it with `target_uid` (exact, zero-ambiguity), `file_path`, or `kind` (`Function`, `Class`, `Method`, …). From the CLI these are `--uid`, `--file`, and `--kind`, matching `gitnexus context`:
+
+```bash
+gitnexus impact get_embeddings                       # → ambiguous: lists ranked candidates
+gitnexus impact get_embeddings --file src/embed.py   # → resolves to the one in that file
+gitnexus impact get_embeddings --uid "Function:src/embed.py:get_embeddings"  # exact
+```
 
 ### Process-Grouped Search
 

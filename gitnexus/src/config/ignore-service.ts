@@ -87,6 +87,7 @@ const DEFAULT_IGNORE_LIST = new Set([
   '.generated',
   'generated',
   'auto-generated',
+  'monaco-workers', // Monaco editor web-worker bundles generated for browser runtime
   '.terraform',
   '.serverless',
 
@@ -321,14 +322,6 @@ export const shouldIgnorePath = (filePath: string): boolean => {
       const compoundExt = fileNameLower.substring(secondLastDot);
       if (IGNORED_EXTENSIONS.has(compoundExt)) return true;
     }
-  }
-
-  // Ignore hidden files (starting with .)
-  if (fileName.startsWith('.') && fileName !== '.') {
-    // But allow some important config files
-    const allowedDotFiles = ['.env', '.gitignore']; // Already in IGNORED_FILES, so this is redundant
-    // Actually, let's NOT ignore all dot files - many are important configs
-    // Just rely on the explicit lists above
   }
 
   // Ignore files that look like generated/bundled code

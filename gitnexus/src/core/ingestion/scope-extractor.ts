@@ -574,6 +574,7 @@ function buildDefFromDeclarationMatch(
   const declaredType = match['@declaration.field-type']?.text;
   const returnType = match['@declaration.return-type']?.text;
   const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
+  const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -588,6 +589,7 @@ function buildDefFromDeclarationMatch(
     ...(returnType !== undefined ? { returnType } : {}),
     ...(templateArguments !== undefined ? { templateArguments } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
+    ...(isExplicit === true ? { isExplicit: true } : {}),
   };
 }
 
@@ -608,6 +610,13 @@ function parseIntCapture(cap: { readonly text: string } | undefined): number | u
   if (cap === undefined) return undefined;
   const n = Number.parseInt(cap.text, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function parseBooleanCapture(cap: { readonly text: string } | undefined): boolean | undefined {
+  if (cap === undefined) return undefined;
+  if (cap.text === 'true') return true;
+  if (cap.text === 'false') return false;
+  return undefined;
 }
 
 function parseJsonParameterTypeClassesCapture(
@@ -739,6 +748,61 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
     default:
       return undefined;
   }
+}
+
+/** Function-like labels: callable defs that must keep incoming CALLS edges. */
+const NODE_BEARING_FUNCTION_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set([
+  'Function',
+  'Method',
+  'Constructor',
+]);
+
+/** Value labels: non-callable bindings (a `const`/`let`/`var` holds a value). */
+const NODE_BEARING_VALUE_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set([
+  'Const',
+  'Variable',
+]);
+
+/**
+ * Collapse rule for the deferred node-creation migration (#1876).
+ *
+ * When graph-node creation moves from the legacy DAG onto the
+ * registry-primary path, a single source binding can carry more than one
+ * `SymbolDefinition` for the same name in the same scope — e.g. a direct
+ * arrow `const fn = () => {}` is classified BOTH as a `Function` (the
+ * arrow) and a `Variable` (the binding). Emitting one graph node per def
+ * would reproduce exactly the duplicate-node bug this issue tracks.
+ *
+ * `selectNodeBearingDef` picks the ONE def that should bear the graph node
+ * for such a binding group:
+ *
+ *   1. a function-like def (`Function` / `Method` / `Constructor`) if any —
+ *      the binding is callable and must keep incoming `CALLS` edges;
+ *   2. otherwise a value def (`Const` / `Variable`) — the binding holds a
+ *      value (e.g. an array-method result after the U1/U2 narrowing);
+ *   3. otherwise the first def — deterministic fallback for label sets this
+ *      rule does not rank.
+ *
+ * INPUT CONTRACT: `group` must be the defs bound to ONE name within ONE
+ * scope (a binding group). It deliberately does NOT dedup by range —
+ * `SymbolDefinition` carries no range and `makeDefId` encodes only the
+ * start position, so containment is uncomputable here; the caller forms the
+ * group (e.g. from a scope's `ownedDefs` keyed by name) before calling.
+ *
+ * Pure. No production call site yet — this dead export is intentional and
+ * tracked by #1876 (the deferred node-creation migration); it is the
+ * executable contract that follow-up will consume, pinned today by the
+ * scope-extractor unit test.
+ */
+export function selectNodeBearingDef(
+  group: readonly SymbolDefinition[],
+): SymbolDefinition | undefined {
+  if (group.length === 0) return undefined;
+  const functionLike = group.find((def) => NODE_BEARING_FUNCTION_LABELS.has(def.type));
+  if (functionLike !== undefined) return functionLike;
+  const value = group.find((def) => NODE_BEARING_VALUE_LABELS.has(def.type));
+  if (value !== undefined) return value;
+  return group[0];
 }
 
 function makeDefId(
@@ -1078,7 +1142,9 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
   '@declaration.parameter-type-classes',
+  '@declaration.return-type',
   '@declaration.template-constraints',
+  '@declaration.is-explicit',
 ]);
 
 /**

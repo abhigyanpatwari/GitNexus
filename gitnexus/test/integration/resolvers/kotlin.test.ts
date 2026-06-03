@@ -114,6 +114,47 @@ describe('Kotlin heritage resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Interface-delegation heritage (#1951): `class F : Iface by d`. The base is an
+// `explicit_delegation` (`(user_type) by <delegate>`); the registry-primary
+// synth previously DROPPED this shape (only `user_type` / `constructor_invocation`
+// were handled), so production emitted NO IMPLEMENTS edge for the delegated
+// interface in worker mode — while the legacy @heritage leg (config-driven
+// `kotlinHeritageShapes` + normalizeSupertypeName) captured it. Widening the
+// synth to descend into `explicit_delegation`'s leading `user_type` closes the
+// parity break. G : Base() is the bare control proving the simple-base path is
+// unchanged. This block runs under BOTH legs via createResolverParityIt.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin interface-delegation heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits IMPLEMENTS F → Iface for an interface-delegation base (: Iface by d)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['F → Iface']);
+  });
+
+  it('emits EXTENDS G → Base for the bare constructor-call control (: Base())', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['G → Base']);
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler + Runnable in two packages, explicit imports disambiguate
 // ---------------------------------------------------------------------------
 

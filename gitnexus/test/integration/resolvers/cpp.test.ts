@@ -10,6 +10,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   getResolutionOutcomes,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -347,6 +348,89 @@ describe('C++ variadic call resolution', () => {
     expect(logCall).toBeDefined();
     expect(logCall!.source).toBe('main');
     expect(logCall!.targetFilePath).toBe('logger.h');
+  });
+});
+
+describe('C++ variadic packs and dependent-name resolution (#1894)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-variadic-dependent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('keeps parameter-pack functions viable when call arity exceeds the fixed prefix', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'callVariadic' && c.target === 'logMany',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('emits one fold-expression edge when the folded callee is unambiguous', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'logMany' && c.target === 'sink',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('emits zero fold-expression edges when overload resolution remains ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'foldAmbiguous' && c.target === 'ambiguous',
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not emit a concrete EXTENDS edge for a pack-expanded base', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS').filter(
+      (e) => e.source === 'Mix' && e.target === 'B',
+    );
+
+    expect(extendsEdges).toHaveLength(0);
+  });
+
+  it('does not bind unqualified member lookup through a pack-expanded dependent base', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'inherited',
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('preserves free helper calls inside a class with a pack-expanded dependent base', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'helper',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('preserves using-declaration namespace helper calls inside a pack-base class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'namespaceHelper',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('resolves current-instantiation unqualified member calls', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'own',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps unknown-specialization member types unresolved', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'use',
+    );
+
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -1473,6 +1557,34 @@ describe('C++ template overload disambiguation (vector<int> vs vector<string>)',
   });
 });
 
+describe('C++ template partial ordering (#1635)', () => {
+  it('pick(T*) wins over pick(T) for pointer arguments', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-template-partial-order-pointer'),
+      () => {},
+    );
+
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+    expect(calls.length).toBe(1);
+    const target = result.graph.getNode(calls[0].rel.targetId);
+    expect(target?.properties.startLine).toBe(5);
+  });
+
+  it('pick(T*, T) vs pick(T, T*) emits zero CALLS edges when partial ordering is incomparable', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-template-partial-order-tied'),
+      () => {},
+    );
+
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+    expect(calls.length).toBe(0);
+  });
+});
+
 // ── Phase P: C++ template overload cross-file + chain resolution ──────────
 
 describe('C++ template overload cross-file and chain resolution', () => {
@@ -1983,6 +2095,71 @@ describe('C++ overload resolution — pointer/nullptr/ellipsis ranks (#1637)', (
   });
 });
 
+describe('C++ overload resolution — user-defined conversion rank (#1631)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-user-defined-conversion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(42) resolves to f(double) because standard conversion beats constructor UDC', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+
+    expect(fCalls.length).toBe(1);
+    const target = result.graph.getNode(fCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['double']);
+  });
+
+  it('g(42) keeps a single constructor UDC viable when no standard conversion overload exists', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+
+    expect(gCalls.length).toBe(1);
+    const target = result.graph.getNode(gCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['Wrap']);
+  });
+
+  it('h(42) emits zero CALLS edges when two single-step constructor UDCs tie', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+
+    expect(hCalls.length).toBe(0);
+  });
+
+  it('e(42) ignores the explicit-constructor overload and keeps the implicit UDC viable', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const eCalls = calls.filter((c) => c.source === 'run' && c.target === 'e');
+
+    expect(eCalls.length).toBe(1);
+    const target = result.graph.getNode(eCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['Wrap']);
+  });
+});
+
+describe('C++ overload resolution — UDC namespace collision guard (#1631)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-udc-namespace-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not let beta::Token(int) tie the valid alpha::Other(int) conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+
+    expect(fCalls.length).toBe(1);
+    const target = result.graph.getNode(fCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['Other']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
@@ -2285,6 +2462,93 @@ describe('C++ two-phase template lookup — this-> name-hiding arity mismatch', 
     const fCalls = calls.filter((c) => c.source === 'g_ok' && c.target === 'f');
     expect(fCalls.length).toBe(1);
     expect(fCalls[0].targetFilePath).toContain('derived.h');
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base cross-namespace (nested ns)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-pos'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() resolves to inner::Inner<T>::f when Inner is in a nested namespace (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const resolved = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base cross-namespace (negative)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-neg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS when no Inner<T> exists in the nested namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base inline-namespace variant', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-inline'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() resolves to v1::Base<T>::f when Base is in an inline namespace (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const resolved = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base deep nesting suppression', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-deep'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base sibling-namespace suppression', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-sibling-suppress'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f_a() emits zero CALLS when detail::Inner and public_api::Inner are sibling namespaces (ambiguity suppressed)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const suppressed = calls.filter((c) => c.source === 'g' && c.target === 'f_a');
+    expect(suppressed.length).toBe(0);
   });
 });
 
@@ -2811,41 +3075,66 @@ describe('C++ ADL — block-scope function declaration suppresses ADL', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ADL V2 — free-function reference args contribute their namespace.
+// ADL V2 - strict function-type associated entities.
 //
-// GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
-// like `utils::worker` is passed as an argument, GitNexus contributes the
-// enclosing namespace (`utils`) to the associated set, provided a Function or
-// Method named `worker` is found in the `utils` namespace at resolution time.
-// Under ISO C++ [basic.lookup.argdep] the associated entities for a function-type
-// argument come from the parameter types and return type of the overload set —
-// NOT the function's enclosing namespace. For `void worker()`, the standard-
-// compliant associated set is empty. The approximation captures the dominant
-// real-world pattern (pass a utility function → find its sibling) at the cost
-// of potential false positives when an unrelated function with the same simple
-// name exists in the same namespace (bounded by the workspace-function lookup).
+// Function-reference arguments follow strict ISO C++ ADL: GitNexus walks the
+// referenced overload set's parameter and return types instead of contributing
+// the referenced function's enclosing namespace.
+// For `void worker()`, the associated set is empty; for `void worker(api::Token)`
+// or `api::Token make_token()`, `api` is associated through `Token`.
 // ---------------------------------------------------------------------------
 
-describe('C++ ADL — qualified free-function reference contributes its namespace', () => {
+describe('C++ ADL - free-function reference does not contribute its namespace', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-free-func-ref'), () => {});
   }, 60000);
 
-  it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
+  it('with_callback(utils::worker) emits zero CALLS edges when worker has no class parameter or return type', () => {
     const calls = getRelationships(result, 'CALLS');
     const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
-    // Ordinary lookup inside caller::run finds nothing (no `using`, no local
-    // declaration). utils::worker is a qualified_identifier argument, so ADL
-    // contributes `utils` to the associated-namespace set. utils::with_callback
-    // is then discovered as the sole candidate.
-    expect(cbCalls.length).toBe(1);
-    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+    expect(cbCalls.length).toBe(0);
   });
 });
 
-describe('C++ ADL — overloaded free-function reference does not crash', () => {
+describe('C++ ADL - free-function reference contributes parameter-type associated namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-strict'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_callback(utils::worker) resolves hidden friend through worker(api::Token)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_callback');
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ ADL - free-function reference contributes return-type associated namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-return-strict'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_callback(utils::make_token) resolves hidden friend through api::Token return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_callback');
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ ADL - overloaded free-function reference stays strict', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2855,15 +3144,10 @@ describe('C++ ADL — overloaded free-function reference does not crash', () => 
     );
   }, 60000);
 
-  it('with_callback(utils::worker) with overloaded utils::worker still resolves utils::with_callback via ADL', () => {
+  it('with_callback(utils::worker) with overloaded utils::worker still emits zero CALLS edges', () => {
     const calls = getRelationships(result, 'CALLS');
     const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
-    // utils::worker has two overloads (worker() and worker(int)). V1
-    // simplification: contribute the namespace if ANY overload exists in the
-    // workspace, regardless of which one would be selected. The namespace
-    // `utils` is still added, and utils::with_callback is discovered.
-    expect(cbCalls.length).toBe(1);
-    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+    expect(cbCalls.length).toBe(0);
   });
 });
 
@@ -2883,10 +3167,10 @@ describe('C++ ADL — namespace-qualified variable arg does NOT contribute names
     // data::value is a namespace-qualified integer variable. tree-sitter-cpp
     // produces a qualified_identifier AST node regardless of whether `value`
     // denotes a function, variable, enum, or static member. The GitNexus guard
-    // in collectFunctionRefNamespaces verifies that a Function/Method named
-    // `value` exists in the `data` namespace before contributing it. Since
-    // `data::value` is an int variable, `data` is never added to the associated
-    // set, so data::process is never found as an ADL candidate.
+    // in collectFunctionTypeAssociatedNamespaces verifies that a Function/Method
+    // named `value` exists in the `data` namespace before walking any function
+    // type. Since `data::value` is an int variable, no function type is walked,
+    // so data::process is never found as an ADL candidate.
     expect(processCalls.length).toBe(0);
   });
 });
@@ -3443,5 +3727,41 @@ describe('C++ SFINAE filter — arity gate runs before constraint filter', () =>
       (c) => c.source === 'run' && c.target === 'process',
     );
     expect(calls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Out-of-line nested definitions — method ownership + collision (issue #1975)
+//
+// `struct Outer::Inner { ... }` (name = qualified_identifier) now materializes a
+// node keyed by the full scoped text, so its methods own through a real node.
+// Crucially, a same-tail type in another scope (Other::Inner) stays a DISTINCT
+// node — no merge, no method mis-attribution. (A redundant forward-decl node
+// `Inner` also exists; the pre-existing inline same-tail node collision is
+// tracked separately in #1978.)
+// ---------------------------------------------------------------------------
+
+describe('C++ out-of-line nested definitions — ownership + collision (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-out-of-line-class'), () => {});
+  }, 60000);
+
+  it('owns each out-of-line method with no dangling HAS_METHOD edges', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R3: same-tail types in different scopes must NOT merge — each method owns
+  // through its own distinct node (positive owner-identity, not just dangle-free).
+  it('keeps Outer::Inner and Other::Inner distinct (no cross-wired methods)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const outer = hasMethod.find((e) => e.target === 'from_outer');
+    const other = hasMethod.find((e) => e.target === 'from_other');
+    expect(outer).toBeDefined();
+    expect(other).toBeDefined();
+    expect(outer!.source).toBe('Outer::Inner');
+    expect(other!.source).toBe('Other::Inner');
+    expect(outer!.source).not.toBe(other!.source);
   });
 });
