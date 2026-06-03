@@ -5,6 +5,7 @@ import {
   GRAPH_RAG_TOOL_NAMES,
   type GraphRAGBackend,
 } from '../../src/core/llm/tools';
+import { NODE_REF_REGEX } from '../../src/lib/grounding-patterns';
 
 /** Legacy or phantom tool names that must not appear in the system prompt. */
 const FORBIDDEN_TOOL_NAMES = [
@@ -41,7 +42,7 @@ describe('BASE_SYSTEM_PROMPT tool parity', () => {
 
   it('keeps GRAPH_RAG_TOOL_NAMES in sync with the tools createGraphRAGTools registers', () => {
     const registered = createGraphRAGTools(stubBackend).map((t) => t.name);
-    expect([...registered].sort()).toEqual([...GRAPH_RAG_TOOL_NAMES].sort());
+    expect(registered.sort()).toEqual([...GRAPH_RAG_TOOL_NAMES].sort());
   });
 
   it('does not reference legacy or non-existent tool names', () => {
@@ -57,9 +58,10 @@ describe('BASE_SYSTEM_PROMPT tool parity', () => {
   });
 
   it('documents a parser-recognized symbol citation format', () => {
-    // The UI grounding parser (grounding-patterns.ts NODE_REF_REGEX) recognizes
-    // [[Label:Name]] where Label is one of Function/Class/Method/Interface/...
-    expect(BASE_SYSTEM_PROMPT).toMatch(/\[\[(?:Function|Class|Method|Interface):[^\]]+\]\]/);
+    // Use the UI parser's own allowlist (NODE_REF_REGEX) so this tracks the parser
+    // instead of forking its label list. NODE_REF_REGEX is /g; use a non-global copy
+    // so the match is stateless.
+    expect(BASE_SYSTEM_PROMPT).toMatch(new RegExp(NODE_REF_REGEX.source));
   });
 
   it('documents typed node labels, not polymorphic CodeNode', () => {
@@ -71,7 +73,7 @@ describe('BASE_SYSTEM_PROMPT tool parity', () => {
   it('clarifies highlight_in_graph is not a callable tool', () => {
     // Reword-proof, registry-level guarantee: the load-bearing fact is that
     // highlight_in_graph is not a registered tool, regardless of prompt phrasing.
-    expect([...GRAPH_RAG_TOOL_NAMES] as string[]).not.toContain('highlight_in_graph');
+    expect(GRAPH_RAG_TOOL_NAMES).not.toContain('highlight_in_graph');
     // And the prompt still addresses it explicitly so the model is told not to call it.
     expect(BASE_SYSTEM_PROMPT).toContain('highlight_in_graph');
   });
