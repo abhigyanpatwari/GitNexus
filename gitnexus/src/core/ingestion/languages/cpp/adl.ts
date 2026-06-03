@@ -120,7 +120,7 @@ const classToNamespaceQualifiedName = new Map<string, string>();
  * super-linear (observed ~6.7h on a large repo). This index moves all of that
  * work to a single pass; per-site cost drops to O(associated namespaces).
  */
-interface AdlCandidateIndex {
+export interface AdlCandidateIndex {
   /** simple name → class-like defs (Class/Struct/Interface/Enum), preserving
    *  `scopes.defs.byId` iteration order so first-match / ambiguous semantics
    *  match the legacy linear scan. */
@@ -297,7 +297,47 @@ function buildAdlIndex(
     }
   }
 
+  // Dev/test-only invariant guard: every def bucketed into nsCandidates/
+  // friendCandidates must have a seqByNodeId entry, otherwise the `?? 0`
+  // fallback in pickCppAdlCandidates could collapse two seq-0 candidates and
+  // silently drop a CALLS edge. Gated like the rest of the resolver's opt-in
+  // validation (see contract/scope-resolver.ts and reconcile-ownership.ts):
+  // active in dev/test, off in production and when VALIDATE_SEMANTIC_MODEL=0.
+  if (process.env.NODE_ENV !== 'production' && process.env.VALIDATE_SEMANTIC_MODEL !== '0') {
+    const missing = validateAdlSeqCoverage(idx);
+    if (missing.length > 0) {
+      throw new Error(
+        `[cpp-adl] seq-coverage invariant violated: ${missing.length} candidate def(s) ` +
+          `bucketed without a seqByNodeId entry (e.g. ${missing.slice(0, 5).join(', ')}). ` +
+          `Every def pushed into nsCandidates/friendCandidates must be seq-assigned in the ` +
+          `same build block — see pickCppAdlCandidates' \`?? 0\` fallback.`,
+      );
+    }
+  }
+
   return idx;
+}
+
+/**
+ * Return the nodeIds present in the index's candidate buckets
+ * (`nsCandidates` + `friendCandidates`) but missing from `seqByNodeId`, each
+ * reported once. Empty array means the seq-coverage invariant holds — which it
+ * must, since `buildAdlIndex` assigns a seq to every callable def in the same
+ * block that buckets it. Exported for the dev-gated guard in `buildAdlIndex`
+ * and its unit test.
+ */
+export function validateAdlSeqCoverage(idx: AdlCandidateIndex): string[] {
+  const missing = new Set<string>();
+  for (const buckets of [idx.nsCandidates, idx.friendCandidates]) {
+    for (const bySimple of buckets.values()) {
+      for (const defs of bySimple.values()) {
+        for (const def of defs) {
+          if (!idx.seqByNodeId.has(def.nodeId)) missing.add(def.nodeId);
+        }
+      }
+    }
+  }
+  return [...missing];
 }
 
 /** Build the ADL index on first use of a given `parsedFiles` set; reuse it for
@@ -446,6 +486,10 @@ export function pickCppAdlCandidates(
       for (const def of matches) {
         if (seenKey.has(def.nodeId)) continue;
         seenKey.add(def.nodeId);
+        // `?? 0` is unreachable: every bucketed def is seq-assigned in the same
+        // block that buckets it in buildAdlIndex (PASS A / PASS B). The dev-gated
+        // validateAdlSeqCoverage guard in buildAdlIndex fails loudly if that ever
+        // breaks, rather than letting two seq-0 defs collide and drop a candidate.
         bySeq.set(idx.seqByNodeId.get(def.nodeId) ?? 0, def);
       }
     }
