@@ -1193,6 +1193,45 @@ describe('_impactedEndpointsImpl', () => {
       expect(bfsCallCount).toBe(6);
     });
 
+    // U-BFS10a: max_depth=0 should disable upstream traversal (#64)
+    it('honors max_depth=0 and skips upstream traversal entirely', async () => {
+      setupGitDiff(['FormatUtil.java']);
+      const fileSymbols: Record<string, any[]> = {
+        'FormatUtil.java': [
+          { id: 'sym-format', name: 'formatUser', type: 'Method', filePath: 'FormatUtil.java' },
+        ],
+      };
+      setupFileSymbols(fileSymbols);
+
+      let bfsCallCount = 0;
+      executeQueryMock.mockImplementation(async (...args: any[]) => {
+        const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+        if (query.includes('r.type IN')) {
+          bfsCallCount++;
+          // Should never be called when max_depth=0
+          return [{ sourceId: 'sym-format', id: 'sym-service', name: 'getUser', type: 'Method', filePath: 'UserService.java', relType: 'CALLS', confidence: 0.9 }];
+        }
+        return [];
+      });
+
+      executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+        const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+        if (query.includes('n.filePath CONTAINS')) {
+          return fileSymbols[args[2]?.filePath] || [];
+        }
+        return [];
+      });
+
+      await (backend as any)._impactedEndpointsImpl(
+        (backend as any).repos.get('repo-ie'),
+        { scope: 'unstaged', max_depth: 0 },
+      );
+
+      // (#64) Before the fix, `0 || 3` coerced max_depth=0 to 3, so the
+      // BFS would run. Now it must run ZERO times.
+      expect(bfsCallCount).toBe(0);
+    });
+
     // U-BFS11: OVERRIDES edge traversal
     it('follows OVERRIDES edges during BFS traversal and records them in expandedMeta', async () => {
       setupGitDiff(['CashServiceV2Impl.java']);

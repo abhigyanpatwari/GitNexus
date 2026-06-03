@@ -1869,7 +1869,12 @@ export class LocalBackend {
   ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
-    const maxDepth = params.max_depth || 3;
+    // (#64) Use `??` (nullish coalescing) instead of `||` so that a user-
+    // supplied `max_depth=0` is honored as "no upstream traversal" rather
+    // than coerced to the default 3. The `||` operator treats 0 as falsy,
+    // which silently turned `max_depth=0` into `max_depth=3` and made all
+    // four documented values (0/1/5/10) return identical results.
+    const maxDepth = params.max_depth ?? 3;
     const minConfidence = params.min_confidence ?? 0.7;
 
     // ── 1. Git diff → changed files with line ranges ─────────────────
