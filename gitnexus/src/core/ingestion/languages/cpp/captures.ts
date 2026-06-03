@@ -8,6 +8,7 @@ import {
 import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
 import {
   classifyCppParameterType,
@@ -1587,7 +1588,7 @@ function extractAdlTypeNamespace(typeNode: SyntaxNode): string {
   }
   if (typeNode.type === 'qualified_identifier') {
     const scope = typeNode.childForFieldName('scope');
-    if (scope !== null) return normalizeCppNamespaceQName(scope.text);
+    if (scope !== null) return normalizeQualifiedName(scope.text);
     return extractNamespaceFromQualifiedText(typeNode.text);
   }
   return '';
@@ -1664,16 +1665,11 @@ function findTemplateTypeNode(typeNode: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
-function normalizeCppNamespaceQName(text: string): string {
-  const normalized = text.replace(/^::/, '').replace(/::$/, '').replace(/::/g, '.');
-  return normalized;
-}
-
 function extractNamespaceFromQualifiedText(text: string): string {
   const cleaned = text.replace(/\s+/g, '');
   const idx = cleaned.lastIndexOf('::');
   if (idx <= 0) return '';
-  return normalizeCppNamespaceQName(cleaned.slice(0, idx));
+  return normalizeQualifiedName(cleaned.slice(0, idx));
 }
 
 /**

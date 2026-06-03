@@ -11,6 +11,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 
 const HERITAGE_PREFIX = '__heritage__:';
+const PROPERTY_PREFIX = '__property__:';
 
 function emitRubyMixinEdges(
   graph: KnowledgeGraph,
@@ -92,7 +93,6 @@ function emitRubyMixinEdges(
     }
   }
 
-  const PROPERTY_PREFIX = '__property__:';
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
       if (!imp.targetRaw.startsWith(PROPERTY_PREFIX)) continue;
