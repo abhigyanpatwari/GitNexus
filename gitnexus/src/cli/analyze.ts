@@ -35,6 +35,7 @@ import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -1207,6 +1208,19 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           `    3. Once downloaded the model is cached — future runs work offline.\n`,
         { recoveryHint: 'hf-endpoint-unreachable' },
       );
+      process.exitCode = 1;
+      return;
+    }
+
+    // Local embedding runtime unsupported on this platform (macOS Intel ships no
+    // darwin/x64 ONNX native binding, #1515). The guard threw before importing
+    // transformers.js, so this is a clean, actionable GitNexus message — present
+    // it as such instead of a raw stack trace plus the misleading "installation
+    // may be corrupt" module-not-found hint below.
+    if (isLocalEmbeddingRuntimeBlockerMessage(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
       process.exitCode = 1;
       return;
     }
