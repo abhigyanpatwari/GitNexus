@@ -18,6 +18,7 @@ import {
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   isSuppressedConcreteTypedefDuplicate,
+  qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
   type EnclosingClassInfo,
@@ -297,10 +298,16 @@ const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
 ): EnclosingClassInfo | null => {
   const cached = classInfoCache.get(node);
   if (cached !== undefined) return cached;
-  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
+  const result = findEnclosingClassInfo(
+    node,
+    filePath,
+    resolveEnclosingOwner,
+    getQualifiedOwnerName,
+  );
   classInfoCache.set(node, result);
   return result;
 };
@@ -602,24 +609,71 @@ const processParsingSequential = async (
         nodeLabel === 'Constructor' ||
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
+      // #1978: when the language opts into qualified node ids, thread the
+      // class-extractor's qualifier into the enclosing-owner walk so a nested
+      // member resolves to its owner's *qualified* id (Outer.Inner) — matching
+      // the qualified class node id computed below. Gated on the flag, so the
+      // owner walk and its cache entry are byte-identical when the flag is off.
+      const getQualifiedOwnerName =
+        provider.classExtractor?.qualifiedNodeId === true
+          ? (node: SyntaxNode, simpleName: string): string | null =>
+              provider.classExtractor!.extractQualifiedName(node, simpleName)
+          : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
             nameNode || definitionNodeForRange,
             file.path,
             provider.resolveEnclosingOwner,
+            getQualifiedOwnerName,
           )
         : null;
-      const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const enclosingClassId =
+        enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
       const objectLiteralOwnerInfo =
         !enclosingClassId && nodeLabel === 'Method' && definitionNode
           ? findObjectLiteralBindingInfo(definitionNode, file.path)
           : null;
 
+      // #1978: a class-like node opts into a fully-qualified node id (Outer.Inner)
+      // when the language enables qualifiedNodeId, so same-tail nested types in one
+      // file stay distinct. Hoisted ABOVE the node-id/qualifiedName use below and
+      // derived from the SAME extractQualifiedName the owner edge uses, so the
+      // member's owner id and the class node id agree. The order is load-bearing.
+      const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
+      const qualifiedTypeName =
+        extractedClassSymbol?.qualifiedName ??
+        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
+          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
+          : undefined);
+
       // Qualify method/property IDs with enclosing class name to avoid collisions
-      // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak"
-      const qualifiedName = enclosingClassInfo
-        ? `${enclosingClassInfo.className}.${nodeName}`
-        : nodeName;
+      // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak".
+      // Class-like nodes use their own fully-qualified path as the id key when the
+      // language enables qualifiedNodeId (#1978); everything else is unchanged.
+      // #1982: a Rust inherent-impl node is keyed by its target's RAW tail by
+      // default, so two bare same-tail impls under different mods collapse onto
+      // one Impl node. For an UNSCOPED bare target (type_identifier), qualify the
+      // Impl node id by the enclosing `mod_item` scope — byte-identical to the
+      // owner-walk id (ast-helpers `findEnclosingClassInfo`), so HAS_METHOD stays
+      // anchored. SCOPED targets (`impl a::Inner`) keep their full raw text and
+      // are NOT routed here (#1975).
+      const rustImplQualifiedName =
+        nodeLabel === 'Impl' &&
+        definitionNode?.type === 'impl_item' &&
+        nameNode?.type === 'type_identifier'
+          ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
+          : undefined;
+
+      const qualifiedName =
+        rustImplQualifiedName !== undefined
+          ? rustImplQualifiedName
+          : isClassLikeLabel &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              qualifiedTypeName !== undefined
+            ? qualifiedTypeName
+            : enclosingClassInfo
+              ? `${enclosingClassInfo.className}.${nodeName}`
+              : nodeName;
 
       // Extract method metadata for Function/Method/Constructor nodes BEFORE generating
       // the node ID — parameterCount is needed to disambiguate overloaded methods.
@@ -778,12 +832,6 @@ const processParsingSequential = async (
         nodeLabel,
         `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${constraintsTag}${parameterShapeTag}`,
       );
-      const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
-      const qualifiedTypeName =
-        extractedClassSymbol?.qualifiedName ??
-        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
-          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;

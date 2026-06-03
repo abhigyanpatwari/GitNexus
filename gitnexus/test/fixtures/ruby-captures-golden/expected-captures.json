@@ -207,6 +207,14 @@
     "captureGroups": 16,
     "digest": "34e07387fece6c1d2deb49c39fc2bfe0badfe8015dd1f7ae956d57ac98322a1d"
   },
+  "ruby-nested-mixin-shortname/app.rb": {
+    "captureGroups": 11,
+    "digest": "dfa494facc56b5e07a12befc77cd1e3788f0494f1373960cd9fe88715750e590"
+  },
+  "ruby-nested-tail-collision/nested.rb": {
+    "captureGroups": 31,
+    "digest": "c48ebe5516a0faf50effbad0a19fe29be70c371b50ba9d6fa6ae3f6f708b3a4e"
+  },
   "ruby-overload-dispatch/lib/app.rb": {
     "captureGroups": 10,
     "digest": "288d5386cf37fb76b52a94bc7da6bf8e7843830ebbb01fcd8100d1590c0e3f72"
@@ -234,6 +242,10 @@
   "ruby-qualified-base/lib/outer.rb": {
     "captureGroups": 18,
     "digest": "f81f06be06d013a08a5c9b730a79494251f102f48ca4c25bf0bbd4a2cdcd889e"
+  },
+  "ruby-qualified-mixin/app.rb": {
+    "captureGroups": 11,
+    "digest": "30e3ff7538ab8cea9e5bd9c47c6275aa653b110720f24ee08d7fe19fc5c78952"
   },
   "ruby-qualified-types/lib/admin/user.rb": {
     "captureGroups": 8,

@@ -3768,12 +3768,16 @@ describe('C++ SFINAE filter — arity gate runs before constraint filter', () =>
 // ---------------------------------------------------------------------------
 // Out-of-line nested definitions — method ownership + collision (issue #1975)
 //
-// `struct Outer::Inner { ... }` (name = qualified_identifier) now materializes a
-// node keyed by the full scoped text, so its methods own through a real node.
-// Crucially, a same-tail type in another scope (Other::Inner) stays a DISTINCT
-// node — no merge, no method mis-attribution. (A redundant forward-decl node
-// `Inner` also exists; the pre-existing inline same-tail node collision is
-// tracked separately in #1978.)
+// `struct Outer::Inner { ... }` (name = qualified_identifier) and its in-class
+// forward declaration `struct Outer { struct Inner; }` are the SAME type. Once
+// qualified node ids are on (#1978), both key to one canonical node whose
+// qualifiedName is the normalized scope path `Outer.Inner` — so the forward
+// decl and the out-of-line definition correctly UNIFY instead of producing two
+// redundant nodes (the pre-#1978 base kept them separate). Crucially, a
+// same-tail type in another scope (`Other::Inner`) stays a DISTINCT node — no
+// merge, no method mis-attribution. Owner identity is asserted on the
+// qualifiedName + distinct node id (the real key), not the simple `name`
+// (which is just the tail `Inner` for both, by design).
 // ---------------------------------------------------------------------------
 
 describe('C++ out-of-line nested definitions — ownership + collision (issue #1975)', () => {
@@ -3795,8 +3799,266 @@ describe('C++ out-of-line nested definitions — ownership + collision (issue #1
     const other = hasMethod.find((e) => e.target === 'from_other');
     expect(outer).toBeDefined();
     expect(other).toBeDefined();
-    expect(outer!.source).toBe('Outer::Inner');
-    expect(other!.source).toBe('Other::Inner');
-    expect(outer!.source).not.toBe(other!.source);
+    const ownerQn = (e: typeof outer) =>
+      result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    expect(ownerQn(outer)).toBe('Outer.Inner');
+    expect(ownerQn(other)).toBe('Other.Inner');
+    expect(outer!.rel.sourceId).not.toBe(other!.rel.sourceId);
+    // Discriminator: with qualifiedNodeId ON the owner node id is keyed by the
+    // NORMALIZED dotted path (Struct:...:Outer.Inner); with the fix OFF the
+    // out-of-line node is keyed by the raw scoped text (...:Outer::Inner). The
+    // `qualifiedName` PROPERTY is normalized either way, so assert on the id to
+    // actually prove the fix is engaged (test-soundness, workflow finding #5).
+    expect(outer!.rel.sourceId).toContain('Outer.Inner');
+    expect(outer!.rel.sourceId).not.toContain('::');
+    expect(other!.rel.sourceId).not.toContain('::');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline nested same-tail collision — distinct qualified nodes (issue #1978)
+//
+// `struct Outer { struct Inner {...} }` + `struct Other { struct Inner {...} }`
+// must materialize TWO distinct Struct nodes (qn Outer.Inner vs Other.Inner),
+// each owning its own method/field. On the pre-fix base both Inner structs
+// merge into one simple-keyed node and the methods cross-wire (dangling:0 but
+// wrong). Asserts positive owner-identity via the resolved node's qualifiedName,
+// not just dangle-free (R7). Distinct from the #1977 out-of-line case above.
+// ---------------------------------------------------------------------------
+
+describe('C++ inline nested same-tail collision — distinct qualified nodes (issue #1978)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-nested-tail-collision'), () => {});
+  }, 60000);
+
+  it('materializes Outer.Inner and Other.Inner as two distinct Struct nodes', () => {
+    const qns = getNodesByLabelFull(result, 'Struct')
+      .map((n) => n.properties.qualifiedName)
+      .filter((q) => q === 'Outer.Inner' || q === 'Other.Inner')
+      .sort();
+    expect(qns).toEqual(['Other.Inner', 'Outer.Inner']);
+  });
+
+  it('owns from_outer / from_other through their OWN distinct node (positive identity, R7)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD', 'HAS_PROPERTY'])).toEqual([]);
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const ownerQn = (target: string) => {
+      const e = hm.find((x) => x.target === target);
+      expect(e, `HAS_METHOD -> ${target}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQn('from_outer')).toBe('Outer.Inner');
+    expect(ownerQn('from_other')).toBe('Other.Inner');
+  });
+
+  it('owns outer_field under Outer.Inner (struct field via the main HAS_PROPERTY path)', () => {
+    const hp = getRelationships(result, 'HAS_PROPERTY');
+    const e = hp.find((x) => x.target === 'outer_field');
+    expect(e).toBeDefined();
+    expect(result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName).toBe('Outer.Inner');
+  });
+});
+
+// Same collision fixture, forced through the WORKER pool (parse-worker.ts) rather
+// than the sequential parsing-processor.ts. Production parses repos >= 15 files via
+// the pool, so the qualified node-id + owner-edge logic must hold on BOTH paths
+// (workflow finding #4: the #1978 fixtures otherwise only exercise the sequential
+// path). Asserts worker == sequential for the distinct-node + owner outcome.
+describe('C++ inline nested same-tail collision — worker path parity (issue #1978)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-nested-tail-collision'), () => {}, {
+      // Force the worker-pool gate low so the 1-file fixture engages the pool.
+      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+      workerPoolSize: 2,
+    });
+  }, 120000);
+
+  it('genuinely used the worker pool (guards against silent sequential fallback)', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('materializes two distinct Struct nodes and owns each method correctly (R7)', () => {
+    const qns = getNodesByLabelFull(result, 'Struct')
+      .map((n) => n.properties.qualifiedName)
+      .filter((q) => q === 'Outer.Inner' || q === 'Other.Inner')
+      .sort();
+    expect(qns).toEqual(['Other.Inner', 'Outer.Inner']);
+    expect(findDanglingEdges(result, ['HAS_METHOD', 'HAS_PROPERTY'])).toEqual([]);
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const ownerQn = (target: string) =>
+      result.graph.getNode(hm.find((x) => x.target === target)!.rel.sourceId)?.properties
+        .qualifiedName;
+    expect(ownerQn('from_outer')).toBe('Outer.Inner');
+    expect(ownerQn('from_other')).toBe('Other.Inner');
+  });
+
+  it('resolves DerivedB : Other::Inner → EXTENDS Other.Inner on the worker path (#1982: rawQualifiedName survives worker serialization)', () => {
+    const e = getRelationships(result, 'EXTENDS').find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === 'DerivedB',
+    );
+    expect(e, 'DerivedB EXTENDS edge (worker path)').toBeDefined();
+    expect(e!.rel.targetId).toContain('Other.Inner');
+    expect(e!.rel.targetId).not.toContain('Outer.Inner');
+  });
+
+  it('resolves DerivedA : Outer::Inner → EXTENDS Outer.Inner on the worker path (parity + no duplicate)', () => {
+    const edges = getRelationships(result, 'EXTENDS').filter(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === 'DerivedA',
+    );
+    expect(edges, 'DerivedA EXTENDS edges (worker path)').toHaveLength(1);
+    expect(edges[0]!.rel.targetId).toContain('Outer.Inner');
+    expect(edges[0]!.rel.targetId).not.toContain('Other.Inner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline nested same-tail HERITAGE — qualified base resolution (issue #1982)
+//
+// `struct DerivedA : Outer::Inner` + `struct DerivedB : Other::Inner` must each
+// resolve EXTENDS to the MATCHING nested node. On the registry-primary base the
+// qualifier is discarded (cpp/captures.ts emits the bare tail `Inner`), so
+// resolveInheritanceBaseInScope sees an ambiguous same-tail base. Asserts the
+// resolved EXTENDS endpoint's id contains the right qn (KTD-4: assert on the
+// node id, not the property). Registry-primary only (legacy leg expected-fail).
+// ---------------------------------------------------------------------------
+describe('C++ inline nested same-tail heritage — qualified base (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-nested-tail-collision'), () => {});
+  }, 60000);
+
+  const extendsTargetIdOf = (childQn: string): string | undefined => {
+    const ext = getRelationships(result, 'EXTENDS');
+    const e = ext.find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === childQn,
+    );
+    return e?.rel.targetId;
+  };
+
+  it('resolves DerivedA : Outer::Inner → EXTENDS the Outer.Inner node', () => {
+    const tid = extendsTargetIdOf('DerivedA');
+    expect(tid, 'DerivedA EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('Outer.Inner');
+    expect(tid).not.toContain('Other.Inner');
+  });
+
+  it('resolves DerivedB : Other::Inner → EXTENDS the Other.Inner node (not Outer.Inner)', () => {
+    const tid = extendsTargetIdOf('DerivedB');
+    expect(tid, 'DerivedB EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('Other.Inner');
+    expect(tid).not.toContain('Outer.Inner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespaced same-tail nested heritage — qualified base resolution (issue #1982)
+//
+// `namespace NS { struct A{struct Inner{};}; struct B{struct Inner{};};
+// struct DA:A::Inner{}; struct DB:B::Inner{}; }` — the bases NS::A::Inner and
+// NS::B::Inner are namespace-nested. The structure phase materializes distinct
+// NS.A.Inner / NS.B.Inner nodes, but the scope-model def.qualifiedName dropped
+// the namespace (`A.Inner` not `NS.A.Inner`), so resolveDefGraphId missed the
+// namespaced node key and the simpleKey('Inner') fallback collapsed both bases —
+// DB's EXTENDS pointed at NS.A.Inner. Asserts each Derived EXTENDS its own
+// namespaced base by NODE ID (KTD3). Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('C++ namespaced same-tail nested heritage — qualified base (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-namespaced-collision'), () => {});
+  }, 60000);
+
+  const extendsTargetIdOf = (childQn: string): string | undefined => {
+    const ext = getRelationships(result, 'EXTENDS');
+    const e = ext.find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === childQn,
+    );
+    return e?.rel.targetId;
+  };
+
+  it('resolves NS::DA : A::Inner → EXTENDS the NS.A.Inner node', () => {
+    const tid = extendsTargetIdOf('NS.DA');
+    expect(tid, 'NS.DA EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('NS.A.Inner');
+    expect(tid).not.toContain('NS.B.Inner');
+  });
+
+  it('resolves NS::DB : B::Inner → EXTENDS the NS.B.Inner node (not NS.A.Inner)', () => {
+    const tid = extendsTargetIdOf('NS.DB');
+    expect(tid, 'NS.DB EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('NS.B.Inner');
+    expect(tid).not.toContain('NS.A.Inner');
+  });
+});
+
+// Same namespaced fixture through the WORKER pool — the namespacePrefix tag is
+// applied during main-process scope-resolution (after worker parse/merge), so
+// the fix must hold on both paths. Registry-primary only.
+describe('C++ namespaced same-tail nested heritage — worker path parity (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-namespaced-collision'), () => {}, {
+      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+      workerPoolSize: 2,
+    });
+  }, 120000);
+
+  it('genuinely used the worker pool for the namespaced fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('resolves NS::DA / NS::DB to their own namespaced base on the worker path', () => {
+    const extendsTargetIdOf = (childQn: string): string | undefined => {
+      const ext = getRelationships(result, 'EXTENDS');
+      const e = ext.find(
+        (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === childQn,
+      );
+      return e?.rel.targetId;
+    };
+    const da = extendsTargetIdOf('NS.DA');
+    const db = extendsTargetIdOf('NS.DB');
+    expect(da, 'NS.DA EXTENDS (worker)').toBeDefined();
+    expect(db, 'NS.DB EXTENDS (worker)').toBeDefined();
+    expect(da).toContain('NS.A.Inner');
+    expect(db).toContain('NS.B.Inner');
+    expect(db).not.toContain('NS.A.Inner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Root-anchored base must not pick up enclosing-relative segments (issue #1982)
+//
+// `namespace Outer { struct Wrap { struct A{struct Inner{};}; struct D : ::A::Inner {}; }; }`
+// with a GLOBAL `struct A { struct Inner {}; }` — the leading `::` names the
+// global type. Without the root-anchor guard, resolveQualifiedInheritanceBase
+// prepends the deriving class's enclosing segments and tries `Wrap.A.Inner`
+// first, mis-binding D to the inner type. With it, only the root-anchored
+// `A.Inner` key is tried → the global type. Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('C++ root-anchored base ignores enclosing-relative type (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-global-base-anchor'), () => {});
+  }, 60000);
+
+  it('resolves Outer::Wrap::D : ::A::Inner → EXTENDS the GLOBAL A.Inner (not Wrap.A.Inner)', () => {
+    const e = getRelationships(result, 'EXTENDS').find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === 'Outer.Wrap.D',
+    );
+    expect(e, 'Outer.Wrap.D EXTENDS endpoint').toBeDefined();
+    // Global node id is `Struct:main.cpp:A.Inner`; the enclosing-relative type
+    // is `Struct:main.cpp:Outer.Wrap.A.Inner`. KTD3: discriminate on the node id.
+    expect(e!.rel.targetId).toContain('A.Inner');
+    expect(e!.rel.targetId).not.toContain('Wrap');
   });
 });
