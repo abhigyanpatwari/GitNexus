@@ -598,6 +598,41 @@ export class LocalBackend {
         return aggregated;
       }
 
+      case 'endpoints': {
+        // (#12) Query Route nodes for HTTP endpoints across multiple repos.
+        // Mirrors the single-repo `endpoints` contract: each repo contributes
+        // its EndpointInfo[]; results are tagged with `_repoId`. Failed repos
+        // surface in `errors[]` rather than aborting the whole call.
+        const results = await Promise.all(
+          repoIds.map(async (repoId) => {
+            try {
+              const handle = await this.resolveRepo(repoId);
+              const result = await this.endpoints(handle, params);
+              return { repoId, result, error: null };
+            } catch (err: any) {
+              return { repoId, result: null, error: err.message };
+            }
+          })
+        );
+
+        const aggregated: any = {
+          endpoints: [] as any[],
+          errors: [] as { repoId: string; error: string }[],
+        };
+
+        for (const { repoId, result, error } of results) {
+          if (error) {
+            aggregated.errors.push({ repoId, error });
+          } else if (result?.endpoints) {
+            aggregated.endpoints.push(
+              ...result.endpoints.map((e: any) => ({ ...e, _repoId: repoId })),
+            );
+          }
+        }
+
+        return aggregated;
+      }
+
       case 'impact': {
         // Run impact analysis on multiple repos
         const results = await Promise.all(

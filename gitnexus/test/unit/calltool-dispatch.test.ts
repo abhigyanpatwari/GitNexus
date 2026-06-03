@@ -1156,6 +1156,91 @@ describe('callTool multi-repo routing', () => {
     });
   });
 
+  describe('endpoints tool with repos[] (#12)', () => {
+    it('routes to multi-repo handler when repos array is provided', async () => {
+      // (#12) Multi-repo `endpoints` should aggregate per-repo EndpointInfo[] with
+      // _repoId attribution — never the "Multiple repositories indexed" error.
+      vi.spyOn(backend as any, 'endpoints').mockImplementation(async (handle: any) => {
+        if (handle.id === 'test-project') {
+          return {
+            endpoints: [
+              { method: 'GET', path: '/api/users', controllerName: 'UserController', filePath: 'UserController.java', line: 25 },
+              { method: 'POST', path: '/api/users', controllerName: 'UserController', filePath: 'UserController.java', line: 42 },
+            ],
+          };
+        }
+        if (handle.id === 'other-project') {
+          return {
+            endpoints: [
+              { method: 'GET', path: '/api/orders/{id}', controllerName: 'OrderController', filePath: 'OrderController.java', line: 30 },
+            ],
+          };
+        }
+        return { endpoints: [] };
+      });
+
+      const result = await backend.callTool('endpoints', {
+        repos: ['test-project', 'other-project'],
+      });
+
+      // Aggregated with _repoId attribution
+      expect((result as any)).toHaveProperty('endpoints');
+      expect((result as any).endpoints).toHaveLength(3);
+      const tagged = (result as any).endpoints.filter((e: any) => e._repoId);
+      expect(tagged).toHaveLength(3);
+      expect((result as any).endpoints.filter((e: any) => e._repoId === 'test-project')).toHaveLength(2);
+      expect((result as any).endpoints.filter((e: any) => e._repoId === 'other-project')).toHaveLength(1);
+    });
+
+    it('filters endpoints by method across multiple repos', async () => {
+      // (#12) The method/path params must pass through to each repo's
+      // single-repo endpoints() call so filters work cross-repo.
+      vi.spyOn(backend as any, 'endpoints').mockImplementation(async (_handle: any, params: any) => {
+        const all = [
+          { method: 'GET', path: '/api/users' },
+          { method: 'POST', path: '/api/users' },
+        ];
+        if (params?.method) {
+          return { endpoints: all.filter(e => e.method === params.method) };
+        }
+        return { endpoints: all };
+      });
+
+      const result = await backend.callTool('endpoints', {
+        method: 'GET',
+        repos: ['test-project', 'other-project'],
+      });
+
+      // Both repos got the GET filter; result contains only GET entries
+      expect((result as any).endpoints.every((e: any) => e.method === 'GET')).toBe(true);
+      expect((result as any).endpoints.length).toBeGreaterThan(0);
+    });
+
+    it('surfaces per-repo errors without aborting the whole call', async () => {
+      // (#12) If one repo's endpoints() throws, the others still contribute.
+      // The failed repo is recorded in `errors[]` so callers can diagnose.
+      vi.spyOn(backend as any, 'endpoints').mockImplementation(async (handle: any) => {
+        if (handle.id === 'test-project') {
+          return { endpoints: [{ method: 'GET', path: '/api/users' }] };
+        }
+        if (handle.id === 'other-project') {
+          throw new Error('LadybugDB not ready');
+        }
+        return { endpoints: [] };
+      });
+
+      const result = await backend.callTool('endpoints', {
+        repos: ['test-project', 'other-project'],
+      });
+
+      expect((result as any).endpoints).toHaveLength(1);
+      expect((result as any).endpoints[0]._repoId).toBe('test-project');
+      expect((result as any).errors).toHaveLength(1);
+      expect((result as any).errors[0].repoId).toBe('other-project');
+      expect((result as any).errors[0].error).toMatch(/LadybugDB not ready/);
+    });
+  });
+
   describe('backward compatibility', () => {
     it('rejects repos[] for tools that do not support it', async () => {
       await expect(backend.callTool('rename', {
