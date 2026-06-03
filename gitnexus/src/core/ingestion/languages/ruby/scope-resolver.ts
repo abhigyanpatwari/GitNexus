@@ -9,9 +9,7 @@ import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
-
-const HERITAGE_PREFIX = '__heritage__:';
-const PROPERTY_PREFIX = '__property__:';
+import { decodeMarker } from '../../utils/heritage-marker.js';
 
 /**
  * #1991: resolve a BARE mixin reference (`include Loggable`) to a nested module by
@@ -85,8 +83,9 @@ function emitRubyMixinEdges(
 
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
-      if (!imp.targetRaw.startsWith(HERITAGE_PREFIX)) continue;
-      const parts = imp.targetRaw.slice(HERITAGE_PREFIX.length).split(':');
+      const decoded = decodeMarker(imp.targetRaw);
+      if (decoded?.kind !== 'heritage') continue;
+      const parts = decoded.fields;
       if (parts.length < 3) continue;
       const [kind, mixinName, className] = parts;
       const classGraphId = graphIdByName.get(className!);
@@ -127,8 +126,9 @@ function emitRubyMixinEdges(
 
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
-      if (!imp.targetRaw.startsWith(PROPERTY_PREFIX)) continue;
-      const parts = imp.targetRaw.slice(PROPERTY_PREFIX.length).split(':');
+      const decoded = decodeMarker(imp.targetRaw);
+      if (decoded?.kind !== 'property') continue;
+      const parts = decoded.fields;
       if (parts.length < 3) continue;
       const [_attrKind, propName, className] = parts;
       const classGraphId = graphIdByName.get(className!);

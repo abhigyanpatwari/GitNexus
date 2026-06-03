@@ -13,6 +13,7 @@ import { synthesizeRubyReceiverBinding, findEnclosingClassOrModule } from './rec
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitQualifiedName } from '../../utils/qualified-name.js';
+import { encodeMarker } from '../../utils/heritage-marker.js';
 
 const FUNCTION_NODE_TYPES = ['method', 'singleton_method'] as const;
 const HERITAGE_CALL_NAMES: ReadonlySet<string> = new Set(['include', 'extend', 'prepend']);
@@ -193,7 +194,7 @@ export function emitRubyScopeCaptures(
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__heritage__:${callName}:${mixinName}:${ownerName}`,
+                      encodeMarker('heritage', [callName, mixinName, ownerName]),
                     ),
                     '@import.name': syntheticCapture('@import.name', callNode, mixinName),
                   });
@@ -227,7 +228,7 @@ export function emitRubyScopeCaptures(
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__property__:${callName}:${propName}:${ownerName}`,
+                      encodeMarker('property', [callName, propName, ownerName]),
                     ),
                     '@import.name': syntheticCapture('@import.name', callNode, propName),
                   });
