@@ -232,6 +232,53 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).candidates).toHaveLength(2);
   });
 
+  it('context tool aggregates method-level CALLS into Class incoming (#56)', async () => {
+    // (#56) Reproduction: `CashServiceV2Impl` had no incoming refs
+    // because the previous expansion only looked at callers via the
+    // class's Constructor and File nodes, not its Method nodes. The
+    // graph has CALLS edges from controllers → service methods, but
+    // the class context view missed them. The fix adds a third
+    // parallel query that walks HAS_METHOD from the class to its
+    // methods, then finds CALLS edges from any caller to those
+    // methods, and reports the callers under `incoming.calls`.
+    const SYM_ID = 'Class:CashServiceV2Impl';
+    (executeParameterized as any).mockImplementation(async (_repoId: string, query: string) => {
+      // Initial name lookup
+      if (query.includes('n.name = $symName') || query.includes('n.id = $symName')) {
+        return [{
+          id: SYM_ID,
+          name: 'CashServiceV2Impl',
+          type: 'Class',
+          filePath: 'src/main/java/CashServiceV2Impl.java',
+          startLine: 1, endLine: 50,
+        }];
+      }
+      // Constructor / File / Method incoming queries
+      if (query.includes('UNION ALL') && query.includes('MATCH (n:Interface)')) {
+        return [{ label: 'Class' }]; // typeCheck union → isClassLike
+      }
+      if (query.includes(':Constructor')) return []; // ctorIncoming
+      if (query.includes(':File') && query.includes('rel.type = \'DEFINES\'')) return []; // fileIncoming
+      if (query.includes('HAS_METHOD') && query.includes('MATCH (caller)-[r:CodeRelation {type: \'CALLS\'}]->(target)')) {
+        // The new method-incoming query: return 2 callers.
+        return [
+          { relType: 'CALLS', uid: 'Method:OrderIntController:cancel', name: 'cancel', filePath: 'OrderIntController.java', kind: 'Method', targetMethod: 'unholdMoney' },
+          { relType: 'CALLS', uid: 'Method:SigningIConnectFacadeImpl:signContractIConnect', name: 'signContractIConnect', filePath: 'SigningIConnectFacadeImpl.java', kind: 'Method', targetMethod: 'unholdMoney' },
+        ];
+      }
+      // Incoming/outgoing/process queries → empty
+      return [];
+    });
+
+    const result = await backend.callTool('context', { name: 'CashServiceV2Impl' });
+    expect((result as any).status).toBe('found');
+    // The 2 method-level callers should be aggregated under incoming.calls.
+    expect((result as any).incoming.calls).toBeInstanceOf(Array);
+    expect((result as any).incoming.calls).toHaveLength(2);
+    const names = (result as any).incoming.calls.map((c: any) => c.name).sort();
+    expect(names).toEqual(['cancel', 'signContractIConnect']);
+  });
+
   it('context tool kind matches uid prefix when sym.type is empty (#30)', async () => {
     // (#30) Reproduction: `UserRepository` is a Spring @Repository
     // interface extending `JpaRepository`. The graph stores a single

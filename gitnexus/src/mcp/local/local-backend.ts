@@ -1577,11 +1577,18 @@ export class LocalBackend {
       LIMIT 30
     `, { symId });
 
-    // Expand incoming refs for Class/Interface nodes: callers via Constructor/File
+    // Expand incoming refs for Class/Interface nodes: callers via Constructor/File/Method
     if (isClassLike) {
       try {
-        // Run both incoming-ref queries in parallel — they are independent.
-        const [ctorIncoming, fileIncoming] = await Promise.all([
+        // Run all three incoming-ref queries in parallel — they are
+        // independent. The third query (#56) covers callers of the
+        // class's METHODS — without it, a query like
+        // `context(name="CashServiceV2Impl")` returns no incoming
+        // refs even though 8 controllers call its methods at the
+        // method level. We aggregate those method-level CALLS edges
+        // into the class context, similar to how outgoing
+        // `has_method` already shows method-level outgoing edges.
+        const [ctorIncoming, fileIncoming, methodIncoming] = await Promise.all([
           executeParameterized(repo.id, `
             MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -1598,6 +1605,22 @@ export class LocalBackend {
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `, { symId }),
+          executeParameterized(repo.id, `
+            // (#56) Find callers of the class's methods. This walks
+            // HAS_METHOD from the class to its Method nodes, then
+            // finds CALLS edges from any caller to those methods. The
+            // relation type is reported as CALLS so it sorts into
+            // the same incoming.calls bucket as direct method-level
+            // context queries. The caller.uid, name, filePath come
+            // from the caller (the source of the CALLS edge), and
+            // targetMethod identifies which method on the class was
+            // called — useful for the consumer to show a backtrace.
+            MATCH (n)-[hm:CodeRelation {type: 'HAS_METHOD'}]->(target:Method)
+            WHERE n.id = $symId
+            MATCH (caller)-[r:CodeRelation {type: 'CALLS'}]->(target)
+            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind, target.name AS targetMethod
+            LIMIT 30
+          `, { symId }),
         ]);
 
         // Deduplicate by (relType, uid) — a caller can have multiple relation
@@ -1606,7 +1629,7 @@ export class LocalBackend {
         const seenKeys = new Set(
           incomingRows.map((r: any) => `${r.relType || r[0]}:${r.uid || r[1]}`),
         );
-        for (const r of [...ctorIncoming, ...fileIncoming]) {
+        for (const r of [...ctorIncoming, ...fileIncoming, ...methodIncoming]) {
           const key = `${r.relType || r[0]}:${r.uid || r[1]}`;
           if (!seenKeys.has(key)) { seenKeys.add(key); incomingRows.push(r); }
         }
