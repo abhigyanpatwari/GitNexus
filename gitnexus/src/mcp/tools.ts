@@ -224,6 +224,9 @@ Results from multi-repo queries include '_repoId' attribution.`,
         relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, OVERRIDES (default: usage-based)' },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
+        // (#53) Disambiguate overloaded methods (interface vs impl) by file path.
+        // Matches the `context` tool's `file_path` contract.
+        file_path: { type: 'string', description: 'File path to disambiguate symbols (matches the context tool\'s `file_path` parameter; preferred candidate is the one whose filePath ends with this suffix).' },
         repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
         repos: { type: 'array', items: { type: 'string' }, description: 'Multiple repos for cross-repo queries. When provided, analyzes impact across all listed repos in parallel with repoId attribution.' },
       },
