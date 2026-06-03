@@ -69,10 +69,10 @@ export function localEmbeddingDoctorStatus(opts: {
   if (opts.httpMode) {
     return { status: '✓ http endpoint configured', detail: null };
   }
-  const blocker = getLocalEmbeddingRuntimeBlocker({ platform: opts.platform, arch: opts.arch });
+  const platform = opts.platform ?? process.platform;
+  const arch = opts.arch ?? process.arch;
+  const blocker = getLocalEmbeddingRuntimeBlocker({ platform, arch });
   if (blocker) {
-    const platform = opts.platform ?? process.platform;
-    const arch = opts.arch ?? process.arch;
     return { status: `✗ local embeddings unavailable on ${platform}/${arch}`, detail: blocker };
   }
   return { status: '✓ local embeddings supported', detail: null };

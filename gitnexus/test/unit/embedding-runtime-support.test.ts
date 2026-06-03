@@ -83,13 +83,30 @@ describe('getLocalEmbeddingRuntimeBlocker', () => {
     expect(text).toContain('GITNEXUS_EMBEDDING_URL');
     expect(text).toMatch(/Linux or in Docker/);
     expect(text).toMatch(/Apple Silicon/);
+    // Addresses the GitNexus device knob too, not only ONNX_WEB_BACKEND (R3 / #1987)
+    expect(text).toContain('GITNEXUS_EMBEDDING_DEVICE');
   });
 
-  it('defaults platform/arch to the current process when no options are given', () => {
-    // On the linux/x64 CI host this is null; the value must equal the explicit form.
-    expect(getLocalEmbeddingRuntimeBlocker()).toBe(
-      getLocalEmbeddingRuntimeBlocker({ platform: process.platform, arch: process.arch }),
-    );
+  it('reads platform/arch from process when no options are given', () => {
+    // Stub the process so the no-arg call must consult process.platform/arch —
+    // this falsifiably exercises the `?? process.platform` / `?? process.arch`
+    // fallback (a plain null === null on the CI host would not).
+    const restoreBlocked = stubPlatform('darwin', 'x64');
+    try {
+      expect(getLocalEmbeddingRuntimeBlocker()).not.toBeNull();
+      expect(getLocalEmbeddingRuntimeBlocker()).toBe(
+        getLocalEmbeddingRuntimeBlocker({ platform: 'darwin', arch: 'x64' }),
+      );
+    } finally {
+      restoreBlocked();
+    }
+
+    const restoreSupported = stubPlatform('linux', 'x64');
+    try {
+      expect(getLocalEmbeddingRuntimeBlocker()).toBeNull();
+    } finally {
+      restoreSupported();
+    }
   });
 });
 
@@ -204,6 +221,49 @@ describe('HTTP embedding mode on darwin/x64', () => {
 
       // HTTP embeddings must route through fetch, never the local ONNX runtime.
       expect(fetch).toHaveBeenCalled();
+      expect(transformersImported).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('MCP embedQuery on darwin/x64', () => {
+  it('routes HTTP mode through httpEmbedQuery without importing transformers.js', async () => {
+    process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+    process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+    const mockVec = Array.from({ length: 384 }, (_, i) => i / 384);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: [{ embedding: mockVec }] }),
+      })),
+    );
+
+    const restore = stubPlatform('darwin', 'x64');
+    try {
+      const { embedQuery } = await import('../../src/mcp/core/embedder.js');
+      const vec = await embedQuery('query from macOS Intel');
+
+      // httpEmbedQuery validates against the default 384 dims (no GITNEXUS_EMBEDDING_DIMS
+      // set), so the reused stub stays 384-length; resize the stub + DIMS together to vary it.
+      expect(Array.isArray(vec)).toBe(true);
+      expect(vec).toHaveLength(384);
+      expect(fetch).toHaveBeenCalled();
+      expect(transformersImported).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('rejects local mode before importing transformers.js', async () => {
+    // No GITNEXUS_EMBEDDING_* env (cleared in beforeEach) → local mode → embedQuery
+    // calls initEmbedder, which throws the guard before the lazy transformers import.
+    const restore = stubPlatform('darwin', 'x64');
+    try {
+      const { embedQuery } = await import('../../src/mcp/core/embedder.js');
+      await expect(embedQuery('query from macOS Intel')).rejects.toThrow(/macOS Intel/);
       expect(transformersImported).not.toHaveBeenCalled();
     } finally {
       restore();

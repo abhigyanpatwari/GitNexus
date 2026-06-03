@@ -1192,6 +1192,20 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       return;
     }
 
+    // Local embedding runtime unsupported on this platform (macOS Intel ships no
+    // darwin/x64 ONNX native binding, #1515). The guard threw before importing
+    // transformers.js, so this is a clean, actionable GitNexus message. Checked
+    // before the network-heuristic isHfDownloadFailure branch below (and before
+    // the generic module-not-found "installation may be corrupt" hint) so the
+    // explicit platform message always takes priority.
+    if (isLocalEmbeddingRuntimeBlockerMessage(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
     // HF download failure — show clean guidance without the raw stack trace.
     // Checked before writeFatalToStderr so the user sees one focused message
     // rather than a stack-trace dump followed by a second remediation block.
@@ -1208,19 +1222,6 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           `    3. Once downloaded the model is cached — future runs work offline.\n`,
         { recoveryHint: 'hf-endpoint-unreachable' },
       );
-      process.exitCode = 1;
-      return;
-    }
-
-    // Local embedding runtime unsupported on this platform (macOS Intel ships no
-    // darwin/x64 ONNX native binding, #1515). The guard threw before importing
-    // transformers.js, so this is a clean, actionable GitNexus message — present
-    // it as such instead of a raw stack trace plus the misleading "installation
-    // may be corrupt" module-not-found hint below.
-    if (isLocalEmbeddingRuntimeBlockerMessage(msg)) {
-      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
-        recoveryHint: 'local-embedding-unsupported',
-      });
       process.exitCode = 1;
       return;
     }
