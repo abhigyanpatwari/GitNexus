@@ -164,6 +164,14 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
       return extract(node, { name: simpleName })?.qualifiedName ?? null;
     },
 
+    // #1991: qualify a non-typeDeclaration scope node (e.g. a Ruby `module` → Trait)
+    // by the same ancestor-scope walk the node-id path uses, so two same-tail nested
+    // mixin modules stay distinct. extract()/extractQualifiedName cannot be reused —
+    // they bail on non-typeDeclarations (a module is not in typeDeclarationNodes).
+    qualifyScopeName(node: SyntaxNode, simpleName: string): string {
+      return buildQualifiedName(node, simpleName);
+    },
+
     shouldSkipClassCapture(context): boolean {
       return config.shouldSkipClassCapture?.(context) ?? false;
     },

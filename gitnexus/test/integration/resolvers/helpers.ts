@@ -337,6 +337,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'routes include OuterMix / OtherMix to their OWN qualified Inner owner (same-tail mixin, R7)',
     'genuinely used the worker pool for the same-tail Ruby fixture',
     'owns outer_attr / other_attr under their OWN qualified Inner node on the worker path (no duplicate, R7)',
+    // #1991: same-tail nested mixin-MODULE (Trait) routing. emitRubyMixinEdges
+    // resolves the bare mixin by the including class's enclosing scope; the legacy
+    // DAG does not use that bridge, so these are registry-primary-only by design.
+    'routes S -> App.Loggable and T -> Web.Loggable (no cross-wire, R2)',
+    'genuinely used the worker pool for the same-tail mixin-module fixture',
+    'routes S -> App.Loggable and T -> Web.Loggable on the worker path (no cross-wire)',
     // #1982 follow-up: a nested mixin included by short name must not drop its
     // IMPLEMENTS edge. The fix (graphIdByTail fallback in emitRubyMixinEdges) is
     // registry-primary only; the legacy DAG does not use that bridge.

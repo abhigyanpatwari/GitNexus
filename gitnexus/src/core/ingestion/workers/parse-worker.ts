@@ -1831,7 +1831,13 @@ const processFileGroup = (
       const getQualifiedOwnerName =
         provider.classExtractor?.qualifiedNodeId === true
           ? (node: SyntaxNode, simpleName: string): string | null =>
-              provider.classExtractor!.extractQualifiedName(node, simpleName)
+              // #1991: LOCKSTEP — a Ruby `module` owner is not a typeDeclaration, so
+              // extractQualifiedName returns null; fall back to the scope walk so a
+              // method inside a nested module owns through the SAME qualified Trait
+              // id its node uses on the worker path too.
+              provider.classExtractor!.extractQualifiedName(node, simpleName) ??
+              provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
+              null
           : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
@@ -1856,7 +1862,15 @@ const processFileGroup = (
         extractedClassSymbol?.qualifiedName ??
         (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
           ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
+          : // #1991: LOCKSTEP with parsing-processor.ts — qualify a Ruby `module`
+            // (Trait) via the scope walk so same-tail nested mixin modules get
+            // distinct ids on the worker path too. Gated on qualifiedNodeId.
+            nodeLabel === 'Trait' &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              classNodeForSymbol
+            ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
+              undefined)
+            : undefined);
 
       // Qualify method/property IDs with enclosing class name to avoid collisions.
       // Class-like nodes use their own fully-qualified path as the id key when the
@@ -1874,7 +1888,9 @@ const processFileGroup = (
       const qualifiedName =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
-          : isClassLikeLabel &&
+          : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
+            // scope id keys the worker-path node, matching the sequential path.
+            (isClassLikeLabel || nodeLabel === 'Trait') &&
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName
