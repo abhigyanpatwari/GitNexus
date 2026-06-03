@@ -14,12 +14,11 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
-import {
-  pipeline,
-  env,
-  type FeatureExtractionPipeline,
-  type ProgressInfo,
-} from '@huggingface/transformers';
+// Type-only import: erased at compile time so loading this module never pulls
+// in @huggingface/transformers (and its native onnxruntime-node binding) at
+// runtime. The runtime values (pipeline, env) are dynamically imported inside
+// initEmbedder, after the platform guard has passed (#1515).
+import type { FeatureExtractionPipeline, ProgressInfo } from '@huggingface/transformers';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -28,6 +27,7 @@ import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } fr
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
+import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
 import { logger } from '../logger.js';
 
 /**
@@ -143,6 +143,17 @@ export const initEmbedder = async (
     );
   }
 
+  // Fail fast on platforms where the bundled native ONNX Runtime binding is not
+  // shipped (macOS Intel, #1515). Must run before any transformers.js /
+  // onnxruntime-node import or resolution — otherwise the native module load
+  // crashes with a raw "Cannot find module ...onnxruntime_binding.node" that
+  // ONNX_WEB_BACKEND=wasm cannot rescue (#1516). HTTP mode was already handled
+  // above, so this only blocks the local-runtime path.
+  const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+  if (runtimeBlocker) {
+    throw new Error(runtimeBlocker);
+  }
+
   // Return existing instance if available
   if (embedderInstance) {
     return embedderInstance;
@@ -166,6 +177,10 @@ export const initEmbedder = async (
 
   initPromise = (async () => {
     try {
+      // Lazy-load transformers.js only after the runtime guard has passed, so
+      // unsupported platforms never reach the native ONNX import (#1515).
+      const { pipeline, env } = await import('@huggingface/transformers');
+
       // Configure transformers.js environment
       env.allowLocalModels = false;
       // Bridge user-controlled env vars to transformers.js: HF_HOME →
