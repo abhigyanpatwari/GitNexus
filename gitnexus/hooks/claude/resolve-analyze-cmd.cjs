@@ -27,6 +27,8 @@
  */
 
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const NPX_REF = 'gitnexus@latest';
 
@@ -34,46 +36,72 @@ const NPX_REF = 'gitnexus@latest';
 const PNPM_ALLOW_BUILD_BASE = ['@ladybugdb/core', 'gitnexus', 'tree-sitter'];
 const PNPM_ALLOW_BUILD_EMBEDDINGS = ['onnxruntime-node'];
 
-// Probe timeout, kept under Claude Code's 10s hook budget. In a linked worktree
-// the stale-index hook first runs `git rev-parse --git-common-dir` (~2s) and
-// `git rev-parse HEAD` (~3s); the pnpm path then adds up to four 1s probes
-// (which gitnexus, npm --version, which pnpm, pnpm --version), so the worst case
-// is ~9s — within budget but tight. A healthy `which`/`where`/`--version`
-// returns in well under a second, so the realistic cost is far lower.
+// Version-probe timeout, kept under Claude Code's 10s hook budget. PATH presence
+// detection is now spawn-free (resolveOnPath scans PATH directly), so the only
+// subprocesses left are the version probes: in a linked worktree the stale-index
+// hook first runs `git rev-parse --git-common-dir` (~2s) and `git rev-parse HEAD`
+// (~3s); the pnpm path then adds up to two 1s `--version` probes (npm, pnpm), so
+// the worst case is ~7s — within budget. A healthy `--version` returns in well
+// under a second, so the realistic cost is far lower.
 const PROBE_TIMEOUT_MS = 1000;
 
 /**
- * Pick the best match from `where`/`which` output. A global `gitnexus` may be a
- * `.cmd`/`.bat` (npm), a `.exe`, or an extensionless shim (Volta, scoop), so on
- * Windows we prefer a recognized executable extension but accept any hit — the
- * emitted hint is `gitnexus analyze` regardless of which shim resolves it. Pure
- * and exported so the shim-matching can be unit-tested without spawning.
+ * Absolute path to `command` on PATH, or null — a pure-Node, spawn-free lookup
+ * that mirrors how a shell resolves a bare command name: each PATH dir × the
+ * platform's executable extensions (PATHEXT on Windows; the bare name + X_OK on
+ * POSIX). This replaces the former `where`/`which` subprocess (#1938 "Option A"):
+ * it is byte-for-byte identical on every OS, with no dependency on the probe
+ * binary being reachable (a sanitized PATH that drops System32 / `/usr/bin` no
+ * longer defeats detection), no shell-spawn surface (CVE-2024-27980), and no
+ * spawn timeout to tune. On Windows it matches PATHEXT extensions ONLY — exactly
+ * what `where`/cmd.exe resolve — so neither an un-spawnable `.ps1`-only shim (not
+ * in default PATHEXT) nor a bare extensionless file (which the shell cannot launch
+ * as `command`) is a false positive. `preferExecExt` returns a recognized
+ * `.cmd`/`.bat`/`.exe` shim ahead of an exotic PATHEXT hit (e.g. `.COM`) when both
+ * match, matching what a user would actually launch. Pure (platform/env injectable)
+ * so it is unit-testable without touching the host PATH.
  */
-function pickPathMatch(output, { isWin, gitnexusWrapper } = {}) {
-  const lines = output
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (isWin && gitnexusWrapper) {
-    return lines.find((l) => /\.(cmd|bat|exe)$/i.test(l)) || lines[0] || null;
+function resolveOnPath(
+  command,
+  preferExecExt = false,
+  { platform = process.platform, env = process.env } = {},
+) {
+  const pathValue = env.PATH || env.Path || env.path || '';
+  if (!pathValue) return null;
+  const isWin = platform === 'win32';
+  const exts = isWin
+    ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+        .split(';')
+        .map((e) => e.trim())
+        .filter(Boolean)
+        .map((e) => (e.startsWith('.') ? e : `.${e}`))
+    : [''];
+  let weakHit = null;
+  // Split on the host's PATH delimiter. `platform` is injected only to choose the
+  // extension/exec-bit rules; the PATH string is always host-format, so it must
+  // split on the host delimiter (`path.delimiter`) — in production `platform` IS
+  // the host, so they coincide. (Deriving the delimiter from an injected platform
+  // would split a Windows drive-letter path `C:\…` at its colon under a POSIX
+  // injection.)
+  for (const dir of pathValue.split(path.delimiter).filter(Boolean)) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, `${command}${ext}`);
+      try {
+        if (!fs.statSync(candidate).isFile()) continue;
+        if (!isWin) fs.accessSync(candidate, fs.constants.X_OK);
+        // Prefer a runnable .cmd/.bat/.exe shim; remember an exotic PATHEXT hit
+        // (e.g. .COM) only as a last resort if nothing better turns up.
+        if (isWin && preferExecExt && !/\.(cmd|bat|exe)$/i.test(ext)) {
+          weakHit = weakHit || candidate;
+          continue;
+        }
+        return candidate;
+      } catch {
+        /* not a runnable file here — try the next candidate */
+      }
+    }
   }
-  return lines[0] || null;
-}
-
-/** Absolute path to `command` on PATH, or null. `gitnexusWrapper` enables the Windows shim match. */
-function resolveOnPath(command, gitnexusWrapper = false) {
-  const isWin = process.platform === 'win32';
-  try {
-    const output = execFileSync(isWin ? 'where' : 'which', [command], {
-      encoding: 'utf-8',
-      timeout: PROBE_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-    return pickPathMatch(output, { isWin, gitnexusWrapper });
-  } catch {
-    return null;
-  }
+  return weakHit;
 }
 
 // One spawn of `<command> --version` → { major, minor } (each null when
@@ -193,12 +221,12 @@ function formatPnpmDlxCommand(gitnexusArgs, options = {}, deps = {}) {
 function formatAnalyzeCommand(options = {}, deps = {}) {
   const suffix = options.embeddings ? ' --embeddings' : '';
   // Keep the stale-index hook budget tight by querying each tool at most once.
-  // A memoized PATH probe is shared with resolveInvocationMode (so `gitnexus`
-  // isn't probed twice), and pnpm's version is captured by a single
-  // `pnpm --version` that proves both presence (for mode resolution) and
-  // version (for the allow-build gate) — replacing the former `which pnpm` +
-  // `pnpm --version` double spawn. Injected deps (tests) and forced/global
-  // modes skip the pnpm probe.
+  // The memoized `probe` is a spawn-free PATH scan (resolveOnPath) shared with
+  // resolveInvocationMode, so `gitnexus` is scanned only once and no subprocess
+  // is spawned for presence. pnpm's *version* is still captured by a single
+  // `pnpm --version` (the allow-build gate needs the number), which also proves
+  // presence; the memoized scan only re-checks pnpm when that version is
+  // unreadable. Injected deps (tests) and forced/global modes skip the pnpm probe.
   const cache = new Map();
   const probe = (command, gitnexusWrapper) => {
     const key = `${command}:${gitnexusWrapper ? 1 : 0}`;
@@ -256,7 +284,7 @@ module.exports = {
   formatPnpmDlxCommand,
   resolveInvocationMode,
   buildRunnerArgv,
-  pickPathMatch,
+  resolveOnPath,
   getNpmMajorVersion,
   NPX_REF,
   PNPM_ALLOW_BUILD_BASE,
