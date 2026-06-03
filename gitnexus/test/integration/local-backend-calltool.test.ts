@@ -134,10 +134,15 @@ withTestLbugDB('local-backend-calltool', (handle) => {
     });
 
     it('filters by OVERRIDES only', async () => {
+      // (#10) `authenticate` exists in BOTH `src/auth.ts` and `src/base.ts`,
+      // so the call without disambiguation now returns `status: 'ambiguous'`
+      // to prevent silently picking a single candidate. Disambiguate via
+      // file_path to scope to the AuthService implementation.
       const result = await backend.callTool('impact', {
         target: 'authenticate',
         direction: 'downstream',
         relationTypes: ['OVERRIDES'],
+        file_path: 'src/auth.ts',
       });
       expect(result).not.toHaveProperty('error');
       // AuthService.authenticate overrides BaseService.authenticate
@@ -145,6 +150,22 @@ withTestLbugDB('local-backend-calltool', (handle) => {
       const d1 = result.byDepth[1] || result.byDepth['1'] || [];
       const names = d1.map((d: any) => d.name);
       expect(names).toContain('authenticate');
+    });
+
+    it('returns ambiguous when name matches symbols in multiple files (#10)', async () => {
+      // `authenticate` exists in both `src/auth.ts` and `src/base.ts`.
+      // Without disambiguation, impact should refuse to silently pick
+      // a candidate and instead surface the ambiguity.
+      const result = await backend.callTool('impact', {
+        target: 'authenticate',
+        direction: 'upstream',
+      });
+      expect(result.status).toBe('ambiguous');
+      expect(result.candidates.length).toBeGreaterThanOrEqual(2);
+      const filePaths = result.candidates.map((c: any) => c.filePath).sort();
+      expect(filePaths).toContain('src/auth.ts');
+      expect(filePaths).toContain('src/base.ts');
+      expect(result.suggestion).toContain('file_path');
     });
 
     it('does not return HAS_METHOD results when filtering by CALLS only', async () => {

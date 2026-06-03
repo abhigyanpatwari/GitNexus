@@ -3317,49 +3317,88 @@ export class LocalBackend {
 
     if (!sym) {
       try {
+        // (#10) Collect ALL matches across types, not just the first per type.
+        // When a name like "GetOrder" exists in multiple files (e.g., a
+        // service method and a handler method), silently picking the first
+        // candidate gives a misleading blast radius. Mirror the `context`
+        // tool's `status: 'ambiguous'` contract so callers can disambiguate
+        // with `file_path` rather than receive silently-wrong results.
         const rows = await executeParameterized(repo.id, `
           MATCH (n:\`Class\`) WHERE n.name = $targetName
-          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 0 AS priority LIMIT 1
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 0 AS priority
           UNION ALL
           MATCH (n:\`Interface\`) WHERE n.name = $targetName
-          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 1 AS priority LIMIT 1
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 1 AS priority
           UNION ALL
           MATCH (n:\`Function\`) WHERE n.name = $targetName
-          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 2 AS priority LIMIT 1
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 2 AS priority
           UNION ALL
           MATCH (n:\`Method\`) WHERE n.name = $targetName
-          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 3 AS priority LIMIT 1
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 3 AS priority
           UNION ALL
           MATCH (n:\`Constructor\`) WHERE n.name = $targetName
-          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 4 AS priority LIMIT 1
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 4 AS priority
         `, { targetName }).catch(() => []);
 
         if (rows.length > 0) {
+          const filePathFilter = params.file_path;
+          const fpLower = filePathFilter?.toLowerCase();
+          // Build a deduplicated, priority-sorted list of candidates. Two
+          // rows with the same id are a single candidate.
+          const uniqueById = new Map<string, any>();
+          for (const r of rows) {
+            const id = r.id || r[0];
+            if (id && !uniqueById.has(id)) uniqueById.set(id, r);
+          }
+          const candidates = Array.from(uniqueById.values()).sort(
+            (a, b) => (a.priority ?? a[3] ?? 99) - (b.priority ?? b[3] ?? 99),
+          );
+
           // (#53) If `file_path` is supplied, prefer the row whose filePath
           // contains it as a suffix. This disambiguates interface-vs-impl
           // overloading (e.g., `unholdMoney` defined in both
-          // CashService.java and CashServiceV2Impl.java). Falls back to
-          // priority-based selection if no file path matches.
-          const filePathFilter = params.file_path;
-          let best: any;
-          if (filePathFilter) {
-            const fpLower = filePathFilter.toLowerCase();
-            const matched = rows.find((r: any) => {
+          // CashService.java and CashServiceV2Impl.java).
+          if (fpLower) {
+            const matched = candidates.find((r: any) => {
               const fp = (r.filePath ?? r[2] ?? '') as string;
               return fp && fp.toLowerCase().endsWith(fpLower);
             });
-            best = matched ?? rows.reduce((a: any, b: any) =>
-              (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
-            );
-          } else {
-            // Pick the row with the lowest priority value (Class wins over Constructor)
-            best = rows.reduce((a: any, b: any) =>
-              (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
-            );
+            if (matched) {
+              sym = matched;
+            }
           }
-          sym = best;
+          if (!sym) {
+            // (#10) When a name matches multiple distinct files (e.g.,
+            // GetOrder in handlers/ vs services/), the result is genuinely
+            // ambiguous — picking one candidate silently mis-states the
+            // blast radius. Surface the ambiguity in a structured shape
+            // the caller can act on (re-run with file_path, or inspect
+            // candidates). Same-file matches (e.g., a Class and its
+            // Constructor with the same name) silently prefer Class via
+            // the priority sort, mirroring #480.
+            const distinctFiles = new Set(
+              candidates.map((r: any) => (r.filePath ?? r[2] ?? '') as string),
+            );
+            if (candidates.length > 1 && distinctFiles.size > 1) {
+              return {
+                status: 'ambiguous',
+                target: targetName,
+                candidates: candidates.map((r: any) => ({
+                  uid: r.id || r[0],
+                  name: r.name || r[1],
+                  kind: ['Class', 'Interface', 'Function', 'Method', 'Constructor'][
+                    r.priority ?? r[3]
+                  ] ?? '',
+                  filePath: r.filePath || r[2],
+                })),
+                suggestion:
+                  'Re-run with file_path parameter to scope impact analysis to a single candidate (matches the context tool contract).',
+              };
+            }
+            sym = candidates[0];
+          }
           const priorityToLabel = ['Class', 'Interface', 'Function', 'Method', 'Constructor'];
-          symType = priorityToLabel[best.priority ?? best[3]] ?? '';
+          symType = priorityToLabel[sym.priority ?? sym[3]] ?? '';
         }
       } catch { /* fall through to unlabeled match */ }
 
@@ -3405,12 +3444,30 @@ export class LocalBackend {
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
     if (symType === 'Class' || symType === 'Interface') {
       try {
-        // Run both seed queries in parallel — they are independent.
-        const [ctorRows, fileRows] = await Promise.all([
+        // Run all seed queries in parallel — they are independent.
+        //
+        // (#75) Class nodes have HAS_METHOD edges to BOTH Constructor and
+        // Method nodes. The original seed only collected Constructor (which
+        // is enough for typical Java bean patterns but misses real service
+        // methods like `pricingIConnect` that hold the actual downstream
+        // CALLS edges). Pull both node types so the BFS reaches method-level
+        // edges at depth 2+, making `maxDepth` actually meaningful for
+        // class-level impact analysis.
+        //
+        // Note: Method nodes are added to the BFS frontier but NOT to
+        // `visited` — they must be discoverable as HAS_METHOD results at
+        // depth 1 (the legitimate "direct callers" of the class). Adding
+        // them to `visited` would dedupe those legitimate results away.
+        const [ctorRows, methodRows, fileRows] = await Promise.all([
           executeParameterized(repo.id, `
             MATCH (n)-[hm:CodeRelation]->(c:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
             RETURN c.id AS id, c.name AS name, labels(c)[0] AS type, c.filePath AS filePath
+          `, { symId }),
+          executeParameterized(repo.id, `
+            MATCH (n)-[hm:CodeRelation]->(m:Method)
+            WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+            RETURN m.id AS id, m.name AS name, labels(m)[0] AS type, m.filePath AS filePath
           `, { symId }),
           // Restrict to DEFINES edges only — other File->Class edge types (if
           // any) should not be treated as the owning file relationship.
@@ -3421,9 +3478,19 @@ export class LocalBackend {
           `, { symId }),
         ]);
 
+        // Constructors: add to both visited and frontier (Java class↔ctor
+        // name collision; they have no incoming HAS_METHOD from the class).
         for (const r of ctorRows) {
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) { visited.add(rid); frontier.push(rid); }
+        }
+        // Methods: add to frontier ONLY (not visited) so the depth-1
+        // HAS_METHOD edges from the Class are still discoverable. The
+        // Methods are already the targets of those edges, so we want to
+        // traverse FROM them at depth 2+ (their outgoing CALLS, etc.).
+        for (const r of methodRows) {
+          const rid = r.id || r[0];
+          if (rid && !frontier.includes(rid)) { frontier.push(rid); }
         }
         for (const r of fileRows) {
           const rid = r.id || r[0];
