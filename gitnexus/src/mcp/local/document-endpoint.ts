@@ -820,7 +820,7 @@ export async function documentEndpoint(
 
   // Step 1: Try to find the Route node (may fail if Route table doesn't exist)
   let route: EndpointInfo | undefined;
-  
+
   try {
     const endpointsResult = await queryEndpoints(repo, { method, path });
     if (endpointsResult.endpoints && endpointsResult.endpoints.length > 0) {
@@ -830,6 +830,42 @@ export async function documentEndpoint(
   } catch (err: any) {
     if (DEBUG) console.error('[GitNexus DEBUG] Route query failed:', err);
     // Fall back to handler search
+  }
+
+  // (#42) When the user provided both method+path and the exact-match Route
+  // query returned nothing, the most likely cause is an HTTP-method mismatch
+  // (the path exists, but for a different method). Before falling through to
+  // the broader handler-pattern search — which may return a sibling route
+  // with a similar path and silently mis-document the wrong endpoint — do a
+  // path-only sweep to detect the mismatch and surface a "Did you mean X?"
+  // error. This is a hard fail: the caller asked for `GET /x` and there is
+  // no `GET /x`, only `POST /x`. Silent acceptance generated `get:` and
+  // `operationId: get_x` for a POST handler, which is the bug.
+  if (!route && method && path) {
+    try {
+      const pathOnlyResult = await queryEndpoints(repo, { path });
+      const mismatched = (pathOnlyResult.endpoints || []).filter(
+        (e) => e.method && e.method.toUpperCase() !== upperMethod,
+      );
+      if (mismatched.length > 0) {
+        // Dedupe by method (a path may have multiple Route nodes for the
+        // same method from inherited @RequestMapping etc.) and present the
+        // distinct alternatives. This is the user-facing "Did you mean?" hint.
+        const suggestions = Array.from(
+          new Set(mismatched.map((e) => e.method.toUpperCase())),
+        ).sort();
+        const suggestionList = suggestions.join(', ');
+        return {
+          error:
+            `No ${upperMethod} endpoint found at ${path}. ` +
+            `Did you mean ${suggestionList}? ` +
+            `Available methods at this path: ${suggestionList}.`,
+        };
+      }
+    } catch (err: any) {
+      if (DEBUG) console.error('[GitNexus DEBUG] Path-only sweep failed:', err);
+      // Fall through to the handler search
+    }
   }
 
   // Fallback: If no Route nodes exist, search for handler methods directly

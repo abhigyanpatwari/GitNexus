@@ -113,6 +113,93 @@ describe('documentEndpoint', () => {
       expect(asContextResult(result).result).toBeUndefined();
     });
 
+    it('returns "Did you mean X?" error when HTTP method mismatches (#42)', async () => {
+      // (#42) When the user asks for GET /i/v1/orders/{id}/confirm but the
+      // actual route is POST, the tool used to silently fall through to
+      // handler-pattern search and produce a `get:` operationId for a POST
+      // handler. The fix: after the exact-match query returns empty, do a
+      // path-only sweep to detect the mismatch and surface a clear error.
+      // The first mock is the user's exact-match call (empty); the second
+      // is the path-only follow-up sweep that reveals the actual POST route.
+      vi.mocked(endpointQuery.queryEndpoints)
+        .mockResolvedValueOnce({ endpoints: [] })
+        .mockResolvedValueOnce({
+          endpoints: [{
+            method: 'POST',
+            path: '/i/v1/orders/{id}/confirm',
+            controller: 'OrderController',
+            handler: 'confirmOrder',
+            filePath: 'src/controllers/OrderController.java',
+            line: 88,
+          }],
+        });
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/i/v1/orders/{id}/confirm',
+        mode: 'ai_context',
+      });
+
+      // The tool must surface the mismatch — not generate a phantom doc
+      // for a non-existent GET route.
+      expect(asContextResult(result).error).toMatch(/No GET endpoint found/);
+      expect(asContextResult(result).error).toMatch(/Did you mean POST/);
+      expect(asContextResult(result).error).toContain('/i/v1/orders/{id}/confirm');
+      expect(asContextResult(result).result).toBeUndefined();
+
+      // Verify both queries were issued in the right order: exact-match
+      // first (with method), then path-only sweep.
+      const calls = vi.mocked(endpointQuery.queryEndpoints).mock.calls;
+      expect(calls[0][1]).toEqual({ method: 'GET', path: '/i/v1/orders/{id}/confirm' });
+      expect(calls[1][1]).toEqual({ path: '/i/v1/orders/{id}/confirm' });
+    });
+
+    it('lists all available methods when path has multiple routes (#42)', async () => {
+      // (#42) A path may have GET, POST, PUT, DELETE. The error must list
+      // every distinct method so the caller can pick the right one.
+      vi.mocked(endpointQuery.queryEndpoints)
+        .mockResolvedValueOnce({ endpoints: [] })
+        .mockResolvedValueOnce({
+          endpoints: [
+            { method: 'GET', path: '/api/users', controller: 'A', handler: 'h' },
+            { method: 'POST', path: '/api/users', controller: 'A', handler: 'h' },
+            { method: 'POST', path: '/api/users', controller: 'A', handler: 'h' }, // duplicate method
+            { method: 'PUT', path: '/api/users', controller: 'A', handler: 'h' },
+          ],
+        });
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'DELETE',
+        path: '/api/users',
+        mode: 'ai_context',
+      });
+
+      expect(asContextResult(result).error).toMatch(/No DELETE endpoint found/);
+      // Distinct methods sorted, dupes collapsed
+      expect(asContextResult(result).error).toMatch(/GET, POST, PUT/);
+    });
+
+    it('falls through to handler search when path-only sweep is empty (#42)', async () => {
+      // (#42) When the path-only sweep is ALSO empty, the fix must not
+      // break the existing fallback path: it should still surface a
+      // generic "No endpoint found" error after findHandlerByPathPattern
+      // fails. (findHandlerByPathPattern is not mocked here, so the
+      // executeParameterized mock returning [] for all queries makes it
+      // resolve to undefined.)
+      vi.mocked(endpointQuery.queryEndpoints)
+        .mockResolvedValueOnce({ endpoints: [] })
+        .mockResolvedValueOnce({ endpoints: [] });
+
+      const result = await documentEndpoint(mockRepo, {
+        method: 'GET',
+        path: '/totally/missing',
+        mode: 'ai_context',
+      });
+
+      expect(asContextResult(result).error).toContain('No endpoint found');
+      expect(asContextResult(result).result).toBeUndefined();
+    });
+
     it('returns valid JSON structure for found endpoint', async () => {
       vi.mocked(endpointQuery.queryEndpoints).mockResolvedValue({
         endpoints: [{
