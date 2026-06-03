@@ -3241,8 +3241,21 @@ export class LocalBackend {
     
     // Step 2: Collect edits from graph (high confidence)
     const changes = new Map<string, { file_path: string; edits: any[] }>();
-    
+
+    // (#37) Track (file, line, oldText, newText) tuples to
+    // dedupe edits. The same import line can be discovered
+    // via two graph edges (e.g. EXTENDS + IMPORTS both
+    // pointing to the same import statement). The previous
+    // addEdit blindly pushed every call, producing two
+    // identical edits on the same line. With dry_run=false
+    // that would attempt to apply the same edit twice. We
+    // dedupe here so callers see one entry per unique
+    // (file, line, oldText, newText) combination.
+    const seenEdits = new Set<string>();
     const addEdit = (filePath: string, line: number, oldText: string, newText: string, confidence: string) => {
+      const key = `${filePath}\0${line}\0${oldText}\0${newText}`;
+      if (seenEdits.has(key)) return;
+      seenEdits.add(key);
       if (!changes.has(filePath)) {
         changes.set(filePath, { file_path: filePath, edits: [] });
       }

@@ -374,6 +374,37 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).error).toContain('Either symbol_name or symbol_uid');
   });
 
+  it('rename dedupes identical edits on same line (#37)', async () => {
+    // (#37) Reproduction: BondServiceV2Impl has both an EXTENDS
+    // and an IMPORTS edge to BondServiceImpl in the graph.
+    // Both edges resolve to the same import statement on line 14
+    // of BondServiceV2Impl.java. The previous addEdit blindly
+    // pushed each call, producing two identical edits on the
+    // same line — a no-op if applied twice. The fix dedupes by
+    // (filePath, line, oldText, newText) tuple via a Set.
+    //
+    // This test pins the contract via a dispatch that returns a
+    // well-formed rename result. Without the dedup, the result
+    // would include two identical edits for the same import
+    // line. We assert there is at most one edit per (file, line)
+    // pair in the returned changes.
+    const result = await backend.callTool('rename', {
+      symbol_name: 'BondServiceImpl',
+      new_name: 'BondServiceV3',
+      dry_run: true,
+    });
+    if ((result as any).changes) {
+      const seenLineKeys = new Set<string>();
+      for (const change of (result as any).changes) {
+        for (const edit of change.edits || []) {
+          const key = `${change.file_path}::${edit.line}`;
+          expect(seenLineKeys.has(key)).toBe(false);
+          seenLineKeys.add(key);
+        }
+      }
+    }
+  });
+
   it('rename skips substring false-positives (#60)', async () => {
     // (#60) Reproduction: renaming `getAllBond` on BondService
     // pulled AssetDetailServiceImpl into the edit list because the
