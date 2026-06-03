@@ -3,9 +3,11 @@
 // NS1::A::Inner and NS2::A::Inner are distinct nested types whose scope-model
 // def.qualifiedName both drops the enclosing namespace and reads `A.Inner`. They
 // collide in the qualifiedNames resolution index, so resolveQualifiedInheritanceBase
-// hit refuse-on-tie and DA / DB lost their EXTENDS edge entirely (a silent miss,
-// not a miswire — invisible to findDanglingEdges). The `namespacePrefix` sidecar
-// breaks the tie (bridge-held): DA's enclosing namespace NS1 selects NS1::A::Inner.
+// hit refuse-on-tie and the scope-walk fallback first-won to NS1's Inner — DB
+// CROSS-WIRED its EXTENDS to NS1::A::Inner (DA resolved correctly only by that
+// first-wins luck). The cross-wire still lands on a real node, so findDanglingEdges
+// stays blind to it. The `namespacePrefix` sidecar breaks the tie (bridge-held):
+// DA's enclosing namespace NS1 selects NS1::A::Inner.
 namespace NS1 {
 struct A {
   struct Inner {};
