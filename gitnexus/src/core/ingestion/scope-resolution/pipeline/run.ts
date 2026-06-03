@@ -131,11 +131,20 @@ function preEmitInheritanceEdges(
       handledSites.add(siteKey);
     }
 
-    const targetDef = resolveInheritanceBaseInScope(site.inScope, site.name, scopes);
-    if (targetDef === undefined) continue;
-
+    // Resolve the deriving (caller) class first and reuse it as the enclosing
+    // context for qualified-base resolution — avoids a second findEnclosingClassDef
+    // walk per qualified site (#1982 perf). Both need the same enclosing class.
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
     if (callerClass === undefined) continue;
+
+    const targetDef = resolveInheritanceBaseInScope(
+      site.inScope,
+      site.name,
+      scopes,
+      site.rawQualifiedName,
+      callerClass,
+    );
+    if (targetDef === undefined) continue;
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
     if (callerGraphId === undefined || targetGraphId === undefined) continue;
