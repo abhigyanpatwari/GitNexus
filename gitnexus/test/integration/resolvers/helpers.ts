@@ -292,6 +292,9 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // IMPLEMENTS edge. The fix (graphIdByTail fallback in emitRubyMixinEdges) is
     // registry-primary only; the legacy DAG does not use that bridge.
     'emits App.Service -IMPLEMENTS-> App.Loggable for a short-name nested mixin (R1)',
+    // #1982 follow-up: a qualified mixin arg (`include Outer::Mixin`) must not be
+    // corrupted by the ':'-delimited __heritage__ marker. Registry-primary only.
+    'emits Consumer -IMPLEMENTS-> Outer.Mixin for include Outer::Mixin (R2)',
   ]),
   swift: new Set<string>([
     // Swift scope-resolution achieves 77/77 baseline parity. The tests

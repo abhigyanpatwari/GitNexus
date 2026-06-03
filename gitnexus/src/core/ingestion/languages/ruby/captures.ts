@@ -176,15 +176,22 @@ export function emitRubyScopeCaptures(
               for (let ai = 0; ai < argList.namedChildCount; ai++) {
                 const arg = argList.namedChild(ai);
                 if (arg !== null && (arg.type === 'constant' || arg.type === 'scope_resolution')) {
+                  // Normalize a qualified mixin arg (`Outer::Mixin`) to its dotted
+                  // form (`Outer.Mixin`) BEFORE embedding it in the ':'-delimited
+                  // __heritage__ marker: the raw `::` collides with the marker's `:`
+                  // field separator and emitRubyMixinEdges mis-splits it, dropping
+                  // the edge (#1982). The dotted form also matches the mixin def's
+                  // qualifiedName key for resolution. Simple names are unchanged.
+                  const mixinName = splitQualifiedName(arg.text).join('.');
                   out.push({
                     '@import.statement': grouped['@reference.call.free']!,
                     '@import.kind': syntheticCapture('@import.kind', callNode, 'namespace'),
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__heritage__:${callName}:${arg.text}:${ownerName}`,
+                      `__heritage__:${callName}:${mixinName}:${ownerName}`,
                     ),
-                    '@import.name': syntheticCapture('@import.name', callNode, arg.text),
+                    '@import.name': syntheticCapture('@import.name', callNode, mixinName),
                   });
                 }
               }

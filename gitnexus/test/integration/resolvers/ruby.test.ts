@@ -1678,3 +1678,32 @@ describe('Ruby nested mixin by short name — IMPLEMENTS not dropped (issue #198
     expect(e!.rel.targetId).toContain('Loggable');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Qualified mixin argument — `::` must not corrupt the __heritage__ marker (#1982).
+//
+// `class Consumer; include Outer::Mixin; end` — the `::` in `arg.text`
+// (`Outer::Mixin`) collided with the ':'-delimited __heritage__ marker field
+// separator (`__heritage__:include:Outer::Mixin:Consumer`), so emitRubyMixinEdges
+// mis-split it and dropped the edge. The marker now embeds the dotted form
+// (`Outer.Mixin`), which both parses correctly and matches the mixin def's
+// qualifiedName. Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('Ruby qualified mixin arg — IMPLEMENTS not corrupted by :: (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-qualified-mixin'), () => {});
+  }, 60000);
+
+  pit('emits Consumer -IMPLEMENTS-> Outer.Mixin for include Outer::Mixin (R2)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const e = impl.find((x) => x.target === 'Mixin');
+    expect(e, 'IMPLEMENTS -> Mixin (qualified mixin arg)').toBeDefined();
+    // KTD3: discriminate on the resolved node id (the pre-fix bug dropped the edge).
+    expect(e!.rel.sourceId).toContain('Consumer');
+    expect(e!.rel.targetId).toContain('Mixin');
+  });
+});
