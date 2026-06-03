@@ -18,6 +18,7 @@ import {
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   isSuppressedConcreteTypedefDuplicate,
+  qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
   type EnclosingClassInfo,
@@ -649,14 +650,30 @@ const processParsingSequential = async (
       // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak".
       // Class-like nodes use their own fully-qualified path as the id key when the
       // language enables qualifiedNodeId (#1978); everything else is unchanged.
+      // #1982: a Rust inherent-impl node is keyed by its target's RAW tail by
+      // default, so two bare same-tail impls under different mods collapse onto
+      // one Impl node. For an UNSCOPED bare target (type_identifier), qualify the
+      // Impl node id by the enclosing `mod_item` scope — byte-identical to the
+      // owner-walk id (ast-helpers `findEnclosingClassInfo`), so HAS_METHOD stays
+      // anchored. SCOPED targets (`impl a::Inner`) keep their full raw text and
+      // are NOT routed here (#1975).
+      const rustImplQualifiedName =
+        nodeLabel === 'Impl' &&
+        definitionNode?.type === 'impl_item' &&
+        nameNode?.type === 'type_identifier'
+          ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
+          : undefined;
+
       const qualifiedName =
-        isClassLikeLabel &&
-        provider.classExtractor?.qualifiedNodeId === true &&
-        qualifiedTypeName !== undefined
-          ? qualifiedTypeName
-          : enclosingClassInfo
-            ? `${enclosingClassInfo.className}.${nodeName}`
-            : nodeName;
+        rustImplQualifiedName !== undefined
+          ? rustImplQualifiedName
+          : isClassLikeLabel &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              qualifiedTypeName !== undefined
+            ? qualifiedTypeName
+            : enclosingClassInfo
+              ? `${enclosingClassInfo.className}.${nodeName}`
+              : nodeName;
 
       // Extract method metadata for Function/Method/Constructor nodes BEFORE generating
       // the node ID — parameterCount is needed to disambiguate overloaded methods.

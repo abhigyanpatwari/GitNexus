@@ -7,9 +7,41 @@ import {
   stripTemplateArguments,
   templateArgumentsIdTag,
 } from './template-arguments.js';
+import { splitQualifiedName } from './qualified-name.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
+
+/**
+ * Qualify a Rust inherent-impl target (`impl Inner { ... }`) by its enclosing
+ * `mod_item` scope, so a bare same-tail target nested under different modules
+ * resolves to a DISTINCT path (`outer.Inner` vs `other.Inner`) — the #1982
+ * follow-up to #1975. Walks `mod_item` ancestors (outermost → innermost) and
+ * joins them with the normalized raw target via the shared `splitQualifiedName`.
+ * A top-level `impl Inner` (no enclosing mod) returns the bare target unchanged.
+ * Keyed purely on tree-sitter node types (no language name), matching the
+ * inherent-impl branch in `findEnclosingClassInfo`; the caller restricts this to
+ * UNSCOPED targets (`type_identifier`) so a SCOPED `impl a::Inner` keeps its full
+ * raw text (#1975). The Impl-node materialization in parsing-processor /
+ * parse-worker mirrors this so the owner edge and node id agree byte-for-byte.
+ */
+export const qualifyRustImplTargetByModScope = (
+  implNode: SyntaxNode,
+  rawTargetText: string,
+): string => {
+  const modSegments: string[] = [];
+  let current = implNode.parent;
+  while (current) {
+    if (current.type === 'mod_item') {
+      const nameNode =
+        current.childForFieldName?.('name') ??
+        current.children?.find((c: SyntaxNode) => c.type === 'identifier');
+      if (nameNode) modSegments.unshift(nameNode.text);
+    }
+    current = current.parent;
+  }
+  return [...modSegments, ...splitQualifiedName(rawTargetText)].filter(Boolean).join('.');
+};
 
 /**
  * Ordered list of definition capture keys for tree-sitter query matches.
@@ -463,16 +495,24 @@ export const findEnclosingClassInfo = (
             };
           }
         }
-        // Inherent impl target. Accept a scoped path (`impl a::Inner { ... }`) and
-        // key the Impl node by its FULL text — matching the @definition.impl
-        // scoped arm — so methods own through a node that exists and stays
-        // distinct from a same-tail type in another module (#1975).
+        // Inherent impl target.
+        //   - SCOPED (`impl a::Inner`, scoped_type_identifier): key by FULL text,
+        //     matching the @definition.impl scoped arm (#1975). UNCHANGED.
+        //   - UNSCOPED (`impl Inner`, type_identifier): qualify by the enclosing
+        //     `mod_item` scope (`outer.Inner`) so two same-tail bare impls under
+        //     different mods own through DISTINCT nodes. The Impl-node
+        //     materialization (parsing-processor / parse-worker) mirrors this, so
+        //     the owner id == the Impl node id byte-for-byte (#1982).
         const firstType = children.find(
           (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
         );
         if (firstType) {
+          const ownerKey =
+            firstType.type === 'type_identifier'
+              ? qualifyRustImplTargetByModScope(current, firstType.text)
+              : firstType.text;
           return {
-            classId: generateId('Impl', `${filePath}:${firstType.text}`),
+            classId: generateId('Impl', `${filePath}:${ownerKey}`),
             className: firstType.text,
           };
         }

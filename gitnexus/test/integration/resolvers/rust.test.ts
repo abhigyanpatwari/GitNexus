@@ -2073,24 +2073,32 @@ describe('Rust scoped inherent impl — ownership + collision (issue #1975)', ()
 // is separate machinery tracked as a follow-up. C++/Ruby land first (KTD-6).
 // ---------------------------------------------------------------------------
 
-// Skipped: Rust inherent-impl ownership is deferred to the resolution-side
-// follow-up (see the comment block above). Tracked in the #1978 follow-up issue.
-describe.skip('Rust inline mod-nested same-tail collision — distinct nodes (issue #1978)', () => {
+// #1982: Rust same-tail nested-mod inherent-impl methods now own through DISTINCT
+// Impl nodes — mod outer's `impl Inner` → `Impl:...:outer.Inner`, mod other's →
+// `other.Inner`. The inherent-impl owner walk (ast-helpers `findEnclosingClassInfo`)
+// and the Impl-node materialization (parsing-processor / parse-worker) both qualify
+// an UNSCOPED impl target by its enclosing `mod_item` scope, byte-identically, so
+// the HAS_METHOD owner edge stays anchored. Structure-phase, so it holds on both
+// resolver legs. (Scoped `impl a::Inner` is unchanged — #1975.)
+describe('Rust inline mod-nested same-tail collision — distinct nodes (issue #1978/#1982)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-nested-tail-collision'), () => {});
   }, 60000);
 
-  it('owns from_outer / from_other through distinct nodes (no merge, no mis-attribution)', () => {
+  it('owns from_outer / from_other through distinct mod-qualified Impl nodes (no merge)', () => {
     expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
     const hm = getRelationships(result, 'HAS_METHOD');
     const a = hm.find((e) => e.target === 'from_outer');
     const b = hm.find((e) => e.target === 'from_other');
-    expect(a).toBeDefined();
-    expect(b).toBeDefined();
-    // The two same-tail `Inner` methods must NOT share one owner node id.
+    expect(a, 'HAS_METHOD -> from_outer').toBeDefined();
+    expect(b, 'HAS_METHOD -> from_other').toBeDefined();
+    // Pre-fix the two same-tail `Inner` impls merged onto one `Impl:...:Inner`
+    // node. KTD3: discriminate on the node id — each now carries its mod path.
     expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('outer.Inner');
+    expect(b!.rel.sourceId).toContain('other.Inner');
   });
 });
 

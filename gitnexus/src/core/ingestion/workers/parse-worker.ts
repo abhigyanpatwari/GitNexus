@@ -67,6 +67,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   isSuppressedConcreteTypedefDuplicate,
+  qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
@@ -1857,14 +1858,26 @@ const processFileGroup = (
       // Qualify method/property IDs with enclosing class name to avoid collisions.
       // Class-like nodes use their own fully-qualified path as the id key when the
       // language enables qualifiedNodeId (#1978); everything else is unchanged.
+      // #1982: LOCKSTEP with parsing-processor.ts — a Rust inherent-impl with an
+      // UNSCOPED bare target is keyed by the enclosing `mod_item` scope so the
+      // worker-path Impl node id matches the sequential path and the owner walk.
+      const rustImplQualifiedName =
+        nodeLabel === 'Impl' &&
+        definitionNode?.type === 'impl_item' &&
+        nameNode?.type === 'type_identifier'
+          ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
+          : undefined;
+
       const qualifiedName =
-        isClassLikeLabel &&
-        provider.classExtractor?.qualifiedNodeId === true &&
-        qualifiedTypeName !== undefined
-          ? qualifiedTypeName
-          : enclosingClassInfo
-            ? `${enclosingClassInfo.className}.${nodeName}`
-            : nodeName;
+        rustImplQualifiedName !== undefined
+          ? rustImplQualifiedName
+          : isClassLikeLabel &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              qualifiedTypeName !== undefined
+            ? qualifiedTypeName
+            : enclosingClassInfo
+              ? `${enclosingClassInfo.className}.${nodeName}`
+              : nodeName;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
