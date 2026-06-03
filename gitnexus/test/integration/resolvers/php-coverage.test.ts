@@ -2,8 +2,6 @@
  * Regression tests for PHP scope-resolution coverage gaps (issue #1931).
  */
 import { describe, it, expect } from 'vitest';
-import fs from 'fs';
-import path from 'path';
 import { emitPhpScopeCaptures } from '../../../src/core/ingestion/languages/php/index.js';
 import type { CaptureMatch } from 'gitnexus-shared';
 
@@ -15,9 +13,7 @@ describe('F53 — comma-separated use declarations', () => {
   it('use A, B, C produces 3 import names', () => {
     const src = `<?php\nuse A, B, C;\n`;
     const matches = emitPhpScopeCaptures(src, 'test.php') as CaptureMatch[];
-    const importNames = matches
-      .filter((m) => m['@import.name'])
-      .map((m) => m['@import.name'].text);
+    const importNames = matches.filter((m) => m['@import.name']).map((m) => m['@import.name'].text);
     // A, B, C should each appear
     expect(importNames).toContain('A');
     expect(importNames).toContain('B');
@@ -28,9 +24,7 @@ describe('F53 — comma-separated use declarations', () => {
   it('use Foo\\Bar, Baz\\Qux as Quux produces correct names and aliases', () => {
     const src = `<?php\nuse Foo\\Bar, Baz\\Qux as Quux;\n`;
     const matches = emitPhpScopeCaptures(src, 'test.php') as CaptureMatch[];
-    const importNames = matches
-      .filter((m) => m['@import.name'])
-      .map((m) => m['@import.name'].text);
+    const importNames = matches.filter((m) => m['@import.name']).map((m) => m['@import.name'].text);
     expect(importNames).toContain('Bar');
     expect(importNames).toContain('Quux');
     expect(importNames.length).toBe(2);
