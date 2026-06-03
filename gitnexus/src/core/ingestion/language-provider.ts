@@ -426,6 +426,19 @@ interface LanguageProviderConfig {
      * MUST trigger a fresh parse.
      */
     cachedTree?: unknown,
+    /**
+     * Optional metadata about how `sourceText` was produced.
+     *
+     * Most providers ignore this and treat `sourceText` as full file content.
+     * Vue uses it to distinguish:
+     *   - `full-file`: full `.vue` SFC source
+     *   - `pre-extracted-script`: worker-preprocessed bare `<script>` content
+     *
+     * Default: `{ sourceKind: 'full-file' }`.
+     */
+    sourceMeta?: {
+      readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+    },
   ) => readonly CaptureMatch[];
 
   /**

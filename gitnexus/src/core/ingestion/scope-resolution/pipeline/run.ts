@@ -592,6 +592,16 @@ export function runScopeResolution(
     provider.importEdgeReason,
   );
 
+  // Language-specific supplementary edges (e.g. Vue template-derived
+  // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
+  // Runs last so the full graph — including import edges — is visible.
+  if (provider.emitPostResolutionEdges !== undefined) {
+    provider.emitPostResolutionEdges(graph, parsedFiles, postHeritageNodeLookup, indexes, {
+      fileContents: getFileContents(),
+      resolutionConfig,
+    });
+  }
+
   if (PROF) {
     const tEnd = process.hrtime.bigint();
     const ns = (a: bigint, b: bigint): number => Number(b - a) / 1_000_000;
