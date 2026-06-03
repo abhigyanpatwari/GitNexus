@@ -24,6 +24,7 @@ export type NodeLabel =
   | 'Type'
   | 'CodeElement'
   | 'Community'
+  | 'CoverageRun'
   | 'Process'
   // Multi-language node types
   | 'Struct'
@@ -62,6 +63,18 @@ export type NodeProperties = {
   keywords?: string[];
   description?: string;
   enrichedBy?: 'heuristic' | 'llm';
+  // Coverage-specific
+  coverageRatio?: number;       // 0.0-1.0, latest run coverage
+  lastCoveredAt?: string;       // ISO timestamp of last coverage update
+  hitCount?: number;            // total hits for this symbol in a run
+  runId?: string;               // associated CoverageRun id
+  timestamp?: string;           // CoverageRun: when the run occurred
+  label?: string;               // CoverageRun: human label
+  command?: string;             // CoverageRun: fuzzer command
+  durationMs?: number;          // CoverageRun: duration in ms
+  totalExecs?: number;          // CoverageRun: total executions
+  totalLines?: number;          // CoverageRun/aggregated: total lines
+  coveredLines?: number;        // CoverageRun/aggregated: covered lines
   // Process
   processType?: 'intra_community' | 'cross_community';
   stepCount?: number;
@@ -115,7 +128,8 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
-  | 'QUERIES';
+  | 'QUERIES'
+  | 'COVERED_BY';
 
 export interface GraphNode {
   id: string;

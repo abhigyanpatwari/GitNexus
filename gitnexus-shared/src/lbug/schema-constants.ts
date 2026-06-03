@@ -17,6 +17,7 @@ export const NODE_TABLES = [
   'Method',
   'CodeElement',
   'Community',
+  'CoverageRun',
   'Process',
   'Section',
   'Struct',
@@ -67,6 +68,7 @@ export const REL_TYPES = [
   'ENTRY_POINT_OF',
   'WRAPS',
   'QUERIES',
+  'COVERED_BY',
 ] as const;
 
 export type RelType = (typeof REL_TYPES)[number];
