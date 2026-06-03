@@ -50,10 +50,9 @@ interface BenchResult {
 function generateCppAdlFixture(fileCount: number, siteCount: number): { dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cpp-adl-bench-${fileCount}-`));
   for (let k = 0; k < fileCount; k++) {
-    const helpers = Array.from(
-      { length: 3 },
-      (_, j) => `void helper${k}_${j}(T${k}& x) {}`,
-    ).join('\n');
+    const helpers = Array.from({ length: 3 }, (_, j) => `void helper${k}_${j}(T${k}& x) {}`).join(
+      '\n',
+    );
     fs.writeFileSync(
       path.join(dir, `lib_${k}.h`),
       `namespace lib_${k} {\nstruct T${k} {};\n${helpers}\n}\n`,
