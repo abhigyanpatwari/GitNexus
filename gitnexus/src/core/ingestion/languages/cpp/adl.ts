@@ -103,8 +103,205 @@ const argInfoBySite = new Map<string, readonly CppAdlArgInfo[]>();
 const noAdlSites = new Set<string>();
 const classToNamespaceQualifiedName = new Map<string, string>();
 
+/**
+ * ADL candidate index — built **once** per pipeline run from
+ * `(scopes, parsedFiles)` and reused by every call site.
+ *
+ * The legacy `pickCppAdlCandidates` re-scanned all parsed files (rebuilding a
+ * per-file `scopesById` map each time), all workspace defs (for the
+ * class-by-simple-name lookup), and used an O(scopes²) child-scope walk for
+ * hidden friends — once **per unresolved call site**. With hundreds of
+ * thousands of unresolved C++ sites that made the scope-resolution emit phase
+ * super-linear (observed ~6.7h on a large repo). This index moves all of that
+ * work to a single pass; per-site cost drops to O(associated namespaces).
+ */
+interface AdlCandidateIndex {
+  /** simple name → class-like defs (Class/Struct/Interface/Enum), preserving
+   *  `scopes.defs.byId` iteration order so first-match / ambiguous semantics
+   *  match the legacy linear scan. */
+  readonly classDefsBySimple: Map<string, SymbolDefinition[]>;
+  /** namespace QName → simple name → callable defs owned by that namespace,
+   *  with inline-namespace transparency (inline-ns defs are also registered
+   *  under the parent namespace's QName). */
+  readonly nsCandidates: Map<string, Map<string, SymbolDefinition[]>>;
+  /** associated-class enclosing-namespace QName → simple name → hidden-friend
+   *  and class-member callable defs. */
+  readonly friendCandidates: Map<string, Map<string, SymbolDefinition[]>>;
+  /** namespace QName (own) → simple name → Function/Method defs, for the
+   *  qualified function-reference ADL path. */
+  readonly nsFunctionsByQName: Map<string, Map<string, SymbolDefinition[]>>;
+  /** simple name → Function/Method defs across all namespaces, for the
+   *  unqualified function-reference ADL path. */
+  readonly nsFunctionsBySimple: Map<string, SymbolDefinition[]>;
+  /** nodeId → visitation sequence number, used to merge per-namespace buckets
+   *  back into the exact legacy candidate order (file-major; namespace defs
+   *  before friend/member defs within a file). */
+  readonly seqByNodeId: Map<string, number>;
+}
+
+let adlIndex: AdlCandidateIndex | undefined;
+let adlIndexSource: readonly ParsedFile[] | undefined;
+
 function siteKey(filePath: string, line: number, col: number): string {
   return `${filePath}:${line}:${col}`;
+}
+
+/** Last segment of a dotted qualified name (matches legacy inline expression). */
+function adlSimpleName(def: SymbolDefinition): string {
+  return def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+}
+
+function isAdlCallableType(type: string): boolean {
+  return type === 'Function' || type === 'Method' || type === 'Constructor';
+}
+
+function pushNested(
+  map: Map<string, Map<string, SymbolDefinition[]>>,
+  outerKey: string,
+  innerKey: string,
+  def: SymbolDefinition,
+): void {
+  let inner = map.get(outerKey);
+  if (inner === undefined) {
+    inner = new Map();
+    map.set(outerKey, inner);
+  }
+  let arr = inner.get(innerKey);
+  if (arr === undefined) {
+    arr = [];
+    inner.set(innerKey, arr);
+  }
+  arr.push(def);
+}
+
+function pushFlat(map: Map<string, SymbolDefinition[]>, key: string, def: SymbolDefinition): void {
+  let arr = map.get(key);
+  if (arr === undefined) {
+    arr = [];
+    map.set(key, arr);
+  }
+  arr.push(def);
+}
+
+/** Build the ADL candidate index in a single pass over the workspace. The
+ *  visitation order (file-major; per file, all namespace scopes before all
+ *  class scopes; ownedDefs in declaration order) mirrors the legacy push
+ *  order so `seqByNodeId` reconstructs identical candidate ordering. */
+function buildAdlIndex(
+  scopes: ScopeResolutionIndexes,
+  parsedFiles: readonly ParsedFile[],
+): AdlCandidateIndex {
+  const idx: AdlCandidateIndex = {
+    classDefsBySimple: new Map(),
+    nsCandidates: new Map(),
+    friendCandidates: new Map(),
+    nsFunctionsByQName: new Map(),
+    nsFunctionsBySimple: new Map(),
+    seqByNodeId: new Map(),
+  };
+
+  // (1) class-like defs by simple name — preserve byId order so arr[0] is the
+  //     legacy `firstMatch` and `arr.length > 1` is the legacy `ambiguous`.
+  for (const def of scopes.defs.byId.values()) {
+    if (
+      def.type !== 'Class' &&
+      def.type !== 'Struct' &&
+      def.type !== 'Interface' &&
+      def.type !== 'Enum'
+    )
+      continue;
+    pushFlat(idx.classDefsBySimple, adlSimpleName(def), def);
+  }
+
+  let seq = 0;
+  for (const parsed of parsedFiles) {
+    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+    // parent → children, built once (replaces the legacy O(scopes²) walk).
+    const childrenByParent = new Map<ScopeId, (typeof parsed.scopes)[number][]>();
+    for (const sc of parsed.scopes) {
+      if (sc.parent === null) continue;
+      let kids = childrenByParent.get(sc.parent);
+      if (kids === undefined) {
+        kids = [];
+        childrenByParent.set(sc.parent, kids);
+      }
+      kids.push(sc);
+    }
+
+    // PASS A — namespace-owned candidates (+ function-reference indexes).
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Namespace') continue;
+      const qName = computeNamespaceQName(scope, scopesById);
+      // Registration keys reproduce the legacy membership test: own QName
+      // always; for an inline namespace child of a Namespace, also the parent
+      // QName (ISO C++ inline-namespace transparency for ADL).
+      const keys: string[] = [];
+      if (qName !== '') keys.push(qName);
+      if (isCppInlineNamespaceScope(scope.id)) {
+        const parentScope = scope.parent !== null ? scopesById.get(scope.parent) : undefined;
+        if (parentScope !== undefined && parentScope.kind === 'Namespace') {
+          const parentQName = computeNamespaceQName(parentScope, scopesById);
+          if (parentQName !== '' && parentQName !== qName) keys.push(parentQName);
+        }
+      }
+      for (const def of scope.ownedDefs) {
+        if (def.type === 'Function' || def.type === 'Method') {
+          const sn = adlSimpleName(def);
+          pushFlat(idx.nsFunctionsBySimple, sn, def);
+          if (qName !== '') pushNested(idx.nsFunctionsByQName, qName, sn, def);
+        }
+        if (!isAdlCallableType(def.type)) continue;
+        const s = seq++;
+        idx.seqByNodeId.set(def.nodeId, s);
+        const sn = adlSimpleName(def);
+        for (const key of keys) pushNested(idx.nsCandidates, key, sn, def);
+      }
+    }
+
+    // PASS B — hidden-friend + class-member candidates for associated classes.
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Class') continue;
+      // Enclosing-namespace QName(s) of the class def(s) in this scope.
+      const classNsKeys = new Set<string>();
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+        const nsQName = classToNamespaceQualifiedName.get(def.nodeId);
+        if (nsQName !== undefined) classNsKeys.add(nsQName);
+      }
+      if (classNsKeys.size === 0) continue;
+      // Friend functions: callable defs in child Function scopes.
+      for (const childScope of childrenByParent.get(scope.id) ?? []) {
+        if (childScope.kind !== 'Function') continue;
+        for (const def of childScope.ownedDefs) {
+          if (!isAdlCallableType(def.type)) continue;
+          const s = seq++;
+          idx.seqByNodeId.set(def.nodeId, s);
+          const sn = adlSimpleName(def);
+          for (const key of classNsKeys) pushNested(idx.friendCandidates, key, sn, def);
+        }
+      }
+      // Class-member callables.
+      for (const def of scope.ownedDefs) {
+        if (!isAdlCallableType(def.type)) continue;
+        const s = seq++;
+        idx.seqByNodeId.set(def.nodeId, s);
+        const sn = adlSimpleName(def);
+        for (const key of classNsKeys) pushNested(idx.friendCandidates, key, sn, def);
+      }
+    }
+  }
+
+  return idx;
+}
+
+/** Build the ADL index on first use of a given `parsedFiles` set; reuse it for
+ *  all subsequent call sites in the same pipeline run. Reset by
+ *  `clearCppAdlState`. */
+function ensureAdlIndex(scopes: ScopeResolutionIndexes, parsedFiles: readonly ParsedFile[]): void {
+  if (adlIndex !== undefined && adlIndexSource === parsedFiles) return;
+  adlIndex = buildAdlIndex(scopes, parsedFiles);
+  adlIndexSource = parsedFiles;
 }
 
 /** Record per-call-site argument info. Called once per call site from
@@ -130,6 +327,8 @@ export function clearCppAdlState(): void {
   argInfoBySite.clear();
   noAdlSites.clear();
   classToNamespaceQualifiedName.clear();
+  adlIndex = undefined;
+  adlIndexSource = undefined;
 }
 
 /**
@@ -195,111 +394,47 @@ export function pickCppAdlCandidates(
   const args = argInfoBySite.get(key);
   if (args === undefined || args.length === 0) return undefined;
 
+  // Build the workspace-wide ADL candidate index once; reuse for every site.
+  ensureAdlIndex(scopes, parsedFiles);
+
   // Collect associated namespace QNames from every participating class-typed arg
   // and from function-reference args.
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
     collectAssociatedNamespacesForAdlArg(arg, scopes, associatedNamespaces);
     if (arg.functionRefText !== undefined) {
-      collectFunctionTypeAssociatedNamespaces(
-        arg.functionRefText,
-        scopes,
-        parsedFiles,
-        associatedNamespaces,
-      );
+      collectFunctionTypeAssociatedNamespaces(arg.functionRefText, scopes, associatedNamespaces);
     }
   }
   if (associatedNamespaces.size === 0) return undefined;
 
-  // Walk every namespace scope in every parsed file; collect callable
-  // ownedDefs whose enclosing namespace matches one of the associated
-  // QNames AND whose simple name matches the call's name.
-  // ISO C++: inline namespaces are transparent — candidates in inline
-  // children of an associated namespace are also ADL-reachable.
-  const candidates: SymbolDefinition[] = [];
+  // Gather candidates from the prebuilt index instead of re-scanning every
+  // parsed file. For each associated namespace, pull:
+  //   - namespace-owned callables (`nsCandidates`, includes inline-namespace
+  //     transparency), AND
+  //   - hidden-friend / class-member callables of associated classes
+  //     (`friendCandidates`, ISO C++ `[basic.lookup.argdep]` §2).
+  // Dedup by nodeId and sort by visitation sequence so the candidate list is
+  // byte-for-byte identical to the legacy file-major scan order.
+  const idx = adlIndex;
+  if (idx === undefined) return undefined;
+  const bySeq = new Map<number, SymbolDefinition>();
   const seenKey = new Set<string>();
-  for (const parsed of parsedFiles) {
-    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
-    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
-    for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Namespace') continue;
-      const qName = computeNamespaceQName(scope, scopesById);
-      if (!associatedNamespaces.has(qName)) {
-        // Check if this is an inline-namespace child of an associated NS.
-        // ISO C++ inline namespaces are transparent for ADL: if the outer
-        // namespace is in the associated set, candidates in the inline child
-        // are also reachable.
-        if (!isCppInlineNamespaceScope(scope.id)) continue;
-        const parentScope = scope.parent !== null ? scopesById.get(scope.parent) : undefined;
-        if (parentScope === undefined || parentScope.kind !== 'Namespace') continue;
-        const parentQName = computeNamespaceQName(parentScope, scopesById);
-        if (!associatedNamespaces.has(parentQName)) continue;
-      }
-      for (const def of scope.ownedDefs) {
-        if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
-          continue;
-        }
-        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-        if (simple !== site.name) continue;
-        // Dedup by nodeId — using normalized parameter-types as the key
-        // would collapse `process(int)`/`process(long)`-style overloads
-        // (both normalize to `['int']`) before
-        // `isOverloadAmbiguousAfterNormalization` can detect them.
+  const collectFrom = (buckets: Map<string, Map<string, SymbolDefinition[]>>): void => {
+    for (const ns of associatedNamespaces) {
+      const matches = buckets.get(ns)?.get(site.name);
+      if (matches === undefined) continue;
+      for (const def of matches) {
         if (seenKey.has(def.nodeId)) continue;
         seenKey.add(def.nodeId);
-        candidates.push(def);
+        bySeq.set(idx.seqByNodeId.get(def.nodeId) ?? 0, def);
       }
     }
-    // ISO C++ `[basic.lookup.argdep]` §2: hidden friend functions declared
-    // inside a class body are visible via ADL when the class is an associated
-    // class. Scan Class scopes whose enclosing namespace is in the associated
-    // set for callable ownedDefs matching the call name. This enables the
-    // canonical "hidden friend" idiom:
-    //   struct Foo { friend void swap(Foo&, Foo&) {} };
-    for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Class') continue;
-      // Check if ANY class def in this scope has an associated namespace.
-      let isAssociatedClass = false;
-      for (const def of scope.ownedDefs) {
-        if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
-        const nsQName = classToNamespaceQualifiedName.get(def.nodeId);
-        if (nsQName !== undefined && associatedNamespaces.has(nsQName)) {
-          isAssociatedClass = true;
-          break;
-        }
-      }
-      if (!isAssociatedClass) continue;
-      // Also scan Function scopes that are direct children of this class
-      // scope — friend function definitions create their own Function scope
-      // underneath the Class scope.
-      for (const childScope of parsed.scopes) {
-        if (childScope.parent !== scope.id) continue;
-        if (childScope.kind !== 'Function') continue;
-        for (const def of childScope.ownedDefs) {
-          if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
-            continue;
-          }
-          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-          if (simple !== site.name) continue;
-          if (seenKey.has(def.nodeId)) continue;
-          seenKey.add(def.nodeId);
-          candidates.push(def);
-        }
-      }
-      for (const def of scope.ownedDefs) {
-        if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
-          continue;
-        }
-        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-        if (simple !== site.name) continue;
-        if (seenKey.has(def.nodeId)) continue;
-        seenKey.add(def.nodeId);
-        candidates.push(def);
-      }
-    }
-  }
-  if (candidates.length === 0) return undefined;
-  return candidates;
+  };
+  collectFrom(idx.nsCandidates);
+  collectFrom(idx.friendCandidates);
+  if (bySeq.size === 0) return undefined;
+  return [...bySeq.entries()].sort((a, b) => a[0] - b[0]).map(([, def]) => def);
 }
 
 function collectAssociatedNamespacesForAdlArg(
@@ -331,7 +466,7 @@ function addAssociatedNamespaceForClassName(
   associatedNamespaces: Set<string>,
 ): void {
   if (simpleClassName.length === 0) return;
-  const classLookup = findCppClassDefBySimpleName(simpleClassName, scopes);
+  const classLookup = findCppClassDefBySimpleName(simpleClassName);
   if (classLookup === undefined) return;
   const { classDef, ambiguous } = classLookup;
   const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
@@ -447,27 +582,14 @@ function findNamespaceDefInScope(scope: {
  *  enclosing namespace to the associated set, just like class types. */
 function findCppClassDefBySimpleName(
   simpleName: string,
-  scopes: ScopeResolutionIndexes,
 ): { classDef: SymbolDefinition; ambiguous: boolean } | undefined {
-  let firstMatch: SymbolDefinition | undefined;
-  for (const def of scopes.defs.byId.values()) {
-    if (
-      def.type !== 'Class' &&
-      def.type !== 'Struct' &&
-      def.type !== 'Interface' &&
-      def.type !== 'Enum'
-    )
-      continue;
-    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-    if (simple !== simpleName) continue;
-    if (firstMatch === undefined) {
-      firstMatch = def;
-      continue;
-    }
-    return { classDef: firstMatch, ambiguous: true };
-  }
-  if (firstMatch === undefined) return undefined;
-  return { classDef: firstMatch, ambiguous: false };
+  // `classDefsBySimple` preserves `scopes.defs.byId` order, so `[0]` is the
+  // legacy first-match and `length > 1` is the legacy `ambiguous` flag.
+  const matches = adlIndex?.classDefsBySimple.get(simpleName);
+  if (matches === undefined) return undefined;
+  const first = matches[0];
+  if (first === undefined) return undefined;
+  return { classDef: first, ambiguous: matches.length > 1 };
 }
 
 /**
@@ -477,31 +599,23 @@ function findCppClassDefBySimpleName(
 function collectFunctionTypeAssociatedNamespaces(
   refText: string,
   scopes: ScopeResolutionIndexes,
-  parsedFiles: readonly ParsedFile[],
   out: Set<string>,
 ): void {
+  const idx = adlIndex;
+  if (idx === undefined) return;
   const colonIdx = refText.lastIndexOf('::');
   if (colonIdx !== -1) {
     // Qualified ref: extract namespace prefix and normalise :: → dot notation.
     const nsText = refText.slice(0, colonIdx).replace(/::/g, '.');
     if (nsText === '') return;
     const simpleName = refText.slice(colonIdx + 2);
-    // Verify that a Function/Method named `simpleName` exists in `nsText`.
-    // Without this guard every `a::b` qualified_identifier arg (variable,
-    // enum value, static member, type alias) would blindly contribute `a`
-    // to the associated set and risk a false-positive CALLS edge.
-    for (const parsed of parsedFiles) {
-      const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
-      for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
-      for (const scope of parsed.scopes) {
-        if (scope.kind !== 'Namespace') continue;
-        if (computeNamespaceQName(scope, scopesById) !== nsText) continue;
-        for (const def of scope.ownedDefs) {
-          if (def.type !== 'Function' && def.type !== 'Method') continue;
-          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-          if (simple === simpleName) collectAssociatedNamespacesForFunctionDef(def, scopes, out);
-        }
-      }
+    // Only Function/Method defs named `simpleName` in `nsText` contribute
+    // (the index already restricts to those types); this guards against an
+    // `a::b` arg that names a variable / enum value / type alias blindly
+    // contributing `a` to the associated set (false-positive CALLS edge).
+    const matches = idx.nsFunctionsByQName.get(nsText)?.get(simpleName);
+    if (matches !== undefined) {
+      for (const def of matches) collectAssociatedNamespacesForFunctionDef(def, scopes, out);
     }
     return;
   }
@@ -510,16 +624,9 @@ function collectFunctionTypeAssociatedNamespaces(
   // the previous V1 lookup scope. The stricter part of this PR is what each
   // overload contributes: only namespaces from parameter/return types, never
   // the function's own enclosing namespace.
-  for (const parsed of parsedFiles) {
-    for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Namespace') continue;
-      for (const def of scope.ownedDefs) {
-        if (def.type !== 'Function' && def.type !== 'Method') continue;
-        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-        if (simple !== refText) continue;
-        collectAssociatedNamespacesForFunctionDef(def, scopes, out);
-      }
-    }
+  const matches = idx.nsFunctionsBySimple.get(refText);
+  if (matches !== undefined) {
+    for (const def of matches) collectAssociatedNamespacesForFunctionDef(def, scopes, out);
   }
 }
 
