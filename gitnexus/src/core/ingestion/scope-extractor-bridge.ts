@@ -31,6 +31,7 @@ import type { LanguageProvider } from './language-provider.js';
 import { logger } from '../logger.js';
 /** Callback used to report scope-extraction warnings to the host (worker or direct). */
 export type ScopeBridgeWarn = (message: string) => void;
+export type ScopeCaptureSourceKind = 'full-file' | 'pre-extracted-script';
 
 /**
  * Produce a `ParsedFile` for the given file, or `undefined` when the
@@ -43,11 +44,12 @@ export function extractParsedFile(
   filePath: string,
   onWarn?: ScopeBridgeWarn,
   cachedTree?: unknown,
+  sourceKind: ScopeCaptureSourceKind = 'full-file',
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
   if (sourceText.trim().length === 0) return undefined;
   try {
-    const captures = provider.emitScopeCaptures(sourceText, filePath, cachedTree);
+    const captures = provider.emitScopeCaptures(sourceText, filePath, cachedTree, { sourceKind });
     return extractScope(captures, filePath, provider);
   } catch (err) {
     const message = `scope extraction failed for ${filePath}: ${

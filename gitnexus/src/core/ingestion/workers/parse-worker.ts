@@ -98,7 +98,7 @@ import {
 import { extractTemplateArguments, templateArgumentsIdTag } from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import { extractParsedFile } from '../scope-extractor-bridge.js';
+import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
 
 import { logger } from '../../logger.js';
@@ -1111,12 +1111,14 @@ const processFileGroup = (
 
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
+    let scopeSourceKind: ScopeCaptureSourceKind = 'full-file';
     let lineOffset = 0;
     let isVueSetup = false;
     if (language === SupportedLanguages.Vue) {
       const extracted = extractVueScript(file.content);
       if (!extracted) continue; // skip .vue files with no script block
       parseContent = extracted.scriptContent;
+      scopeSourceKind = 'pre-extracted-script';
       lineOffset = extracted.lineOffset;
       isVueSetup = extracted.isSetup;
     }
@@ -1174,6 +1176,7 @@ const processFileGroup = (
         }
       },
       tree,
+      scopeSourceKind,
     );
     if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
 
