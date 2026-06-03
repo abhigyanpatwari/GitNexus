@@ -3257,7 +3257,18 @@ export class LocalBackend {
         const lineIdx = sym.startLine - 1;
         if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
           const defRegex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-          addEdit(sym.filePath, sym.startLine, lines[lineIdx].trim(), lines[lineIdx].replace(defRegex, new_name).trim(), 'graph');
+          // (#60) Verify the regex actually finds a match. The
+          // previous String.includes() check is a substring match
+          // (e.g. "getAllBond" is included in "getAllBondCategory")
+          // and the subsequent String.replace() with a word-bounded
+          // regex then produces a no-op edit (old === new),
+          // polluting the edit list. Gate on regex.test() so only
+          // true symbol-accurate matches contribute.
+          defRegex.lastIndex = 0;
+          if (defRegex.test(lines[lineIdx])) {
+            defRegex.lastIndex = 0;
+            addEdit(sym.filePath, sym.startLine, lines[lineIdx].trim(), lines[lineIdx].replace(defRegex, new_name).trim(), 'graph');
+          }
         }
       } catch (e) { logQueryError('rename:read-definition', e); }
     }
@@ -3279,7 +3290,22 @@ export class LocalBackend {
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes(oldName)) {
-            addEdit(ref.filePath, i + 1, lines[i].trim(), lines[i].replace(new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), new_name).trim(), 'graph');
+            // (#60) Same gate as the definition edit: substring
+            // match is too loose, so verify the word-bounded
+            // regex finds a real match before producing an
+            // edit. The reproduction in #60 was renaming
+            // `getAllBond` on BondService — the IMPLEMENTS edge
+            // from AssetDetailServiceImpl pulled its file into
+            // the rename, and lines like
+            // `protected ... getAllBondCategory() {` matched
+            // String.includes('getAllBond') but the regex found
+            // nothing — producing a no-op edit.
+            const refRegex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+            refRegex.lastIndex = 0;
+            if (refRegex.test(lines[i])) {
+              refRegex.lastIndex = 0;
+              addEdit(ref.filePath, i + 1, lines[i].trim(), lines[i].replace(refRegex, new_name).trim(), 'graph');
+            }
             graphEdits++;
             break; // one edit per file from graph refs
           }
