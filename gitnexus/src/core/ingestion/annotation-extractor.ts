@@ -56,16 +56,47 @@ export function extractSingleAnnotation(node: Parser.SyntaxNode): AnnotationInfo
     return null;
   }
 
-  // Get annotation name - in tree-sitter-java, name is first identifier child
-  const nameNode = node.children.find(c => c.type === 'identifier' || c.type === 'scoped_identifier');
+  // (#55) Kotlin wraps the annotation name in a `constructor_invocation`
+  // node: annotation > constructor_invocation > user_type > type_identifier.
+  // Java keeps the identifier as a direct child of `annotation`. Kotlin
+  // marker annotations skip the constructor_invocation layer and go
+  // directly: annotation > user_type > type_identifier. Handle all
+  // three shapes so the extractor works for Java + Kotlin.
+  let nameNode = node.children.find(c => c.type === 'identifier' || c.type === 'scoped_identifier');
+  if (!nameNode) {
+    // Kotlin full annotation: annotation > constructor_invocation > user_type > type_identifier
+    const ctor = node.children.find(c => c.type === 'constructor_invocation');
+    if (ctor) {
+      const userType = ctor.children.find(c => c.type === 'user_type' || c.type === 'scoped_identifier');
+      if (userType) {
+        nameNode = userType.children.find(c => c.type === 'type_identifier' || c.type === 'scoped_identifier') ?? userType;
+      }
+    }
+  }
+  if (!nameNode) {
+    // Kotlin marker annotation: annotation > user_type > type_identifier
+    const userType = node.children.find(c => c.type === 'user_type' || c.type === 'scoped_identifier');
+    if (userType) {
+      nameNode = userType.children.find(c => c.type === 'type_identifier' || c.type === 'scoped_identifier') ?? userType;
+    }
+  }
   if (!nameNode) return null;
 
   const name = '@' + nameNode.text;
   const annInfo: AnnotationInfo = { name };
 
-  // If it's a full annotation, extract arguments
+  // If it's a full annotation, extract arguments. Java uses
+  // `annotation_argument_list`; Kotlin uses `value_arguments` (nested
+  // inside `constructor_invocation`).
   if (node.type === 'annotation') {
-    const argsList = node.childForFieldName('arguments') ?? node.children.find(c => c.type === 'annotation_argument_list');
+    let argsList = node.childForFieldName('arguments')
+      ?? node.children.find(c => c.type === 'annotation_argument_list');
+    if (!argsList) {
+      const ctor = node.children.find(c => c.type === 'constructor_invocation');
+      if (ctor) {
+        argsList = ctor.children.find(c => c.type === 'value_arguments');
+      }
+    }
     if (argsList) {
       annInfo.attrs = extractAnnotationArgs(argsList);
     }
@@ -77,7 +108,7 @@ export function extractSingleAnnotation(node: Parser.SyntaxNode): AnnotationInfo
 /**
  * Extracts key-value pairs from an annotation_argument_list.
  * Handles:
- * - Named args: key = value
+ * - Named args: key = value (Java `element_value_pair` or Kotlin `value_argument`)
  * - Unnamed args: value (stored with numeric index as key)
  * - Nested annotations: @Backoff(delay = 1000)
  */
@@ -85,20 +116,38 @@ function extractAnnotationArgs(argsList: Parser.SyntaxNode): Record<string, stri
   const attrs: Record<string, string> = {};
 
   for (const child of argsList.children) {
-    // element_value_pair: key = value
-    if (child.type === 'element_value_pair') {
-      const keyNode = child.children.find(c => c.type === 'identifier');
+    // Java: element_value_pair: key = value (key is `identifier`)
+    // Kotlin: value_argument: key = value (key is `simple_identifier`)
+    if (child.type === 'element_value_pair' || child.type === 'value_argument') {
+      // Detect named vs unnamed: Kotlin unnamed args like
+      // `@GetMapping("/users")` produce value_argument without a `simple_identifier`
+      // key (just a string literal value). Use the presence of `=` as the
+      // marker for named args.
+      const hasEquals = child.children.some(c => c.type === '=');
+      if (!hasEquals) {
+        // Unnamed Kotlin value_argument: the value is its first non-trivial child.
+        const value = extractArgValue(child.children.find(c =>
+          c.type !== '(' && c.type !== ')' && !c.text.match(/^\s*$/)
+        ));
+        if (value !== null) {
+          const idx = Object.keys(attrs).filter(k => k.match(/^\d+$/)).length;
+          attrs[String(idx)] = value;
+        }
+        continue;
+      }
+      const keyNode = child.children.find(c => c.type === 'identifier' || c.type === 'simple_identifier');
       if (!keyNode) continue;
 
       const key = keyNode.text;
       const value = extractArgValue(child.children.find(c =>
-        c.type !== 'identifier' && c.type !== '=' && !c.text.match(/^\s*$/)
+        c.type !== 'identifier' && c.type !== 'simple_identifier' &&
+        c.type !== '=' && !c.text.match(/^\s*$/)
       ));
       if (value !== null) {
         attrs[key] = value;
       }
     }
-    // Unnamed argument: single value (e.g., @GetMapping("/users"))
+    // Unnamed argument: single value (e.g., @GetMapping("/users") in Java)
     else if (child.type === 'string_literal' || child.type === 'number' || child.type === 'true' || child.type === 'false' || child.type === 'identifier') {
       // Store with numeric index - first unnamed arg gets key "0"
       const idx = Object.keys(attrs).filter(k => k.match(/^\d+$/)).length;
@@ -147,6 +196,7 @@ function extractArgValue(node: Parser.SyntaxNode | undefined): string | null {
 
     case 'true':
     case 'false':
+    case 'boolean_literal':
       return node.text;
 
     case 'identifier':

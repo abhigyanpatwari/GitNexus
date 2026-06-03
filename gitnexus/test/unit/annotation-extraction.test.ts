@@ -222,10 +222,14 @@ describe('extractAnnotations', () => {
       expect(() => extractAnnotations(declNode!)).not.toThrow();
     });
 
-    // TODO(#55): deeper Kotlin annotation assertions pending a real Kotlin extractor fix.
-    // Verified red on 2026-06-03: extractAnnotations returns [] for @Transactional / @GetMapping
-    // / @Transactional(readOnly = true) on Kotlin AST nodes. Keep skipped until extractor fix lands.
-    describe.skip('deep Kotlin annotation assertions (pending #55)', () => {
+    // (#55) Kotlin annotation extraction is now wired up. The
+    // extractor was previously Java-only — it expected an `identifier`
+    // child directly under `annotation`, but Kotlin's tree-sitter grammar
+    // wraps the name in `annotation > constructor_invocation >
+    // user_type > type_identifier` and the args in
+    // `constructor_invocation > value_arguments`. The extractor now
+    // handles both shapes.
+    describe('deep Kotlin annotation assertions', () => {
       it('extracts marker annotation (@Transactional)', () => {
         const code = `
           @Transactional
