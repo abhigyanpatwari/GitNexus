@@ -26,6 +26,7 @@ import { rubyScopeResolver } from '../../languages/ruby/scope-resolver.js';
 import { cobolScopeResolver } from '../../languages/cobol/scope-resolver.js';
 import { swiftScopeResolver } from '../../languages/swift/scope-resolver.js';
 import { dartScopeResolver } from '../../languages/dart/scope-resolver.js';
+import { vueScopeResolver } from '../../languages/vue/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The phase iterates
  *  this map intersected with `MIGRATED_LANGUAGES` (the per-language
@@ -50,4 +51,5 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Cobol, cobolScopeResolver],
   [SupportedLanguages.Swift, swiftScopeResolver],
   [SupportedLanguages.Dart, dartScopeResolver],
+  [SupportedLanguages.Vue, vueScopeResolver],
 ]);
