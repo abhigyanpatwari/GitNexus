@@ -24,6 +24,12 @@ const MAPPING_ANNOTATIONS = [
   { regex: /@PostMapping\(([^)]*)\)/, method: 'POST' },
   { regex: /@PutMapping\(([^)]*)\)/, method: 'PUT' },
   { regex: /@DeleteMapping\(([^)]*)\)/, method: 'DELETE' },
+  // (#91) @PatchMapping was missing from the standalone extractor.
+  // The production pipeline (workers/spring-route-extractor.ts) handled
+  // it correctly, but the standalone extractRoutesFromClass in this
+  // file was emitting `ANY` for every @PatchMapping endpoint. Add it
+  // here so the standalone extractor and the pipeline agree.
+  { regex: /@PatchMapping\(([^)]*)\)/, method: 'PATCH' },
   { regex: /@RequestMapping\(([^)]*)\)/, method: 'ANY' },
 ];
 
@@ -329,8 +335,14 @@ export async function extractSpringRoutes(
         if (annName === 'PostMapping') { httpMethods = ['POST']; }
         if (annName === 'PutMapping') { httpMethods = ['PUT']; }
         if (annName === 'DeleteMapping') { httpMethods = ['DELETE']; }
+        // (#91) @PatchMapping was missing from the inline check below.
+        // The MAPPING_ANNOTATIONS regex at the top of the file is only
+        // used by the regex-based extractors; extractRoutesFromClass
+        // dispatches by name explicitly. Add the dispatch here so
+        // @PatchMapping produces a PATCH route, not ANY.
+        if (annName === 'PatchMapping') { httpMethods = ['PATCH']; }
         if ([
-          'GetMapping','PostMapping','PutMapping','DeleteMapping','RequestMapping'
+          'GetMapping','PostMapping','PutMapping','DeleteMapping','PatchMapping','RequestMapping'
         ].includes(annName)) {
           methodLevelPath = getAnnotationValue(ann, 'value') || getAnnotationValue(ann, 'path') || getAnnotationValue(ann) || '';
           if (methodLevelPath.startsWith('/')) methodLevelPath = methodLevelPath.slice(1);
@@ -346,7 +358,16 @@ export async function extractSpringRoutes(
                       if (val && val.startsWith('RequestMethod.')) {
                         httpMethods = [val.replace('RequestMethod.', '')];
                       }
-                    } else if (valNode.type === 'array_initializer') {
+                    // (#91) tree-sitter-java wraps `{RequestMethod.X}`
+                    // (and `{RequestMethod.X, RequestMethod.Y}`) in an
+                    // `element_value_array_initializer` node, NOT an
+                    // `array_initializer`. The previous check only
+                    // matched `array_initializer`, so single-element and
+                    // multi-element method arrays both fell through to
+                    // the default `['ANY']`. Match the real node type
+                    // and also keep the bare `array_initializer` check
+                    // for robustness across tree-sitter versions.
+                    } else if (valNode.type === 'element_value_array_initializer' || valNode.type === 'array_initializer') {
                       httpMethods = valNode.namedChildren
                         .filter((n: any) => n.type === 'field_access' && n.text.startsWith('RequestMethod.'))
                         .map((n: any) => n.text.replace('RequestMethod.', ''));
