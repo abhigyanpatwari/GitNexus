@@ -3225,6 +3225,15 @@ export class LocalBackend {
     includeTests?: boolean;
     minConfidence?: number;
   }): Promise<any> {
+    // Validate minConfidence range (#66). Reject out-of-range values explicitly
+    // so callers learn about the 0-1 contract instead of silently getting
+    // an empty result set (minConfidence=1.5 reads as "no result above 150%").
+    if (params.minConfidence !== undefined &&
+        (params.minConfidence < 0 || params.minConfidence > 1)) {
+      throw new Error(
+        `minConfidence must be between 0 and 1 (got ${params.minConfidence})`
+      );
+    }
     try {
       return await this._impactImpl(repo, params);
     } catch (err: any) {

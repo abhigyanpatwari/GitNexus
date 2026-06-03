@@ -324,6 +324,19 @@ export const analyzeCommand = async (
   // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
   updateBar(98, 'Saving metadata...');
 
+  // Bail before writing the registry if the pipeline produced no files (#48).
+  // Otherwise a --skip-git run on an empty dir creates a 0-node entry that
+  // pollutes `gitnexus list` and triggers "Multiple repositories indexed"
+  // for subsequent calls. Use the same exit-code-via-processExitCode pattern
+  // the early-return path uses, so scripts can detect the failure.
+  if (pipelineResult.totalFileCount === 0) {
+    bar.stop();
+    console.log(`\n  No source files found in ${repoPath}. Aborting — nothing to index.\n`);
+    console.log('  Tip: pass a path with source files, or remove --skip-git to let GitNexus locate the repo root.\n');
+    process.exitCode = 1;
+    return;
+  }
+
   // Count embeddings in the index (cached + newly generated)
   let embeddingCount = 0;
   try {
