@@ -181,6 +181,17 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'binds the call to alpha/services/sync.py, not omega',
     'lex tiebreak still picks alpha/services/sync.py with reversed file-write order',
   ]),
+  rust: new Set([
+    // Macro resolution (#1934 F72) is a registry-primary-only capability:
+    // a `macro_rules!` invocation resolves through the MacroRegistry to a
+    // Macro node (USES edge), never to a same-named function. The legacy
+    // DAG has no macro-invocation resolver, so these assertions are
+    // skipped under `REGISTRY_PRIMARY_RUST=0`. (The Macro/Function node
+    // materialization itself is shared, so the node-presence assertion in
+    // the same describe block runs on both paths and is NOT listed here.)
+    'resolves greet!(..) as a USES edge to the Macro (not the Function)',
+    'does NOT emit a CALLS edge from the macro invocation to fn greet',
+  ]),
   kotlin: new Set<string>([
     // #1756 companion-vs-instance dispatch: the registry-primary path
     // suppresses `instance.companionMethod()` via `ScopeResolver.

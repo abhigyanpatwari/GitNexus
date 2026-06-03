@@ -12,8 +12,14 @@ import {
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
+  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
+
+// Registry-primary-only assertions (e.g. macro resolution, which the legacy
+// DAG does not implement) use this parity-aware `it` so they are skipped —
+// not failed — under the legacy half of the scope-parity gate.
+const rustParityIt = createResolverParityIt('rust');
 
 // ---------------------------------------------------------------------------
 // Heritage: trait implementations
@@ -2045,5 +2051,79 @@ describe('Rust scoped inherent impl — ownership + collision (issue #1975)', ()
     expect(fromA!.source).toBe('a::Inner');
     expect(fromB!.source).toBe('b::Inner');
     expect(fromA!.source).not.toBe(fromB!.source);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F71 — union declarations resolve as Struct nodes (issue #1934)
+//
+// A `union` is deliberately captured as a Struct-labeled node (see the
+// rationale in languages/rust/query.ts): every registry-primary resolution
+// gate includes Struct but excludes Union, so a Union-labeled node would be
+// an unresolvable orphan. These pipeline-level assertions pin BOTH that the
+// node is labeled Struct AND that it is genuinely resolvable (the union
+// literal is a real constructor) — works on the legacy + registry-primary
+// paths, so it runs under both halves of the scope-parity gate.
+// ---------------------------------------------------------------------------
+
+describe('Rust union resolution (issue #1934 F71)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-union'), () => {});
+  }, 60000);
+
+  it('captures the union as a Struct node named MyUnion (not Union)', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('MyUnion');
+    expect(getNodesByLabel(result, 'Union')).toEqual([]);
+  });
+
+  it('resolves the union literal MyUnion { .. } as a CALLS edge to the Struct', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find((e) => e.source === 'make' && e.target === 'MyUnion');
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetLabel).toBe('Struct');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F72 — macro invocations resolve to their definition (issue #1934)
+//
+// A `macro_rules! greet` invocation (`greet!(...)`) resolves via the
+// MacroRegistry to the Macro node, emitting a USES edge — NEVER a CALLS
+// edge, and NEVER binding to a same-named free function `fn greet`. This is
+// a registry-primary-only capability (the legacy DAG does not resolve
+// macros), so the resolution assertions use `rustParityIt` and are listed
+// in helpers' LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.
+// ---------------------------------------------------------------------------
+
+describe('Rust macro resolution (issue #1934 F72)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-macro'), () => {});
+  }, 60000);
+
+  it('materializes both a Macro and a same-named Function node', () => {
+    expect(getNodesByLabel(result, 'Macro')).toContain('greet');
+    expect(getNodesByLabel(result, 'Function')).toContain('greet');
+  });
+
+  rustParityIt('resolves greet!(..) as a USES edge to the Macro (not the Function)', () => {
+    const uses = getRelationships(result, 'USES');
+    const macroUse = uses.find((e) => e.source === 'run' && e.target === 'greet');
+    expect(macroUse).toBeDefined();
+    expect(macroUse!.targetLabel).toBe('Macro');
+  });
+
+  rustParityIt('does NOT emit a CALLS edge from the macro invocation to fn greet', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // The only run -> greet CALLS edge is the genuine fn call; it must target
+    // the Function, and there must be exactly one (the macro adds no CALLS).
+    const greetCalls = calls.filter((e) => e.source === 'run' && e.target === 'greet');
+    expect(greetCalls.length).toBe(1);
+    expect(greetCalls[0].targetLabel).toBe('Function');
+    // And no CALLS edge anywhere targets the Macro node.
+    expect(calls.every((e) => e.targetLabel !== 'Macro')).toBe(true);
   });
 });

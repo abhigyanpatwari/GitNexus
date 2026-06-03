@@ -28,10 +28,10 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "3c4b8e0a707299cc5db0af2528c72a99457859104589a7ef3cd1f377da01793e",
+    "fingerprint": "a5fdff2cf427504e33e66d0221b3ad62739c64bd0898e1dafedc15dbbe347b4d",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04).",
-    "_note": "#1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls). Pure fixture-corpus drift — the fix is the legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target, NOT the rust scope-extractor; existing fixtures' captures byte-identical. fixture_count 120->121."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) — legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical.",
+    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED — @declaration.macro/@reference.macro + MacroRegistry → USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126)."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",

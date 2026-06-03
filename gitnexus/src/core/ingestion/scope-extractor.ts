@@ -745,6 +745,8 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
       return 'Annotation';
     case 'namespace':
       return 'Namespace';
+    case 'macro':
+      return 'Macro';
     default:
       return undefined;
   }
@@ -1044,6 +1046,8 @@ function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
     case 'import_use':
     case 'import-use':
       return 'import-use';
+    case 'macro':
+      return 'macro';
     default:
       return undefined;
   }
