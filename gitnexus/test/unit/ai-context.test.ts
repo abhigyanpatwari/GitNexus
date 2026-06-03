@@ -210,9 +210,14 @@ describe('generateAIContextFiles', () => {
 
   it('keeps the CLAUDE.md GitNexus block under the token-cost budget (#856)', async () => {
     // The pre-trim block was ~5465 chars. After #856 it's ~2580 — about a
-    // 52% reduction. 2700 is a soft ceiling that still leaves headroom for
+    // 52% reduction. The ceiling is a soft cap that still leaves headroom for
     // legitimate future additions but will fail loudly if the trim is
     // reverted or someone pads the block back out toward the original size.
+    //
+    // Raised 2700 → 2900 for #243: the regression-compare example (one
+    // load-bearing per-repo `base_ref` line on the detect_changes bullet) is a
+    // legitimate addition, not a revert of the trim — the block stays roughly
+    // half the original size.
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -221,7 +226,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(2700);
+    expect(block.length).toBeLessThan(2900);
   });
 
   it('handles empty stats', async () => {
@@ -874,6 +879,66 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
       expect(result).toContain(`Indexed as **${trickyName}** (5 symbols`);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Configurable default branch in the regression example (#243)
+  // ──────────────────────────────────────────────────────────────────
+
+  it('generated regression-compare example uses the configured default branch (#243)', () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    const develop = generateGitNexusContent(
+      'P',
+      stats,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'develop',
+    );
+    expect(develop).toContain('base_ref: "develop"');
+    expect(develop).not.toContain('base_ref: "main"');
+  });
+
+  it('defaults the regression-compare example to "main" when no branch is configured (#243)', () => {
+    const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
+    expect(content).toContain('base_ref: "main"');
+  });
+
+  it('JSON-escapes a markdown/quote-bearing branch so it cannot break the code span (#243)', () => {
+    // A branch name with a double-quote must be JSON-escaped, not concatenated
+    // raw, so it stays inside the inline code span.
+    const content = generateGitNexusContent(
+      'P',
+      { nodes: 1 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'we"ird',
+    );
+    expect(content).toContain('base_ref: "we\\"ird"');
+  });
+
+  it('threads defaultBranch through generateAIContextFiles into AGENTS.md and CLAUDE.md (#243)', async () => {
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-default-branch-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(subDir, subStorage, 'P', stats, undefined, {
+        defaultBranch: 'release/1.0',
+      });
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        expect(content).toContain('base_ref: "release/1.0"');
+        expect(content).not.toContain('base_ref: "main"');
+      }
+    } finally {
+      await fs.rm(subDir, { recursive: true, force: true });
     }
   });
 });

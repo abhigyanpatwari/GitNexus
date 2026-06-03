@@ -29,6 +29,12 @@ export interface AIContextOptions {
   skipAgentsMd?: boolean;
   noStats?: boolean;
   skipSkills?: boolean;
+  /**
+   * Default branch used by the generated regression-compare example (#243).
+   * Resolved by the CLI (CLI flag > `.gitnexusrc` > auto-detect > "main"); a
+   * plain caller that omits it gets "main", preserving prior behavior.
+   */
+  defaultBranch?: string;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -100,6 +106,11 @@ export function generateGitNexusContent(
   // index (#1945). Referenced by docs so a single CLI-neutral command resolves
   // the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time.
   runnerPath: string = '.gitnexus/run.cjs',
+  // Default branch for the regression-compare example (#243). Configurable so
+  // projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
+  // back over their fix on every analyze. JSON.stringify keeps the embedded
+  // value quoted and escaped so a branch name can't break out of the code span.
+  defaultBranch: string = 'main',
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -151,7 +162,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 ## Always Do
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`gitnexus_impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run \`gitnexus_detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run \`gitnexus_detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: \`gitnexus_detect_changes({scope: "compare", base_ref: ${JSON.stringify(defaultBranch)}})\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use \`gitnexus_query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`gitnexus_context({name: "symbolName"})\`.
@@ -430,6 +441,7 @@ export async function generateAIContextFiles(
     options?.noStats,
     options?.skipSkills,
     runnerPath,
+    options?.defaultBranch ?? 'main',
   );
   const createdFiles: string[] = [];
 

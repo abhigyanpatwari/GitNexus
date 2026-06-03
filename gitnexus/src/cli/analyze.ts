@@ -26,7 +26,13 @@ import {
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
 } from '../storage/repo-manager.js';
-import { getGitRoot, hasGitDir } from '../storage/git.js';
+import { getGitRoot, hasGitDir, getDefaultBranch } from '../storage/git.js';
+import {
+  loadAnalyzeConfig,
+  mergeAnalyzeOptions,
+  resolveDefaultBranch,
+  GitNexusRcError,
+} from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import { warnMissingOptionalGrammars } from './optional-grammars.js';
@@ -555,6 +561,13 @@ export interface AnalyzeOptions {
   stats?: boolean;
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
+  /**
+   * Default branch for the generated regression-compare example (#243). From
+   * `--default-branch`; may also be supplied via `.gitnexusrc`. Resolved to a
+   * concrete branch (CLI > `.gitnexusrc` > auto-detected origin/HEAD > "main")
+   * before being threaded into the generated AGENTS.md / CLAUDE.md content.
+   */
+  defaultBranch?: string;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -639,7 +652,93 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 };
 
-const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions): Promise<void> => {
+const analyzeCommandImpl = async (
+  inputPath?: string,
+  cliOptions?: AnalyzeOptions,
+): Promise<void> => {
+  console.log('\n  GitNexus Analyzer\n');
+
+  // ── Resolve the target repo root ──────────────────────────────────
+  // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
+  // caller's cwd), and config can set defaults that the validation below
+  // consumes. `--skip-git` is a CLI-only flag (never a config key), so the raw
+  // CLI options are authoritative for repo-root resolution.
+  let repoPath: string;
+  if (inputPath) {
+    repoPath = path.resolve(inputPath);
+  } else if (cliOptions?.skipGit) {
+    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
+    repoPath = path.resolve(process.cwd());
+  } else {
+    const gitRoot = getGitRoot(process.cwd());
+    if (!gitRoot) {
+      console.log(
+        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    repoPath = gitRoot;
+  }
+
+  const repoHasGit = hasGitDir(repoPath);
+  if (!repoHasGit && !cliOptions?.skipGit) {
+    console.log(
+      '  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!repoHasGit) {
+    console.log(
+      '  Warning: no .git directory found — commit-tracking and incremental updates disabled.\n',
+    );
+  }
+
+  // ── Load .gitnexusrc and merge: CLI flags override config (#243) ───
+  // Parse/validate before the progress bar so a malformed config produces an
+  // actionable error and exits before any expensive analysis starts.
+  let options: AnalyzeOptions;
+  let resolvedDefaultBranch: string;
+  try {
+    const fileConfig = loadAnalyzeConfig(repoPath);
+    options = mergeAnalyzeOptions(cliOptions ?? {}, fileConfig);
+
+    // Resolve the default branch threaded into generated context:
+    //   CLI --default-branch > .gitnexusrc defaultBranch/branch
+    //     > auto-detected origin/HEAD > "main".
+    // Only shell out to git when no branch was configured AND the generated
+    // context will actually use it, keeping the common path free of an extra
+    // git call. Detection is best-effort and never blocks analyze.
+    const cliBranch = cliOptions?.defaultBranch;
+    const configBranch = fileConfig?.defaultBranch;
+    const willGenerateContext = !options.indexOnly && !options.skipAgentsMd;
+    let detectedBranch: string | null = null;
+    if (
+      cliBranch === undefined &&
+      configBranch === undefined &&
+      repoHasGit &&
+      !cliOptions?.skipGit &&
+      willGenerateContext
+    ) {
+      try {
+        detectedBranch = getDefaultBranch(repoPath);
+      } catch {
+        detectedBranch = null;
+      }
+    }
+    resolvedDefaultBranch = resolveDefaultBranch({ cliBranch, configBranch, detectedBranch });
+    options.defaultBranch = resolvedDefaultBranch;
+  } catch (err) {
+    const msg =
+      err instanceof GitNexusRcError
+        ? err.message
+        : `Invalid .gitnexusrc: ${err instanceof Error ? err.message : String(err)}`;
+    cliError(`  ${msg}\n`, { recoveryHint: 'gitnexusrc-invalid' });
+    process.exitCode = 1;
+    return;
+  }
+
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
@@ -764,8 +863,6 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     return;
   }
 
-  console.log('\n  GitNexus Analyzer\n');
-
   // `--index-only` is the stronger contract — it suppresses every form of file
   // injection, including community skill writes that `--skills` would normally
   // produce. Surface the override explicitly so users don't wonder why a
@@ -775,38 +872,6 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
   if (options?.indexOnly && options?.skills) {
     console.log(
       '  Note: --index-only overrides --skills; community skill files will not be written.\n',
-    );
-  }
-
-  let repoPath: string;
-  if (inputPath) {
-    repoPath = path.resolve(inputPath);
-  } else if (options?.skipGit) {
-    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
-    repoPath = path.resolve(process.cwd());
-  } else {
-    const gitRoot = getGitRoot(process.cwd());
-    if (!gitRoot) {
-      console.log(
-        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-      );
-      process.exitCode = 1;
-      return;
-    }
-    repoPath = gitRoot;
-  }
-
-  const repoHasGit = hasGitDir(repoPath);
-  if (!repoHasGit && !options?.skipGit) {
-    console.log(
-      '  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-    );
-    process.exitCode = 1;
-    return;
-  }
-  if (!repoHasGit) {
-    console.log(
-      '  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n',
     );
   }
 
@@ -957,6 +1022,9 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
         skipGit: options?.skipGit,
         skipAgentsMd,
         skipSkills,
+        // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
+        // threaded into the generated regression-compare example (#243).
+        defaultBranch: resolvedDefaultBranch,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options?.noStats` here returns
@@ -1070,6 +1138,10 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
             {
               skipAgentsMd,
               skipSkills,
+              // Same resolved branch as the main run (#243) so the --skills
+              // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
+              // to "main".
+              defaultBranch: resolvedDefaultBranch,
               // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options?.stats === false,

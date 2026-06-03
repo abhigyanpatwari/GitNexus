@@ -52,7 +52,8 @@ export type RecoveryHint =
   | 'local-embedding-unsupported'
   | 'large-repo'
   | 'npm-resolution'
-  | 'module-not-found';
+  | 'module-not-found'
+  | 'gitnexusrc-invalid';
 
 /**
  * Common shape for the optional structured-field bag passed to
