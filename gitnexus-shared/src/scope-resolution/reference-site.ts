@@ -37,7 +37,12 @@ export type ReferenceKind =
   | 'write'
   | 'type-reference'
   | 'inherits'
-  | 'import-use';
+  | 'import-use'
+  // A macro invocation (`log!(...)` / `vec![...]`). Resolved against
+  // `Macro`-labeled definitions ONLY (see `MacroRegistry`) so a macro
+  // never aliases a same-named free function — macros and functions are
+  // disjoint namespaces. Emitted as a `USES` edge, not `CALLS`.
+  | 'macro';
 
 /**
  * How a call site binds its target. Informs `Registry.lookup` Step 2

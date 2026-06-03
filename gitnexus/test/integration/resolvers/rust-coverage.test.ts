@@ -44,10 +44,16 @@ describe('F71 — union declaration', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F72 — macro invocations
+// F72 — macro invocations (capture layer)
+//
+// These pin the tree-sitter CAPTURE shape only. End-to-end macro RESOLUTION
+// (the @reference.macro → MacroRegistry → USES-edge-to-a-Macro-node path, and
+// the guarantee that a macro never binds to a same-named function) is asserted
+// at the pipeline level — and under the legacy-vs-registry-primary scope-parity
+// gate — in `rust.test.ts` › "Rust macro resolution (issue #1934 F72)".
 // ---------------------------------------------------------------------------
 
-describe('F72 — macro invocations', () => {
+describe('F72 — macro invocations (capture layer)', () => {
   it('macro_invocation with bare identifier emits @reference.macro', () => {
     const src = `fn f() { println!("hi"); }\n`;
     const matches = emitRustScopeCaptures(src, 'test.rs') as CaptureMatch[];
@@ -62,5 +68,24 @@ describe('F72 — macro invocations', () => {
     const macroRefs = matches.filter((m) => m['@reference.macro']);
     const macroNames = macroRefs.map((m) => m['@reference.name']?.text);
     expect(macroNames).toContain('vec');
+  });
+
+  it('scoped macro invocation captures the TAIL identifier, not the full path', () => {
+    const src = `fn f() { log::info!("hi"); }\n`;
+    const matches = emitRustScopeCaptures(src, 'test.rs') as CaptureMatch[];
+    const macroRefs = matches.filter((m) => m['@reference.macro']);
+    const macroNames = macroRefs.map((m) => m['@reference.name']?.text);
+    // Must be the tail `info`, not the whole path `log::info` — mirrors the
+    // scoped free-call pattern. Guards the P3 fix.
+    expect(macroNames).toContain('info');
+    expect(macroNames).not.toContain('log::info');
+  });
+
+  it('macro_rules! definition emits a @declaration.macro capture', () => {
+    const src = `macro_rules! greet { () => {}; }\n`;
+    const matches = emitRustScopeCaptures(src, 'test.rs') as CaptureMatch[];
+    const macroDecls = matches.filter((m) => m['@declaration.macro']);
+    expect(macroDecls.length).toBe(1);
+    expect(macroDecls[0]['@declaration.name'].text).toBe('greet');
   });
 });

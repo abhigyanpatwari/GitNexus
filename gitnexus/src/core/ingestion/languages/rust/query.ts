@@ -32,8 +32,24 @@ const RUST_SCOPE_QUERY = `
   name: (type_identifier) @declaration.name) @declaration.enum
 
 ;; Declarations — union
+;; Deliberately tagged @declaration.struct (→ Struct label), NOT a
+;; @declaration.union: every registry-primary resolution gate —
+;; isLinkableLabel (node-lookup.ts), CALLABLE_OR_TYPE_LIKE
+;; (finalize-algorithm.ts), ClassLikeNodeLabel (class-types.ts) — includes
+;; Struct but EXCLUDES Union, so a Union-labeled node would be an
+;; unresolvable orphan. A Rust union is a type whose literal is a real
+;; constructor, so Struct is both the resolvable and the semantically
+;; honest label here. #1934 F71.
 (union_item
   name: (type_identifier) @declaration.name) @declaration.struct
+
+;; Declarations — macro (macro_rules! foo { ... })
+;; Captured as @declaration.macro → Macro label. A macro invocation
+;; (@reference.macro, below) resolves to this definition via MacroRegistry,
+;; whose acceptedKinds is ['Macro'] ONLY — so an invoked macro never binds
+;; to a same-named free function (log!() is not fn log). #1934 F72.
+(macro_definition
+  name: (identifier) @declaration.name) @declaration.macro
 
 ;; Declarations — function (top-level or inside mod)
 (function_item
@@ -125,11 +141,16 @@ const RUST_SCOPE_QUERY = `
   name: (_) @reference.name) @reference.call.constructor
 
 ;; References — macro invocations (disjoint namespace from functions)
+;; Resolved via MacroRegistry → Macro defs only (never fn of the same name).
 (macro_invocation
   macro: (identifier) @reference.name) @reference.macro
 
+;; Scoped macro invocation (log::info!(…)) — capture the tail identifier,
+;; mirroring the scoped free-call pattern above, so the resolved name is
+;; the tail (info), not the full path (log::info).
 (macro_invocation
-  macro: (scoped_identifier) @reference.name) @reference.macro
+  macro: (scoped_identifier
+    name: (identifier) @reference.name)) @reference.macro
 
 ;; References — field reads
 (field_expression

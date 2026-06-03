@@ -279,6 +279,10 @@
     "captureGroups": 6,
     "digest": "493dbeab554e28bed4a03cb62b951cad4f43bce5b5b522a192cd04159b3b2d9c"
   },
+  "rust-macro/lib.rs": {
+    "captureGroups": 11,
+    "digest": "19b650be99256aa211356edc5a3dde83aff21e5d763e2c079322a24045bf69c9"
+  },
   "rust-match-unwrap/src/main.rs": {
     "captureGroups": 24,
     "digest": "1d9ead4663799e035816ed06a17d37e9a98d0fd8090f9dea256ec6f019788648"
@@ -482,6 +486,10 @@
   "rust-traits/src/traits/drawable.rs": {
     "captureGroups": 5,
     "digest": "1dca39bbc7c1b1b66f1a34730b9a5b4dba04c54ee9d2688255e0fd4e6bc48499"
+  },
+  "rust-union/lib.rs": {
+    "captureGroups": 10,
+    "digest": "e2a6fb9eab259b8c7104f1530b96b8c1f42ab32fe1d71d6bdca04d68263507f2"
   },
   "rust-write-access/models.rs": {
     "captureGroups": 9,

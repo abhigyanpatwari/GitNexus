@@ -267,9 +267,14 @@ function buildRelationship(
 
 /**
  * Map a `Reference.kind` to an existing `RelationshipType`. Read/write
- * both fold into `ACCESSES`; `type-reference` + `import-use` both fold
- * into `USES`. This keeps the graph schema additive — no new
+ * both fold into `ACCESSES`; `type-reference`, `import-use`, and `macro`
+ * all fold into `USES`. This keeps the graph schema additive — no new
  * RelationshipType values are introduced by this module.
+ *
+ * `macro` folds into `USES` (not `CALLS`) deliberately: a macro
+ * invocation targets a `Macro` node, not a callable function, so keeping
+ * it out of the `CALLS` keyspace preserves the invariant that `CALLS`
+ * edges denote function/method dispatch.
  */
 function mapKindToType(kind: Reference['kind']): RelationshipType {
   switch (kind) {
@@ -282,6 +287,7 @@ function mapKindToType(kind: Reference['kind']): RelationshipType {
       return 'INHERITS';
     case 'type-reference':
     case 'import-use':
+    case 'macro':
       return 'USES';
   }
 }
