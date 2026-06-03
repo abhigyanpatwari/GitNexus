@@ -330,7 +330,7 @@ function embeddedInterfacesFor(
   return embedded;
 }
 
-function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): readonly string[] {
+function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): Iterable<string> {
   let result: Set<string> | undefined;
   for (const name of required.keys()) {
     const candidates = indexes.structIdsByMethodName.get(name);
@@ -350,7 +350,7 @@ function candidateStructIdsFor(required: MethodSet, indexes: DetectionIndexes): 
     }
     if (result.size === 0) return []; // Early exit: no struct has all required methods
   }
-  return result === undefined ? [...indexes.structsById.keys()] : [...result];
+  return result === undefined ? indexes.structsById.keys() : result;
 }
 
 function resolveEmbeddedInterface(

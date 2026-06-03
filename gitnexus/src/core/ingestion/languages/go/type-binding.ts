@@ -1,6 +1,12 @@
 import type { CaptureMatch } from 'gitnexus-shared';
 import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
+const COMPOSITE_LITERAL_TYPE_NODE_TYPES = new Set([
+  'type_identifier',
+  'qualified_type',
+  'generic_type',
+]);
+
 export function synthesizeGoTypeBindings(rootNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
 
@@ -261,9 +267,7 @@ function extractCompositeLiteralTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) =>
-        ['type_identifier', 'qualified_type', 'generic_type'].includes(c.type),
-      ) ??
+      expr.namedChildren.find((c) => COMPOSITE_LITERAL_TYPE_NODE_TYPES.has(c.type)) ??
       null
     );
   }
@@ -278,9 +282,7 @@ function extractTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) =>
-        ['type_identifier', 'qualified_type', 'generic_type'].includes(c.type),
-      ) ??
+      expr.namedChildren.find((c) => COMPOSITE_LITERAL_TYPE_NODE_TYPES.has(c.type)) ??
       null
     );
   }
