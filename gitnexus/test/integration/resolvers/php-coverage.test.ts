@@ -101,12 +101,8 @@ describe('F55 — anonymous class pipeline graph output', () => {
   beforeAll(async () => {
     // Dynamic import to avoid loading helpers at module level (transitive
     // tree-sitter-dart import fails when the optional grammar is missing).
-    const {
-      FIXTURES,
-      getNodesByLabel,
-      getRelationships,
-      runPipelineFromRepo,
-    } = await import('./helpers.js');
+    const { FIXTURES, getNodesByLabel, getRelationships, runPipelineFromRepo } =
+      await import('./helpers.js');
     const result = await runPipelineFromRepo(path.join(FIXTURES, 'php-anonymous-class'), () => {});
     importResult = { result, getNodesByLabel, getRelationships };
   }, 60000);
