@@ -27,6 +27,7 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
 import {
+  finalizeLbugSidecarsAfterClose,
   isMissingFsError,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
@@ -164,7 +165,7 @@ function ensureIdleTimer(): void {
     const now = Date.now();
     for (const [repoId, entry] of pool) {
       if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
-        closeOne(repoId);
+        void closeOne(repoId);
       }
     }
   }, 60_000);
@@ -199,7 +200,7 @@ function evictLRU(): void {
     }
   }
   if (oldestId) {
-    closeOne(oldestId);
+    void closeOne(oldestId);
   }
 }
 
@@ -208,23 +209,21 @@ function evictLRU(): void {
  * shared Database ref.  Only closes the Database when no other repoIds
  * reference it (refCount === 0).
  */
-function closeOne(repoId: string): void {
+async function closeOne(repoId: string): Promise<void> {
   const entry = pool.get(repoId);
   if (!entry) return;
 
   entry.closed = true;
 
-  // Close available connections — fire-and-forget with .catch() to prevent
-  // unhandled rejections.  Native close() returns Promise<void> but can crash
-  // the N-API destructor on macOS/Windows; deferring to process exit lets
-  // dangerouslyIgnoreUnhandledErrors absorb the crash.
-  for (const conn of entry.available) {
-    conn.close().catch(() => {});
-  }
+  // Close available connections and wait for the close promises to settle before
+  // inspecting sidecars. Errors remain intentionally swallowed, but the
+  // post-close finalizer must observe the final on-disk state.
+  const connectionCloses = entry.available.map((conn) => conn.close().catch(() => {}));
   entry.available.length = 0;
 
   // Checked-out connections can't be closed here — they're in-flight.
   // The checkin() function detects entry.closed and closes them on return.
+  await Promise.allSettled(connectionCloses);
 
   // Only close the Database when no other repoIds reference it.
   // External databases (injected via initLbugWithDb) are never closed here —
@@ -240,8 +239,9 @@ function closeOne(repoId: string): void {
         shared.refCount = 0;
         shared.ftsLoaded = false;
       } else {
-        shared.db.close().catch(() => {});
+        await shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);
+        await finalizeLbugSidecarsAfterClose(entry.dbPath, { logger: poolSidecarLogger });
       }
     }
   }
@@ -304,6 +304,18 @@ function createConnection(db: lbug.Database): lbug.Connection {
     return new lbug.Connection(db);
   } finally {
     restoreStdout();
+  }
+}
+
+async function withBootstrapConnection<T>(
+  db: lbug.Database,
+  run: (conn: lbug.Connection) => Promise<T>,
+): Promise<T> {
+  const conn = createConnection(db);
+  try {
+    return await run(conn);
+  } finally {
+    await conn.close().catch(() => {});
   }
 }
 
@@ -573,10 +585,11 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           throw lastError;
         }
 
-        const isLockError =
+        const isRetryableOpenError =
+          isReadOnlyShadowReplayError(lastError) ||
           lastError.message.includes('Could not set lock') ||
           /\block(\b|ed|ing)/i.test(lastError.message);
-        if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
+        if (!isRetryableOpenError || attempt === LOCK_RETRY_ATTEMPTS) break;
         await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
       }
     }
@@ -592,8 +605,44 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   shared.refCount++;
   const db = shared.db;
 
-  // Pre-create the full pool upfront so createConnection() (which silences
-  // stdout) is never called lazily during active query execution.
+  // Load FTS extension once per shared Database.
+  // Done BEFORE pool registration so no concurrent checkout can grab
+  // a half-initialized connection while the async load is in progress.
+  // Use a short-lived bootstrap connection here rather than a pooled one:
+  // if read-only open just recovered from shadow replay / WAL quarantine,
+  // prewarming pooled connections too early can leave the pool holding
+  // connections created against the pre-recovery state.
+  // policy: 'load-only' — the read pool must never trigger a network
+  // install; analyze owns extension installation. If LOAD fails, search
+  // features degrade gracefully and the user-facing query path proceeds.
+  if (!shared.ftsLoaded) {
+    await withBootstrapConnection(db, async (bootstrapConn) => {
+      // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows during
+      // *install* — the @ladybugdb/core out-of-process installer hits an unhandled
+      // error path that signals SIGSEGV instead of throwing (see #1199, #1217).
+      // The previous unconditional skip was over-broad: it also disabled FTS on
+      // hosts where the binary was already on disk and only needed LOAD, leaving
+      // BM25 silently degraded with no error path (see #1690).
+      //
+      // Probe ~/.lbdb/extension/*/win_amd64/fts/ first. If any binary is on disk
+      // we run loadFTSExtension(..., 'load-only'); the install path is never
+      // exercised, and LadybugDB's version-specific resolution + ExtensionManager
+      // try/catch handle stale/zero-byte siblings cleanly (verified empirically
+      // on Win10 + Node 22.19 + gitnexus 1.6.5 + @ladybugdb/core 0.16.1). With
+      // no binary at all, we fall back to the upstream skip so install-time
+      // SIGSEGV continues to be avoided.
+      if (process.platform === 'win32') {
+        shared!.ftsLoaded = (await hasLocalWinFtsExtension())
+          ? await loadFTSExtension(bootstrapConn, { policy: 'load-only' })
+          : true;
+      } else {
+        shared!.ftsLoaded = await loadFTSExtension(bootstrapConn, { policy: 'load-only' });
+      }
+    });
+  }
+
+  // Pre-create the full pool only after the read-only open / probe / FTS path
+  // has stabilized so pooled connections inherit the recovered state.
   // Mark preWarmActive so the watchdog timer doesn't interfere.
   preWarmActive = true;
   const available: lbug.Connection[] = [];
@@ -603,36 +652,6 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     }
   } finally {
     preWarmActive = false;
-  }
-
-  // Load FTS extension once per shared Database.
-  // Done BEFORE pool registration so no concurrent checkout can grab
-  // the connection while the async FTS load is in progress.
-  // policy: 'load-only' — the read pool must never trigger a network
-  // install; analyze owns extension installation. If LOAD fails, search
-  // features degrade gracefully and the user-facing query path proceeds.
-  if (!shared.ftsLoaded) {
-    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows during
-    // *install* — the @ladybugdb/core out-of-process installer hits an unhandled
-    // error path that signals SIGSEGV instead of throwing (see #1199, #1217).
-    // The previous unconditional skip was over-broad: it also disabled FTS on
-    // hosts where the binary was already on disk and only needed LOAD, leaving
-    // BM25 silently degraded with no error path (see #1690).
-    //
-    // Probe ~/.lbdb/extension/*/win_amd64/fts/ first. If any binary is on disk
-    // we run loadFTSExtension(..., 'load-only'); the install path is never
-    // exercised, and LadybugDB's version-specific resolution + ExtensionManager
-    // try/catch handle stale/zero-byte siblings cleanly (verified empirically
-    // on Win10 + Node 22.19 + gitnexus 1.6.5 + @ladybugdb/core 0.16.1). With
-    // no binary at all, we fall back to the upstream skip so install-time
-    // SIGSEGV continues to be avoided.
-    if (process.platform === 'win32') {
-      shared.ftsLoaded = (await hasLocalWinFtsExtension())
-        ? await loadFTSExtension(available[0], { policy: 'load-only' })
-        : true;
-    } else {
-      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
-    }
   }
 
   // Register pool entry only after all connections are pre-warmed and FTS is
@@ -683,6 +702,22 @@ export async function initLbugWithDb(
   }
   shared.refCount++;
 
+  // Load FTS extension if not already loaded on this Database.
+  // policy: 'load-only' — same contract as initLbug above; the read pool
+  // must not block on a network install during query execution.
+  // Windows guard: same probe-then-load policy as doInitLbug above.
+  if (!shared.ftsLoaded) {
+    await withBootstrapConnection(existingDb, async (bootstrapConn) => {
+      if (process.platform === 'win32') {
+        shared!.ftsLoaded = (await hasLocalWinFtsExtension())
+          ? await loadFTSExtension(bootstrapConn, { policy: 'load-only' })
+          : true;
+      } else {
+        shared!.ftsLoaded = await loadFTSExtension(bootstrapConn, { policy: 'load-only' });
+      }
+    });
+  }
+
   const available: lbug.Connection[] = [];
   preWarmActive = true;
   try {
@@ -691,20 +726,6 @@ export async function initLbugWithDb(
     }
   } finally {
     preWarmActive = false;
-  }
-
-  // Load FTS extension if not already loaded on this Database.
-  // policy: 'load-only' — same contract as initLbug above; the read pool
-  // must not block on a network install during query execution.
-  // Windows guard: same probe-then-load policy as doInitLbug above.
-  if (!shared.ftsLoaded) {
-    if (process.platform === 'win32') {
-      shared.ftsLoaded = (await hasLocalWinFtsExtension())
-        ? await loadFTSExtension(available[0], { policy: 'load-only' })
-        : true;
-    } else {
-      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
-    }
   }
 
   pool.set(repoId, {
@@ -850,12 +871,12 @@ export const executeParameterized = async (
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
-    closeOne(repoId);
+    await closeOne(repoId);
     return;
   }
 
   for (const id of [...pool.keys()]) {
-    closeOne(id);
+    await closeOne(id);
   }
 
   if (idleTimer) {

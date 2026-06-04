@@ -33,8 +33,24 @@ RUN npm run build --prefix gitnexus-shared
 COPY gitnexus ./gitnexus
 RUN npm ci --prefix gitnexus
 
+# `materialize-vendor-grammars.cjs` copies vendored grammar packages into
+# `gitnexus/node_modules/`, but they are not declared in package.json and get
+# dropped as extraneous during `npm prune --omit=dev`. Preserve the built
+# runtime copies so `gitnexus analyze` in the container can still import them.
+RUN mkdir -p /tmp/gitnexus-vendored-grammars \
+    && for pkg in tree-sitter-dart tree-sitter-proto tree-sitter-swift; do \
+         if [ -d "gitnexus/node_modules/$pkg" ]; then \
+           cp -a "gitnexus/node_modules/$pkg" "/tmp/gitnexus-vendored-grammars/$pkg"; \
+         fi; \
+       done
+
 # Drop dev dependencies for a smaller runtime layer.
 RUN npm prune --omit=dev --prefix gitnexus
+RUN for pkg in tree-sitter-dart tree-sitter-proto tree-sitter-swift; do \
+      if [ -d "/tmp/gitnexus-vendored-grammars/$pkg" ]; then \
+        cp -a "/tmp/gitnexus-vendored-grammars/$pkg" "gitnexus/node_modules/$pkg"; \
+      fi; \
+    done
 
 # -- Runtime -----------------------------------------------------------
 # node:22-bookworm-slim

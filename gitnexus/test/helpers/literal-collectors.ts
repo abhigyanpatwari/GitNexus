@@ -199,7 +199,7 @@ function configFiles(): string[] {
   return files;
 }
 
-const rel = (abs: string): string => abs.slice(INGESTION_DIR.length);
+const rel = (abs: string): string => abs.slice(INGESTION_DIR.length).replace(/\\/g, '/');
 
 // ---------------------------------------------------------------------------
 // Mode 1 — config reflection

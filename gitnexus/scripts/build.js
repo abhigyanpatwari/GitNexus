@@ -109,12 +109,28 @@ if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
 // ── 6. Build & copy web UI ──────────────────────────────────────────
 const WEB_ROOT = path.resolve(ROOT, '..', 'gitnexus-web');
 const WEB_DEST = path.join(DIST, '..', 'web');
+const WEB_REQUIRED_BUILD_PACKAGES = [
+  '@types/react-dom',
+  '@types/react-syntax-highlighter',
+  '@vitejs/plugin-react',
+  'typescript',
+  'vite',
+];
+
+function hasInstalledPackage(packageRoot, packageName) {
+  return fs.existsSync(path.join(packageRoot, 'node_modules', ...packageName.split('/'), 'package.json'));
+}
 
 if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
   console.log('[build] building gitnexus-web…');
-  if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
-    console.log('[build] installing gitnexus-web dependencies…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+  const missingWebBuildPackages = WEB_REQUIRED_BUILD_PACKAGES.filter(
+    (packageName) => !hasInstalledPackage(WEB_ROOT, packageName),
+  );
+  if (missingWebBuildPackages.length > 0) {
+    console.log(
+      `[build] installing gitnexus-web dependencies; missing ${missingWebBuildPackages.join(', ')}`,
+    );
+    execSync('npm ci --include=dev', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
   }
   execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 

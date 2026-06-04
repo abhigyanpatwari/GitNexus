@@ -50,6 +50,10 @@ import {
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
+import {
+  isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
+} from '../../core/lbug/sidecar-recovery.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -178,6 +182,8 @@ function logQueryError(context: string, err: unknown): void {
 
 const isReadOnlyDbError = (err: unknown): boolean =>
   /read-only database/i.test(err instanceof Error ? err.message : String(err));
+
+const INIT_READY_PROBE_QUERY = 'MATCH (n) RETURN n.id AS id LIMIT 1';
 
 /**
  * Per-query latency telemetry for production aggregation (#553).
@@ -373,6 +379,38 @@ export class LocalBackend {
   async init(): Promise<boolean> {
     await this.refreshRepos();
     return this.repos.size > 0;
+  }
+
+  /**
+   * Refresh one repo after a completed reindex and invalidate its pooled read state.
+   *
+   * A plain `init()` refreshes registry metadata, but if a LadybugDB pool is
+   * already open it can also update the handle's `indexedAt` before
+   * `ensureInitialized()` gets a chance to detect the old handle as stale.
+   * Reindex completion needs a stronger contract: reload registry metadata and
+   * close the stale repo pool before the job is reported complete.
+   *
+   * We deliberately do not eagerly reopen the pool here. Immediately after
+   * analyze completion the storage can still be in a transient state where a
+   * read-only reopen hits a shadow-page replay error; the next backend read can
+   * safely reopen lazily through `ensureInitialized()`.
+   */
+  async refreshRepoIndex(repoParam: string): Promise<void> {
+    await this.refreshRepos();
+    const handle = await this.resolveRepo(repoParam);
+
+    const invalidate = (async () => {
+      try {
+        await closeLbug(handle.id);
+        this.initializedRepos.delete(handle.id);
+        this.lastStalenessCheck.delete(handle.id);
+      } finally {
+        this.reinitPromises.delete(handle.id);
+      }
+    })();
+
+    this.reinitPromises.set(handle.id, invalidate);
+    return invalidate;
   }
 
   /**
@@ -641,6 +679,34 @@ export class LocalBackend {
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────
 
+  private async probeInitializedRepoReady(repoId: string): Promise<void> {
+    await executeQuery(repoId, INIT_READY_PROBE_QUERY);
+  }
+
+  private shouldRetryRepoInit(err: unknown): boolean {
+    return isMissingShadowSidecarError(err) || isReadOnlyShadowReplayError(err);
+  }
+
+  private async initRepoPoolReady(repoId: string, handle: RepoHandle): Promise<void> {
+    let retried = false;
+
+    while (true) {
+      try {
+        await initLbug(repoId, handle.lbugPath);
+        await this.probeInitializedRepoReady(repoId);
+        this.initializedRepos.add(repoId);
+        return;
+      } catch (err) {
+        this.initializedRepos.delete(repoId);
+        if (retried || !this.shouldRetryRepoInit(err)) {
+          throw err;
+        }
+        retried = true;
+        await closeLbug(repoId);
+      }
+    }
+  }
+
   private async ensureInitialized(repoId: string): Promise<void> {
     // If a reinit is already in progress for this repo, wait for it
     const pending = this.reinitPromises.get(repoId);
@@ -671,8 +737,7 @@ export class LocalBackend {
               await closeLbug(repoId);
               this.initializedRepos.delete(repoId);
               handle.indexedAt = meta.indexedAt;
-              await initLbug(repoId, handle.lbugPath);
-              this.initializedRepos.add(repoId);
+              await this.initRepoPoolReady(repoId, handle);
             } finally {
               this.reinitPromises.delete(repoId);
             }
@@ -688,8 +753,7 @@ export class LocalBackend {
     }
 
     try {
-      await initLbug(repoId, handle.lbugPath);
-      this.initializedRepos.add(repoId);
+      await this.initRepoPoolReady(repoId, handle);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(repoId);

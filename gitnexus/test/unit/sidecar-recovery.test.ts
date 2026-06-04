@@ -99,6 +99,51 @@ describe('LadybugDB sidecar recovery', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
+  it('finalize catches a tiny orphan WAL that appears after an initially clean sample', async () => {
+    const log = logger();
+    const lateWal = setTimeout(() => {
+      void fs.writeFile(`${dbPath}.wal`, Buffer.alloc(34));
+    }, 10);
+
+    try {
+      await finalizeLbugSidecarsAfterClose(dbPath, { logger: log });
+    } finally {
+      clearTimeout(lateWal);
+    }
+
+    await expect(fs.stat(`${dbPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+    const files = await fs.readdir(dir);
+    expect(files.some((file) => file.startsWith('lbug.wal.missing-shadow.'))).toBe(true);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('finalize removes a tiny WAL/shadow pair after close without creating a quarantine breadcrumb', async () => {
+    await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(34));
+    await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+    const log = logger();
+
+    await finalizeLbugSidecarsAfterClose(dbPath, { logger: log });
+
+    await expect(fs.stat(`${dbPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(`${dbPath}.shadow`)).rejects.toMatchObject({ code: 'ENOENT' });
+    const files = await fs.readdir(dir);
+    expect(files.some((file) => file.startsWith('lbug.wal.missing-shadow.'))).toBe(false);
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.debug).toHaveBeenCalledWith(expect.stringContaining('tiny LadybugDB WAL/shadow pair'));
+  });
+
+  it('finalize keeps large WAL/shadow pairs for LadybugDB replay', async () => {
+    await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+    await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+    const log = logger();
+
+    await finalizeLbugSidecarsAfterClose(dbPath, { logger: log });
+
+    await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    await expect(fs.stat(`${dbPath}.shadow`)).resolves.toBeDefined();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
   it('can be disabled through GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT', async () => {
     vi.stubEnv('GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT', '1');
     await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(34));

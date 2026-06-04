@@ -84,6 +84,28 @@ const logInfo = (logger: SidecarRecoveryLogger, message: string): void => {
   else logDebug(logger, message);
 };
 
+const removeTinyWalWithShadowAfterClose = async (
+  dbPath: string,
+  state: Extract<LbugSidecarState, { kind: 'wal-with-shadow' }>,
+  logger: SidecarRecoveryLogger,
+): Promise<void> => {
+  if (state.walBytes > TINY_ORPHAN_WAL_BYTES) return;
+  try {
+    await fs.unlink(`${dbPath}.wal`);
+  } catch (err) {
+    if (!missing(err)) throw err;
+  }
+  try {
+    await fs.unlink(`${dbPath}.shadow`);
+  } catch (err) {
+    if (!missing(err)) throw err;
+  }
+  logDebug(
+    logger,
+    `GitNexus: removed tiny LadybugDB WAL/shadow pair after close (${state.walBytes} byte WAL)`,
+  );
+};
+
 /**
  * Log at warn-level on logarithmic milestone occurrences (1st, 10th, 100th,
  * 1000th, 10000th); debug-level otherwise. Past the first occurrence the warn
@@ -277,7 +299,7 @@ export async function finalizeLbugSidecarsAfterClose(
     );
     return;
   }
-  if (state.kind === 'clean' || state.kind === 'wal-with-shadow') return;
+  if (state.kind === 'wal-with-shadow' && state.walBytes > TINY_ORPHAN_WAL_BYTES) return;
 
   for (const delayMs of [25, 50, 100]) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -290,7 +312,22 @@ export async function finalizeLbugSidecarsAfterClose(
       );
       return;
     }
-    if (state.kind === 'clean' || state.kind === 'wal-with-shadow') return;
+    if (state.kind === 'wal-with-shadow' && state.walBytes > TINY_ORPHAN_WAL_BYTES) return;
+  }
+
+  if (state.kind === 'clean') return;
+
+  if (state.kind === 'wal-with-shadow') {
+    try {
+      await removeTinyWalWithShadowAfterClose(dbPath, state, options.logger);
+    } catch (err) {
+      warnOnce(
+        options.logger,
+        `${dbPath}:post-close-tiny-wal-shadow-cleanup-failed`,
+        `GitNexus: failed to remove tiny WAL/shadow pair after close (${(err as Error).message}); next read may recover reactively.`,
+      );
+    }
+    return;
   }
 
   if (state.kind === 'tiny-orphan-wal') {

@@ -20,6 +20,7 @@ import {
   executeWithReusedStatement,
   streamQuery,
   flushWAL,
+  initLbug,
   closeLbug,
   withLbugDb,
   isReadOnlyDbError,
@@ -35,10 +36,29 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import {
+  ReindexQueue,
+  buildReindexWorkerOptions,
+  isGraphReadBlockedDuringReindex,
+  parseReindexRequestBody,
+  resolveRegisteredReindexTarget,
+  type ReindexRequestOptions,
+  type ReindexTarget,
+} from './reindex-control.js';
+import {
+  ReindexOperationRegistry,
+  isReindexOperationStatus,
+  isReindexTrigger,
+  type ReindexOperationStatus,
+  type ReindexTrigger,
+} from './reindex-operations.js';
+import { startPendingRerun } from './reindex-follow-up.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
+const DEFAULT_REINDEX_LIST_LIMIT = 20;
+const MAX_REINDEX_LIST_LIMIT = 100;
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -290,6 +310,35 @@ const isClientDisconnectWriteError = (err: unknown): boolean => {
     (err as NodeJS.ErrnoException).code === 'ECONNRESET' ||
     err.message.includes('write after end')
   );
+};
+
+const parseOptionalQueryString = (value: unknown): string | undefined => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed || undefined;
+};
+
+const parseReindexListLimit = (value: unknown): number => {
+  const raw = parseOptionalQueryString(value);
+  if (!raw) return DEFAULT_REINDEX_LIST_LIMIT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_REINDEX_LIST_LIMIT;
+  return Math.min(parsed, MAX_REINDEX_LIST_LIMIT);
+};
+
+const parseReindexStatusFilter = (value: unknown): ReindexOperationStatus | undefined => {
+  const raw = parseOptionalQueryString(value);
+  if (!raw) return undefined;
+  if (isReindexOperationStatus(raw)) return raw;
+  throw new BadRequestError(`Invalid reindex status filter: ${raw}`);
+};
+
+const parseReindexTriggerFilter = (value: unknown): ReindexTrigger | undefined => {
+  const raw = parseOptionalQueryString(value);
+  if (!raw) return undefined;
+  if (isReindexTrigger(raw)) return raw;
+  throw new BadRequestError(`Invalid reindex trigger filter: ${raw}`);
 };
 
 export const writeNdjsonRecord = async (
@@ -725,6 +774,31 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
+  const reindexQueue = new ReindexQueue();
+  const reindexOperations = new ReindexOperationRegistry();
+  const reindexJobRepoKeys = new Map<string, string>();
+
+  const getActiveReindexGuardState = (repoKey: string) => {
+    const queueStatus = reindexQueue.status(repoKey);
+    const activeJob = jobManager
+      .listJobs()
+      .find(
+        (job) =>
+          reindexJobRepoKeys.get(job.id) === repoKey &&
+          job.status !== 'complete' &&
+          job.status !== 'failed',
+      );
+    const operation = activeJob ? reindexOperations.get(activeJob.id) : undefined;
+    return {
+      queueStatus,
+      activeJob,
+      operation,
+      blocked: isGraphReadBlockedDuringReindex({
+        queueStatus,
+        activeTrigger: operation?.trigger,
+      }),
+    };
+  };
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
   // which would corrupt LadybugDB (analyze calls closeLbug + initLbug while embed has queries in flight).
@@ -1089,6 +1163,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const repoKey = entry.name;
+      const guardState = getActiveReindexGuardState(repoKey);
+      if (guardState.blocked) {
+        res.status(503).json({
+          error: 'Repository reindex is still settling. Retry shortly.',
+          retryable: true,
+          repo: entry.name,
+        });
         return;
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
@@ -1673,6 +1757,412 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
     jobManager.cancelJob(req.params.jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
+  });
+
+  // ── Reindex API ───────────────────────────────────────────────────
+
+  const startReindexJob = (
+    target: ReindexTarget,
+    repoKey: string,
+    requestedOptions: ReindexRequestOptions,
+    lineage: { trigger: ReindexTrigger; parentJobId?: string } = { trigger: 'direct' },
+  ) => {
+    let job;
+    try {
+      job = jobManager.createJob({ repoPath: target.path });
+    } catch (err: any) {
+      const message = err.message || 'Failed to create reindex job';
+      reindexQueue.fail(repoKey, message);
+      throw err;
+    }
+    reindexJobRepoKeys.set(job.id, repoKey);
+
+    if (job.status !== 'queued') return job;
+
+    reindexOperations.create({
+      id: job.id,
+      repoKey,
+      repoName: target.name,
+      repoPath: target.path,
+      trigger: lineage.trigger,
+      parentJobId: lineage.parentJobId,
+    });
+
+    jobManager.updateJob(job.id, {
+      repoName: target.name,
+      repoPath: target.path,
+      status: 'analyzing',
+      progress: { phase: 'analyzing', percent: 0, message: `Reindexing ${target.name}...` },
+    });
+    const startedOperation = reindexOperations.markStarted(job.id);
+    logger.info(
+      {
+        event: 'reindex.started',
+        jobId: job.id,
+        repoKey,
+        repoName: target.name,
+        repoPath: target.path,
+        trigger: startedOperation?.trigger ?? lineage.trigger,
+        parentJobId: startedOperation?.parentJobId,
+        followUpJobId: startedOperation?.followUpJobId,
+      },
+      'reindex.started',
+    );
+
+    const reindexOptions = buildReindexWorkerOptions(requestedOptions);
+    const { indexOnly: _indexOnly, ...workerOptions } = reindexOptions;
+
+    (async () => {
+      const reindexLockKey = target.storagePath || getStoragePath(target.path);
+      try {
+        const lockErr = acquireRepoLock(reindexLockKey);
+        if (lockErr) {
+          reindexQueue.fail(repoKey, lockErr);
+          reindexOperations.markFailed(job.id, lockErr);
+          logger.info(
+            {
+              event: 'reindex.failed',
+              jobId: job.id,
+              repoKey,
+              repoName: target.name,
+              repoPath: target.path,
+              trigger: lineage.trigger,
+              parentJobId: lineage.parentJobId,
+              error: lockErr,
+            },
+            'reindex.failed',
+          );
+          jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
+          return;
+        }
+
+        const callerPath = fileURLToPath(import.meta.url);
+        const isDev = callerPath.endsWith('.ts');
+        const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
+        const workerPath = path.join(path.dirname(callerPath), workerFile);
+        const tsxHookArgs: string[] = isDev
+          ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
+          : [];
+
+        const child = fork(workerPath, [], {
+          execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        });
+
+        let stderrChunks = '';
+        child.stderr?.on('data', (chunk: Buffer) => {
+          stderrChunks += chunk.toString();
+          if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
+        });
+
+        let terminalWorkerMessageReceived = false;
+        let completedWorkerResult: any | null = null;
+        const failWorker = (message: string) => {
+          releaseRepoLock(reindexLockKey);
+          reindexQueue.fail(repoKey, message);
+          reindexOperations.markFailed(job.id, message);
+          logger.info(
+            {
+              event: 'reindex.failed',
+              jobId: job.id,
+              repoKey,
+              repoName: target.name,
+              repoPath: target.path,
+              trigger: lineage.trigger,
+              parentJobId: lineage.parentJobId,
+              error: message,
+            },
+            'reindex.failed',
+          );
+          jobManager.updateJob(job.id, { status: 'failed', error: message });
+        };
+        const finalizeCompletedWorker = async (result: any) => {
+          try {
+            await closeLbug();
+            await initLbug(path.join(target.storagePath, 'lbug'));
+            await closeLbug();
+            await backend.refreshRepoIndex(target.name);
+            releaseRepoLock(reindexLockKey);
+            jobManager.updateJob(job.id, {
+              status: 'complete',
+              repoName: result.repoName ?? target.name,
+            });
+            const completedOperation = reindexOperations.markComplete(job.id);
+            logger.info(
+              {
+                event: 'reindex.completed',
+                jobId: job.id,
+                repoKey,
+                repoName: result.repoName ?? target.name,
+                repoPath: target.path,
+                trigger: completedOperation?.trigger ?? lineage.trigger,
+                parentJobId: completedOperation?.parentJobId,
+                followUpJobId: completedOperation?.followUpJobId,
+              },
+              'reindex.completed',
+            );
+            const completionAction = reindexQueue.complete(repoKey);
+            if (completionAction.action === 'start-pending-rerun') {
+              const followUp = startPendingRerun({
+                parentJobId: job.id,
+                repoKey,
+                startFollowUp: () =>
+                  startReindexJob(target, repoKey, requestedOptions, {
+                    trigger: 'pending-rerun',
+                    parentJobId: job.id,
+                  }),
+                linkFollowUp: (parentJobId, followUpJobId) =>
+                  reindexOperations.linkFollowUp(parentJobId, followUpJobId),
+                getOperation: (followUpJobId) => reindexOperations.get(followUpJobId),
+                recordFollowUpStartFailure: (parentJobId, message) =>
+                  reindexOperations.recordFollowUpStartFailure(parentJobId, message),
+                queueFail: (failedRepoKey, message) => reindexQueue.fail(failedRepoKey, message),
+              });
+              if (followUp.kind === 'started') {
+                logger.info(
+                  {
+                    event: 'reindex.pending_rerun.started',
+                    jobId: followUp.followUpJobId,
+                    repoKey,
+                    repoName: target.name,
+                    repoPath: target.path,
+                    trigger: followUp.followUpOperation?.trigger ?? 'pending-rerun',
+                    parentJobId: job.id,
+                    followUpJobId: followUp.parentOperation?.followUpJobId ?? followUp.followUpJobId,
+                  },
+                  'reindex.pending_rerun.started',
+                );
+              } else {
+                logger.error({ err: followUp.cause }, 'pending reindex rerun failed to start:');
+              }
+            }
+          } catch (err) {
+            const message = 'Server failed to reload after reindex. Try again.';
+            logger.error({ err }, 'backend.refreshRepoIndex() failed after reindex:');
+            failWorker(message);
+          }
+        };
+        child.on('message', (msg: any) => {
+          if (msg.type === 'progress') {
+            jobManager.updateJob(job.id, {
+              status: 'analyzing',
+              progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+            });
+          } else if (msg.type === 'complete') {
+            terminalWorkerMessageReceived = true;
+            completedWorkerResult = msg.result ?? {};
+          } else if (msg.type === 'error') {
+            terminalWorkerMessageReceived = true;
+            failWorker(msg.message);
+          }
+        });
+
+        child.on('error', (err) => {
+          if (terminalWorkerMessageReceived) return;
+          const message = `Worker process error: ${err.message}`;
+          failWorker(message);
+        });
+
+        child.on('exit', (code) => {
+          if (completedWorkerResult) {
+            if (code === 0) {
+              void finalizeCompletedWorker(completedWorkerResult);
+            } else {
+              const lastErr = stderrChunks.trim().split('\n').pop();
+              failWorker(
+                `Worker exited after completing reindex (code ${code})${lastErr ? ': ' + lastErr : ''}`,
+              );
+            }
+            return;
+          }
+          if (terminalWorkerMessageReceived) return;
+          const current = jobManager.getJob(job.id);
+          if (!current || current.status === 'complete' || current.status === 'failed') return;
+
+          const lastErr = stderrChunks.trim().split('\n').pop();
+          const message = `Worker exited before completing reindex (code ${code})${lastErr ? ': ' + lastErr : ''}`;
+          failWorker(message);
+        });
+
+        jobManager.registerChild(job.id, child);
+        child.send({
+          type: 'start',
+          repoPath: target.path,
+          options: workerOptions,
+        });
+      } catch (err: any) {
+        releaseRepoLock(reindexLockKey);
+        const message = err.message || 'Reindex failed';
+        reindexQueue.fail(repoKey, message);
+        reindexOperations.markFailed(job.id, message);
+        logger.info(
+          {
+            event: 'reindex.failed',
+            jobId: job.id,
+            repoKey,
+            repoName: target.name,
+            repoPath: target.path,
+            trigger: lineage.trigger,
+            parentJobId: lineage.parentJobId,
+            error: message,
+          },
+          'reindex.failed',
+        );
+        jobManager.updateJob(job.id, { status: 'failed', error: message });
+      }
+    })();
+
+    return job;
+  };
+
+  // POST /api/reindex — reindex an already-registered local repository
+  app.post('/api/reindex', createRouteLimiter({ limit: 20 }), async (req, res) => {
+    try {
+      const { repo, path: repoPath, force, embeddings, dropEmbeddings } = parseReindexRequestBody(
+        req.body,
+      );
+
+      const target = resolveRegisteredReindexTarget(await listRegisteredRepos(), {
+        repo,
+        path: repoPath,
+      });
+      const repoKey = target.id ?? target.name;
+      const queueAction = reindexQueue.request(repoKey);
+
+      if (queueAction.action === 'reject-active-other-repo') {
+        res.status(409).json({
+          error: `Reindex already active for ${queueAction.activeRepoKey}`,
+          activeRepoKey: queueAction.activeRepoKey,
+        });
+        return;
+      }
+
+      if (queueAction.action !== 'start') {
+        const activeJob = jobManager
+          .listJobs()
+          .find(
+            (job) =>
+              reindexJobRepoKeys.get(job.id) === repoKey &&
+              job.status !== 'complete' &&
+              job.status !== 'failed',
+          );
+        const operation = activeJob
+          ? reindexOperations.recordCoalescedRequest(activeJob.id)
+          : undefined;
+        logger.info(
+          {
+            event: 'reindex.request.coalesced',
+            jobId: activeJob?.id,
+            repoKey,
+            repoName: target.name,
+            repoPath: target.path,
+            trigger: operation?.trigger,
+            parentJobId: operation?.parentJobId,
+            followUpJobId: operation?.followUpJobId,
+            coalescedRequestCount: operation?.coalescedRequestCount,
+          },
+          'reindex.request.coalesced',
+        );
+        res.status(202).json({
+          jobId: activeJob?.id,
+          status: activeJob?.status ?? 'analyzing',
+          queue: reindexQueue.status(repoKey),
+          operation,
+        });
+        return;
+      }
+
+      const requestedOptions = { force, embeddings, dropEmbeddings };
+      let job;
+      try {
+        job = startReindexJob(target, repoKey, requestedOptions);
+      } catch (err: any) {
+        const message = err.message || 'Failed to create reindex job';
+        reindexQueue.fail(repoKey, message);
+        const status = message.includes('already in progress') ? 409 : 500;
+        res.status(status).json({ error: message });
+        return;
+      }
+
+      const operation = reindexOperations.get(job.id);
+      logger.info(
+        {
+          event: 'reindex.request.accepted',
+          jobId: job.id,
+          repoKey,
+          repoName: target.name,
+          repoPath: target.path,
+          trigger: operation?.trigger ?? 'direct',
+          parentJobId: operation?.parentJobId,
+          followUpJobId: operation?.followUpJobId,
+        },
+        'reindex.request.accepted',
+      );
+      if (job.status !== 'queued') {
+        res
+          .status(202)
+          .json({ jobId: job.id, status: job.status, queue: reindexQueue.status(repoKey), operation });
+        return;
+      }
+
+      res
+        .status(202)
+        .json({ jobId: job.id, status: 'analyzing', queue: reindexQueue.status(repoKey), operation });
+    } catch (err: any) {
+      const status = err instanceof BadRequestError ? err.status : 500;
+      res.status(status).json({ error: err.message || 'Failed to start reindex' });
+    }
+  });
+
+  // GET /api/reindex — list recent reindex operation records
+  app.get('/api/reindex', createRouteLimiter({ limit: 60 }), (req, res) => {
+    try {
+      const jobs = reindexOperations.list({
+        limit: parseReindexListLimit(req.query.limit),
+        repo: parseOptionalQueryString(req.query.repo),
+        status: parseReindexStatusFilter(req.query.status),
+        trigger: parseReindexTriggerFilter(req.query.trigger),
+      });
+      res.json({ jobs });
+    } catch (err: any) {
+      const status = err instanceof BadRequestError ? err.status : 500;
+      res.status(status).json({ error: err.message || 'Failed to list reindex jobs' });
+    }
+  });
+
+  // GET /api/reindex/:jobId — poll reindex job status
+  app.get('/api/reindex/:jobId', (req, res) => {
+    const operation = reindexOperations.get(req.params.jobId);
+    const job = jobManager.getJob(req.params.jobId);
+    if (!job && !operation) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+
+    const repoKey =
+      operation?.repoKey ??
+      (job
+        ? (reindexJobRepoKeys.get(job.id) ?? job.repoName ?? job.repoPath ?? job.id)
+        : req.params.jobId);
+    const queueStatus = reindexQueue.status(repoKey);
+    res.json({
+      id: operation?.id ?? job!.id,
+      status: operation?.status ?? job!.status,
+      repoPath: operation?.repoPath ?? job?.repoPath,
+      repoName: operation?.repoName ?? job?.repoName,
+      progress: job?.progress,
+      error: operation?.error ?? job?.error,
+      requestedAt: operation?.requestedAt,
+      startedAt: operation?.startedAt ?? job?.startedAt,
+      completedAt: operation?.completedAt ?? job?.completedAt,
+      trigger: operation?.trigger,
+      parentJobId: operation?.parentJobId,
+      followUpJobId: operation?.followUpJobId,
+      coalescedRequestCount: operation?.coalescedRequestCount ?? 0,
+      pendingRerun: queueStatus.pendingRerun,
+      lastError: queueStatus.lastError,
+      lastFailureAt: queueStatus.lastFailureAt,
+    });
   });
 
   // ── Embedding endpoints ────────────────────────────────────────────
