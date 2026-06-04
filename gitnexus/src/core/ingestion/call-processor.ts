@@ -88,8 +88,8 @@ const ROUTE_EDGE_CONFIDENCE = 0.5;
  *
  * Resolves the controller class by global name via the type registry
  * (`Registry.lookup` equivalent) and the method within the controller's file
- * via the symbol table — replacing the retired `ResolutionContext.resolve`
- * tiered lookup (RING4-2 #943).
+ * via the symbol table — replacing the retired tiered name resolver
+ * (RING4-2 #943).
  */
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,
