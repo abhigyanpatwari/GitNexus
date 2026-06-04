@@ -214,6 +214,11 @@ const typescriptScopeResolver: ScopeResolver = {
       const emittedImports = new Set<string>();
       const emittedCalls = new Set<string>();
 
+      // Skip source files: a file cannot auto-import its own exports.
+      // Without this guard the content scanner would match each exported
+      // function's own name inside its definition body and emit a self-loop.
+      const selfPath = filePath;
+
       CALL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = CALL_RE.exec(content)) !== null) {
@@ -223,8 +228,9 @@ const typescriptScopeResolver: ScopeResolver = {
 
         const { exportName, sourceFile } = entry;
 
-        // Skip when the file already has an explicit import from this source.
-        if (explicitImports.has(sourceFile)) continue;
+        // Skip when the file already has an explicit import from this source,
+        // or when the file IS the source (a file cannot auto-import itself).
+        if (explicitImports.has(sourceFile) || sourceFile === selfPath) continue;
 
         // Emit one IMPORTS edge per (caller, sourceFile) pair.
         if (!emittedImports.has(sourceFile)) {
