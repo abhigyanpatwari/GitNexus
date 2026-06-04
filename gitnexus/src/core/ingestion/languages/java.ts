@@ -16,7 +16,6 @@ import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { javaExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { javaImportConfig } from '../import-resolvers/configs/jvm.js';
-import { extractJavaNamedBindings } from '../named-bindings/java.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { javaCallConfig } from '../call-extractors/configs/jvm.js';
@@ -109,7 +108,6 @@ export const javaProvider = defineLanguage({
   typeConfig: javaTypeConfig,
   exportChecker: javaExportChecker,
   importResolver: createImportResolver(javaImportConfig),
-  namedBindingExtractor: extractJavaNamedBindings,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(javaCallConfig),
   fieldExtractor: createFieldExtractor(javaConfig),

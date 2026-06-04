@@ -48,7 +48,6 @@ import { logger } from '../logger.js';
 import type {
   ParseWorkerResult,
   ParseWorkerInput,
-  ExtractedImport,
   ExtractedCall,
   ExtractedAssignment,
   ExtractedRoute,
@@ -79,7 +78,6 @@ import {
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
 export interface WorkerExtractedData {
-  imports: ExtractedImport[];
   calls: ExtractedCall[];
   assignments: ExtractedAssignment[];
   routes: ExtractedRoute[];
@@ -123,7 +121,6 @@ export const mergeChunkResults = (
   symbolTable: SymbolTableWriter,
   chunkResults: readonly ParseWorkerResult[],
 ): WorkerExtractedData => {
-  const allImports: ExtractedImport[] = [];
   const allCalls: ExtractedCall[] = [];
   const allAssignments: ExtractedAssignment[] = [];
   const allRoutes: ExtractedRoute[] = [];
@@ -163,7 +160,6 @@ export const mergeChunkResults = (
         qualifiedName: sym.qualifiedName,
       });
     }
-    for (const item of result.imports) allImports.push(item);
     for (const item of result.calls) allCalls.push(item);
     for (const item of result.assignments) allAssignments.push(item);
     for (const item of result.routes) allRoutes.push(item);
@@ -182,7 +178,6 @@ export const mergeChunkResults = (
   }
 
   return {
-    imports: allImports,
     calls: allCalls,
     assignments: allAssignments,
     routes: allRoutes,
@@ -225,7 +220,6 @@ const processParsingWithWorkers = async (
 
   if (parseableFiles.length === 0)
     return {
-      imports: [],
       calls: [],
       assignments: [],
       routes: [],

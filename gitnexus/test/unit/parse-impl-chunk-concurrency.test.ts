@@ -64,9 +64,9 @@ describe('parse-impl chunk concurrency (U1)', () => {
     });
 
     // Same fixture under different concurrency values must produce the
-    // same graph — F4 (wildcard-synthesis ordering): per-chunk results
-    // merge in chunkIdx order regardless of file-read completion order,
-    // so cross-chunk processors see deterministic input.
+    // same graph — per-chunk results merge in chunkIdx order regardless of
+    // file-read completion order, so cross-chunk processors see deterministic
+    // input.
     expect(g2.nodeCount).toBe(g1.nodeCount);
     expect(g2.relationshipCount).toBe(g1.relationshipCount);
   });

@@ -19,13 +19,12 @@
 import Parser from 'tree-sitter';
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolTableReader } from './model/index.js';
-import type { ResolutionContext } from './model/resolution-context.js';
-import { TIER_CONFIDENCE } from './model/resolution-context.js';
+import type { SemanticModel, SymbolTableReader } from './model/index.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getTreeSitterBufferSize } from './constants.js';
@@ -77,13 +76,111 @@ export function buildExportedTypeMapFromGraph(
 }
 
 /**
+ * Confidence for route → controller-method CALLS edges. Framework-route
+ * controller references (e.g. `OrderController::class` in `routes/web.php`)
+ * resolve by global class name, so this matches the legacy `global`-tier
+ * confidence the tiered resolver previously assigned these edges.
+ */
+const ROUTE_EDGE_CONFIDENCE = 0.5;
+
+/**
+ * Resolve a route's controller class from its normalized dot-joined
+ * fully-qualified name (threaded by the Laravel extractor from a `use`/`::class`
+ * reference). Two strategies, in order:
+ *
+ *   1. Direct qualified lookup — works when the type registry keys the class by
+ *      its FQN (block-form namespaces, non-PHP frameworks, seeded test models).
+ *   2. PSR-4 file-path disambiguation — PHP's common statement-form namespace
+ *      (`namespace App\Http\Controllers;`) leaves the structure-phase
+ *      `qualifiedName` as the *short* class name, so the registry has no FQN
+ *      key. Instead, take the FQN's last segment as the class name, fetch the
+ *      same-short-name candidates, and pick the one whose file path's tail
+ *      matches the FQN's namespace tail (e.g. `App.Admin.OrderController` ↔
+ *      `app/Admin/OrderController.php`). Requires ≥2 trailing segments (class +
+ *      ≥1 namespace segment) and a unique winner — conservative, so a
+ *      non-PSR-4 layout falls through to short-name resolution rather than
+ *      guessing.
+ *
+ * Returns the resolved class, or `undefined` when the FQN cannot be uniquely
+ * resolved (the caller then falls back to bare short-name resolution).
+ */
+function resolveControllerByQualifiedName(
+  model: SemanticModel,
+  fqn: string,
+): SymbolDefinition | undefined {
+  const direct = model.types.lookupClassByQualifiedName(fqn);
+  if (direct.length === 1) return direct[0];
+
+  const fqnSegments = fqn.split('.');
+  const shortName = fqnSegments[fqnSegments.length - 1];
+  if (!shortName) return undefined;
+
+  const candidates = model.types.lookupClassByName(shortName);
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 0) return undefined;
+
+  let best: SymbolDefinition | undefined;
+  let bestScore = 0;
+  let tie = false;
+  for (const candidate of candidates) {
+    // Compare the FQN's namespace tail against the file path's directory tail
+    // (PSR-4: `App\Admin\OrderController` ↔ `app/Admin/OrderController.php`).
+    // Split on `/` (a path separator normalizeQualifiedName does not touch).
+    const fileBase = candidate.filePath.replace(/\.[^./]+$/, '');
+    const fileSegments = fileBase.split('/').filter((s) => s.length > 0);
+    let score = 0;
+    while (
+      score < fqnSegments.length &&
+      score < fileSegments.length &&
+      fqnSegments[fqnSegments.length - 1 - score].toLowerCase() ===
+        fileSegments[fileSegments.length - 1 - score].toLowerCase()
+    ) {
+      score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+      tie = false;
+    } else if (score === bestScore) {
+      tie = true;
+    }
+  }
+  // Need the class name + at least one namespace segment to disambiguate, and a
+  // single unambiguous winner.
+  return bestScore >= 2 && !tie ? best : undefined;
+}
+
+/**
  * Create CALLS edges from extracted framework routes (e.g. Laravel) to their
  * controller methods. Runs for all languages — independent of call resolution.
+ *
+ * Resolution is registry-based (RING4-2 #943 retired the tiered resolver):
+ *   - Controller: **qualified-first** (see {@link resolveControllerByQualifiedName}).
+ *     When the routes file disambiguated the controller, the Laravel extractor
+ *     threads `route.controllerQualifiedName` (a `use` import — incl. aliased
+ *     `use … as X;` — or an inline qualified `::class`, normalized to the dot-
+ *     joined key shape). The emitter resolves it by direct qualified lookup, or
+ *     by PSR-4 file-path disambiguation when PHP's statement-form namespace left
+ *     the registry keyed only by the short name — either way picking the
+ *     specific class even when the short name is globally duplicated (the common
+ *     admin/public `OrderController` split) or aliased. It falls back to the
+ *     global short-name lookup (`lookupClassByName`), which still skips on
+ *     ambiguity (`length !== 1`) — so a bare, genuinely ambiguous short name
+ *     with no `use`/FQN correctly produces no (wrong) edge.
+ *   - Method: resolved within the controller's own file via the symbol table
+ *     (the legacy emitter only accepted same-file method resolutions).
+ *
+ * Edge confidence is a flat {@link ROUTE_EDGE_CONFIDENCE}. Route CALLS edges
+ * are gated downstream by the process-trace (`MIN_TRACE_CONFIDENCE`) and
+ * large-graph community (`MIN_CONFIDENCE_LARGE`) thresholds (both 0.5); a
+ * resolved edge lands at exactly 0.5 and passes (`>= 0.5`). The guessed-method
+ * fallback edge (`× 0.8` = 0.4) sits below the gate and is excluded from those
+ * passes — acceptable for an edge whose target method could not be resolved.
  */
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,
   extractedRoutes: ExtractedRoute[],
-  ctx: ResolutionContext,
+  model: SemanticModel,
   onProgress?: (current: number, total: number) => void,
 ) => {
   for (let i = 0; i < extractedRoutes.length; i++) {
@@ -95,16 +192,29 @@ export const processRoutesFromExtracted = async (
 
     if (!route.controllerName || !route.methodName) continue;
 
-    const controllerResolved = ctx.resolve(route.controllerName, route.filePath);
-    if (!controllerResolved || controllerResolved.candidates.length === 0) continue;
-    if (controllerResolved.tier === 'global' && controllerResolved.candidates.length > 1) continue;
+    // Resolve the controller class. Qualified-first: when the routes file
+    // disambiguated the controller (a `use` import or inline `::class` FQN, both
+    // normalized to the registry's dot-joined key shape by the extractor), look
+    // it up by qualified name — this resolves aliased imports and same-short-name
+    // controllers in different namespaces. Fall back to the global short-name
+    // lookup, which still refuses ambiguous matches (`length !== 1 → skip`),
+    // mirroring the legacy global tier.
+    let controllerDef: SymbolDefinition | undefined;
+    if (route.controllerQualifiedName) {
+      controllerDef = resolveControllerByQualifiedName(model, route.controllerQualifiedName);
+    }
+    if (!controllerDef) {
+      const controllerDefs = model.types.lookupClassByName(route.controllerName);
+      if (controllerDefs.length !== 1) continue;
+      controllerDef = controllerDefs[0];
+    }
 
-    const controllerDef = controllerResolved.candidates[0];
-    const confidence = TIER_CONFIDENCE[controllerResolved.tier];
+    const confidence = ROUTE_EDGE_CONFIDENCE;
 
-    const methodResolved = ctx.resolve(route.methodName, controllerDef.filePath);
-    const methodId =
-      methodResolved?.tier === 'same-file' ? methodResolved.candidates[0]?.nodeId : undefined;
+    // Method must live in the controller's own file (the legacy emitter only
+    // accepted same-file method resolutions).
+    const methodDefs = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
+    const methodId = methodDefs[0]?.nodeId;
     const sourceId = generateId('File', route.filePath);
 
     if (!methodId) {

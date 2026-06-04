@@ -5,9 +5,7 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Python traits:
- *   - importSemantics: 'namespace' (Python uses namespace imports, not wildcard)
  *   - mroStrategy: 'c3' (Python C3 linearization for multiple inheritance)
- *   - namedBindingExtractor: present (from X import Y)
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
@@ -20,7 +18,6 @@ import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { pythonImportConfig } from '../import-resolvers/configs/python.js';
-import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { pythonConfig as pythonFieldConfig } from '../field-extractors/configs/python.js';
@@ -125,8 +122,6 @@ export const pythonProvider = defineLanguage({
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,
   importResolver: createImportResolver(pythonImportConfig),
-  namedBindingExtractor: extractPythonNamedBindings,
-  importSemantics: 'namespace',
   mroStrategy: 'c3',
   callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),

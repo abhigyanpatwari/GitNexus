@@ -27,7 +27,7 @@
  *          ↑
  *     model/semantic-model.ts           — orchestrator, wraps add()
  *          ↑
- *     model/resolve.ts, call-processor.ts, resolution-context.ts, ...
+ *     model/resolve.ts, call-processor.ts, ...
  *
  * No arrow ever points downward from this file. If you are tempted to
  * import from `./model/` here, you are going the wrong way — move the
@@ -69,9 +69,8 @@ export const CLASS_TYPES: ReadonlySet<NodeLabel> = new Set(CLASS_TYPES_TUPLE);
 
 /** Free-callable labels — single source of truth for "callables that have
  *  NO owner scope". Methods and constructors are owner-scoped and live in
- *  `MethodRegistry` — Tier 3 reaches them via
- *  `model.methods.lookupMethodByName`. See `resolution-context.ts` Tier 3
- *  for how both indexes are consulted together.
+ *  `MethodRegistry`, reached via `model.methods.lookupMethodByName`. Global
+ *  by-name resolution consults both indexes (see `model/index.ts`).
  *
  *  Exported as a `readonly` tuple so that `typeof FREE_CALLABLE_TUPLE[number]`
  *  yields a precise literal union (`FreeCallableLabel`). `registration-table.ts`

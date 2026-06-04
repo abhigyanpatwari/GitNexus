@@ -3,8 +3,10 @@
  *
  * This is the core parsing engine of the ingestion pipeline. It reads
  * source files in byte-budget chunks (~20MB each), parses via worker
- * pool (or sequential fallback), resolves imports/calls/heritage per
- * chunk, and synthesizes wildcard import bindings.
+ * pool (or sequential fallback), and emits route CALLS edges. Import,
+ * call, and inheritance resolution are owned by the scope-resolution
+ * phase, not here (RING4-1 #942 removed the legacy call DAG; RING4-2 #943
+ * removed the legacy per-file import resolution + wildcard synthesis).
  *
  * Consumed by the parse phase (`parse.ts`) — the phase file handles
  * dependency wiring while the heavy implementation lives here.
@@ -22,17 +24,11 @@ import { fileContentHash, computeChunkHash } from '../../../storage/parse-cache.
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
 import type { WorkerExtractedData } from '../parsing-processor.js';
 import {
-  processImports,
-  processImportsFromExtracted,
-  buildImportResolutionContext,
-} from '../import-processor.js';
-import { EMPTY_INDEX } from '../import-resolvers/utils.js';
-import {
   processRoutesFromExtracted,
   buildExportedTypeMapFromGraph,
   type ExportedTypeMap,
 } from '../call-processor.js';
-import { createResolutionContext } from '../model/resolution-context.js';
+import { createSemanticModel, type MutableSemanticModel } from '../model/index.js';
 import { ASTCache, createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
@@ -46,7 +42,6 @@ import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
-  ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
@@ -72,7 +67,6 @@ import {
   logDeferredProfile,
   startTimer,
 } from '../utils/deferred-resolution-profile.js';
-import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
 import { extractORMQueriesInline } from './orm-extraction.js';
 
 import { logger } from '../../logger.js';
@@ -185,13 +179,14 @@ export function handleWorkerStartupFailure(err: Error): never {
 /**
  * Chunked parse + resolve loop.
  *
- * Reads source in byte-budget chunks (~20MB each). For each chunk:
- * 1. Parse via worker pool (or sequential fallback)
- * 2. Resolve imports from extracted data
- * 3. Synthesize wildcard import bindings (Go/Ruby/C++/Swift/Python)
- * 4. Resolve heritage + routes per chunk; defer worker CALLS until all chunks
- *    have contributed heritage so interface-dispatch implementor map is complete
- * 5. Collect TypeEnv bindings for cross-file propagation
+ * Reads source in byte-budget chunks (~20MB each):
+ * 1. Parse each chunk via worker pool (or sequential fallback)
+ * 2. After all chunks parse, emit route CALLS edges (deferred so resolution
+ *    sees the full repo graph) and collect the exported-type map
+ * 3. Collect TypeEnv bindings for cross-file propagation
+ *
+ * Import, call, and inheritance edges are emitted by the scope-resolution
+ * phase, not here (RING4-1 #942 / RING4-2 #943 removed the legacy passes).
  */
 export async function runChunkedParseAndResolve(
   graph: KnowledgeGraph,
@@ -211,7 +206,9 @@ export async function runChunkedParseAndResolve(
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
-  resolutionContext: ReturnType<typeof createResolutionContext>;
+  /** SemanticModel populated during parse — scope-resolution reads its
+   *  TypeRegistry / MethodRegistry / SymbolTable indexes. */
+  model: MutableSemanticModel;
   usedWorkerPool: boolean;
   /** Cross-phase tree-sitter Tree cache populated by the sequential
    *  parse path. Distinct from the chunk-local `astCache` used inside
@@ -228,8 +225,8 @@ export async function runChunkedParseAndResolve(
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
 }> {
-  const ctx = createResolutionContext();
-  const symbolTable = ctx.model.symbols;
+  const model = createSemanticModel();
+  const symbolTable = model.symbols;
 
   const parseableScanned = scannedFiles.filter((f) => {
     const lang = getLanguageFromFilename(f.path);
@@ -412,25 +409,9 @@ export async function runChunkedParseAndResolve(
   let astCache = createASTCache(maxChunkFiles);
   const scopeTreeCache = createASTCache(Math.max(parseableScanned.length, 1));
 
-  // Build import resolution context once — suffix index, file lists, resolve cache.
-  const importCtx = buildImportResolutionContext(allPaths);
-  const allPathObjects = allPaths.map((p) => ({ path: p }));
-
   const sequentialChunkPaths: string[][] = [];
-  const chunkNeedsSynthesis = chunks.map((paths) =>
-    paths.some((p) => {
-      const lang = getLanguageFromFilename(p);
-      return lang != null && needsSynthesis(lang);
-    }),
-  );
   const exportedTypeMap: ExportedTypeMap = new Map();
   const bindingAccumulator = new BindingAccumulator();
-  // Tracks whether per-chunk or fallback wildcard-binding synthesis already
-  // ran, so the unconditional final call below can be skipped when redundant.
-  // synthesizeWildcardImportBindings is graph-global; once any chunk runs it
-  // after parsing wildcard files, later non-wildcard chunks add no work for
-  // it, and later wildcard chunks re-run it themselves.
-  let hasSynthesized = false;
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
@@ -440,16 +421,6 @@ export async function runChunkedParseAndResolve(
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
-  // Imports accumulated across chunks. Previously processed per-chunk
-  // via `processImportsFromExtracted` inside the chunk loop, which
-  // forced workers to sit idle on the main thread's extraction pass
-  // between chunk dispatches (4-5% CPU utilization symptom). Deferring
-  // to a single end-of-loop pass lets the worker pool start chunk N+1
-  // immediately after chunk N's worker dispatch returns. Resolution is
-  // strictly-more-information at end-of-loop because graph now has
-  // every chunk's symbols — improves cross-chunk import targets.
-  const deferredWorkerImports: ExtractedImport[] = [];
-  let anyChunkNeedsWildcardSynth = false;
   // Aggregated per-file ParsedFile artifacts produced by workers' calls
   // to `extractParsedFile`. Threaded through to the scope-resolution
   // phase so it can SKIP its own re-extraction on cache hits — this is
@@ -660,40 +631,17 @@ export async function runChunkedParseAndResolve(
         }
       }
 
-      // Per-chunk extraction passes (import resolution, route resolution,
-      // wildcard-import synthesis) moved out of the chunk loop into a single
-      // end-of-loop pass below.
+      // Route resolution is moved out of the chunk loop into a single
+      // end-of-loop pass below. (Import resolution and wildcard synthesis
+      // used to run here too; they were removed in RING4-2 #943 — IMPORTS
+      // edges now come from the scope-resolution phase.)
       // Reason: per-chunk extraction blocked the chunk loop on
       // main-thread work between worker dispatches — workers sat idle
       // and total CPU utilization plateaued at 4-5% on multi-core boxes.
-      // Deferring keeps workers busy chunk-after-chunk; resolution sees
-      // strictly-more-information (full repo graph) so cross-chunk import
-      // and heritage targets resolve at least as well as before.
+      // Deferring keeps workers busy chunk-after-chunk; route resolution
+      // sees strictly-more-information (full repo graph) so cross-chunk
+      // controller targets resolve at least as well as before.
       if (chunkWorkerData) {
-        if (chunkNeedsSynthesis[chunkIdx]) {
-          anyChunkNeedsWildcardSynth = true;
-        }
-        const skipFile = new Set<string>();
-        const checkFile = new Set<string>();
-        // Legacy deferred-import accumulation. Imports for every known language
-        // are resolved by the scope-resolution phase (RING4-1 #942 removed the
-        // legacy resolution path), so known-language files are never accumulated
-        // here; only null-language files (no parser) would be, which never have
-        // resolvable imports — so this path is effectively inert.
-        const shouldAccumulate = (filePath: string): boolean => {
-          if (checkFile.has(filePath)) return true;
-          if (skipFile.has(filePath)) return false;
-          const lang = getLanguageFromFilename(filePath);
-          if (lang !== null) {
-            skipFile.add(filePath);
-            return false;
-          }
-          checkFile.add(filePath);
-          return true;
-        };
-        for (const item of chunkWorkerData.imports) {
-          if (shouldAccumulate(item.filePath)) deferredWorkerImports.push(item);
-        }
         // Aggregate worker-produced ParsedFile artifacts so scope-
         // resolution can use them as a re-extraction cache (skips its
         // own tree-sitter re-parse on warm runs).
@@ -745,7 +693,6 @@ export async function runChunkedParseAndResolve(
           for (const item of chunkWorkerData.ormQueries) allORMQueries.push(item);
         }
       } else {
-        await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
         sequentialChunkPaths.push(chunkPaths);
       }
 
@@ -778,80 +725,27 @@ export async function runChunkedParseAndResolve(
     }
 
     // Deferred end-of-loop extraction (moved out of the per-chunk block):
-    //   1. import resolution on all chunks' imports
-    //   2. wildcard-import binding synthesis (if any chunk had wildcards)
-    //   3. route resolution on all chunks' routes
-    // Same logic as the prior per-chunk passes, just batched — resolution
-    // sees the full repo graph instead of just current-and-earlier chunks.
-    // Call resolution and inheritance edges are emitted by the scope-resolution
-    // phase, not here (RING4-1 #942 removed the legacy deferred passes).
-    // Progress band: the stages below each get a slice of the 70-95 range so
-    // percent advances monotonically through the (potentially long) resolution
-    // work. Skipped stages (zero-length input) leave their band as a no-op jump.
-    //   imports:  70 -> 75 (5)
+    //   1. route resolution on all chunks' routes
+    // Resolution sees the full repo graph instead of just current-and-earlier
+    // chunks. Import, call, and inheritance edges are emitted by the
+    // scope-resolution phase, not here (RING4-1 #942 removed the legacy call
+    // DAG; RING4-2 #943 removed the legacy import-map resolution + wildcard
+    // synthesis). Progress band: the route stage gets a slice of the 70-95
+    // range; a zero-length input leaves its band as a no-op jump.
     //   routes:   80 -> 85 (5)
     const deferredProfile = isDeferredResolutionProfileEnabled();
     if (deferredProfile) {
-      logDeferredProfile(
-        `deferred band start: imports=${deferredWorkerImports.length} routes=${allExtractedRoutes.length}`,
-      );
-    }
-    if (deferredWorkerImports.length > 0) {
-      const tImports = startTimer(deferredProfile);
-      await processImportsFromExtracted(
-        graph,
-        allPathObjects,
-        deferredWorkerImports,
-        ctx,
-        (current, total) => {
-          const ratio = total > 0 ? current / total : 1;
-          onProgress({
-            phase: 'parsing',
-            percent: 70 + Math.round(ratio * 5),
-            message: 'Resolving imports (all chunks)...',
-            detail: `${current}/${total} files`,
-            stats: {
-              filesProcessed: filesParsedSoFar,
-              totalFiles: totalParseable,
-              nodesCreated: graph.nodeCount,
-            },
-          });
-        },
-        repoPath,
-        importCtx,
-      );
-      endTimer(
-        tImports,
-        (ms) =>
-          `processImportsFromExtracted: ${ms.toFixed(0)}ms (${deferredWorkerImports.length} import batches before drain)`,
-      );
-      // U15 (lightweight M1): processImportsFromExtracted is the sole
-      // consumer of `deferredWorkerImports`. Free the array now so the
-      // GC can reclaim the per-file ExtractedImport records before the
-      // heavier downstream stages run (heritage, routes, calls). Peak
-      // accumulator memory drops from O(repo) to O(repo - imports) for
-      // the remainder of the deferred phase. The future per-chunk
-      // streaming upgrade can rewrite this with the same correctness
-      // contract once profile data shows it's warranted.
-      deferredWorkerImports.length = 0;
-    }
-    if (anyChunkNeedsWildcardSynth) {
-      const tWildcard = startTimer(deferredProfile);
-      synthesizeWildcardImportBindings(graph, ctx);
-      hasSynthesized = true;
-      endTimer(tWildcard, (ms) => `synthesizeWildcardImportBindings: ${ms.toFixed(0)}ms`);
+      logDeferredProfile(`deferred band start: routes=${allExtractedRoutes.length}`);
     }
     // Populate `exportedTypeMap` from the in-progress graph so the post-parse
     // enrichment pass (enrichExportedTypeMap) sees cross-file export types.
-    // Inheritance and call resolution are owned by the scope-resolution phase
-    // (RING4-1 #942 removed the legacy heritage/call-DAG deferred passes here).
     if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
-      const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
+      const graphExports = buildExportedTypeMapFromGraph(graph, model.symbols);
       for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
     }
     if (allExtractedRoutes.length > 0) {
       const tRoutes = startTimer(deferredProfile);
-      await processRoutesFromExtracted(graph, allExtractedRoutes, ctx, (current, total) => {
+      await processRoutesFromExtracted(graph, allExtractedRoutes, model, (current, total) => {
         const ratio = total > 0 ? current / total : 1;
         onProgress({
           phase: 'parsing',
@@ -892,15 +786,11 @@ export async function runChunkedParseAndResolve(
   // Disposal of the accumulator remains with `crossFile` (owned by U2). We do
   // NOT call `bindingAccumulator.dispose()` here.
   try {
-    if (sequentialChunkPaths.length > 0) {
-      synthesizeWildcardImportBindings(graph, ctx);
-      hasSynthesized = true;
-    }
-    // Sequential fallback: imports are resolved per-chunk above (processImports).
-    // Calls and inheritance are emitted by the scope-resolution phase, not here
-    // (RING4-1 #942 removed the legacy call/heritage resolution passes). This
-    // loop still extracts fetch routes + ORM queries, which are language-agnostic
-    // edge sources independent of call resolution.
+    // Sequential fallback: calls, inheritance, and imports are emitted by the
+    // scope-resolution phase, not here (RING4-1 #942 removed the legacy
+    // call/heritage passes; RING4-2 #943 removed the legacy import resolution).
+    // This loop still extracts fetch routes + ORM queries, which are
+    // language-agnostic edge sources independent of call resolution.
     for (const chunkPaths of sequentialChunkPaths) {
       const chunkContents = await readFileContents(repoPath, chunkPaths);
       const chunkFiles: Array<{ path: string; content: string }> = [];
@@ -917,16 +807,6 @@ export async function runChunkedParseAndResolve(
         extractORMQueriesInline(f.path, f.content, allORMQueries);
       }
       astCache.clear();
-    }
-
-    // Log resolution cache stats
-    if (isDev) {
-      const rcStats = ctx.getStats();
-      const total = rcStats.cacheHits + rcStats.cacheMisses;
-      const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
-      logger.info(
-        `🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`,
-      );
     }
   } finally {
     // Clearing an already-empty cache is a no-op, so this is idempotent-safe
@@ -954,15 +834,6 @@ export async function runChunkedParseAndResolve(
     }
   }
 
-  if (!hasSynthesized) {
-    const synthesized = synthesizeWildcardImportBindings(graph, ctx);
-    if (isDev && synthesized > 0) {
-      logger.info(
-        `🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Python)`,
-      );
-    }
-  }
-
   // Worker-path enrichment: if exportedTypeMap is empty (e.g. the worker pool
   // built TypeEnv inside workers without access to SymbolTable), reconstruct
   // the map from graph nodes + SymbolTable here in the main thread before
@@ -970,22 +841,9 @@ export async function runChunkedParseAndResolve(
   // crossFile receives a fully-populated map and never needs to mutate it for
   // initial-graph enrichment.
   if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
-    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
+    const graphExports = buildExportedTypeMapFromGraph(graph, model.symbols);
     for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
   }
-
-  allPathObjects.length = 0;
-  // Safe to reset importCtx caches here: `importCtx` (ImportResolutionContext)
-  // is a scratch workspace used only during import path resolution. The
-  // `resolutionContext` (`ctx`) returned below is a distinct object — it owns
-  // the fully-populated, post-parse `importMap` / `namedImportMap` /
-  // `packageMap` / `moduleAliasMap` / `model`, and never references
-  // `importCtx`. Downstream consumers (the scope-resolution phase, route
-  // extraction) consume only `ctx`, never `importCtx`, so clearing the suffix
-  // index / resolveCache / normalizedFileList here cannot lose import matches.
-  importCtx.resolveCache.clear();
-  importCtx.index = EMPTY_INDEX;
-  importCtx.normalizedFileList = [];
 
   // FastAPI router-prefix resolution (cross-file).
   //
@@ -1147,7 +1005,7 @@ export async function runChunkedParseAndResolve(
     allToolDefs,
     allORMQueries,
     bindingAccumulator,
-    resolutionContext: ctx,
+    model,
     // Whether a worker pool was actually live for this run. False means the
     // sequential fallback handled every chunk (either due to `skipWorkers`,
     // the file-count/byte thresholds, or a pool-creation failure).

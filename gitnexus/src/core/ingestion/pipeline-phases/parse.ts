@@ -29,8 +29,8 @@ import type {
   ExtractedORMQuery,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
-import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
+import type { MutableSemanticModel } from '../model/index.js';
 import type { ASTCache } from '../ast-cache.js';
 
 export interface ParseOutput {
@@ -52,8 +52,9 @@ export interface ParseOutput {
   readonly allToolDefs: readonly ExtractedToolDef[];
   readonly allORMQueries: readonly ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
-  /** Resolution context from the parse phase — carries importMap, namedImportMap, etc. */
-  resolutionContext: ReturnType<typeof createResolutionContext>;
+  /** SemanticModel populated during parse — scope-resolution reads its
+   *  TypeRegistry / MethodRegistry / SymbolTable indexes. */
+  model: MutableSemanticModel;
   /** Pass-through: all file paths for downstream phases. */
   readonly allPaths: readonly string[];
   /** Pass-through: shared `allPathSet` from structure (built once, not per-phase). */

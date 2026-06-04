@@ -5,9 +5,7 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Rust traits:
- *   - importSemantics: 'named' (Rust has use X::{a, b})
  *   - mroStrategy: 'qualified-syntax' (Rust uses trait qualification, not MRO)
- *   - namedBindingExtractor: present (use X::{a, b} extracts named bindings)
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -20,7 +18,6 @@ import { typeConfig as rustConfig } from '../type-extractors/rust.js';
 import { rustExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { rustImportConfig } from '../import-resolvers/configs/rust.js';
-import { extractRustNamedBindings } from '../named-bindings/rust.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -169,7 +166,6 @@ export const rustProvider = defineLanguage({
   typeConfig: rustConfig,
   exportChecker: rustExportChecker,
   importResolver: createImportResolver(rustImportConfig),
-  namedBindingExtractor: extractRustNamedBindings,
   mroStrategy: 'qualified-syntax',
   callExtractor: createCallExtractor(rustCallConfig),
   fieldExtractor: createFieldExtractor(rustFieldConfig),

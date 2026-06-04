@@ -19,7 +19,7 @@
  *          ↑
  *     model/semantic-model.ts                 — THIS FILE (orchestrator)
  *          ↑
- *     resolve.ts, call-processor.ts, resolution-context.ts, ...
+ *     resolve.ts, call-processor.ts, ...
  *
  * `symbol-table.ts` is a leaf — it never imports from `./model/`. This
  * file (semantic-model.ts) is the ONLY place where SymbolTable and the
@@ -142,7 +142,7 @@ export interface SemanticModel {
 
 /** Mutable variant — exposes the MutableX registries, a Writer-typed
  *  `symbols` facade, and a full-cascade reset. This is the interface
- *  held by the lifecycle owner (pipeline, resolution-context); resolvers
+ *  held by the lifecycle owner (the parse pipeline); resolvers
  *  that only query should hold the narrower {@link SemanticModel}. */
 export interface MutableSemanticModel extends SemanticModel {
   readonly types: MutableTypeRegistry;

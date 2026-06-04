@@ -144,7 +144,7 @@ const fastStripNullable = (typeName: string): string | undefined => {
     : stripNullable(typeName);
 };
 
-/** Implementation of the lookup logic — shared between TypeEnvironment and the legacy export. */
+/** Implementation of the lookup logic backing TypeEnvironment.lookup. */
 const lookupInEnv = (
   env: TypeEnv,
   varName: string,
