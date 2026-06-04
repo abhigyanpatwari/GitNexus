@@ -45,17 +45,39 @@ describe('Go multi-name declaration metadata in sequential parsing', () => {
       scopeTreeCache,
     );
 
-    const metadata = new Map<string, string | undefined>();
+    const metadata = new Map<string, Record<string, unknown>>();
     graph.forEachNode((node) => {
       if (node.label === 'Const' || node.label === 'Variable') {
-        metadata.set(node.properties.name, node.properties.declaredType as string | undefined);
+        metadata.set(node.properties.name, node.properties);
       }
     });
 
-    expect(metadata.get('X')).toBe('int');
-    expect(metadata.get('Y')).toBe('int');
-    expect(metadata.get('a')).toBe('string');
-    expect(metadata.get('b')).toBe('string');
-    expect(metadata.get('c')).toBe('bool');
+    expect(metadata.get('X')).toMatchObject({
+      declaredType: 'int',
+      isConst: true,
+      isMutable: false,
+      scope: 'module',
+    });
+    expect(metadata.get('Y')).toMatchObject({
+      declaredType: 'int',
+      isConst: true,
+      isMutable: false,
+      scope: 'module',
+    });
+    expect(metadata.get('a')).toMatchObject({
+      declaredType: 'string',
+      isMutable: true,
+      scope: 'module',
+    });
+    expect(metadata.get('b')).toMatchObject({
+      declaredType: 'string',
+      isMutable: true,
+      scope: 'module',
+    });
+    expect(metadata.get('c')).toMatchObject({
+      declaredType: 'bool',
+      isMutable: true,
+      scope: 'module',
+    });
   });
 });

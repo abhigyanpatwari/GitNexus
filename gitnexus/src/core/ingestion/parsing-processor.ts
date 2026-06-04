@@ -27,7 +27,7 @@ import {
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
-import type { VariableExtractorContext } from './variable-types.js';
+import type { VariableExtractorContext, VariableInfo } from './variable-types.js';
 import type { MethodInfo } from './method-types.js';
 import {
   buildMethodProps,
@@ -410,6 +410,7 @@ export const processParsingSequential = async (
     seqFieldInfoCache.clear();
     seqMethodExtractCache.clear();
     seqMethodMapCache.clear();
+    const seqVariableInfoCache = new Map<number, Map<string, VariableInfo>>();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -923,13 +924,20 @@ export const processParsingSequential = async (
         definitionNode &&
         provider.variableExtractor
       ) {
-        const varCtx: VariableExtractorContext = {
-          filePath: file.path,
-          language,
-        };
-        const varInfo = provider.variableExtractor
-          .extractAll(definitionNode, varCtx)
-          .find((info) => info.name === nodeName);
+        let variableInfoByName = seqVariableInfoCache.get(definitionNode.startIndex);
+        if (!variableInfoByName) {
+          const varCtx: VariableExtractorContext = {
+            filePath: file.path,
+            language,
+          };
+          variableInfoByName = new Map(
+            provider.variableExtractor
+              .extractAll(definitionNode, varCtx)
+              .map((info) => [info.name, info]),
+          );
+          seqVariableInfoCache.set(definitionNode.startIndex, variableInfoByName);
+        }
+        const varInfo = variableInfoByName.get(nodeName);
         if (varInfo) {
           if (varInfo.type) declaredType = varInfo.type;
           seqVisibility = varInfo.visibility;
@@ -945,6 +953,9 @@ export const processParsingSequential = async (
       if (seqIsStatic !== undefined) node.properties.isStatic = seqIsStatic;
       if (seqIsReadonly !== undefined) node.properties.isReadonly = seqIsReadonly;
       if (declaredType !== undefined) node.properties.declaredType = declaredType;
+      if (methodProps.isConst !== undefined) node.properties.isConst = methodProps.isConst;
+      if (methodProps.isMutable !== undefined) node.properties.isMutable = methodProps.isMutable;
+      if (methodProps.scope !== undefined) node.properties.scope = methodProps.scope;
 
       symbolTable.add(file.path, nodeName, nodeId, nodeLabel, {
         parameterCount: methodProps.parameterCount as number | undefined,
