@@ -16,22 +16,22 @@
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
-    "fingerprint": "538e8beebf0a69f6170dff452da3f98046a08cbe8b098b3c9943c4a8a79d2e22",
+    "fingerprint": "6d6207ae1df3943c5fae28983e0c294e55225456e7cf39af1d46fda21b6787c4",
     "scaling_budget": 1.5,
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
     "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
-    "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift — no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267."
+    "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift \u2014 no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267. #1995: + cpp-union-nested-tail-collision and cpp-anon-ns-tail-collision fixtures \u2014 pure fixture-corpus drift; fixture_count 270->272, fingerprint 538e8be->d63ded6. #1993: + cpp-cross-namespace-same-tail fixture \u2014 pure fixture-corpus drift; fixture_count 272->273, fingerprint d63ded6->6d6207ae."
   },
   "csharp": {
-    "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.)",
-    "fingerprint": "68ef32c126d5c6de5d8184c6ad0a6104043036daf9805947db8b21741b883f43",
+    "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
+    "fingerprint": "7e8845040540ae69ef564ebf597305ade31e4480cee1dc910ea0fcfc26794910",
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "b00aea0f2dbff6a77d3aa709f7f90e8a70649f7e789a8de725d9b1958ebe12bc",
+    "fingerprint": "ac610bbe97666bf285923479dd7b43a2fe4c5354aae8df1bcbafdc04fb220f82",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) — legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical.",
-    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED — @declaration.macro/@reference.macro + MacroRegistry → USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126). #1992: + rust-nested-tail-collision-generic and rust-generic-impl-same-method-name (F3) fixtures — pure fixture-corpus drift, no scope-extractor change; fixture_count 127->129, fingerprint 56ffc1c0->b00aea0f."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) \u2014 legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical. | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
+    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED \u2014 @declaration.macro/@reference.macro + MacroRegistry \u2192 USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126). #1992: + rust-nested-tail-collision-generic and rust-generic-impl-same-method-name (F3) fixtures \u2014 pure fixture-corpus drift, no scope-extractor change; fixture_count 127->129, fingerprint 56ffc1c0->b00aea0f."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",
@@ -39,10 +39,10 @@
     "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04)."
   },
   "ruby": {
-    "fingerprint": "bf6b13a366e4116da3772f9a9fdd50517eb11da73918451392e014a2c905b2dd",
+    "fingerprint": "b5ea93bb3d0469c3821a8c70f5d5991c6f326e41097c119ad691154301dcc753",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.)",
-    "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) — pure fixture-corpus drift, scope-extractor captures unchanged; 81→82."
+    "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
+    "_note": "F62: + scope_resolution class/module declaration captures \u2014 fixture count 78\u219281, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) \u2014 pure fixture-corpus drift, scope-extractor captures unchanged; 81\u219282. #1991: + ruby-nested-mixin-tail-collision fixture (85\u219286). Recomputed on the #942 merge (fixture-comment rewording shifts capture byte-positions, capture LOGIC unchanged): bf6b13a -> b5ea93bb."
   },
   "swift": {
     "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
@@ -56,9 +56,9 @@
     "_rebaselined": "#1970 review + tri-review follow-ups: constructor-call retag, cascade calls, built-in suppression, enum scope, #1926 F24/F25, named-ctor dedup (crash fix), container-name binding suppression; heritage file-affinity resolution. Fixtures: member-call-contexts, constructor-body, named-constructor-body, heritage-name-collision, construct-cascade."
   },
   "java": {
-    "fingerprint": "b63f9be458f7ece854e7b007159d7bf65b4b66a86e83a6c0656fc93ebd5d83da",
+    "fingerprint": "d5cf68e9faf92fffd928c1ee6e584c72cc65918d1f1b5078abb3bfe09ac699bf",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.)"
+    "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   },
   "typescript": {
     "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
@@ -67,15 +67,15 @@
     "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected."
   },
   "javascript": {
-    "fingerprint": "a8ddfb15620ae55e50651fc21ab14c4a1f874d9b19e208cc6cbf0a8daac8ec5b",
+    "fingerprint": "d72f03c6c502235d2d4b74d66baa5c7d361f040d7a1b72e84acad61210d05ae8",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05)."
+    "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   },
   "kotlin": {
-    "fingerprint": "5121a11855cd9cc44a357ae3ff50953de80cdd743f00e8924c31503b132bcd84",
+    "fingerprint": "9b212eca24959cc1705933df213f4ec739c5c1b4580c7929347d37bf4d72ba8a",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87)."
+    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   }
 }

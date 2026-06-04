@@ -65,7 +65,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | Wiki generation | `src/core/wiki/` |
 | Language support | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts` |
 | Import resolution | `src/core/ingestion/import-processor.ts` + `import-resolvers/configs/` + `model/resolution-context.ts` |
-| Call resolution/MRO | `src/core/ingestion/call-processor.ts` + `model/resolve.ts` |
+| Call resolution/inheritance/MRO | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge) |
 | Type extraction | `src/core/ingestion/type-extractors/` |
 | Worker pool | `src/core/ingestion/workers/` |
 | Web UI | `gitnexus-web/src/` |
@@ -147,105 +147,18 @@ export const myPhase: PipelinePhase<MyPhaseOutput> = {
 
 ---
 
-## Call-Resolution DAG
+## Semantic model
 
-Typed 6-stage pipeline in `call-processor.ts` (inside the `parse` phase) that resolves method/function calls and emits CALLS edges. Language behavior plugs in at two `LanguageProvider` hook points (stages 3–4); shared code names no languages. Scope: call resolution only — import resolution, type extraction, heritage, and symbol-table population live in other phases.
+`SemanticModel` (`gitnexus/src/core/ingestion/model/semantic-model.ts`) is the authoritative store for every symbol-indexed lookup (by `nodeId`, `simpleName`, `qualifiedName`, or `filePath`). The scope-resolution pipeline reads from here: `findOwnedMember`, `pickOverload`, and `findExportedDefByName` all consult `model.methods` / `model.fields` / `model.symbols`.
 
-### Stages
-
-```
-extract-call ──▶ classify-form ──▶ infer-receiver ──▶ select-dispatch ──▶ resolve-target ──▶ emit-edge
-     (1)              (2)            (3)  [hook]       (4)  [hook]         (5)                 (6)
-```
-
-| Stage | Produces | Location |
-|-------|----------|----------|
-| **extract-call** | `ExtractedCallSite` (name, form, receiver, argCount) | `call-extractors/` (per-language); runs in worker |
-| **classify-form** | callForm (`free`/`member`/`constructor`) + arity | `call-analysis.ts` → `inferCallForm`; shared, runs in worker |
-| **infer-receiver** | `ReceiverEnriched` (receiver type finalized) | `call-processor.ts`; shared default chain, then `inferImplicitReceiver` hook |
-| **select-dispatch** | `DispatchDecision` (primary, fallback, ancestryView) | `selectDispatch` hook, falls back to shared default |
-| **resolve-target** | `TieredCandidates` | `model/resolve.ts` → `lookupMethodByOwnerWithMRO` (MRO walk) |
-| **emit-edge** | CALLS edge in graph | `call-processor.ts`; writes edge with confidence tier |
-
-### Provider hooks
-
-Both hooks are optional on `LanguageProvider`. Ruby is the only current implementer.
-
-**`inferImplicitReceiver`** — called after shared infer-receiver defaults. Returns `ImplicitReceiverOverride | null`.
-
-| | |
-|---|---|
-| Inputs | `calledName`, `callForm`, `receiverName`, `receiverTypeName`, `callNode` (AST), `filePath` |
-| Non-null fields | `callForm`, `receiverName`, `receiverTypeName` (required); `receiverSource: 'implicit-self'` (fixed); `hint?` (opaque, passed to `selectDispatch`) |
-| Null | Keep existing `ReceiverEnriched` state |
-
-**`selectDispatch`** — called after infer-receiver (including hook). Returns `DispatchDecision | null`; null uses shared default (constructor → `primary:'constructor'`; typed receiver → `primary:'owner-scoped'`; else → `primary:'free'`).
-
-| | |
-|---|---|
-| Inputs | `calledName`, `callForm`, `receiverName`, `receiverTypeName`, `receiverSource`, `hint` |
-| Non-null fields | `primary: 'owner-scoped' \| 'free' \| 'constructor'`; `fallback?: 'free-arity-narrowed'`; `ancestryView?: 'instance' \| 'singleton'`; `hint?` |
-
-**`DispatchDecision` field semantics:**
-- `primary: 'owner-scoped'` — MRO walk from receiver's type; used when receiver type is known.
-- `fallback: 'free-arity-narrowed'` — after owner-scoped miss, search free-call candidates by arity only (Ruby uses this for implicit-self calls that miss their owner's MRO).
-- `ancestryView: 'singleton'` — walk singleton/class ancestry instead of instance ancestry (Ruby `def self.foo` bodies, so `extend`-ed methods are found).
-
-### Adding language behavior
-
-1. **Implicit receivers** — implement `inferImplicitReceiver`: return null if call already has a receiver; otherwise use `findEnclosingClassInfo` (`ast-helpers.ts`) to find the enclosing context, return `ImplicitReceiverOverride` with `receiverSource: 'implicit-self'`, and optionally set `hint` for `selectDispatch`.
-2. **Custom dispatch** — implement `selectDispatch`: inspect `receiverSource` and `hint`, return `DispatchDecision` with `primary`, optional `fallback`, optional `ancestryView`; return null to keep shared defaults.
-3. **MRO strategy** — confirm `mroStrategy` is `'first-wins'`, `'c3'`, `'ruby-mixin'`, or `'none'`; consumed by `lookupMethodByOwnerWithMRO`.
-
-**Ruby example** (`languages/ruby.ts` + `utils/ruby-self-call.ts`): `inferImplicitReceiver` rewrites bare-identifier calls to `self.method` and sets `hint` to `'instance'`/`'singleton'`; `selectDispatch` uses hint for `ancestryView` and adds `fallback: 'free-arity-narrowed'` for implicit-self calls.
-
-### Code references
-
-| Module | Purpose |
-|--------|---------|
-| `core/ingestion/call-types.ts` | DAG types: `ReceiverEnriched`, `DispatchDecision`, `ImplicitReceiverOverride` |
-| `core/ingestion/language-provider.ts` | Hook signatures: `inferImplicitReceiver`, `selectDispatch` |
-| `core/ingestion/call-processor.ts` | `processCalls`: stages 3–6 |
-| `core/ingestion/model/resolve.ts` | `lookupMethodByOwnerWithMRO`: stage 5 MRO walk |
-| `core/ingestion/languages/ruby.ts` | Both hooks + `mroStrategy: 'ruby-mixin'` |
-| `core/ingestion/utils/ruby-self-call.ts` | Bare-call rewrite for `inferImplicitReceiver` |
-
-### Coexistence with the scope-resolution pipeline
-
-The Call-Resolution DAG is the **legacy path**. RFC #909 Ring 3 introduces a parallel **scope-resolution pipeline** (next section) that replaces stages 1–6 with a scope-indexed registry lookup. Both paths ship side-by-side and are gated per-language via `MIGRATED_LANGUAGES` + the `REGISTRY_PRIMARY_<LANG>` env var.
-
-- **Unmigrated language** → Call-Resolution DAG runs; scope-resolution phase is a no-op.
-- **Migrated language** (currently: Python, C#) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
-- `import-processor` still populates `importMap` for migrated languages — heritage's `ctx.resolve` reads it to disambiguate parent classes. Only edge emission is gated.
-- CI runs BOTH paths for every migrated language on every PR (`.github/workflows/ci-scope-parity.yml`); both must pass.
-
-#### Same-graph guarantee
-
-Edges emitted by the scope-resolution pipeline and edges emitted by the legacy DAG are indistinguishable to downstream consumers (MCP tools, HTTP API, embeddings, group bridge):
-
-- **Node identity** — both paths use `generateId(...)` from `lib/utils.ts`, the same qualified-name keyspace, and the same node labels (`File`, `Folder`, `Class`, `Method`, `Function`, …). Overload disambiguation suffixes `parameterTypes` into the id consistently — see `scope-resolution/graph-bridge/ids.ts` and the legacy emitter in `call-processor.ts`.
-- **Edge vocabulary** — both paths emit the same reasons: `'import-resolved' | 'global' | 'local-call' | 'same-file' | 'interface-dispatch' | 'read' | 'write'`. Migrating a language must not change which reasons consumers see for previously-resolved edges.
-- **Confidence tier** — both paths attach a numeric `confidence` to each edge using the same scale.
-
-The CI parity workflow (`.github/workflows/ci-scope-parity.yml`) runs both paths against every migrated language's fixture corpus and fails on any divergence.
-
-#### Semantic-model source of truth
-
-Two independent invariants.
-
-**ParsedFile = the AST-level truth.** `ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single per-file artifact both resolution paths consume. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
-
-**SemanticModel = the symbol-level truth.** `SemanticModel` (`gitnexus/src/core/ingestion/model/semantic-model.ts`) is the authoritative store for every symbol-indexed lookup (by `nodeId`, `simpleName`, `qualifiedName`, or `filePath`). Both paths read from here:
-
-- Legacy Call-Resolution DAG → `call-processor` Tier 1/2/3 via `model.symbols.lookupExactAll`, `model.methods.lookupMethodByName`, `model.types.lookupClassByName`, `lookupMethodByOwnerWithMRO`.
-- Scope-resolution pipeline → `findOwnedMember`, `pickOverload`, `findExportedDefByName` all consult `model.methods` / `model.fields` / `model.symbols`.
+`ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single per-file artifact the scope-resolution pipeline consumes. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
 
 The scope-resolution pipeline additionally carries `WorkspaceResolutionIndex` for `Scope`-valued lookups (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel` structurally cannot hold. No symbol-indexed duplicates exist outside `SemanticModel`.
 
 **Write / read phase contract.** The model is mutable during three ordered phases and read-only afterward:
 
 ```
- Phase 1: legacy parse     ──► symbolTable.add fans into types/methods/fields
+ Phase 1: parse            ──► symbolTable.add fans into types/methods/fields
  Phase 2: scope-resolution ──► reconcileOwnership() registers corrected ownerIds
  Phase 3: finalize         ──► model.attachScopeIndexes(bundle) — one-shot freeze
  ─────────────────────────── phase boundary ───────────────────────────
@@ -255,7 +168,7 @@ The scope-resolution pipeline additionally carries `WorkspaceResolutionIndex` fo
 
 `runScopeResolution` narrows `MutableSemanticModel` → `SemanticModel` at the phase boundary so downstream passes physically cannot mutate the model even accidentally.
 
-**Transitional: reconciliation pass.** `reconcileOwnership` (`scope-resolution/pipeline/reconcile-ownership.ts`) is a shim for languages whose legacy extractor doesn't resolve `enclosingClassId` at parse time (Python class-body methods are the canonical case). It walks `parsed.localDefs[i].ownerId` after `populateOwners` and registers any missed methods/fields into the model. Idempotent — safe to re-run, safe alongside languages whose legacy extractor already carries `ownerId` (C#).
+**Reconciliation pass.** `reconcileOwnership` (`scope-resolution/pipeline/reconcile-ownership.ts`) is a shim for languages whose parse-time extractor doesn't resolve `enclosingClassId` at parse time (Python class-body methods are the canonical case). It walks `parsed.localDefs[i].ownerId` after `populateOwners` and registers any missed methods/fields into the model. Idempotent — safe to re-run, safe alongside languages whose extractor already carries `ownerId` (C#).
 
 The architectural end state is for every language's parse-time extractor to emit the correct `ownerId` directly, making reconciliation a no-op (tracked as a follow-up refactor). The dev-mode validator `validateOwnershipParity` surfaces any drift via `onWarn` under `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
 
@@ -265,7 +178,7 @@ References: `semantic-model.ts` file-head (full write/read contract); `contract/
 
 ## Scope-Resolution Pipeline (RFC #909 Ring 3)
 
-Language-agnostic registry-primary resolver. Replaces the Call-Resolution DAG for migrated languages. Adding a language is one interface implementation (`ScopeResolver`) plus two registrations — no changes to shared code, no new pipeline phase.
+Language-agnostic scope-resolution resolver. This is the resolution path for every language — it owns CALLS/ACCESSES/USES emission and inheritance edges. Adding a language is one interface implementation (`ScopeResolver`) plus one registration in the `SCOPE_RESOLVERS` map — no changes to shared code, no new pipeline phase. (RING4-1 #942 removed the legacy call-resolution DAG and the per-language `MIGRATED_LANGUAGES` flag, so `SCOPE_RESOLVERS` registration is all that's needed.)
 
 ### Pipeline stages
 
@@ -286,7 +199,7 @@ Language-agnostic registry-primary resolver. Replaces the Call-Resolution DAG fo
 ```
 
 Orchestrator: `runScopeResolution(input, provider)` in `scope-resolution/pipeline/run.ts`.
-Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates `SCOPE_RESOLVERS ∩ MIGRATED_LANGUAGES`, reads per-file Trees from the parse phase's `scopeTreeCache`, disposes the cache at the end.
+Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates the registered `SCOPE_RESOLVERS`, reads per-file Trees from the parse phase's `scopeTreeCache`, disposes the cache at the end.
 
 ### `ScopeResolver` contract
 
@@ -312,7 +225,6 @@ Single interface a language implements to plug into the pipeline. Contract fully
 
 1. Implement `ScopeResolver` in `languages/<lang>/scope-resolver.ts`.
 2. Add entry to `SCOPE_RESOLVERS` in `scope-resolution/pipeline/registry.ts`.
-3. Add the language to `MIGRATED_LANGUAGES` in `registry-primary-flag.ts` when the shadow-harness corpus parity ≥ 99% fixtures / ≥ 98% corpus.
 
 CI auto-discovers the set via `tsx`. No workflow edit required.
 
@@ -328,7 +240,6 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 | `scope-resolution/graph-bridge/*.ts` | CLI-local translation from resolved references → `KnowledgeGraph` edges |
 | `scope-resolution/scope/*.ts` | Generic scope-chain walkers + namespace targets |
 | `scope-resolution/workspace-index.ts` | Build-once O(1) lookup index |
-| `registry-primary-flag.ts` | `MIGRATED_LANGUAGES` set + `isRegistryPrimary(lang)` |
 | `languages/python/index.ts` | Python `ScopeResolver` hooks + known-limitation docs |
 | `languages/python/captures.ts` | `emitPythonScopeCaptures` (honors cross-phase Tree cache) |
 | `languages/csharp/index.ts` | C# `ScopeResolver` hooks + known-limitation docs |
@@ -351,7 +262,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 ```
  Unified Graph Schema (44 node types, 21 relationship types)
            ↑
- Unified Resolution (3-tier name lookup + MRO walk)
+ Scope-Resolution Pipeline (registry lookup + 3-tier import resolution + MRO)
            ↑
  Language Providers (import semantics, type config, export checker, MRO strategy)
            ↑
@@ -376,7 +287,7 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 
 ### Unified capture tags
 
-Per-language tree-sitter queries use different AST node names but produce the **same semantic capture tags**: `@definition.class`, `@definition.function`, `@call.name`, `@import.source`, `@heritage.extends`. Downstream extraction needs no language branching. Defined in `tree-sitter-queries.ts`.
+Per-language tree-sitter queries use different AST node names but produce the **same semantic capture tags**: `@definition.class`, `@definition.function`, `@call.name`, `@import.source`, `@reference.inherits`. Downstream extraction needs no language branching. Defined in `tree-sitter-queries.ts`.
 
 ### Import resolution
 
@@ -403,19 +314,20 @@ Unified 3-tier algorithm (`model/resolution-context.ts`), per-language `importSe
 1. Worker pool dispatches files (or sequential fallback via `skipWorkers`)
 2. Each worker: detect language → load grammar → run queries → return unified `ParseWorkerResult`
 3. Synthesize wildcard bindings (`wildcard-synthesis.ts`)
-4. Resolve imports and heritage
+4. Resolve imports
 5. Collect `BindingAccumulator` entries for cross-file propagation
+
+Inheritance edges are emitted later, by the scope-resolution phase (`preEmitInheritanceEdges` + `emitHeritageEdges`), not during `parse`.
 
 Workers: `workers/worker-pool.ts`, `workers/parse-worker.ts`.
 
-### Heritage and MRO
+### Inheritance and MRO
 
-All languages emit unified `ExtractedHeritage` (child, parent, `EXTENDS`/`IMPLEMENTS`). MRO phase walks the heritage graph using per-language strategy:
+Inheritance is captured by the `@reference.inherits` tag and emitted by the scope-resolution phase: `preEmitInheritanceEdges` resolves each base in scope, then `emitHeritageEdges` writes the `EXTENDS`/`IMPLEMENTS` edges. The phase then computes method resolution order via each `ScopeResolver`'s `buildMro` hook, feeding a `MethodDispatchIndex` used for owner-scoped lookups. Per-language strategy:
 - **`first-wins`** — Java, C#, C++, TS, Ruby, Go
 - **`c3`** — Python (C3 linearization)
+- **`ruby-mixin`** — Ruby (mixin-aware linearization)
 - **`none`** — single-inheritance languages
-
-Unified walk: `lookupMethodByOwnerWithMRO()` in `model/resolve.ts`.
 
 ---
 

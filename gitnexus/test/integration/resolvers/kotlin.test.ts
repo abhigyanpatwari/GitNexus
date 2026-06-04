@@ -1,12 +1,11 @@
 /**
  * Kotlin: data class extends + implements interfaces + ambiguous import disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,8 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('kotlin');
 
 // ---------------------------------------------------------------------------
 // Heritage: data class extends + implements interfaces (delegation specifiers)
@@ -115,14 +112,12 @@ describe('Kotlin heritage resolution', () => {
 
 // ---------------------------------------------------------------------------
 // Interface-delegation heritage (#1951): `class F : Iface by d`. The base is an
-// `explicit_delegation` (`(user_type) by <delegate>`); the registry-primary
-// synth previously DROPPED this shape (only `user_type` / `constructor_invocation`
-// were handled), so production emitted NO IMPLEMENTS edge for the delegated
-// interface in worker mode — while the legacy @heritage leg (config-driven
-// `kotlinHeritageShapes` + normalizeSupertypeName) captured it. Widening the
-// synth to descend into `explicit_delegation`'s leading `user_type` closes the
-// parity break. G : Base() is the bare control proving the simple-base path is
-// unchanged. This block runs under BOTH legs via createResolverParityIt.
+// `explicit_delegation` (`(user_type) by <delegate>`); an earlier synth DROPPED
+// this shape (only `user_type` / `constructor_invocation` were handled), so
+// production emitted NO IMPLEMENTS edge for the delegated interface in worker
+// mode. Widening the synth to descend into `explicit_delegation`'s leading
+// `user_type` closes the gap. G : Base() is the bare control proving the
+// simple-base path is unchanged. Scope-resolution owns these edges since #942.
 // ---------------------------------------------------------------------------
 
 describe('Kotlin interface-delegation heritage resolution (#1951)', () => {
@@ -2037,7 +2032,7 @@ describe('Kotlin overloaded method disambiguation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — child.parentMethod() via implements-split walk
+// SM-9: inherited method resolution — child.parentMethod() via the inheritance walk
 // ---------------------------------------------------------------------------
 
 describe('Kotlin Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -2163,10 +2158,9 @@ describe('Kotlin companion vs instance member dispatch (#1756)', () => {
     // `logger.create(...)` on an instance is a compile error in Kotlin —
     // companion-object methods can only be called through the class name.
     // The resolver must NOT emit a CALLS edge for this call site (#1756).
-    // Registry-primary path filters via `ScopeResolver.isStaticOnly`; the
-    // legacy DAG has a pre-existing crossover bug, so this assertion is
-    // marked as a legacy expected failure in
-    // `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.kotlin` (helpers.ts).
+    // Scope-resolution filters via `ScopeResolver.isStaticOnly`. The legacy DAG
+    // (removed in #942) had a pre-existing crossover bug here; scope-resolution
+    // owns this and resolves it correctly.
     const calls = getRelationships(result, 'CALLS');
     const crossover = calls.find((c) => c.source === 'crossover' && c.target === 'create');
     expect(crossover).toBeUndefined();
@@ -2569,17 +2563,13 @@ describe('Kotlin companion vs instance cross-file dispatch (#1756 / U6)', () => 
 // Case 4 simple typeBinding `r.getAll()`) must continue to emit.
 //
 // **Empirical case-coverage observations** (probe at commit pre-U3, test
-// run 2026-05-22): in **registry-primary** mode, the existing pipeline
-// already emits zero crossover edges for the fixture shapes below even
-// without U3's filter wired at Cases 0 / 3b / 5. In **legacy DAG** mode
-// (REGISTRY_PRIMARY_KOTLIN=0), the same shapes leak crossover edges for
-// the `useChainTypeBindingCrossover` and `useValueReceiverCrossover`
-// scenarios — confirming that *some* suppression mechanism in the
-// registry-primary path is already catching them (most likely U2's
-// Case-4 filter for `l.create("nope")`, since `val l = ...` produces a
-// typeBinding routing through Case 4; the compound and chain shapes
-// are suppressed by the receiver resolver not binding to the static-
-// only def in the first place).
+// run 2026-05-22): the scope-resolution pipeline already emits zero
+// crossover edges for the fixture shapes below even without U3's filter
+// wired at Cases 0 / 3b / 5 — confirming that *some* suppression mechanism
+// is already catching them (most likely U2's Case-4 filter for
+// `l.create("nope")`, since `val l = ...` produces a typeBinding routing
+// through Case 4; the compound and chain shapes are suppressed by the
+// receiver resolver not binding to the static-only def in the first place).
 //
 // Per the remediation plan's "be honest about which paths are actually
 // exercised by tests vs which are added defensively" guidance, the
@@ -2587,10 +2577,9 @@ describe('Kotlin companion vs instance cross-file dispatch (#1756 / U6)', () => 
 // wire-ups** — they ensure the contract symmetry the JSDoc now claims
 // (filter applies to every instance-dispatch case) holds for future
 // fixture shapes that DO trigger these paths with a static-only
-// candidate. The crossover tests are registered as expected failures
-// in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.kotlin` because the
-// legacy DAG genuinely diverges on these shapes; the registry-primary
-// path's suppression is a real scope-resolver-only correctness win.
+// candidate. The legacy DAG (removed in #942) genuinely diverged on
+// these crossover shapes; scope-resolution now owns them and its
+// suppression of the spurious edge is the correct behavior.
 // ---------------------------------------------------------------------------
 
 describe('Kotlin isStaticOnly across other receiver cases (#1756 / U3)', () => {

@@ -59,12 +59,6 @@ export {
   createFieldRegistry,
 } from './field-registry.js';
 
-// MRO-aware method resolution (C3, first-wins, leftmost-base, implements-split,
-// qualified-syntax). Pure function that depends only on the model + HeritageMap.
-// `MroStrategy` itself lives in `gitnexus-shared`; re-exported here for
-// consumers that reach model behavior through the barrel.
-export { lookupMethodByOwnerWithMRO } from './resolve.js';
-
 // Named-import types and package-dir helper. Re-exported so barrel
 // consumers don't need to reach into a specific model file.
 export {
@@ -72,16 +66,6 @@ export {
   type NamedImportMap,
   isFileInPackageDir,
 } from './resolution-context.js';
-
-// Heritage types and builder. `buildHeritageMap` + `resolveExtendsType` are
-// exported directly from `heritage-map.ts` and are not re-surfaced here to
-// keep the barrel narrow.
-export {
-  type ExtractedHeritage,
-  type HeritageMap,
-  type HeritageResolutionStrategy,
-  type HeritageStrategyLookup,
-} from './heritage-map.js';
 
 // Behavior-grouped dispatch table for SymbolTable.add() routing.
 // See registration-table.ts module JSDoc for the behavior group taxonomy

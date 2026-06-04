@@ -289,8 +289,8 @@ export function emitSwiftScopeCaptures(
   // inheritance specifiers and synthesize `@reference.inherits` captures so
   // the registry-primary path emits EXTENDS / IMPLEMENTS (mirrors C++ /
   // C# / Java). Without this, Swift inheritance edges came only from the
-  // legacy `@heritage.*` path, which the worker pipeline drops for
-  // registry-primary languages (issue #1951).
+  // legacy heritage-capture leg (removed in #942), which the worker pipeline
+  // drops for registry-primary languages (issue #1951).
   out.push(...synthesizeSwiftInheritanceReferences(tree.rootNode));
 
   return out;
@@ -301,10 +301,10 @@ export function emitSwiftScopeCaptures(
  * specifiers so the registry-primary scope-resolution path emits
  * EXTENDS / IMPLEMENTS edges (mirrors `synthesizeCsharpInheritanceReferences`
  * / `emitCppInheritanceCaptures`). Without this, Swift inheritance edges came
- * only from the legacy `@heritage.*` path, dropped for registry-primary
- * languages in the worker pipeline (issue #1951).
+ * only from the legacy heritage-capture leg (removed in #942), dropped for
+ * registry-primary languages in the worker pipeline (issue #1951).
  *
- * Scope matches the legacy SWIFT_QUERIES `@heritage` blocks exactly: a
+ * Scope matches the legacy SWIFT_QUERIES heritage blocks exactly: a
  * `class_declaration` (class / struct / enum / actor / extension all share
  * this node) or a `protocol_declaration`, each with an
  * `(inheritance_specifier inherits_from: (user_type (type_identifier)))`.

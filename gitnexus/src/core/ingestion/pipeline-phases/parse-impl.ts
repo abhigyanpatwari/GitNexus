@@ -28,25 +28,13 @@ import {
 } from '../import-processor.js';
 import { EMPTY_INDEX } from '../import-resolvers/utils.js';
 import {
-  processCalls,
-  processCallsFromExtracted,
-  processAssignmentsFromExtracted,
   processRoutesFromExtracted,
-  seedCrossFileReceiverTypes,
   buildExportedTypeMapFromGraph,
   type ExportedTypeMap,
 } from '../call-processor.js';
-import { buildHeritageMap } from '../model/heritage-map.js';
-import {
-  processHeritage,
-  processHeritageFromExtracted,
-  extractExtractedHeritageFromFiles,
-  getHeritageStrategyForLanguage,
-} from '../heritage-processor.js';
 import { createResolutionContext } from '../model/resolution-context.js';
 import { ASTCache, createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
-import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import {
@@ -56,15 +44,12 @@ import {
 } from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
-  ExtractedAssignment,
-  ExtractedCall,
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
   ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
-  FileConstructorBindings,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
 import type {
@@ -72,7 +57,6 @@ import type {
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
-import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import { extractFetchCallsFromFiles } from '../call-processor.js';
@@ -456,10 +440,6 @@ export async function runChunkedParseAndResolve(
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
-  const deferredWorkerCalls: ExtractedCall[] = [];
-  const deferredWorkerHeritage: ExtractedHeritage[] = [];
-  const deferredConstructorBindings: FileConstructorBindings[] = [];
-  const deferredAssignments: ExtractedAssignment[] = [];
   // Imports accumulated across chunks. Previously processed per-chunk
   // via `processImportsFromExtracted` inside the chunk loop, which
   // forced workers to sit idle on the main thread's extraction pass
@@ -680,10 +660,9 @@ export async function runChunkedParseAndResolve(
         }
       }
 
-      // Per-chunk extraction passes (processImportsFromExtracted,
-      // processHeritageFromExtracted, processRoutesFromExtracted,
-      // synthesizeWildcardImportBindings, seedCrossFileReceiverTypes)
-      // moved out of the chunk loop into a single end-of-loop pass below.
+      // Per-chunk extraction passes (import resolution, route resolution,
+      // wildcard-import synthesis) moved out of the chunk loop into a single
+      // end-of-loop pass below.
       // Reason: per-chunk extraction blocked the chunk loop on
       // main-thread work between worker dispatches — workers sat idle
       // and total CPU utilization plateaued at 4-5% on multi-core boxes.
@@ -696,11 +675,16 @@ export async function runChunkedParseAndResolve(
         }
         const skipFile = new Set<string>();
         const checkFile = new Set<string>();
+        // Legacy deferred-import accumulation. Imports for every known language
+        // are resolved by the scope-resolution phase (RING4-1 #942 removed the
+        // legacy resolution path), so known-language files are never accumulated
+        // here; only null-language files (no parser) would be, which never have
+        // resolvable imports — so this path is effectively inert.
         const shouldAccumulate = (filePath: string): boolean => {
           if (checkFile.has(filePath)) return true;
           if (skipFile.has(filePath)) return false;
           const lang = getLanguageFromFilename(filePath);
-          if (lang !== null && isRegistryPrimary(lang)) {
+          if (lang !== null) {
             skipFile.add(filePath);
             return false;
           }
@@ -710,25 +694,11 @@ export async function runChunkedParseAndResolve(
         for (const item of chunkWorkerData.imports) {
           if (shouldAccumulate(item.filePath)) deferredWorkerImports.push(item);
         }
-        for (const item of chunkWorkerData.calls) {
-          if (shouldAccumulate(item.filePath)) deferredWorkerCalls.push(item);
-        }
-        for (const item of chunkWorkerData.heritage) {
-          if (shouldAccumulate(item.filePath)) deferredWorkerHeritage.push(item);
-        }
-        for (const item of chunkWorkerData.constructorBindings) {
-          if (shouldAccumulate(item.filePath)) deferredConstructorBindings.push(item);
-        }
         // Aggregate worker-produced ParsedFile artifacts so scope-
         // resolution can use them as a re-extraction cache (skips its
         // own tree-sitter re-parse on warm runs).
         if (chunkWorkerData.parsedFiles?.length) {
           for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
-        }
-        if (chunkWorkerData.assignments?.length) {
-          for (const item of chunkWorkerData.assignments) {
-            if (shouldAccumulate(item.filePath)) deferredAssignments.push(item);
-          }
         }
 
         if (chunkWorkerData.fileScopeBindings?.length) {
@@ -808,29 +778,22 @@ export async function runChunkedParseAndResolve(
     }
 
     // Deferred end-of-loop extraction (moved out of the per-chunk block):
-    //   1. processImportsFromExtracted on all chunks' imports
-    //   2. synthesizeWildcardImportBindings (if any chunk had wildcards)
-    //   3. seedCrossFileReceiverTypes on deferred calls (depends on
-    //      namedImportMap populated by step 1)
-    //   4. processHeritageFromExtracted on all chunks' heritage
-    //   5. processRoutesFromExtracted on all chunks' routes
+    //   1. import resolution on all chunks' imports
+    //   2. wildcard-import binding synthesis (if any chunk had wildcards)
+    //   3. route resolution on all chunks' routes
     // Same logic as the prior per-chunk passes, just batched — resolution
     // sees the full repo graph instead of just current-and-earlier chunks.
-    // Deferred extraction band (M2 from PR #1693 review): the 4 stages below
-    // each get their own 5-10 point slice of the 70-95 range so percent
-    // advances monotonically through the (potentially long) resolution work
-    // instead of holding flat at 82. Stages that are skipped (zero-length
-    // input) leave their band as a no-op jump — the next stage still starts
-    // at its own band, preserving monotonicity.
+    // Call resolution and inheritance edges are emitted by the scope-resolution
+    // phase, not here (RING4-1 #942 removed the legacy deferred passes).
+    // Progress band: the stages below each get a slice of the 70-95 range so
+    // percent advances monotonically through the (potentially long) resolution
+    // work. Skipped stages (zero-length input) leave their band as a no-op jump.
     //   imports:  70 -> 75 (5)
-    //   heritage: 75 -> 80 (5)
     //   routes:   80 -> 85 (5)
-    //   calls:    85 -> 95 (10)
     const deferredProfile = isDeferredResolutionProfileEnabled();
     if (deferredProfile) {
       logDeferredProfile(
-        `deferred band start: imports=${deferredWorkerImports.length} heritage=${deferredWorkerHeritage.length} ` +
-          `calls=${deferredWorkerCalls.length} routes=${allExtractedRoutes.length}`,
+        `deferred band start: imports=${deferredWorkerImports.length} routes=${allExtractedRoutes.length}`,
       );
     }
     if (deferredWorkerImports.length > 0) {
@@ -878,60 +841,13 @@ export async function runChunkedParseAndResolve(
       hasSynthesized = true;
       endTimer(tWildcard, (ms) => `synthesizeWildcardImportBindings: ${ms.toFixed(0)}ms`);
     }
-    // L5 from PR #1693 review: populate `exportedTypeMap` from the in-progress
-    // graph BEFORE `seedCrossFileReceiverTypes` runs. Previously the seeding
-    // branch below was reached with `exportedTypeMap.size === 0` in the
-    // worker path (the map was only built at the post-parse block far below,
-    // AFTER the seeding branch), so the seed dead-coded itself silently and
-    // call resolution never got the cross-file receiver-type enrichment.
-    // The post-parse builder still runs as a defensive fallback on the
-    // sequential path; its `size === 0` guard means we don't pay the cost
-    // twice on the worker path.
+    // Populate `exportedTypeMap` from the in-progress graph so the post-parse
+    // enrichment pass (enrichExportedTypeMap) sees cross-file export types.
+    // Inheritance and call resolution are owned by the scope-resolution phase
+    // (RING4-1 #942 removed the legacy heritage/call-DAG deferred passes here).
     if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
       const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
       for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
-    }
-    if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0 && deferredWorkerCalls.length > 0) {
-      const { enrichedCount } = seedCrossFileReceiverTypes(
-        deferredWorkerCalls,
-        ctx.namedImportMap,
-        exportedTypeMap,
-      );
-      if (enrichedCount > 0) {
-        // Two independent gates, not else-if: when both isDev AND
-        // deferredProfile are active, BOTH lines fire — log scrapers keyed
-        // on the original "🔗 E1" emoji marker keep matching, AND operators
-        // grepping the [deferred-profile] prefix see no gap between the
-        // wildcard-synth and heritage timings.
-        if (isDev) {
-          logger.info(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (all chunks)`);
-        }
-        if (deferredProfile) {
-          logDeferredProfile(`E1: seeded ${enrichedCount} cross-file receiver types (all chunks)`);
-        }
-      }
-    }
-    if (deferredWorkerHeritage.length > 0) {
-      const tHeritage = startTimer(deferredProfile);
-      await processHeritageFromExtracted(graph, deferredWorkerHeritage, ctx, (current, total) => {
-        const ratio = total > 0 ? current / total : 1;
-        onProgress({
-          phase: 'parsing',
-          percent: 75 + Math.round(ratio * 5),
-          message: 'Resolving heritage (all chunks)...',
-          detail: `${current}/${total} records`,
-          stats: {
-            filesProcessed: filesParsedSoFar,
-            totalFiles: totalParseable,
-            nodesCreated: graph.nodeCount,
-          },
-        });
-      });
-      endTimer(
-        tHeritage,
-        (ms) =>
-          `processHeritageFromExtracted: ${ms.toFixed(0)}ms (${deferredWorkerHeritage.length} records)`,
-      );
     }
     if (allExtractedRoutes.length > 0) {
       const tRoutes = startTimer(deferredProfile);
@@ -955,85 +871,6 @@ export async function runChunkedParseAndResolve(
           `processRoutesFromExtracted: ${ms.toFixed(0)}ms (${allExtractedRoutes.length} routes)`,
       );
     }
-
-    let fullWorkerHeritageMap: ReturnType<typeof buildHeritageMap> | undefined;
-    if (deferredWorkerHeritage.length > 0) {
-      const tBuildHeritage = startTimer(deferredProfile);
-      fullWorkerHeritageMap = buildHeritageMap(
-        deferredWorkerHeritage,
-        ctx,
-        getHeritageStrategyForLanguage,
-      );
-      endTimer(tBuildHeritage, (ms) => `buildHeritageMap wall: ${ms.toFixed(0)}ms`);
-    } else if (deferredProfile) {
-      logDeferredProfile('buildHeritageMap: skipped (no heritage records)');
-    }
-    // U15 (lightweight M1): buildHeritageMap is the LAST consumer of the
-    // raw `deferredWorkerHeritage` records — processCallsFromExtracted
-    // below reads from the derived `fullWorkerHeritageMap` instead. Free
-    // the raw heritage array now so the GC can reclaim it before the
-    // (potentially long) call-resolution stage. processHeritageFromExtracted
-    // earlier was a read-only consumer (pushed to graph, didn't drain).
-    deferredWorkerHeritage.length = 0;
-
-    if (deferredWorkerCalls.length > 0) {
-      if (deferredProfile) {
-        logDeferredProfile(
-          `processCallsFromExtracted: starting (${deferredWorkerCalls.length} call sites, heritageMap=${fullWorkerHeritageMap !== undefined})`,
-        );
-      }
-      const tCalls = startTimer(deferredProfile);
-      await processCallsFromExtracted(
-        graph,
-        deferredWorkerCalls,
-        ctx,
-        (current, total) => {
-          const ratio = total > 0 ? current / total : 1;
-          onProgress({
-            phase: 'parsing',
-            // Calls is the longest deferred stage on real repos — give it the
-            // 10-point tail 85-95 so the progress bar visibly advances during
-            // call resolution instead of holding at 82 (M2).
-            percent: 85 + Math.round(ratio * 10),
-            message: 'Resolving calls (all chunks)...',
-            detail: `${current}/${total} files`,
-            stats: {
-              filesProcessed: filesParsedSoFar,
-              totalFiles: totalParseable,
-              nodesCreated: graph.nodeCount,
-            },
-          });
-        },
-        deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
-        fullWorkerHeritageMap,
-        bindingAccumulator,
-      );
-      endTimer(tCalls, (ms) => `processCallsFromExtracted: ${ms.toFixed(0)}ms total`);
-    }
-
-    if (deferredAssignments.length > 0) {
-      processAssignmentsFromExtracted(
-        graph,
-        deferredAssignments,
-        ctx,
-        deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
-        bindingAccumulator,
-      );
-    }
-    // U15 (lightweight M1): all three arrays have had their last consumer
-    // by the time we reach this point — processCallsFromExtracted drained
-    // `deferredWorkerCalls` and read `deferredConstructorBindings`;
-    // processAssignmentsFromExtracted drained `deferredAssignments` and
-    // also read `deferredConstructorBindings`. Free them now so the
-    // function-scope references die before downstream graph-build /
-    // scope-resolution starts using its own working memory. Note: arrays
-    // returned in the function result object (allFetchCalls,
-    // allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries,
-    // allParsedFiles) intentionally stay live — downstream consumers
-    // need them.
-    deferredWorkerCalls.length = 0;
-    deferredConstructorBindings.length = 0;
-    deferredAssignments.length = 0;
   } finally {
     await workerPool?.terminate();
   }
@@ -1059,8 +896,11 @@ export async function runChunkedParseAndResolve(
       synthesizeWildcardImportBindings(graph, ctx);
       hasSynthesized = true;
     }
-    const allSequentialHeritage: ExtractedHeritage[] = [];
-    const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
+    // Sequential fallback: imports are resolved per-chunk above (processImports).
+    // Calls and inheritance are emitted by the scope-resolution phase, not here
+    // (RING4-1 #942 removed the legacy call/heritage resolution passes). This
+    // loop still extracts fetch routes + ORM queries, which are language-agnostic
+    // edge sources independent of call resolution.
     for (const chunkPaths of sequentialChunkPaths) {
       const chunkContents = await readFileContents(repoPath, chunkPaths);
       const chunkFiles: Array<{ path: string; content: string }> = [];
@@ -1068,37 +908,7 @@ export async function runChunkedParseAndResolve(
         const content = chunkContents.get(p);
         if (content !== undefined) chunkFiles.push({ path: p, content });
       }
-      cachedSequentialChunkFiles.push(chunkFiles);
       astCache = createASTCache(chunkFiles.length);
-      const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
-      for (const h of sequentialHeritage) allSequentialHeritage.push(h);
-      astCache.clear();
-    }
-    const sequentialHeritageMap =
-      allSequentialHeritage.length > 0
-        ? buildHeritageMap(allSequentialHeritage, ctx, getHeritageStrategyForLanguage)
-        : undefined;
-
-    for (let chunkIdx = 0; chunkIdx < sequentialChunkPaths.length; chunkIdx++) {
-      const chunkFiles = cachedSequentialChunkFiles[chunkIdx];
-      astCache = createASTCache(chunkFiles.length);
-      const rubyHeritage = await processCalls(
-        graph,
-        chunkFiles,
-        astCache,
-        ctx,
-        undefined,
-        exportedTypeMap,
-        undefined,
-        undefined,
-        undefined,
-        sequentialHeritageMap,
-        bindingAccumulator,
-      );
-      await processHeritage(graph, chunkFiles, astCache, ctx);
-      if (rubyHeritage.length > 0) {
-        await processHeritageFromExtracted(graph, rubyHeritage, ctx);
-      }
       const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
       if (chunkFetchCalls.length > 0) {
         for (const item of chunkFetchCalls) allFetchCalls.push(item);
@@ -1107,7 +917,6 @@ export async function runChunkedParseAndResolve(
         extractORMQueriesInline(f.path, f.content, allORMQueries);
       }
       astCache.clear();
-      cachedSequentialChunkFiles[chunkIdx] = [];
     }
 
     // Log resolution cache stats
@@ -1171,9 +980,9 @@ export async function runChunkedParseAndResolve(
   // `resolutionContext` (`ctx`) returned below is a distinct object — it owns
   // the fully-populated, post-parse `importMap` / `namedImportMap` /
   // `packageMap` / `moduleAliasMap` / `model`, and never references
-  // `importCtx`. Cross-file re-resolution in cross-file-impl.ts consumes only
-  // `ctx` (via `processCalls`), so clearing the suffix index / resolveCache /
-  // normalizedFileList here cannot lose import matches downstream.
+  // `importCtx`. Downstream consumers (the scope-resolution phase, route
+  // extraction) consume only `ctx`, never `importCtx`, so clearing the suffix
+  // index / resolveCache / normalizedFileList here cannot lose import matches.
   importCtx.resolveCache.clear();
   importCtx.index = EMPTY_INDEX;
   importCtx.normalizedFileList = [];

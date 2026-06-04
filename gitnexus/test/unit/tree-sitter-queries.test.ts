@@ -50,11 +50,6 @@ describe('tree-sitter queries', () => {
       expect(TYPESCRIPT_QUERIES).toContain('call_expression');
       expect(TYPESCRIPT_QUERIES).toContain('@call');
     });
-
-    it('captures heritage (extends/implements)', () => {
-      expect(TYPESCRIPT_QUERIES).toContain('@heritage.extends');
-      expect(TYPESCRIPT_QUERIES).toContain('@heritage.implements');
-    });
   });
 
   describe('JavaScript queries', () => {
@@ -62,10 +57,6 @@ describe('tree-sitter queries', () => {
       expect(JAVASCRIPT_QUERIES).toContain('@definition.class');
       expect(JAVASCRIPT_QUERIES).toContain('@definition.function');
       expect(JAVASCRIPT_QUERIES).toContain('@definition.method');
-    });
-
-    it('captures heritage (extends)', () => {
-      expect(JAVASCRIPT_QUERIES).toContain('@heritage.extends');
     });
 
     it('does not have interface declarations', () => {
@@ -83,10 +74,6 @@ describe('tree-sitter queries', () => {
       expect(PYTHON_QUERIES).toContain('import_statement');
       expect(PYTHON_QUERIES).toContain('import_from_statement');
     });
-
-    it('captures heritage (class inheritance)', () => {
-      expect(PYTHON_QUERIES).toContain('@heritage.extends');
-    });
   });
 
   describe('Java queries', () => {
@@ -97,11 +84,6 @@ describe('tree-sitter queries', () => {
       expect(JAVA_QUERIES).toContain('@definition.method');
       expect(JAVA_QUERIES).toContain('@definition.constructor');
       expect(JAVA_QUERIES).toContain('@definition.annotation');
-    });
-
-    it('captures extends and implements heritage', () => {
-      expect(JAVA_QUERIES).toContain('@heritage.extends');
-      expect(JAVA_QUERIES).toContain('@heritage.implements');
     });
 
     it('captures method references as calls', () => {
@@ -158,10 +140,6 @@ describe('tree-sitter queries', () => {
       expect(CPP_QUERIES).toContain('@definition.template');
       expect(CPP_QUERIES).toContain('template_declaration');
     });
-
-    it('captures heritage (base class)', () => {
-      expect(CPP_QUERIES).toContain('@heritage.extends');
-    });
   });
 
   describe('C# queries', () => {
@@ -203,11 +181,6 @@ describe('tree-sitter queries', () => {
       expect(RUST_QUERIES).toContain('@definition.static');
       expect(RUST_QUERIES).toContain('@definition.macro');
     });
-
-    it('captures trait implementation heritage', () => {
-      expect(RUST_QUERIES).toContain('@heritage.trait');
-      expect(RUST_QUERIES).toContain('@heritage.class');
-    });
   });
 
   describe('PHP queries', () => {
@@ -231,12 +204,6 @@ describe('tree-sitter queries', () => {
     it('captures class properties', () => {
       expect(PHP_QUERIES).toContain('property_declaration');
       expect(PHP_QUERIES).toContain('@definition.property');
-    });
-
-    it('captures heritage (extends, implements, use trait)', () => {
-      expect(PHP_QUERIES).toContain('@heritage.extends');
-      expect(PHP_QUERIES).toContain('@heritage.implements');
-      expect(PHP_QUERIES).toContain('@heritage.trait');
     });
 
     it('captures namespace definitions', () => {
@@ -275,10 +242,6 @@ describe('tree-sitter queries', () => {
     it('captures properties', () => {
       expect(SWIFT_QUERIES).toContain('property_declaration');
       expect(SWIFT_QUERIES).toContain('@definition.property');
-    });
-
-    it('captures heritage (inheritance)', () => {
-      expect(SWIFT_QUERIES).toContain('@heritage.extends');
     });
 
     it('captures type aliases', () => {
@@ -321,10 +284,6 @@ describe('tree-sitter queries', () => {
     it('captures import statements', () => {
       expect(DART_QUERIES).toContain('@import');
       expect(DART_QUERIES).toContain('library_import');
-    });
-
-    it('captures heritage (extends, implements, with)', () => {
-      expect(DART_QUERIES).toContain('@heritage.extends');
     });
 
     it('captures direct calls and method chains', () => {

@@ -271,11 +271,12 @@ export function emitCsharpScopeCaptures(
  * Synthesize `@reference.inherits` captures from C# base lists so the
  * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
  * (mirrors C++ `emitCppInheritanceCaptures`). Without this, C# inheritance
- * edges came only from the legacy `@heritage.*` path, which is dropped for
- * registry-primary languages in the worker pipeline (issue #1951).
+ * edges came only from the legacy heritage-capture leg (removed in #942),
+ * which is dropped for registry-primary languages in the worker pipeline
+ * (issue #1951).
  *
- * Scope covers every `base_list`-bearing declaration the legacy `@heritage`
- * leg matches: `class_declaration`, `interface_declaration`,
+ * Scope covers every `base_list`-bearing declaration the legacy heritage
+ * leg matched: `class_declaration`, `interface_declaration`,
  * `record_declaration`, and `struct_declaration`. Records and structs were
  * dropped before (#1951): a `record R(...) : Base(args), IFoo` or
  * `struct S : IFoo, ns.IBar` produced no registry-primary inheritance edge
