@@ -365,6 +365,10 @@ export interface ExtractedRoute {
   isControllerClass?: boolean;
   /** Whether the method is inherited from a parent class */
   isInherited?: boolean;
+  /** Media types the route produces, taken from `produces` attribute of @RequestMapping / @*Mapping */
+  produces?: string[];
+  /** Media types the route consumes, taken from `consumes` attribute of @RequestMapping / @*Mapping */
+  consumes?: string[];
 }
 
 /** Constructor bindings keyed by filePath for cross-file type resolution */

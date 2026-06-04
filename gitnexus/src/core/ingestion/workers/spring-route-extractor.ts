@@ -132,50 +132,56 @@ function extractAnnotationPath(
 }
 
 /**
- * Extracts HTTP method from @RequestMapping annotation.
- * Returns GET by default if no method attribute.
+ * Extracts HTTP method(s) from an @RequestMapping annotation.
+ * Returns an array because `method = {RequestMethod.X, RequestMethod.Y}` is valid
+ * Java syntax and Spring fans it out to one route per element.
+ * Defaults to ['GET'] for marker annotations or when no `method` attribute is present.
  * Handles:
- *   - method = RequestMethod.POST
- *   - method = {RequestMethod.PUT} (array syntax)
+ *   - method = RequestMethod.POST                  → ['POST']
+ *   - method = {RequestMethod.PUT}                 → ['PUT']
+ *   - method = {RequestMethod.GET, RequestMethod.POST} → ['GET', 'POST']
  */
-function extractRequestMappingMethod(annotationNode: Parser.SyntaxNode): string {
+function extractRequestMappingMethod(annotationNode: Parser.SyntaxNode): string[] {
   if (annotationNode.type === 'marker_annotation') {
-    return 'GET'; // Default method
+    return ['GET']; // Default method
   }
 
   const argsList = annotationNode.childForFieldName('arguments') ?? annotationNode.children.find(c => c.type === 'annotation_argument_list');
-  if (!argsList) return 'GET';
+  if (!argsList) return ['GET'];
 
   for (const child of argsList.children) {
     if (child.type === 'element_value_pair') {
       // The key is an 'identifier' child
       const keyNode = child.children.find(c => c.type === 'identifier');
       if (keyNode && keyNode.text === 'method') {
-        // Find value after '=' (could be field_access or element_value_array_initializer)
+        // Find value after '=' (could be field_access, scoped_identifier, or element_value_array_initializer)
         const valueNode = child.children.find(c => c.type === 'field_access' || c.type === 'scoped_identifier' || c.type === 'element_value_array_initializer');
         if (valueNode) {
-          // Handle: method = RequestMethod.POST
+          // Handle: method = RequestMethod.POST → ['POST']
           if (valueNode.type === 'field_access' || valueNode.type === 'scoped_identifier') {
             const parts = valueNode.text.split('.');
             const lastPart = parts[parts.length - 1];
-            return lastPart.toUpperCase();
+            return [lastPart.toUpperCase()];
           }
-          // Handle: method = {RequestMethod.PUT} (element_value_array_initializer)
+          // Handle: method = {RequestMethod.X, ...} → ['X', ...]
+          // Collect ALL elements; do not stop at the first.
           if (valueNode.type === 'element_value_array_initializer') {
+            const methods: string[] = [];
             for (const elem of valueNode.children) {
               if (elem.type === 'field_access' || elem.type === 'scoped_identifier') {
                 const parts = elem.text.split('.');
                 const lastPart = parts[parts.length - 1];
-                return lastPart.toUpperCase();
+                methods.push(lastPart.toUpperCase());
               }
             }
+            if (methods.length > 0) return methods;
           }
         }
       }
     }
   }
 
-  return 'GET'; // Default
+  return ['GET']; // Default
 }
 
 /**
@@ -186,6 +192,82 @@ function extractRequestMappingMethod(annotationNode: Parser.SyntaxNode): string 
  * For identifiers/field_access: returns resolved value if found, otherwise the raw text.
  * For binary_expression: returns concatenated string if all parts resolve, otherwise null.
  */
+
+/**
+ * Extracts a string-or-array attribute (e.g. `produces`, `consumes`) from an annotation.
+ *
+ * Returns the array of string values:
+ * - If the annotation has an `element_value_pair` with the given `key`...
+ *   - and the value is a `string_literal`, returns `[value]`
+ *   - and the value is an `element_value_array_initializer`, returns all string
+ *     fragments inside the braces (skipping punctuation).
+ * - Otherwise returns `[]` (attribute omitted or value not a recognized form).
+ *
+ * Constant references (identifiers, field_access) are resolved against the
+ * provided `constants` map. Unresolved references are kept as their raw text.
+ */
+function extractArrayOrString(
+  annotationNode: Parser.SyntaxNode,
+  key: 'produces' | 'consumes',
+  constants: Map<string, string>,
+): string[] {
+  if (annotationNode.type === 'marker_annotation') {
+    return [];
+  }
+
+  const argsList =
+    annotationNode.childForFieldName('arguments') ??
+    annotationNode.children.find(c => c.type === 'annotation_argument_list');
+  if (!argsList) return [];
+
+  for (const child of argsList.children) {
+    if (child.type !== 'element_value_pair') continue;
+    const keyNode = child.children.find(c => c.type === 'identifier');
+    if (!keyNode || keyNode.text !== key) continue;
+
+    // The value node sits after the '=' token. Skip the key identifier (it is
+    // an `identifier` too) by starting the search from the child that follows
+    // the keyNode, then look for the first value-shaped node. Fall back to the
+    // last child for robustness against extra whitespace nodes.
+    const valueCandidates = child.children.slice(child.children.indexOf(keyNode) + 1);
+    const valueNode =
+      valueCandidates.find(
+        c => c.type === 'string_literal' || c.type === 'element_value_array_initializer' ||
+             c.type === 'identifier' || c.type === 'field_access' || c.type === 'binary_expression',
+      ) ?? valueCandidates[valueCandidates.length - 1];
+    if (!valueNode) return [];
+
+    if (valueNode.type === 'string_literal') {
+      const str = extractStringContent(valueNode);
+      return str !== null ? [str] : [];
+    }
+
+    if (valueNode.type === 'element_value_array_initializer') {
+      const out: string[] = [];
+      for (const elem of valueNode.children) {
+        if (elem.type === 'string_literal') {
+          const str = extractStringContent(elem);
+          if (str !== null) out.push(str);
+        } else if (constants && (elem.type === 'identifier' || elem.type === 'field_access' || elem.type === 'binary_expression')) {
+          const resolved = resolveStringNode(elem, constants);
+          if (resolved !== null) out.push(resolved);
+        }
+      }
+      return out;
+    }
+
+    // Single constant reference like `produces = MediaType.APPLICATION_JSON_VALUE`
+    if (constants && (valueNode.type === 'identifier' || valueNode.type === 'field_access' || valueNode.type === 'binary_expression')) {
+      const resolved = resolveStringNode(valueNode, constants);
+      if (resolved !== null) return [resolved];
+    }
+
+    return [];
+  }
+
+  return [];
+}
+
 function resolveStringNode(node: Parser.SyntaxNode, constants: Map<string, string>): string | null {
   if (!node) return null;
 
@@ -453,12 +535,87 @@ function getMethodName(methodDecl: Parser.SyntaxNode): string | null {
 }
 
 /**
+ * Builds a map of className -> class-level @RequestMapping prefix for every
+ * class/interface/enum declaration in the file. The map is used to resolve
+ * inherited prefixes when a subclass has no class-level @RequestMapping.
+ *
+ * Note: This is computed for every class in the file (not just @RestController
+ * ones) because a base class may carry a plain @Controller annotation or
+ * even no controller annotation at all but still declare a path prefix.
+ */
+function buildClassPrefixMap(
+  rootNode: Parser.SyntaxNode,
+  constants: Map<string, string>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+
+  function walk(node: Parser.SyntaxNode): void {
+    if (node.type === 'class_declaration' || node.type === 'interface_declaration' || node.type === 'enum_declaration') {
+      const name = node.childForFieldName('name')?.text ?? node.children.find(c => c.type === 'identifier')?.text;
+      if (name) {
+        const prefix = getClassRequestMappingPrefix(node, constants);
+        // Only set if there is a prefix; absence means "no class-level @RequestMapping"
+        if (prefix !== null) {
+          map.set(name, prefix);
+        }
+      }
+    }
+    for (const child of node.children) {
+      walk(child);
+    }
+  }
+
+  walk(rootNode);
+  return map;
+}
+
+/**
+ * Extracts the superclass type name from a class_declaration node.
+ * Handles the common Java `extends BaseClass` form. Returns null if the class
+ * does not extend anything (e.g. an interface, enum, or class without a parent).
+ */
+function getSuperclassName(classDecl: Parser.SyntaxNode): string | null {
+  if (classDecl.type !== 'class_declaration') return null;
+
+  // Tree-sitter Java exposes the parent class via the `superclass` field on
+  // class_declaration.
+  const superclassField = classDecl.childForFieldName('superclass');
+  if (superclassField) {
+    if (superclassField.type === 'type_identifier') {
+      return superclassField.text;
+    }
+    const inner = superclassField.children.find(c => c.type === 'type_identifier');
+    if (inner) return inner.text;
+    return superclassField.text;
+  }
+
+  // Fallback: scan children for superclass / superclass_list
+  for (const child of classDecl.children) {
+    if (child.type === 'superclass') {
+      const inner = child.children.find(c => c.type === 'type_identifier');
+      if (inner) return inner.text;
+      return child.text;
+    }
+    if (child.type === 'superclass_list') {
+      for (const sc of child.children) {
+        if (sc.type === 'type_identifier') {
+          return sc.text;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extracts routes from a single class/interface declaration.
  */
 function extractRoutesFromClass(
   classDecl: Parser.SyntaxNode,
   filePath: string,
   constants: Map<string, string>,
+  classPrefixMap: Map<string, string> = new Map(),
 ): ExtractedRoute[] {
   const routes: ExtractedRoute[] = [];
 
@@ -478,8 +635,20 @@ function extractRoutesFromClass(
     return nameNode && (nameNode.text === 'RestController' || nameNode.text === 'Controller');
   });
 
-  // Get class-level @RequestMapping prefix
-  const classPrefix = getClassRequestMappingPrefix(classDecl, constants);
+  // Get class-level @RequestMapping prefix, falling back to an inherited
+  // prefix from a superclass declared in the same file.
+  let classPrefix = getClassRequestMappingPrefix(classDecl, constants);
+  let isInheritedPrefix = false;
+  if (classPrefix === null) {
+    const superName = getSuperclassName(classDecl);
+    if (superName) {
+      const inherited = classPrefixMap.get(superName);
+      if (inherited !== undefined) {
+        classPrefix = inherited;
+        isInheritedPrefix = true;
+      }
+    }
+  }
 
   // Get class name
   const className = classDecl.childForFieldName('name')?.text ?? classDecl.children.find(c => c.type === 'identifier')?.text;
@@ -515,6 +684,8 @@ function extractRoutesFromClass(
               // Otherwise combine with class prefix as normal
               const fullRoutePath = methodPath.includes('.') ? methodPath : combinePaths(classPrefix, methodPath);
               const lineNumber = ann.startPosition.row + 1; // tree-sitter uses 0-based
+              const produces = extractArrayOrString(ann, 'produces', constants);
+              const consumes = extractArrayOrString(ann, 'consumes', constants);
 
               routes.push({
                 filePath,
@@ -526,25 +697,39 @@ function extractRoutesFromClass(
                 prefix: classPrefix,
                 lineNumber,
                 isControllerClass,
+                isInherited: isInheritedPrefix,
+                ...(produces.length > 0 ? { produces } : {}),
+                ...(consumes.length > 0 ? { consumes } : {}),
               });
             } else if (annotationName === 'RequestMapping') {
               const methodPath = extractAnnotationPath(ann, constants) ?? '';
-              const httpMethod = extractRequestMappingMethod(ann);
+              // extractRequestMappingMethod returns string[] because Spring allows
+              // `method = {RequestMethod.GET, RequestMethod.POST}` (array form),
+              // which fans out into one route per element.
+              const httpMethods = extractRequestMappingMethod(ann);
               // If methodPath looks like a raw constant reference (contains '.'), use it directly
               const fullRoutePath = methodPath.includes('.') ? methodPath : combinePaths(classPrefix, methodPath);
               const lineNumber = ann.startPosition.row + 1;
+              const produces = extractArrayOrString(ann, 'produces', constants);
+              const consumes = extractArrayOrString(ann, 'consumes', constants);
 
-              routes.push({
-                filePath,
-                httpMethod,
-                routePath: fullRoutePath,
-                controllerName: className ?? null,
-                methodName,
-                middleware: [],
-                prefix: classPrefix,
-                lineNumber,
-                isControllerClass,
-              });
+              // Fan out: one route per HTTP method (single-element array still produces one route)
+              for (const httpMethod of httpMethods) {
+                routes.push({
+                  filePath,
+                  httpMethod,
+                  routePath: fullRoutePath,
+                  controllerName: className ?? null,
+                  methodName,
+                  middleware: [],
+                  prefix: classPrefix,
+                  lineNumber,
+                  isControllerClass,
+                  isInherited: isInheritedPrefix,
+                  ...(produces.length > 0 ? { produces } : {}),
+                  ...(consumes.length > 0 ? { consumes } : {}),
+                });
+              }
             }
           }
         }
@@ -569,10 +754,15 @@ export function extractSpringRoutes(
   const routes: ExtractedRoute[] = [];
   const constantMap = constants ?? new Map<string, string>();
 
+  // Pre-pass: build className -> @RequestMapping prefix map for ALL classes
+  // in the file. This enables a subclass to inherit a class-level prefix
+  // from a same-file superclass (see WI-90).
+  const classPrefixMap = buildClassPrefixMap(tree.rootNode, constantMap);
+
   function walk(node: Parser.SyntaxNode): void {
     // Check for class_declaration, interface_declaration, enum_declaration
     if (node.type === 'class_declaration' || node.type === 'interface_declaration' || node.type === 'enum_declaration') {
-      const classRoutes = extractRoutesFromClass(node, filePath, constantMap);
+      const classRoutes = extractRoutesFromClass(node, filePath, constantMap, classPrefixMap);
       routes.push(...classRoutes);
       // Continue walking for nested classes
     }
