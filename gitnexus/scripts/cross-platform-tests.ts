@@ -33,7 +33,7 @@ const PLATFORM_LOGIC = [
   'test/unit/resolve-invocation.test.ts',
   'test/unit/platform-capabilities.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
-  'test/unit/lbug-pool-win-fts-probe.test.ts',
+  'test/unit/lbug-pool-fts-load.test.ts',
   'test/unit/repo-manager.test.ts',
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/hooks.test.ts',
