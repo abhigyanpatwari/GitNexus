@@ -187,7 +187,6 @@ export const rubyProvider = defineLanguage({
   exportChecker: rubyExportChecker,
   importResolver: createImportResolver(rubyImportConfig),
   callRouter: routeRubyCall,
-  importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(rubyCallConfig),
   resolveEnclosingOwner: rubyResolveEnclosingOwner,
   fieldExtractor: createFieldExtractor(rubyFieldConfig),

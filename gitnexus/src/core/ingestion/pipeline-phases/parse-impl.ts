@@ -3,8 +3,10 @@
  *
  * This is the core parsing engine of the ingestion pipeline. It reads
  * source files in byte-budget chunks (~20MB each), parses via worker
- * pool (or sequential fallback), resolves imports/calls/heritage per
- * chunk, and synthesizes wildcard import bindings.
+ * pool (or sequential fallback), and emits route CALLS edges. Import,
+ * call, and inheritance resolution are owned by the scope-resolution
+ * phase, not here (RING4-1 #942 removed the legacy call DAG; RING4-2 #943
+ * removed the legacy per-file import resolution + wildcard synthesis).
  *
  * Consumed by the parse phase (`parse.ts`) — the phase file handles
  * dependency wiring while the heavy implementation lives here.
@@ -177,13 +179,14 @@ export function handleWorkerStartupFailure(err: Error): never {
 /**
  * Chunked parse + resolve loop.
  *
- * Reads source in byte-budget chunks (~20MB each). For each chunk:
- * 1. Parse via worker pool (or sequential fallback)
- * 2. Resolve imports from extracted data
- * 3. Synthesize wildcard import bindings (Go/Ruby/C++/Swift/Python)
- * 4. Resolve heritage + routes per chunk; defer worker CALLS until all chunks
- *    have contributed heritage so interface-dispatch implementor map is complete
- * 5. Collect TypeEnv bindings for cross-file propagation
+ * Reads source in byte-budget chunks (~20MB each):
+ * 1. Parse each chunk via worker pool (or sequential fallback)
+ * 2. After all chunks parse, emit route CALLS edges (deferred so resolution
+ *    sees the full repo graph) and collect the exported-type map
+ * 3. Collect TypeEnv bindings for cross-file propagation
+ *
+ * Import, call, and inheritance edges are emitted by the scope-resolution
+ * phase, not here (RING4-1 #942 / RING4-2 #943 removed the legacy passes).
  */
 export async function runChunkedParseAndResolve(
   graph: KnowledgeGraph,
@@ -628,15 +631,16 @@ export async function runChunkedParseAndResolve(
         }
       }
 
-      // Per-chunk extraction passes (import resolution, route resolution,
-      // wildcard-import synthesis) moved out of the chunk loop into a single
-      // end-of-loop pass below.
+      // Route resolution is moved out of the chunk loop into a single
+      // end-of-loop pass below. (Import resolution and wildcard synthesis
+      // used to run here too; they were removed in RING4-2 #943 — IMPORTS
+      // edges now come from the scope-resolution phase.)
       // Reason: per-chunk extraction blocked the chunk loop on
       // main-thread work between worker dispatches — workers sat idle
       // and total CPU utilization plateaued at 4-5% on multi-core boxes.
-      // Deferring keeps workers busy chunk-after-chunk; resolution sees
-      // strictly-more-information (full repo graph) so cross-chunk import
-      // and heritage targets resolve at least as well as before.
+      // Deferring keeps workers busy chunk-after-chunk; route resolution
+      // sees strictly-more-information (full repo graph) so cross-chunk
+      // controller targets resolve at least as well as before.
       if (chunkWorkerData) {
         // Aggregate worker-produced ParsedFile artifacts so scope-
         // resolution can use them as a re-extraction cache (skips its

@@ -5,7 +5,6 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Rust traits:
- *   - importSemantics: 'named' (Rust has use X::{a, b})
  *   - mroStrategy: 'qualified-syntax' (Rust uses trait qualification, not MRO)
  */
 

@@ -5,7 +5,6 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Python traits:
- *   - importSemantics: 'namespace' (Python uses namespace imports, not wildcard)
  *   - mroStrategy: 'c3' (Python C3 linearization for multiple inheritance)
  */
 
@@ -123,7 +122,6 @@ export const pythonProvider = defineLanguage({
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,
   importResolver: createImportResolver(pythonImportConfig),
-  importSemantics: 'namespace',
   mroStrategy: 'c3',
   callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),

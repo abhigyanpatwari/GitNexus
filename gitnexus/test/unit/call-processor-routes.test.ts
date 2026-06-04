@@ -183,4 +183,29 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(edges).toHaveLength(1);
     expect(edges[0].targetId).toBe('method:OrderController.index#1');
   });
+
+  it('aliased / import-disambiguated controller name → no edge (RING4-2 global-resolution convergence)', async () => {
+    // An aliased import `use App\\Http\\Controllers\\OrderController as Orders;`
+    // + `[Orders::class, 'index']` yields controllerName='Orders'. The class is
+    // registered under its DECLARED name 'OrderController', so
+    // lookupClassByName('Orders') is empty → no edge. The legacy import-scoped
+    // tier resolved the alias via the routes-file `use` binding and emitted the
+    // edge; global-only resolution intentionally cannot (the per-file import map
+    // was deleted with the tiered resolver — see processRoutesFromExtracted JSDoc).
+    // This pins the documented missed-edge convergence so it can't silently change.
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ controllerName: 'Orders', methodName: 'index' })],
+      model,
+    );
+
+    expect(routeCallsEdges(graph)).toHaveLength(0);
+  });
 });

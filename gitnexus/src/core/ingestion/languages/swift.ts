@@ -3,9 +3,6 @@
  *
  * Assembles all Swift-specific ingestion capabilities into a single
  * LanguageProvider, following the Strategy pattern used by the pipeline.
- *
- * Key Swift traits:
- *   - importSemantics: 'wildcard-leaf' (Swift imports entire modules)
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -237,7 +234,6 @@ export const swiftProvider = defineLanguage({
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
   importResolver: createImportResolver(swiftImportConfig),
-  importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(swiftCallConfig),
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({

@@ -93,14 +93,27 @@ const ROUTE_EDGE_CONFIDENCE = 0.5;
  *
  * Intentional convergence (RING4-2): the legacy resolver could resolve a
  * controller at the *import-scoped* tier (0.9) by consulting the routes file's
- * named-import binding (`use App\Http\Controllers\OrderController;`). That
- * per-file import map was deleted with the tiered resolver, so all route
- * controllers now resolve by global class name at a flat {@link ROUTE_EDGE_CONFIDENCE}.
- * Two accepted consequences: (1) an imported controller's edge confidence
- * collapses 0.9 → 0.5 (the edge target is unchanged); (2) when a short class
- * name is globally ambiguous (two `OrderController`s in different namespaces),
- * the import binding used to disambiguate — without it the emitter conservatively
- * skips, matching the legacy *global*-tier ambiguity guard.
+ * named-import binding (`use App\Http\Controllers\OrderController;`, including
+ * aliased `use … as Orders;`). That per-file import map was deleted with the
+ * tiered resolver, so all route controllers now resolve by **global class
+ * name** at a flat {@link ROUTE_EDGE_CONFIDENCE}. Accepted consequences:
+ *   1. An imported controller resolving to a *unique* global class keeps its
+ *      edge (same target) but the confidence collapses 0.9 → 0.5.
+ *   2. An import-disambiguated controller whose short name is *not* globally
+ *      unique now loses its edge entirely (not just confidence): two
+ *      `OrderController`s in different namespaces → `lookupClassByName` returns
+ *      2 → the emitter skips. The legacy import-scoped tier resolved these to
+ *      the specific imported class and emitted the edge; global resolution
+ *      cannot, because the disambiguating per-file `use` map is gone. (This is
+ *      stricter than — not the same as — the legacy *global*-tier `>1 → skip`
+ *      guard, which only applied when no `use` binding existed.)
+ *   3. An aliased import (`use … as Orders; [Orders::class, 'm']`) resolves the
+ *      *alias* token as the class name; since the class is registered under its
+ *      declared name, `lookupClassByName('Orders')` is empty → no edge.
+ * All three produce only *missing* edges, never a wrong target. The patterns
+ * (multi-namespace same-short-name controllers, aliased controller imports)
+ * are uncommon, and re-disambiguating would require re-introducing the deleted
+ * per-file import map — out of scope for the registry-only resolution model.
  *
  * Confidence-threshold impact: route CALLS edges are filtered by the
  * process-trace (`MIN_TRACE_CONFIDENCE`) and large-graph community

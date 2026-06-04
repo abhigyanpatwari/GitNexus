@@ -3,7 +3,7 @@
  *
  *   - `interpretDartImport`  — `@import.source` → a whole-library
  *     `ParsedImport` (Dart `import`/`export` bring every public top-level
- *     symbol of the target into scope: `importSemantics: 'wildcard-leaf'`).
+ *     symbol of the target into scope — whole-library / wildcard-leaf semantics).
  *     `@import.heritage` markers (synthesized by `captures.ts` for
  *     `implements`/`with` clauses) become side-effect imports carrying a
  *     `__heritage__:` payload that `emitDartHeritageEdges` consumes; they
