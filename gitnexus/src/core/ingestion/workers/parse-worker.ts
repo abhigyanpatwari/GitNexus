@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { extractSpringRoutes } from './spring-route-extractor.js';
 import { extractExpressRoutes } from '../route-extractors/express.js';
+import { extractFastApiRoutes } from '../route-extractors/python.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -2851,6 +2852,14 @@ const processFileGroup = (
       const expressRoutes = extractExpressRoutes(tree, file.path);
       if (expressRoutes.length > 0) {
         result.decoratorRoutes.push(...expressRoutes);
+      }
+    }
+
+    // Extract FastAPI routes from Python files (Issues #79, #5, #78)
+    if (language === SupportedLanguages.Python) {
+      const fastApiRoutes = extractFastApiRoutes(tree, file.path);
+      if (fastApiRoutes.length > 0) {
+        result.routes.push(...fastApiRoutes);
       }
     }
   }
