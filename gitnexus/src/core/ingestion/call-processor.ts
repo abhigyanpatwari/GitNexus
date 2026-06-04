@@ -84,15 +84,84 @@ export function buildExportedTypeMapFromGraph(
 const ROUTE_EDGE_CONFIDENCE = 0.5;
 
 /**
+ * Resolve a route's controller class from its normalized dot-joined
+ * fully-qualified name (threaded by the Laravel extractor from a `use`/`::class`
+ * reference). Two strategies, in order:
+ *
+ *   1. Direct qualified lookup — works when the type registry keys the class by
+ *      its FQN (block-form namespaces, non-PHP frameworks, seeded test models).
+ *   2. PSR-4 file-path disambiguation — PHP's common statement-form namespace
+ *      (`namespace App\Http\Controllers;`) leaves the structure-phase
+ *      `qualifiedName` as the *short* class name, so the registry has no FQN
+ *      key. Instead, take the FQN's last segment as the class name, fetch the
+ *      same-short-name candidates, and pick the one whose file path's tail
+ *      matches the FQN's namespace tail (e.g. `App.Admin.OrderController` ↔
+ *      `app/Admin/OrderController.php`). Requires ≥2 trailing segments (class +
+ *      ≥1 namespace segment) and a unique winner — conservative, so a
+ *      non-PSR-4 layout falls through to short-name resolution rather than
+ *      guessing.
+ *
+ * Returns the resolved class, or `undefined` when the FQN cannot be uniquely
+ * resolved (the caller then falls back to bare short-name resolution).
+ */
+function resolveControllerByQualifiedName(
+  model: SemanticModel,
+  fqn: string,
+): SymbolDefinition | undefined {
+  const direct = model.types.lookupClassByQualifiedName(fqn);
+  if (direct.length === 1) return direct[0];
+
+  const fqnSegments = fqn.split('.');
+  const shortName = fqnSegments[fqnSegments.length - 1];
+  if (!shortName) return undefined;
+
+  const candidates = model.types.lookupClassByName(shortName);
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 0) return undefined;
+
+  let best: SymbolDefinition | undefined;
+  let bestScore = 0;
+  let tie = false;
+  for (const candidate of candidates) {
+    // Compare the FQN's namespace tail against the file path's directory tail
+    // (PSR-4: `App\Admin\OrderController` ↔ `app/Admin/OrderController.php`).
+    // Split on `/` (a path separator normalizeQualifiedName does not touch).
+    const fileBase = candidate.filePath.replace(/\.[^./]+$/, '');
+    const fileSegments = fileBase.split('/').filter((s) => s.length > 0);
+    let score = 0;
+    while (
+      score < fqnSegments.length &&
+      score < fileSegments.length &&
+      fqnSegments[fqnSegments.length - 1 - score].toLowerCase() ===
+        fileSegments[fileSegments.length - 1 - score].toLowerCase()
+    ) {
+      score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+      tie = false;
+    } else if (score === bestScore) {
+      tie = true;
+    }
+  }
+  // Need the class name + at least one namespace segment to disambiguate, and a
+  // single unambiguous winner.
+  return bestScore >= 2 && !tie ? best : undefined;
+}
+
+/**
  * Create CALLS edges from extracted framework routes (e.g. Laravel) to their
  * controller methods. Runs for all languages — independent of call resolution.
  *
  * Resolution is registry-based (RING4-2 #943 retired the tiered resolver):
- *   - Controller: **qualified-first**. When the routes file disambiguated the
- *     controller, the Laravel extractor threads `route.controllerQualifiedName`
- *     (a `use` import — incl. aliased `use … as X;` — or an inline qualified
- *     `::class`, normalized to the registry's dot-joined key shape). The emitter
- *     resolves it via `model.types.lookupClassByQualifiedName`, which picks the
+ *   - Controller: **qualified-first** (see {@link resolveControllerByQualifiedName}).
+ *     When the routes file disambiguated the controller, the Laravel extractor
+ *     threads `route.controllerQualifiedName` (a `use` import — incl. aliased
+ *     `use … as X;` — or an inline qualified `::class`, normalized to the dot-
+ *     joined key shape). The emitter resolves it by direct qualified lookup, or
+ *     by PSR-4 file-path disambiguation when PHP's statement-form namespace left
+ *     the registry keyed only by the short name — either way picking the
  *     specific class even when the short name is globally duplicated (the common
  *     admin/public `OrderController` split) or aliased. It falls back to the
  *     global short-name lookup (`lookupClassByName`), which still skips on
@@ -132,8 +201,7 @@ export const processRoutesFromExtracted = async (
     // mirroring the legacy global tier.
     let controllerDef: SymbolDefinition | undefined;
     if (route.controllerQualifiedName) {
-      const qualifiedDefs = model.types.lookupClassByQualifiedName(route.controllerQualifiedName);
-      if (qualifiedDefs.length === 1) controllerDef = qualifiedDefs[0];
+      controllerDef = resolveControllerByQualifiedName(model, route.controllerQualifiedName);
     }
     if (!controllerDef) {
       const controllerDefs = model.types.lookupClassByName(route.controllerName);
