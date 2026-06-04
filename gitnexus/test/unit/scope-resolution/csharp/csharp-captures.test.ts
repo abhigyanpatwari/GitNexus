@@ -308,6 +308,61 @@ describe('emitCsharpScopeCaptures — receiver-binding synthesis (`this` / `base
     expect(baseMatch!['@type-binding.type'].text).toBe('BaseModel');
   });
 
+  it('excludes constructor arguments from record primary-constructor base bindings', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(int id) : BaseEntity(id) { public void M() { base.Save(); } }',
+      'test.cs',
+    );
+    const baseMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'base',
+    );
+    expect(baseMatch?.['@type-binding.type'].text).toBe('BaseEntity');
+  });
+
+  it('preserves a plain record base binding', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(int id) : BaseEntity { public void M() { base.Save(); } }',
+      'test.cs',
+    );
+    const baseMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'base',
+    );
+    expect(baseMatch?.['@type-binding.type'].text).toBe('BaseEntity');
+  });
+
+  it('excludes empty constructor arguments from record primary-constructor base bindings', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(int id) : BaseEntity() { public void M() { base.Save(); } }',
+      'test.cs',
+    );
+    const baseMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'base',
+    );
+    expect(baseMatch?.['@type-binding.type'].text).toBe('BaseEntity');
+  });
+
+  it('excludes nested constructor arguments from record primary-constructor base bindings', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(int id) : BaseEntity(Create(id, 2)) { public void M() { base.Save(); } }',
+      'test.cs',
+    );
+    const baseMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'base',
+    );
+    expect(baseMatch?.['@type-binding.type'].text).toBe('BaseEntity');
+  });
+
+  it('preserves qualified generic record primary-constructor base types without arguments', () => {
+    const matches = emitCsharpScopeCaptures(
+      'record User(int id) : App.BaseEntity<int>(id) { public void M() { base.Save(); } }',
+      'test.cs',
+    );
+    const baseMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'base',
+    );
+    expect(baseMatch?.['@type-binding.type'].text).toBe('App.BaseEntity<int>');
+  });
+
   it('does not emit `this` or `base` for static methods', () => {
     const matches = emitCsharpScopeCaptures('class User { public static void M() { } }', 'test.cs');
     const receiverMatches = matches.filter((m) => '@type-binding.self' in m);

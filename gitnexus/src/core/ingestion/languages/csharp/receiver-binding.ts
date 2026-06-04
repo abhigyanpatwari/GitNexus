@@ -49,18 +49,22 @@ function typeName(typeNode: SyntaxNode): string | null {
   return typeNode.childForFieldName('name')?.text ?? null;
 }
 
-/** First entry in the type's `base_list`, read as raw text. C# allows
- *  generic and qualified bases (`Foo<T>`, `N.M.Base`); we keep the raw
- *  form so downstream interpret layer can strip generics/qualifiers
- *  the same way as other type-binding captures. Returns null when the
- *  type has no base (or an empty base_list). */
+/** First entry in the type's `base_list`, read as raw type text. C#
+ *  allows generic and qualified bases (`Foo<T>`, `N.M.Base`); we keep
+ *  that form so downstream interpretation can strip generics and
+ *  qualifiers consistently. A record primary-constructor base wraps
+ *  its type and constructor arguments in `primary_constructor_base_type`,
+ *  so read its `type` field instead of leaking `(args)` into the binding.
+ *  Returns null when the type has no base (or an empty base_list). */
 function firstBaseText(typeNode: SyntaxNode): string | null {
   for (let i = 0; i < typeNode.namedChildCount; i++) {
     const child = typeNode.namedChild(i);
     if (child === null || child.type !== 'base_list') continue;
     const firstBase = child.namedChild(0);
     if (firstBase === null) return null;
-    return firstBase.text;
+    return firstBase.type === 'primary_constructor_base_type'
+      ? (firstBase.childForFieldName('type')?.text ?? firstBase.text)
+      : firstBase.text;
   }
   return null;
 }

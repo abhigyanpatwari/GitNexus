@@ -489,7 +489,7 @@
   },
   "csharp-qualified-base/src/Shapes.cs": {
     "captureGroups": 38,
-    "digest": "9f7730c2579cff867f929efc8ad9e314f847b7e020174282c7c104339ad5b610"
+    "digest": "eb485282a87a35dac553701e6560d26b4e01f585fa36ded4576bbce00c8c163a"
   },
   "csharp-qualified-types/Data/User.cs": {
     "captureGroups": 7,
@@ -512,12 +512,12 @@
     "digest": "4f0c929c82e56f41e5b3b4c0aefee2121d7a307ef24535ac998fd7041d0e025b"
   },
   "csharp-record-base/src/Models/BaseEntity.cs": {
-    "captureGroups": 7,
-    "digest": "e7da2e190dad718eeaa22dad011740fd2086eb2f86331d887e47cd9c5092003c"
+    "captureGroups": 8,
+    "digest": "1ed96b53bfd3a0ed13a7931e82b0b47f4c4acfc23d23f04d4053c7ad994cf9f9"
   },
   "csharp-record-base/src/Models/UserRecord.cs": {
-    "captureGroups": 10,
-    "digest": "e6276cd40438125f468adb2f193786a6e888032a3980d0d7ac586d355c40534c"
+    "captureGroups": 11,
+    "digest": "416980acf3f3df44c96c375de8cd683031e053b3d82cf1a0ea5ae66b056438b6"
   },
   "csharp-recursive-pattern/Models/Repo.cs": {
     "captureGroups": 8,
