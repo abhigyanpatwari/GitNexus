@@ -211,6 +211,10 @@
     "captureGroups": 11,
     "digest": "dfa494facc56b5e07a12befc77cd1e3788f0494f1373960cd9fe88715750e590"
   },
+  "ruby-nested-mixin-tail-collision/app.rb": {
+    "captureGroups": 21,
+    "digest": "b42c38446b3e5307cd79eec888d5faf9d9683d79bacdd9738f64871d2a1e8bbc"
+  },
   "ruby-nested-tail-collision/nested.rb": {
     "captureGroups": 31,
     "digest": "c48ebe5516a0faf50effbad0a19fe29be70c371b50ba9d6fa6ae3f6f708b3a4e"
@@ -237,7 +241,7 @@
   },
   "ruby-qualified-base/lib/derived.rb": {
     "captureGroups": 18,
-    "digest": "8825a54a774c8c77f96315413f632fda626f35d705d8fe697cd362f7acf77a8a"
+    "digest": "a53ab5401694f26da04b02f5be6bc1ba6a292ca93eb16e2df6089e15c60dfba5"
   },
   "ruby-qualified-base/lib/outer.rb": {
     "captureGroups": 18,

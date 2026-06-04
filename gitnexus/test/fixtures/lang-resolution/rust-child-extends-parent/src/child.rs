@@ -3,7 +3,7 @@ use crate::parent::Parent;
 pub struct Child;
 
 impl Child {
-    // Direct impl method — MUST resolve via resolveMemberCall owner-scoped path.
+    // Direct impl method — MUST resolve via the owner-scoped resolution path.
     pub fn own_method(&self) -> &str {
         "child-own"
     }

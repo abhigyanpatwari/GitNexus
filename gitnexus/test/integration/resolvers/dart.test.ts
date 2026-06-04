@@ -6,7 +6,7 @@
  * All Dart pipeline features are covered: Property nodes, HAS_PROPERTY edges,
  * CALLS chain resolution, IMPORTS, call attribution, and ACCESSES field reads.
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -15,7 +15,6 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
 import {
@@ -37,12 +36,6 @@ if (dartAvailable) {
     dartAvailable = false;
   }
 }
-
-// Parity-aware `it`: tests whose names are registered in
-// LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES['dart'] (registry-primary-only
-// correctness wins) are skipped under REGISTRY_PRIMARY_DART=0 and asserted
-// under =1, keeping the dual-mode parity gate green.
-const it = createResolverParityIt('dart');
 
 // ── Phase 8: Field-type resolution ──────────────────────────────────────
 
@@ -483,7 +476,7 @@ describe.skipIf(!dartAvailable)('Dart interface dispatch (METHOD_IMPLEMENTS)', (
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Dart first-wins
+// SM-9/SM-10: inherited method resolution — Dart first-wins inheritance walk
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!dartAvailable)(
@@ -615,9 +608,10 @@ describe.skipIf(!dartAvailable)('Dart implicit-constructor construction', () => 
 
 // ---------------------------------------------------------------------------
 // F24 (issue #1926): member calls (obj.method()) in return / list-literal /
-// named-argument / arrow-body contexts. The legacy DAG only captures member
-// calls under expression_statement / initialized_variable_definition, so these
-// are registry-primary-only wins (registered in LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES).
+// named-argument / arrow-body contexts. The legacy DAG (removed in #942) only
+// captured member calls under expression_statement /
+// initialized_variable_definition; scope-resolution now owns and resolves these
+// broader contexts.
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!dartAvailable)('Dart member-call contexts (F24)', () => {

@@ -2,14 +2,8 @@
  * Java `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
  * the generic `runScopeResolution` orchestrator (RFC #909 Ring 3).
  *
- * ## Registry-primary parity status
- *
- * Java is in `MIGRATED_LANGUAGES` — the scope-resolution registry is
- * the primary call-resolution path.  Parity: 178/178 (100%).
- *
- * **CI visibility:** The parity CI workflow (`ci-scope-parity.yml`)
- * runs Java tests in both `REGISTRY_PRIMARY_JAVA=0` and `=1` modes
- * automatically.
+ * Java resolves via the scope-resolution registry — the sole
+ * call-resolution path.
  */
 
 import type { ParsedFile, TypeRef } from 'gitnexus-shared';

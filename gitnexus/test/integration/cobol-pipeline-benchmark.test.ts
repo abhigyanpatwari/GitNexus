@@ -7,10 +7,9 @@
  *
  * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/cobol-pipeline-benchmark.test.ts
  *
- * Results are identical under both REGISTRY_PRIMARY_COBOL modes because
- * cobolPhase runs in both modes. Under =1, scope-resolution is skipped for
- * COBOL (standalone guard at phase.ts:164), so node/edge counts come entirely
- * from the legacy cobolPhase.
+ * COBOL is wired as a standalone provider, so the scope-resolution phase is
+ * skipped for it (standalone guard in phase.ts) and node/edge counts come
+ * entirely from cobolPhase.
  *
  * IMPORTANT — this benchmark measures scaling in FILE COUNT, so per-file work
  * must stay constant as fileCount grows. Each program therefore COPYs a fixed

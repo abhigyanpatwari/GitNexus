@@ -206,7 +206,8 @@ describe('HTTP embedding backend', () => {
     it('excludes API key from error messages', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
-      process.env.GITNEXUS_EMBEDDING_API_KEY = 'secret-key-12345';
+      const redactionProbeKey = 'test-api-key-redaction-check';
+      process.env.GITNEXUS_EMBEDDING_API_KEY = redactionProbeKey;
 
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
 
@@ -214,7 +215,7 @@ describe('HTTP embedding backend', () => {
       try {
         await embedText('test');
       } catch (e: any) {
-        expect(e.message).not.toContain('secret-key-12345');
+        expect(e.message).not.toContain(redactionProbeKey);
         expect(e.message).not.toContain('Authorization');
       }
     });

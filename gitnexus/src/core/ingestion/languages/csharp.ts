@@ -25,7 +25,6 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { csharpVariableConfig } from '../variable-extractors/configs/csharp.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitCsharpScopeCaptures,
   interpretCsharpImport,
@@ -190,14 +189,12 @@ export const csharpProvider = defineLanguage({
   exportChecker: csharpExportChecker,
   importResolver: createImportResolver(csharpImportConfig),
   namedBindingExtractor: extractCSharpNamedBindings,
-  interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(csharpCallConfig),
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
   methodExtractor: createMethodExtractor(csharpMethodConfig),
   variableExtractor: createVariableExtractor(csharpVariableConfig),
   classExtractor: createClassExtractor(csharpClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.CSharp),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

@@ -44,6 +44,14 @@ export interface ClassExtractor {
     },
   ): ExtractedClassSymbol | null;
   extractQualifiedName(node: SyntaxNode, simpleName: string): string | null;
+  /**
+   * #1991: qualify a scope-defining node that maps to a class-like registry label
+   * (e.g. a Ruby `module` → Trait) but is NOT a typeDeclaration, so it cannot go
+   * through extract()/extractQualifiedName (which bail on non-typeDeclarations).
+   * Walks the same ancestor scopes as the node-id path. Optional — only providers
+   * that materialize such nodes implement it.
+   */
+  qualifyScopeName?(node: SyntaxNode, simpleName: string): string;
   shouldSkipClassCapture?(
     context: ClassCaptureContext & { nodeLabel: ClassLikeNodeLabel },
   ): boolean;

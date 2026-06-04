@@ -27,8 +27,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
-import { goHeritageConfig } from '../heritage-extractors/configs/go.js';
 import {
   emitGoScopeCaptures,
   goArityCompatibility,
@@ -141,7 +139,6 @@ export const goProvider = defineLanguage({
   methodExtractor: createMethodExtractor(goMethodConfig),
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
-  heritageExtractor: createHeritageExtractor(goHeritageConfig),
   builtInNames: GO_BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────

@@ -4,10 +4,8 @@
  * isolating the resolution cost from parse / heritage / pipeline
  * overhead.
  *
- * Usage: REGISTRY_PRIMARY_PYTHON=1 npx tsx scripts/bench-scope-resolution.ts
+ * Usage: npx tsx scripts/bench-scope-resolution.ts
  */
-process.env.REGISTRY_PRIMARY_PYTHON = '1';
-
 import { generateId } from '../src/lib/utils.js';
 import { createKnowledgeGraph } from '../src/core/graph/graph.js';
 import { runScopeResolution } from '../src/core/ingestion/scope-resolution/index.js';

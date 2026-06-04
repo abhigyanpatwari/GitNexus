@@ -42,7 +42,7 @@ import { getDartParser, getDartScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { DART_HERITAGE_PREFIX } from './interpret.js';
+import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 
 const FUNCTION_DECL_TAGS = [
@@ -491,7 +491,7 @@ function emitHeritageMarkers(
   for (let i = 0; i < container.namedChildCount; i++) {
     const c = container.namedChild(i);
     if (c === null || c.type !== 'type_identifier') continue;
-    const payload = `${DART_HERITAGE_PREFIX}${kind}:${c.text}:${className}`;
+    const payload = encodeMarker('heritage', [kind, c.text, className]);
     out.push({ '@import.heritage': syntheticCapture('@import.heritage', c, payload) });
   }
 }

@@ -1,4 +1,5 @@
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
+import { isHeritageMarker } from '../../utils/heritage-marker.js';
 
 // ─── interpretImport ──────────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ export function interpretRubyImport(captures: CaptureMatch): ParsedImport | null
 
   // Heritage-encoded imports (__heritage__:include:Serializable:User)
   // are stored as namespace imports so emitHeritageEdges can read them.
-  if (source.startsWith('__heritage__:') || source.startsWith('__property__:')) {
+  if (isHeritageMarker(source)) {
     const name = captures['@import.name']?.text ?? source;
     return { kind: 'namespace', localName: name, importedName: name, targetRaw: source };
   }
