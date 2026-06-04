@@ -1,12 +1,11 @@
 /**
  * Java: class extends + implements multiple interfaces + ambiguous package disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,8 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('java');
 
 // ---------------------------------------------------------------------------
 // Heritage: class extends + implements multiple interfaces

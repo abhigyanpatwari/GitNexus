@@ -2,26 +2,10 @@
  * Shared test helpers for language resolution integration tests.
  */
 import path from 'path';
-import { it as vitestIt } from 'vitest';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import type { GraphRelationship } from 'gitnexus-shared';
-
-type VitestIt = typeof vitestIt;
-
-/**
- * Returns the vitest `it` for a language's resolver integration tests.
- *
- * Historically this wrapped `it` to skip known-failing cases on the legacy
- * call-resolution DAG leg. That DAG was removed in RING4-1 (#942), so there
- * is a single (scope-resolution) resolution path and every case runs
- * unconditionally. The thin wrapper is retained so the per-language resolver
- * test files keep a stable, language-tagged entry point.
- */
-export function createResolverParityIt(_languageSlug: string): VitestIt {
-  return vitestIt;
-}
 
 export const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang-resolution');
 export const CROSS_FILE_FIXTURES = path.resolve(

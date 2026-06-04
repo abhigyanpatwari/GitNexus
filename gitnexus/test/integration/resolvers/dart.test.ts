@@ -6,7 +6,7 @@
  * All Dart pipeline features are covered: Property nodes, HAS_PROPERTY edges,
  * CALLS chain resolution, IMPORTS, call attribution, and ACCESSES field reads.
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -15,7 +15,6 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
 import {
@@ -37,12 +36,6 @@ if (dartAvailable) {
     dartAvailable = false;
   }
 }
-
-// Language-tagged `it`. The legacy dual-mode parity skip was removed with the
-// call-resolution DAG (#942); scope-resolution is now the single resolution
-// path, so every case runs unconditionally. The wrapper is retained as a
-// stable, language-tagged entry point.
-const it = createResolverParityIt('dart');
 
 // ── Phase 8: Field-type resolution ──────────────────────────────────────
 

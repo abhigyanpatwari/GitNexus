@@ -1,12 +1,11 @@
 /**
  * JavaScript: self/this resolution, parent resolution, super resolution
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,12 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-// Shadow vitest's `it` with the language-tagged runner. The legacy dual-mode
-// parity skip was removed with the call-resolution DAG (#942); scope-resolution
-// is now the single resolution path, so every case (including the issue #1358
-// singleton describes below) runs unconditionally.
-const it = createResolverParityIt('javascript');
 
 // ---------------------------------------------------------------------------
 // Qualified (namespaced) base (#1951): `extends ns.Base` parses as a

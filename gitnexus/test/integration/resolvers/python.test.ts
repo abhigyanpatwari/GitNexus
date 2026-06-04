@@ -1,14 +1,13 @@
 /**
  * Python: relative imports + class inheritance + ambiguous module disambiguation
  */
-import { describe, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -16,12 +15,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-// Language-tagged `it`. The legacy dual-mode parity sweep was removed with the
-// call-resolution DAG (#942); scope-resolution is now the single resolution
-// path, so this is a transparent passthrough to vitest's `it` and every case
-// runs unconditionally.
-const it = createResolverParityIt('python');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {

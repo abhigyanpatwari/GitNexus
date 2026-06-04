@@ -9,25 +9,19 @@
  *     data()/methods/computed; `this.X()` method calls.
  *   - vue-cross-file      — composable functions, class models, multi-
  *     component app with cross-file CALLS chains.
- *
- * The `createResolverParityIt` wrapper runs each test against the
- * scope-resolution path (the only resolution path).
  */
 
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
 
 const VUE_SCOPE_FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'vue-scope');
-
-const it = createResolverParityIt('vue');
 
 // ─── Composition API (`<script setup lang="ts">`) ───────────────────────────
 

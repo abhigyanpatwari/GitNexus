@@ -1,12 +1,11 @@
 /**
  * Go: package imports + cross-package calls + ambiguous struct disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,8 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('go');
 
 // ---------------------------------------------------------------------------
 // Heritage: package imports + cross-package calls (exercises PackageMap)

@@ -6,11 +6,10 @@
  * NOTE: Swift is installed as an optional dependency. These tests skip gracefully
  * if a consumer installs without optional dependencies.
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -20,8 +19,6 @@ import {
 } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-
-const it = createResolverParityIt('swift');
 
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
 
@@ -1031,10 +1028,9 @@ describe.skipIf(!swiftAvailable)(
 // WRITE edge emitted. The fix re-tags the write-LHS navigation to
 // `@reference.write.member`, so a `write` ACCESSES edge emits (for BOTH a
 // `self.field = x` receiver-bound write AND a non-self `obj.field = x`) and no
-// spurious read appears at the LHS. The genuine standalone field READs
-// (`let y = obj.field`) are a registry-primary-only correctness win — the
-// legacy DAG emits read ACCESSES only for field-access CHAINS feeding a call,
-// not standalone reads — so the read-control assertion is skip-gated.
+// spurious read appears at the LHS. Genuine standalone field READs
+// (`let y = obj.field`) — not just field-access CHAINS feeding a call — emit a
+// read ACCESSES.
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!swiftAvailable)('Swift member-write ACCESSES (read/write classification)', () => {
@@ -1083,12 +1079,9 @@ describe.skipIf(!swiftAvailable)('Swift member-write ACCESSES (read/write classi
     expect(spuriousRead).toBeUndefined();
   });
 
-  // legacy_skip: registry-primary-only. The legacy DAG emits a read ACCESSES
-  // only for a field-access CHAIN feeding a call (e.g. `user.address.save()`);
-  // a STANDALONE field read (`let current = self.balance`, `let who = acct.owner`)
-  // produces no read ACCESSES under legacy. The scope-resolver emits it via the
-  // reference-site `read` kind. Registered in helpers.ts; backporting the read
-  // edge to legacy is out of scope per the migration policy.
+  // A STANDALONE field read (`let current = self.balance`, `let who = acct.owner`)
+  // — not just a field-access CHAIN feeding a call (e.g. `user.address.save()`) —
+  // emits a read ACCESSES via the reference-site `read` kind.
   it('still emits a read ACCESSES for a genuine standalone field read (not the write LHS)', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     // readBalance: `let current = self.balance` (self read).
@@ -1121,10 +1114,6 @@ describe.skipIf(!swiftAvailable)('Swift member-write ACCESSES (read/write classi
 // the weaker lexical name fallback (`reason === 'scope-resolution: read'`).
 // Pre-fix, the `class func` read carried the instance-binding provenance like
 // `instanceCaller`; post-fix it matches `staticCaller`.
-//
-// legacy_skip: registry-primary-only — the legacy DAG cannot resolve these
-// self-property reads at all (it emits no ACCESSES for this fixture), so the
-// provenance-parity assertion is a scope-resolver-only correctness check.
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!swiftAvailable)('Swift class func receiver (no instance self-binding)', () => {
@@ -1168,11 +1157,8 @@ describe.skipIf(!swiftAvailable)('Swift class func receiver (no instance self-bi
 // Observable signal: `b.shared()` where B.shared collides with Decoy.shared, so
 // it resolves to B.shared ONLY via the second clause binding — a unique-name
 // global fallback is ambiguous. The first clause `a.m()` (unique name) resolves
-// in both legs; the second clause `b.shared()` is registry-primary-only.
-//
-// legacy_skip: registry-primary-only — legacy cannot infer the second clause's
-// type binding and the ambiguous `shared` defeats its name fallback, so
-// `b.shared()` stays unresolved under legacy.
+// directly; the second clause `b.shared()` resolves only via its type binding,
+// since the ambiguous `shared` defeats the name fallback.
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!swiftAvailable)('Swift multi-clause if-let / guard-let binding', () => {

@@ -12,14 +12,8 @@ import {
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
-
-// Registry-primary-only assertions (e.g. macro resolution, which the legacy
-// DAG does not implement) use this parity-aware `it` so they are skipped —
-// not failed — under the legacy half of the scope-parity gate.
-const rustParityIt = createResolverParityIt('rust');
 
 // ---------------------------------------------------------------------------
 // Heritage: trait implementations
@@ -2264,12 +2258,11 @@ describe('Rust same-tail generic impls with shared method name — worker path p
 // F71 — union declarations resolve as Struct nodes (issue #1934)
 //
 // A `union` is deliberately captured as a Struct-labeled node (see the
-// rationale in languages/rust/query.ts): every registry-primary resolution
-// gate includes Struct but excludes Union, so a Union-labeled node would be
-// an unresolvable orphan. These pipeline-level assertions pin BOTH that the
-// node is labeled Struct AND that it is genuinely resolvable (the union
-// literal is a real constructor) — works on the legacy + registry-primary
-// paths, so it runs under both halves of the scope-parity gate.
+// rationale in languages/rust/query.ts): every resolution gate includes
+// Struct but excludes Union, so a Union-labeled node would be an unresolvable
+// orphan. These pipeline-level assertions pin BOTH that the node is labeled
+// Struct AND that it is genuinely resolvable (the union literal is a real
+// constructor).
 // ---------------------------------------------------------------------------
 
 describe('Rust union resolution (issue #1934 F71)', () => {
@@ -2299,8 +2292,7 @@ describe('Rust union resolution (issue #1934 F71)', () => {
 // MacroRegistry to the Macro node, emitting a USES edge — NEVER a CALLS
 // edge, and NEVER binding to a same-named free function `fn greet`. Macro
 // resolution is owned by scope-resolution (the legacy DAG, removed in #942,
-// did not resolve macros); these assertions run unconditionally via the
-// language-tagged `rustParityIt`.
+// did not resolve macros).
 // ---------------------------------------------------------------------------
 
 describe('Rust macro resolution (issue #1934 F72)', () => {
@@ -2315,14 +2307,14 @@ describe('Rust macro resolution (issue #1934 F72)', () => {
     expect(getNodesByLabel(result, 'Function')).toContain('greet');
   });
 
-  rustParityIt('resolves greet!(..) as a USES edge to the Macro (not the Function)', () => {
+  it('resolves greet!(..) as a USES edge to the Macro (not the Function)', () => {
     const uses = getRelationships(result, 'USES');
     const macroUse = uses.find((e) => e.source === 'run' && e.target === 'greet');
     expect(macroUse).toBeDefined();
     expect(macroUse!.targetLabel).toBe('Macro');
   });
 
-  rustParityIt('does NOT emit a CALLS edge from the macro invocation to fn greet', () => {
+  it('does NOT emit a CALLS edge from the macro invocation to fn greet', () => {
     const calls = getRelationships(result, 'CALLS');
     // The only run -> greet CALLS edge is the genuine fn call; it must target
     // the Function, and there must be exactly one (the macro adds no CALLS).

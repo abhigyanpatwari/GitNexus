@@ -1,12 +1,11 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,8 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('csharp');
 
 // ---------------------------------------------------------------------------
 // Heritage: class + interface resolution via base_list

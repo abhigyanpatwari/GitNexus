@@ -1,12 +1,11 @@
 /**
  * PHP: PSR-4 imports, extends, implements, trait use, enums, calls + ambiguous disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,11 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-// Language-tagged `it`. The legacy dual-mode parity skip (commit af9af4a9
-// U1/U3) was removed with the call-resolution DAG (#942); scope-resolution is
-// now the single resolution path, so every case runs unconditionally.
-const it = createResolverParityIt('php');
 
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls

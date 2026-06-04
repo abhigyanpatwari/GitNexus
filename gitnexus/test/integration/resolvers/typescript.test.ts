@@ -1,13 +1,12 @@
 /**
  * TypeScript: heritage resolution + ambiguous symbol disambiguation
  */
-import { describe, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -15,12 +14,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-// Shadow vitest's `it` with the language-tagged runner. The legacy dual-mode
-// parity skip was removed with the call-resolution DAG (#942); scope-resolution
-// is now the single resolution path, so every case (including the issue #1358
-// singleton describes below) runs unconditionally.
-const it = createResolverParityIt('typescript');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
