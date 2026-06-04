@@ -54,6 +54,7 @@ const PHP_SCOPE_QUERY = `
 (interface_declaration) @scope.class
 (trait_declaration)     @scope.class
 (enum_declaration)      @scope.class
+(anonymous_class)       @scope.class
 
 (method_declaration)                        @scope.function
 (function_definition)                       @scope.function
@@ -73,6 +74,10 @@ const PHP_SCOPE_QUERY = `
 
 (enum_declaration
   name: (name) @declaration.name) @declaration.enum
+
+;; Enum case
+(enum_case
+  name: (name) @declaration.name) @declaration.const
 
 ;; ── Declarations — methods / functions / constructors ─────────────────────
 
