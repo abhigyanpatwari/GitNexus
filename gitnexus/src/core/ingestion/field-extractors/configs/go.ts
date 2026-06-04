@@ -3,6 +3,8 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { FieldExtractionConfig } from '../generic.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import type { FieldVisibility } from '../../field-types.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
  * Go field extraction config.
@@ -13,14 +15,52 @@ import { extractSimpleTypeName } from '../../type-extractors/shared.js';
  * Visibility in Go is based on the first character: uppercase = exported (public),
  * lowercase = unexported (package).
  */
+function goVisibilityForName(name: string): FieldVisibility {
+  const first = name.charAt(0);
+  return first === first.toUpperCase() && first !== first.toLowerCase() ? 'public' : 'package';
+}
+
+function extractGoFieldNames(node: SyntaxNode): string[] {
+  const names: string[] = [];
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'field_identifier') names.push(child.text);
+  }
+  return names;
+}
+
 export const goConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Go,
-  typeDeclarationNodes: ['type_declaration'],
+  typeDeclarationNodes: ['type_declaration', 'struct_type'],
   fieldNodeTypes: ['field_declaration'],
   bodyNodeTypes: ['field_declaration_list'],
   defaultVisibility: 'package',
 
+  extractOwnerName(node) {
+    if (node.type === 'struct_type') {
+      return node.parent?.type === 'type_spec'
+        ? node.parent.childForFieldName('name')?.text
+        : undefined;
+    }
+    const typeSpec = node.namedChildren.find((child) => child.type === 'type_spec');
+    return typeSpec?.childForFieldName('name')?.text;
+  },
+
+  findBodyNodes(node) {
+    if (node.type === 'struct_type') {
+      const body = node.namedChildren.find((child) => child.type === 'field_declaration_list');
+      return body ? [body] : [];
+    }
+    const typeSpec = node.namedChildren.find((child) => child.type === 'type_spec');
+    const typeNode = typeSpec?.childForFieldName('type');
+    const body = typeNode?.namedChildren.find((child) => child.type === 'field_declaration_list');
+    return body ? [body] : [];
+  },
+
   extractName(node) {
+    const firstName = extractGoFieldNames(node)[0];
+    if (firstName) return firstName;
+
     // field_declaration > name:(field_identifier)
     const name = node.childForFieldName('name');
     if (name) return name.text;
@@ -31,6 +71,8 @@ export const goConfig: FieldExtractionConfig = {
     }
     return undefined;
   },
+
+  extractNames: extractGoFieldNames,
 
   extractType(node) {
     // field_declaration > type:(type_identifier | pointer_type | ...)
@@ -52,6 +94,10 @@ export const goConfig: FieldExtractionConfig = {
       return first === first.toUpperCase() && first !== first.toLowerCase() ? 'public' : 'package';
     }
     return 'package';
+  },
+
+  extractVisibilityForName(_node, name) {
+    return goVisibilityForName(name);
   },
 
   isStatic(_node) {

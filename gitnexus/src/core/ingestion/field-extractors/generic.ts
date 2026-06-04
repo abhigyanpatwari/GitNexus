@@ -33,6 +33,10 @@ export interface FieldExtractionConfig {
   bodyNodeTypes: string[];
   /** Default visibility when no modifier is present */
   defaultVisibility: FieldVisibility;
+  /** Extract owner type name from a type declaration node. */
+  extractOwnerName?: (node: SyntaxNode) => string | undefined;
+  /** Find body nodes inside a type declaration node. */
+  findBodyNodes?: (node: SyntaxNode) => SyntaxNode[];
   /**
    * Extract field name from a field declaration node.
    * Use this for nodes that declare exactly one field.
@@ -49,6 +53,8 @@ export interface FieldExtractionConfig {
   extractType: (node: SyntaxNode) => string | undefined;
   /** Extract visibility from a field declaration node */
   extractVisibility: (node: SyntaxNode) => FieldVisibility;
+  /** Extract visibility for one field name from a multi-name declaration. */
+  extractVisibilityForName?: (node: SyntaxNode, name: string) => FieldVisibility;
   /** Check if a field is static */
   isStatic: (node: SyntaxNode) => boolean;
   /** Check if a field is readonly/final/const */
@@ -84,10 +90,9 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
     extract(node: SyntaxNode, context: FieldExtractorContext): ExtractedFields | null {
       if (!this.isTypeDeclaration(node)) return null;
 
-      const nameNode = node.childForFieldName('name');
-      if (!nameNode) return null;
+      const ownerFqn = config.extractOwnerName?.(node) ?? node.childForFieldName('name')?.text;
+      if (!ownerFqn) return null;
 
-      const ownerFqn = nameNode.text;
       const fields: FieldInfo[] = [];
 
       // Find body container(s)
@@ -110,6 +115,8 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
     // ------------------------------------------------------------------
 
     private findBodies(node: SyntaxNode): SyntaxNode[] {
+      if (config.findBodyNodes) return config.findBodyNodes(node);
+
       const result: SyntaxNode[] = [];
       // Try named 'body' field first
       const bodyField = node.childForFieldName('body');
@@ -179,7 +186,7 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       return {
         name,
         type,
-        visibility: config.extractVisibility(node),
+        visibility: config.extractVisibilityForName?.(node, name) ?? config.extractVisibility(node),
         isStatic: config.isStatic(node),
         isReadonly: config.isReadonly(node),
         sourceFile: context.filePath,

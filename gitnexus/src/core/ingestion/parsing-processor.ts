@@ -26,6 +26,7 @@ import {
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
+import type { VariableExtractorContext } from './variable-types.js';
 import type { MethodInfo } from './method-types.js';
 import {
   buildMethodProps,
@@ -397,7 +398,7 @@ function seqGetFieldInfo(
   return cached;
 }
 
-const processParsingSequential = async (
+export const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   symbolTable: SymbolTableWriter,
@@ -907,6 +908,28 @@ const processParsingSequential = async (
           }
         }
         // All 15 tree-sitter languages register a FieldExtractor — no fallback needed.
+      }
+
+      if (
+        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
+        definitionNode &&
+        provider.variableExtractor
+      ) {
+        const varCtx: VariableExtractorContext = {
+          filePath: file.path,
+          language,
+        };
+        const varInfo = provider.variableExtractor
+          .extractAll(definitionNode, varCtx)
+          .find((info) => info.name === nodeName);
+        if (varInfo) {
+          if (varInfo.type) declaredType = varInfo.type;
+          seqVisibility = varInfo.visibility;
+          seqIsStatic = varInfo.isStatic;
+          methodProps.isConst = varInfo.isConst;
+          methodProps.isMutable = varInfo.isMutable;
+          methodProps.scope = varInfo.scope;
+        }
       }
 
       // Apply field metadata to the graph node retroactively
