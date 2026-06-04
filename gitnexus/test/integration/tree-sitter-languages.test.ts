@@ -363,7 +363,6 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(names).toContain('Vec');
     });
 
-
     it('captures modules, consts, and statics', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const code = `mod utils { pub fn helper() {} }\npub const MAX: usize = 100;\nstatic INSTANCE: i32 = 0;`;
