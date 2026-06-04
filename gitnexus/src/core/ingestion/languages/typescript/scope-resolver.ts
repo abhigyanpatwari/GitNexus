@@ -187,6 +187,22 @@ const typescriptScopeResolver: ScopeResolver = {
     // Pre-index: localName -> entry for fast lookup during content scan.
     const { byLocalName } = autoImports;
 
+    // Pre-build a file -> explicit-import-targets index so the per-file
+    // lookup below is O(1) rather than scanning all import edges every iteration.
+    const explicitImportsByFile = new Map<string, Set<string>>();
+    for (const [scopeId, edges] of indexes.imports) {
+      const scope = indexes.scopeTree.getScope(scopeId);
+      if (!scope?.filePath) continue;
+      let targets = explicitImportsByFile.get(scope.filePath);
+      if (!targets) {
+        targets = new Set<string>();
+        explicitImportsByFile.set(scope.filePath, targets);
+      }
+      for (const edge of edges) {
+        if (edge.targetFile !== null) targets.add(edge.targetFile);
+      }
+    }
+
     // Regex matches bare identifier call sites: word-boundary + name + "(".
     // Excludes `new X(` (constructor calls are not free-function auto-imports).
     const CALL_RE = /(?<![.\w])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
@@ -198,26 +214,13 @@ const typescriptScopeResolver: ScopeResolver = {
       const content = ctx.fileContents.get(filePath);
       if (!content) continue;
 
-      // Collect files already brought in by an explicit import in this file.
-      const explicitImports = new Set<string>();
-      for (const [scopeId, edges] of indexes.imports) {
-        const scope = indexes.scopeTree.getScope(scopeId);
-        if (scope?.filePath !== filePath) continue;
-        for (const edge of edges) {
-          if (edge.targetFile !== null) explicitImports.add(edge.targetFile);
-        }
-      }
+      const explicitImports = explicitImportsByFile.get(filePath) ?? new Set<string>();
 
       const fileId = generateId('File', filePath);
       // Track (sourceFile) pairs already handled for this caller to avoid
       // emitting duplicate IMPORTS edges and duplicate CALLS edges per symbol.
       const emittedImports = new Set<string>();
       const emittedCalls = new Set<string>();
-
-      // Skip source files: a file cannot auto-import its own exports.
-      // Without this guard the content scanner would match each exported
-      // function's own name inside its definition body and emit a self-loop.
-      const selfPath = filePath;
 
       CALL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
@@ -230,7 +233,7 @@ const typescriptScopeResolver: ScopeResolver = {
 
         // Skip when the file already has an explicit import from this source,
         // or when the file IS the source (a file cannot auto-import itself).
-        if (explicitImports.has(sourceFile) || sourceFile === selfPath) continue;
+        if (explicitImports.has(sourceFile) || sourceFile === filePath) continue;
 
         // Emit one IMPORTS edge per (caller, sourceFile) pair.
         if (!emittedImports.has(sourceFile)) {

@@ -62,18 +62,24 @@ export interface NuxtAutoImportConfig {
  * Load the Nuxt auto-import map for `repoRoot`.
  *
  * Returns null when:
- *   - `.nuxt/imports.d.ts` does not exist (non-Nuxt project), or
- *   - the file exists but yields zero project-local entries.
+ *   - `.nuxt/imports.d.ts` does not exist (non-Nuxt project or pre-build), or
+ *   - the file exists but yields zero project-local entries and `server/utils`
+ *     is absent or empty.
+ *
+ * The `server/utils` scan is only attempted when `.nuxt/imports.d.ts` was
+ * successfully read, confirming this is an initialized Nuxt project. This
+ * avoids partial results from repos that have a `server/utils` directory but
+ * are not Nuxt projects.
  */
 export async function loadNuxtAutoImports(repoRoot: string): Promise<NuxtAutoImportConfig | null> {
   const byLocalName = new Map<string, NuxtAutoImportEntry>();
 
-  await collectImportsDts(repoRoot, byLocalName);
+  const nuxtInitialized = await collectImportsDts(repoRoot, byLocalName);
 
-  // Only attempt the server/utils scan when we confirmed this is a Nuxt project
-  // (imports.d.ts was present and populated the map, or at least the file existed).
-  const nuxtDirExists = await dirExists(path.join(repoRoot, '.nuxt'));
-  if (nuxtDirExists) {
+  // Only scan server/utils when imports.d.ts was present, confirming this is
+  // an initialized Nuxt project. Without this gate, a non-Nuxt repo with a
+  // server/utils directory would get spurious Nitro auto-import edges.
+  if (nuxtInitialized) {
     await collectNitroServerUtils(repoRoot, byLocalName);
   }
 
@@ -93,16 +99,17 @@ export async function loadNuxtAutoImports(repoRoot: string): Promise<NuxtAutoImp
  * included. Nuxt runtime paths (`#app/...`) and third-party packages are
  * intentionally skipped because they have no graph nodes in the repo.
  */
+/** Returns true when `.nuxt/imports.d.ts` was successfully read. */
 async function collectImportsDts(
   repoRoot: string,
   byLocalName: Map<string, NuxtAutoImportEntry>,
-): Promise<void> {
+): Promise<boolean> {
   const importsPath = path.join(repoRoot, '.nuxt', 'imports.d.ts');
   let content: string;
   try {
     content = await fs.readFile(importsPath, 'utf-8');
   } catch {
-    return;
+    return false;
   }
 
   const nuxtDir = path.join(repoRoot, '.nuxt');
@@ -136,6 +143,7 @@ async function collectImportsDts(
       }
     }
   }
+  return true;
 }
 
 // ---- server/utils (Nitro auto-imports) --------------------------------------
