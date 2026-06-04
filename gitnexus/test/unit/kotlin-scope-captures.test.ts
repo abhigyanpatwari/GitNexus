@@ -8,6 +8,16 @@ function captureTexts(source: string): Array<Record<string, string>> {
 }
 
 describe('Kotlin scope captures', () => {
+  it('emits required arity excluding default parameters', () => {
+    const captures = captureTexts(`
+      fun greet(name: String, greeting: String = "Hello", punctuation: String = "!") {}
+    `);
+    const declaration = captures.find((match) => match['@declaration.function'] !== undefined);
+
+    expect(declaration?.['@declaration.parameter-count']).toBe('3');
+    expect(declaration?.['@declaration.required-parameter-count']).toBe('1');
+  });
+
   it('counts trailing lambda call suffixes as call arguments', () => {
     const captures = captureTexts(`
       fun run(items: List<String>) {

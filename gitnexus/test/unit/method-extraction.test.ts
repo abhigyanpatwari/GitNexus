@@ -504,6 +504,24 @@ describeKotlin('Kotlin MethodExtractor', () => {
     });
   });
 
+  describe('default parameters', () => {
+    it('marks parameters with default expressions as optional', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(name: String, greeting: String = "Hello", punctuation: String = "!") { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        false,
+        true,
+        true,
+      ]);
+    });
+  });
+
   describe('extension functions', () => {
     it('extracts receiverType for extension functions', () => {
       const tree = parseKotlin(`
