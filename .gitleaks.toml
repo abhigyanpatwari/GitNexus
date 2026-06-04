@@ -1,7 +1,12 @@
 title = "GitNexus"
 
-# Unit tests use fake embedding API keys to assert redaction in error messages.
-# Historical commits may contain high-entropy placeholders; ignore that file.
+[extend]
+useDefault = true
+
+# Fake embedding API keys in unit tests (current probe + historical placeholder).
 [allowlist]
 description = "fake embedding API keys in http-embedder unit tests"
-paths = ['''gitnexus/test/unit/http-embedder\.test\.ts''']
+regexes = [
+  '''secret-key-12345''',
+  '''test-api-key-redaction-check''',
+]
