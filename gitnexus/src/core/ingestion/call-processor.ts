@@ -90,6 +90,27 @@ const ROUTE_EDGE_CONFIDENCE = 0.5;
  * (`Registry.lookup` equivalent) and the method within the controller's file
  * via the symbol table — replacing the retired tiered name resolver
  * (RING4-2 #943).
+ *
+ * Intentional convergence (RING4-2): the legacy resolver could resolve a
+ * controller at the *import-scoped* tier (0.9) by consulting the routes file's
+ * named-import binding (`use App\Http\Controllers\OrderController;`). That
+ * per-file import map was deleted with the tiered resolver, so all route
+ * controllers now resolve by global class name at a flat {@link ROUTE_EDGE_CONFIDENCE}.
+ * Two accepted consequences: (1) an imported controller's edge confidence
+ * collapses 0.9 → 0.5 (the edge target is unchanged); (2) when a short class
+ * name is globally ambiguous (two `OrderController`s in different namespaces),
+ * the import binding used to disambiguate — without it the emitter conservatively
+ * skips, matching the legacy *global*-tier ambiguity guard.
+ *
+ * Confidence-threshold impact: route CALLS edges are filtered by the
+ * process-trace (`MIN_TRACE_CONFIDENCE`) and large-graph community
+ * (`MIN_CONFIDENCE_LARGE`) gates, both 0.5. A *resolved* route edge lands at
+ * exactly 0.5 and still passes (`>= 0.5` / not `< 0.5`), so the 0.9 → 0.5
+ * flattening does not change its downstream treatment. The only edge that
+ * crosses the gate is the narrow imported-controller-with-unresolved-method
+ * case, whose guessed edge drops 0.9×0.8=0.72 → 0.5×0.8=0.4 and is excluded
+ * from process traces / large-graph communities — an acceptable loss for an
+ * already-heuristic edge whose target method could not be resolved.
  */
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,

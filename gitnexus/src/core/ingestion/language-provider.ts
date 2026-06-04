@@ -158,7 +158,7 @@ interface LanguageProviderConfig {
    *  - 'named': per-symbol imports (JS/TS, Java, C#, Rust, PHP, Kotlin)
    *  - 'wildcard-transitive': textual-include closure; imports chain through files (C, C++)
    *  - 'wildcard-leaf': whole-module single-hop imports; no transitive chaining (Go, Ruby, Swift, Dart)
-   *  - 'namespace': qualified namespace imports, needs moduleAliasMap (Python)
+   *  - 'namespace': qualified namespace imports (Python)
    *  - 'explicit-reexport': opt-in per-symbol re-export (scaffold; no provider uses yet)
    *  Default: 'named'. */
   readonly importSemantics?: ImportSemantics;

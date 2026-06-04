@@ -154,4 +154,26 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
       'method:OrderController.store',
     ]);
   });
+
+  it('overloaded controller method → edge targets the first-registered definition', async () => {
+    // Two same-name method definitions in the controller file (overloads).
+    // The emitter takes lookupExactAll(...)[0] — first-registered wins, parity
+    // with the legacy same-file tier which returned candidates[0]. Pins the
+    // selection policy so it can't silently drift.
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index#1', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index#2', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.index#1');
+  });
 });

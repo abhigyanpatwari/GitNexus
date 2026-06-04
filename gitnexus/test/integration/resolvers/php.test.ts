@@ -406,7 +406,7 @@ describe('PHP grouped import with alias', () => {
     expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
   });
 
-  it('resolves non-aliased User via NamedImportMap (not just the aliased Repo)', () => {
+  it('resolves non-aliased User (not just the aliased Repo)', () => {
     // Both User (non-aliased) and R→Repo (aliased) should resolve through grouped import
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');

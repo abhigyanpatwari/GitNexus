@@ -6,7 +6,6 @@
  *
  * Key Swift traits:
  *   - importSemantics: 'wildcard-leaf' (Swift imports entire modules)
- *   - implicitImportWirer: all files in the same SPM target see each other
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -20,7 +19,6 @@ import { swiftExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { swiftImportConfig } from '../import-resolvers/configs/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
-import type { SwiftPackageConfig } from '../language-config.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
@@ -40,53 +38,6 @@ import {
   swiftMergeBindings,
   swiftArityCompatibility,
 } from './swift/index.js';
-
-/**
- * Group Swift files by SPM target for implicit module visibility.
- * If SwiftPackageConfig is available, use target -> directory mappings.
- * Otherwise, group all Swift files under a single "default" target
- * (assumes a single-module Xcode project).
- */
-function groupSwiftFilesByTarget(
-  swiftFiles: string[],
-  swiftPackageConfig: SwiftPackageConfig | null,
-): Map<string, string[]> {
-  // No SPM config -> single target (common for Xcode projects)
-  if (!swiftPackageConfig || swiftPackageConfig.targets.size === 0) {
-    return new Map([['__default__', swiftFiles]]);
-  }
-
-  // Pre-convert target dirs to normalized prefix format once
-  const targets = [...swiftPackageConfig.targets.entries()].map(([name, dir]) => ({
-    name,
-    prefix: dir.replace(/\\/g, '/') + '/',
-  }));
-
-  const groups = new Map<string, string[]>();
-  const defaultGroup: string[] = [];
-
-  for (const file of swiftFiles) {
-    const normalized = file.includes('\\') ? file.replace(/\\/g, '/') : file;
-    let assigned = false;
-    for (const { name, prefix } of targets) {
-      const idx = normalized.indexOf(prefix);
-      if (idx === 0 || (idx > 0 && normalized[idx - 1] === '/')) {
-        let group = groups.get(name);
-        if (!group) {
-          group = [];
-          groups.set(name, group);
-        }
-        group.push(file);
-        assigned = true;
-        break;
-      }
-    }
-    if (!assigned) defaultGroup.push(file);
-  }
-
-  if (defaultGroup.length > 0) groups.set('__default__', defaultGroup);
-  return groups;
-}
 
 /** Swift init/deinit declarations have special names and Constructor label. */
 const swiftExtractFunctionName = (

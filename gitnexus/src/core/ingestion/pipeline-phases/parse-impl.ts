@@ -785,9 +785,8 @@ export async function runChunkedParseAndResolve(
     // Sequential fallback: calls, inheritance, and imports are emitted by the
     // scope-resolution phase, not here (RING4-1 #942 removed the legacy
     // call/heritage passes; RING4-2 #943 removed the legacy import resolution).
-    // This
-    // loop still extracts fetch routes + ORM queries, which are language-agnostic
-    // edge sources independent of call resolution.
+    // This loop still extracts fetch routes + ORM queries, which are
+    // language-agnostic edge sources independent of call resolution.
     for (const chunkPaths of sequentialChunkPaths) {
       const chunkContents = await readFileContents(repoPath, chunkPaths);
       const chunkFiles: Array<{ path: string; content: string }> = [];
