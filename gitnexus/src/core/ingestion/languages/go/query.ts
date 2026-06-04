@@ -71,14 +71,14 @@ const GO_SCOPE_QUERY = `
   parameters: (parameter_list
     (parameter_declaration
       name: (identifier) @type-binding.name
-      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type)] @type-binding.type))) @type-binding.parameter
+      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type) (channel_type) (array_type) (function_type) (interface_type) (generic_type)] @type-binding.type))) @type-binding.parameter
 
 (method_declaration
   name: (field_identifier) @_fn_name
   parameters: (parameter_list
     (parameter_declaration
       name: (identifier) @type-binding.name
-      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type)] @type-binding.type))) @type-binding.parameter
+      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type) (channel_type) (array_type) (function_type) (interface_type) (generic_type)] @type-binding.type))) @type-binding.parameter
 
 ;; Type bindings — constructor-inferred (:= T{})
 (short_var_declaration
