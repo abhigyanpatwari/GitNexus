@@ -44,6 +44,11 @@ program
       '(no-op when --index-only is also set).',
   )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--default-branch <branch>',
+    'Default branch used in the generated regression-compare example (base_ref). ' +
+      'Falls back to .gitnexusrc, then auto-detected origin/HEAD, then "main".',
+  )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-skills',
