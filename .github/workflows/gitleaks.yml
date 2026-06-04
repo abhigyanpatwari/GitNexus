@@ -38,6 +38,15 @@ jobs:
           # steps (and Gitleaks itself) don't need it for repo operations.
           persist-credentials: false
 
+      # gitleaks-action builds `base^..head` for pull_request events; both SHAs
+      # must exist locally (fork PRs and shallow checkouts otherwise fail with
+      # "unknown revision" — see gitleaks/gitleaks-action#199).
+      - name: Fetch PR refs for gitleaks range
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "${{ github.event.pull_request.head.sha }}"
+
       # No GITLEAKS_LICENSE secret is required for OSS / public-repo usage.
       # If this repo becomes private, the action will require a license key.
       - name: Gitleaks
