@@ -171,8 +171,8 @@ function buildRubyMro(
 
   // Step 4: Reorder MRO per Ruby semantics.
   // Order: prepend (reversed) → direct extends chain → include (reversed).
-  // `extend` is excluded — it belongs to singleton dispatch only (legacy
-  // `getInstanceAncestry` in heritage-map.ts explicitly drops extend entries).
+  // `extend` is excluded — it belongs to singleton dispatch only (the
+  // instance-ancestry walk drops extend entries).
   // Reversed because Ruby declaration order means last-declared wins
   // (prepend B; prepend A → B checked before A).
   for (const defId of defIdByGraphId.values()) {

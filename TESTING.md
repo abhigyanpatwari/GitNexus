@@ -74,21 +74,11 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 - **Resolver / parity** — Language-specific call-resolution tests in `test/integration/resolvers/`.
 - **E2E (web)** — Critical user paths only; prefer `data-testid` attributes for stable selectors. Tests run against real backend (`gitnexus serve`) and Vite dev server.
 
-## Scope-resolution parity
+## Scope-resolution tests
 
-Migrated languages (listed in `MIGRATED_LANGUAGES` in `src/core/ingestion/registry-primary-flag.ts`) are tested in both legacy and registry-primary modes on every PR.
+Every language resolves calls and inheritance through the scope-resolution pipeline — the legacy call-resolution DAG and the per-language `REGISTRY_PRIMARY_<LANG>` flag were removed in RING4-1 (#942). Each language's resolver test lives at `test/integration/resolvers/<slug>.test.ts` and runs once, on the single scope-resolution path, as part of the normal `tests` job (`vitest test/**/*.test.ts`).
 
-For each migrated language, CI runs the resolver test file twice:
-1. `REGISTRY_PRIMARY_<LANG>=0` — legacy DAG path
-2. `REGISTRY_PRIMARY_<LANG>=1` — registry-primary path
-
-Both must pass. Known legacy gaps are listed in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES` in `test/integration/resolvers/helpers.ts` and are automatically skipped in legacy mode.
-
-Adding a language to `MIGRATED_LANGUAGES` automatically enrolls it in parity — no workflow or config edit needed. The test file must exist at `test/integration/resolvers/<slug>.test.ts`.
-
-Run parity locally: `cd gitnexus && npm run test:parity`
-
-Run for a single language: `cd gitnexus && npx tsx scripts/run-parity.ts --language python`
+Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/registry.ts` (`SCOPE_RESOLVERS`) and add the resolver test file — no workflow or config edit needed.
 
 ## Cross-platform testing
 
