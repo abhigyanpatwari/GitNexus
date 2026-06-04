@@ -1,6 +1,6 @@
 namespace Models;
 
-public record UserRecord : BaseEntity
+public record UserRecord(int Id) : BaseEntity(Id)
 {
     public override bool Save()
     {

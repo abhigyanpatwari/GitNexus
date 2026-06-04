@@ -62,7 +62,9 @@ function firstBaseText(typeNode: SyntaxNode): string | null {
     if (child === null || child.type !== 'base_list') continue;
     const firstBase = child.namedChild(0);
     if (firstBase === null) return null;
-    return firstBase.childForFieldName('type')?.text ?? firstBase.text;
+    return firstBase.type === 'primary_constructor_base_type'
+      ? (firstBase.childForFieldName('type')?.text ?? firstBase.text)
+      : firstBase.text;
   }
   return null;
 }
