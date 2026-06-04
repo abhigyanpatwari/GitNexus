@@ -327,6 +327,49 @@ describe('extractSpringRoutes', () => {
         routePath: '/resource/{id}',
       });
     });
+
+    // WI-81: @DeleteMapping with path variable must produce method=DELETE
+    // (regression guard — the array-form fallback in #91 must not regress this path)
+    it('WI-81: @DeleteMapping("/foo/{id}") produces method=DELETE', () => {
+      const source = `
+        @RestController
+        public class FooController {
+          @DeleteMapping("/foo/{id}")
+          public void deleteFoo() { }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/FooController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0]).toMatchObject({
+        httpMethod: 'DELETE',
+        routePath: '/foo/{id}',
+        controllerName: 'FooController',
+        methodName: 'deleteFoo',
+      });
+    });
+
+    // WI-81: single-element array form is the case the user's failing repo was hitting
+    it('WI-81: @RequestMapping(method = {RequestMethod.DELETE}) array form produces method=DELETE', () => {
+      const source = `
+        @RestController
+        public class BarController {
+          @RequestMapping(value = "/bar", method = {RequestMethod.DELETE})
+          public void deleteBar() { }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/BarController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0]).toMatchObject({
+        httpMethod: 'DELETE',
+        routePath: '/bar',
+        controllerName: 'BarController',
+        methodName: 'deleteBar',
+      });
+    });
   });
 
   // ========================================
@@ -1084,6 +1127,363 @@ describe('extractSpringRoutes', () => {
       const routes = extractSpringRoutes(tree, 'ItemController.java', constants);
       expect(routes).toHaveLength(1);
       expect(routes[0].routePath).toBe('/api/users');
+    });
+  });
+
+  // ========================================
+  // 14. WI-92: produces / consumes extraction
+  // ========================================
+
+  describe('WI-92: produces/consumes attribute extraction', () => {
+    it('extracts produces and consumes from @RequestMapping string form', () => {
+      const source = `
+        @RestController
+        public class MediaTypeController {
+          @RequestMapping(value = "/x", produces = "application/json", consumes = "application/json")
+          public String x() { return "x"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/MediaTypeController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/x');
+      expect(routes[0].produces).toEqual(['application/json']);
+      expect(routes[0].consumes).toEqual(['application/json']);
+    });
+
+    it('extracts produces array form from @RequestMapping', () => {
+      const source = `
+        @RestController
+        public class ArrayProducesController {
+          @RequestMapping(value = "/y", produces = {"application/json", "application/xml"})
+          public String y() { return "y"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/ArrayProducesController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/y');
+      expect(routes[0].produces).toEqual(['application/json', 'application/xml']);
+    });
+
+    it('omits produces/consumes keys when not declared on the annotation', () => {
+      const source = `
+        @RestController
+        public class PlainController {
+          @GetMapping("/plain")
+          public String plain() { return "plain"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/PlainController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].produces).toBeUndefined();
+      expect(routes[0].consumes).toBeUndefined();
+    });
+
+    it('extracts produces and consumes from per-method @GetMapping annotations', () => {
+      const source = `
+        @RestController
+        public class GetMediaController {
+          @GetMapping(value = "/z", produces = "text/plain", consumes = "text/plain")
+          public String z() { return "z"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/GetMediaController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].httpMethod).toBe('GET');
+      expect(routes[0].produces).toEqual(['text/plain']);
+      expect(routes[0].consumes).toEqual(['text/plain']);
+    });
+  });
+
+  // ========================================
+  // 16. WI-90: inherited @RequestMapping prefix from same-file superclass
+  // ========================================
+
+  describe('WI-90: inherited class-level @RequestMapping prefix', () => {
+    it('uses superclass @RequestMapping prefix when subclass is @RestController', () => {
+      const source = `
+        @Controller
+        @RequestMapping("/api")
+        public class BaseApiController { }
+
+        @RestController
+        public class UserController extends BaseApiController {
+          @GetMapping("/users")
+          public List<User> list() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/UserController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0]).toMatchObject({
+        httpMethod: 'GET',
+        routePath: '/api/users',
+        controllerName: 'UserController',
+        methodName: 'list',
+        prefix: '/api',
+        isInherited: true,
+      });
+    });
+
+    it('uses superclass prefix when base class is plain @Controller (not @RestController)', () => {
+      const source = `
+        @Controller
+        @RequestMapping("/v1")
+        public class BaseController { }
+
+        @RestController
+        public class OrderController extends BaseController {
+          @PostMapping("/orders")
+          public Order create() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/OrderController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/v1/orders');
+      expect(routes[0].prefix).toBe('/v1');
+      expect(routes[0].isInherited).toBe(true);
+    });
+
+    it('uses superclass prefix with @RequestMapping method (not just HTTP-method annotations)', () => {
+      const source = `
+        @Controller
+        @RequestMapping("/api/v2")
+        public class BaseController { }
+
+        @RestController
+        public class ThingController extends BaseController {
+          @RequestMapping(value = "/things", method = RequestMethod.GET)
+          public Thing get() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/ThingController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/api/v2/things');
+      expect(routes[0].prefix).toBe('/api/v2');
+      expect(routes[0].isInherited).toBe(true);
+    });
+
+    it('does not set isInherited when subclass has its own class-level @RequestMapping', () => {
+      const source = `
+        @Controller
+        @RequestMapping("/api")
+        public class BaseApiController { }
+
+        @RestController
+        @RequestMapping("/v2")
+        public class UserController extends BaseApiController {
+          @GetMapping("/users")
+          public List<User> list() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/UserController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/v2/users');
+      expect(routes[0].prefix).toBe('/v2');
+      expect(routes[0].isInherited).toBe(false);
+    });
+
+    it('does not set isInherited when superclass has no @RequestMapping', () => {
+      const source = `
+        public class PlainBase { }
+
+        @RestController
+        public class UserController extends PlainBase {
+          @GetMapping("/users")
+          public List<User> list() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/UserController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/users');
+      expect(routes[0].prefix).toBeNull();
+      expect(routes[0].isInherited).toBe(false);
+    });
+
+    it('does not affect routes on a controller that does not extend anything', () => {
+      const source = `
+        @RestController
+        public class StandaloneController {
+          @GetMapping("/items")
+          public List<Item> list() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/StandaloneController.java');
+
+      expect(routes).toHaveLength(1);
+      expect(routes[0].routePath).toBe('/items');
+      expect(routes[0].prefix).toBeNull();
+      expect(routes[0].isInherited).toBe(false);
+    });
+
+    it('emits no route for the base class itself (it is not a controller with mapped methods)', () => {
+      const source = `
+        @Controller
+        @RequestMapping("/api")
+        public class BaseApiController { }
+
+        @RestController
+        public class UserController extends BaseApiController {
+          @GetMapping("/users")
+          public List<User> list() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/UserController.java');
+
+      // Only one route (from UserController); BaseApiController has no mapped methods
+      expect(routes).toHaveLength(1);
+      expect(routes[0].controllerName).toBe('UserController');
+    });
+
+    // Cross-file inheritance is NOT supported by this fix; see #followup for the multi-file case.
+    // The current extractor only walks the AST of the source it is given, so a subclass
+    // that extends a base class defined in a different file has no entry for the base in
+    // `classPrefixMap`, and therefore loses its inherited prefix.
+    it('does NOT inherit prefix when superclass is defined in a different file (cross-file inheritance unsupported)', () => {
+      // Subclass only — base class lives in another file and is therefore not
+      // discoverable from the current AST walk.
+      const source = `
+        @RestController
+        public class UserController extends BaseApiController {
+          @GetMapping("/users")
+          public List<User> list() { return null; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/UserController.java');
+
+      // The route still gets extracted (the handler is concrete), but the
+      // inherited /api prefix is silently dropped because BaseApiController
+      // is not in this file's classPrefixMap.
+      expect(routes).toHaveLength(1);
+      expect(routes[0]).toMatchObject({
+        httpMethod: 'GET',
+        // routePath falls back to the method-level path only; no prefix
+        routePath: '/users',
+        controllerName: 'UserController',
+        methodName: 'list',
+      });
+      expect(routes[0].prefix).toBeNull();
+      expect(routes[0].isInherited).toBe(false);
+    });
+  });
+
+  // ========================================
+  // 17. WI-91: @RequestMapping multi-method array fan-out + @PatchMapping
+  // ========================================
+
+  describe('WI-91: @RequestMapping multi-method array fan-out', () => {
+    it('produces TWO routes from method = {RequestMethod.GET, RequestMethod.POST} (not one)', () => {
+      const source = `
+        @RestController
+        public class MultiMethodController {
+          @RequestMapping(value = "/foo", method = {RequestMethod.GET, RequestMethod.POST})
+          public String handle() { return "x"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/MultiMethodController.java');
+
+      // WI-91: must produce one route per HTTP method, not just the first
+      expect(routes).toHaveLength(2);
+
+      const methods = routes.map(r => r.httpMethod).sort();
+      expect(methods).toEqual(['GET', 'POST']);
+
+      for (const r of routes) {
+        expect(r.routePath).toBe('/foo');
+        expect(r.controllerName).toBe('MultiMethodController');
+        expect(r.methodName).toBe('handle');
+        expect(r.isControllerClass).toBe(true);
+      }
+    });
+
+    it('produces THREE routes from method = {GET, POST, PUT}', () => {
+      const source = `
+        @RestController
+        public class TripleController {
+          @RequestMapping(value = "/items", method = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT})
+          public String handle() { return "x"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/TripleController.java');
+
+      expect(routes).toHaveLength(3);
+      const methods = routes.map(r => r.httpMethod).sort();
+      expect(methods).toEqual(['GET', 'POST', 'PUT']);
+      for (const r of routes) {
+        expect(r.routePath).toBe('/items');
+      }
+    });
+
+    // Fan-out MUST propagate produces/consumes to every fanned-out route.
+    // Guards against a refactor that pushes the route object before extracting
+    // media types and therefore only attaches them to the first emitted route.
+    it('fans out produces/consumes to ALL emitted routes, not just the first', () => {
+      const source = `
+        @RestController
+        public class MediaFanOutController {
+          @RequestMapping(value = "/x", method = {RequestMethod.GET, RequestMethod.POST}, produces = "application/json")
+          public String handle() { return "x"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/MediaFanOutController.java');
+
+      expect(routes).toHaveLength(2);
+      const methods = routes.map(r => r.httpMethod).sort();
+      expect(methods).toEqual(['GET', 'POST']);
+
+      // Every fanned-out route must carry the produces attribute.
+      // A refactor that pushes the route object before extracting media
+      // types would leave produces undefined on at least one of these.
+      for (const r of routes) {
+        expect(r.routePath).toBe('/x');
+        expect(r.produces).toEqual(['application/json']);
+      }
+    });
+  });
+
+  describe('WI-91: @PatchMapping recognized', () => {
+    it('produces ONE route with method=PATCH from @PatchMapping("/bar")', () => {
+      const source = `
+        @RestController
+        public class PatchController {
+          @PatchMapping("/bar")
+          public String patch() { return "patched"; }
+        }
+      `;
+      const tree = parseJava(source);
+      const routes = extractSpringRoutes(tree, 'src/PatchController.java');
+
+      // WI-91: @PatchMapping must be recognized
+      expect(routes).toHaveLength(1);
+      expect(routes[0]).toMatchObject({
+        httpMethod: 'PATCH',
+        routePath: '/bar',
+        controllerName: 'PatchController',
+        methodName: 'patch',
+        isControllerClass: true,
+      });
     });
   });
 });
