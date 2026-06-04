@@ -16,7 +16,9 @@ describe('Go receiver binding', () => {
     const result = synthesizeGoReceiverBinding(methodNode as any)!;
     expect(result['@type-binding.self']).toBeDefined();
     expect(result['@type-binding.name']!.text).toBe('u');
-    expect(result['@type-binding.type']!.text).toBe('User');
+    expect(result['@type-binding.type']!.text).toBe('*User');
+    const parsed = interpretGoTypeBinding(result);
+    expect(parsed?.rawTypeName).toBe('*User');
   });
 
   it('returns null for free function', () => {
@@ -67,6 +69,49 @@ describe('Go type binding synthesis — 7 patterns', () => {
     expect(qMatch).toBeDefined();
   });
 
+  it('prefers concrete RHS composite literal type for explicit interface var declarations', () => {
+    const src = `package main
+type Repository interface{ Save(User) error }
+type User struct{}
+type SqlRepository struct{}
+func main() {
+  var repo Repository = SqlRepository{}
+  _ = repo
+}`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    const concreteMatch = matches.find(
+      (m) =>
+        m['@type-binding.constructor'] !== undefined &&
+        m['@type-binding.name']?.text === 'repo' &&
+        m['@type-binding.type']?.text === 'SqlRepository',
+    );
+    expect(concreteMatch).toBeDefined();
+  });
+
+  it('supplements generic type constructor: Box[User]{}', () => {
+    const src = `package main
+type User struct{}
+type Box[T any] struct{}
+func main() {
+  b := Box[User]{}
+  p := &Box[User]{}
+}`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    const constructorRefs = matches
+      .filter((m) => m['@reference.call.constructor'])
+      .map((m) => m['@reference.name']?.text);
+    const constructorBindings = matches
+      .filter((m) => m['@type-binding.constructor'])
+      .map((m) => ({
+        name: m['@type-binding.name']?.text,
+        type: m['@type-binding.type']?.text,
+      }));
+
+    expect(constructorRefs).toEqual(['Box', 'Box']);
+    expect(constructorBindings).toContainEqual({ name: 'b', type: 'Box' });
+    expect(constructorBindings).toContainEqual({ name: 'p', type: 'Box' });
+  });
+
   it('keeps multi-assignment constructor bindings aligned with RHS positions', () => {
     const src = 'package main\nfunc main() {\n  a, b := 42, X{}\n}';
     const bindings = emitGoScopeCaptures(src, 'main.go')
@@ -105,11 +150,89 @@ describe('Go type binding synthesis — 7 patterns', () => {
   it('normalizes pointer, slice, map, qualified, generic type names', () => {
     expect(normalizeGoTypeName('*User')).toBe('User');
     expect(normalizeGoTypeName('[]string')).toBe('string');
+    expect(normalizeGoTypeName('[]*User')).toBe('User');
+    expect(normalizeGoTypeName('[3]User')).toBe('User');
+    expect(normalizeGoTypeName('[3]*User')).toBe('User');
     expect(normalizeGoTypeName('map[string]int')).toBe('int');
     expect(normalizeGoTypeName('chan int')).toBe('int');
     expect(normalizeGoTypeName('func() error')).toBe('error');
     expect(normalizeGoTypeName('models.User')).toBe('User');
     expect(normalizeGoTypeName('List[User]')).toBe('List');
+  });
+
+  it('captures and normalizes fixed-array parameter type bindings', () => {
+    const src = 'package main\ntype User struct{}\nfunc Save(xs [3]User) {}';
+    const binding = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@type-binding.parameter'] && m['@type-binding.name']?.text === 'xs',
+    );
+
+    expect(binding?.['@type-binding.type']?.text).toBe('[3]User');
+    const parsed = interpretGoTypeBinding(binding!);
+    expect(parsed).toEqual({
+      boundName: 'xs',
+      rawTypeName: 'User',
+      source: 'parameter-annotation',
+    });
+  });
+
+  it('captures and normalizes fixed-array return type bindings', () => {
+    const src = 'package main\ntype User struct{}\nfunc Load() [3]User { return [3]User{} }';
+    const binding = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@type-binding.return'] && m['@type-binding.name']?.text === 'Load',
+    );
+
+    expect(binding?.['@type-binding.type']?.text).toBe('[3]User');
+    const parsed = interpretGoTypeBinding(binding!);
+    expect(parsed).toEqual({
+      boundName: 'Load',
+      rawTypeName: 'User',
+      source: 'return-annotation',
+    });
+  });
+
+  it('captures and normalizes generic and channel parameter type bindings', () => {
+    const src = `package main
+type User struct{}
+type Box[T any] struct{}
+func Process(b Box[int], recv chan *User, send chan<- *User) {}`;
+    const parsed = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@type-binding.parameter'])
+      .map((m) => interpretGoTypeBinding(m));
+
+    expect(parsed).toContainEqual({
+      boundName: 'b',
+      rawTypeName: 'Box',
+      source: 'parameter-annotation',
+    });
+    expect(parsed).toContainEqual({
+      boundName: 'recv',
+      rawTypeName: 'User',
+      source: 'parameter-annotation',
+    });
+    expect(parsed).toContainEqual({
+      boundName: 'send',
+      rawTypeName: 'User',
+      source: 'parameter-annotation',
+    });
+  });
+
+  it('documents dormant anonymous interface and multi-return function parameter bindings', () => {
+    const src = `package main
+func Use(cb func() (int, error), v interface{ Foo() }) {}`;
+    const parsed = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@type-binding.parameter'])
+      .map((m) => interpretGoTypeBinding(m));
+
+    expect(parsed).toContainEqual({
+      boundName: 'cb',
+      rawTypeName: '(int, error)',
+      source: 'parameter-annotation',
+    });
+    expect(parsed).toContainEqual({
+      boundName: 'v',
+      rawTypeName: 'interface{ Foo() }',
+      source: 'parameter-annotation',
+    });
   });
 });
 

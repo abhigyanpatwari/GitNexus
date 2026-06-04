@@ -1,2 +1,17 @@
 * text=auto eol=lf
 .husky/* text eol=lf
+
+# Shell scripts: force LF unconditionally so devcontainer scripts
+# (e.g. anything COPYed into a Linux container) execute correctly when
+# checked out on Windows hosts with core.autocrlf=true.
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Native and binary assets shouldn't be treated as text under any
+# auto-detection or eol normalization.
+*.node binary
+*.wasm binary
+*.onnx binary
+*.so binary
+*.dll binary
+*.dylib binary

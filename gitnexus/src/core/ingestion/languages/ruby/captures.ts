@@ -1,8 +1,10 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  findChild,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
+  walkNamedTree,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { getRubyParser, getRubyScopeQuery } from './query.js';
@@ -10,6 +12,7 @@ import { recordRubyCacheHit, recordRubyCacheMiss } from './cache-stats.js';
 import { synthesizeRubyReceiverBinding, findEnclosingClassOrModule } from './receiver-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { splitQualifiedName } from '../../utils/qualified-name.js';
 
 const FUNCTION_NODE_TYPES = ['method', 'singleton_method'] as const;
 const HERITAGE_CALL_NAMES: ReadonlySet<string> = new Set(['include', 'extend', 'prepend']);
@@ -18,6 +21,34 @@ const ATTR_CALL_NAMES: ReadonlySet<string> = new Set([
   'attr_reader',
   'attr_writer',
 ]);
+
+/**
+ * Build the full `.`-joined qualified owner name for a heritage/attr call by
+ * walking ALL enclosing class/module ancestors (not just the immediate one),
+ * so a same-tail nested owner (`module Outer; class Inner`) is keyed by its
+ * full path `Outer.Inner` instead of the bare tail `Inner` — which otherwise
+ * collapses both same-tail owners onto one `__heritage__`/`__property__` marker
+ * key (last-wins) and cross-wires their mixin / attr_accessor edges (#1982).
+ * Handles the compact `class Outer::Inner` form (name is a `scope_resolution`)
+ * via the shared normalizer, so the marker owner byte-matches the resolution
+ * def's `qualifiedName`. Returns undefined when there is no enclosing class/module.
+ */
+function buildEnclosingQualifiedName(callNode: SyntaxNode): string | undefined {
+  const segments: string[] = [];
+  let current: SyntaxNode | null = callNode.parent;
+  while (current !== null) {
+    if (current.type === 'class' || current.type === 'module') {
+      const nameNode = current.childForFieldName('name');
+      if (nameNode !== null) segments.unshift(...splitQualifiedName(nameNode.text));
+    }
+    // Stop at the file root — nothing above `program` contributes a Ruby
+    // class/module scope segment (#1982 perf; avoids walking to the very top
+    // for every heritage/attr call).
+    if (current.type === 'program') break;
+    current = current.parent;
+  }
+  return segments.length > 0 ? segments.join('.') : undefined;
+}
 
 export function emitRubyScopeCaptures(
   sourceText: string,
@@ -49,17 +80,24 @@ export function emitRubyScopeCaptures(
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The query already hands us each
+    // matched node as c.node, so anchors are used directly (via nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose require/require_relative/load into import captures
     if (grouped['@import.statement'] !== undefined) {
       const anchor = grouped['@import.statement']!;
-      const callNode = findNodeAtRange(tree.rootNode, anchor.range, 'call');
+      const callNode = nodeIfType(nodeMap['@import.statement'], 'call');
       if (callNode !== null) {
         const decomposed = decomposeRubyImport(callNode, anchor);
         if (decomposed !== null) {
@@ -73,8 +111,7 @@ export function emitRubyScopeCaptures(
 
     // Synthesize self receiver bindings for methods inside class/module
     if (grouped['@scope.function'] !== undefined) {
-      const scopeCap = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, scopeCap.range);
+      const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const enclosingNode = findEnclosingClassOrModule(fnNode);
         const receiver = synthesizeRubyReceiverBinding(fnNode, enclosingNode);
@@ -86,8 +123,7 @@ export function emitRubyScopeCaptures(
 
     // Reclassify declaration.function as declaration.method + attach arity
     if (grouped['@declaration.function'] !== undefined) {
-      const anchorCap = grouped['@declaration.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchorCap.range);
+      const fnNode = nodeIfType(nodeMap['@declaration.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const enclosingNode = findEnclosingClassOrModule(fnNode);
         if (enclosingNode !== null) {
@@ -135,29 +171,31 @@ export function emitRubyScopeCaptures(
     if (grouped['@reference.call.free'] !== undefined && grouped['@reference.name'] !== undefined) {
       const callName = grouped['@reference.name']!.text;
       if (HERITAGE_CALL_NAMES.has(callName)) {
-        const callNode = findNodeAtRange(
-          tree.rootNode,
-          grouped['@reference.call.free']!.range,
-          'call',
-        );
+        const callNode = nodeIfType(nodeMap['@reference.call.free'], 'call');
         if (callNode !== null) {
-          const enclosing = findEnclosingClassOrModule(callNode);
-          const ownerName = enclosing?.childForFieldName('name')?.text;
+          const ownerName = buildEnclosingQualifiedName(callNode);
           if (ownerName) {
             const argList = callNode.childForFieldName('arguments');
             if (argList !== null) {
               for (let ai = 0; ai < argList.namedChildCount; ai++) {
                 const arg = argList.namedChild(ai);
                 if (arg !== null && (arg.type === 'constant' || arg.type === 'scope_resolution')) {
+                  // Normalize a qualified mixin arg (`Outer::Mixin`) to its dotted
+                  // form (`Outer.Mixin`) BEFORE embedding it in the ':'-delimited
+                  // __heritage__ marker: the raw `::` collides with the marker's `:`
+                  // field separator and emitRubyMixinEdges mis-splits it, dropping
+                  // the edge (#1982). The dotted form also matches the mixin def's
+                  // qualifiedName key for resolution. Simple names are unchanged.
+                  const mixinName = splitQualifiedName(arg.text).join('.');
                   out.push({
                     '@import.statement': grouped['@reference.call.free']!,
                     '@import.kind': syntheticCapture('@import.kind', callNode, 'namespace'),
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__heritage__:${callName}:${arg.text}:${ownerName}`,
+                      `__heritage__:${callName}:${mixinName}:${ownerName}`,
                     ),
-                    '@import.name': syntheticCapture('@import.name', callNode, arg.text),
+                    '@import.name': syntheticCapture('@import.name', callNode, mixinName),
                   });
                 }
               }
@@ -173,20 +211,15 @@ export function emitRubyScopeCaptures(
       // localDefs and gets reconciled into model.fields, enabling write-access
       // resolution via receiver-bound-calls (Case 4 → findOwnedMember).
       if (ATTR_CALL_NAMES.has(callName)) {
-        const callNode = findNodeAtRange(
-          tree.rootNode,
-          grouped['@reference.call.free']!.range,
-          'call',
-        );
+        const callNode = nodeIfType(nodeMap['@reference.call.free'], 'call');
         if (callNode !== null) {
-          const enclosing = findEnclosingClassOrModule(callNode);
-          const ownerName = enclosing?.childForFieldName('name')?.text;
+          const ownerName = buildEnclosingQualifiedName(callNode);
           if (ownerName) {
             const argList = callNode.childForFieldName('arguments');
             if (argList !== null) {
               for (let ai = 0; ai < argList.namedChildCount; ai++) {
                 const arg = argList.namedChild(ai);
-                if (arg !== null && (arg.type === 'simple_symbol' || arg.type === 'symbol')) {
+                if (arg !== null && arg.type === 'simple_symbol') {
                   const propName = arg.text.replace(/^:/, '');
                   out.push({
                     '@import.statement': grouped['@reference.call.free']!,
@@ -222,8 +255,7 @@ export function emitRubyScopeCaptures(
       (t) => grouped[t] !== undefined,
     );
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode = findNodeAtRange(tree.rootNode, anchor.range, 'call');
+      const callNode = nodeIfType(nodeMap[callTag], 'call');
       if (callNode !== null) {
         const arity = computeRubyCallArity(callNode);
         grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
@@ -331,7 +363,7 @@ export function emitRubyScopeCaptures(
           if (argList !== null) {
             for (let ai = 0; ai < argList.namedChildCount; ai++) {
               const arg = argList.namedChild(ai);
-              if (arg !== null && (arg.type === 'simple_symbol' || arg.type === 'symbol')) {
+              if (arg !== null && arg.type === 'simple_symbol') {
                 const propName = arg.text.replace(/^:/, '');
                 out.push({
                   '@type-binding.return': syntheticCapture('@type-binding.return', attrNode, text),
@@ -373,21 +405,37 @@ export function emitRubyScopeCaptures(
   // return-type binding `methodName → ClassName` on the method node.
   // This enables cross-file return-type propagation for factory methods
   // like `def self.get_user; User.new; end` → `get_user → User`.
+  // Keys of methods that already got a return binding from the YARD pass above,
+  // precomputed once. The previous `out.some(...)` per method was
+  // O(methods x out.length) ~ O(n^2); this makes the dedup O(1) per method.
+  // Key = `<name>:<return-binding startLine>`, matching the old AND condition.
+  //
+  // Snapshot-vs-live note (PR #1918 tri-review P3): the old `out.some` was
+  // evaluated LIVE, so it also saw constructor-return bindings this very loop
+  // pushed in earlier iterations. That made the old code suppress the 2nd of
+  // two same-named methods one source row apart whose bodies both end in
+  // `Const.new` (the 1st's pushed binding startLine == the 2nd's row via the
+  // 1-based/0-based offset below). The snapshot is built from the YARD pass
+  // only, so it no longer cross-suppresses — both bindings are emitted, which
+  // is the intended behavior (the cross-suppression was unintended). This
+  // corner is absent from fixtures, so the capture fingerprint is unchanged;
+  // ruby-captures-golden.test.ts pins it explicitly.
+  const yardReturnKeys = new Set<string>();
+  for (const m of out) {
+    const ret = m['@type-binding.return'];
+    const name = m['@type-binding.name'];
+    if (ret !== undefined && name !== undefined) {
+      yardReturnKeys.add(`${name.text}:${ret.range.startLine}`);
+    }
+  }
   for (const methodNode of [
     ...tree.rootNode.descendantsOfType('method'),
     ...tree.rootNode.descendantsOfType('singleton_method'),
   ]) {
     const methodName = methodNode.childForFieldName('name')?.text;
     if (methodName === undefined) continue;
-    // Skip if a YARD @return already created a return binding for this method
-    if (
-      out.some(
-        (m) =>
-          m['@type-binding.return'] !== undefined &&
-          m['@type-binding.name']?.text === methodName &&
-          m['@type-binding.return']?.range.startLine === methodNode.startPosition.row,
-      )
-    ) {
+    // Skip if a YARD @return already created a return binding for this method.
+    if (yardReturnKeys.has(`${methodName}:${methodNode.startPosition.row}`)) {
       continue;
     }
     const body = methodNode.childForFieldName('body');
@@ -418,7 +466,97 @@ export function emitRubyScopeCaptures(
     }
   }
 
+  // Fifth pass: superclass inheritance (`class Foo < Bar`).
+  // Emit `@reference.inherits` captures so the registry-primary scope-
+  // resolution path produces EXTENDS edges (issue #1951). This mirrors the
+  // C#/C++ inheritance synthesis: Ruby's superclass edges previously came
+  // only from the legacy `@heritage.extends` query, which the worker
+  // pipeline drops for registry-primary languages → 0 inheritance edges in
+  // worker mode. Mixins (include/extend/prepend) are NOT touched here — they
+  // flow through `emitHeritageEdges` (the `__heritage__:` import path above),
+  // an independent lane that stays intact when legacy @heritage is gated off.
+  out.push(...synthesizeRubySuperclassReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Ruby `class Foo < Bar`
+ * superclass declarations so the shared `preEmitInheritanceEdges` pass can
+ * resolve the base to a Class def and emit an EXTENDS edge.
+ *
+ * Scope is `class` nodes whose `superclass` field holds either a bare
+ * `constant` base (`class D < Super`) or a qualified/scoped
+ * `scope_resolution` base (`class C < Outer::Super`, `class E < A::B::C`) —
+ * exactly the two shapes the config-driven legacy `@heritage.extends`
+ * alternation now captures (heritage-extractors/configs/ruby.ts
+ * `rubyHeritageShapes: ['constant', 'scope_resolution']`):
+ *
+ *   (class
+ *     name: (constant) @heritage.class
+ *     superclass: (superclass
+ *       [(constant) (scope_resolution)] @heritage.extends)) @heritage
+ *
+ * Previously this pass emitted only for a direct `(constant)` child, so the
+ * production registry-primary path silently dropped `Outer::Super`
+ * superclasses while the legacy @heritage leg captured them — the exact
+ * EXTENDS/IMPLEMENTS-drop bug of #1951.
+ *
+ * THE PARITY CONTRACT: the `@reference.name` bare text must equal the legacy
+ * leg's `normalizeSupertypeName(baseNode)` reduction. For a `scope_resolution`
+ * (`Outer::Super`, `A::B::C`) the normalizer recurses into the `name:` field
+ * and returns the trailing `constant` (`Super` / `C`); this synth mirrors that
+ * by reading the same `name:` tail. A bare `constant` is unchanged
+ * (byte-identical to the prior emission). `module` nodes are excluded (no
+ * superclass field). Mixins (include/extend/prepend) are untouched — they flow
+ * through the `__heritage__:` import lane above.
+ *
+ * Edge type (EXTENDS vs IMPLEMENTS) is decided downstream from the resolved
+ * target's symbol kind — this pass only emits `@reference.inherits`.
+ */
+function synthesizeRubySuperclassReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'class') return;
+    const superclass = node.childForFieldName('superclass');
+    if (superclass === null) return;
+    const baseNode = extractRubySuperclassBaseNode(superclass);
+    if (baseNode === null) return;
+    out.push({
+      '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
+      '@reference.name': nodeToCapture('@reference.name', baseNode),
+    });
+  });
+  return out;
+}
+
+/**
+ * Reduce a Ruby `superclass` node to the bare `constant` the resolver should
+ * look up, at parity with the legacy heritage leg's
+ * `normalizeSupertypeName(baseNode)`:
+ *
+ *   - direct `(constant)` child (`class D < Super`)       → that constant
+ *     (unchanged from the original emission — kept byte-identical)
+ *   - `(scope_resolution)` child (`class C < Outer::Super`,
+ *     `class E < A::B::C`)                                → the trailing
+ *     `name:` constant (`Super` / `C`)
+ *
+ * A `scope_resolution` nests qualifier-first, name-last
+ * (`scope: (...) name: (constant)`), so the `name:` field is always the
+ * trailing simple identifier — the same tail `normalizeSupertypeName` reaches
+ * by recursing through its `name` field. Any other shape returns null (no
+ * edge), keeping this emitter at parity with the legacy alternation
+ * (`['constant', 'scope_resolution']`).
+ */
+function extractRubySuperclassBaseNode(superclass: SyntaxNode): SyntaxNode | null {
+  const directConstant = findChild(superclass, 'constant');
+  if (directConstant !== null) return directConstant;
+  const scoped = findChild(superclass, 'scope_resolution');
+  if (scoped !== null) {
+    const tail = scoped.childForFieldName('name');
+    if (tail !== null && tail.type === 'constant') return tail;
+  }
+  return null;
 }
 
 function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatch | null {
@@ -527,14 +665,6 @@ function computeRubyCallArity(callNode: SyntaxNode): number {
     if (child !== null && child.type !== 'block') count++;
   }
   return count;
-}
-
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n;
-  }
-  return null;
 }
 
 function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {

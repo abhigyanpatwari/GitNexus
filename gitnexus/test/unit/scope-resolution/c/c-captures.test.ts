@@ -120,6 +120,19 @@ describe('emitCScopeCaptures — enum declarations', () => {
     expect(names).toContain('GREEN');
     expect(names).toContain('BLUE');
   });
+
+  it('captures typedef anonymous enum with @declaration.enum (not typedef)', () => {
+    const m = findMatch('typedef enum { OFF, ON } SwitchState;', (t) =>
+      t.includes('@declaration.enum'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('SwitchState');
+
+    const typedefs = allMatches('typedef enum { OFF, ON } SwitchState;', (t) =>
+      t.includes('@declaration.typedef'),
+    );
+    expect(typedefs).toHaveLength(0);
+  });
 });
 
 describe('emitCScopeCaptures — function declarations', () => {
@@ -183,6 +196,14 @@ describe('emitCScopeCaptures — other declarations', () => {
     const m = findMatch('int x = 42;', (t) => t.includes('@declaration.variable'));
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('x');
+  });
+
+  it('captures all names in mixed initialized and uninitialized declarations', () => {
+    const matches = allMatches('void f(void) { int a = 1, b, *p, c = 3, d; }', (t) =>
+      t.includes('@declaration.variable'),
+    );
+    const names = matches.map((m) => m['@declaration.name'].text).sort();
+    expect(names).toEqual(['a', 'b', 'c', 'd', 'p']);
   });
 
   it('captures macro as @declaration.macro', () => {

@@ -622,8 +622,9 @@ interface PythonRepoContext {
 
 /** Strip `.py` and return the bare basename (e.g. `api/users.py` → `users`). */
 function fileShortKey(rel: string): string {
-  const slash = rel.lastIndexOf('/');
-  const file = slash >= 0 ? rel.slice(slash + 1) : rel;
+  const normalized = rel.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf('/');
+  const file = slash >= 0 ? normalized.slice(slash + 1) : normalized;
   return file.endsWith('.py') ? file.slice(0, -3) : file;
 }
 
@@ -633,7 +634,8 @@ function fileShortKey(rel: string): string {
  * case callers should fall back to the short key.
  */
 function fileLongKey(rel: string): string {
-  const noExt = rel.endsWith('.py') ? rel.slice(0, -3) : rel;
+  const normalized = rel.replace(/\\/g, '/');
+  const noExt = normalized.endsWith('.py') ? normalized.slice(0, -3) : normalized;
   const lastSlash = noExt.lastIndexOf('/');
   if (lastSlash < 0) return '';
   const beforeLast = noExt.slice(0, lastSlash);

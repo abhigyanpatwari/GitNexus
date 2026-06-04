@@ -2,8 +2,9 @@ import type { ParsedFile, Scope, ScopeId, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getRustParser } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { logger } from '../../../logger.js';
 
 /**
  * Populate type bindings for patterns and iterators that the tree-sitter
@@ -31,12 +32,28 @@ export function populateRustRangeBindings(
     const sourceText = ctx.fileContents.get(parsed.filePath);
     if (sourceText === undefined) continue;
 
-    const cachedTree = ctx.treeCache?.get(parsed.filePath);
-    const tree =
-      (cachedTree as ReturnType<typeof parser.parse> | undefined) ??
-      parseSourceSafe(parser, sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
-      });
+    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
+      | ReturnType<typeof parser.parse>
+      | undefined;
+    let tree: ReturnType<typeof parser.parse>;
+    if (cachedTree !== undefined) {
+      tree = cachedTree;
+    } else {
+      try {
+        tree = parseSourceSafe(parser, sourceText, undefined, {
+          bufferSize: getTreeSitterBufferSize(sourceText),
+        });
+      } catch (err) {
+        if (err instanceof ParseTimeoutError) {
+          logger.warn(
+            { file: parsed.filePath },
+            'rust range-binding: parse timed out, skipping file',
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
 
     for (const fn of tree.rootNode.descendantsOfType('function_item')) {
       const nameNode = fn.childForFieldName('name');
@@ -78,12 +95,28 @@ export function populateRustRangeBindings(
     const sourceText = ctx.fileContents.get(parsed.filePath);
     if (sourceText === undefined) continue;
 
-    const cachedTree = ctx.treeCache?.get(parsed.filePath);
-    const tree =
-      (cachedTree as ReturnType<typeof parser.parse> | undefined) ??
-      parseSourceSafe(parser, sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
-      });
+    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
+      | ReturnType<typeof parser.parse>
+      | undefined;
+    let tree: ReturnType<typeof parser.parse>;
+    if (cachedTree !== undefined) {
+      tree = cachedTree;
+    } else {
+      try {
+        tree = parseSourceSafe(parser, sourceText, undefined, {
+          bufferSize: getTreeSitterBufferSize(sourceText),
+        });
+      } catch (err) {
+        if (err instanceof ParseTimeoutError) {
+          logger.warn(
+            { file: parsed.filePath },
+            'rust range-binding: parse timed out, skipping file',
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
 
     const scopeMap = new Map(parsed.scopes.map((s) => [s.id, s]));
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
@@ -310,9 +343,9 @@ function processStructDestructuring(
     for (const fieldNode of patternNode.namedChildren) {
       let fieldName: string | undefined;
       if (fieldNode.type === 'field_pattern') {
+        // shorthand `{ a }` and full `{ b: c }` are both field_pattern; the
+        // `name` field is shorthand_field_identifier or field_identifier.
         fieldName = fieldNode.childForFieldName('name')?.text;
-      } else if (fieldNode.type === 'shorthand_field_pattern') {
-        fieldName = fieldNode.firstNamedChild?.text;
       }
       if (fieldName === undefined) continue;
 

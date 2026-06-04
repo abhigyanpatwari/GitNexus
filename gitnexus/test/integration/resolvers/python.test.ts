@@ -90,6 +90,51 @@ describe('Python relative import & heritage resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified / generic bases (#1951). The registry-primary synth previously
+// DROPPED these shapes — only bare `identifier` bases emitted, so production
+// silently omitted their inheritance edges while the legacy @heritage leg
+// captured them. service.py exercises the three now-handled shapes plus a bare
+// control, each base defined in a sibling module:
+//   - Service: `base_mod.Model`   (attribute base, trailing id -> Model)
+//   - Nested:  `a.b.Base`         (nested attribute base, recurse -> Base)
+//   - Gen:     `Container[str]`   (subscript base, value: field -> Container)
+//   - Plain:   `Container`        (bare control, byte-identical capture)
+// Runs under BOTH legs (createResolverParityIt) so the synth's bare-name text
+// is asserted equal to the legacy normalizeSupertypeName reduction.
+// ---------------------------------------------------------------------------
+
+describe('Python qualified-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS edges for attribute / nested-attribute / subscript / bare bases', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual([
+      'Gen → Container',
+      'Nested → Base',
+      'Plain → Container',
+      'Service → Model',
+    ]);
+  });
+
+  it('emits no IMPLEMENTS edges (Python has no interfaces)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(0);
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of getRelationships(result, 'EXTENDS')) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler in two packages, relative import disambiguates
 // ---------------------------------------------------------------------------
 

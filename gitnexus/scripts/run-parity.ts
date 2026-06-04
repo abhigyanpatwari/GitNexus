@@ -41,8 +41,15 @@ function envVarName(slug: string): string {
   return `REGISTRY_PRIMARY_${slug.toUpperCase().replace(/-/g, '_')}`;
 }
 
-function testFilePath(slug: string): string {
-  return `test/integration/resolvers/${slug}.test.ts`;
+function testFilePaths(slug: string): string[] {
+  const resolverDir = path.resolve(ROOT, 'test/integration/resolvers');
+  const files = fs.readdirSync(resolverDir);
+  const direct = `${slug}.test.ts`;
+  const prefixed = `${slug}-`;
+  return files
+    .filter((name) => name === direct || (name.startsWith(prefixed) && name.endsWith('.test.ts')))
+    .sort()
+    .map((name) => `test/integration/resolvers/${name}`);
 }
 
 function runVitest(testFile: string, env: Record<string, string>): boolean {
@@ -73,12 +80,12 @@ const languages = singleLang ? [singleLang] : [...MIGRATED_LANGUAGES].map(String
 
 // Verify test files exist before running
 const missingFiles: string[] = [];
+const filesByLanguage = new Map<string, string[]>();
 for (const lang of languages) {
-  const file = path.resolve(ROOT, testFilePath(lang));
-  try {
-    fs.accessSync(file);
-  } catch {
-    missingFiles.push(`${testFilePath(lang)} (${lang})`);
+  const files = testFilePaths(lang);
+  filesByLanguage.set(lang, files);
+  if (files.length === 0) {
+    missingFiles.push(`test/integration/resolvers/${lang}*.test.ts (${lang})`);
   }
 }
 
@@ -94,22 +101,26 @@ console.log(`Languages: ${languages.join(', ')}\n`);
 const failures: ParityFailure[] = [];
 
 for (const lang of languages) {
-  const file = testFilePath(lang);
+  const files = filesByLanguage.get(lang) ?? [];
   const envVar = envVarName(lang);
 
   console.log(`\n── ${lang} — legacy DAG (${envVar}=0) ──`);
-  if (!runVitest(file, { [envVar]: '0' })) {
-    failures.push({ lang, mode: 'legacy' });
+  for (const file of files) {
+    if (!runVitest(file, { [envVar]: '0' })) {
+      failures.push({ lang, mode: 'legacy' });
+    }
   }
 
   console.log(`\n── ${lang} — registry-primary (${envVar}=1) ──`);
-  if (!runVitest(file, { [envVar]: '1' })) {
-    failures.push({ lang, mode: 'registry-primary' });
+  for (const file of files) {
+    if (!runVitest(file, { [envVar]: '1' })) {
+      failures.push({ lang, mode: 'registry-primary' });
+    }
   }
 }
 
 // Summary
-const total = languages.length * 2;
+const total = [...filesByLanguage.values()].reduce((sum, files) => sum + files.length * 2, 0);
 const passed = total - failures.length;
 
 console.log('\n═══════════════════════════════════════');

@@ -1,5 +1,5 @@
 import type { MethodInfo } from '../method-types.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, type ParameterTypeClass } from 'gitnexus-shared';
 
 /** Languages where class overload signatures are declaration-only contracts
  *  that should collapse to the implementation body's node ID. */
@@ -139,13 +139,58 @@ export function constTagForId(
   return '';
 }
 
+/**
+ * Disambiguate function-template overloads whose normalized parameter types
+ * intentionally collapse to the same placeholder token (`T`, `U`, ...), but
+ * whose C++ sidecar shape is semantically different (`T` vs `T*` / `T&`).
+ *
+ * Kept intentionally narrow: concrete types already use the existing raw-type
+ * overload tag, and non-template languages should not acquire sidecar-shaped
+ * IDs.
+ */
+export function parameterShapeIdTag(
+  parameterTypes?: readonly string[],
+  parameterTypeClasses?: readonly ParameterTypeClass[],
+): string {
+  if (
+    parameterTypes === undefined ||
+    parameterTypeClasses === undefined ||
+    parameterTypes.length === 0
+  ) {
+    return '';
+  }
+  let hasTemplatePlaceholder = false;
+  let hasDisambiguatingShape = false;
+  const parts: string[] = [];
+  for (let i = 0; i < parameterTypes.length; i++) {
+    const type = parameterTypes[i];
+    const typeClass = parameterTypeClasses[i];
+    if (typeClass === undefined) return '';
+    if (/^[A-Z]\w*$/.test(type)) hasTemplatePlaceholder = true;
+    if (
+      typeClass.indirection !== 'value' ||
+      typeClass.pointerDepth > 0 ||
+      (typeClass.cv !== 'none' && typeClass.cv !== 'unknown')
+    ) {
+      hasDisambiguatingShape = true;
+    }
+    parts.push(
+      `${type}:${typeClass.cv}:${typeClass.indirection}:${typeClass.pointerDepth.toString()}`,
+    );
+  }
+  if (!hasTemplatePlaceholder || !hasDisambiguatingShape) return '';
+  return `~shape:${parts.join('|')}`;
+}
+
 /** Convert MethodInfo from methodExtractor into flat properties for a graph node. */
 export function buildMethodProps(info: MethodInfo): Record<string, unknown> {
   const types: string[] = [];
+  const typeClasses: ParameterTypeClass[] = [];
   let optionalCount = 0;
   let hasVariadic = false;
   for (const p of info.parameters) {
     if (p.type !== null) types.push(p.type);
+    if (p.typeClass !== undefined) typeClasses.push(p.typeClass);
     if (p.isOptional) optionalCount++;
     if (p.isVariadic) hasVariadic = true;
   }
@@ -155,6 +200,9 @@ export function buildMethodProps(info: MethodInfo): Record<string, unknown> {
       ? { requiredParameterCount: info.parameters.length - optionalCount }
       : {}),
     ...(types.length > 0 ? { parameterTypes: types } : {}),
+    ...(typeClasses.length === info.parameters.length && typeClasses.length > 0
+      ? { parameterTypeClasses: typeClasses }
+      : {}),
     returnType: info.returnType ?? undefined,
     visibility: info.visibility,
     isStatic: info.isStatic,

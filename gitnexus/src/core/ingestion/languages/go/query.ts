@@ -39,6 +39,10 @@ const GO_SCOPE_QUERY = `
 (method_declaration
   name: (field_identifier) @declaration.name) @declaration.method
 
+;; Declarations — interface methods
+(method_elem
+  name: (field_identifier) @declaration.name) @declaration.method
+
 ;; Declarations — struct fields
 (struct_type
   (field_declaration_list
@@ -67,21 +71,21 @@ const GO_SCOPE_QUERY = `
   parameters: (parameter_list
     (parameter_declaration
       name: (identifier) @type-binding.name
-      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type)] @type-binding.type))) @type-binding.parameter
+      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type) (channel_type) (array_type) (function_type) (interface_type) (generic_type)] @type-binding.type))) @type-binding.parameter
 
 (method_declaration
   name: (field_identifier) @_fn_name
   parameters: (parameter_list
     (parameter_declaration
       name: (identifier) @type-binding.name
-      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type)] @type-binding.type))) @type-binding.parameter
+      type: [(type_identifier) (qualified_type) (pointer_type) (slice_type) (map_type) (channel_type) (array_type) (function_type) (interface_type) (generic_type)] @type-binding.type))) @type-binding.parameter
 
 ;; Type bindings — constructor-inferred (:= T{})
 (short_var_declaration
   left: (expression_list (identifier) @type-binding.name)
   right: (expression_list
     (composite_literal
-      type: [(type_identifier) (qualified_type)] @type-binding.type))) @type-binding.constructor
+      type: [(type_identifier) (qualified_type) (generic_type)] @type-binding.type))) @type-binding.constructor
 
 ;; Type bindings — pointer constructor (:= &T{})
 (short_var_declaration
@@ -90,7 +94,7 @@ const GO_SCOPE_QUERY = `
     (unary_expression
       "&"
       operand: (composite_literal
-        type: [(type_identifier) (qualified_type)] @type-binding.type)))) @type-binding.constructor
+        type: [(type_identifier) (qualified_type) (generic_type)] @type-binding.type)))) @type-binding.constructor
 
 ;; Type bindings — type assertion (:= s.(T))
 (short_var_declaration
@@ -165,7 +169,7 @@ const GO_SCOPE_QUERY = `
 
 ;; References — constructor calls (T{})
 (composite_literal
-  type: [(type_identifier) (qualified_type)] @reference.name) @reference.call.constructor
+  type: [(type_identifier) (qualified_type) (generic_type)] @reference.name) @reference.call.constructor
 
 ;; References — field reads
 (selector_expression

@@ -37,7 +37,12 @@ export type ReferenceKind =
   | 'write'
   | 'type-reference'
   | 'inherits'
-  | 'import-use';
+  | 'import-use'
+  // A macro invocation (`log!(...)` / `vec![...]`). Resolved against
+  // `Macro`-labeled definitions ONLY (see `MacroRegistry`) so a macro
+  // never aliases a same-named free function — macros and functions are
+  // disjoint namespaces. Emitted as a `USES` edge, not `CALLS`.
+  | 'macro';
 
 /**
  * How a call site binds its target. Informs `Registry.lookup` Step 2
@@ -54,6 +59,18 @@ export type CallForm = 'free' | 'member' | 'constructor' | 'index';
 export interface ReferenceSite {
   /** The name being referenced (e.g., `'save'`, `'User'`, `'count'`). */
   readonly name: string;
+  /**
+   * Optional raw, qualified form of the referenced name when the source wrote
+   * a qualified path (e.g. a C++ base `struct D : Other::Inner` yields
+   * `'Other::Inner'`). `name` keeps the simple tail (`'Inner'`) for the existing
+   * scope-chain contract; resolution normalizes this via `normalizeQualifiedName`
+   * and resolves it against the full-path `QualifiedNameIndex` BEFORE the
+   * simple-tail walk, so a same-tail nested base resolves to the correct
+   * sibling instead of the first-inserted one (issue #1982). Populated only by
+   * per-language captures that emit `@reference.qualified-name`; absent
+   * otherwise, in which case resolution is unchanged.
+   */
+  readonly rawQualifiedName?: string;
   /** Source-text range of this reference. */
   readonly atRange: Range;
   /**

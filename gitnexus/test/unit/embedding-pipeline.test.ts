@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import {
   contentHashForNode,
   EMBEDDING_TEXT_VERSION,
+  resolveEmbeddingInstallPolicy,
 } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
 import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
@@ -11,6 +12,55 @@ import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 
 const CLASS_CHUNK_SIZE = 90;
 const CLASS_OVERLAP = 10;
+
+// ────────────────────────────────────────────────────────────────────────────
+// resolveEmbeddingInstallPolicy (offline-first, #1153)
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('resolveEmbeddingInstallPolicy (#1153)', () => {
+  const ENV = 'GITNEXUS_LBUG_EXTENSION_INSTALL';
+  const original = process.env[ENV];
+  const restore = () => {
+    if (original === undefined) delete process.env[ENV];
+    else process.env[ENV] = original;
+  };
+
+  it('defaults to auto when unset (embeddings are an explicit network-capable opt-in)', () => {
+    delete process.env[ENV];
+    try {
+      expect(resolveEmbeddingInstallPolicy()).toBe('auto');
+    } finally {
+      restore();
+    }
+  });
+
+  it('honors an explicit load-only override (offline operator is not forced onto the network)', () => {
+    process.env[ENV] = 'load-only';
+    try {
+      expect(resolveEmbeddingInstallPolicy()).toBe('load-only');
+    } finally {
+      restore();
+    }
+  });
+
+  it('honors an explicit never override', () => {
+    process.env[ENV] = 'never';
+    try {
+      expect(resolveEmbeddingInstallPolicy()).toBe('never');
+    } finally {
+      restore();
+    }
+  });
+
+  it('falls back to auto for invalid values', () => {
+    process.env[ENV] = 'bogus';
+    try {
+      expect(resolveEmbeddingInstallPolicy()).toBe('auto');
+    } finally {
+      restore();
+    }
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // contentHashForNode

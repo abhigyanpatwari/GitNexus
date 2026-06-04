@@ -43,20 +43,38 @@ import {
   STALE_HASH_SENTINEL,
 } from '../lbug/schema.js';
 import { loadVectorExtension } from '../lbug/lbug-adapter.js';
+import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
 const vectorUnavailableMessage =
-  'VECTOR extension is unavailable for this LadybugDB runtime; semantic search will use exact scan when embeddings exist.';
+  'VECTOR extension unavailable; semantic embeddings fall back to exact scan. ' +
+  'To enable vector search, install it once with network access ' +
+  '(GITNEXUS_LBUG_EXTENSION_INSTALL=auto), or pre-install it for offline use. ' +
+  'Set GITNEXUS_LBUG_EXTENSION_INSTALL=never to skip installs and silence this.';
+
+/**
+ * Resolve the extension-install policy for the embedding WRITE path (analyze).
+ *
+ * Generating embeddings is an explicit opt-in to a feature that requires the
+ * VECTOR extension, so when the operator has NOT pinned a policy we default to
+ * `auto` (one bounded, out-of-process INSTALL) — matching the documented
+ * "auto = default for analyze" intent in extension-loader.ts. An explicit
+ * GITNEXUS_LBUG_EXTENSION_INSTALL=load-only|never|auto always wins, so an
+ * offline or locked-down operator is never silently forced onto the network
+ * (the #1153 regression caused by hard-coding `auto` here). Read on every call
+ * (not memoized) so test env stubbing works.
+ */
+export const resolveEmbeddingInstallPolicy = (): ExtensionInstallPolicy => {
+  const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+  if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
+  return 'auto';
+};
 
 const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
-  const vectorReady = await loadVectorExtension();
-  if (!vectorReady) {
-    return false;
-  }
-  return true;
+  return loadVectorExtension(undefined, { policy: resolveEmbeddingInstallPolicy() });
 };
 /**
  * Bump this when the embedding text template changes in a way that should
@@ -257,7 +275,7 @@ export const runEmbeddingPipeline = async (
 
   try {
     const vectorAvailable = await ensureVectorExtensionAvailable();
-    if (!vectorAvailable && isDev) {
+    if (!vectorAvailable) {
       logger.warn(vectorUnavailableMessage);
     }
 
@@ -584,7 +602,11 @@ export const semanticSearch = async (
     string,
     { distance: number; chunkIndex: number; startLine: number; endLine: number }
   >();
-  if (await loadVectorExtension()) {
+  // Query/read path: NEVER spawn a network INSTALL on a user query. If the
+  // VECTOR extension was not pre-installed, fall back to exact scan rather than
+  // blocking the query on a download (offline-first; see extension-loader.ts
+  // "load-only" — used by all serve/MCP query paths).
+  if (await loadVectorExtension(undefined, { policy: 'load-only' })) {
     try {
       bestChunks = await collectBestChunks(k, async (fetchLimit) => {
         const vectorQuery = `

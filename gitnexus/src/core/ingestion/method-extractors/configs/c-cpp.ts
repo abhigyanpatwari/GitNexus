@@ -8,6 +8,7 @@ import type {
   MethodVisibility,
 } from '../../method-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
+import { classifyCppParameterType } from '../../languages/cpp/arity-metadata.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -149,6 +150,11 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
           rawType: typeNode?.text?.trim() ?? null,
+          typeClass: classifyCppParameterType(
+            typeNode?.text?.trim() ?? 'unknown',
+            declNode?.text,
+            param.text,
+          ),
           isOptional: false,
           isVariadic: false,
         });
@@ -164,6 +170,11 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
           rawType: typeNode?.text?.trim() ?? null,
+          typeClass: classifyCppParameterType(
+            typeNode?.text?.trim() ?? 'unknown',
+            declNode?.text,
+            param.text,
+          ),
           isOptional: true,
           isVariadic: false,
         });
@@ -180,6 +191,11 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
           rawType: typeNode?.text?.trim() ?? null,
+          typeClass: classifyCppParameterType(
+            typeNode?.text?.trim() ?? 'unknown',
+            declNode?.text,
+            param.text,
+          ),
           isOptional: false,
           isVariadic: true,
         });

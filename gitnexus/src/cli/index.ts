@@ -44,6 +44,11 @@ program
       '(no-op when --index-only is also set).',
   )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--default-branch <branch>',
+    'Default branch used in the generated regression-compare example (base_ref). ' +
+      'Falls back to .gitnexusrc, then auto-detected origin/HEAD, then "main".',
+  )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-skills',
@@ -219,10 +224,16 @@ program
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program
-  .command('impact <target>')
+  .command('impact [target]')
   .description('Blast radius analysis: what breaks if you change a symbol')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
   .option('-r, --repo <name>', 'Target repository')
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
+  .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option(
+    '--kind <kind>',
+    'Kind filter to disambiguate common names (e.g. Function, Class, Method)',
+  )
   .option('--depth <n>', 'Max relationship depth (default: 3)')
   .option('--include-tests', 'Include test files in results')
   .option('--limit <n>', 'Max symbols per depth level (default: 100)')

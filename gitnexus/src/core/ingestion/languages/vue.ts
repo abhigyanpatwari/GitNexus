@@ -28,6 +28,17 @@ import { typescriptVariableConfig } from '../variable-extractors/configs/typescr
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { typescriptCallConfig } from '../call-extractors/configs/typescript-javascript.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  interpretTsImport,
+  interpretTsTypeBinding,
+  tsBindingScopeFor,
+  tsImportOwningScope,
+  tsReceiverBinding,
+  typescriptMergeBindings,
+  typescriptArityCompatibility,
+  resolveTsImportTarget,
+} from './typescript/index.js';
+import { emitVueScopeCaptures } from './vue/captures.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -81,4 +92,14 @@ export const vueProvider = defineLanguage({
   classExtractor: vueClassExtractor,
   heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: VUE_BUILT_INS,
+  // Scope-resolution pipeline hooks (RFC #909 Ring 3)
+  emitScopeCaptures: emitVueScopeCaptures,
+  interpretImport: interpretTsImport,
+  interpretTypeBinding: interpretTsTypeBinding,
+  bindingScopeFor: tsBindingScopeFor,
+  importOwningScope: tsImportOwningScope,
+  receiverBinding: tsReceiverBinding,
+  mergeBindings: (_scope, bindings) => typescriptMergeBindings(bindings),
+  arityCompatibility: typescriptArityCompatibility,
+  resolveImportTarget: resolveTsImportTarget,
 });

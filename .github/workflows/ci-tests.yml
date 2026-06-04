@@ -12,7 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # persist-credentials: false — this job runs tests and uploads a
+      # test-reports artifact (if: always()). The default-persisted token in
+      # .git/config must not be capturable through that upload (zizmor
+      # credential-persistence / artipacked audit). The job never pushes.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -72,12 +78,44 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # persist-credentials: false — runs tests only, never pushes (zizmor
+      # credential-persistence / artipacked audit).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
       - name: Run platform-sensitive tests
         run: npx tsx scripts/run-cross-platform.ts
+        working-directory: gitnexus
+
+  # Tree-sitter ABI gate (#1922). Two halves, both blocking:
+  #   1. Static, offline: assert every grammar's compiled ABI loads on the
+  #      pinned runtime (check-tree-sitter-upgrade-readiness.py --assert-current).
+  #   2. Dynamic: run the parser-loader ABI load-smoke on the OS matrix so an
+  #      ABI-incompatible prebuilt (esp. the binary-only Swift vendor, which the
+  #      static check can't introspect) fails on the platform it ships to.
+  abi-assert:
+    name: tree-sitter ABI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Assert installed + vendored grammar ABIs (static)
+        shell: bash
+        run: python3 .github/scripts/check-tree-sitter-upgrade-readiness.py --assert-current
+
+      - name: Run parser-loader ABI load-smoke (dynamic)
+        run: npx vitest run test/unit/parser-loader-abi.test.ts
         working-directory: gitnexus
 
   # End-to-end smoke test for the #1728 packaging fix: pack the published
@@ -181,3 +219,60 @@ jobs:
           else
             "$PREFIX/bin/gitnexus" --version
           fi
+
+  # ── Dedicated benchmark gate ─────────────────────────────────────
+  # The cross-language `*-pipeline-benchmark.test.ts` suites are gated behind
+  # GITNEXUS_BENCH (they generate synthetic codebases at scale), so the main
+  # coverage job above SKIPS them — their O(n^2) scaling guards never ran in CI.
+  # Run them here with GITNEXUS_BENCH=1, alongside the Python scope-capture and
+  # import-resolution fingerprint + scaling guards (PR #1918 P2a).
+  #
+  # `--no-file-parallelism` is REQUIRED: these suites measure wall-clock and peak
+  # heap, so parallel forks both skew the timings and OOM the worker pool — they
+  # must run one file at a time.
+  #
+  # go-pipeline-benchmark.test.ts is deliberately NOT included: its
+  # worker-pool (#1848) suite spins a real worker pool that exits unexpectedly
+  # under vitest's fork pool (reproduced in validation), which would make this
+  # gate flaky. Go is already guarded by its non-gated O(n^2) tripwire (runs in
+  # the main coverage job) plus its golden capture-parity test.
+  benchmarks:
+    name: benchmarks (GITNEXUS_BENCH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # persist-credentials: false — this job only runs npm + vitest benchmarks
+      # and never pushes; the default-persisted token in .git/config would be at
+      # risk of leaking through an artifact upload (zizmor credential-persistence
+      # / artipacked audit). Mirrors the packaged-install-smoke job below.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Python scope-capture + import-resolution fingerprint / scaling guards
+        run: |
+          node --import tsx bench/python-scope/measure.mjs --check
+          node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
+        working-directory: gitnexus
+
+      - name: Cross-language scope-capture fingerprint + scaling guards
+        # Build-free: asserts emit<Lang>ScopeCaptures output is unchanged
+        # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
+        # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
+        run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        env:
+          GITNEXUS_BENCH: '1'
+        run: >-
+          npx vitest run --no-file-parallelism
+          test/integration/cobol-pipeline-benchmark.test.ts
+          test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/rust-pipeline-benchmark.test.ts
+          test/integration/php-pipeline-benchmark.test.ts
+          test/integration/ruby-pipeline-benchmark.test.ts
+        working-directory: gitnexus

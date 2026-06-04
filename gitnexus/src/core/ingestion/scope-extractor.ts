@@ -745,9 +745,66 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
       return 'Annotation';
     case 'namespace':
       return 'Namespace';
+    case 'macro':
+      return 'Macro';
     default:
       return undefined;
   }
+}
+
+/** Function-like labels: callable defs that must keep incoming CALLS edges. */
+const NODE_BEARING_FUNCTION_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set([
+  'Function',
+  'Method',
+  'Constructor',
+]);
+
+/** Value labels: non-callable bindings (a `const`/`let`/`var` holds a value). */
+const NODE_BEARING_VALUE_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set([
+  'Const',
+  'Variable',
+]);
+
+/**
+ * Collapse rule for the deferred node-creation migration (#1876).
+ *
+ * When graph-node creation moves from the legacy DAG onto the
+ * registry-primary path, a single source binding can carry more than one
+ * `SymbolDefinition` for the same name in the same scope — e.g. a direct
+ * arrow `const fn = () => {}` is classified BOTH as a `Function` (the
+ * arrow) and a `Variable` (the binding). Emitting one graph node per def
+ * would reproduce exactly the duplicate-node bug this issue tracks.
+ *
+ * `selectNodeBearingDef` picks the ONE def that should bear the graph node
+ * for such a binding group:
+ *
+ *   1. a function-like def (`Function` / `Method` / `Constructor`) if any —
+ *      the binding is callable and must keep incoming `CALLS` edges;
+ *   2. otherwise a value def (`Const` / `Variable`) — the binding holds a
+ *      value (e.g. an array-method result after the U1/U2 narrowing);
+ *   3. otherwise the first def — deterministic fallback for label sets this
+ *      rule does not rank.
+ *
+ * INPUT CONTRACT: `group` must be the defs bound to ONE name within ONE
+ * scope (a binding group). It deliberately does NOT dedup by range —
+ * `SymbolDefinition` carries no range and `makeDefId` encodes only the
+ * start position, so containment is uncomputable here; the caller forms the
+ * group (e.g. from a scope's `ownedDefs` keyed by name) before calling.
+ *
+ * Pure. No production call site yet — this dead export is intentional and
+ * tracked by #1876 (the deferred node-creation migration); it is the
+ * executable contract that follow-up will consume, pinned today by the
+ * scope-extractor unit test.
+ */
+export function selectNodeBearingDef(
+  group: readonly SymbolDefinition[],
+): SymbolDefinition | undefined {
+  if (group.length === 0) return undefined;
+  const functionLike = group.find((def) => NODE_BEARING_FUNCTION_LABELS.has(def.type));
+  if (functionLike !== undefined) return functionLike;
+  const value = group.find((def) => NODE_BEARING_VALUE_LABELS.has(def.type));
+  if (value !== undefined) return value;
+  return group[0];
 }
 
 function makeDefId(
@@ -936,6 +993,11 @@ function pass5CollectReferences(
     if (kind === undefined) continue;
 
     const nameCap = match['@reference.name'] ?? anchor;
+    // Optional qualified form of the reference (e.g. a C++ base `Other::Inner`),
+    // threaded to resolution so a same-tail nested base resolves to the correct
+    // sibling via the full-path QualifiedNameIndex before the simple-tail walk
+    // (#1982). Absent for unqualified references — resolution stays unchanged.
+    const qualifiedCap = match['@reference.qualified-name'];
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -959,6 +1021,9 @@ function pass5CollectReferences(
       atRange: anchor.range,
       inScope: inScopeId,
       kind,
+      ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
+        ? { rawQualifiedName: qualifiedCap.text }
+        : {}),
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
@@ -989,6 +1054,8 @@ function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
     case 'import_use':
     case 'import-use':
       return 'import-use';
+    case 'macro':
+      return 'macro';
     default:
       return undefined;
   }
@@ -1078,6 +1145,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.name',
   '@type-binding.type',
   '@reference.name',
+  '@reference.qualified-name',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

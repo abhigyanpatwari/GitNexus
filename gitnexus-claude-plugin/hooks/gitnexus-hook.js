@@ -16,6 +16,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.js');
 const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -345,7 +346,7 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings });
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
