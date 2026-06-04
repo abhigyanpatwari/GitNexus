@@ -71,6 +71,15 @@ describe('interpretJavaTypeBinding — type normalization (F41 #1928)', () => {
     expect(raw('List<Map<String, User>>')).toBe('List');
   });
 
+  it('keeps the outer class for a QUALIFIED nested generic element (guards the strip order)', () => {
+    // Unlike `List<Map<String, User>>` (no dot inside the args, so it yields
+    // `List` under both strip orders), this input has a qualified nested
+    // element: the OLD order (stripQualifier first) cut inside the generic and
+    // produced a corrupted `Foo<String>>`; only generics-first yields `List`.
+    // This is the case that actually fails if the F41 reorder regresses.
+    expect(raw('List<com.x.Foo<String>>')).toBe('List');
+  });
+
   it('returns null for a bare `var` with no concrete type', () => {
     expect(interpretJavaTypeBinding(binding('var'))).toBeNull();
   });

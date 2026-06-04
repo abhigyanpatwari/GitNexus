@@ -53,14 +53,24 @@ describe('Java explicit constructor invocation resolution (F38 #1928)', () => {
     expect(superCall).toBeDefined();
     expect(superCall!.source).toBe('Child');
     expect(superCall!.targetFilePath).toBe('models/Base.java');
+    // Source is the arity-0 `Child()`, where `super(1)` lives.
+    expect(superCall!.rel.sourceId).toContain('Child.Child#0');
+    expect(superCall!.rel.targetId).toContain('Base.Base#1');
   });
 
-  it('resolves `this()` in Child(int) to the Child constructor', () => {
+  it('resolves `this()` in Child(int) to a DISTINCT Child constructor (no self-loop)', () => {
     const calls = getRelationships(result, 'CALLS');
     const thisCall = calls.find(
       (c) => c.target === 'Child' && c.targetLabel === 'Constructor' && c.source === 'Child',
     );
     expect(thisCall).toBeDefined();
     expect(thisCall!.targetFilePath).toBe('models/Child.java');
+    // The edge must connect DISTINCT constructors: the caller `Child(int)` (#1)
+    // chains to `Child()` (#0). A self-loop (`#0 → #0`) — the bug this PR's
+    // review caught (#1928 F38: ctor overload keys missing in node-lookup) —
+    // satisfies the name-only match above but must NOT pass here.
+    expect(thisCall!.rel.sourceId).not.toBe(thisCall!.rel.targetId);
+    expect(thisCall!.rel.sourceId).toContain('Child.Child#1');
+    expect(thisCall!.rel.targetId).toContain('Child.Child#0');
   });
 });
