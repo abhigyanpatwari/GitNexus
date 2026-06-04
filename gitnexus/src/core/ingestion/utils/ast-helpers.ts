@@ -503,18 +503,50 @@ export const findEnclosingClassInfo = (
         //     different mods own through DISTINCT nodes. The Impl-node
         //     materialization (parsing-processor / parse-worker) mirrors this, so
         //     the owner id == the Impl node id byte-for-byte (#1982).
-        const firstType = children.find(
-          (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+        //   - GENERIC (`impl<T> Inner<T>`, generic_type): the @definition.impl
+        //     node is materialized only when the generic base is a bare
+        //     `type_identifier` (tree-sitter-queries.ts), qualified the same way —
+        //     so drill into the base and mirror that gate, keeping the owner id ==
+        //     the node id byte-for-byte (#1992). A generic over a SCOPED base
+        //     (`impl<T> a::Inner<T>`) materializes NO node, so it must produce NO
+        //     owner (the method orphans — scoped-generic deferred, #1992).
+        const implTarget = children.find(
+          (c: SyntaxNode) =>
+            c.type === 'type_identifier' ||
+            c.type === 'scoped_type_identifier' ||
+            c.type === 'generic_type',
         );
-        if (firstType) {
-          const ownerKey =
-            firstType.type === 'type_identifier'
-              ? qualifyRustImplTargetByModScope(current, firstType.text)
-              : firstType.text;
-          return {
-            classId: generateId('Impl', `${filePath}:${ownerKey}`),
-            className: firstType.text,
-          };
+        if (implTarget) {
+          const baseType =
+            implTarget.type === 'generic_type'
+              ? (implTarget.childForFieldName?.('type') ?? null)
+              : implTarget;
+          if (baseType?.type === 'type_identifier') {
+            // Bare target (`impl Inner` or `impl<T> Inner<T>`): qualify by mod scope.
+            // #1992 follow-up: qualify `className` too (not just `classId`). The
+            // method node id is keyed `${className}.${name}`, so a bare tail collapses
+            // two same-tail bare impls that ALSO share a method name (`a::Inner::m` +
+            // `b::Inner::m` both → `Inner.m`) onto one Method node (graph addNode is
+            // first-write-wins). Qualifying className → `a.Inner.m` / `b.Inner.m` keeps
+            // them distinct. Symmetric: the call-resolution fallback rebuilds the same
+            // `${className}.${name}` from the same enclosing-impl walk, so def and call
+            // ids still agree. Owner edge anchors on `classId` (already qualified).
+            const qualified = qualifyRustImplTargetByModScope(current, baseType.text);
+            return {
+              classId: generateId('Impl', `${filePath}:${qualified}`),
+              className: qualified,
+            };
+          }
+          if (baseType?.type === 'scoped_type_identifier' && implTarget.type !== 'generic_type') {
+            // Top-level scoped `impl a::Inner`: key by full raw text (#1975).
+            return {
+              classId: generateId('Impl', `${filePath}:${baseType.text}`),
+              className: baseType.text,
+            };
+          }
+          // generic-over-scoped (`impl<T> a::Inner<T>`) and any other base: fall
+          // through with no owner — no @definition.impl node exists, so attributing
+          // a method to a synthesized id would orphan it against a phantom owner.
         }
       }
 
