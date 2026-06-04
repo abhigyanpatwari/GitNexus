@@ -36,12 +36,8 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { generateId } from '../../../../lib/utils.js';
 import { dartProvider } from '../dart.js';
-import {
-  dartArityCompatibility,
-  dartMergeBindings,
-  resolveDartImportTarget,
-  DART_HERITAGE_PREFIX,
-} from './index.js';
+import { dartArityCompatibility, dartMergeBindings, resolveDartImportTarget } from './index.js';
+import { decodeMarker } from '../../utils/heritage-marker.js';
 import { expandDartWildcardNames } from './expand-wildcards.js';
 
 interface ClassDefRef {
@@ -109,8 +105,10 @@ function emitDartHeritageEdges(
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
       const raw = imp.targetRaw;
-      if (typeof raw !== 'string' || !raw.startsWith(DART_HERITAGE_PREFIX)) continue;
-      const parts = raw.slice(DART_HERITAGE_PREFIX.length).split(':');
+      if (typeof raw !== 'string') continue;
+      const decoded = decodeMarker(raw);
+      if (decoded?.kind !== 'heritage') continue;
+      const parts = decoded.fields;
       if (parts.length < 3) continue;
       const [kind, baseName, childName] = parts;
       const childId = pickClassByName(childName!, parsed.filePath, defsByName);
