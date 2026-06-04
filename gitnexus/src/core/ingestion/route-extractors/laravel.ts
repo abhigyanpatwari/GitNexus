@@ -234,7 +234,8 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
       const [controller, method] = text.split('@');
       return { controller, controllerQualified: null, method, bareMethod: null };
     }
-    if (text) return { controller: null, controllerQualified: null, method: null, bareMethod: text };
+    if (text)
+      return { controller: null, controllerQualified: null, method: null, bareMethod: text };
   }
 
   // Class reference: UserController::class (invokable controller)

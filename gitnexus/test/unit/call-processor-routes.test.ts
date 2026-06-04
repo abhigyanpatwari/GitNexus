@@ -221,22 +221,52 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     const model = createSemanticModel();
     const ADMIN_FQN = 'App.Admin.OrderController';
     const PUBLIC_FQN = 'App.Http.Controllers.OrderController';
-    model.symbols.add('app/Admin/OrderController.php', 'OrderController', 'class:Admin.OrderController', 'Class', {
-      qualifiedName: ADMIN_FQN,
-    });
-    model.symbols.add('app/Admin/OrderController.php', 'index', 'method:Admin.OrderController.index', 'Method', {
-      ownerId: 'class:Admin.OrderController',
-    });
-    model.symbols.add('app/Http/Controllers/OrderController.php', 'OrderController', 'class:Public.OrderController', 'Class', {
-      qualifiedName: PUBLIC_FQN,
-    });
-    model.symbols.add('app/Http/Controllers/OrderController.php', 'index', 'method:Public.OrderController.index', 'Method', {
-      ownerId: 'class:Public.OrderController',
-    });
+    model.symbols.add(
+      'app/Admin/OrderController.php',
+      'OrderController',
+      'class:Admin.OrderController',
+      'Class',
+      {
+        qualifiedName: ADMIN_FQN,
+      },
+    );
+    model.symbols.add(
+      'app/Admin/OrderController.php',
+      'index',
+      'method:Admin.OrderController.index',
+      'Method',
+      {
+        ownerId: 'class:Admin.OrderController',
+      },
+    );
+    model.symbols.add(
+      'app/Http/Controllers/OrderController.php',
+      'OrderController',
+      'class:Public.OrderController',
+      'Class',
+      {
+        qualifiedName: PUBLIC_FQN,
+      },
+    );
+    model.symbols.add(
+      'app/Http/Controllers/OrderController.php',
+      'index',
+      'method:Public.OrderController.index',
+      'Method',
+      {
+        ownerId: 'class:Public.OrderController',
+      },
+    );
 
     await processRoutesFromExtracted(
       graph,
-      [makeRoute({ controllerName: 'OrderController', controllerQualifiedName: ADMIN_FQN, methodName: 'index' })],
+      [
+        makeRoute({
+          controllerName: 'OrderController',
+          controllerQualifiedName: ADMIN_FQN,
+          methodName: 'index',
+        }),
+      ],
       model,
     );
 

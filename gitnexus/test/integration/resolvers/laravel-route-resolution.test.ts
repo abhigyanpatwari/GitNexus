@@ -32,7 +32,9 @@ describe('Laravel route → controller qualified resolution', () => {
 
   it('resolves a globally-duplicated short name to the use-imported (public) controller', () => {
     const edges = routeCalls().filter(
-      (e) => e.target === 'index' && e.targetFilePath.endsWith('app/Http/Controllers/OrderController.php'),
+      (e) =>
+        e.target === 'index' &&
+        e.targetFilePath.endsWith('app/Http/Controllers/OrderController.php'),
     );
     expect(edges.length).toBeGreaterThanOrEqual(1);
   });
@@ -48,7 +50,9 @@ describe('Laravel route → controller qualified resolution', () => {
 
   it('resolves an aliased uniquely-named controller (PhotoController) to its list method', () => {
     const edges = routeCalls().filter(
-      (e) => e.target === 'list' && e.targetFilePath.endsWith('app/Http/Controllers/PhotoController.php'),
+      (e) =>
+        e.target === 'list' &&
+        e.targetFilePath.endsWith('app/Http/Controllers/PhotoController.php'),
     );
     expect(edges.length).toBeGreaterThanOrEqual(1);
   });
