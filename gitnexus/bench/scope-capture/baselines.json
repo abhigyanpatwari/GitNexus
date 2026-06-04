@@ -16,11 +16,11 @@
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
   },
   "cpp": {
-    "fingerprint": "538e8beebf0a69f6170dff452da3f98046a08cbe8b098b3c9943c4a8a79d2e22",
+    "fingerprint": "d63ded6251a89d42cc63941ac3fdb093bf5b59ae483b135786766f925cdc91c5",
     "scaling_budget": 1.5,
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
     "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
-    "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift — no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267."
+    "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift — no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267. #1995: + cpp-union-nested-tail-collision and cpp-anon-ns-tail-collision fixtures — pure fixture-corpus drift; fixture_count 270->272, fingerprint 538e8be->d63ded6."
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.)",
