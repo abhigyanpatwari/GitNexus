@@ -933,10 +933,19 @@ export interface CLIConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor' | 'claude' | 'codex';
+  provider?:
+    | 'openai'
+    | 'openrouter'
+    | 'azure'
+    | 'custom'
+    | 'cursor'
+    | 'claude'
+    | 'codex'
+    | 'opencode';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;
+  opencodeModel?: string;
   /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */
