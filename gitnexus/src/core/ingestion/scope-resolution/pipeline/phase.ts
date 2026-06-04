@@ -91,12 +91,11 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // Worker-mode parses leave the cache empty for those files; they
     // also fall back to a fresh parse — no correctness impact.
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { scopeTreeCache, resolutionContext, parsedFiles: workerParsedFiles } = parseOutput;
+    const { scopeTreeCache, model, parsedFiles: workerParsedFiles } = parseOutput;
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
     // rebuilding parallel indexes. See ARCHITECTURE.md § "Semantic-model
     // source of truth".
-    const model = resolutionContext.model;
 
     // Build a per-file lookup of ParsedFile artifacts the workers (or
     // sequential extracts) already produced. Threading this into
