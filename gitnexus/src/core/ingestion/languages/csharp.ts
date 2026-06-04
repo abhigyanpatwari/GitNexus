@@ -14,7 +14,6 @@ import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
-import { extractCSharpNamedBindings } from '../named-bindings/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
@@ -25,7 +24,6 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { csharpVariableConfig } from '../variable-extractors/configs/csharp.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitCsharpScopeCaptures,
   interpretCsharpImport,
@@ -189,15 +187,12 @@ export const csharpProvider = defineLanguage({
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
   importResolver: createImportResolver(csharpImportConfig),
-  namedBindingExtractor: extractCSharpNamedBindings,
-  interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(csharpCallConfig),
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
   methodExtractor: createMethodExtractor(csharpMethodConfig),
   variableExtractor: createVariableExtractor(csharpVariableConfig),
   classExtractor: createClassExtractor(csharpClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.CSharp),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

@@ -48,6 +48,9 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 vi.mock('../../src/storage/git.js', () => ({
   getGitRoot: vi.fn(() => '/repo'),
   hasGitDir: vi.fn(() => true),
+  // #243: default-branch auto-detection. Return null so the resolver falls back
+  // to "main" deterministically in this mocked environment.
+  getDefaultBranch: vi.fn(() => null),
 }));
 
 vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
@@ -162,6 +165,8 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       expect(aiCtxOpts).toEqual({
         skipAgentsMd: undefined,
         skipSkills: undefined,
+        // #243: resolved default branch threaded into the --skills regen path.
+        defaultBranch: 'main',
         noStats: true,
       });
     } finally {

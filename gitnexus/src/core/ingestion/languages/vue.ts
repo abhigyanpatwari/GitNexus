@@ -19,7 +19,6 @@ import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js
 import { tsExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { vueImportConfig } from '../import-resolvers/configs/typescript-javascript.js';
-import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
@@ -27,7 +26,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { typescriptCallConfig } from '../call-extractors/configs/typescript-javascript.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   interpretTsImport,
   interpretTsTypeBinding,
@@ -85,12 +83,10 @@ export const vueProvider = defineLanguage({
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(vueImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: VUE_BUILT_INS,
   // Scope-resolution pipeline hooks (RFC #909 Ring 3)
   emitScopeCaptures: emitVueScopeCaptures,

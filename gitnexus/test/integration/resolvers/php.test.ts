@@ -1,12 +1,11 @@
 /**
  * PHP: PSR-4 imports, extends, implements, trait use, enums, calls + ambiguous disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,12 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-// Wrap vitest's `it` so legacy-DAG-only divergences (commit af9af4a9 U1/U3)
-// are skipped under REGISTRY_PRIMARY_PHP=0. The skip list lives in
-// helpers.ts:LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.php — sibling pattern
-// to csharp/typescript/python.
-const it = createResolverParityIt('php');
 
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls
@@ -413,7 +406,7 @@ describe('PHP grouped import with alias', () => {
     expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
   });
 
-  it('resolves non-aliased User via NamedImportMap (not just the aliased Repo)', () => {
+  it('resolves non-aliased User (not just the aliased Repo)', () => {
     // Both User (non-aliased) and R→Repo (aliased) should resolve through grouped import
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
@@ -1948,7 +1941,7 @@ describe('PHP abstract dispatch', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — PHP first-wins
+// SM-9/SM-10: inherited method resolution — PHP first-wins inheritance walk
 // ---------------------------------------------------------------------------
 
 describe('PHP Child extends ParentClass — inherited method resolution (SM-9)', () => {

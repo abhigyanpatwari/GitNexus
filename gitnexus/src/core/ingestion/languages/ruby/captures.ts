@@ -13,6 +13,7 @@ import { synthesizeRubyReceiverBinding, findEnclosingClassOrModule } from './rec
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitQualifiedName } from '../../utils/qualified-name.js';
+import { encodeMarker } from '../../utils/heritage-marker.js';
 
 const FUNCTION_NODE_TYPES = ['method', 'singleton_method'] as const;
 const HERITAGE_CALL_NAMES: ReadonlySet<string> = new Set(['include', 'extend', 'prepend']);
@@ -193,7 +194,7 @@ export function emitRubyScopeCaptures(
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__heritage__:${callName}:${mixinName}:${ownerName}`,
+                      encodeMarker('heritage', [callName, mixinName, ownerName]),
                     ),
                     '@import.name': syntheticCapture('@import.name', callNode, mixinName),
                   });
@@ -227,7 +228,7 @@ export function emitRubyScopeCaptures(
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__property__:${callName}:${propName}:${ownerName}`,
+                      encodeMarker('property', [callName, propName, ownerName]),
                     ),
                     '@import.name': syntheticCapture('@import.name', callNode, propName),
                   });
@@ -470,11 +471,11 @@ export function emitRubyScopeCaptures(
   // Emit `@reference.inherits` captures so the registry-primary scope-
   // resolution path produces EXTENDS edges (issue #1951). This mirrors the
   // C#/C++ inheritance synthesis: Ruby's superclass edges previously came
-  // only from the legacy `@heritage.extends` query, which the worker
-  // pipeline drops for registry-primary languages → 0 inheritance edges in
-  // worker mode. Mixins (include/extend/prepend) are NOT touched here — they
+  // only from the legacy heritage-capture query (removed in #942), which the
+  // worker pipeline drops for registry-primary languages → 0 inheritance edges
+  // in worker mode. Mixins (include/extend/prepend) are NOT touched here — they
   // flow through `emitHeritageEdges` (the `__heritage__:` import path above),
-  // an independent lane that stays intact when legacy @heritage is gated off.
+  // an independent lane that stays intact when the legacy heritage leg is gated off.
   out.push(...synthesizeRubySuperclassReferences(tree.rootNode));
 
   return out;
@@ -488,18 +489,16 @@ export function emitRubyScopeCaptures(
  * Scope is `class` nodes whose `superclass` field holds either a bare
  * `constant` base (`class D < Super`) or a qualified/scoped
  * `scope_resolution` base (`class C < Outer::Super`, `class E < A::B::C`) —
- * exactly the two shapes the config-driven legacy `@heritage.extends`
- * alternation now captures (heritage-extractors/configs/ruby.ts
- * `rubyHeritageShapes: ['constant', 'scope_resolution']`):
- *
- *   (class
- *     name: (constant) @heritage.class
- *     superclass: (superclass
- *       [(constant) (scope_resolution)] @heritage.extends)) @heritage
+ * exactly the two shapes the config-driven legacy heritage alternation
+ * captured (heritage-extractors/configs/ruby.ts
+ * `rubyHeritageShapes: ['constant', 'scope_resolution']`). In prose: the
+ * legacy query matched a `class` whose name is a `constant` and whose
+ * `superclass` is either a `constant` or a `scope_resolution`, capturing the
+ * superclass constant as the inherited base.
  *
  * Previously this pass emitted only for a direct `(constant)` child, so the
  * production registry-primary path silently dropped `Outer::Super`
- * superclasses while the legacy @heritage leg captured them — the exact
+ * superclasses while the legacy heritage leg captured them — the exact
  * EXTENDS/IMPLEMENTS-drop bug of #1951.
  *
  * THE PARITY CONTRACT: the `@reference.name` bare text must equal the legacy

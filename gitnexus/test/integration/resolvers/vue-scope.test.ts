@@ -9,26 +9,19 @@
  *     data()/methods/computed; `this.X()` method calls.
  *   - vue-cross-file      — composable functions, class models, multi-
  *     component app with cross-file CALLS chains.
- *
- * The `createResolverParityIt` wrapper runs each test under BOTH the
- * legacy DAG path (REGISTRY_PRIMARY_VUE=0) and the registry-primary
- * path (default) so the CI scope-parity gate can compare them.
  */
 
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
 
 const VUE_SCOPE_FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'vue-scope');
-
-const it = createResolverParityIt('vue');
 
 // ─── Composition API (`<script setup lang="ts">`) ───────────────────────────
 

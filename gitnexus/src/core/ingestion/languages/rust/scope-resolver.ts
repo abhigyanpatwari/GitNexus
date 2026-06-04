@@ -28,7 +28,7 @@ import { generateId } from '../../../../lib/utils.js';
  * sites synthesized in `captures.ts` carry the trait `T` as `site.name` (target)
  * and the struct `S` as `site.explicitReceiver.name` (source); this hook reads
  * them back and emits the IMPLEMENTS edge with source `S`, target `T`, and the
- * legacy `'trait-impl'` reason — matching the legacy `@heritage` DAG (#1951).
+ * legacy `'trait-impl'` reason — matching the legacy heritage DAG (#1951).
  *
  * Resolution is scope-aware and import-aware, mirroring the shared
  * `preEmitInheritanceEdges` pass: both `S` and `T` resolve from the `impl`

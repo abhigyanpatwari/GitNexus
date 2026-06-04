@@ -1,5 +1,7 @@
 import type Parser from 'tree-sitter';
 import { extractStringContent, findDescendant, type SyntaxNode } from '../utils/ast-helpers.js';
+import { splitNamespaceUseDeclaration } from '../languages/php/import-decomposer.js';
+import { normalizeQualifiedName } from '../utils/qualified-name.js';
 
 export interface ExtractedRoute {
   filePath: string;
@@ -7,6 +9,16 @@ export interface ExtractedRoute {
   routePath: string | null;
   routeName: string | null;
   controllerName: string | null;
+  /**
+   * The controller class's normalized (dot-joined) fully-qualified name when
+   * the routes file disambiguates it — via a `use` import (`use App\…\X;` or
+   * `use App\…\X as Y;`) or an inline qualified `::class` reference. Resolved
+   * to the same key shape the type registry stores (`normalizeQualifiedName`),
+   * so the emitter can `lookupClassByQualifiedName` to disambiguate
+   * same-short-name controllers. `null`/undefined when only a bare short name
+   * is available — the emitter then falls back to short-name resolution.
+   */
+  controllerQualifiedName?: string | null;
   methodName: string | null;
   middleware: string[];
   prefix: string | null;
@@ -150,13 +162,34 @@ function appendResourceActionName(base: string | null, action: string): string |
   return base.endsWith('.') ? `${base}${action}` : `${base}.${action}`;
 }
 
+/**
+ * Read the controller class reference out of a `class_constant_access_expression`
+ * (the `X::class` node). Returns the simple short name (for short-name fallback)
+ * and, when the reference is itself namespace-qualified (`\App\Admin\X::class`),
+ * its normalized dot-joined fully-qualified name (for direct disambiguation).
+ */
+function readControllerClassRef(classAccess: SyntaxNode): {
+  simple: string | null;
+  qualified: string | null;
+} {
+  const nameChild = classAccess.children?.find((c: SyntaxNode) => c.type === 'name');
+  const qualifiedChild = classAccess.children?.find((c: SyntaxNode) => c.type === 'qualified_name');
+  const qualified = qualifiedChild ? normalizeQualifiedName(qualifiedChild.text) : null;
+  // When only a qualified_name is present, derive the simple short name from
+  // its last segment so short-name fallback still works.
+  const simple = nameChild?.text ?? (qualified ? (qualified.split('.').pop() ?? null) : null);
+  return { simple, qualified };
+}
+
 /** Extract controller class name from common Laravel handler argument shapes. */
 function extractControllerTarget(argsNode: SyntaxNode | null): {
   controller: string | null;
+  controllerQualified: string | null;
   method: string | null;
   bareMethod: string | null;
 } {
-  if (!argsNode) return { controller: null, method: null, bareMethod: null };
+  const none = { controller: null, controllerQualified: null, method: null, bareMethod: null };
+  if (!argsNode) return none;
 
   const args: (SyntaxNode | undefined)[] = [];
   for (const child of argsNode.children ?? []) {
@@ -166,11 +199,12 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
 
   // Second arg is the handler
   const handlerNode = args[1];
-  if (!handlerNode) return { controller: null, method: null, bareMethod: null };
+  if (!handlerNode) return none;
 
   // Array syntax: [UserController::class, 'index']
   if (handlerNode.type === 'array_creation_expression') {
     let controller: string | null = null;
+    let controllerQualified: string | null = null;
     let method: string | null = null;
     const elements: SyntaxNode[] = [];
     for (const el of handlerNode.children ?? []) {
@@ -179,14 +213,16 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
     if (elements[0]) {
       const classAccess = findDescendant(elements[0], 'class_constant_access_expression');
       if (classAccess) {
-        controller = classAccess.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+        const ref = readControllerClassRef(classAccess);
+        controller = ref.simple;
+        controllerQualified = ref.qualified;
       }
     }
     if (elements[1]) {
       const str = findDescendant(elements[1], 'string');
       method = str ? extractStringContent(str) : null;
     }
-    return { controller, method, bareMethod: null };
+    return { controller, controllerQualified, method, bareMethod: null };
   }
 
   // String syntax: 'UserController@index'. A bare string such as 'index'
@@ -196,19 +232,24 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
     const text = extractStringContent(handlerNode);
     if (text?.includes('@')) {
       const [controller, method] = text.split('@');
-      return { controller, method, bareMethod: null };
+      return { controller, controllerQualified: null, method, bareMethod: null };
     }
-    if (text) return { controller: null, method: null, bareMethod: text };
+    if (text)
+      return { controller: null, controllerQualified: null, method: null, bareMethod: text };
   }
 
   // Class reference: UserController::class (invokable controller)
   if (handlerNode.type === 'class_constant_access_expression') {
-    const controller =
-      handlerNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-    return { controller, method: '__invoke', bareMethod: null };
+    const ref = readControllerClassRef(handlerNode);
+    return {
+      controller: ref.simple,
+      controllerQualified: ref.qualified,
+      method: '__invoke',
+      bareMethod: null,
+    };
   }
 
-  return { controller: null, method: null, bareMethod: null };
+  return { controller: null, controllerQualified: null, method: null, bareMethod: null };
 }
 
 interface ChainedRouteCall {
@@ -304,8 +345,62 @@ function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
   return ctx;
 }
 
+/**
+ * Build the routes file's `use`-import alias map: local name (alias, else the
+ * imported short name) → the class's normalized dot-joined fully-qualified name.
+ * Reuses the PHP `use`-declaration decomposer so grouped (`use Foo\{A, B}`) and
+ * aliased (`use Foo\Bar as Baz;`) forms are handled across grammar versions.
+ * `use` statements are file-/namespace-scoped, so a shallow walk over the
+ * routes file's structural nodes finds them all.
+ */
+function buildUseAliasMap(root: SyntaxNode): Map<string, string> {
+  const aliasMap = new Map<string, string>();
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'namespace_use_declaration') {
+      for (const match of splitNamespaceUseDeclaration(node)) {
+        const source = match['@import.source']?.text;
+        if (source === undefined) continue;
+        const local = match['@import.alias']?.text ?? match['@import.name']?.text;
+        if (local === undefined || local === '') continue;
+        aliasMap.set(local, normalizeQualifiedName(source));
+      }
+      continue;
+    }
+    // Only descend through file/namespace structure where `use` can appear —
+    // not into function bodies or expressions.
+    if (
+      node.type === 'program' ||
+      node.type === 'namespace_definition' ||
+      node.type === 'declaration_list' ||
+      node.type === 'compound_statement'
+    ) {
+      for (const child of node.namedChildren ?? []) stack.push(child);
+    }
+  }
+  return aliasMap;
+}
+
+/**
+ * Resolve a route's controller to its normalized fully-qualified name when the
+ * routes file disambiguates it: an inline qualified `::class` wins, else the
+ * `use`-import alias map for the short/local name, else `null` (the emitter
+ * falls back to short-name resolution).
+ */
+function resolveControllerQualifiedName(
+  inlineQualified: string | null,
+  controllerName: string | null,
+  aliasMap: Map<string, string>,
+): string | null {
+  if (inlineQualified) return inlineQualified;
+  if (controllerName) return aliasMap.get(controllerName) ?? null;
+  return null;
+}
+
 export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
   const routes: ExtractedRoute[] = [];
+  const useAliasMap = buildUseAliasMap(tree.rootNode);
 
   function resolveStack(stack: RouteGroupContext[]): {
     middleware: string[];
@@ -367,6 +462,11 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           routePath,
           routeName: appendResourceActionName(routeNameBase, action),
           controllerName: target.controller ?? effective.controller,
+          controllerQualifiedName: resolveControllerQualifiedName(
+            target.controllerQualified,
+            target.controller ?? effective.controller,
+            useAliasMap,
+          ),
           methodName: action,
           middleware: [...effective.middleware],
           prefix: effective.prefix,
@@ -381,6 +481,11 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         routePath,
         routeName,
         controllerName: target.controller ?? effective.controller,
+        controllerQualifiedName: resolveControllerQualifiedName(
+          target.controllerQualified,
+          target.controller ?? effective.controller,
+          useAliasMap,
+        ),
         methodName: target.method ?? (effective.controller ? target.bareMethod : null),
         middleware: [...effective.middleware],
         prefix: effective.prefix,

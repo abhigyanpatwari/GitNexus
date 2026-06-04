@@ -1,12 +1,11 @@
 /**
  * Go: package imports + cross-package calls + ambiguous struct disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,8 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('go');
 
 // ---------------------------------------------------------------------------
 // Heritage: package imports + cross-package calls (exercises PackageMap)
@@ -95,16 +92,14 @@ describe('Go package import & call resolution', () => {
 // ---------------------------------------------------------------------------
 // Qualified / generic / pointer / interface embeds (#1951)
 //
-// The registry-primary inheritance synth (languages/go/captures.ts) used to
-// emit edges ONLY for a bare `type_identifier` struct embed, silently DROPPING
-// the qualified (`pkg.Base`), pointer (`*pkg.Base`), qualified-generic
-// (`pkg.Box[T]`) struct embeds and ALL interface embeds — even though the
-// legacy `@heritage` leg (config-driven since #1940) captured them. This
-// fixture widens the synth to parity: every base reduces to its bare simple
-// name, struct bases resolve to EXTENDS and interface bases to IMPLEMENTS. The
-// bare-name struct embed (T → Local) is the byte-identical simple-base path
-// (unchanged), kept here as a regression guard. Runs under BOTH legs
-// (createResolverParityIt), so a regression on either leg fails.
+// An earlier inheritance synth (languages/go/captures.ts) emitted edges ONLY
+// for a bare `type_identifier` struct embed, silently DROPPING the qualified
+// (`pkg.Base`), pointer (`*pkg.Base`), qualified-generic (`pkg.Box[T]`) struct
+// embeds and ALL interface embeds. The synth was widened so every base reduces
+// to its bare simple name, struct bases resolve to EXTENDS and interface bases
+// to IMPLEMENTS. The bare-name struct embed (T → Local) is the unchanged
+// simple-base path, kept here as a regression guard. Scope-resolution owns
+// these edges since #942.
 // ---------------------------------------------------------------------------
 
 describe('Go qualified-base embed resolution (#1951)', () => {
@@ -1630,7 +1625,7 @@ describe('Go method enrichment', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Go struct embedding
+// SM-9/SM-10: inherited method resolution — Go struct embedding
 // ---------------------------------------------------------------------------
 
 describe('Go Child embeds Parent — inherited method resolution (SM-9)', () => {

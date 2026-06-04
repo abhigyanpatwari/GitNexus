@@ -9,6 +9,7 @@
 
 import { resolveRubyImportInternal } from '../../import-resolvers/ruby.js';
 import { buildSuffixIndex } from '../../import-resolvers/utils.js';
+import { isHeritageMarker } from '../../utils/heritage-marker.js';
 
 export interface RubyResolveContext {
   readonly fromFile: string;
@@ -37,7 +38,7 @@ export function resolveRubyImportTarget(
   _resolutionConfig?: unknown,
 ): string | readonly string[] | null {
   if (!targetRaw) return null;
-  if (targetRaw.startsWith('__heritage__:') || targetRaw.startsWith('__property__:')) return null;
+  if (isHeritageMarker(targetRaw)) return null;
 
   const fromNormalized = fromFile.replace(/\\/g, '/');
   const fromDir = fromNormalized.includes('/')

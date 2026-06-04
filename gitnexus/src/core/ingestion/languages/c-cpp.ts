@@ -44,7 +44,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { cVariableConfig, cppVariableConfig } from '../variable-extractors/configs/c-cpp.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import { stripUeMacros } from '../cpp-ue-preprocessor.js';
 import {
   emitCScopeCaptures,
@@ -383,7 +382,6 @@ export const cProvider = defineLanguage({
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cImportConfig),
-  importSemantics: 'wildcard-transitive',
   callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
   methodExtractor: createMethodExtractor({
@@ -392,7 +390,6 @@ export const cProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(cVariableConfig),
   classExtractor: cClassExtractor,
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.C),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
 
@@ -453,7 +450,6 @@ export const cppProvider = defineLanguage({
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cppImportConfig),
-  importSemantics: 'wildcard-transitive',
   mroStrategy: 'leftmost-base',
   callExtractor: createCallExtractor(cppCallConfig),
   fieldExtractor: createFieldExtractor(cppFieldConfig),
@@ -463,7 +459,6 @@ export const cppProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(cppVariableConfig),
   classExtractor: cppClassExtractor,
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.CPlusPlus),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
   extractTemplateConstraints: extractCppTemplateConstraintsForProvider,

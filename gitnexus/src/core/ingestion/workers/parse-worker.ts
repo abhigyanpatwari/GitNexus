@@ -27,7 +27,6 @@ import {
 } from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
-import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type {
   ExtractedRouterInclude,
   ExtractedRouterImport,
@@ -67,6 +66,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   isSuppressedConcreteTypedefDuplicate,
+  isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -76,13 +76,11 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
-import { preprocessImportPath } from '../import-processor.js';
 import {
   extractVueScript,
   extractTemplateComponents,
   isVueSetupTopLevel,
 } from '../vue-sfc-extractor.js';
-import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
@@ -178,14 +176,6 @@ interface ParsedSymbol {
   annotations?: string[];
 }
 
-export interface ExtractedImport {
-  filePath: string;
-  rawImportPath: string;
-  language: SupportedLanguages;
-  /** Named bindings from the import (e.g., import {User as U} → [{local:'U', exported:'User'}]) */
-  namedBindings?: NamedBinding[];
-}
-
 export interface ExtractedCall {
   filePath: string;
   calledName: string;
@@ -224,9 +214,6 @@ export interface ExtractedAssignment {
   /** 1-indexed line number of the assignment site (used for per-site dedup) */
   line?: number;
 }
-
-// `ExtractedHeritage` now lives in `../model/heritage-map.ts` and is
-// re-exported at the top of this file.
 
 export interface ExtractedFetchCall {
   filePath: string;
@@ -316,10 +303,8 @@ export interface ParseWorkerResult {
   nodes: ParsedNode[];
   relationships: ParsedRelationship[];
   symbols: ParsedSymbol[];
-  imports: ExtractedImport[];
   calls: ExtractedCall[];
   assignments: ExtractedAssignment[];
-  heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
@@ -799,10 +784,8 @@ const processBatch = (
     nodes: [],
     relationships: [],
     symbols: [],
-    imports: [],
     calls: [],
     assignments: [],
-    heritage: [],
     routes: [],
     fetchCalls: [],
     fetchWrapperDefs: [],
@@ -1180,39 +1163,13 @@ const processFileGroup = (
     );
     if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
 
-    // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
-    // Heritage edges (EXTENDS/IMPLEMENTS) are created by heritage-processor which runs
-    // in PARALLEL with call-processor, so the graph edges don't exist when buildTypeEnv
-    // runs. This pre-pass makes parent class information available for type resolution.
-    const fileParentMap = new Map<string, string[]>();
-    if (provider.heritageExtractor) {
-      for (const match of matches) {
-        const captureMap: Record<string, SyntaxNode> = {};
-        for (const c of match.captures) {
-          captureMap[c.name] = c.node;
-        }
-        if (captureMap['heritage.class']) {
-          const heritageItems = provider.heritageExtractor.extract(captureMap, {
-            filePath: file.path,
-            language,
-          });
-          for (const item of heritageItems) {
-            if (item.kind === 'extends') {
-              let parents = fileParentMap.get(item.className);
-              if (!parents) {
-                parents = [];
-                fileParentMap.set(item.className, parents);
-              }
-              if (!parents.includes(item.parentName)) parents.push(item.parentName);
-            }
-          }
-        }
-      }
-    }
-
     // Build per-file type environment + constructor bindings in a single AST walk.
-    // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
-    const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
+    // The legacy heritage pre-pass that seeded a file-local parentMap for
+    // buildTypeEnv was removed in RING4-1 (#942) along with the rest of the
+    // call-resolution DAG. Inheritance is now emitted by scope-resolution
+    // (preEmitInheritanceEdges + @reference.inherits), so buildTypeEnv runs with
+    // an empty parentMap — cross-file inheritance was never resolved here anyway.
+    const parentMap: ReadonlyMap<string, readonly string[]> = new Map();
     const typeEnv = buildTypeEnv(tree, language, {
       filePath: file.path,
       parentMap,
@@ -1263,22 +1220,10 @@ const processFileGroup = (
 
       if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) continue;
 
-      // Extract import paths before skipping
+      // Import matches: IMPORTS edges are emitted by the scope-resolution
+      // phase from finalized ImportEdges (RING4-1 #942 / RING4-2 #943 removed
+      // the legacy per-file import-map extraction that ran here). Skip.
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = preprocessImportPath(
-          captureMap['import.source'].text,
-          captureMap['import'],
-          provider,
-        );
-        if (!rawImportPath) continue;
-        const extractor = provider.namedBindingExtractor;
-        const namedBindings = extractor ? extractor(captureMap['import']) : undefined;
-        result.imports.push({
-          filePath: file.path,
-          rawImportPath,
-          language: language,
-          ...(namedBindings ? { namedBindings } : {}),
-        });
         continue;
       }
 
@@ -1491,38 +1436,19 @@ const processFileGroup = (
           if (callNameNode) {
             const calledName = callNameNode.text;
 
-            // Check heritage extractor for call-based heritage (e.g., Ruby include/extend/prepend)
-            if (provider.heritageExtractor?.extractFromCall) {
-              const heritageItems = provider.heritageExtractor.extractFromCall(
-                calledName,
-                callNode,
-                { filePath: file.path, language },
-              );
-              if (heritageItems !== null) {
-                for (const item of heritageItems) {
-                  result.heritage.push({
-                    filePath: file.path,
-                    className: item.className,
-                    parentName: item.parentName,
-                    kind: item.kind,
-                  });
-                }
-                continue;
-              }
-            }
-
-            // Dispatch: route language-specific calls (properties, imports)
-            // Heritage routing is handled by heritageExtractor.extractFromCall above.
+            // Dispatch: route language-specific calls (properties, imports).
+            // Call-based heritage (Ruby include/extend/prepend) is no longer
+            // routed here — those calls return 'skip' from the router and the
+            // mixin edges are emitted by scope-resolution (emitHeritageEdges).
             const routed = callRouter?.(calledName, captureMap['call']);
             if (routed) {
               if (routed.kind === 'skip') continue;
 
               if (routed.kind === 'import') {
-                result.imports.push({
-                  filePath: file.path,
-                  rawImportPath: routed.importPath,
-                  language,
-                });
+                // Call-routed imports (e.g. Ruby `require`) are emitted as
+                // IMPORTS edges by the scope-resolution phase; the legacy
+                // per-file extraction that consumed these was removed in
+                // RING4-2 (#943). Skip.
                 continue;
               }
 
@@ -1694,38 +1620,6 @@ const processFileGroup = (
         continue;
       }
 
-      // Extract heritage (extends/implements) via provider heritage extractor
-      if (captureMap['heritage.class']) {
-        if (provider.heritageExtractor) {
-          const heritageItems = provider.heritageExtractor.extract(captureMap, {
-            filePath: file.path,
-            language,
-          });
-          for (const item of heritageItems) {
-            result.heritage.push({
-              filePath: file.path,
-              className: item.className,
-              parentName: item.parentName,
-              kind: item.kind,
-            });
-          }
-          // When the extractor consumes the match, skip symbol processing below.
-          if (heritageItems.length > 0) {
-            continue;
-          }
-        }
-        // Fallback: the extractor returned [] (or is absent), but the match still
-        // carries a heritage-specific capture. The match belongs to a heritage
-        // clause and must not fall through to generic symbol processing.
-        if (
-          captureMap['heritage.extends'] ||
-          captureMap['heritage.implements'] ||
-          captureMap['heritage.trait']
-        ) {
-          continue;
-        }
-      }
-
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
@@ -1831,7 +1725,13 @@ const processFileGroup = (
       const getQualifiedOwnerName =
         provider.classExtractor?.qualifiedNodeId === true
           ? (node: SyntaxNode, simpleName: string): string | null =>
-              provider.classExtractor!.extractQualifiedName(node, simpleName)
+              // #1991: LOCKSTEP — a Ruby `module` owner is not a typeDeclaration, so
+              // extractQualifiedName returns null; fall back to the scope walk so a
+              // method inside a nested module owns through the SAME qualified Trait
+              // id its node uses on the worker path too.
+              provider.classExtractor!.extractQualifiedName(node, simpleName) ??
+              provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
+              null
           : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
@@ -1856,7 +1756,15 @@ const processFileGroup = (
         extractedClassSymbol?.qualifiedName ??
         (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
           ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
+          : // #1991: LOCKSTEP with parsing-processor.ts — qualify a Ruby `module`
+            // (Trait) via the scope walk so same-tail nested mixin modules get
+            // distinct ids on the worker path too. Gated on qualifiedNodeId.
+            isQualifiableScopeLabel(nodeLabel) &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              classNodeForSymbol
+            ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
+              undefined)
+            : undefined);
 
       // Qualify method/property IDs with enclosing class name to avoid collisions.
       // Class-like nodes use their own fully-qualified path as the id key when the
@@ -1874,7 +1782,9 @@ const processFileGroup = (
       const qualifiedName =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
-          : isClassLikeLabel &&
+          : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
+            // scope id keys the worker-path node, matching the sequential path.
+            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName
@@ -2245,10 +2155,8 @@ let accumulated: ParseWorkerResult = {
   nodes: [],
   relationships: [],
   symbols: [],
-  imports: [],
   calls: [],
   assignments: [],
-  heritage: [],
   routes: [],
   fetchCalls: [],
   fetchWrapperDefs: [],
@@ -2277,10 +2185,8 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.nodes, src.nodes);
   appendAll(target.relationships, src.relationships);
   appendAll(target.symbols, src.symbols);
-  appendAll(target.imports, src.imports);
   appendAll(target.calls, src.calls);
   appendAll(target.assignments, src.assignments);
-  appendAll(target.heritage, src.heritage);
   appendAll(target.routes, src.routes);
   appendAll(target.fetchCalls, src.fetchCalls);
   appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
@@ -2381,10 +2287,8 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         nodes: [],
         relationships: [],
         symbols: [],
-        imports: [],
         calls: [],
         assignments: [],
-        heritage: [],
         routes: [],
         fetchCalls: [],
         fetchWrapperDefs: [],

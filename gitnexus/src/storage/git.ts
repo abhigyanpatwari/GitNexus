@@ -264,6 +264,35 @@ export const getRemoteOriginUrl = (repoPath: string): string | null => {
 };
 
 /**
+ * Best-effort detection of the repository's default branch (#243).
+ *
+ * Reads `git symbolic-ref --short refs/remotes/origin/HEAD`, which resolves to
+ * the short ref `origin/<branch>` that the local `origin/HEAD` points at, and
+ * strips the `origin/` prefix. This is a purely local lookup — it never makes a
+ * network call. Returns `null` when there is no git repo, no `origin` remote, no
+ * `origin/HEAD` (e.g. it was never set by clone, or the repo is detached), or
+ * git is unavailable, so callers can fall back to a configured/default branch.
+ */
+export const getDefaultBranch = (repoPath: string): string | null => {
+  try {
+    const ref = execSync('git symbolic-ref --short refs/remotes/origin/HEAD', {
+      cwd: repoPath,
+      // Suppress stderr -- see getCurrentCommit comment and #1172. Without it,
+      // git prints "fatal: ref refs/remotes/origin/HEAD is not a symbolic ref"
+      // to the user's terminal on repos that never set origin/HEAD.
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+    if (!ref) return null;
+    return ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Sanitize a repository name to prevent argument injection and ensure
  * cross-platform filesystem compatibility.
  *

@@ -1,6 +1,5 @@
 /**
- * Shared utilities for import resolution.
- * Extracted from import-processor.ts to reduce file size.
+ * Suffix-index helpers for import path resolution.
  */
 
 /** All file extensions to try during resolution */
@@ -85,15 +84,6 @@ export interface SuffixIndex {
   /** Get all files in a directory suffix */
   getFilesInDir(dirSuffix: string, extension: string): string[];
 }
-
-const FROZEN_EMPTY_ARRAY: string[] = Object.freeze([]) as string[];
-
-/** Sentinel index that returns no results. Used to release memory after import resolution. */
-export const EMPTY_INDEX: SuffixIndex = Object.freeze({
-  get: () => undefined,
-  getInsensitive: () => undefined,
-  getFilesInDir: () => FROZEN_EMPTY_ARRAY,
-});
 
 export function buildSuffixIndex(normalizedFileList: string[], allFileList: string[]): SuffixIndex {
   // Map: normalized suffix -> original file path

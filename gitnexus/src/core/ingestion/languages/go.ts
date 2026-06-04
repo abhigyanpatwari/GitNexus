@@ -5,7 +5,6 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Go traits:
- *   - importSemantics: 'wildcard-leaf' (Go imports entire packages)
  *   - callRouter: present (Go method calls may need routing)
  */
 
@@ -27,8 +26,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
-import { goHeritageConfig } from '../heritage-extractors/configs/go.js';
 import {
   emitGoScopeCaptures,
   goArityCompatibility,
@@ -135,13 +132,11 @@ export const goProvider = defineLanguage({
   typeConfig: goConfig,
   exportChecker: goExportChecker,
   importResolver: createImportResolver(goImportConfig),
-  importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(goCallConfig),
   fieldExtractor: createFieldExtractor(goFieldConfig),
   methodExtractor: createMethodExtractor(goMethodConfig),
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
-  heritageExtractor: createHeritageExtractor(goHeritageConfig),
   builtInNames: GO_BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────

@@ -44,7 +44,11 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
  * On version mismatch, `loadParseCache` returns an empty cache and the
  * next save overwrites the on-disk file with the new version baked in.
  */
-const SCHEMA_BUMP = 2;
+// Bumped to 3 in RING4-1 (#942): ParseWorkerResult lost its `heritage` field
+// when the legacy heritage path was deleted. Invalidating stale on-disk caches
+// prevents cross-version replay (e.g. a rollback reading a heritage-less cache
+// into legacy code that expects `result.heritage`).
+const SCHEMA_BUMP = 3;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
