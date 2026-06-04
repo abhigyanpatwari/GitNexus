@@ -19,9 +19,7 @@
 import Parser from 'tree-sitter';
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolTableReader } from './model/index.js';
-import type { ResolutionContext } from './model/resolution-context.js';
-import { TIER_CONFIDENCE } from './model/resolution-context.js';
+import type { SemanticModel, SymbolTableReader } from './model/index.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
@@ -77,13 +75,26 @@ export function buildExportedTypeMapFromGraph(
 }
 
 /**
+ * Confidence for route → controller-method CALLS edges. Framework-route
+ * controller references (e.g. `OrderController::class` in `routes/web.php`)
+ * resolve by global class name, so this matches the legacy `global`-tier
+ * confidence the tiered resolver previously assigned these edges.
+ */
+const ROUTE_EDGE_CONFIDENCE = 0.5;
+
+/**
  * Create CALLS edges from extracted framework routes (e.g. Laravel) to their
  * controller methods. Runs for all languages — independent of call resolution.
+ *
+ * Resolves the controller class by global name via the type registry
+ * (`Registry.lookup` equivalent) and the method within the controller's file
+ * via the symbol table — replacing the retired `ResolutionContext.resolve`
+ * tiered lookup (RING4-2 #943).
  */
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,
   extractedRoutes: ExtractedRoute[],
-  ctx: ResolutionContext,
+  model: SemanticModel,
   onProgress?: (current: number, total: number) => void,
 ) => {
   for (let i = 0; i < extractedRoutes.length; i++) {
@@ -95,16 +106,18 @@ export const processRoutesFromExtracted = async (
 
     if (!route.controllerName || !route.methodName) continue;
 
-    const controllerResolved = ctx.resolve(route.controllerName, route.filePath);
-    if (!controllerResolved || controllerResolved.candidates.length === 0) continue;
-    if (controllerResolved.tier === 'global' && controllerResolved.candidates.length > 1) continue;
+    // Controller resolves by global class name. Refuse ambiguous matches —
+    // mirrors the legacy global-tier "candidates.length > 1 → skip" guard.
+    const controllerDefs = model.types.lookupClassByName(route.controllerName);
+    if (controllerDefs.length !== 1) continue;
 
-    const controllerDef = controllerResolved.candidates[0];
-    const confidence = TIER_CONFIDENCE[controllerResolved.tier];
+    const controllerDef = controllerDefs[0];
+    const confidence = ROUTE_EDGE_CONFIDENCE;
 
-    const methodResolved = ctx.resolve(route.methodName, controllerDef.filePath);
-    const methodId =
-      methodResolved?.tier === 'same-file' ? methodResolved.candidates[0]?.nodeId : undefined;
+    // Method must live in the controller's own file (the legacy emitter only
+    // accepted same-file method resolutions).
+    const methodDefs = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
+    const methodId = methodDefs[0]?.nodeId;
     const sourceId = generateId('File', route.filePath);
 
     if (!methodId) {

@@ -851,7 +851,7 @@ export async function runChunkedParseAndResolve(
     }
     if (allExtractedRoutes.length > 0) {
       const tRoutes = startTimer(deferredProfile);
-      await processRoutesFromExtracted(graph, allExtractedRoutes, ctx, (current, total) => {
+      await processRoutesFromExtracted(graph, allExtractedRoutes, ctx.model, (current, total) => {
         const ratio = total > 0 ? current / total : 1;
         onProgress({
           phase: 'parsing',

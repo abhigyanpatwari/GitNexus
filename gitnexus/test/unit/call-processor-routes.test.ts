@@ -21,7 +21,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/index.js';
 import { processRoutesFromExtracted } from '../../src/core/ingestion/call-processor.js';
 import { generateId } from '../../src/lib/utils.js';
 import type { ExtractedRoute } from '../../src/core/ingestion/route-extractors/laravel.js';
@@ -45,17 +45,18 @@ function makeRoute(overrides: Partial<ExtractedRoute> = {}): ExtractedRoute {
   };
 }
 
-/** A context with a single OrderController class + the given methods registered
- *  in the controller's own file (so method resolution lands at the same-file tier). */
-function ctxWithController(methods: string[]) {
-  const ctx = createResolutionContext();
-  ctx.model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+/** A semantic model with a single OrderController class + the given methods
+ *  registered in the controller's own file (so method resolution finds them
+ *  via the same-file symbol-table lookup). */
+function modelWithController(methods: string[]) {
+  const model = createSemanticModel();
+  model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
   for (const m of methods) {
-    ctx.model.symbols.add(CONTROLLER_FILE, m, `method:OrderController.${m}`, 'Method', {
+    model.symbols.add(CONTROLLER_FILE, m, `method:OrderController.${m}`, 'Method', {
       ownerId: 'class:OrderController',
     });
   }
-  return ctx;
+  return model;
 }
 
 function routeCallsEdges(graph: KnowledgeGraph) {
@@ -65,23 +66,23 @@ function routeCallsEdges(graph: KnowledgeGraph) {
 describe('processRoutesFromExtracted — Laravel route → controller CALLS edges', () => {
   it('resolvable controller + same-file method → one CALLS edge to the method node', async () => {
     const graph = createKnowledgeGraph();
-    const ctx = ctxWithController(['index']);
+    const model = modelWithController(['index']);
 
-    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], ctx);
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], model);
 
     const edges = routeCallsEdges(graph);
     expect(edges).toHaveLength(1);
     expect(edges[0].sourceId).toBe(generateId('File', ROUTES_FILE));
     expect(edges[0].targetId).toBe('method:OrderController.index');
-    // controller resolved at the 'global' tier → TIER_CONFIDENCE.global
+    // controller resolved by global class name → ROUTE_EDGE_CONFIDENCE (0.5)
     expect(edges[0].confidence).toBeCloseTo(0.5, 5);
   });
 
   it('resolvable controller + unknown method → CALLS edge to a guessed Method id at reduced confidence', async () => {
     const graph = createKnowledgeGraph();
-    const ctx = ctxWithController([]); // controller class only, no methods
+    const model = modelWithController([]); // controller class only, no methods
 
-    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'ghost' })], ctx);
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'ghost' })], model);
 
     const edges = routeCallsEdges(graph);
     expect(edges).toHaveLength(1);
@@ -93,12 +94,12 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
 
   it('unknown controller → no edge emitted', async () => {
     const graph = createKnowledgeGraph();
-    const ctx = ctxWithController(['index']);
+    const model = modelWithController(['index']);
 
     await processRoutesFromExtracted(
       graph,
       [makeRoute({ controllerName: 'GhostController', methodName: 'index' })],
-      ctx,
+      model,
     );
 
     expect(routeCallsEdges(graph)).toHaveLength(0);
@@ -106,20 +107,20 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
 
   it('ambiguous controller name (2+ global matches) → no edge emitted', async () => {
     const graph = createKnowledgeGraph();
-    const ctx = createResolutionContext();
+    const model = createSemanticModel();
     // Two distinct classes share the controller short-name in different files →
-    // global tier returns >1 candidate, which the emitter refuses.
-    ctx.model.symbols.add('app/A/OrderController.php', 'OrderController', 'class:A.OrderController', 'Class');
-    ctx.model.symbols.add('app/B/OrderController.php', 'OrderController', 'class:B.OrderController', 'Class');
+    // lookupClassByName returns >1 candidate, which the emitter refuses.
+    model.symbols.add('app/A/OrderController.php', 'OrderController', 'class:A.OrderController', 'Class');
+    model.symbols.add('app/B/OrderController.php', 'OrderController', 'class:B.OrderController', 'Class');
 
-    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], ctx);
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], model);
 
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
 
   it('route missing controllerName or methodName → skipped', async () => {
     const graph = createKnowledgeGraph();
-    const ctx = ctxWithController(['index']);
+    const model = modelWithController(['index']);
 
     await processRoutesFromExtracted(
       graph,
@@ -127,7 +128,7 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
         makeRoute({ controllerName: null }),
         makeRoute({ methodName: null }),
       ],
-      ctx,
+      model,
     );
 
     expect(routeCallsEdges(graph)).toHaveLength(0);
@@ -135,7 +136,7 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
 
   it('multiple routes to the same controller → one edge per route, distinct targets', async () => {
     const graph = createKnowledgeGraph();
-    const ctx = ctxWithController(['index', 'store']);
+    const model = modelWithController(['index', 'store']);
 
     await processRoutesFromExtracted(
       graph,
@@ -143,7 +144,7 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
         makeRoute({ httpMethod: 'get', routePath: '/orders', methodName: 'index' }),
         makeRoute({ httpMethod: 'post', routePath: '/orders', methodName: 'store' }),
       ],
-      ctx,
+      model,
     );
 
     const edges = routeCallsEdges(graph);
