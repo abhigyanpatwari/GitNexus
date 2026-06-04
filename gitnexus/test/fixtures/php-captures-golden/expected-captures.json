@@ -279,22 +279,6 @@
     "captureGroups": 15,
     "digest": "b315d87f85f0899ed3883ec529b86a57f2d1a88d41b2b615e707307e2889c049"
   },
-  "php-laravel-routes/app/Admin/OrderController.php": {
-    "captureGroups": 7,
-    "digest": "3a734722f3b8b2f4788878ab629590a2a676ab7cc7a5f14d2b3a5fd09ff2e2ff"
-  },
-  "php-laravel-routes/app/Http/Controllers/OrderController.php": {
-    "captureGroups": 7,
-    "digest": "63a22a22d1db899a7cda2e78ab946733ca9bb3aeb3f0cd1b6eb2623f8b5315f5"
-  },
-  "php-laravel-routes/app/Http/Controllers/PhotoController.php": {
-    "captureGroups": 7,
-    "digest": "9641941c23a8432b1f2af9b7cd23884f3ef7aa71c39eed7c45c6feb094041c2e"
-  },
-  "php-laravel-routes/routes/web.php": {
-    "captureGroups": 7,
-    "digest": "a8a83dc4ba343cd78534548bd6e19f5d989bc4970dbe759210664c4a73e39786"
-  },
   "php-local-shadow/app/Services/Main.php": {
     "captureGroups": 9,
     "digest": "b4b3e35399501d98521dc9d9281a4e5c94449b580cc6cb9b3ed4187e79ee2c07"
