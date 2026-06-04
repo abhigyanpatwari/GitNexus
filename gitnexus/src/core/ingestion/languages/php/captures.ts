@@ -308,11 +308,11 @@ export function emitPhpScopeCaptures(
  * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
  * (mirrors C# `synthesizeCsharpInheritanceReferences` / C++
  * `emitCppInheritanceCaptures`). Without this, PHP inheritance edges came only
- * from the legacy `@heritage.*` path, which the worker pipeline drops for
- * registry-primary languages (issue #1951).
+ * from the legacy heritage-capture leg (removed in #942), which the worker
+ * pipeline drops for registry-primary languages (issue #1951).
  *
  * Scope matches the legacy PHP heritage query (tree-sitter-queries.ts
- * PHP_QUERIES @heritage.extends / @heritage.implements / @heritage.trait):
+ * PHP_QUERIES extends / implements / trait-use captures):
  *
  *   1. `class_declaration` > `base_clause` > [(name) (qualified_name)] — extends
  *   2. `class_declaration` > `class_interface_clause` > [(name) (qualified_name)] — implements
@@ -326,7 +326,7 @@ export function emitPhpScopeCaptures(
  * `Base`) to match the V1 simple-name `findClassBindingInScope` contract.
  *
  * NOTE (#1951 trait-use parity): legacy emits trait-use as an IMPLEMENTS edge
- * (`heritage.trait` → `trait-impl` → IMPLEMENTS in heritage-processor.ts), and
+ * (legacy trait-use capture → `trait-impl` → IMPLEMENTS in heritage-processor.ts), and
  * the central pass matches it — `preEmitInheritanceEdges` (run.ts) maps a
  * resolved `Interface` OR `Trait` target to IMPLEMENTS (`type === 'Interface'
  * || type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS'`), so `use Trait` resolves to

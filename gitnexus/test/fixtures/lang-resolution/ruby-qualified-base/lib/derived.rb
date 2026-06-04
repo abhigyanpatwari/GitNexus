@@ -1,12 +1,12 @@
 require_relative 'outer'
 
 # SCOPED superclass `class C < Outer::Super`: the superclass field holds a
-# `scope_resolution` (Outer::Super), not a direct `constant`. The registry-
-# primary synth previously dropped this (findChild(superclass,'constant') was
-# null) so production silently omitted the EXTENDS edge while the legacy
-# @heritage leg captured it (#1951). It must resolve to `Super` by the trailing
-# `name:` constant, at parity with normalizeSupertypeName. `include Mixin` flows
-# through the independent mixin lane (IMPLEMENTS, unchanged).
+# `scope_resolution` (Outer::Super), not a direct `constant`. An earlier synth
+# dropped this (findChild(superclass,'constant') was null) so production silently
+# omitted the EXTENDS edge (#1951). It must resolve to `Super` by the trailing
+# `name:` constant, per the documented scoped-base reduction. Scope-resolution
+# owns these edges since #942. `include Mixin` flows through the independent
+# mixin lane (IMPLEMENTS, unchanged).
 class C < Outer::Super
   include Mixin
 

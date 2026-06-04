@@ -32,7 +32,7 @@ export type ConstructorBindingScanner = (
 
 /** Infer the type name of a literal AST node for overload disambiguation.
  *  Returns the canonical type name (e.g. 'int', 'String', 'boolean') or undefined
- *  for non-literal nodes. Only used when resolveCallTarget has multiple candidates
+ *  for non-literal nodes. Only used when the call resolver has multiple candidates
  *  with parameterTypes — ~1-3% of call sites. */
 export type LiteralTypeInferrer = (node: SyntaxNode) => string | undefined;
 

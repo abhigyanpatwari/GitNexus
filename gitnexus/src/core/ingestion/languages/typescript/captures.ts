@@ -429,13 +429,13 @@ export function emitTsScopeCaptures(
  * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
  * (mirrors C# `synthesizeCsharpInheritanceReferences` / JS
  * `synthesizeJsInheritanceReferences`). Without this, TS inheritance edges came
- * only from the legacy `@heritage.*` path, which the worker pipeline drops for
- * registry-primary languages — yielding 0 inheritance edges in worker mode
- * (issue #1951).
+ * only from the legacy heritage-capture leg (removed in #942), which the worker
+ * pipeline drops for registry-primary languages — yielding 0 inheritance edges
+ * in worker mode (issue #1951).
  *
  * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
  * `extends_clause` value + `implements_clause` types, matching the legacy
- * TypeScript `@heritage` query's class scope (TYPESCRIPT_QUERIES). Generic
+ * TypeScript heritage query's class scope (TYPESCRIPT_QUERIES). Generic
  * bases agree across both paths: `extends Base<T>` is captured by the legacy
  * `extends_clause value: (identifier)` already (the `type_arguments` are a
  * sibling field), and `implements IFoo<T>` is captured by a legacy clause
@@ -443,7 +443,7 @@ export function emitTsScopeCaptures(
  * path keeps parity on SIMPLE (unqualified) generic bases too (#1951).
  * Qualified bases (`ns.Base`, `ns.Base<T>`, `ns.IFoo<T>`) are ALSO now at parity
  * (#1956 tri-review U2): the synth resolves them by their member_expression /
- * nested_type_identifier tail, and the legacy `@heritage` query was widened with
+ * nested_type_identifier tail, and the legacy heritage query was widened with
  * matching arms (member_expression for extends, nested_type_identifier plain +
  * generic-wrapped for implements).
  *

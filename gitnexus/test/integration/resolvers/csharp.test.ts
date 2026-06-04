@@ -128,11 +128,10 @@ describe('C# ambiguous symbol resolution', () => {
     // `using MyApp.Models;` emits the file-level import edge, so import-aware
     // resolution (#1951) disambiguates both same-named bases to the Models/
     // definitions (NOT Other/) — pinned exactly (the prior `if (targetFilePath)`
-    // guard was vacuous). This asserts the correct registry-primary model; the
-    // legacy DAG does not emit the C# namespace using-import edge and so refuses
-    // to disambiguate, which is why this test is listed in
-    // LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES (helpers.ts) — a scope-resolver-
-    // only correctness win, not branched with conditional logic here.
+    // guard was vacuous). This asserts the correct registry-primary model. The
+    // legacy DAG (removed in #942) did not emit the C# namespace using-import
+    // edge and so refused to disambiguate; scope-resolution now owns this and
+    // resolves it correctly.
     expect(extends_[0].target).toBe('Handler');
     expect(extends_[0].targetFilePath).toBe('Models/Handler.cs');
     expect(implements_[0].target).toBe('IProcessor');
@@ -745,10 +744,10 @@ describe('C# return type inference via var + invocation', () => {
   });
 
   it('resolves user.Save() to User#Save (not Repo#Save) via return type of GetUser(): User', () => {
-    // scanConstructorBinding binds `var user = svc.GetUser()` → calleeName "GetUser".
-    // processCallsFromExtracted verifies GetUser's returnType is "User" via
-    // PackageMap resolution of `using ReturnType.Models;`, then receiver filtering
-    // resolves user.Save() to User#Save (not Repo#Save).
+    // `var user = svc.GetUser()` binds receiver `user` to calleeName "GetUser".
+    // Scope-resolution verifies GetUser's returnType is "User" via PackageMap
+    // resolution of `using ReturnType.Models;`, then receiver filtering resolves
+    // user.Save() to User#Save (not Repo#Save).
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) => c.target === 'Save' && c.source === 'Run' && c.targetFilePath.includes('User.cs'),
@@ -2059,7 +2058,7 @@ describe('C# overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — c.ParentMethod() via implements-split walk
+// SM-9: inherited method resolution — c.ParentMethod() via the inheritance walk
 // ---------------------------------------------------------------------------
 
 describe('C# Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -2273,17 +2272,16 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
   });
 
   it('emits no spurious self-EXTENDS for a record (record→record same-namespace EXTENDS is a known registry gap)', () => {
-    // Since #1956 the registry-primary synth walks `record_declaration` base_lists
-    // (matching the legacy @heritage leg), so record→class and record→interface
-    // bases now resolve to EXTENDS/IMPLEMENTS edges — see the qualified/record/
-    // struct block below (record R : Base, record P : Base(id), …). The
-    // record→RECORD case in the SAME namespace (`record UserRecord : BaseEntity`,
-    // both in `Models`) is a separate, pre-existing registry resolution gap: the
-    // synth emits the @reference.inherits capture, but the same-namespace
-    // record-target binding is not resolved on the registry leg, so no
-    // UserRecord→BaseEntity EXTENDS edge appears there (the legacy leg does emit
-    // it). It is NOT asserted here — doing so would diverge between legs — and is
-    // tracked as a follow-up. The self-edge invariant must hold on both legs.
+    // Since #1956 the inheritance synth walks `record_declaration` base_lists,
+    // so record→class and record→interface bases now resolve to
+    // EXTENDS/IMPLEMENTS edges — see the qualified/record/struct block below
+    // (record R : Base, record P : Base(id), …). The record→RECORD case in the
+    // SAME namespace (`record UserRecord : BaseEntity`, both in `Models`) is a
+    // separate, pre-existing resolution gap: the synth emits the
+    // @reference.inherits capture, but the same-namespace record-target binding
+    // is not resolved, so no UserRecord→BaseEntity EXTENDS edge appears. It is
+    // NOT asserted here and is tracked as a follow-up. The self-edge invariant
+    // must always hold.
     const extends_ = getRelationships(result, 'EXTENDS');
     const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
     expect(selfExtend).toBeUndefined();
@@ -2317,14 +2315,13 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
 // ---------------------------------------------------------------------------
 // C# qualified / record / struct / alias-qualified base heritage (#1951)
 //
-// The registry-primary synth previously walked only class/interface base
-// lists, so `record R(...) : Base, IFoo`, `record P(...) : Base(id), IBar`
+// An earlier synth walked only class/interface base lists, so
+// `record R(...) : Base, IFoo`, `record P(...) : Base(id), IBar`
 // (primary_constructor_base_type), `struct S : IFoo, ns.IBar`, and the
 // `alias_qualified_name` base `B : DomainAlias::Base` produced NO inheritance
-// edges in worker mode — even though the legacy @heritage leg covered them.
-// This block runs on BOTH legs (createResolverParityIt) and asserts the now-
-// emitted edge sets, exactly mirroring the bare names normalizeSupertypeName
-// reduces each shape to (Base / IFoo / IBar).
+// edges in worker mode. Scope-resolution (the single path since #942) now owns
+// these and asserts the emitted edge sets, mirroring the bare names each shape
+// reduces to (Base / IFoo / IBar).
 // ---------------------------------------------------------------------------
 
 describe('C# qualified/record/struct/alias base heritage (#1951)', () => {

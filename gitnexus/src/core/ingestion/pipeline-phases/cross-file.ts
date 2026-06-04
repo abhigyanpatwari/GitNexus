@@ -33,7 +33,6 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
-import { runCrossFileBindingPropagation } from './cross-file-impl.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
@@ -50,8 +49,7 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<CrossFileOutput> {
-    const { exportedTypeMap, allPathSet, totalFiles, bindingAccumulator, resolutionContext } =
-      getPhaseOutput<ParseOutput>(deps, 'parse');
+    const { totalFiles, bindingAccumulator } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     try {
       // Telemetry must run BEFORE dispose: totalBindings, fileCount, and
@@ -70,18 +68,12 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
         }
       }
 
-      const filesReprocessed = await runCrossFileBindingPropagation(
-        ctx.graph,
-        resolutionContext,
-        exportedTypeMap,
-        allPathSet,
-        totalFiles,
-        ctx.repoPath,
-        ctx.pipelineStart,
-        ctx.onProgress,
-      );
-
-      return { filesReprocessed };
+      // Legacy cross-file call re-resolution was owned by the call-resolution
+      // DAG (registry-primary languages skipped it entirely). With the DAG
+      // removed (RING4-1 #942), scope-resolution owns all CALLS edges and no
+      // cross-file re-resolution pass runs here. This phase survives solely to
+      // dispose the BindingAccumulator on the runner's behalf (see finally).
+      return { filesReprocessed: 0 };
     } finally {
       // Single dispose call site for the accumulator — runs on both the
       // happy path and the throw path so the heap is always released

@@ -1774,7 +1774,7 @@ describe('C++ out-of-class method definition with overloaded declarations', () =
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — c.parentMethod() via leftmost-base walk
+// SM-9: inherited method resolution — c.parentMethod() via leftmost-base walk
 // ---------------------------------------------------------------------------
 
 describe('C++ Child extends Parent — inherited method resolution (SM-9)', () => {

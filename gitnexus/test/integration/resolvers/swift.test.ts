@@ -464,11 +464,11 @@ describe.skipIf(!swiftAvailable)('Swift await / try expression unwrapping', () =
 // type from the iterable's declared type annotation (e.g., [User] → User).
 //
 // KNOWN GAP: The type-env correctly stores declarationTypeNodes for Swift
-// array types ([User]), but the call-processor's re-parse path doesn't
-// propagate the for-loop binding to receiver resolution. The type-env
-// infrastructure (extractForLoopBinding, extractSwiftElementTypeFromTypeNode,
+// array types ([User]), but the scope-resolution call path doesn't propagate
+// the for-loop binding to receiver resolution. The type-env infrastructure
+// (extractForLoopBinding, extractSwiftElementTypeFromTypeNode,
 // declarationTypeNodes population for type_annotation) is in place — the
-// integration gap is in how processCalls rebuilds TypeEnv for call resolution.
+// integration gap is in how the TypeEnv is rebuilt for call resolution.
 // Fixture: swift-for-loop-inference/ (ready for when this is wired up).
 // ---------------------------------------------------------------------------
 
@@ -870,7 +870,7 @@ describe.skipIf(!swiftAvailable)('Swift overloaded method disambiguation', () =>
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Swift first-wins
+// SM-9/SM-10: inherited method resolution — Swift first-wins inheritance walk
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!swiftAvailable)(

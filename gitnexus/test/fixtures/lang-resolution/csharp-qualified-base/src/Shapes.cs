@@ -3,10 +3,9 @@ using DomainAlias = App.Domain;
 
 namespace App
 {
-    // Each declaration below exercises a base-list shape the registry-primary
-    // inheritance synth DROPPED before #1951. The legacy @heritage leg already
-    // covered them (tree-sitter-queries.ts record/struct base_list arms), so
-    // both resolver legs must now agree.
+    // Each declaration below exercises a base-list shape an earlier inheritance
+    // synth DROPPED before #1951. Scope-resolution (the single path since #942)
+    // now covers them all.
 
     // record_declaration base_list, plain identifier bases (record traversal
     // was skipped — synth only walked class/interface declarations).
@@ -38,9 +37,9 @@ namespace App
     {
     }
 
-    // alias_qualified_name base (`DomainAlias::Base` → `Base`): the extractor
-    // had no case for alias_qualified_name and returned null. Its `name` field
-    // is the bare identifier; `normalizeSupertypeName` reduces it the same way.
+    // alias_qualified_name base (`DomainAlias::Base` → `Base`): an earlier
+    // extractor had no case for alias_qualified_name and returned null. Its
+    // `name` field is the bare identifier; scope-resolution reduces it the same way.
     public class B : DomainAlias::Base
     {
     }

@@ -4,7 +4,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
+import type { SymbolTableReader, SymbolTableWriter } from './model/index.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
@@ -81,7 +81,6 @@ export interface WorkerExtractedData {
   imports: ExtractedImport[];
   calls: ExtractedCall[];
   assignments: ExtractedAssignment[];
-  heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
@@ -126,7 +125,6 @@ export const mergeChunkResults = (
   const allImports: ExtractedImport[] = [];
   const allCalls: ExtractedCall[] = [];
   const allAssignments: ExtractedAssignment[] = [];
-  const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
@@ -167,7 +165,6 @@ export const mergeChunkResults = (
     for (const item of result.imports) allImports.push(item);
     for (const item of result.calls) allCalls.push(item);
     for (const item of result.assignments) allAssignments.push(item);
-    for (const item of result.heritage) allHeritage.push(item);
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
@@ -187,7 +184,6 @@ export const mergeChunkResults = (
     imports: allImports,
     calls: allCalls,
     assignments: allAssignments,
-    heritage: allHeritage,
     routes: allRoutes,
     fetchCalls: allFetchCalls,
     fetchWrapperDefs: allFetchWrapperDefs,
@@ -231,7 +227,6 @@ const processParsingWithWorkers = async (
       imports: [],
       calls: [],
       assignments: [],
-      heritage: [],
       routes: [],
       fetchCalls: [],
       fetchWrapperDefs: [],

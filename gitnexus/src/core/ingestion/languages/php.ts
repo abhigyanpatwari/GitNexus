@@ -37,7 +37,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { phpCallConfig } from '../call-extractors/configs/php.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -295,7 +294,6 @@ export const phpProvider = defineLanguage({
   methodExtractor: createMethodExtractor(phpMethodConfig),
   variableExtractor: createVariableExtractor(phpVariableConfig),
   classExtractor: createClassExtractor(phpClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.PHP),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,

@@ -16,11 +16,10 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
-// Shadow vitest's `it` with the parity-gated runner so tests listed in
-// `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.typescript` (helpers.ts) skip
-// under `REGISTRY_PRIMARY_TYPESCRIPT=0` (legacy DAG mode) and run normally
-// under the default registry-primary path. The scope-parity CI gate
-// requires this for the issue #1358 singleton describes below.
+// Shadow vitest's `it` with the language-tagged runner. The legacy dual-mode
+// parity skip was removed with the call-resolution DAG (#942); scope-resolution
+// is now the single resolution path, so every case (including the issue #1358
+// singleton describes below) runs unconditionally.
 const it = createResolverParityIt('typescript');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
@@ -33,10 +32,9 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
 
 // ---------------------------------------------------------------------------
 // Generic-base heritage (#1951): extends Box<T> already worked (value: identifier
-// captures Base; type_args are a sibling), but `implements IFoo<T>` matched 0 in
-// the legacy @heritage query while the registry synth emitted 1 — a latent =0/=1
-// parity break. Widening the legacy implements clause closes it. Runs under BOTH
-// legs via createResolverParityIt, so it fails on the legacy leg if it regresses.
+// captures Base; type_args are a sibling), and `implements IFoo<T>` is resolved
+// to its bare name IFoo. Scope-resolution (the single path since #942) owns
+// these edges.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript generic-base heritage resolution (#1951)', () => {
@@ -62,9 +60,8 @@ describe('TypeScript generic-base heritage resolution (#1951)', () => {
 // + `implements ns.IFoo<string>` (qualified-generic, on Service) and `extends
 // ns.Base` + `implements ns.IBar` (qualified non-generic, on Plain). extends
 // uses a member_expression value; implements uses a nested_type_identifier
-// (plain) or a generic_type wrapping one. The registry-primary synth resolves
-// these by their tail; the legacy @heritage query was widened to match. Runs
-// under BOTH legs via createResolverParityIt.
+// (plain) or a generic_type wrapping one. Scope-resolution resolves these by
+// their tail and owns these edges since #942.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript qualified-base heritage resolution (#1956 U2)', () => {
@@ -2711,7 +2708,7 @@ describe('TypeScript same-arity overload cross-file resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — child.parentMethod() via first-wins walk
+// SM-9: inherited method resolution — child.parentMethod() via first-wins walk
 // ---------------------------------------------------------------------------
 
 describe('TypeScript Child extends Parent — inherited method resolution (SM-9)', () => {

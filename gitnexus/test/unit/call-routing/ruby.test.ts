@@ -251,18 +251,18 @@ describe('routeRubyCall — require / require_relative', () => {
 });
 
 // ── include / extend / prepend ───────────────────────────────────────────────
-// Heritage routing (include/extend/prepend) is now handled by
-// heritageExtractor.extractFromCall before the call router runs.
-// routeRubyCall returns 'skip' so these calls don't fall through
-// to normal call processing.
+// Heritage edges for include/extend/prepend are emitted by the scope-resolution
+// pipeline, not by the call router. routeRubyCall returns 'skip' for these so
+// they don't become spurious call edges or fall through to normal call
+// processing.
 
-describe('routeRubyCall — include / extend / prepend (now delegated to heritageExtractor)', () => {
-  it('include returns skip (heritage handled by heritageExtractor)', () => {
+describe('routeRubyCall — include / extend / prepend (heritage owned by scope-resolution)', () => {
+  it('include returns skip (heritage emitted by scope-resolution, not a call edge)', () => {
     const node = makeHeritageCallNode([makeConstantArg('Serializable')], 'class', 'User');
     expect(routeRubyCall('include', node)).toEqual({ kind: 'skip' });
   });
 
-  it('extend returns skip (heritage handled by heritageExtractor)', () => {
+  it('extend returns skip (heritage emitted by scope-resolution, not a call edge)', () => {
     const node = makeHeritageCallNode(
       [makeScopeResolutionArg('ActiveSupport::Concern')],
       'class',
@@ -271,7 +271,7 @@ describe('routeRubyCall — include / extend / prepend (now delegated to heritag
     expect(routeRubyCall('extend', node)).toEqual({ kind: 'skip' });
   });
 
-  it('prepend returns skip (heritage handled by heritageExtractor)', () => {
+  it('prepend returns skip (heritage emitted by scope-resolution, not a call edge)', () => {
     const node = makeHeritageCallNode([makeConstantArg('Instrumented')], 'class', 'Service');
     expect(routeRubyCall('prepend', node)).toEqual({ kind: 'skip' });
   });

@@ -28,12 +28,11 @@ import path from 'path';
 import {
   FIXTURES,
   getRelationships,
-  isLegacyResolverParityRun,
   runPipelineFromRepo,
   type PipelineResult,
 } from './resolvers/helpers.js';
 
-describe.skipIf(isLegacyResolverParityRun('javascript'))(
+describe(
   'JavaScript array-method-callback CALLS attribution (#1876)',
   () => {
     let result: PipelineResult;

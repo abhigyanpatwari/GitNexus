@@ -239,9 +239,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   extension_declaration: 'Extension',
   class: 'Class',
   // Ruby `module` declarations map to `Trait` so they participate in the
-  // class-like type registry used by `lookupClassByName` / `buildHeritageMap`.
-  // This lets `include` / `extend` / `prepend` mixin heritage resolve to
-  // the providing module. Safe for non-Ruby languages: the only supported
+  // class-like type registry used by `lookupClassByName` / inheritance
+  // resolution. This lets `include` / `extend` / `prepend` mixin heritage
+  // resolve to the providing module. Safe for non-Ruby languages: the only supported
   // grammar that uses the bare `module` AST node type as a container is
   // Ruby (Rust uses `mod_item`). Any new language adding a `module` node
   // type must explicitly reclassify here.

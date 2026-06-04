@@ -39,8 +39,9 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   pit('detects 3 modules (labeled as Trait for class-like registry lookup)', () => {
     // Ruby `module` declarations are relabeled to `Trait` during ingestion so
-    // they participate in `lookupClassByName` and `buildHeritageMap`. This is
-    // the single source of truth for Ruby module detection in the graph.
+    // they participate in `lookupClassByName` and scope-resolution's heritage
+    // resolution. This is the single source of truth for Ruby module detection
+    // in the graph.
     expect(getNodesByLabel(result, 'Trait')).toEqual(['Cacheable', 'Loggable', 'Serializable']);
     expect(getNodesByLabel(result, 'Module')).toEqual([]);
   });
@@ -282,9 +283,9 @@ describe('Ruby qualified class names', () => {
 
 // ---------------------------------------------------------------------------
 // Qualified-base heritage: `class C < Outer::Super` (scope_resolution super-
-// class) must emit EXTENDS at parity with the legacy @heritage leg (#1951).
-// The bare control `class D < Base` keeps the original path byte-identical, and
-// `include Mixin` flows through the unchanged mixin → IMPLEMENTS lane.
+// class) must emit EXTENDS (#1951). The bare control `class D < Base` keeps the
+// original path unchanged, and `include Mixin` flows through the unchanged
+// mixin → IMPLEMENTS lane. Scope-resolution owns these edges since #942.
 // ---------------------------------------------------------------------------
 
 describe('Ruby qualified-base heritage resolution (#1951)', () => {
@@ -1405,7 +1406,7 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Ruby first-wins
+// SM-9/SM-10: inherited method resolution — Ruby first-wins inheritance walk
 // ---------------------------------------------------------------------------
 
 describe('Ruby Child extends Parent — inherited method resolution (SM-9)', () => {
