@@ -395,6 +395,19 @@ function joinPath(prefix: string, methodPath: string): string {
   return `/${cleanPrefix}/${cleanSub}`;
 }
 
+function joinInheritedSpringPath(prefix: string, inheritedPath: string): string {
+  if (!prefix) return inheritedPath;
+  const normalizedPrefix = joinPath('', prefix).replace(/\/+$/, '') || '/';
+  const normalizedInheritedPath = joinPath('', inheritedPath);
+  if (
+    normalizedInheritedPath === normalizedPrefix ||
+    normalizedInheritedPath.startsWith(`${normalizedPrefix}/`)
+  ) {
+    return normalizedInheritedPath;
+  }
+  return joinPath(prefix, inheritedPath);
+}
+
 function getNodeName(node: Parser.SyntaxNode): string | null {
   return node.childForFieldName('name')?.text ?? null;
 }
@@ -651,7 +664,7 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
         const routes = routeMap.get(method.name) ?? [];
         return routes.map((route) => ({
           method: route.method,
-          path: joinPath(type.classPrefix, route.path),
+          path: joinInheritedSpringPath(type.classPrefix, route.path),
         }));
       });
 
