@@ -919,15 +919,6 @@ export async function runChunkedParseAndResolve(
       astCache.clear();
     }
 
-    // Log resolution cache stats
-    if (isDev) {
-      const rcStats = ctx.getStats();
-      const total = rcStats.cacheHits + rcStats.cacheMisses;
-      const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
-      logger.info(
-        `🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`,
-      );
-    }
   } finally {
     // Clearing an already-empty cache is a no-op, so this is idempotent-safe
     // on the happy path where every per-chunk block already cleared astCache.
