@@ -703,6 +703,48 @@ describe('GenericFieldExtractor — Go', () => {
     expect(goConfig.extractType(xNode)).toBe('float64');
   });
 
+  it('extracts every name from Go multi-name struct fields', () => {
+    const { typeDecl } = findTypeSpec(`type Point struct {\n\tX, y int\n}`);
+
+    const result = extractor.extract(typeDecl, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(2);
+
+    const xField = result!.fields.find((field) => field.name === 'X');
+    expect(xField).toBeDefined();
+    expect(xField!.type).toBe('int');
+    expect(xField!.visibility).toBe('public');
+
+    const yField = result!.fields.find((field) => field.name === 'y');
+    expect(yField).toBeDefined();
+    expect(yField!.type).toBe('int');
+    expect(yField!.visibility).toBe('package');
+  });
+
+  it('extracts Go multi-name struct fields when called with the runtime struct_type owner', () => {
+    const { typeDecl } = findTypeSpec(`type Point struct {\n\tX, y int\n}`);
+    const typeSpec = typeDecl.namedChild(0)!;
+    const structType = typeSpec.namedChild(1)!;
+
+    expect(structType.type).toBe('struct_type');
+    expect(extractor.isTypeDeclaration(structType)).toBe(true);
+
+    const result = extractor.extract(structType, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('Point');
+    expect(result!.fields).toHaveLength(2);
+
+    const xField = result!.fields.find((field) => field.name === 'X');
+    expect(xField).toBeDefined();
+    expect(xField!.type).toBe('int');
+    expect(xField!.visibility).toBe('public');
+
+    const yField = result!.fields.find((field) => field.name === 'y');
+    expect(yField).toBeDefined();
+    expect(yField!.type).toBe('int');
+    expect(yField!.visibility).toBe('package');
+  });
+
   it('reports isStatic and isReadonly as false for all fields', () => {
     const { typeDecl } = findTypeSpec(`type S struct {\n\tX int\n}`);
     const typeSpec = typeDecl.namedChild(0)!;

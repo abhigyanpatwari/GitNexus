@@ -63,6 +63,38 @@ func main() {
     expect(tags).toContain('@reference.write');
   });
 
+  it('emits every name from multi-name const, var, and field declarations', () => {
+    const src = `
+package main
+
+const X, Y,Z,A,B = 1, 2,3,4,5
+var a, b int
+var (
+  c, d string
+)
+const (
+  C, D = 3, 4
+)
+type Point struct { X, y int }
+`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+
+    const constNames = matches
+      .filter((m) => m['@declaration.const'] !== undefined)
+      .map((m) => m['@declaration.name']!.text);
+    expect(constNames.sort()).toEqual(['A', 'B', 'C', 'D', 'X', 'Y', 'Z']);
+
+    const variableNames = matches
+      .filter((m) => m['@declaration.variable'] !== undefined)
+      .map((m) => m['@declaration.name']!.text);
+    expect(variableNames.sort()).toEqual(['a', 'b', 'c', 'd']);
+
+    const fieldNames = matches
+      .filter((m) => m['@declaration.field'] !== undefined)
+      .map((m) => m['@declaration.name']!.text);
+    expect(fieldNames.sort()).toEqual(['X', 'y']);
+  });
+
   // ── Edge shapes the #1915 captured-node refactor reasons about but no
   //    lang-resolution fixture exercises (issue #1848 follow-up U2). ──
 

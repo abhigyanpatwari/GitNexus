@@ -21,7 +21,72 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
  * Visibility: uppercase first letter = exported (public), lowercase = unexported (package).
  */
 
+function goVisibilityForName(name: string): VariableVisibility {
+  const firstChar = name.charAt(0);
+  return firstChar === firstChar.toUpperCase() && firstChar !== firstChar.toLowerCase()
+    ? 'public'
+    : 'package';
+}
+
+function collectGoSpecNames(spec: SyntaxNode): string[] {
+  const names: string[] = [];
+  for (let i = 0; i < spec.namedChildCount; i++) {
+    const child = spec.namedChild(i);
+    if (!child) continue;
+    if (child.type === 'identifier') {
+      names.push(child.text);
+      continue;
+    }
+    break;
+  }
+  return names;
+}
+
+function collectGoSpecs(node: SyntaxNode): SyntaxNode[] {
+  const specs: SyntaxNode[] = [];
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'var_spec' || child?.type === 'const_spec') {
+      specs.push(child);
+      continue;
+    }
+    if (child?.type === 'var_spec_list') {
+      specs.push(...collectGoSpecs(child));
+    }
+  }
+  return specs;
+}
+
+function collectGoDeclarationNames(node: SyntaxNode): string[] {
+  if (node.type === 'short_var_declaration') {
+    const left = node.childForFieldName('left');
+    if (left?.type !== 'expression_list') return [];
+    return left.namedChildren
+      .filter((child: SyntaxNode) => child.type === 'identifier')
+      .map((child: SyntaxNode) => child.text);
+  }
+
+  const names: string[] = [];
+  for (const spec of collectGoSpecs(node)) names.push(...collectGoSpecNames(spec));
+  return names;
+}
+
+function findGoSpecForName(node: SyntaxNode, name: string): SyntaxNode | undefined {
+  for (const spec of collectGoSpecs(node)) {
+    if (collectGoSpecNames(spec).includes(name)) return spec;
+  }
+  return undefined;
+}
+
+function extractGoSpecType(spec: SyntaxNode): string | undefined {
+  const typeNode = spec.childForFieldName('type');
+  return typeNode ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim()) : undefined;
+}
+
 function extractGoVarName(node: SyntaxNode): string | undefined {
+  const firstName = collectGoDeclarationNames(node)[0];
+  if (firstName) return firstName;
+
   // var_declaration/const_declaration → var_spec/const_spec → identifier
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
@@ -47,12 +112,9 @@ function extractGoVarName(node: SyntaxNode): string | undefined {
 }
 
 function extractGoVarType(node: SyntaxNode): string | undefined {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === 'var_spec' || child?.type === 'const_spec') {
-      const typeNode = child.childForFieldName('type');
-      if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
-    }
+  for (const spec of collectGoSpecs(node)) {
+    const typeName = extractGoSpecType(spec);
+    if (typeName) return typeName;
   }
   return undefined;
 }
@@ -66,6 +128,11 @@ export const goVariableConfig: VariableExtractionConfig = {
   extractName: extractGoVarName,
   extractType: extractGoVarType,
 
+  extractTypeForName(node, name) {
+    const spec = findGoSpecForName(node, name);
+    return spec ? extractGoSpecType(spec) : undefined;
+  },
+
   extractVisibility(node): VariableVisibility {
     const name = extractGoVarName(node);
     if (!name) return 'package';
@@ -74,6 +141,12 @@ export const goVariableConfig: VariableExtractionConfig = {
     return firstChar === firstChar.toUpperCase() && firstChar !== firstChar.toLowerCase()
       ? 'public'
       : 'package';
+  },
+
+  extractNames: collectGoDeclarationNames,
+
+  extractVisibilityForName(_node, name): VariableVisibility {
+    return goVisibilityForName(name);
   },
 
   isConst(node) {

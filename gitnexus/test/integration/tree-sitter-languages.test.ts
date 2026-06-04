@@ -128,6 +128,40 @@ describe('Tree-sitter multi-language parsing', () => {
       const defTypes = defs.map((d) => d.type);
       expect(defTypes).toContain('definition.function');
     });
+
+    it('captures every name in multi-name const, var, and field declarations', async () => {
+      await loadLanguage(SupportedLanguages.Go);
+      const provider = getProvider(SupportedLanguages.Go);
+      const code = `
+        package main
+        const X, Y,Z,A,B = 1, 2,3,4,5
+        var a, b int
+        var (
+          c, d string
+        )
+        const (
+          C, D = 3, 4
+        )
+        type Point struct { X, y int }
+      `;
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const constNames = defs
+        .filter((def) => def.type === 'definition.const')
+        .map((def) => def.name);
+      expect(constNames.sort()).toEqual(['A', 'B', 'C', 'D', 'X', 'Y', 'Z']);
+
+      const variableNames = defs
+        .filter((def) => def.type === 'definition.variable')
+        .map((def) => def.name);
+      expect(variableNames.sort()).toEqual(['a', 'b', 'c', 'd']);
+
+      const propertyNames = defs
+        .filter((def) => def.type === 'definition.property')
+        .map((def) => def.name);
+      expect(propertyNames.sort()).toEqual(['X', 'y']);
+    });
   });
 
   describe('C', () => {

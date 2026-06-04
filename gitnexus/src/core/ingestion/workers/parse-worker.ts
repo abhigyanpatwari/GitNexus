@@ -1984,7 +1984,9 @@ const processFileGroup = (
           filePath: file.path,
           language,
         };
-        const varInfo = provider.variableExtractor.extract(definitionNode, varCtx);
+        const varInfo = provider.variableExtractor
+          .extractAll(definitionNode, varCtx)
+          .find((info) => info.name === nodeName);
         if (varInfo) {
           if (varInfo.type) declaredType = varInfo.type;
           methodProps.visibility = varInfo.visibility;
