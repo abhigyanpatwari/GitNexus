@@ -59,4 +59,13 @@ export interface SymbolDefinition {
   isExplicit?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
+  /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)
+   *  tagged during the C++ resolution phase. Lets the graph bridge retry a
+   *  namespace-prefixed node-lookup key and lets the qualified-base resolver
+   *  break same-tail cross-namespace inheritance ties. A deliberate sidecar,
+   *  separate from `qualifiedName`: it does NOT participate in graph node
+   *  identity (node keys derive from filePath/type/qualifiedName) and leaves the
+   *  qualifiedName-keyed resolution index untouched. Absent for the common case
+   *  (non-namespace-nested defs and all non-C++ languages). */
+  namespacePrefix?: string;
 }

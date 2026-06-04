@@ -621,6 +621,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'resolves NS::DB : B::Inner → EXTENDS the NS.B.Inner node (not NS.A.Inner)',
     'genuinely used the worker pool for the namespaced fixture',
     'resolves NS::DA / NS::DB to their own namespaced base on the worker path',
+    // #1993: cross-namespace same-tail base, broken by the namespacePrefix sidecar
+    // tie-break in the registry-primary resolveQualifiedInheritanceBase. Legacy only.
+    'routes NS1.DA EXTENDS NS1.A.Inner and NS2.DB EXTENDS NS2.A.Inner (no cross-ns tie)',
+    // #1993 worker-path parity (mirrors the sequential entry above): the sidecar
+    // tie-break must resolve identically on the parse-worker path. Registry-primary only.
+    'genuinely used the worker pool for the cross-namespace fixture',
+    'routes NS1.DA / NS2.DB to their own namespaced base on the worker path (no cross-ns tie)',
     // #1982 follow-up: C++ worker-path DerivedA parity + duplicate guard.
     'resolves DerivedA : Outer::Inner → EXTENDS Outer.Inner on the worker path (parity + no duplicate)',
     // #1982 follow-up: root-anchored base must not bind to an enclosing-relative

@@ -385,7 +385,27 @@ function resolveQualifiedInheritanceBase(
       }
     }
     if (count === 1) return unique;
-    if (count > 1) return undefined; // genuine tie at this key → refuse, don't guess
+    if (count > 1) {
+      // #1993: same-tail bases collide at this namespace-omitted key (`NS1::A::Inner`
+      // and `NS2::A::Inner` both key `A.Inner`). Break the tie with the bridge's
+      // `namespacePrefix` sidecar — prefer the candidate in the SAME enclosing
+      // namespace as the deriving class. Bridge-held: `def.qualifiedName` and the
+      // index keys are untouched; still refuse when the sidecar can't pick a unique.
+      const childPrefix = enclosingClassDef?.namespacePrefix;
+      if (childPrefix !== undefined && childPrefix.length > 0) {
+        let nsUnique: SymbolDefinition | undefined;
+        let nsCount = 0;
+        for (const id of ids) {
+          const def = scopes.defs.get(id);
+          if (def !== undefined && isClassLike(def.type) && def.namespacePrefix === childPrefix) {
+            nsUnique = def;
+            nsCount++;
+          }
+        }
+        if (nsCount === 1) return nsUnique;
+      }
+      return undefined; // genuine tie → refuse, don't guess
+    }
   }
   return undefined;
 }
@@ -853,7 +873,32 @@ export function tagNamespacePrefixes(parsed: ParsedFile): void {
       const q = def.qualifiedName;
       if (q === undefined || q.length === 0) continue;
       if (q === prefix || q.startsWith(`${prefix}.`)) continue; // already namespaced
-      (def as { namespacePrefix?: string }).namespacePrefix = prefix;
+      def.namespacePrefix = prefix;
+    }
+  }
+
+  // #1993: also tag defs declared DIRECTLY in a Namespace scope with that
+  // namespace's OWN full path. The loop above only reaches class-nested defs
+  // (`A::Inner`); a deriving class like `NS1::DA` lives in the namespace scope and
+  // is skipped, so it would carry no prefix and a same-tail cross-namespace base
+  // tie (`NS1::A::Inner` vs `NS2::A::Inner`) could not be broken by the deriving
+  // side. Composed identically to the class-nested path (enclosing tails + own
+  // tail) so the two agree; still sidecar-only (`qualifiedName` untouched).
+  for (const scope of parsed.scopes) {
+    if (scope.kind !== 'Namespace') continue;
+    const ownNsDef = scope.ownedDefs.find((d) => d.type === 'Namespace');
+    const ownQ = ownNsDef?.qualifiedName;
+    if (ownQ === undefined || ownQ.length === 0) continue;
+    const ownTail = ownQ.slice(ownQ.lastIndexOf('.') + 1);
+    const parentPrefix = namespacePrefixOf(scope);
+    const fullPrefix = parentPrefix.length > 0 ? `${parentPrefix}.${ownTail}` : ownTail;
+    for (const def of scope.ownedDefs) {
+      if (def.type === 'Namespace') continue;
+      const q = def.qualifiedName;
+      if (q === undefined || q.length === 0) continue;
+      if (q === fullPrefix || q.startsWith(`${fullPrefix}.`)) continue; // already namespaced
+      if (def.namespacePrefix !== undefined) continue;
+      def.namespacePrefix = fullPrefix;
     }
   }
 }

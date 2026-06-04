@@ -4188,6 +4188,73 @@ describe('C++ namespaced same-tail nested heritage — worker path parity (issue
 // `A.Inner` key is tried → the global type. Registry-primary only.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cross-namespace same-tail nested heritage — bridge-held tie-break (issue #1993)
+//
+// NS1::A::Inner and NS2::A::Inner both key the namespace-omitted `A.Inner` in the
+// qualifiedNames index, so resolveQualifiedInheritanceBase refused-on-tie and the
+// scope-walk fallback first-wins to NS1's Inner — DB CROSS-WIRES its EXTENDS to
+// NS1::A::Inner (DA resolves correctly only by that first-wins luck). The cross-wire
+// still resolves to a real node, so findDanglingEdges can't catch it, and the #1982
+// bridge can't reach it either (it rescues the structure-phase node lookup, not the
+// resolution-index tie). The `namespacePrefix` sidecar breaks the tie: DA's enclosing
+// namespace NS1 selects NS1::A::Inner. Bridge-held — def.qualifiedName and the index
+// keys are unchanged. Registry-primary only (the qualified-base resolver is the bridge).
+// ---------------------------------------------------------------------------
+
+describe('C++ cross-namespace same-tail nested heritage — bridge-held tie-break (issue #1993)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-cross-namespace-same-tail'),
+      () => {},
+    );
+  }, 60000);
+
+  it('routes NS1.DA EXTENDS NS1.A.Inner and NS2.DB EXTENDS NS2.A.Inner (no cross-ns tie)', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS');
+    const baseQnOf = (derivedQn: string) => {
+      const e = extendsEdges.find(
+        (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === derivedQn,
+      );
+      expect(e, `EXTENDS from ${derivedQn}`).toBeDefined();
+      return result.graph.getNode(e!.rel.targetId)?.properties.qualifiedName;
+    };
+    expect(baseQnOf('NS1.DA')).toBe('NS1.A.Inner');
+    expect(baseQnOf('NS2.DB')).toBe('NS2.A.Inner');
+  });
+});
+
+describe('C++ cross-namespace same-tail nested heritage — worker path parity (issue #1993)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-cross-namespace-same-tail'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool for the cross-namespace fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('routes NS1.DA / NS2.DB to their own namespaced base on the worker path (no cross-ns tie)', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS');
+    const baseQnOf = (derivedQn: string) => {
+      const e = extendsEdges.find(
+        (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === derivedQn,
+      );
+      expect(e, `EXTENDS from ${derivedQn} (worker)`).toBeDefined();
+      return result.graph.getNode(e!.rel.targetId)?.properties.qualifiedName;
+    };
+    expect(baseQnOf('NS1.DA')).toBe('NS1.A.Inner');
+    expect(baseQnOf('NS2.DB')).toBe('NS2.A.Inner');
+  });
+});
+
 describe('C++ root-anchored base ignores enclosing-relative type (issue #1982)', () => {
   let result: PipelineResult;
 
