@@ -2103,6 +2103,164 @@ describe('Rust inline mod-nested same-tail collision — distinct nodes (issue #
 });
 
 // ---------------------------------------------------------------------------
+// #1992: GENERIC inherent-impl ownership — `impl<T> Inner<T>` methods own through
+// the mod-qualified Impl node, not orphaned to File.
+//
+// PR #1981 / `bc4a560d` qualified the UNSCOPED bare `impl Inner` target. A GENERIC
+// inherent-impl target (`impl<T> Inner<T>`) is a `generic_type` node, which the
+// inherent-impl owner walk (ast-helpers `findEnclosingClassInfo`) did not match —
+// so the walk returned null and the method got `File -> DEFINES` with NO HAS_METHOD
+// (orphaned; invisible to findDanglingEdges). The Impl NODE was already correctly
+// mod-qualified (the @name capture drills into the inner type_identifier,
+// tree-sitter-queries.ts), so the fix is owner-walk-only and the owner id == the
+// node id (`a.Inner` / `b.Inner`) by construction. Holds on both resolver legs
+// (structure-phase).
+// ---------------------------------------------------------------------------
+
+describe('Rust generic inherent-impl same-tail ownership — distinct nodes (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
+      () => {},
+    );
+  }, 60000);
+
+  it('owns fa / fb through distinct mod-qualified Impl nodes (generic impl, no orphan)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'fa');
+    const b = hm.find((e) => e.target === 'fb');
+    // Pre-fix the generic-impl owner walk returns null, so fa/fb orphan to File
+    // (File -> DEFINES, no HAS_METHOD) — toBeDefined() fails on the pre-fix base.
+    expect(a, 'HAS_METHOD -> fa').toBeDefined();
+    expect(b, 'HAS_METHOD -> fb').toBeDefined();
+    // Owner id is the mod-qualified Impl node, byte-identical to the node id.
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('a.Inner');
+    expect(b!.rel.sourceId).toContain('b.Inner');
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R6: scoped-generic `impl<T> crate::c::Scoped<T>` materializes no Impl node, so
+  // `fd` must NOT own through a phantom `c.Scoped` node — it stays orphaned
+  // (deferred). Guards against the owner walk minting an owner id for an
+  // unmaterialized node.
+  it('does not mint a phantom owner for a scoped-generic impl (fd orphaned, deferred)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    expect(hm.find((e) => e.target === 'fd')).toBeUndefined();
+  });
+});
+
+// Same fixture forced through the WORKER pool (parse-worker.ts). The inherent-impl
+// owner walk is shared structure-phase logic, so generic-impl ownership must hold
+// on BOTH the sequential and worker paths.
+describe('Rust generic inherent-impl ownership — worker path parity (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('owns fa / fb through distinct mod-qualified Impl nodes on the worker path', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'fa');
+    const b = hm.find((e) => e.target === 'fb');
+    expect(a, 'HAS_METHOD -> fa').toBeDefined();
+    expect(b, 'HAS_METHOD -> fb').toBeDefined();
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('a.Inner');
+    expect(b!.rel.sourceId).toContain('b.Inner');
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F3 (#1992 follow-up) — same-tail generic impls that ALSO share a method name
+// must materialize DISTINCT method (Function) nodes.
+//
+// `${className}.${methodName}` keys the method node id (Rust `fn`s carry the
+// `Function` label). Before this fix the bare inherent-impl arm set `className` to
+// the bare tail (`Inner`), so two same-tail generic impls under sibling mods that
+// each define `fn m` both keyed `Function:…:Inner.m#0` and collapsed onto ONE node
+// (graph addNode is first-write-wins) — the second `m` was silently dropped and
+// both HAS_METHOD edges targeted the survivor. The owner `classId` was already
+// mod-qualified, so HAS_METHOD *sources* stayed distinct, which masked the
+// collision (sourceId-only assertions passed). Qualifying `className`
+// (`a.Inner` / `b.Inner`) keys `a.Inner.m` / `b.Inner.m`, so both nodes survive
+// with distinct ids. Structure-phase, so it holds on both resolver legs and the
+// worker path.
+// ---------------------------------------------------------------------------
+
+describe('Rust same-tail generic impls with shared method name — distinct nodes (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
+      () => {},
+    );
+  }, 60000);
+
+  it('materializes two distinct `m` method nodes (no first-write-wins collapse)', () => {
+    // Pre-fix: only one `m` Function node survives (the second is dropped on the
+    // colliding id) — length is 1, so toBe(2) fails on the pre-fix base.
+    const methods = getNodesByLabel(result, 'Function').filter((n) => n === 'm');
+    expect(methods.length).toBe(2);
+  });
+
+  it('owns each `m` through its own mod-qualified Impl node (distinct source AND target)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'm');
+    expect(hm.length).toBe(2);
+    // Owner edges were always distinct (classId is mod-qualified)…
+    expect(hm[0].rel.sourceId).not.toBe(hm[1].rel.sourceId);
+    const sources = [hm[0].rel.sourceId, hm[1].rel.sourceId].sort();
+    expect(sources[0]).toContain('a.Inner');
+    expect(sources[1]).toContain('b.Inner');
+    // …but the TARGET node collapsed pre-fix — this is the F3 assertion.
+    expect(hm[0].rel.targetId).not.toBe(hm[1].rel.targetId);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// Same fixture forced through the WORKER pool — the impl owner walk + node-id
+// keying is shared structure-phase logic, so the distinct-node guarantee must hold
+// on the worker path too (parse-worker.ts mirrors parsing-processor.ts).
+describe('Rust same-tail generic impls with shared method name — worker path parity (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('materializes two distinct `m` method nodes on the worker path', () => {
+    const methods = getNodesByLabel(result, 'Function').filter((n) => n === 'm');
+    expect(methods.length).toBe(2);
+    const hm = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'm');
+    expect(hm.length).toBe(2);
+    expect(hm[0].rel.sourceId).not.toBe(hm[1].rel.sourceId);
+    expect(hm[0].rel.targetId).not.toBe(hm[1].rel.targetId);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // F71 — union declarations resolve as Struct nodes (issue #1934)
 //
 // A `union` is deliberately captured as a Struct-labeled node (see the
