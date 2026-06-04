@@ -14,9 +14,11 @@
 
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
@@ -26,10 +28,13 @@ import {
   resolveTsTarget,
   type TsResolveContext,
 } from './index.js';
+import { loadNuxtAutoImports, type NuxtAutoImportConfig } from './nuxt-auto-imports.js';
 
 /** Shape the orchestrator threads in via `RunScopeResolutionInput.resolutionConfig`. */
 interface TypescriptResolutionConfig {
   readonly tsconfigPaths: TsconfigPaths | null;
+  /** Nuxt/Nitro auto-import map. Null for non-Nuxt projects. */
+  readonly nuxtAutoImports: NuxtAutoImportConfig | null;
 }
 
 /**
@@ -92,11 +97,14 @@ const typescriptScopeResolver: ScopeResolver = {
   resolveImportTarget: makeTsResolveImportTarget(),
 
   // Threaded into `resolveImportTarget` so tsconfig path aliases
-  // (`@/services/user`, `~/x`, …) resolve through the same standard
+  // (`@/services/user`, `~/x`, ...) resolve through the same standard
   // resolver branch the legacy DAG uses. One I/O round-trip per
   // workspace pass; the orchestrator awaits this once.
+  // `nuxtAutoImports` is null for non-Nuxt projects (no .nuxt/imports.d.ts),
+  // so this adds zero overhead to ordinary TypeScript repos.
   loadResolutionConfig: async (repoPath: string) => ({
     tsconfigPaths: await loadTsconfigPaths(repoPath),
+    nuxtAutoImports: await loadNuxtAutoImports(repoPath),
   }),
 
   // TypeScript declaration merging + LEGB: local > import > wildcard,
@@ -130,24 +138,134 @@ const typescriptScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
 
   // TypeScript uses `.values()` / `.keys()` method-call syntax for
-  // collection views — no property-style accessors like C#'s
+  // collection views -- no property-style accessors like C#'s
   // `Dictionary<K,V>.Values`. Leave `unwrapCollectionAccessor`
   // undefined and let the regular member-call branch handle them.
   //
-  // `collapseMemberCallsByCallerTarget` left undefined (= false) —
+  // `collapseMemberCallsByCallerTarget` left undefined (= false) --
   // TypeScript legacy DAG emits one edge per call site, so
   // per-site dedup is the parity target.
   //
-  // `populateNamespaceSiblings` left undefined — TypeScript requires
+  // `populateNamespaceSiblings` left undefined -- TypeScript requires
   // an explicit `import` / namespace augmentation for cross-file
   // visibility; there's no implicit same-namespace sibling rule
   // like C#'s.
   //
-  // `hoistTypeBindingsToModule` — `tsBindingScopeFor` DOES hoist
+  // `hoistTypeBindingsToModule` -- `tsBindingScopeFor` DOES hoist
   // method return-type bindings to the enclosing Module scope
   // (mirrors C#), so enable the walk-up that lets the compound-
   // receiver resolver find them.
   hoistTypeBindingsToModule: true,
+
+  /**
+   * Emit CALLS edges for Nuxt/Nitro auto-imported symbols that are used
+   * without an explicit import statement.
+   *
+   * Nuxt makes composables and server utils available project-wide via its
+   * auto-import system. Because no `import` statement exists, the standard
+   * scope-resolution passes cannot create call-graph edges for these symbols.
+   * This hook recovers those edges after all normal resolution has run.
+   *
+   * For each TypeScript file the hook:
+   *   1. Builds the set of files already explicitly imported (to avoid
+   *      creating duplicate edges for symbols imported conventionally).
+   *   2. Scans the raw source for identifier call-patterns (`name(`) and
+   *      checks each against the auto-import map.
+   *   3. For each hit that is not already explicitly imported, emits a CALLS
+   *      edge from the file's File node to the target function node, and an
+   *      IMPORTS edge from the caller file to the source file (once per pair).
+   *
+   * Confidence is 0.75 (below the 0.9 used for fully resolved edges) to
+   * signal that these edges are heuristic: the content scanner does not
+   * filter string literals or comments.
+   */
+  emitPostResolutionEdges(graph, parsedFiles, nodeLookup, indexes, ctx) {
+    const cfg = ctx.resolutionConfig as TypescriptResolutionConfig | undefined;
+    const autoImports = cfg?.nuxtAutoImports;
+    if (!autoImports || autoImports.byLocalName.size === 0) return;
+
+    // Pre-index: localName -> entry for fast lookup during content scan.
+    const { byLocalName } = autoImports;
+
+    // Regex matches bare identifier call sites: word-boundary + name + "(".
+    // Excludes `new X(` (constructor calls are not free-function auto-imports).
+    const CALL_RE = /(?<![.\w])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+
+    for (const parsedFile of parsedFiles) {
+      const { filePath } = parsedFile;
+      if (!filePath.endsWith('.ts') && !filePath.endsWith('.tsx')) continue;
+
+      const content = ctx.fileContents.get(filePath);
+      if (!content) continue;
+
+      // Collect files already brought in by an explicit import in this file.
+      const explicitImports = new Set<string>();
+      for (const [scopeId, edges] of indexes.imports) {
+        const scope = indexes.scopeTree.getScope(scopeId);
+        if (scope?.filePath !== filePath) continue;
+        for (const edge of edges) {
+          if (edge.targetFile !== null) explicitImports.add(edge.targetFile);
+        }
+      }
+
+      const fileId = generateId('File', filePath);
+      // Track (sourceFile) pairs already handled for this caller to avoid
+      // emitting duplicate IMPORTS edges and duplicate CALLS edges per symbol.
+      const emittedImports = new Set<string>();
+      const emittedCalls = new Set<string>();
+
+      CALL_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = CALL_RE.exec(content)) !== null) {
+        const localName = m[1]!;
+        const entry = byLocalName.get(localName);
+        if (!entry) continue;
+
+        const { exportName, sourceFile } = entry;
+
+        // Skip when the file already has an explicit import from this source.
+        if (explicitImports.has(sourceFile)) continue;
+
+        // Emit one IMPORTS edge per (caller, sourceFile) pair.
+        if (!emittedImports.has(sourceFile)) {
+          emittedImports.add(sourceFile);
+          const targetFileId = generateId('File', sourceFile);
+          if (graph.getNode(targetFileId)) {
+            graph.addRelationship({
+              id: generateId('IMPORTS', `${fileId}->nuxt-auto-import->${targetFileId}`),
+              sourceId: fileId,
+              targetId: targetFileId,
+              type: 'IMPORTS',
+              confidence: 0.75,
+              reason: 'nuxt-auto-import-file',
+            });
+          }
+        }
+
+        // Emit one CALLS edge per (caller, symbol) pair.
+        const callKey = `${sourceFile}::${localName}`;
+        if (emittedCalls.has(callKey)) continue;
+        emittedCalls.add(callKey);
+
+        // Look up the graph node by export name first, fall back to local name.
+        // The fallback handles `default as X` where the function is named X.
+        const targetNodeId =
+          nodeLookup.get(simpleKey(sourceFile, exportName)) ??
+          (exportName !== localName ? nodeLookup.get(simpleKey(sourceFile, localName)) : undefined);
+
+        if (!targetNodeId || !graph.getNode(targetNodeId)) continue;
+
+        graph.addRelationship({
+          id: generateId('CALLS', `${fileId}:nuxt-auto-import:${localName}->${targetNodeId}`),
+          sourceId: fileId,
+          targetId: targetNodeId,
+          type: 'CALLS',
+          confidence: 0.75,
+          reason: 'nuxt-auto-import',
+        });
+      }
+    }
+  },
 };
 
 export { typescriptScopeResolver };
