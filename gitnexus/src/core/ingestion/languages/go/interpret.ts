@@ -81,11 +81,10 @@ export function interpretGoTypeBinding(captures: CaptureMatch): ParsedTypeBindin
 
 export function normalizeGoTypeName(text: string): string {
   let t = text.trim();
-  while (t.startsWith('*')) t = t.slice(1).trim();
-  if (t.startsWith('[]')) t = t.slice(2).trim();
+  t = stripGoOuterTypePrefixes(t);
   const mapMatch = t.match(/^map\[[^\]]+\]\s*(.+)$/);
   if (mapMatch) t = mapMatch[1].trim();
-  t = t.replace(/^(?:<-)?chan\s+/, '');
+  t = stripGoOuterTypePrefixes(t.replace(/^(?:<-)?chan(?:<-)?\s+/, ''));
   if (t.startsWith('func(')) {
     const retMatch = t.match(/^func\([^)]*\)\s*(.*)$/);
     if (retMatch) t = retMatch[1].trim();
@@ -111,11 +110,10 @@ export function normalizeGoReturnType(text: string): string {
     const closeIdx = t.indexOf(',');
     t = t.slice(1, closeIdx).trim();
   }
-  while (t.startsWith('*')) t = t.slice(1).trim();
-  if (t.startsWith('[]')) t = t.slice(2).trim();
+  t = stripGoOuterTypePrefixes(t);
   const mapMatch = t.match(/^map\[[^\]]+\]\s*(.+)$/);
   if (mapMatch) t = mapMatch[1].trim();
-  t = t.replace(/^(?:<-)?chan\s+/, '');
+  t = stripGoOuterTypePrefixes(t.replace(/^(?:<-)?chan(?:<-)?\s+/, ''));
   if (t.startsWith('func(')) {
     const retMatch = t.match(/^func\([^)]*\)\s*(.*)$/);
     if (retMatch) t = retMatch[1].trim();
@@ -123,5 +121,17 @@ export function normalizeGoReturnType(text: string): string {
   // Preserve dotted qualified names for cross-package resolution.
   const bracket = t.indexOf('[');
   if (bracket !== -1) t = t.slice(0, bracket);
+  return t;
+}
+
+function stripGoOuterTypePrefixes(text: string): string {
+  let t = text.trim();
+  let previous: string;
+  do {
+    previous = t;
+    while (t.startsWith('*')) t = t.slice(1).trim();
+    if (t.startsWith('[]')) t = t.slice(2).trim();
+    t = t.replace(/^\[[^\]]+\]\s*/, '');
+  } while (t !== previous);
   return t;
 }
