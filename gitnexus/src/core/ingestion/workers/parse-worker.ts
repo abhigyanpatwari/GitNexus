@@ -67,6 +67,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   isSuppressedConcreteTypedefDuplicate,
+  isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -1865,7 +1866,7 @@ const processFileGroup = (
           : // #1991: LOCKSTEP with parsing-processor.ts — qualify a Ruby `module`
             // (Trait) via the scope walk so same-tail nested mixin modules get
             // distinct ids on the worker path too. Gated on qualifiedNodeId.
-            nodeLabel === 'Trait' &&
+            isQualifiableScopeLabel(nodeLabel) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               classNodeForSymbol
             ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
@@ -1890,7 +1891,7 @@ const processFileGroup = (
           ? rustImplQualifiedName
           : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
             // scope id keys the worker-path node, matching the sequential path.
-            (isClassLikeLabel || nodeLabel === 'Trait') &&
+            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName

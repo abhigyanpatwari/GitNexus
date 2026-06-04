@@ -18,6 +18,7 @@ import {
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   isSuppressedConcreteTypedefDuplicate,
+  isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -654,7 +655,7 @@ const processParsingSequential = async (
             // typeDeclaration, so extractQualifiedName bails. Qualify it via the scope
             // walk so two same-tail nested mixin modules get distinct ids. Gated on
             // qualifiedNodeId, so languages without the flag are unaffected.
-            nodeLabel === 'Trait' &&
+            isQualifiableScopeLabel(nodeLabel) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               classNodeForSymbol
             ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
@@ -685,7 +686,7 @@ const processParsingSequential = async (
           : // #1991: include Trait so a Ruby mixin module's qualified scope id keys
             // the node, mirroring the class-like path (qualifiedTypeName is computed
             // for Trait above).
-            (isClassLikeLabel || nodeLabel === 'Trait') &&
+            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName
