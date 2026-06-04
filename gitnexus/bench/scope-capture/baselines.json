@@ -74,9 +74,9 @@
     "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   },
   "kotlin": {
-    "fingerprint": "9b212eca24959cc1705933df213f4ec739c5c1b4580c7929347d37bf4d72ba8a",
+    "fingerprint": "a16400622892183581b8f5f8fa01f07842d19b8cf49ed021df52bd17009d749f",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
+    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1930 F45: default parameters now emit optional-arity metadata; capture fingerprint changes, scaling remains linear."
   }
 }
