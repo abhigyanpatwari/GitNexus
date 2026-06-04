@@ -75,13 +75,11 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
-import { preprocessImportPath } from '../import-processor.js';
 import {
   extractVueScript,
   extractTemplateComponents,
   isVueSetupTopLevel,
 } from '../vue-sfc-extractor.js';
-import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
@@ -175,14 +173,6 @@ interface ParsedSymbol {
   isAbstract?: boolean;
   isFinal?: boolean;
   annotations?: string[];
-}
-
-export interface ExtractedImport {
-  filePath: string;
-  rawImportPath: string;
-  language: SupportedLanguages;
-  /** Named bindings from the import (e.g., import {User as U} → [{local:'U', exported:'User'}]) */
-  namedBindings?: NamedBinding[];
 }
 
 export interface ExtractedCall {
@@ -312,7 +302,6 @@ export interface ParseWorkerResult {
   nodes: ParsedNode[];
   relationships: ParsedRelationship[];
   symbols: ParsedSymbol[];
-  imports: ExtractedImport[];
   calls: ExtractedCall[];
   assignments: ExtractedAssignment[];
   routes: ExtractedRoute[];
@@ -794,7 +783,6 @@ const processBatch = (
     nodes: [],
     relationships: [],
     symbols: [],
-    imports: [],
     calls: [],
     assignments: [],
     routes: [],
@@ -1231,22 +1219,10 @@ const processFileGroup = (
 
       if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) continue;
 
-      // Extract import paths before skipping
+      // Import matches: IMPORTS edges are emitted by the scope-resolution
+      // phase from finalized ImportEdges (RING4-1 #942 / RING4-2 #943 removed
+      // the legacy per-file import-map extraction that ran here). Skip.
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = preprocessImportPath(
-          captureMap['import.source'].text,
-          captureMap['import'],
-          provider,
-        );
-        if (!rawImportPath) continue;
-        const extractor = provider.namedBindingExtractor;
-        const namedBindings = extractor ? extractor(captureMap['import']) : undefined;
-        result.imports.push({
-          filePath: file.path,
-          rawImportPath,
-          language: language,
-          ...(namedBindings ? { namedBindings } : {}),
-        });
         continue;
       }
 
@@ -1468,11 +1444,10 @@ const processFileGroup = (
               if (routed.kind === 'skip') continue;
 
               if (routed.kind === 'import') {
-                result.imports.push({
-                  filePath: file.path,
-                  rawImportPath: routed.importPath,
-                  language,
-                });
+                // Call-routed imports (e.g. Ruby `require`) are emitted as
+                // IMPORTS edges by the scope-resolution phase; the legacy
+                // per-file extraction that consumed these was removed in
+                // RING4-2 (#943). Skip.
                 continue;
               }
 
@@ -2163,7 +2138,6 @@ let accumulated: ParseWorkerResult = {
   nodes: [],
   relationships: [],
   symbols: [],
-  imports: [],
   calls: [],
   assignments: [],
   routes: [],
@@ -2194,7 +2168,6 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.nodes, src.nodes);
   appendAll(target.relationships, src.relationships);
   appendAll(target.symbols, src.symbols);
-  appendAll(target.imports, src.imports);
   appendAll(target.calls, src.calls);
   appendAll(target.assignments, src.assignments);
   appendAll(target.routes, src.routes);
@@ -2297,7 +2270,6 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         nodes: [],
         relationships: [],
         symbols: [],
-        imports: [],
         calls: [],
         assignments: [],
         routes: [],

@@ -15,7 +15,6 @@ import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { kotlinImportConfig } from '../import-resolvers/configs/jvm.js';
-import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -160,7 +159,6 @@ export const kotlinProvider = defineLanguage({
   typeConfig: kotlinTypeConfig,
   exportChecker: kotlinExportChecker,
   importResolver: createImportResolver(kotlinImportConfig),
-  namedBindingExtractor: extractKotlinNamedBindings,
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(kotlinCallConfig),

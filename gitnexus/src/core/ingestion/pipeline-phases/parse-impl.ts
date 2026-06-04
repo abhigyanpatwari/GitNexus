@@ -40,7 +40,6 @@ import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
-  ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,

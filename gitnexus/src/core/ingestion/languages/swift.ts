@@ -88,46 +88,6 @@ function groupSwiftFilesByTarget(
   return groups;
 }
 
-/**
- * Wire implicit inter-file imports for Swift.
- * All files in the same SPM target see each other (full module visibility).
- * Two fast paths avoid unnecessary work:
- *   1. No existing imports for src -> emit all (m-1) edges without Set.has checks
- *   2. Existing imports present -> skip already-connected pairs
- */
-function wireSwiftImplicitImports(
-  swiftFiles: string[],
-  importMap: ReadonlyMap<string, ReadonlySet<string>>,
-  addImportEdge: (src: string, target: string) => void,
-  projectConfig: unknown,
-): void {
-  const configs = projectConfig as { swiftPackageConfig?: SwiftPackageConfig | null } | null;
-  const targetGroups = groupSwiftFilesByTarget(swiftFiles, configs?.swiftPackageConfig ?? null);
-
-  for (const group of targetGroups.values()) {
-    const m = group.length;
-    if (m <= 1) continue;
-    // All-pairs implicit edges: O(m²) is inherent for full module visibility.
-    for (let i = 0; i < m; i++) {
-      const src = group[i];
-      const existing = importMap.get(src);
-      if (!existing || existing.size === 0) {
-        // Fast path: no prior imports — emit all peers unconditionally
-        for (let j = 0; j < m; j++) {
-          if (i !== j) addImportEdge(src, group[j]);
-        }
-      } else {
-        // Dedup path: skip already-connected pairs
-        for (let j = 0; j < m; j++) {
-          if (i !== j && !existing.has(group[j])) {
-            addImportEdge(src, group[j]);
-          }
-        }
-      }
-    }
-  }
-}
-
 /** Swift init/deinit declarations have special names and Constructor label. */
 const swiftExtractFunctionName = (
   node: SyntaxNode,
@@ -335,7 +295,6 @@ export const swiftProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(swiftVariableConfig),
   classExtractor: createClassExtractor(swiftClassConfig),
-  implicitImportWirer: wireSwiftImplicitImports,
   orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,
   // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #937). See

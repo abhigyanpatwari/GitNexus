@@ -34,7 +34,6 @@ import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
 import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
-import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 
@@ -155,9 +154,6 @@ interface LanguageProviderConfig {
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
    *  Default: no routing (all calls are normal call expressions). */
   readonly callRouter?: CallRouter;
-  /** Named binding extraction from import statements.
-   *  Default: undefined (language uses wildcard/whole-module imports). */
-  readonly namedBindingExtractor?: NamedBindingExtractorFn;
   /** How this language handles imports. See `ImportSemantics` for the full taxonomy.
    *  - 'named': per-symbol imports (JS/TS, Java, C#, Rust, PHP, Kotlin)
    *  - 'wildcard-transitive': textual-include closure; imports chain through files (C, C++)
@@ -170,16 +166,6 @@ interface LanguageProviderConfig {
    *  Called after sanitization. E.g., Kotlin appends wildcard suffixes.
    *  Default: undefined (no preprocessing). */
   readonly importPathPreprocessor?: (cleaned: string, importNode: SyntaxNode) => string;
-  /** Wire implicit inter-file imports for languages where all files in a module
-   *  see each other (e.g., Swift targets, C header inclusion units).
-   *  Called with only THIS language's files (pre-grouped by the processor).
-   *  Default: undefined (no implicit imports). */
-  readonly implicitImportWirer?: (
-    languageFiles: string[],
-    importMap: ReadonlyMap<string, ReadonlySet<string>>,
-    addImportEdge: (src: string, target: string) => void,
-    projectConfig: unknown,
-  ) => void;
 
   // ── Enclosing owner resolution ─────────────────────────────────
   /** Resolve a container node during enclosing-owner tree walks.
