@@ -4,9 +4,8 @@
  * These test that `emitCobolScopeCaptures` produces correct `CaptureMatch[]`
  * from real COBOL source files, covering all 11 fixture classes.
  *
- * The test verifies capture output directly — scope-resolution pipeline
- * integration (REGISTRY_PRIMARY_COBOL) will be tested in a follow-up phase
- * after the pipeline wiring is complete.
+ * The test verifies capture output directly — full scope-resolution
+ * pipeline integration is covered by the COBOL resolver integration tests.
  */
 
 import { describe, expect, it } from 'vitest';

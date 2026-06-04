@@ -639,19 +639,19 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
  * Synthesize `@reference.inherits` captures from JavaScript class heritage so
  * the registry-primary scope-resolution path emits EXTENDS edges (mirrors C#
  * `synthesizeCsharpInheritanceReferences` / C++ `emitCppInheritanceCaptures`).
- * Without this, JS inheritance edges came only from the legacy `@heritage.*`
- * path, which the worker pipeline drops for registry-primary languages,
- * yielding 0 inheritance edges in worker mode (issue #1951).
+ * Without this, JS inheritance edges came only from the legacy heritage-capture
+ * leg (removed in #942), which the worker pipeline drops for registry-primary
+ * languages, yielding 0 inheritance edges in worker mode (issue #1951).
  *
  * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
- * base, matching the legacy JavaScript `@heritage` query's class scope and its
+ * base, matching the legacy JavaScript heritage query's class scope and its
  * supertype shape descriptor (`javascriptHeritageShapes`:
  * `['identifier', 'member_expression']`). JavaScript classes have a single
  * `extends` base and no `implements`, so every emission is an EXTENDS (decided
  * downstream from the resolved target's symbol kind in
  * `preEmitInheritanceEdges`).
  *
- * Bases handled (at parity with the legacy `@heritage` leg, #1951):
+ * Bases handled (at parity with the legacy heritage leg, #1951):
  *   - `(identifier)` base (`extends Base`) — bare simple name.
  *   - `(member_expression)` base (`extends ns.Base`, `extends a.b.Base`) —
  *     qualified; reduced to its trailing `property_identifier` (`Base`) so the

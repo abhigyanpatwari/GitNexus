@@ -31,7 +31,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { dartVariableConfig } from '../variable-extractors/configs/dart.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { dartCallConfig } from '../call-extractors/configs/dart.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitDartScopeCaptures,
   interpretDartImport,
@@ -126,7 +125,6 @@ export const dartProvider = defineLanguage({
   methodExtractor: createMethodExtractor(dartMethodConfig),
   variableExtractor: createVariableExtractor(dartVariableConfig),
   classExtractor: createClassExtractor(dartClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Dart),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
   builtInNames: DART_BUILT_INS,
 

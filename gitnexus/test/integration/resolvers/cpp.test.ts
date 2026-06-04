@@ -1,7 +1,7 @@
 /**
  * C++: diamond inheritance + include-based imports + ambiguous #include disambiguation
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -13,11 +13,8 @@ import {
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('cpp');
 
 // ---------------------------------------------------------------------------
 // C++ overloaded operators (#1636)
@@ -1774,7 +1771,7 @@ describe('C++ out-of-class method definition with overloaded declarations', () =
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — c.parentMethod() via leftmost-base walk
+// SM-9: inherited method resolution — c.parentMethod() via leftmost-base walk
 // ---------------------------------------------------------------------------
 
 describe('C++ Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -4063,11 +4060,10 @@ describe('C++ anonymous-namespace nested same-tail collision — worker path par
 // Inline nested same-tail HERITAGE — qualified base resolution (issue #1982)
 //
 // `struct DerivedA : Outer::Inner` + `struct DerivedB : Other::Inner` must each
-// resolve EXTENDS to the MATCHING nested node. On the registry-primary base the
-// qualifier is discarded (cpp/captures.ts emits the bare tail `Inner`), so
-// resolveInheritanceBaseInScope sees an ambiguous same-tail base. Asserts the
-// resolved EXTENDS endpoint's id contains the right qn (KTD-4: assert on the
-// node id, not the property). Registry-primary only (legacy leg expected-fail).
+// resolve EXTENDS to the MATCHING nested node. The qualifier is discarded
+// (cpp/captures.ts emits the bare tail `Inner`), so resolveInheritanceBaseInScope
+// sees an ambiguous same-tail base. Asserts the resolved EXTENDS endpoint's id
+// contains the right qn (KTD-4: assert on the node id, not the property).
 // ---------------------------------------------------------------------------
 describe('C++ inline nested same-tail heritage — qualified base (issue #1982)', () => {
   let result: PipelineResult;

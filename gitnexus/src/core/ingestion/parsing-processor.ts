@@ -4,7 +4,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
+import type { SymbolTableReader, SymbolTableWriter } from './model/index.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
@@ -18,6 +18,7 @@ import {
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   isSuppressedConcreteTypedefDuplicate,
+  isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -81,7 +82,6 @@ export interface WorkerExtractedData {
   imports: ExtractedImport[];
   calls: ExtractedCall[];
   assignments: ExtractedAssignment[];
-  heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
@@ -126,7 +126,6 @@ export const mergeChunkResults = (
   const allImports: ExtractedImport[] = [];
   const allCalls: ExtractedCall[] = [];
   const allAssignments: ExtractedAssignment[] = [];
-  const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
@@ -167,7 +166,6 @@ export const mergeChunkResults = (
     for (const item of result.imports) allImports.push(item);
     for (const item of result.calls) allCalls.push(item);
     for (const item of result.assignments) allAssignments.push(item);
-    for (const item of result.heritage) allHeritage.push(item);
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
@@ -187,7 +185,6 @@ export const mergeChunkResults = (
     imports: allImports,
     calls: allCalls,
     assignments: allAssignments,
-    heritage: allHeritage,
     routes: allRoutes,
     fetchCalls: allFetchCalls,
     fetchWrapperDefs: allFetchWrapperDefs,
@@ -231,7 +228,6 @@ const processParsingWithWorkers = async (
       imports: [],
       calls: [],
       assignments: [],
-      heritage: [],
       routes: [],
       fetchCalls: [],
       fetchWrapperDefs: [],
@@ -617,7 +613,13 @@ const processParsingSequential = async (
       const getQualifiedOwnerName =
         provider.classExtractor?.qualifiedNodeId === true
           ? (node: SyntaxNode, simpleName: string): string | null =>
-              provider.classExtractor!.extractQualifiedName(node, simpleName)
+              // #1991: a Ruby `module` owner is not a typeDeclaration, so
+              // extractQualifiedName returns null; fall back to the scope walk so a
+              // method inside a nested module owns through the SAME qualified Trait
+              // id its node uses (App.Loggable), not a dangling bare id.
+              provider.classExtractor!.extractQualifiedName(node, simpleName) ??
+              provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
+              null
           : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
@@ -644,7 +646,16 @@ const processParsingSequential = async (
         extractedClassSymbol?.qualifiedName ??
         (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
           ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
+          : // #1991: a Ruby `module` maps to Trait (class-like registry) but is not a
+            // typeDeclaration, so extractQualifiedName bails. Qualify it via the scope
+            // walk so two same-tail nested mixin modules get distinct ids. Gated on
+            // qualifiedNodeId, so languages without the flag are unaffected.
+            isQualifiableScopeLabel(nodeLabel) &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              classNodeForSymbol
+            ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
+              undefined)
+            : undefined);
 
       // Qualify method/property IDs with enclosing class name to avoid collisions
       // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak".
@@ -667,7 +678,10 @@ const processParsingSequential = async (
       const qualifiedName =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
-          : isClassLikeLabel &&
+          : // #1991: include Trait so a Ruby mixin module's qualified scope id keys
+            // the node, mirroring the class-like path (qualifiedTypeName is computed
+            // for Trait above).
+            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName

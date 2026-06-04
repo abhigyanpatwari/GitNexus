@@ -1,8 +1,8 @@
 /**
  * Ruby scope-resolution integration tests (U8).
  *
- * These tests run with REGISTRY_PRIMARY_RUBY=true to exercise the
- * scope-based resolution path. They validate class methods, module mixins,
+ * These tests exercise the scope-based resolution path. They validate
+ * class methods, module mixins,
  * singleton methods, require_relative imports, constructor inference,
  * block scope, class inheritance, and super resolution.
  */
@@ -24,18 +24,6 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
     fs.writeFileSync(abs, content, 'utf8');
   }
 }
-
-let savedEnv: string | undefined;
-
-beforeAll(() => {
-  savedEnv = process.env['REGISTRY_PRIMARY_RUBY'];
-  process.env['REGISTRY_PRIMARY_RUBY'] = 'true';
-});
-
-afterAll(() => {
-  if (savedEnv === undefined) delete process.env['REGISTRY_PRIMARY_RUBY'];
-  else process.env['REGISTRY_PRIMARY_RUBY'] = savedEnv;
-});
 
 // ---------------------------------------------------------------------------
 // 1. Basic class method resolution

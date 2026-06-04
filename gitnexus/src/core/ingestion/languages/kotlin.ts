@@ -28,7 +28,6 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { kotlinMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { kotlinVariableConfig } from '../variable-extractors/configs/jvm.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitKotlinScopeCaptures,
   interpretKotlinImport,
@@ -169,7 +168,6 @@ export const kotlinProvider = defineLanguage({
   methodExtractor: createMethodExtractor(kotlinMethodConfig),
   variableExtractor: createVariableExtractor(kotlinVariableConfig),
   classExtractor: createClassExtractor(kotlinClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Kotlin),
   builtInNames: BUILT_INS,
   labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;

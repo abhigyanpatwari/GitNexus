@@ -223,8 +223,8 @@ export function emitJavaScopeCaptures(
  * Synthesize `@reference.inherits` captures from Java class heritage so the
  * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
  * (mirrors C++ `emitCppInheritanceCaptures`). Without this, Java inheritance
- * edges came only from the legacy `@heritage.*` path, which is dropped for
- * registry-primary languages in the worker pipeline (issue #1951).
+ * edges came only from the legacy heritage-capture leg (removed in #942), which
+ * is dropped for registry-primary languages in the worker pipeline (issue #1951).
  *
  * Scope covers `class_declaration` (`superclass` extends + `interfaces`
  * implements clauses) AND `interface_declaration` (`extends_interfaces` →
@@ -235,19 +235,19 @@ export function emitJavaScopeCaptures(
  * edge while the legacy leg emitted it — the exact =0/=N parity break #1951
  * targets. Enum/record heritage stays unemitted (no legacy arm). Generic
  * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
- * `@heritage` query was widened to capture the inner `type_identifier` of a
+ * heritage query was widened to capture the inner `type_identifier` of a
  * `generic_type` (tree-sitter-queries.ts), so both paths now agree on SIMPLE
  * (unqualified) generic bases — the more-correct behavior, consistent with
  * C#/Rust (#1951). Qualified bases (`a.b.Base`, `a.b.Box<T>`, `a.b.IFoo<T>`) are
  * ALSO now at parity (#1956 tri-review U2): the synth resolves them by their
- * `scoped_type_identifier` tail, and the legacy `@heritage` query was widened
+ * `scoped_type_identifier` tail, and the legacy heritage query was widened
  * with matching `scoped_type_identifier` arms (plain + generic-wrapped). The
  * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
  * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
  * An `interface IA extends IB` base resolves to an Interface too, so it is
  * emitted as IMPLEMENTS — matching the legacy `interface_declaration` arm,
- * which tags the bases `@heritage.impl` (`kind: 'implements'`) and likewise
+ * which tagged the bases as implements (`kind: 'implements'`) and likewise
  * resolves them as interfaces. The synth therefore does not need to know the
  * declaration's own kind; it only emits inherits sites and lets the resolved
  * target decide the edge type.
@@ -279,7 +279,7 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
       // whose bases reuse `javaBaseLookupNameNode` (handles type_identifier /
       // generic_type / scoped_type_identifier). These resolve to Interface
       // targets, so `preEmitInheritanceEdges` emits them as IMPLEMENTS, at
-      // parity with the legacy `interface_declaration` @heritage.impl arm.
+      // parity with the legacy `interface_declaration` implements arm.
       for (let i = 0; i < node.namedChildCount; i++) {
         const extendsInterfaces = node.namedChild(i);
         if (extendsInterfaces === null || extendsInterfaces.type !== 'extends_interfaces') continue;

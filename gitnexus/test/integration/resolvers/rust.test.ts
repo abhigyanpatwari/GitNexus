@@ -12,14 +12,8 @@ import {
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
-  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
-
-// Registry-primary-only assertions (e.g. macro resolution, which the legacy
-// DAG does not implement) use this parity-aware `it` so they are skipped —
-// not failed — under the legacy half of the scope-parity gate.
-const rustParityIt = createResolverParityIt('rust');
 
 // ---------------------------------------------------------------------------
 // Heritage: trait implementations
@@ -129,13 +123,13 @@ describe('Rust cross-module trait-impl collision resolution (#1951)', () => {
 // ---------------------------------------------------------------------------
 // Qualified/scoped trait paths (#1956 tri-review U1): `impl crate::traits::Foo
 // for S` and `impl crate::traits::Wrapped<T> for S`. The base is a
-// `scoped_type_identifier` (or a generic_type wrapping one). Both the synth
-// (registry leg, rust/captures.ts `bareTypeIdentifier`) and the legacy
-// `@heritage` query now resolve it by its trailing bare name (KTD-1). The traits
-// are unique, so both legs resolve identically — parity-tested. (Ambiguous
+// `scoped_type_identifier` (or a generic_type wrapping one). The synth
+// (rust/captures.ts `bareTypeIdentifier`) resolves it by its trailing bare name
+// (KTD-1). The traits are unique, so resolution is unambiguous. (Ambiguous
 // scoped bases reuse the same refuse-on-ambiguity path as bare names, already
-// covered by rust-cross-module-collision / rust-ambiguous; that path diverges
-// across legs by design and is intentionally not added to this parity fixture.)
+// covered by rust-cross-module-collision / rust-ambiguous; that path is
+// intentionally not added to this fixture.) Scope-resolution owns these edges
+// since #942.
 // ---------------------------------------------------------------------------
 
 describe('Rust qualified/scoped trait-impl resolution (#1956 U1)', () => {
@@ -1963,8 +1957,8 @@ describe('Rust abstract dispatch (Repository trait)', () => {
 // Companion integration test for the unit-level Rust qualified-syntax tests
 // in symbol-table.test.ts. Validates end-to-end that:
 //
-//   1. Direct `impl` methods on a struct resolve through the D0 owner-scoped
-//      path (`resolveMemberCall`) — the positive control.
+//   1. Direct `impl` methods on a struct resolve through the owner-scoped
+//      path — the positive control.
 //
 //   2. Trait-inherited default methods are NOT reachable via direct
 //      `obj.trait_method()` syntax. Rust requires the trait to be in scope
@@ -1972,9 +1966,9 @@ describe('Rust abstract dispatch (Repository trait)', () => {
 //      treats direct member calls as opaque to trait ancestry.
 //
 //      Previously this case emitted a false-positive CALLS edge via the
-//      permissive tail-return in resolveCallTarget — Codex review finding
-//      R3 (PR #744). The tail-return is now null-routed when D1-D4 receiver
-//      filtering produces zero matches on both file and owner dimensions.
+//      permissive tail-return in the legacy resolver — Codex review finding
+//      R3 (PR #744). It is now null-routed when receiver filtering produces
+//      zero matches on both file and owner dimensions.
 // ---------------------------------------------------------------------------
 
 describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
@@ -2007,10 +2001,10 @@ describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
     // ancestry. `c.trait_only()` must null-route because `trait_only` is
     // defined on the trait, not on the Child struct.
     //
-    // The resolveCallTarget tail-return tightening (R3) is what makes this
-    // assertion testable: before the fix, resolveCallTarget would fall
-    // through D1-D4 (zero file matches, zero owner matches) and silently
-    // pick the single fuzzy candidate as a false-positive edge.
+    // The tail-return tightening (R3) is what makes this assertion testable:
+    // before the fix, the resolver would fall through the fuzzy tiers (zero
+    // file matches, zero owner matches) and silently pick the single fuzzy
+    // candidate as a false-positive edge.
     const calls = getRelationships(result, 'CALLS');
     const traitCall = calls.find(
       (c) =>
@@ -2264,12 +2258,11 @@ describe('Rust same-tail generic impls with shared method name — worker path p
 // F71 — union declarations resolve as Struct nodes (issue #1934)
 //
 // A `union` is deliberately captured as a Struct-labeled node (see the
-// rationale in languages/rust/query.ts): every registry-primary resolution
-// gate includes Struct but excludes Union, so a Union-labeled node would be
-// an unresolvable orphan. These pipeline-level assertions pin BOTH that the
-// node is labeled Struct AND that it is genuinely resolvable (the union
-// literal is a real constructor) — works on the legacy + registry-primary
-// paths, so it runs under both halves of the scope-parity gate.
+// rationale in languages/rust/query.ts): every resolution gate includes
+// Struct but excludes Union, so a Union-labeled node would be an unresolvable
+// orphan. These pipeline-level assertions pin BOTH that the node is labeled
+// Struct AND that it is genuinely resolvable (the union literal is a real
+// constructor).
 // ---------------------------------------------------------------------------
 
 describe('Rust union resolution (issue #1934 F71)', () => {
@@ -2297,10 +2290,9 @@ describe('Rust union resolution (issue #1934 F71)', () => {
 //
 // A `macro_rules! greet` invocation (`greet!(...)`) resolves via the
 // MacroRegistry to the Macro node, emitting a USES edge — NEVER a CALLS
-// edge, and NEVER binding to a same-named free function `fn greet`. This is
-// a registry-primary-only capability (the legacy DAG does not resolve
-// macros), so the resolution assertions use `rustParityIt` and are listed
-// in helpers' LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.
+// edge, and NEVER binding to a same-named free function `fn greet`. Macro
+// resolution is owned by scope-resolution (the legacy DAG, removed in #942,
+// did not resolve macros).
 // ---------------------------------------------------------------------------
 
 describe('Rust macro resolution (issue #1934 F72)', () => {
@@ -2315,14 +2307,14 @@ describe('Rust macro resolution (issue #1934 F72)', () => {
     expect(getNodesByLabel(result, 'Function')).toContain('greet');
   });
 
-  rustParityIt('resolves greet!(..) as a USES edge to the Macro (not the Function)', () => {
+  it('resolves greet!(..) as a USES edge to the Macro (not the Function)', () => {
     const uses = getRelationships(result, 'USES');
     const macroUse = uses.find((e) => e.source === 'run' && e.target === 'greet');
     expect(macroUse).toBeDefined();
     expect(macroUse!.targetLabel).toBe('Macro');
   });
 
-  rustParityIt('does NOT emit a CALLS edge from the macro invocation to fn greet', () => {
+  it('does NOT emit a CALLS edge from the macro invocation to fn greet', () => {
     const calls = getRelationships(result, 'CALLS');
     // The only run -> greet CALLS edge is the genuine fn call; it must target
     // the Function, and there must be exactly one (the macro adds no CALLS).

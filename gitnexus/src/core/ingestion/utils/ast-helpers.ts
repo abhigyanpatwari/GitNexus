@@ -44,6 +44,18 @@ export const qualifyRustImplTargetByModScope = (
 };
 
 /**
+ * #1991: scope-label predicate that single-sources the `nodeLabel === 'Trait'`
+ * checks in parsing-processor.ts / parse-worker.ts. A Ruby `module` maps to the
+ * `Trait` registry label but is NOT a typeDeclaration, so `extractQualifiedName`
+ * bails on it; these node labels are instead qualified via the scope walk
+ * (`qualifyScopeName`) so same-tail nested modules get distinct ids. Keeping the
+ * literal in one place stops the four hand-maintained copies (two each in the
+ * sequential and worker definition paths) from drifting apart. Pure predicate —
+ * value-identical to the inlined `nodeLabel === 'Trait'`.
+ */
+export const isQualifiableScopeLabel = (nodeLabel: string): boolean => nodeLabel === 'Trait';
+
+/**
  * Ordered list of definition capture keys for tree-sitter query matches.
  * Used to extract the definition node from a capture map.
  */
@@ -239,9 +251,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   extension_declaration: 'Extension',
   class: 'Class',
   // Ruby `module` declarations map to `Trait` so they participate in the
-  // class-like type registry used by `lookupClassByName` / `buildHeritageMap`.
-  // This lets `include` / `extend` / `prepend` mixin heritage resolve to
-  // the providing module. Safe for non-Ruby languages: the only supported
+  // class-like type registry used by `lookupClassByName` / inheritance
+  // resolution. This lets `include` / `extend` / `prepend` mixin heritage
+  // resolve to the providing module. Safe for non-Ruby languages: the only supported
   // grammar that uses the bare `module` AST node type as a container is
   // Ruby (Rust uses `mod_item`). Any new language adding a `module` node
   // type must explicitly reclassify here.

@@ -30,7 +30,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { pythonCallConfig } from '../call-extractors/configs/python.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import type { CaptureMap } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
@@ -134,7 +133,6 @@ export const pythonProvider = defineLanguage({
   methodExtractor: createMethodExtractor(pythonMethodConfig),
   variableExtractor: createVariableExtractor(pythonVariableConfig),
   classExtractor: createClassExtractor(pythonClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
   labelOverride: pythonFunctionDefinitionLabel,

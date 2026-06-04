@@ -21,8 +21,12 @@ function countCaptures(src: string, predicate: (tags: string[]) => boolean): num
 // F57 — Heritage: qualified/subscripted bases
 // ---------------------------------------------------------------------------
 
+// The legacy heritage-capture leg was removed in #942; the registry-primary
+// scope-resolution path now synthesizes @reference.inherits captures (full base
+// node) plus @reference.name (the bare normalized lookup name) for each
+// superclass. preEmitInheritanceEdges turns these into EXTENDS edges downstream.
 describe('F57 — Python heritage (qualified / subscripted bases)', () => {
-  it('bare identifier base class emits @heritage.class + @heritage.extends', () => {
+  it('bare identifier base class emits @reference.inherits', () => {
     const src = `
 class Base:
     pass
@@ -31,25 +35,25 @@ class Child(Base):
     pass
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const heritageMatches = matches.filter((m) => m['@heritage.class']);
-    expect(heritageMatches.length).toBe(1);
-    expect(heritageMatches[0]['@heritage.class'].text).toBe('Child');
-    expect(heritageMatches[0]['@heritage.extends'].text).toBe('Base');
+    const inheritsMatches = matches.filter((m) => m['@reference.inherits']);
+    expect(inheritsMatches.length).toBe(1);
+    expect(inheritsMatches[0]['@reference.inherits'].text).toBe('Base');
+    expect(inheritsMatches[0]['@reference.name'].text).toBe('Base');
   });
 
-  it('qualified base (mod.Class) emits @heritage.extends for attribute', () => {
+  it('qualified base (mod.Class) emits @reference.inherits with normalized name', () => {
     const src = `
 class A(mod.Base):
     pass
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const heritageMatches = matches.filter((m) => m['@heritage.class']);
-    expect(heritageMatches.length).toBe(1);
-    expect(heritageMatches[0]['@heritage.class'].text).toBe('A');
-    expect(heritageMatches[0]['@heritage.extends'].text).toBe('mod.Base');
+    const inheritsMatches = matches.filter((m) => m['@reference.inherits']);
+    expect(inheritsMatches.length).toBe(1);
+    expect(inheritsMatches[0]['@reference.inherits'].text).toBe('mod.Base');
+    expect(inheritsMatches[0]['@reference.name'].text).toBe('Base');
   });
 
-  it('subscripted base (Generic[T]) emits @heritage.extends for subscript', () => {
+  it('subscripted base (Generic[T]) emits @reference.inherits with normalized name', () => {
     const src = `
 from typing import Generic, TypeVar
 T = TypeVar('T')
@@ -58,22 +62,22 @@ class B(Generic[T]):
     pass
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const heritageMatches = matches.filter((m) => m['@heritage.class']);
-    expect(heritageMatches.length).toBe(1);
-    expect(heritageMatches[0]['@heritage.class'].text).toBe('B');
-    expect(heritageMatches[0]['@heritage.extends'].text).toBe('Generic[T]');
+    const inheritsMatches = matches.filter((m) => m['@reference.inherits']);
+    expect(inheritsMatches.length).toBe(1);
+    expect(inheritsMatches[0]['@reference.inherits'].text).toBe('Generic[T]');
+    expect(inheritsMatches[0]['@reference.name'].text).toBe('Generic');
   });
 
-  it('multiple patterns coexist with bare-identifier heritage', () => {
+  it('qualified base (types.Type) emits @reference.inherits with normalized name', () => {
     const src = `
 class C(types.Type):
     pass
 `;
     const matches = emitPythonScopeCaptures(src, 'test.py') as CaptureMatch[];
-    const heritageMatches = matches.filter((m) => m['@heritage.class']);
-    expect(heritageMatches.length).toBe(1);
-    expect(heritageMatches[0]['@heritage.class'].text).toBe('C');
-    expect(heritageMatches[0]['@heritage.extends'].text).toBe('types.Type');
+    const inheritsMatches = matches.filter((m) => m['@reference.inherits']);
+    expect(inheritsMatches.length).toBe(1);
+    expect(inheritsMatches[0]['@reference.inherits'].text).toBe('types.Type');
+    expect(inheritsMatches[0]['@reference.name'].text).toBe('Type');
   });
 });
 
