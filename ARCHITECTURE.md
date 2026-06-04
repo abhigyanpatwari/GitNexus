@@ -215,7 +215,7 @@ Both hooks are optional on `LanguageProvider`. Ruby is the only current implemen
 The Call-Resolution DAG is the **legacy path**. RFC #909 Ring 3 introduces a parallel **scope-resolution pipeline** (next section) that replaces stages 1–6 with a scope-indexed registry lookup. Both paths ship side-by-side and are gated per-language via `MIGRATED_LANGUAGES` + the `REGISTRY_PRIMARY_<LANG>` env var.
 
 - **Unmigrated language** → Call-Resolution DAG runs; scope-resolution phase is a no-op.
-- **Migrated language** (currently: Python, C#) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
+- **Migrated language** (currently: Python, C#, TypeScript, Go, C, C++, PHP, JavaScript, Kotlin, Java, Rust, Ruby, Cobol) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
 - `import-processor` still populates `importMap` for migrated languages — heritage's `ctx.resolve` reads it to disambiguate parent classes. Only edge emission is gated.
 - CI runs BOTH paths for every migrated language on every PR (`.github/workflows/ci-scope-parity.yml`); both must pass.
 
@@ -349,7 +349,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 16 languages → single unified graph. Four abstraction layers:
 
 ```
- Unified Graph Schema (44 node types, 21 relationship types)
+ Unified Graph Schema (44 node types, 20 relationship types)
            ↑
  Unified Resolution (3-tier name lookup + MRO walk)
            ↑
@@ -460,7 +460,7 @@ Defined in `lbug/schema.ts`. Separate node tables per type, single `CodeRelation
 
 **Node tables:** File, Folder, Function, Class, Interface, Method, Constructor, CodeElement, Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Template, Module, Community, Process, Route, Tool, Section, Embedding.
 
-**Relation types** (`CodeRelation.type`): CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, METHOD_IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF.
+**Relation types** (`CodeRelation.type`): CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, OVERRIDES, METHOD_IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF, WRAPS, QUERIES.
 
 ## Embeddings and search
 
