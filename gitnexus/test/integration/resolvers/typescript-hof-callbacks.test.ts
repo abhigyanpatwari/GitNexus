@@ -34,15 +34,18 @@
  * Each test fixture below isolates one HOF-callback shape from the bug
  * report with both caller and callee defined in-fixture.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   getRelationships,
   edgeSet,
   runPipelineFromRepo,
+  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('typescript');
 
 describe('TypeScript HOF-callback CALLS edges', () => {
   let result: PipelineResult;

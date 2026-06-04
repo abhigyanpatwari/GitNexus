@@ -36,9 +36,10 @@
  * Each test fixture below isolates one wrapper shape with the call
  * target defined in `helpers.ts` (cross-file resolution).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
+  createResolverParityIt,
   FIXTURES,
   getRelationships,
   edgeSet,
@@ -47,6 +48,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('typescript');
 
 describe('TypeScript HOC-wrapped variable declarations', () => {
   let result: PipelineResult;
