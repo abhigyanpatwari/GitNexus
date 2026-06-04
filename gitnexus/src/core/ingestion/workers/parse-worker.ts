@@ -14,6 +14,7 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { extractSpringRoutes } from './spring-route-extractor.js';
+import { extractExpressRoutes } from '../route-extractors/express.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -1879,101 +1880,6 @@ function parseArrayGroupArgs(argsNode: any): RouteGroupContext {
     }
   }
   return ctx;
-}
-
-// ============================================================================
-// Express/Hono route extraction
-// ============================================================================
-
-/**
- * Extract Express/Hono route registrations from JavaScript/TypeScript files via AST walk.
- * Handles: app.get('/path', handler), app.post('/path', handler), router.get('/path', handler), etc.
- */
-export function extractExpressRoutes(tree: any, filePath: string): ExtractedDecoratorRoute[] {
-  const routes: ExtractedDecoratorRoute[] = [];
-  const EXPRESS_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'use', 'route', 'head', 'options']);
-
-  // Non-Express objects that have .get()/.post() etc. methods - these are NOT route registrations
-  const NON_EXPRESS_OBJECTS = new Set([
-    'headers', 'request', 'response', 'req', 'res',  // HTTP request/response
-    'map', 'set', 'weakmap', 'weakset',  // Collections
-    'cache', 'storage',  // Storage APIs
-    'formdata', 'urlsearchparams',  // Form APIs
-    'promise', 'observable',  // Async APIs
-  ]);
-
-  function walk(node: any): void {
-    if (!node) {
-      return;
-    }
-
-    // Check if this is a call_expression with a member_expression function (e.g., app.get)
-    if (node.type === 'call_expression') {
-      const func = node.childForFieldName?.('function') ?? node.children?.[0];
-      if (func?.type === 'member_expression') {
-        const prop = func.childForFieldName?.('property') ?? func.children?.[func.childCount - 1];
-        if (prop?.type === 'property_identifier' && EXPRESS_METHODS.has(prop.text)) {
-          // Check if this is likely NOT an Express route (e.g., request.headers.get())
-          // Get the object of the member expression
-          const obj = func.childForFieldName?.('object') ?? func.children?.[0];
-          if (obj) {
-            // For chained calls like app.route('/path').get(), obj is a call_expression
-            // For direct calls like app.get('/path'), obj is an identifier
-            // For non-Express like request.headers.get(), obj is a member_expression
-
-            // Skip if object is a known non-Express pattern
-            if (obj.type === 'member_expression') {
-              const objProp = obj.childForFieldName?.('property') ?? obj.children?.[obj.childCount - 1];
-              if (objProp?.type === 'property_identifier' && NON_EXPRESS_OBJECTS.has(objProp.text.toLowerCase())) {
-                // This is NOT an Express route - skip it and recurse into children
-                if (node.children) {
-                  for (const child of node.children) {
-                    walk(child);
-                  }
-                }
-                return;
-              }
-            } else if (obj.type === 'identifier' && NON_EXPRESS_OBJECTS.has(obj.text.toLowerCase())) {
-              // Direct call like headers.get() - skip
-              if (node.children) {
-                for (const child of node.children) {
-                  walk(child);
-                }
-              }
-              return;
-            }
-          }
-
-          // Found an Express route registration
-          const args = node.childForFieldName?.('arguments') ?? node.children?.find((c: any) => c.type === 'arguments');
-          if (args && args.children) {
-            for (const arg of args.children) {
-              if (arg.type === 'string') {
-                const routePath = arg.text.replace(/^["']|["']$/g, '');
-                routes.push({
-                  filePath,
-                  decorator: prop.text,
-                  path: routePath,
-                  lineNumber: node.startPosition.row,
-                });
-                break;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Recurse into children
-    if (node.children) {
-      for (const child of node.children) {
-        walk(child);
-      }
-    }
-  }
-
-  walk(tree.rootNode);
-  return routes;
 }
 
 // ============================================================================
