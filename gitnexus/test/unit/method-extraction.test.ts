@@ -504,6 +504,54 @@ describeKotlin('Kotlin MethodExtractor', () => {
     });
   });
 
+  describe('default parameters', () => {
+    it('keeps all required parameters non-optional', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(name: String, greeting: String) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        false,
+        false,
+      ]);
+    });
+
+    it('marks parameters with default expressions as optional', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(name: String, greeting: String = "Hello", punctuation: String = "!") { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        false,
+        true,
+        true,
+      ]);
+    });
+
+    it('preserves a required parameter after a defaulted parameter', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(greeting: String = "Hello", name: String) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        true,
+        false,
+      ]);
+    });
+  });
+
   describe('extension functions', () => {
     it('extracts receiverType for extension functions', () => {
       const tree = parseKotlin(`
