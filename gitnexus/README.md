@@ -204,6 +204,7 @@ Set these env vars to use a remote OpenAI-compatible `/v1/embeddings` endpoint i
 export GITNEXUS_EMBEDDING_URL=http://your-server:8080/v1
 export GITNEXUS_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 export GITNEXUS_EMBEDDING_DIMS=1024          # optional, default 384
+export GITNEXUS_EMBEDDING_OMIT_DIMENSIONS=1   # optional; omit the `dimensions` field for providers that reject it (e.g. Voyage), still validating against GITNEXUS_EMBEDDING_DIMS
 export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 gitnexus analyze . --embeddings
 ```

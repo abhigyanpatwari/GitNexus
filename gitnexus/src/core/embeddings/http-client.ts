@@ -25,6 +25,7 @@ interface HttpConfig {
   model: string;
   apiKey: string;
   dimensions?: number;
+  omitDimensionsField?: boolean;
 }
 
 /**
@@ -50,11 +51,19 @@ const readConfig = (): HttpConfig | null => {
     dimensions = parsed;
   }
 
+  // Some OpenAI-compatible providers (e.g. Voyage) reject the `dimensions` request field with a 400
+  // yet still return a fixed-size vector. When this is set the field is not sent, while
+  // GITNEXUS_EMBEDDING_DIMS is still honoured for validating the returned vector length.
+  const omitDimensionsField =
+    process.env.GITNEXUS_EMBEDDING_OMIT_DIMENSIONS === '1' ||
+    process.env.GITNEXUS_EMBEDDING_OMIT_DIMENSIONS === 'true';
+
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     model,
     apiKey: process.env.GITNEXUS_EMBEDDING_API_KEY ?? 'unused',
     dimensions,
+    omitDimensionsField,
   };
 };
 
@@ -96,11 +105,14 @@ interface EmbeddingItem {
  * @param batchIndex - Logical batch number (for error context)
  * @param dimensions - Optional output-vector size. When provided, sent as
  *   the `dimensions` field in the request body. Endpoints that implement
- *   Matryoshka truncation (OpenAI text-embedding-3-*, Cohere embed-v3,
- *   Voyage) return a truncated vector at that size; endpoints that do not
+ *   Matryoshka truncation (OpenAI text-embedding-3-*, Cohere embed-v3)
+ *   return a truncated vector at that size; endpoints that do not
  *   recognise the field may ignore it or return 400. Leave
  *   `GITNEXUS_EMBEDDING_DIMS` unset for strict backends that reject
- *   unknown fields.
+ *   unknown fields, or set `GITNEXUS_EMBEDDING_OMIT_DIMENSIONS=1` to omit
+ *   the field while still validating the response against
+ *   `GITNEXUS_EMBEDDING_DIMS` (e.g. Voyage, which rejects the field but
+ *   always returns a fixed-size vector).
  */
 const httpEmbedBatch = async (
   url: string,
@@ -193,7 +205,7 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
       config.model,
       config.apiKey,
       batchIndex,
-      config.dimensions,
+      config.omitDimensionsField ? undefined : config.dimensions,
     );
 
     if (items.length !== batch.length) {
@@ -243,7 +255,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
     config.model,
     config.apiKey,
     0,
-    config.dimensions,
+    config.omitDimensionsField ? undefined : config.dimensions,
   );
   if (!items.length) {
     throw new Error(`Embedding endpoint returned empty response (${safeUrl(url)})`);

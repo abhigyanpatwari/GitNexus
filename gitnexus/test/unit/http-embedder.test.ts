@@ -6,6 +6,7 @@ const ENV_KEYS = [
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
   'GITNEXUS_EMBEDDING_DIMS',
+  'GITNEXUS_EMBEDDING_OMIT_DIMENSIONS',
 ] as const;
 
 /** 384d mock vector matching the default schema dimensions. */
@@ -161,6 +162,29 @@ describe('HTTP embedding backend', () => {
       const body = JSON.parse((fetch as any).mock.calls[0][1].body);
       expect(body.dimensions).toBe(512);
       expect(result.length).toBe(512);
+    });
+
+    it('omits the dimensions field on the single-query path when GITNEXUS_EMBEDDING_OMIT_DIMENSIONS is set', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'voyage-code-3';
+      process.env.GITNEXUS_EMBEDDING_DIMS = '1024';
+      process.env.GITNEXUS_EMBEDDING_OMIT_DIMENSIONS = '1';
+
+      const vec1024 = Array.from({ length: 1024 }, (_, i) => i / 1024);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: vec1024 }] }),
+        }),
+      );
+
+      const mod = await import('../../src/mcp/core/embedder.js');
+      const result = await mod.embedQuery('query text');
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect('dimensions' in body).toBe(false);
+      expect(result.length).toBe(1024);
     });
 
     it('retries on server error', async () => {
