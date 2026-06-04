@@ -16,6 +16,7 @@ import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { extractSpringRoutes } from './spring-route-extractor.js';
 import { extractExpressRoutes } from '../route-extractors/express.js';
 import { extractFastApiRoutes } from '../route-extractors/python.js';
+import { extractGinRoutes } from '../route-extractors/go.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -2860,6 +2861,14 @@ const processFileGroup = (
       const fastApiRoutes = extractFastApiRoutes(tree, file.path);
       if (fastApiRoutes.length > 0) {
         result.routes.push(...fastApiRoutes);
+      }
+    }
+
+    // Extract Gin routes from Go files (Issues #80, #6)
+    if (language === SupportedLanguages.Go) {
+      const ginRoutes = extractGinRoutes(tree, file.path);
+      if (ginRoutes.length > 0) {
+        result.routes.push(...ginRoutes);
       }
     }
   }
