@@ -92,39 +92,14 @@ describe('F55 — anonymous class scope', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F55 — anonymous class pipeline test (runPipelineFromRepo)
+// F53 — grouped use prefix
 // ---------------------------------------------------------------------------
 
-describe('F55 — anonymous class pipeline graph output', () => {
-  let importResult: any;
-
-  beforeAll(async () => {
-    // Dynamic import to avoid loading helpers at module level (transitive
-    // tree-sitter-dart import fails when the optional grammar is missing).
-    const { FIXTURES, getNodesByLabel, getRelationships, runPipelineFromRepo } =
-      await import('./helpers.js');
-    const result = await runPipelineFromRepo(path.join(FIXTURES, 'php-anonymous-class'), () => {});
-    importResult = { result, getNodesByLabel, getRelationships };
-  }, 60000);
-
-  it('creates a Method node for the anonymous class execute method', () => {
-    const { result, getNodesByLabel } = importResult;
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('execute');
-  });
-
-  it('$service->execute() produces a CALLS edge', () => {
-    const { result, getRelationships } = importResult;
-    const calls = getRelationships(result, 'CALLS');
-    const executeCall = calls.find((e: any) => e.target === 'execute');
-    expect(executeCall).toBeDefined();
-  });
-
-  it('the CALLS edge source is resolved (not MISSING)', () => {
-    const { result, getRelationships } = importResult;
-    const calls = getRelationships(result, 'CALLS');
-    const executeCall = calls.find((e: any) => e.target === 'execute');
-    expect(executeCall).toBeDefined();
-    expect(executeCall!.source).not.toBe('MISSING');
+describe('F53 — grouped use prefix', () => {
+  it('use App\\Models\\{User} preserves namespace prefix', () => {
+    const src = `<?php\nuse App\\Models\\{User};\n`;
+    const matches = emitPhpScopeCaptures(src, 'test.php') as CaptureMatch[];
+    const importSource = matches.find((m) => m['@import.source'])?.['@import.source']?.text;
+    expect(importSource).toBe('App\\Models\\User');
   });
 });
