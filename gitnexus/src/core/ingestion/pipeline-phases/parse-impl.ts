@@ -871,7 +871,6 @@ export async function runChunkedParseAndResolve(
           `processRoutesFromExtracted: ${ms.toFixed(0)}ms (${allExtractedRoutes.length} routes)`,
       );
     }
-
   } finally {
     await workerPool?.terminate();
   }

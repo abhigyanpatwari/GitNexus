@@ -8,7 +8,6 @@ import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import type { GraphRelationship } from 'gitnexus-shared';
 
-
 type VitestIt = typeof vitestIt;
 
 /**

@@ -30,49 +30,46 @@ import {
   type PipelineResult,
 } from './resolvers/helpers.js';
 
-describe(
-  'JavaScript array-method-callback CALLS attribution (#1876)',
-  () => {
-    let result: PipelineResult;
+describe('JavaScript array-method-callback CALLS attribution (#1876)', () => {
+  let result: PipelineResult;
 
-    beforeAll(async () => {
-      result = await runPipelineFromRepo(
-        path.join(FIXTURES, 'javascript-array-method-callback'),
-        () => {},
-      );
-    }, 60000);
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-array-method-callback'),
+      () => {},
+    );
+  }, 60000);
 
-    it('control: run() body calls transform directly (resolver is wired)', () => {
-      const calls = getRelationships(result, 'CALLS').filter((c) => c.target === 'transform');
-      expect(calls.map((c) => `${c.source} → ${c.target}`)).toContain('run → transform');
-    });
+  it('control: run() body calls transform directly (resolver is wired)', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.target === 'transform');
+    expect(calls.map((c) => `${c.source} → ${c.target}`)).toContain('run → transform');
+  });
 
-    it('call inside .map callback attributes to File, not a phantom Function:exportData', () => {
-      const calls = getRelationships(result, 'CALLS').filter((c) => c.target === 'transform');
-      const fromExportData = calls.filter((c) => c.source === 'exportData');
-      expect(
-        fromExportData,
-        'transform must NOT be attributed to exportData (phantom Function)',
-      ).toEqual([]);
-      const fromFile = calls.filter((c) => c.sourceLabel === 'File');
-      expect(
-        fromFile,
-        'the .map callback call to transform must source from the File node (exactly once)',
-      ).toHaveLength(1);
-    });
+  it('call inside .map callback attributes to File, not a phantom Function:exportData', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.target === 'transform');
+    const fromExportData = calls.filter((c) => c.source === 'exportData');
+    expect(
+      fromExportData,
+      'transform must NOT be attributed to exportData (phantom Function)',
+    ).toEqual([]);
+    const fromFile = calls.filter((c) => c.sourceLabel === 'File');
+    expect(
+      fromFile,
+      'the .map callback call to transform must source from the File node (exactly once)',
+    ).toHaveLength(1);
+  });
 
-    it('call inside .find callback attributes to File, not a phantom Function:firstActive', () => {
-      const calls = getRelationships(result, 'CALLS').filter((c) => c.target === 'predicate');
-      const fromFirstActive = calls.filter((c) => c.source === 'firstActive');
-      expect(
-        fromFirstActive,
-        'predicate must NOT be attributed to firstActive (phantom Function)',
-      ).toEqual([]);
-      const fromFile = calls.filter((c) => c.sourceLabel === 'File');
-      expect(
-        fromFile,
-        'the .find callback call to predicate must source from the File node (exactly once)',
-      ).toHaveLength(1);
-    });
-  },
-);
+  it('call inside .find callback attributes to File, not a phantom Function:firstActive', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.target === 'predicate');
+    const fromFirstActive = calls.filter((c) => c.source === 'firstActive');
+    expect(
+      fromFirstActive,
+      'predicate must NOT be attributed to firstActive (phantom Function)',
+    ).toEqual([]);
+    const fromFile = calls.filter((c) => c.sourceLabel === 'File');
+    expect(
+      fromFile,
+      'the .find callback call to predicate must source from the File node (exactly once)',
+    ).toHaveLength(1);
+  });
+});
