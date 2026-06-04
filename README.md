@@ -22,7 +22,7 @@
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/abhigyanpatwari/GitNexus">
     <img src="https://api.securityscorecards.dev/projects/github.com/abhigyanpatwari/GitNexus/badge" alt="OpenSSF Scorecard"/>
   </a>
-  <a href="(https://github.com/abhigyanpatwari/GitNexus/actions/workflows/ci.yml">
+  <a href="https://github.com/abhigyanpatwari/GitNexus/actions/workflows/ci.yml">
     <img src="https://github.com/abhigyanpatwari/GitNexus/actions/workflows/ci.yml/badge.svg" alt="CI Workflows"/>
   </a>
 
