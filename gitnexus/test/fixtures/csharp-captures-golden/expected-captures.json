@@ -139,6 +139,14 @@
     "captureGroups": 7,
     "digest": "49ec4930562a8e12040010b12535a1620aa5ab86e2aab3cad2623e8aec106518"
   },
+  "csharp-explicit-ctor-init/Models/Base.cs": {
+    "captureGroups": 7,
+    "digest": "7d6709d4cc2db44ea603dcd0e917c201affc22e1a2b7e42f8dfca8733752ad8c"
+  },
+  "csharp-explicit-ctor-init/Models/Child.cs": {
+    "captureGroups": 15,
+    "digest": "820ee2b0401d5f949f8c9939e2350841cd6c3bc9341d8431ce0089781962ff4d"
+  },
   "csharp-field-types/Models.cs": {
     "captureGroups": 16,
     "digest": "c66da699df823e98eba7ee05170001ed51a7f4ed464ece95c8bb8aa92c2cb5bc"
@@ -490,6 +498,18 @@
   "csharp-qualified-base/src/Shapes.cs": {
     "captureGroups": 38,
     "digest": "eb485282a87a35dac553701e6560d26b4e01f585fa36ded4576bbce00c8c163a"
+  },
+  "csharp-qualified-constructor/App.cs": {
+    "captureGroups": 12,
+    "digest": "a306cff8b82946ab57002b850871b05ea9d83a967288c161faaf3e2f510854b5"
+  },
+  "csharp-qualified-constructor/Models/Box.cs": {
+    "captureGroups": 7,
+    "digest": "792e71d6efba48a164555bc20c0779a95440167ac419465b9387a7e317fd7569"
+  },
+  "csharp-qualified-constructor/Models/Widget.cs": {
+    "captureGroups": 10,
+    "digest": "267d49989830299ed08c4ee2bbcfae0017e97ede2832c7c1f35f0f5566e3c020"
   },
   "csharp-qualified-types/Data/User.cs": {
     "captureGroups": 7,
