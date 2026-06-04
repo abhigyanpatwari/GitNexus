@@ -110,8 +110,18 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     const model = createSemanticModel();
     // Two distinct classes share the controller short-name in different files →
     // lookupClassByName returns >1 candidate, which the emitter refuses.
-    model.symbols.add('app/A/OrderController.php', 'OrderController', 'class:A.OrderController', 'Class');
-    model.symbols.add('app/B/OrderController.php', 'OrderController', 'class:B.OrderController', 'Class');
+    model.symbols.add(
+      'app/A/OrderController.php',
+      'OrderController',
+      'class:A.OrderController',
+      'Class',
+    );
+    model.symbols.add(
+      'app/B/OrderController.php',
+      'OrderController',
+      'class:B.OrderController',
+      'Class',
+    );
 
     await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], model);
 
@@ -124,10 +134,7 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
 
     await processRoutesFromExtracted(
       graph,
-      [
-        makeRoute({ controllerName: null }),
-        makeRoute({ methodName: null }),
-      ],
+      [makeRoute({ controllerName: null }), makeRoute({ methodName: null })],
       model,
     );
 

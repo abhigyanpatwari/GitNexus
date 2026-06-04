@@ -804,7 +804,6 @@ export async function runChunkedParseAndResolve(
       }
       astCache.clear();
     }
-
   } finally {
     // Clearing an already-empty cache is a no-op, so this is idempotent-safe
     // on the happy path where every per-chunk block already cleared astCache.
