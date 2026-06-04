@@ -1,8 +1,35 @@
 import type { CaptureMatch } from 'gitnexus-shared';
 import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
+const COMPOSITE_LITERAL_TYPE_NODE_TYPES = new Set([
+  'type_identifier',
+  'qualified_type',
+  'generic_type',
+]);
+
 export function synthesizeGoTypeBindings(rootNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
+
+  for (const node of rootNode.descendantsOfType('var_spec')) {
+    const name = node.childForFieldName('name');
+    const value = node.childForFieldName('value');
+    if (name?.type !== 'identifier' || value === null) continue;
+
+    const rhsExpr = value.namedChildren[0];
+    if (rhsExpr === undefined) continue;
+    const typeNode = extractCompositeLiteralTypeNode(rhsExpr);
+    if (typeNode === null) continue;
+
+    out.push({
+      '@type-binding.constructor': syntheticCapture('@type-binding.constructor', node, node.text),
+      '@type-binding.name': syntheticCapture('@type-binding.name', name, name.text),
+      '@type-binding.type': syntheticCapture(
+        '@type-binding.type',
+        typeNode,
+        extractSimpleTypeNameText(typeNode),
+      ),
+    });
+  }
 
   for (const node of rootNode.descendantsOfType('short_var_declaration')) {
     const right = node.childForFieldName('right');
@@ -223,20 +250,39 @@ function synthesizeElementAccessBindings(rootNode: SyntaxNode, out: CaptureMatch
   }
 }
 
-function extractSimpleTypeNameText(node: SyntaxNode): string {
+export function extractSimpleTypeNameText(node: SyntaxNode): string {
   if (node.type === 'qualified_type') {
     const parts = node.text.split('.');
     return parts[parts.length - 1] ?? node.text;
+  }
+  if (node.type === 'generic_type') {
+    const base = node.childForFieldName('type');
+    return base === null ? node.text : extractSimpleTypeNameText(base);
   }
   return node.text;
 }
 
 /** Extract the type/signature node from a RHS expression. */
+function extractCompositeLiteralTypeNode(expr: SyntaxNode): SyntaxNode | null {
+  if (expr.type === 'composite_literal') {
+    return (
+      expr.childForFieldName('type') ??
+      expr.namedChildren.find((c) => COMPOSITE_LITERAL_TYPE_NODE_TYPES.has(c.type)) ??
+      null
+    );
+  }
+  if (expr.type === 'unary_expression') {
+    const operand = expr.childForFieldName('operand');
+    return operand === null ? null : extractCompositeLiteralTypeNode(operand);
+  }
+  return null;
+}
+
 function extractTypeNode(expr: SyntaxNode): SyntaxNode | null {
   if (expr.type === 'composite_literal') {
     return (
       expr.childForFieldName('type') ??
-      expr.namedChildren.find((c) => ['type_identifier', 'qualified_type'].includes(c.type)) ??
+      expr.namedChildren.find((c) => COMPOSITE_LITERAL_TYPE_NODE_TYPES.has(c.type)) ??
       null
     );
   }

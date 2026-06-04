@@ -105,6 +105,14 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
+> **On npm 11.x?** `npx` can crash during install with `Cannot destructure property 'package' of 'node.target'` (an npm/arborist bug, before GitNexus runs). Use pnpm instead — it builds the native deps explicitly:
+>
+> ```bash
+> pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze
+> ```
+>
+> Or install globally (`npm install -g gitnexus@latest`) and run `gitnexus analyze`. See [#1939](https://github.com/abhigyanpatwari/GitNexus/issues/1939).
+
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 > **Faster install (no C++ toolchain needed):** set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before `npm install -g gitnexus` to skip vendored grammar materialize/build (`tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`). Dart/Proto/Swift files won't be parsed, but install completes in seconds without `python3`/`make`/`g++`. Strict `=1` only — any other value falls through to the rebuild.
@@ -219,8 +227,10 @@ gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS 
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --skip-skills     # Skip installing .claude/skills/gitnexus/ skill files
+gitnexus analyze --default-branch develop  # Branch used in the generated regression-compare example (base_ref)
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
-gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
+gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
@@ -248,6 +258,53 @@ gitnexus group status <name>     # Check staleness of repos in a group
 ```
 
 If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `gitnexus analyze --worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
+
+#### Embeddings node limit
+
+`gitnexus analyze --embeddings` generates semantic search vectors with a default 50,000-node safety cap to protect memory on large repositories. Override the cap when you know the host has enough memory for a larger graph, or disable it entirely for a one-off full embeddings run.
+
+```bash
+# Generate embeddings with the default 50,000 node safety cap
+gitnexus analyze --embeddings
+
+# Disable the safety cap entirely
+gitnexus analyze --embeddings 0
+
+# Use a custom cap
+gitnexus analyze --embeddings 100000
+```
+
+If embeddings are skipped on a large repository, the indexed graph likely exceeds the default safety cap. Re-run with `gitnexus analyze --embeddings 0` to remove the cap, or `gitnexus analyze --embeddings <n>` to choose a higher limit while still keeping memory bounded.
+
+#### Project config (`.gitnexusrc`)
+
+Commit a `.gitnexusrc` JSON file at the repo root to preconfigure recurring `analyze` options per project, instead of re-passing the same flags every run. It is read from the resolved repo root (not `.gitnexus/`, which is gitignored index storage). **CLI flags always override `.gitnexusrc`.**
+
+```jsonc
+{
+  // Default branch used in the generated regression-compare example (base_ref).
+  // Use this so a project on `develop`/`master` doesn't get "main" rewritten
+  // over its fix on every analyze. (Alias: "branch".)
+  "defaultBranch": "develop",
+  "skipContextFiles": true, // alias of skipAgentsMd: keep your own AGENTS.md/CLAUDE.md
+  "skipSkills": true, // don't install .claude/skills/gitnexus/
+  "embeddings": true, // generate embeddings by default
+  "workerTimeout": 60
+}
+```
+
+A nested `analyze` block is also accepted (and overrides flat keys for the same option):
+
+```json
+{ "analyze": { "defaultBranch": "develop", "skipSkills": true } }
+```
+
+Notes:
+
+- The default branch is resolved as: `--default-branch` > `.gitnexusrc` `defaultBranch`/`branch` > auto-detected `origin/HEAD` > `main`.
+- `skipContextFiles` / `skipAiContext` are aliases for `skipAgentsMd` — they skip the `AGENTS.md` / `CLAUDE.md` block only. They do **not** imply `skipSkills`. `indexOnly` is the stronger option that skips all file injection.
+- Supported keys: `defaultBranch` (`branch`), `skipAgentsMd` (`skipContextFiles`, `skipAiContext`), `skipSkills`, `indexOnly`, `stats`/`noStats`, `embeddings`, `dropEmbeddings`, `name`, `allowDuplicateName`, `maxFileSize`, `workerTimeout`, `walCheckpointThreshold`, `workers`, `embeddingThreads`, `embeddingBatchSize`, `embeddingSubBatchSize`, `embeddingDevice`.
+- The file is JSON only. Unknown keys and invalid values fail fast with an actionable error before analysis starts.
 
 #### Environment variables
 

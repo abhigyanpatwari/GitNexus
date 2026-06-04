@@ -22,7 +22,7 @@ const SWIFT_VIS = new Set<FieldVisibility>([
  */
 export const swiftConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Swift,
-  typeDeclarationNodes: ['class_declaration', 'struct_declaration', 'protocol_declaration'],
+  typeDeclarationNodes: ['class_declaration', 'protocol_declaration'],
   fieldNodeTypes: ['property_declaration'],
   bodyNodeTypes: ['class_body', 'protocol_body'],
   defaultVisibility: 'internal',

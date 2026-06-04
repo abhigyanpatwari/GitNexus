@@ -3,6 +3,7 @@ import {
   nodeIfType,
   nodeToCapture,
   syntheticCapture,
+  walkNamedTree,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { getRustParser, getRustScopeQuery } from './query.js';
@@ -161,7 +162,84 @@ export function emitRustScopeCaptures(
     out.push(grouped);
   }
 
+  out.push(...synthesizeRustInheritanceReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Rust trait `impl` blocks so
+ * the registry-primary scope-resolution path can emit the IMPLEMENTS edge for
+ * `impl Trait for Struct` (mirrors the legacy `@heritage.trait`/`@heritage.class`
+ * path, which the worker pipeline drops for registry-primary languages — #1951).
+ *
+ * Rust inheritance is structurally unlike a base list on a type declaration:
+ * the relationship lives on `impl_item { trait: T, type: S }`, meaning
+ * `S IMPLEMENTS T`. The shared `preEmitInheritanceEdges` derives an edge's
+ * SOURCE from the enclosing *class* def of the `@reference.inherits` site, but
+ * an `impl_item` scope owns no class-like def (the struct `S` is declared
+ * elsewhere as a `struct_item`), so `findEnclosingClassDef` returns undefined
+ * and that pass emits nothing for these sites (it still marks them handled,
+ * suppressing the generic reference bridge). The real IMPLEMENTS edge is
+ * therefore emitted by `rustScopeResolver.emitHeritageEdges`, which reads these
+ * sites back from `parsedFiles[*].referenceSites`.
+ *
+ * To carry both ends of the relationship through a single reference site we
+ * encode: `@reference.name` = the trait `T` (becomes `site.name`, the IMPLEMENTS
+ * target) and `@reference.receiver` = the struct `S` (becomes
+ * `site.explicitReceiver.name`, the IMPLEMENTS source).
+ *
+ * Parity is intentionally pinned to the legacy heritage query's `impl_item`
+ * patterns: both `trait:` and `type:` normalize to the base's trailing bare
+ * `type_identifier` — directly, via a `scoped_type_identifier`'s `name:` tail
+ * (`crate::traits::Drawable` → `Drawable`; KTD-1 tail resolution), or through a
+ * `generic_type`'s `type:` field (which may itself be either). Inherent impls
+ * (`impl S {}`, no `trait:` field) still emit nothing.
+ */
+function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'impl_item') return;
+    const traitField = node.childForFieldName('trait');
+    const typeField = node.childForFieldName('type');
+    if (traitField === null || typeField === null) return;
+    const traitName = bareTypeIdentifier(traitField);
+    const structName = bareTypeIdentifier(typeField);
+    if (traitName === null || structName === null) return;
+    out.push({
+      '@reference.inherits': nodeToCapture('@reference.inherits', traitName),
+      '@reference.name': nodeToCapture('@reference.name', traitName),
+      '@reference.receiver': syntheticCapture('@reference.receiver', structName, structName.text),
+    });
+  });
+  return out;
+}
+
+/**
+ * Normalize a `trait:` / `type:` impl_item field to the base's trailing bare
+ * `type_identifier`, matching exactly the node shapes the legacy `@heritage`
+ * query accepts (kept at parity — see the `impl_item` heritage arm in
+ * tree-sitter-queries.ts):
+ *   - `type_identifier`                                  → the node itself
+ *   - `scoped_type_identifier name: (type_identifier)`   → the trailing `name:` id
+ *     (`crate::traits::Drawable` → `Drawable`; KTD-1 tail resolution — the
+ *     simple name then resolves scope-aware via `emitRustTraitImplEdges`)
+ *   - `generic_type type: <any of the above>`            → recurse into `type:`
+ *     (covers `Box<T>` and `m::Wrapped<T>`)
+ * Any other node type returns null (no edge), keeping this emitter at parity
+ * with the legacy query.
+ */
+function bareTypeIdentifier(node: SyntaxNode): SyntaxNode | null {
+  if (node.type === 'type_identifier') return node;
+  if (node.type === 'scoped_type_identifier') {
+    const tail = node.childForFieldName('name');
+    return tail !== null && tail.type === 'type_identifier' ? tail : null;
+  }
+  if (node.type === 'generic_type') {
+    const inner = node.childForFieldName('type');
+    return inner !== null ? bareTypeIdentifier(inner) : null;
+  }
+  return null;
 }
 
 function findEnclosingImpl(node: SyntaxNode): SyntaxNode | null {

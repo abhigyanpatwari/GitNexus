@@ -33,9 +33,8 @@
  *     same identifier also binds as a parameter in the constructor scope
  *     via the normal `required_parameter` → `@type-binding.parameter` path.
  *   - **Enum** — dual type+value. Emits `@scope.class` (enum body contains
- *     member declarations) + `@declaration.enum`. Members are captured as
- *     `@declaration.property` via the generic property_identifier pattern
- *     inside enum_body.
+ *     member declarations) + `@declaration.enum`. Enum member names
+ *     are captured via `enum_assignment` (see below).
  *
  * Node types pinned via `scripts/_probe_typescript_grammar.ts`:
  *   internal_module, namespace_export, namespace_import, import_specifier,
@@ -53,6 +52,10 @@
 
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from '../../ts-js-hoc-utils.js';
 
 // tree-sitter-typescript exports both `typescript` and `tsx` grammars on
 // the default export. The package's `.d.ts` types the default export
@@ -85,6 +88,11 @@ const TYPESCRIPT_SCOPE_QUERY = `
 (abstract_class_declaration) @scope.class
 (interface_declaration) @scope.class
 (enum_declaration) @scope.class
+;; Class expressions: const Foo = class { ... } / const Foo = class Named { ... }.
+;; tree-sitter-typescript uses (class) (NOT class_expression) -- same node
+;; name as tree-sitter-javascript. The name field is optional (anonymous
+;; class expressions omit it); ScopeExtractor tolerates missing names.
+(class) @scope.class
 
 (function_declaration) @scope.function
 (generator_function_declaration) @scope.function
@@ -277,10 +285,16 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; via \`(filePath, type, qualifiedName)\` — second wins. Acceptable;
 ;; multi-arrow-callback APIs are rare (\`new Promise(executor)\` is the
 ;; main one and takes a single executor).
+;;
+;; NOTE: Split into identifier vs member_expression patterns. Member
+;; expressions are filtered with a blocklist of common array methods
+;; (map, filter, reduce, etc.) to avoid false positives like
+;; \`const x = arr.map(a => ...)\` being classified as Function.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -288,13 +302,35 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -302,10 +338,68 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
+;; The emit phase rewrites @declaration.name to a file-derived name so
+;; wrappers like \`defineEventHandler\` / \`React.memo\` do not collapse
+;; unrelated modules onto the same symbol name.
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Method definitions — regular + private (#field) methods.
+;; These match inside both class_declaration and class (class expression)
+;; bodies. The @scope.class for class expressions (see (class) above)
+;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method
 
@@ -326,6 +420,15 @@ const TYPESCRIPT_SCOPE_QUERY = `
 
 (public_field_definition
   name: (private_property_identifier) @declaration.name) @declaration.property
+
+;; Enum members: enum Color { Red, Green = 1, Blue }.
+;; Bare members (no value): Red, Blue — property_identifier inside enum_body.
+;; Members with value: Green = 1 — enum_assignment with name field.
+(enum_body
+  (property_identifier) @declaration.name) @declaration.property
+
+(enum_assignment
+  name: (_) @declaration.name) @declaration.property
 
 ;; Declarations — parameter properties: \`constructor(public name: string)\`.
 ;; The accessibility_modifier presence distinguishes these from regular
@@ -447,6 +550,26 @@ const TYPESCRIPT_SCOPE_QUERY = `
   pattern: (identifier) @type-binding.name
   type: (type_annotation
     (generic_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (predefined_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (union_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (array_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (readonly_type) @type-binding.type)) @type-binding.parameter
 
 ;; Type bindings — variable annotations: \`let u: User = ...\` / \`const u: User\`.
 (variable_declarator
@@ -847,7 +970,8 @@ const TYPESCRIPT_SCOPE_QUERY = `
   constructor: (identifier) @reference.name) @reference.call.constructor
 
 (new_expression
-  constructor: (member_expression) @reference.call.constructor.qualified) @reference.call.constructor
+  constructor: (member_expression
+    property: (property_identifier) @reference.name) @reference.call.constructor.qualified) @reference.call.constructor
 
 ;; References — write access: \`obj.field = value\`.
 (assignment_expression

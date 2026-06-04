@@ -7,9 +7,41 @@ import {
   stripTemplateArguments,
   templateArgumentsIdTag,
 } from './template-arguments.js';
+import { splitQualifiedName } from './qualified-name.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
+
+/**
+ * Qualify a Rust inherent-impl target (`impl Inner { ... }`) by its enclosing
+ * `mod_item` scope, so a bare same-tail target nested under different modules
+ * resolves to a DISTINCT path (`outer.Inner` vs `other.Inner`) — the #1982
+ * follow-up to #1975. Walks `mod_item` ancestors (outermost → innermost) and
+ * joins them with the normalized raw target via the shared `splitQualifiedName`.
+ * A top-level `impl Inner` (no enclosing mod) returns the bare target unchanged.
+ * Keyed purely on tree-sitter node types (no language name), matching the
+ * inherent-impl branch in `findEnclosingClassInfo`; the caller restricts this to
+ * UNSCOPED targets (`type_identifier`) so a SCOPED `impl a::Inner` keeps its full
+ * raw text (#1975). The Impl-node materialization in parsing-processor /
+ * parse-worker mirrors this so the owner edge and node id agree byte-for-byte.
+ */
+export const qualifyRustImplTargetByModScope = (
+  implNode: SyntaxNode,
+  rawTargetText: string,
+): string => {
+  const modSegments: string[] = [];
+  let current = implNode.parent;
+  while (current) {
+    if (current.type === 'mod_item') {
+      const nameNode =
+        current.childForFieldName?.('name') ??
+        current.children?.find((c: SyntaxNode) => c.type === 'identifier');
+      if (nameNode) modSegments.unshift(nameNode.text);
+    }
+    current = current.parent;
+  }
+  return [...modSegments, ...splitQualifiedName(rawTargetText)].filter(Boolean).join('.');
+};
 
 /**
  * Ordered list of definition capture keys for tree-sitter query matches.
@@ -49,6 +81,51 @@ export const getDefinitionNodeFromCaptures = (
     if (captureMap[key]) return captureMap[key];
   }
   return null;
+};
+
+type QueryMatchLike = {
+  captures: Array<{ name: string; node: SyntaxNode }>;
+};
+
+const nodeRangeKey = (node: SyntaxNode): string =>
+  `${node.startPosition.row}:${node.startPosition.column}:${node.endPosition.row}:${node.endPosition.column}`;
+
+const isConcreteTypedefCapture = (captureMap: Record<string, SyntaxNode>): boolean => {
+  const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+  return (
+    definitionNode?.type === 'type_definition' &&
+    (captureMap['definition.struct'] !== undefined || captureMap['definition.enum'] !== undefined)
+  );
+};
+
+export const buildConcreteTypedefDefinitionRanges = (
+  matches: readonly QueryMatchLike[],
+): Set<string> => {
+  const ranges = new Set<string>();
+  for (const match of matches) {
+    const captureMap: Record<string, SyntaxNode> = {};
+    for (const capture of match.captures) {
+      captureMap[capture.name] = capture.node;
+    }
+
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    if (definitionNode && isConcreteTypedefCapture(captureMap)) {
+      ranges.add(nodeRangeKey(definitionNode));
+    }
+  }
+  return ranges;
+};
+
+export const isSuppressedConcreteTypedefDuplicate = (
+  captureMap: Record<string, SyntaxNode>,
+  concreteTypedefRanges: ReadonlySet<string>,
+): boolean => {
+  const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+  return (
+    definitionNode?.type === 'type_definition' &&
+    captureMap['definition.typedef'] !== undefined &&
+    concreteTypedefRanges.has(nodeRangeKey(definitionNode))
+  );
 };
 
 /**
@@ -137,6 +214,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Go
+  'struct_type',
+  'interface_type',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -169,7 +249,31 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
+  struct_type: 'Struct',
+  interface_type: 'Interface',
 };
+
+/**
+ * Pre-order walk over a node and all its named descendants, invoking `cb` on
+ * each. Replaces the per-language `visit`/`visitGo`/`visitRust`/`visitSwift`
+ * clones that every language's capture-synthesis walker re-implemented (#1956
+ * tri-review U6).
+ *
+ * Iterates by index with a null guard: `node.namedChild(i)` is typed
+ * `SyntaxNode | null`, and most callers already guarded it. The Go and C#
+ * callers previously iterated `node.namedChildren`; the Go one had no null
+ * guard, so this standardizes them onto the guarded indexed form — a deliberate,
+ * strictly-safer behavior addition (the traversal *sequence* is identical, so
+ * capture output stays byte-identical on well-formed trees; the guard only
+ * matters for a null named child, which the fixture corpus never produces).
+ */
+export function walkNamedTree(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child !== null) walkNamedTree(child, cb);
+  }
+}
 
 /** Return the first matching ancestor unless a boundary ancestor is reached first. */
 export function findAncestorBeforeBoundary(
@@ -197,7 +301,11 @@ export function getLabelFromCaptures(
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
-  if (!captureMap['name'] && !captureMap['definition.constructor']) return null;
+  const hasDefaultExportHocNameSeed =
+    captureMap['definition.function'] !== undefined &&
+    (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
+  if (!captureMap['name'] && !captureMap['definition.constructor'] && !hasDefaultExportHocNameSeed)
+    return null;
 
   if (captureMap['definition.function']) {
     if (provider.labelOverride) {
@@ -245,6 +353,15 @@ export function getLabelFromCaptures(
 export interface EnclosingClassInfo {
   classId: string; // e.g. "Class:animal.dart:Animal"
   className: string; // e.g. "Animal"
+  /**
+   * The owner node id keyed by the enclosing type's FULLY-QUALIFIED path
+   * (e.g. "Class:file:Outer.Inner"), present only when the language opts into
+   * `qualifiedNodeId` AND the enclosing type is actually nested (#1978).
+   * Consumers building HAS_METHOD/HAS_PROPERTY owner edges use this in
+   * preference to `classId` so the edge source matches the qualified class
+   * node id. When absent, `classId` (the simple-tail key) is unchanged.
+   */
+  qualifiedClassId?: string;
 }
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its ID and name.
@@ -269,6 +386,16 @@ export const findEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  /**
+   * Optional (#1978): returns the enclosing type's fully-qualified name
+   * (e.g. "Outer.Inner") for a type-declaration container, or null. Callers
+   * pass `classExtractor.extractQualifiedName` ONLY when the language's
+   * `qualifiedNodeId` flag is on — so when omitted, behavior is byte-identical
+   * to before (qualifiedClassId stays undefined). Used by the standard
+   * class-container branch to compute `qualifiedClassId` from the SAME function
+   * the node-id is built from, guaranteeing owner-id == node-id by construction.
+   */
+  getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   let iterations = 0;
@@ -344,8 +471,8 @@ export const findEnclosingClassInfo = (
       }
 
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
-      // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
-      // If modifying this block, update the other location too.
+      // NOTE: This impl_item ownership logic is mirrored in
+      // method-extractors/configs/rust.ts (extractOwnerName, metadata only).
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
@@ -359,18 +486,67 @@ export const findEnclosingClassInfo = (
                 c.type === 'identifier',
             );
           if (nameNode) {
+            // `for` target keeps its raw text. A scoped path (impl T for a::Inner)
+            // therefore owns through `a::Inner`, which only resolves once the
+            // referenced struct is keyed by its qualified path — deferred to #1978.
             return {
               classId: generateId('Struct', `${filePath}:${nameNode.text}`),
               className: nameNode.text,
             };
           }
         }
-        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
-        if (firstType) {
-          return {
-            classId: generateId('Impl', `${filePath}:${firstType.text}`),
-            className: firstType.text,
-          };
+        // Inherent impl target.
+        //   - SCOPED (`impl a::Inner`, scoped_type_identifier): key by FULL text,
+        //     matching the @definition.impl scoped arm (#1975). UNCHANGED.
+        //   - UNSCOPED (`impl Inner`, type_identifier): qualify by the enclosing
+        //     `mod_item` scope (`outer.Inner`) so two same-tail bare impls under
+        //     different mods own through DISTINCT nodes. The Impl-node
+        //     materialization (parsing-processor / parse-worker) mirrors this, so
+        //     the owner id == the Impl node id byte-for-byte (#1982).
+        //   - GENERIC (`impl<T> Inner<T>`, generic_type): the @definition.impl
+        //     node is materialized only when the generic base is a bare
+        //     `type_identifier` (tree-sitter-queries.ts), qualified the same way —
+        //     so drill into the base and mirror that gate, keeping the owner id ==
+        //     the node id byte-for-byte (#1992). A generic over a SCOPED base
+        //     (`impl<T> a::Inner<T>`) materializes NO node, so it must produce NO
+        //     owner (the method orphans — scoped-generic deferred, #1992).
+        const implTarget = children.find(
+          (c: SyntaxNode) =>
+            c.type === 'type_identifier' ||
+            c.type === 'scoped_type_identifier' ||
+            c.type === 'generic_type',
+        );
+        if (implTarget) {
+          const baseType =
+            implTarget.type === 'generic_type'
+              ? (implTarget.childForFieldName?.('type') ?? null)
+              : implTarget;
+          if (baseType?.type === 'type_identifier') {
+            // Bare target (`impl Inner` or `impl<T> Inner<T>`): qualify by mod scope.
+            // #1992 follow-up: qualify `className` too (not just `classId`). The
+            // method node id is keyed `${className}.${name}`, so a bare tail collapses
+            // two same-tail bare impls that ALSO share a method name (`a::Inner::m` +
+            // `b::Inner::m` both → `Inner.m`) onto one Method node (graph addNode is
+            // first-write-wins). Qualifying className → `a.Inner.m` / `b.Inner.m` keeps
+            // them distinct. Symmetric: the call-resolution fallback rebuilds the same
+            // `${className}.${name}` from the same enclosing-impl walk, so def and call
+            // ids still agree. Owner edge anchors on `classId` (already qualified).
+            const qualified = qualifyRustImplTargetByModScope(current, baseType.text);
+            return {
+              classId: generateId('Impl', `${filePath}:${qualified}`),
+              className: qualified,
+            };
+          }
+          if (baseType?.type === 'scoped_type_identifier' && implTarget.type !== 'generic_type') {
+            // Top-level scoped `impl a::Inner`: key by full raw text (#1975).
+            return {
+              classId: generateId('Impl', `${filePath}:${baseType.text}`),
+              className: baseType.text,
+            };
+          }
+          // generic-over-scoped (`impl<T> a::Inner<T>`) and any other base: fall
+          // through with no owner — no @definition.impl node exists, so attributing
+          // a method to a synthesized id would orphan it against a phantom owner.
         }
       }
 
@@ -400,9 +576,29 @@ export const findEnclosingClassInfo = (
           templateArguments !== undefined
             ? `${stripTemplateArguments(nameNode.text)}${templateArgumentsIdTag(templateArguments)}`
             : nameNode.text;
+        // #1978: when the language opts into qualified node ids, key the owner
+        // edge by the enclosing type's qualified path (e.g. "Outer.Inner") so it
+        // matches the qualified class node id. Derived from the SAME
+        // extractQualifiedName the node-id uses → agree by construction. Only set
+        // when actually nested (qualified !== simple); top-level types are
+        // unchanged. (Go receiver / Rust impl branches return earlier and are
+        // intentionally untouched here.)
+        const qualifiedOwnerName = getQualifiedOwnerName?.(current, nameNode.text);
+        const qualifiedClassId =
+          qualifiedOwnerName != null && qualifiedOwnerName !== nameNode.text
+            ? generateId(
+                label,
+                `${filePath}:${
+                  templateArguments !== undefined
+                    ? `${stripTemplateArguments(qualifiedOwnerName)}${templateArgumentsIdTag(templateArguments)}`
+                    : qualifiedOwnerName
+                }`,
+              )
+            : undefined;
         return {
           classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
+          ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
         };
       }
     }

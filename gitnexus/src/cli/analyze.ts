@@ -26,7 +26,14 @@ import {
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
 } from '../storage/repo-manager.js';
-import { getGitRoot, hasGitDir } from '../storage/git.js';
+import { getGitRoot, hasGitDir, getDefaultBranch } from '../storage/git.js';
+import {
+  loadAnalyzeConfig,
+  mergeAnalyzeOptions,
+  resolveDefaultBranch,
+  validateBranchName,
+  GitNexusRcError,
+} from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import { warnMissingOptionalGrammars } from './optional-grammars.js';
@@ -35,6 +42,8 @@ import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
+import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -553,6 +562,13 @@ export interface AnalyzeOptions {
   stats?: boolean;
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
+  /**
+   * Default branch for the generated regression-compare example (#243). From
+   * `--default-branch`; may also be supplied via `.gitnexusrc`. Resolved to a
+   * concrete branch (CLI > `.gitnexusrc` > auto-detected origin/HEAD > "main")
+   * before being threaded into the generated AGENTS.md / CLAUDE.md content.
+   */
+  defaultBranch?: string;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -617,6 +633,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
 
+  // npm-11 npx-crash nudge (#1939). Runs here, after the heap re-exec guard,
+  // so it fires once in the working process and never on the lazy-startup path
+  // of other commands (e.g. `gitnexus mcp`).
+  warnIfNpm11NpxRisk();
+
   // Snapshot the GITNEXUS_* env vars that the impl writes for downstream
   // consumption, so they don't leak across `analyzeCommand` invocations in
   // programmatic callers (tests, long-running hosts). `process.exit(0)` on
@@ -632,16 +653,116 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 };
 
-const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions): Promise<void> => {
-  if (options?.verbose) {
+const analyzeCommandImpl = async (
+  inputPath?: string,
+  cliOptions?: AnalyzeOptions,
+): Promise<void> => {
+  console.log('\n  GitNexus Analyzer\n');
+
+  // ── Resolve the target repo root ──────────────────────────────────
+  // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
+  // caller's cwd), and config can set defaults that the validation below
+  // consumes. `--skip-git` is a CLI-only flag (never a config key), so the raw
+  // CLI options are authoritative for repo-root resolution.
+  let repoPath: string;
+  if (inputPath) {
+    repoPath = path.resolve(inputPath);
+  } else if (cliOptions?.skipGit) {
+    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
+    repoPath = path.resolve(process.cwd());
+  } else {
+    const gitRoot = getGitRoot(process.cwd());
+    if (!gitRoot) {
+      console.log(
+        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    repoPath = gitRoot;
+  }
+
+  const repoHasGit = hasGitDir(repoPath);
+  if (!repoHasGit && !cliOptions?.skipGit) {
+    console.log(
+      '  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!repoHasGit) {
+    console.log(
+      '  Warning: no .git directory found — commit-tracking and incremental updates disabled.\n',
+    );
+  }
+
+  // Validate an explicit `--default-branch` up front so its errors are
+  // attributed to the flag (with a CLI-specific recovery hint) rather than to
+  // `.gitnexusrc`, which the user may not even have (#1996 tri-review).
+  if (cliOptions?.defaultBranch !== undefined) {
+    try {
+      validateBranchName(cliOptions.defaultBranch, '--default-branch');
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`, {
+        recoveryHint: 'default-branch-invalid',
+      });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  // ── Load .gitnexusrc and merge: CLI flags override config (#243) ───
+  // Parse/validate before the progress bar so a malformed config produces an
+  // actionable error and exits before any expensive analysis starts.
+  let options: AnalyzeOptions;
+  let resolvedDefaultBranch: string;
+  try {
+    const fileConfig = loadAnalyzeConfig(repoPath);
+    options = mergeAnalyzeOptions(cliOptions ?? {}, fileConfig);
+
+    // Resolve the default branch threaded into generated context:
+    //   CLI --default-branch > .gitnexusrc defaultBranch/branch
+    //     > auto-detected origin/HEAD > "main".
+    // Only shell out to git when no branch was configured AND the generated
+    // context will actually use it, keeping the common path free of an extra
+    // git call. Detection is best-effort and never blocks analyze.
+    const cliBranch = cliOptions?.defaultBranch;
+    const configBranch = fileConfig?.defaultBranch;
+    const willGenerateContext = !options.indexOnly && !options.skipAgentsMd;
+    let detectedBranch: string | null = null;
+    if (
+      cliBranch === undefined &&
+      configBranch === undefined &&
+      repoHasGit &&
+      !cliOptions?.skipGit &&
+      willGenerateContext
+    ) {
+      try {
+        detectedBranch = getDefaultBranch(repoPath);
+      } catch {
+        detectedBranch = null;
+      }
+    }
+    resolvedDefaultBranch = resolveDefaultBranch({ cliBranch, configBranch, detectedBranch });
+  } catch (err) {
+    const msg =
+      err instanceof GitNexusRcError
+        ? err.message
+        : `Invalid .gitnexusrc: ${err instanceof Error ? err.message : String(err)}`;
+    cliError(`  ${msg}\n`, { recoveryHint: 'gitnexusrc-invalid' });
+    process.exitCode = 1;
+    return;
+  }
+
+  if (options.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
 
-  if (options?.maxFileSize) {
+  if (options.maxFileSize) {
     process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
   }
 
-  if (options?.workerTimeout) {
+  if (options.workerTimeout) {
     const workerTimeoutSeconds = Number(options.workerTimeout);
     if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
       cliError('  --worker-timeout must be at least 1 second.\n');
@@ -653,7 +774,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     );
   }
 
-  if (options?.walCheckpointThreshold !== undefined) {
+  if (options.walCheckpointThreshold !== undefined) {
     const parsed = parseWalCheckpointThreshold(options.walCheckpointThreshold);
     if (parsed === undefined) {
       cliError('  --wal-checkpoint-threshold must be an integer >= -1.\n');
@@ -670,7 +791,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
   // values back-to-back and observe the value they passed, not whatever the
   // previous call leaked.
   let workerPoolSize: number | undefined;
-  if (options?.workers !== undefined) {
+  if (options.workers !== undefined) {
     const parsedWorkers = Number(options.workers);
     if (!Number.isInteger(parsedWorkers) || parsedWorkers < 0) {
       cliError(
@@ -688,7 +809,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
   // sibling-validation pattern (exit before bar.start() — otherwise
   // process.exit() leaves the progress bar's hidden cursor uncleared).
   let embeddingsNodeLimit: number | undefined;
-  if (typeof options?.embeddings === 'string') {
+  if (typeof options.embeddings === 'string') {
     const parsed = Number(options.embeddings);
     if (!Number.isInteger(parsed) || parsed < 0) {
       cliError(
@@ -700,7 +821,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     }
     embeddingsNodeLimit = parsed;
   }
-  const embeddingsEnabled = !!options?.embeddings;
+  const embeddingsEnabled = !!options.embeddings;
 
   const setPositiveEnv = (
     optionName: string,
@@ -722,23 +843,23 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     !setPositiveEnv(
       '--embedding-threads',
       'GITNEXUS_EMBEDDING_THREADS',
-      options?.embeddingThreads,
+      options.embeddingThreads,
     ) ||
     !setPositiveEnv(
       '--embedding-batch-size',
       'GITNEXUS_EMBEDDING_BATCH_SIZE',
-      options?.embeddingBatchSize,
+      options.embeddingBatchSize,
     ) ||
     !setPositiveEnv(
       '--embedding-sub-batch-size',
       'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
-      options?.embeddingSubBatchSize,
+      options.embeddingSubBatchSize,
     )
   ) {
     return;
   }
 
-  if (options?.embeddingDevice) {
+  if (options.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
       cliError('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
@@ -748,7 +869,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
   }
 
-  if (options?.repairFts && options?.force) {
+  if (options.repairFts && options.force) {
     cliError(
       '  Cannot combine `--repair-fts` with `--force`. ' +
         'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
@@ -757,49 +878,15 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     return;
   }
 
-  console.log('\n  GitNexus Analyzer\n');
-
   // `--index-only` is the stronger contract — it suppresses every form of file
   // injection, including community skill writes that `--skills` would normally
   // produce. Surface the override explicitly so users don't wonder why a
   // pipeline re-index ran but no skill files appeared. The pipeline still
-  // re-runs (see `force: options?.force || options?.skills` below); the warning
+  // re-runs (see `force: options.force || options.skills` below); the warning
   // is purely about the dropped post-index write step.
-  if (options?.indexOnly && options?.skills) {
+  if (options.indexOnly && options.skills) {
     console.log(
       '  Note: --index-only overrides --skills; community skill files will not be written.\n',
-    );
-  }
-
-  let repoPath: string;
-  if (inputPath) {
-    repoPath = path.resolve(inputPath);
-  } else if (options?.skipGit) {
-    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
-    repoPath = path.resolve(process.cwd());
-  } else {
-    const gitRoot = getGitRoot(process.cwd());
-    if (!gitRoot) {
-      console.log(
-        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-      );
-      process.exitCode = 1;
-      return;
-    }
-    repoPath = gitRoot;
-  }
-
-  const repoHasGit = hasGitDir(repoPath);
-  if (!repoHasGit && !options?.skipGit) {
-    console.log(
-      '  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-    );
-    process.exitCode = 1;
-    return;
-  }
-  if (!repoHasGit) {
-    console.log(
-      '  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n',
     );
   }
 
@@ -932,36 +1019,39 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
-    const skipAll = options?.indexOnly;
-    const skipAgentsMd = skipAll || options?.skipAgentsMd;
-    const skipSkills = skipAll || options?.skipSkills;
+    const skipAll = options.indexOnly;
+    const skipAgentsMd = skipAll || options.skipAgentsMd;
+    const skipSkills = skipAll || options.skipSkills;
     const result = await runFullAnalysis(
       repoPath,
       {
         // Pipeline re-index — OR'd with --skills because skill generation
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
-        force: options?.force || options?.skills,
-        repairFts: options?.repairFts,
+        force: options.force || options.skills,
+        repairFts: options.repairFts,
         embeddings: embeddingsEnabled,
         embeddingsNodeLimit,
-        dropEmbeddings: options?.dropEmbeddings,
-        verbose: options?.verbose,
-        skipGit: options?.skipGit,
+        dropEmbeddings: options.dropEmbeddings,
+        verbose: options.verbose,
+        skipGit: options.skipGit,
         skipAgentsMd,
         skipSkills,
+        // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
+        // threaded into the generated regression-compare example (#243).
+        defaultBranch: resolvedDefaultBranch,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
-        // passed --no-stats). Reading `options?.noStats` here returns
+        // passed --no-stats). Reading `options.noStats` here returns
         // undefined every time, so the flag was a no-op on the markdown
         // rewrite path before this fix. See #1477.
-        noStats: options?.stats === false,
-        registryName: options?.name,
+        noStats: options.stats === false,
+        registryName: options.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
         // be able to accept the duplicate name without also paying the
         // cost of a full pipeline re-index. See #829 review round 2.
-        allowDuplicateName: options?.allowDuplicateName,
+        allowDuplicateName: options.allowDuplicateName,
         // Worker pool size threaded from --workers, replacing the previous
         // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
         // env / auto-formula fallback inside the pipeline.
@@ -981,6 +1071,21 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       // that half-finalized state, runFullAnalysis returns alreadyUpToDate
       // on the next invocation unless we check the registry here too.
       await assertAnalysisFinalized(repoPath);
+      // The fast path skips context regeneration, but a changed `.gitnexusrc`
+      // defaultBranch / `--default-branch` must still take effect. Surgically
+      // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
+      // preserving the rest of the block (incl. --skills community rows). No-op
+      // when the value already matches, so a routine up-to-date run is silent
+      // (#1996 tri-review P2).
+      let baseRefRefreshed: string[] = [];
+      try {
+        const { refreshBaseRefLine } = await import('./ai-context.js');
+        baseRefRefreshed = (
+          await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+        ).files;
+      } catch {
+        /* best-effort — never fail the fast path over a context refresh */
+      }
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
       console.log = origLog;
@@ -990,6 +1095,11 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (baseRefRefreshed.length > 0) {
+        console.log(
+          `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
+        );
+      }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
       return;
@@ -1063,9 +1173,13 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
             {
               skipAgentsMd,
               skipSkills,
+              // Same resolved branch as the main run (#243) so the --skills
+              // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
+              // to "main".
+              defaultBranch: resolvedDefaultBranch,
               // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
-              noStats: options?.stats === false,
+              noStats: options.stats === false,
             },
           );
         }
@@ -1181,6 +1295,20 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           `    (Try 33554432 = 32 MiB on small-disk / CI runners.)\n`,
         { recoveryHint: 'wal-checkpoint-threshold' },
       );
+      process.exitCode = 1;
+      return;
+    }
+
+    // Local embedding runtime unsupported on this platform (macOS Intel ships no
+    // darwin/x64 ONNX native binding, #1515). The guard threw before importing
+    // transformers.js, so this is a clean, actionable GitNexus message. Checked
+    // before the network-heuristic isHfDownloadFailure branch below (and before
+    // the generic module-not-found "installation may be corrupt" hint) so the
+    // explicit platform message always takes priority.
+    if (isLocalEmbeddingRuntimeBlockerMessage(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
       process.exitCode = 1;
       return;
     }

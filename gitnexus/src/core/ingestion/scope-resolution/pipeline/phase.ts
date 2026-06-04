@@ -146,8 +146,11 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
     // Pre-count files and languages for progress reporting. This avoids
     // a frozen progress bar during long scope-resolution runs (#1741).
+    // Uses primary-language file counts only; languages that expand their
+    // context via collectScopeContextPaths may process more files than shown.
     let totalScopeFiles = 0;
     let totalScopeLangs = 0;
+    const allScannedPaths = new Set(scannedFiles.map((f) => f.path));
     for (const [lang] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
       const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
@@ -180,16 +183,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // SCOPE_RESOLVERS.
       if (provider.languageProvider.parseStrategy === 'standalone') continue;
 
-      const langFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
-      if (langFiles.length === 0) continue;
-
-      const filePaths = langFiles.map((f) => f.path);
-      const contents = await readFileContents(ctx.repoPath, filePaths);
-      const files: { path: string; content: string }[] = [];
-      for (const fp of filePaths) {
-        const content = contents.get(fp);
-        if (content !== undefined) files.push({ path: fp, content });
-      }
+      const primaryLangFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
+      if (primaryLangFiles.length === 0) continue;
+      const primaryFilePaths = primaryLangFiles.map((f) => f.path);
 
       // Load per-language import-resolution config (tsconfig paths,
       // composer.json autoload, go.mod, ...). One I/O round trip per
@@ -199,6 +195,40 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         provider.loadResolutionConfig !== undefined
           ? await provider.loadResolutionConfig(ctx.repoPath)
           : undefined;
+
+      // Some languages (e.g. Vue) expand their file universe beyond the
+      // primary-language files via the `collectScopeContextPaths` hook.
+      // The hook receives raw source contents of the primary files so it
+      // can trace import closures without a second tree-sitter parse.
+      //
+      // To avoid reading primary files twice (once for the hook, once for
+      // the resolution pass), we read them upfront and merge with the
+      // extra context paths the hook may add.
+      let scopeFilePaths: Set<string>;
+      let contents: Map<string, string>;
+      if (provider.collectScopeContextPaths !== undefined) {
+        const entryFileContents = await readFileContents(ctx.repoPath, primaryFilePaths);
+        scopeFilePaths = provider.collectScopeContextPaths({
+          primaryFilePaths,
+          preExtractedByPath,
+          entryFileContents,
+          allScannedPaths,
+          resolutionConfig,
+        });
+        // Read only the extra context files (TS/JS etc.) not already loaded.
+        const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
+        const extraContents = await readFileContents(ctx.repoPath, extraPaths);
+        contents = new Map([...entryFileContents, ...extraContents]);
+      } else {
+        scopeFilePaths = new Set(primaryFilePaths);
+        contents = await readFileContents(ctx.repoPath, primaryFilePaths);
+      }
+      const filePaths = [...scopeFilePaths];
+      const files: { path: string; content: string }[] = [];
+      for (const fp of filePaths) {
+        const content = contents.get(fp);
+        if (content !== undefined) files.push({ path: fp, content });
+      }
 
       const langFileCount = files.length;
       const langLabel = lang.charAt(0).toUpperCase() + lang.slice(1);
@@ -279,6 +309,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // to reduce memory pressure. For large codebases (16K+ PHP files),
       // holding all source code simultaneously with scope trees causes OOM.
       // See: https://github.com/abhigyanpatwari/GitNexus/issues/1741
+      //
+      // Use `filePaths` (not `primaryFilePaths`) so that any context files
+      // added by `collectScopeContextPaths` (e.g. TS/JS files pulled in for
+      // Vue cross-file resolution) are also evicted and not held until GC.
       files.length = 0;
       contents.clear();
       for (const fp of filePaths) {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
   loadParser: vi.fn(async () => ({
@@ -20,9 +20,20 @@ import { createResolutionContext } from '../../src/core/ingestion/model/resoluti
 import * as parserLoader from '../../src/core/tree-sitter/parser-loader.js';
 
 import { _captureLogger } from '../../src/core/logger.js';
+import type { LoggerCapture } from '../../src/core/logger.js';
 describe('sequential native parser availability', () => {
+  // Hoisted so a stray live capture from a failed warn test can always be
+  // torn down in afterEach — otherwise a single assertion failure cascades
+  // into `_captureLogger: a previous capture is still active` (logger.ts).
+  let cap: LoggerCapture | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cap?.restore();
+    cap = undefined;
   });
 
   it('skips Swift files in processImports when the native parser is unavailable', async () => {
@@ -44,40 +55,47 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processImports skips files in verbose mode', async () => {
-    const cap = _captureLogger();
+    cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
     process.env.GITNEXUS_VERBOSE = '1';
-    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
+    try {
+      vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-    await processImports(
-      createKnowledgeGraph(),
-      [{ path: 'App.swift', content: 'import Foundation' }],
-      createASTCache(),
-      createResolutionContext(),
-      undefined,
-      '/tmp/repo',
-      ['App.swift'],
-    );
+      await processImports(
+        createKnowledgeGraph(),
+        [{ path: 'App.swift', content: 'import Foundation' }],
+        createASTCache(),
+        createResolutionContext(),
+        undefined,
+        '/tmp/repo',
+        ['App.swift'],
+      );
 
-    expect(
-      cap
-        .records()
-        .some(
-          (r) =>
-            r.msg ===
-            '[ingestion] Skipped 1 swift file(s) in import processing — swift parser not available.',
-        ),
-    ).toBe(true);
-
-    cap.restore();
-    if (previous === undefined) {
-      delete process.env.GITNEXUS_VERBOSE;
-    } else {
-      process.env.GITNEXUS_VERBOSE = previous;
+      expect(
+        cap
+          .records()
+          .some(
+            (r) =>
+              r.msg ===
+              '[ingestion] Skipped 1 swift file(s) in import processing — swift parser not available.',
+          ),
+      ).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GITNEXUS_VERBOSE;
+      } else {
+        process.env.GITNEXUS_VERBOSE = previous;
+      }
     }
   });
 
-  it('skips Swift files in processCalls when the native parser is unavailable', async () => {
+  it('skips Swift files in processCalls (registry-primary: scope-resolution owns call resolution)', async () => {
+    // Swift is registry-primary, so processCalls skips it via the
+    // isRegistryPrimary gate (call-processor.ts) BEFORE the parser-availability
+    // check — the registry-primary scope-resolution path owns its call edges
+    // (#1951). The unavailable-parser mock is therefore moot: the file is skipped
+    // (no loadLanguage) regardless. The legacy availability-skip path itself is
+    // exercised by the Dart verbose test below (Dart is not registry-primary).
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
     await expect(
@@ -93,37 +111,56 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processCalls skips files in verbose mode', async () => {
-    const cap = _captureLogger();
+    cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
+    const previousDart = process.env.REGISTRY_PRIMARY_DART;
     process.env.GITNEXUS_VERBOSE = '1';
-    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
+    // call-processor gates registry-primary languages (Swift, Dart, etc.) via
+    // the isRegistryPrimary gate BEFORE the parser-availability skip counter.
+    // Dart is now in MIGRATED_LANGUAGES, so force it onto the legacy call path
+    // (REGISTRY_PRIMARY_DART=0) to exercise the skip/warn branch this test
+    // covers — without disturbing any other language's mode.
+    process.env.REGISTRY_PRIMARY_DART = '0';
+    try {
+      vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-    await processCalls(
-      createKnowledgeGraph(),
-      [{ path: 'App.swift', content: 'func demo() {}' }],
-      createASTCache(),
-      createResolutionContext(),
-    );
+      await processCalls(
+        createKnowledgeGraph(),
+        [{ path: 'App.dart', content: 'void demo() {}' }],
+        createASTCache(),
+        createResolutionContext(),
+      );
 
-    expect(
-      cap
-        .records()
-        .some(
-          (r) =>
-            r.msg ===
-            '[ingestion] Skipped 1 swift file(s) in call processing — swift parser not available.',
-        ),
-    ).toBe(true);
-
-    cap.restore();
-    if (previous === undefined) {
-      delete process.env.GITNEXUS_VERBOSE;
-    } else {
-      process.env.GITNEXUS_VERBOSE = previous;
+      expect(
+        cap
+          .records()
+          .some(
+            (r) =>
+              r.msg ===
+              '[ingestion] Skipped 1 dart file(s) in call processing — dart parser not available.',
+          ),
+      ).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GITNEXUS_VERBOSE;
+      } else {
+        process.env.GITNEXUS_VERBOSE = previous;
+      }
+      if (previousDart === undefined) {
+        delete process.env.REGISTRY_PRIMARY_DART;
+      } else {
+        process.env.REGISTRY_PRIMARY_DART = previousDart;
+      }
     }
   });
 
-  it('skips Swift files in processHeritage when the native parser is unavailable', async () => {
+  it('skips Swift files in processHeritage (registry-primary: scope-resolution owns heritage)', async () => {
+    // Swift is registry-primary, so processHeritage skips it via the
+    // isRegistryPrimary gate (heritage-processor.ts) BEFORE the parser-availability
+    // check — scope-resolution (#1951) owns its EXTENDS/IMPLEMENTS edges. The
+    // unavailable-parser mock is therefore moot: the file is skipped (no
+    // loadLanguage) regardless. The legacy availability-skip path itself is
+    // exercised by the Dart verbose test below (Dart is not registry-primary).
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
     await expect(
@@ -139,33 +176,47 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processHeritage skips files in verbose mode', async () => {
-    const cap = _captureLogger();
+    cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
+    const previousDart = process.env.REGISTRY_PRIMARY_DART;
     process.env.GITNEXUS_VERBOSE = '1';
-    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
+    // processHeritage skips registry-primary languages (Swift, Dart, etc.) via
+    // the isRegistryPrimary gate — scope-based resolution owns their
+    // inheritance (#1951) — BEFORE the legacy parser-availability skip this
+    // test exercises. Dart is now in MIGRATED_LANGUAGES, so force it onto the
+    // legacy heritage path (REGISTRY_PRIMARY_DART=0) to fire the skip/warn
+    // branch, without disturbing any other language's mode.
+    process.env.REGISTRY_PRIMARY_DART = '0';
+    try {
+      vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-    await processHeritage(
-      createKnowledgeGraph(),
-      [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
-      createASTCache(),
-      createResolutionContext(),
-    );
+      await processHeritage(
+        createKnowledgeGraph(),
+        [{ path: 'App.dart', content: 'class Widget extends StatelessWidget {}' }],
+        createASTCache(),
+        createResolutionContext(),
+      );
 
-    expect(
-      cap
-        .records()
-        .some(
-          (r) =>
-            r.msg ===
-            '[ingestion] Skipped 1 swift file(s) in heritage processing — swift parser not available.',
-        ),
-    ).toBe(true);
-
-    cap.restore();
-    if (previous === undefined) {
-      delete process.env.GITNEXUS_VERBOSE;
-    } else {
-      process.env.GITNEXUS_VERBOSE = previous;
+      expect(
+        cap
+          .records()
+          .some(
+            (r) =>
+              r.msg ===
+              '[ingestion] Skipped 1 dart file(s) in heritage processing — dart parser not available.',
+          ),
+      ).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GITNEXUS_VERBOSE;
+      } else {
+        process.env.GITNEXUS_VERBOSE = previous;
+      }
+      if (previousDart === undefined) {
+        delete process.env.REGISTRY_PRIMARY_DART;
+      } else {
+        process.env.REGISTRY_PRIMARY_DART = previousDart;
+      }
     }
   });
 
@@ -185,33 +236,34 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processParsing skips files in verbose mode', async () => {
-    const cap = _captureLogger();
+    cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
     process.env.GITNEXUS_VERBOSE = '1';
-    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
+    try {
+      vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-    await processParsing(
-      createKnowledgeGraph(),
-      [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
-      createSymbolTable(),
-      createASTCache(),
-    );
+      await processParsing(
+        createKnowledgeGraph(),
+        [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
+        createSymbolTable(),
+        createASTCache(),
+      );
 
-    expect(
-      cap
-        .records()
-        .some(
-          (r) =>
-            r.msg ===
-            '[ingestion] Skipped 1 swift file(s) in parsing processing — swift parser not available.',
-        ),
-    ).toBe(true);
-
-    cap.restore();
-    if (previous === undefined) {
-      delete process.env.GITNEXUS_VERBOSE;
-    } else {
-      process.env.GITNEXUS_VERBOSE = previous;
+      expect(
+        cap
+          .records()
+          .some(
+            (r) =>
+              r.msg ===
+              '[ingestion] Skipped 1 swift file(s) in parsing processing — swift parser not available.',
+          ),
+      ).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GITNEXUS_VERBOSE;
+      } else {
+        process.env.GITNEXUS_VERBOSE = previous;
+      }
     }
   });
 });

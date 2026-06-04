@@ -139,7 +139,19 @@
  *     once per workspace at resolve time), and merging would create a
  *     god-interface that complicates future migrations.
  *
- *   - **I8 — Two-channel binding lifecycle.**
+ *   - **I8 — Binding-channel lifecycle.** Post-finalize binding lookup
+ *     fans across several channels (`lookupBindingsAt` /
+ *     `findReceiverTypeBinding` consult them in precedence order):
+ *     `indexes.bindings` (frozen finalize output), `Scope.bindings`
+ *     (lexical local, first-tier shadowing), `indexes.bindingAugmentations`
+ *     (per-scope append-only), `indexes.workspaceFqnBindings` +
+ *     `indexes.workspaceTypeBindings` (scope-independent / global, consulted
+ *     unconditionally), and `indexes.namespaceFqnBindings` +
+ *     `indexes.namespaceTypeBindings` (per-namespace, consulted only for the
+ *     namespaces in `indexes.accessibleNamespacesByScope` for the caller's
+ *     module). All but `indexes.bindings` are mutable post-finalize and
+ *     populated by hooks; only `indexes.bindings` is frozen.
+ *
  *     `indexes.bindings` is the **finalize-output channel**. After
  *     `finalizeScopeModel` returns, its inner `BindingRef[]` arrays
  *     are deep-frozen by `materializeBindings` and MUST NOT be
@@ -447,9 +459,22 @@ export interface ScopeResolver {
    * `include`/`extend`/`prepend`) use this hook to emit IMPLEMENTS edges
    * from parsed import or reference data.
    *
-   * Receives the graph (writable), parsedFiles, and nodeLookup — same
-   * surface as `buildMro`. Must be idempotent (the orchestrator may call
-   * it more than once during re-resolution).
+   * Receives the graph (writable), parsedFiles, nodeLookup, and the finalized
+   * `ScopeResolutionIndexes` — the same scope/import/def model
+   * `preEmitInheritanceEdges` resolves against, and already a first-class part
+   * of this contract (the structure/binding hooks below take it too), so the
+   * trailing `scopes` parameter is not a new type dependency here. It is
+   * appended and optional so implementations that don't need scope-aware
+   * resolution keep their narrower signature.
+   *
+   * `scopes` has exactly ONE consumer: the Rust resolver — see
+   * `emitRustTraitImplEdges` in languages/rust/scope-resolver.ts — which
+   * resolves `impl T for S` trait/struct names through the scope chain +
+   * import-aware disambiguation (refusing ambiguous matches) instead of a
+   * global last-write-wins simple-name index (#1951). Other implementations
+   * (e.g. Ruby `include`/`extend`/`prepend`) ignore it and keep the 3-arg
+   * shape. Must be idempotent (the orchestrator may call it more than once
+   * during re-resolution).
    *
    * Default: undefined (no extra heritage edges needed).
    */
@@ -457,6 +482,37 @@ export interface ScopeResolver {
     graph: KnowledgeGraph,
     parsedFiles: readonly ParsedFile[],
     nodeLookup: GraphNodeLookup,
+    scopes?: ScopeResolutionIndexes,
+  ) => void;
+
+  /**
+   * Optional hook to emit IMPORTS edges that no syntactic import
+   * statement produces. Some languages grant files implicit visibility
+   * of one another within a compilation unit (e.g. every file in a
+   * build target sees its siblings' top-level declarations without an
+   * explicit import). The generic import pipeline only emits File→File
+   * IMPORTS edges from finalized `ImportEdge`s, so a language with this
+   * implicit-visibility rule has no edge to emit through that path.
+   *
+   * Runs immediately after `emitHeritageEdges` (so it shares the same
+   * pre-MRO surface: writable graph, parsedFiles, nodeLookup). Must be
+   * idempotent — the orchestrator may invoke it more than once during
+   * re-resolution. Implementations dedup their own emissions.
+   *
+   * `resolutionConfig` is the opaque per-workspace value returned by
+   * `loadResolutionConfig` (same channel threaded into `resolveImportTarget`).
+   * Swift uses it to group same-module files by the SPM target subtree;
+   * languages that don't need per-workspace config ignore the trailing
+   * parameter (it is optional so existing impls keep compiling).
+   *
+   * Default: undefined (cross-file visibility requires an explicit
+   * import; the finalized-ImportEdge pipeline covers it).
+   */
+  readonly emitImplicitImportEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    resolutionConfig?: unknown,
   ) => void;
 
   /**
@@ -582,6 +638,16 @@ export interface ScopeResolver {
    * but is too loose as a default for strict module systems.
    */
   readonly allowGlobalFreeCallFallback?: boolean;
+
+  /**
+   * When true, a constructor-form call `Type(...)` links to the Class def
+   * itself rather than its explicit Constructor def. Default
+   * (undefined/false) targets the explicit Constructor when one exists,
+   * else falls back to the Class. Languages whose call graph models
+   * `Type(...)` as a reference to the type (not its initializer) — e.g.
+   * Swift — opt in.
+   */
+  readonly constructorCallTargetsClass?: boolean;
 
   /**
    * Optional per-slot conversion-rank function for overload resolution.
@@ -767,6 +833,12 @@ export interface ScopeResolver {
        *  itself; the cache is opt-in for hooks that need AST-level
        *  facts beyond what `ParsedFile` exposes. */
       readonly treeCache?: { get(filePath: string): unknown };
+      /** Opaque per-workspace value from `loadResolutionConfig` (same
+       *  channel threaded into `resolveImportTarget`). Swift uses it to
+       *  group same-module siblings by the SPM target subtree; languages
+       *  that don't need per-workspace config ignore it. Optional so
+       *  existing impls keep compiling. */
+      readonly resolutionConfig?: unknown;
     },
   ) => void;
 
@@ -810,12 +882,20 @@ export interface ScopeResolver {
    * `NewUser → User` mirrored from the target package). Runs after
    * `populateNamespaceSiblings` and before `propagateImportedReturnTypes`
    * so the SCC-ordered pass sees the mirrored bindings.
+   *
+   * `resolutionConfig` is the opaque per-workspace value returned by
+   * `loadResolutionConfig` (same channel threaded into `resolveImportTarget`).
+   * Swift uses it to group same-module sibling files by the SPM target
+   * subtree; languages that don't need per-workspace config ignore the
+   * trailing parameter (it is optional so existing impls keep compiling).
+   *
    * Default: undefined (no namespace typeBinding mirroring).
    */
   readonly mirrorNamespaceTypeBindings?: (
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     workspaceIndex: import('../../scope-resolution/workspace-index.js').WorkspaceResolutionIndex,
+    resolutionConfig?: unknown,
   ) => void;
 
   /**
@@ -832,6 +912,72 @@ export interface ScopeResolver {
     ctx: {
       readonly fileContents: ReadonlyMap<string, string>;
       readonly treeCache?: { get(filePath: string): unknown };
+    },
+  ) => void;
+
+  /**
+   * Optional hook to expand the set of file paths handed to the scope-
+   * resolution run for this language.
+   *
+   * Called once per language with:
+   *   - `primaryFilePaths`      — files whose `getLanguageFromFilename` === this
+   *                               resolver's `language` (e.g. all `.vue` files).
+   *   - `preExtractedByPath`    — ParsedFile cache from the parse phase.
+   *   - `entryFileContents`     — raw source text of the primary files.
+   *   - `allScannedPaths`       — complete set of paths in the repository.
+   *   - `resolutionConfig`      — language-specific config (tsconfig paths, …).
+   *
+   * Return value: the full set of paths to include in the scope-resolution
+   * run.  May be a superset of `primaryFilePaths`.
+   *
+   * Vue uses this hook to collect the transitive TS/JS import closure of
+   * every `.vue` file so that cross-file imports (`import { fn } from './api'`)
+   * resolve correctly within a single Vue scope-resolution pass.
+   *
+   * This hook keeps language-specific scope-context policy inside the language
+   * module, preventing shared pipeline code (`phase.ts`) from naming individual
+   * languages.
+   *
+   * Default: undefined (use only `primaryFilePaths`).
+   */
+  readonly collectScopeContextPaths?: (options: {
+    readonly primaryFilePaths: readonly string[];
+    readonly preExtractedByPath: ReadonlyMap<string, import('gitnexus-shared').ParsedFile>;
+    readonly entryFileContents: ReadonlyMap<string, string>;
+    readonly allScannedPaths: ReadonlySet<string>;
+    readonly resolutionConfig: unknown;
+  }) => Set<string>;
+
+  /**
+   * Optional post-resolution hook for emitting language-specific graph edges
+   * that cannot be derived from scope captures or import resolution alone.
+   *
+   * Runs AFTER all standard edge-emission passes (receiver-bound CALLS,
+   * free-call fallback, references-via-lookup, and import edges). Receives
+   * the fully-resolved graph, all ParsedFiles, the node lookup, the finalized
+   * scope indexes, and the raw file-content map.
+   *
+   * Vue uses this hook to emit:
+   *   - `CALLS` (`vue-template-component`) for PascalCase component elements
+   *   - `BINDS_EVENT_HANDLER` for `@event="handler"` on component elements
+   *   - `EMITS_EVENT` for `emit('eventName', …)` calls in script blocks
+   *   - `ACCESSES` (`vue-template-attribute`) for `:prop="var"` bindings
+   *
+   * Unlike `emitImplicitImportEdges` and `emitHeritageEdges` (which run
+   * before MRO construction), this hook runs last, after the full graph is
+   * populated, so it can safely query node existence and resolved import
+   * targets via `indexes.imports`.
+   *
+   * Default: undefined (no supplementary edges needed).
+   */
+  readonly emitPostResolutionEdges?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    indexes: ScopeResolutionIndexes,
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly resolutionConfig?: unknown;
     },
   ) => void;
 

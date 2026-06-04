@@ -29,6 +29,12 @@ export interface AIContextOptions {
   skipAgentsMd?: boolean;
   noStats?: boolean;
   skipSkills?: boolean;
+  /**
+   * Default branch used by the generated regression-compare example (#243).
+   * Resolved by the CLI (CLI flag > `.gitnexusrc` > auto-detect > "main"); a
+   * plain caller that omits it gets "main", preserving prior behavior.
+   */
+  defaultBranch?: string;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -89,13 +95,35 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
   return hits;
 }
 
-function generateGitNexusContent(
+/**
+ * Strip backticks from a branch name before it is embedded in a Markdown
+ * inline-code span (#1996 tri-review P1). validateBranchName already rejects
+ * backticks for CLI/config/auto-detect inputs; this is the last-line defense at
+ * the generation sink so the embedding is provably safe regardless of caller.
+ */
+export function markdownSafeBranch(branch: string): string {
+  return branch.replace(/`/g, '');
+}
+
+export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
   noStats?: boolean,
   skipSkills?: boolean,
+  // Project-relative path to the runner `gitnexus analyze` drops next to the
+  // index (#1945). Referenced by docs so a single CLI-neutral command resolves
+  // the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time.
+  runnerPath: string = '.gitnexus/run.cjs',
+  // Default branch for the regression-compare example (#243). Configurable so
+  // projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
+  // back over their fix on every analyze. The value is embedded inside a
+  // Markdown inline-code span: validateBranchName rejects backticks upstream,
+  // and `markdownSafeBranch` strips any remaining backtick here as defense in
+  // depth, so JSON.stringify's quote/escape handling is sufficient and the
+  // branch cannot break out of the span (#1996 tri-review P1).
+  defaultBranch: string = 'main',
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -127,18 +155,27 @@ function generateGitNexusContent(
 |------|---------------------|
 ${tableBody}`
     : '';
+  // Docs reference the project-local runner `gitnexus analyze` writes (#1945):
+  // a single, CLI-neutral, machine-independent command (no per-machine churn,
+  // #1706) that auto-selects the available runner at call time. Kept terse to
+  // stay under the CLAUDE.md block token budget (#856); the cli skill carries the
+  // full bootstrap + npm-11 fallback (`node.target is null` npx install crash).
+  const runner = `node ${runnerPath}`;
+  const bootstrapNote =
+    `No \`${runnerPath}\` yet? \`npx gitnexus analyze\` ` +
+    '(npm 11 crash → `npm i -g gitnexus`; #1939).';
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
+> Index stale? Run \`${runner} analyze\` from the project root — it auto-selects an available runner. ${bootstrapNote}
 
 ## Always Do
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`gitnexus_impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run \`gitnexus_detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run \`gitnexus_detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: \`gitnexus_detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use \`gitnexus_query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`gitnexus_context({name: "symbolName"})\`.
@@ -163,7 +200,7 @@ ${
   groupNames && groupNames.length > 0
     ? `## Cross-Repo Groups
 
-This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the terminal: \`npx gitnexus group list\`, \`npx gitnexus group sync <name>\`, \`npx gitnexus group impact <name> --target <symbol> --repo <group-path>\`.
+This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the project root: \`${runner} group list\`, \`${runner} group sync <name>\`, \`${runner} group impact <name> --target <symbol> --repo <group-path>\` (the \`${runnerPath}\` path is repo-root-relative).
 
 `
     : ''
@@ -379,13 +416,36 @@ Use GitNexus tools to accomplish this task.
  */
 export async function generateAIContextFiles(
   repoPath: string,
-  _storagePath: string,
+  storagePath: string,
   projectName: string,
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
   const groupNames = await findGroupsContainingRegistryName(projectName);
+
+  // Drop a project-local runner next to the index (#1945) so the generated docs
+  // can reference one CLI-neutral command that resolves the available runner at
+  // call time. It is a copy of the canonical self-contained resolver, which the
+  // CLI and hooks already share; failure to copy is non-fatal (docs carry a
+  // bootstrap fallback). `runnerPath` is project-relative with POSIX separators
+  // so the emitted command is identical across platforms.
+  const runnerPath = path.relative(repoPath, path.join(storagePath, 'run.cjs')).replace(/\\/g, '/');
+  try {
+    const runnerSrc = path.join(
+      __dirname,
+      '..',
+      '..',
+      'hooks',
+      'claude',
+      'resolve-analyze-cmd.cjs',
+    );
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.copyFile(runnerSrc, path.join(storagePath, 'run.cjs'));
+  } catch (err) {
+    logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
+  }
+
   const content = generateGitNexusContent(
     projectName,
     stats,
@@ -393,6 +453,8 @@ export async function generateAIContextFiles(
     groupNames,
     options?.noStats,
     options?.skipSkills,
+    runnerPath,
+    options?.defaultBranch ?? 'main',
   );
   const createdFiles: string[] = [];
 
@@ -434,4 +496,57 @@ export async function generateAIContextFiles(
   }
 
   return { files: createdFiles };
+}
+
+/**
+ * Refresh only the `base_ref: "..."` value inside the GitNexus block of an
+ * already-generated AGENTS.md / CLAUDE.md, in place (#1996 tri-review P2).
+ *
+ * The `alreadyUpToDate` analyze fast path returns before the normal
+ * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
+ * (or `--default-branch`) would otherwise not take effect until the next
+ * re-index. This does a surgical line update that preserves the rest of the
+ * block — including community-skill rows written by a prior `--skills` run —
+ * rather than regenerating (which would drop those rows on a no-`--skills` run).
+ *
+ * Best-effort: missing files, a missing/blank block, or a block with no
+ * `base_ref` line (e.g. a user-trimmed keep block) are silently skipped. Writes
+ * only when the value actually changes, so a routine up-to-date run is a no-op.
+ */
+export async function refreshBaseRefLine(
+  repoPath: string,
+  defaultBranch: string,
+  options?: { skipAgentsMd?: boolean },
+): Promise<{ files: string[] }> {
+  if (options?.skipAgentsMd) return { files: [] };
+  const replacement = `base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
+  const updated: string[] = [];
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const filePath = path.join(repoPath, name);
+    if (!(await fileExists(filePath))) continue;
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const startIdx = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+    if (startIdx === -1) continue;
+    const endIdx = findSectionMarkerIndex(content, GITNEXUS_END_MARKER, startIdx);
+    if (endIdx === -1 || endIdx <= startIdx) continue;
+    const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
+    const block = content.substring(startIdx, blockEnd);
+    // Only the generated regression example carries a base_ref line, and only
+    // one per block; replace its quoted value while leaving the rest untouched.
+    const newBlock = block.replace(/base_ref: "(?:[^"\\]|\\.)*"/, replacement);
+    if (newBlock === block) continue; // no base_ref line present, or already current
+    const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
+    try {
+      await fs.writeFile(filePath, newContent, 'utf-8');
+      updated.push(name);
+    } catch {
+      // best-effort — never fail analyze over a context refresh
+    }
+  }
+  return { files: updated };
 }

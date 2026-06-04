@@ -142,14 +142,14 @@ const extractInitializer: InitializerExtractor = (
       const templateFunc =
         func.type === 'template_function'
           ? func
-          : func.type === 'qualified_identifier' || func.type === 'scoped_identifier'
+          : func.type === 'qualified_identifier'
             ? (func.namedChildren.find((c: SyntaxNode) => c.type === 'template_function') ?? null)
             : null;
       if (templateFunc) {
         const nameNode = templateFunc.firstNamedChild;
         if (nameNode) {
           const funcName =
-            nameNode.type === 'qualified_identifier' || nameNode.type === 'scoped_identifier'
+            nameNode.type === 'qualified_identifier'
               ? (nameNode.lastNamedChild?.text ?? '')
               : nameNode.text;
           if (SMART_PTR_FACTORIES.has(funcName)) {
@@ -214,7 +214,7 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (!value || value.type !== 'call_expression') return undefined;
   const func = value.childForFieldName('function');
   if (!func) return undefined;
-  if (func.type === 'qualified_identifier' || func.type === 'scoped_identifier') {
+  if (func.type === 'qualified_identifier') {
     const last = func.lastNamedChild;
     if (!last) return undefined;
     const nameNode = declarator.childForFieldName('declarator');
@@ -331,17 +331,13 @@ const extractCppElementTypeFromTypeNode = (
     const args = extractCppTemplateTypeArgs(typeNode);
     if (args.length >= 1) return pos === 'first' ? args[0] : args[args.length - 1];
   }
-  // reference/pointer types: unwrap and recurse (vector<User>& → vector<User>)
-  if (
-    typeNode.type === 'reference_type' ||
-    typeNode.type === 'pointer_type' ||
-    typeNode.type === 'type_descriptor'
-  ) {
+  // type_descriptor wrapper: unwrap and recurse (vector<User>& → vector<User>)
+  if (typeNode.type === 'type_descriptor') {
     const inner = typeNode.lastNamedChild;
     if (inner) return extractCppElementTypeFromTypeNode(inner, pos, depth + 1);
   }
-  // qualified/scoped types: std::vector<User> → unwrap to template_type child
-  if (typeNode.type === 'qualified_identifier' || typeNode.type === 'scoped_type_identifier') {
+  // qualified types: std::vector<User> → unwrap to template_type child
+  if (typeNode.type === 'qualified_identifier') {
     const inner = typeNode.lastNamedChild;
     if (inner) return extractCppElementTypeFromTypeNode(inner, pos, depth + 1);
   }
@@ -527,7 +523,7 @@ const detectCppConstructorType: ConstructorTypeDetector = (node, classNames) => 
   const nameNode = func.firstNamedChild;
   if (!nameNode) return undefined;
   let funcName: string;
-  if (nameNode.type === 'qualified_identifier' || nameNode.type === 'scoped_identifier') {
+  if (nameNode.type === 'qualified_identifier') {
     funcName = nameNode.lastNamedChild?.text ?? '';
   } else {
     funcName = nameNode.text;

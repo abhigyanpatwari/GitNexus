@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateAIContextFiles } from '../../src/cli/ai-context.js';
+import {
+  generateAIContextFiles,
+  generateGitNexusContent,
+  refreshBaseRefLine,
+  markdownSafeBranch,
+} from '../../src/cli/ai-context.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -93,6 +98,80 @@ describe('generateAIContextFiles', () => {
     }
   });
 
+  it('emits the project-local runner command and drops .gitnexus/run.cjs regardless of mode (#1945)', async () => {
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-analyze-cmd-test-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    const prior = process.env.GITNEXUS_INVOCATION;
+    try {
+      // Force a mode whose machine-resolved command (`gitnexus analyze`) differs
+      // from the emitted string, so this fails loudly if generation ever goes
+      // back to resolving the command per-machine instead of pointing at the
+      // fixed, CLI-neutral project-local runner.
+      process.env.GITNEXUS_INVOCATION = 'gitnexus';
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(subDir, subStorage, 'CmdProject', stats);
+
+      // The runner is copied next to the index so the emitted command resolves.
+      const runner = await fs.readFile(path.join(subStorage, 'run.cjs'), 'utf-8');
+      expect(runner).toContain('buildRunnerArgv'); // it's the real resolver copy
+
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        // Primary command is the fixed project-local runner, not machine-resolved.
+        expect(content).toContain('`node .gitnexus/run.cjs analyze`');
+        expect(content).not.toContain('run `gitnexus analyze`'); // no machine-resolved leak
+        // Bootstrap path (for a not-yet-analyzed checkout) + npm-11 escape hatch.
+        expect(content).toContain('npx gitnexus analyze');
+        expect(content).toContain('1939');
+      }
+    } finally {
+      if (prior === undefined) delete process.env.GITNEXUS_INVOCATION;
+      else process.env.GITNEXUS_INVOCATION = prior;
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits Cross-Repo Groups commands through the project-local runner (#1945)', () => {
+    // Exercise the groupNames>0 branch directly — the no-group path cannot
+    // catch a group-command regression because the block is not emitted.
+    const content = generateGitNexusContent(
+      'TestProject',
+      { nodes: 50, edges: 100, processes: 5 },
+      undefined,
+      ['TeamGroup'],
+    );
+    expect(content).toContain('## Cross-Repo Groups');
+    expect(content).toContain('node .gitnexus/run.cjs group list');
+    expect(content).toContain('node .gitnexus/run.cjs group sync');
+    expect(content).toContain('node .gitnexus/run.cjs group impact');
+    // Group commands must not hardcode a package manager.
+    expect(content).not.toMatch(/dlx gitnexus@latest group/);
+    expect(content).not.toMatch(/npx gitnexus group/);
+  });
+
+  it('degrades gracefully when the runner copy fails (#1945)', async () => {
+    // A read-only/full-disk storage dir must not abort generation. The copy is
+    // best-effort + logged; the generated docs still carry the inline bootstrap
+    // (`npx gitnexus analyze`) so a reader hitting the absent runner has a path.
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copyfail-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    const spy = vi.spyOn(fs, 'copyFile').mockRejectedValueOnce(new Error('EACCES: read-only'));
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      // Must not throw despite the copy failure.
+      await generateAIContextFiles(subDir, subStorage, 'CopyFail', stats);
+      const content = await fs.readFile(path.join(subDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).toContain('npx gitnexus analyze'); // bootstrap survives
+      // The runner was not written, so the file is absent.
+      await expect(fs.access(path.join(subStorage, 'run.cjs'))).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
     // The trimmed block must still contain everything that is genuinely
     // unique per repo or load-bearing for the agent: the freshness warning,
@@ -104,7 +183,7 @@ describe('generateAIContextFiles', () => {
 
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-    expect(content).toContain('If any GitNexus tool warns the index is stale');
+    expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze`');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -136,9 +215,14 @@ describe('generateAIContextFiles', () => {
 
   it('keeps the CLAUDE.md GitNexus block under the token-cost budget (#856)', async () => {
     // The pre-trim block was ~5465 chars. After #856 it's ~2580 — about a
-    // 52% reduction. 2700 is a soft ceiling that still leaves headroom for
+    // 52% reduction. The ceiling is a soft cap that still leaves headroom for
     // legitimate future additions but will fail loudly if the trim is
     // reverted or someone pads the block back out toward the original size.
+    //
+    // Raised 2700 → 2900 for #243: the regression-compare example (one
+    // load-bearing per-repo `base_ref` line on the detect_changes bullet) is a
+    // legitimate addition, not a revert of the trim — the block stays roughly
+    // half the original size.
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -147,7 +231,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(2700);
+    expect(block.length).toBeLessThan(2900);
   });
 
   it('handles empty stats', async () => {
@@ -800,6 +884,153 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
       expect(result).toContain(`Indexed as **${trickyName}** (5 symbols`);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Configurable default branch in the regression example (#243)
+  // ──────────────────────────────────────────────────────────────────
+
+  it('generated regression-compare example uses the configured default branch (#243)', () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    const develop = generateGitNexusContent(
+      'P',
+      stats,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'develop',
+    );
+    expect(develop).toContain('base_ref: "develop"');
+    expect(develop).not.toContain('base_ref: "main"');
+  });
+
+  it('defaults the regression-compare example to "main" when no branch is configured (#243)', () => {
+    const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
+    expect(content).toContain('base_ref: "main"');
+  });
+
+  it('JSON-escapes a markdown/quote-bearing branch so it cannot break the code span (#243)', () => {
+    // A branch name with a double-quote must be JSON-escaped, not concatenated
+    // raw, so it stays inside the inline code span.
+    const content = generateGitNexusContent(
+      'P',
+      { nodes: 1 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'we"ird',
+    );
+    expect(content).toContain('base_ref: "we\\"ird"');
+  });
+
+  it('a backtick branch cannot break the generated Markdown code span (#1996 P1)', () => {
+    // The branch is embedded inside a backtick inline-code span; a stray
+    // backtick would close it early. markdownSafeBranch strips it at the sink.
+    const content = generateGitNexusContent(
+      'P',
+      { nodes: 1 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'main`evil',
+    );
+    const line = content.split('\n').find((l) => l.includes('base_ref'))!;
+    // Even backtick count ⇒ every span is balanced (the regression line opens
+    // and closes exactly one).
+    expect((line.match(/`/g) || []).length % 2).toBe(0);
+    expect(line).not.toContain('main`evil');
+    expect(markdownSafeBranch('a`b`c')).toBe('abc');
+  });
+
+  it('refreshBaseRefLine updates base_ref in place, preserving the rest of the block (#1996 P2)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-baseref-'));
+    try {
+      // Seed a realistic block: a configured base_ref "main" plus a community
+      // skill row that a prior --skills run would have written.
+      const seed = `# Project
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+- run \`gitnexus_detect_changes({scope: "compare", base_ref: "main"})\`.
+
+| Task | Read this skill file |
+|------|---------------------|
+| Work in the Auth area (40 symbols) | \`.claude/skills/generated/auth/SKILL.md\` |
+<!-- gitnexus:end -->
+`;
+      for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+        await fs.writeFile(path.join(dir, f), seed, 'utf-8');
+      }
+
+      const res = await refreshBaseRefLine(dir, 'develop');
+      expect(res.files.sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+
+      for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+        const after = await fs.readFile(path.join(dir, f), 'utf-8');
+        expect(after).toContain('base_ref: "develop"');
+        expect(after).not.toContain('base_ref: "main"');
+        // The community-skill row (and everything else) is preserved.
+        expect(after).toContain('.claude/skills/generated/auth/SKILL.md');
+      }
+
+      // Idempotent: a second run with the same branch writes nothing.
+      const again = await refreshBaseRefLine(dir, 'develop');
+      expect(again.files).toEqual([]);
+
+      // skipAgentsMd short-circuits entirely.
+      const skipped = await refreshBaseRefLine(dir, 'master', { skipAgentsMd: true });
+      expect(skipped.files).toEqual([]);
+      expect(await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8')).toContain(
+        'base_ref: "develop"',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshBaseRefLine is a no-op when there is no base_ref line or no file (#1996 P2)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-baseref-noop-'));
+    try {
+      // No AGENTS.md/CLAUDE.md at all → no files updated, no throw.
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+      // A keep-style block with no base_ref line is left untouched.
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **P**. Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(seed);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('threads defaultBranch through generateAIContextFiles into AGENTS.md and CLAUDE.md (#243)', async () => {
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-default-branch-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(subDir, subStorage, 'P', stats, undefined, {
+        defaultBranch: 'release/1.0',
+      });
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        expect(content).toContain('base_ref: "release/1.0"');
+        expect(content).not.toContain('base_ref: "main"');
+      }
+    } finally {
+      await fs.rm(subDir, { recursive: true, force: true });
     }
   });
 });

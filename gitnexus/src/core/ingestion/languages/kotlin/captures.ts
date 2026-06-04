@@ -1,6 +1,6 @@
-import { makeScopeId, type Capture, type CaptureMatch, type Range } from 'gitnexus-shared';
+import { makeScopeId, type Capture, type CaptureMatch } from 'gitnexus-shared';
 import {
-  findNodeAtRange,
+  nodeIfType,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
@@ -38,12 +38,20 @@ export function emitKotlinScopeCaptures(
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
   out.push(...synthesizeKotlinLambdaBindings(tree.rootNode, returnTypes));
+  out.push(...synthesizeKotlinInheritanceReferences(tree.rootNode));
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map. The query hands us each matched
+    // node as capture.node, so anchors resolve via a type-guarded lookup
+    // (nodeIfType) instead of re-deriving them with
+    // findNodeAtRange(tree.rootNode, ...) per match — the O(matches x N)
+    // root-walk fixed for go #1915 / python #1918 / csharp, mirrored here.
+    const groupedNodes: Record<string, SyntaxNode> = {};
     for (const capture of match.captures) {
       const tag = '@' + capture.name;
       grouped[tag] = nodeToCapture(tag, capture.node);
+      groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -69,11 +77,7 @@ export function emitKotlinScopeCaptures(
     }
 
     if (grouped['@import.statement'] !== undefined) {
-      const importNode = findNodeAtRange(
-        tree.rootNode,
-        grouped['@import.statement']!.range,
-        'import_header',
-      );
+      const importNode = nodeIfType(groupedNodes['@import.statement'], 'import_header');
       if (importNode !== null) {
         const decomposed = splitKotlinImportHeader(importNode);
         if (decomposed !== null) {
@@ -91,8 +95,7 @@ export function emitKotlinScopeCaptures(
     }
 
     if (grouped['@reference.read.member'] !== undefined) {
-      const anchor = grouped['@reference.read.member']!;
-      const navNode = findNodeAtRange(tree.rootNode, anchor.range, 'navigation_expression');
+      const navNode = nodeIfType(groupedNodes['@reference.read.member'], 'navigation_expression');
       if (navNode === null || !shouldEmitReadMember(navNode)) continue;
     }
 
@@ -114,19 +117,15 @@ export function emitKotlinScopeCaptures(
       grouped['@type-binding.name'] !== undefined &&
       grouped['@type-binding.type'] !== undefined
     ) {
-      const annotation = grouped['@type-binding.annotation']!;
-      if (propertyDeclHasConstructorValue(tree.rootNode, annotation.range)) {
+      const propNode = nodeIfType(groupedNodes['@type-binding.annotation'], 'property_declaration');
+      if (propNode !== null && propertyDeclHasConstructorValue(propNode)) {
         continue;
       }
     }
 
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const fnNode = findNodeAtRange(
-        tree.rootNode,
-        grouped['@scope.function']!.range,
-        'function_declaration',
-      );
+      const fnNode = nodeIfType(groupedNodes['@scope.function'], 'function_declaration');
       if (fnNode !== null) {
         out.push(...synthesizeKotlinReceiverBinding(fnNode));
       }
@@ -135,11 +134,7 @@ export function emitKotlinScopeCaptures(
 
     const declTag = FUNCTION_DECL_TAGS.find((tag) => grouped[tag] !== undefined);
     if (declTag !== undefined) {
-      const fnNode = findNodeAtRange(
-        tree.rootNode,
-        grouped[declTag]!.range,
-        'function_declaration',
-      );
+      const fnNode = nodeIfType(groupedNodes[declTag], 'function_declaration');
       if (fnNode !== null) {
         const arity = computeKotlinArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -170,7 +165,7 @@ export function emitKotlinScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((tag) => grouped[tag] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode = findNodeAtRange(tree.rootNode, grouped[callTag]!.range, 'call_expression');
+      const callNode = nodeIfType(groupedNodes[callTag], 'call_expression');
       if (callNode !== null) {
         const args = callArguments(callNode);
         grouped['@reference.arity'] = syntheticCapture(
@@ -188,11 +183,88 @@ export function emitKotlinScopeCaptures(
 
     out.push(grouped);
 
-    const extensionFallback = extensionFreeCallFallback(grouped, tree.rootNode);
+    const extensionFallback = extensionFreeCallFallback(grouped, groupedNodes);
     if (extensionFallback !== null) out.push(extensionFallback);
   }
 
   return out;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from Kotlin `class_declaration`
+ * delegation specifiers so the registry-primary scope-resolution path emits
+ * EXTENDS / IMPLEMENTS edges (mirrors C# `synthesizeCsharpInheritanceReferences`
+ * and C++ `emitCppInheritanceCaptures`). Without this, Kotlin inheritance edges
+ * came only from the legacy `@heritage.*` path, which the worker pipeline drops
+ * for registry-primary languages → 0 inheritance edges in worker mode (#1951).
+ *
+ * Scope mirrors the legacy KOTLIN_QUERIES `@heritage.extends` patterns exactly
+ * (the config-driven `kotlinHeritageShapes`: `user_type`,
+ * `constructor_invocation`, `explicit_delegation`). Each `delegation_specifier`
+ * child of a `class_declaration`, in one of three forms —
+ *   - bare interface/superclass: `class Foo : Bar`
+ *     `(delegation_specifier (user_type (type_identifier)))`
+ *   - constructor-call superclass: `class Foo : Bar()`
+ *     `(delegation_specifier (constructor_invocation (user_type (type_identifier))))`
+ *   - interface delegation: `class Foo : Bar by delegate`
+ *     `(delegation_specifier (explicit_delegation (user_type (type_identifier)) …))`
+ *     — the delegated interface is the LEADING `user_type`; the trailing
+ *     delegate expression (`by delegate`) is NOT a supertype (#1951). This is
+ *     the dropped shape the registry-primary synth previously skipped, leaving
+ *     `class F : Iface by d` with no IMPLEMENTS edge in worker mode.
+ *
+ * Kotlin uses `:` for BOTH superclass and interfaces — the EXTENDS-vs-IMPLEMENTS
+ * split is decided downstream from the resolved target's symbol kind
+ * (`preEmitInheritanceEdges`), so every base is emitted with the same `inherits`
+ * kind here. The bare lookup name is normalized to the simple identifier
+ * (`Base()` → `Base`, `Base<T>` → `Base`, `pkg.Base` → `Base`,
+ * `Iface by d` → `Iface`) so V1's simple-name `findClassBindingInScope`
+ * resolves it. The extracted bare name agrees with the legacy leg's
+ * `normalizeSupertypeName` for every shape (verified by real-parse).
+ */
+function synthesizeKotlinInheritanceReferences(rootNode: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  for (const classNode of descendantsOfType(rootNode, 'class_declaration')) {
+    for (const child of classNode.namedChildren) {
+      if (child.type !== 'delegation_specifier') continue;
+      // Three wrappers, all resolving to a leading `user_type` →
+      // `type_identifier`:
+      //   - `(delegation_specifier (constructor_invocation (user_type …)))` for `Base()`
+      //   - `(delegation_specifier (explicit_delegation (user_type …) <delegate>))`
+      //     for `Iface by d` — the supertype is the FIRST `user_type`; the
+      //     delegate expression that trails `by` is ignored.
+      //   - `(delegation_specifier (user_type …))` for a bare interface/superclass.
+      const ctor = child.namedChildren.find((n) => n.type === 'constructor_invocation');
+      const delegation = child.namedChildren.find((n) => n.type === 'explicit_delegation');
+      const userType =
+        ctor?.namedChildren.find((n) => n.type === 'user_type') ??
+        delegation?.namedChildren.find((n) => n.type === 'user_type') ??
+        child.namedChildren.find((n) => n.type === 'user_type');
+      if (userType === undefined) continue;
+      const nameNode = kotlinUserTypeNameNode(userType);
+      if (nameNode === null) continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', child),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The bare simple-name `type_identifier` of a `user_type`. Strips generic
+ * type arguments (`Base<T>` → `Base`) and qualifier tails (`pkg.Base` → `Base`)
+ * by taking the LAST direct `type_identifier` child, matching the legacy
+ * `(user_type (type_identifier) @heritage.extends)` capture and V1's
+ * simple-name `findClassBindingInScope` contract.
+ */
+function kotlinUserTypeNameNode(userType: SyntaxNode): SyntaxNode | null {
+  let nameNode: SyntaxNode | null = null;
+  for (const child of userType.namedChildren) {
+    if (child.type === 'type_identifier') nameNode = child;
+  }
+  return nameNode;
 }
 
 function synthesizeKotlinLoopBindings(
@@ -1045,13 +1117,11 @@ function shouldEmitReadMember(navNode: SyntaxNode): boolean {
   return true;
 }
 
-/** True when the property_declaration anchored at `range` has a
- *  `call_expression` value sibling (i.e. `val x: T = Foo()`). Used to
- *  suppress the explicit-annotation type-binding capture so the
- *  constructor-inferred binding wins (#1762). */
-function propertyDeclHasConstructorValue(rootNode: SyntaxNode, range: Range): boolean {
-  const propNode = findNodeAtRange(rootNode, range, 'property_declaration');
-  if (propNode === null) return false;
+/** True when the given `property_declaration` has a `call_expression`
+ *  value sibling (i.e. `val x: T = Foo()`). Used to suppress the
+ *  explicit-annotation type-binding capture so the constructor-inferred
+ *  binding wins (#1762). */
+function propertyDeclHasConstructorValue(propNode: SyntaxNode): boolean {
   const variable = propNode.namedChildren.find((c) => c.type === 'variable_declaration');
   if (variable === undefined) return false;
   const value = propNode.namedChildren.find(
@@ -1097,17 +1167,20 @@ function inferArgType(argNode: SyntaxNode): string {
 
 function extensionFreeCallFallback(
   grouped: Record<string, Capture>,
-  rootNode: SyntaxNode,
+  groupedNodes: Record<string, SyntaxNode>,
 ): CaptureMatch | null {
   const member = grouped['@reference.call.member'];
   const receiver = grouped['@reference.receiver'];
   const name = grouped['@reference.name'];
   if (member === undefined || receiver === undefined || name === undefined) return null;
 
-  const callNode = findNodeAtRange(rootNode, member.range, 'call_expression');
+  // The `@reference.call.member` anchor IS the `call_expression`, and the
+  // `@reference.receiver` anchor IS the receiver node — both threaded from the
+  // query match (no per-match root walk).
+  const callNode = nodeIfType(groupedNodes['@reference.call.member'], 'call_expression');
   if (callNode === null) return null;
-  const receiverNode = findNodeAtRange(rootNode, receiver.range);
-  if (receiverNode === null || !isLiteralReceiver(receiverNode)) return null;
+  const receiverNode = groupedNodes['@reference.receiver'];
+  if (receiverNode === undefined || !isLiteralReceiver(receiverNode)) return null;
 
   const out: Record<string, Capture> = {
     '@reference.call.free': syntheticCapture('@reference.call.free', callNode, callNode.text),

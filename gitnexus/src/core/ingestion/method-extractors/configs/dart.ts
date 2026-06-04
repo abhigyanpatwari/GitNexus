@@ -17,7 +17,6 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 /** Type node types that represent a return type in function/getter/setter signatures. */
 const TYPE_NODE_TYPES = new Set([
   'type_identifier',
-  'generic_type',
   'function_type',
   'nullable_type',
   'void_type',
@@ -33,6 +32,22 @@ const TYPE_NODE_TYPES = new Set([
  * method_signature itself.
  */
 function getInnerSignature(node: SyntaxNode): SyntaxNode | null {
+  // A bare signature node IS its own inner signature. The scope-resolution
+  // path passes top-level `function_signature` (and constructor/getter/setter
+  // signatures) directly, unlike the legacy method extractor which always
+  // hands in a `method_signature`/`declaration` wrapper — so the descent loop
+  // below never sees a bare signature on the legacy path and this early return
+  // leaves legacy behavior byte-identical.
+  if (
+    node.type === 'function_signature' ||
+    node.type === 'constructor_signature' ||
+    node.type === 'getter_signature' ||
+    node.type === 'setter_signature' ||
+    node.type === 'operator_signature' ||
+    node.type === 'factory_constructor_signature'
+  ) {
+    return node;
+  }
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (

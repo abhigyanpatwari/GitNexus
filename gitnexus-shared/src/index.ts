@@ -116,6 +116,8 @@ export type {
   FieldRegistry,
   FieldLookupOptions,
 } from './scope-resolution/registries/field-registry.js';
+export { buildMacroRegistry } from './scope-resolution/registries/macro-registry.js';
+export type { MacroRegistry } from './scope-resolution/registries/macro-registry.js';
 export { lookupCore } from './scope-resolution/registries/lookup-core.js';
 export type { CoreLookupParams } from './scope-resolution/registries/lookup-core.js';
 export { lookupQualified } from './scope-resolution/registries/lookup-qualified.js';
@@ -127,7 +129,12 @@ export {
   CONFIDENCE_EPSILON,
 } from './scope-resolution/registries/tie-breaks.js';
 export type { TieBreakKey } from './scope-resolution/registries/tie-breaks.js';
-export { CLASS_KINDS, METHOD_KINDS, FIELD_KINDS } from './scope-resolution/registries/context.js';
+export {
+  CLASS_KINDS,
+  METHOD_KINDS,
+  FIELD_KINDS,
+  MACRO_KINDS,
+} from './scope-resolution/registries/context.js';
 export type {
   RegistryContext,
   RegistryProviders,

@@ -4,8 +4,8 @@
     "digest": "3459af9360d51aaaba72963fc49bb79edc188e97f9831421d6504c7919b61dc5"
   },
   "php-abstract-dispatch/src/Repositories/SqlRepository.php": {
-    "captureGroups": 13,
-    "digest": "01093dcbb7c4482e93572c59d091c6ece2332d46badd7d7a5b44fd2f7cad5507"
+    "captureGroups": 14,
+    "digest": "5905bb450b29d4e186d74b50f70f07a54c8e0d4b8c3748c998c1579e72283215"
   },
   "php-abstract-dispatch/src/app.php": {
     "captureGroups": 10,
@@ -40,8 +40,8 @@
     "digest": "f6ad05a50da70b32744792da353d520d63722bca7c0802e603af5eb13a223c5c"
   },
   "php-ambiguous/app/Services/UserHandler.php": {
-    "captureGroups": 10,
-    "digest": "90054792db28ad77054994b483305ebf82d8a8959a0350a721d4a76438aea0a0"
+    "captureGroups": 12,
+    "digest": "1c47e7020939a6cd6bb18f3732b51a16f4c75ded0fe9883a87d6706a2c624d1f"
   },
   "php-app/app/Contracts/Loggable.php": {
     "captureGroups": 7,
@@ -56,16 +56,16 @@
     "digest": "aadf56b87d67191b13f4e3f9fae7e8097f4c8a81d13135645ceb8c5be1063a9b"
   },
   "php-app/app/Models/BaseModel.php": {
-    "captureGroups": 16,
-    "digest": "3a768a8443ad599d8501e9aa1e56535cb32ba8b13779b837a68781df3442edff"
+    "captureGroups": 18,
+    "digest": "be7ca5be7e28417afdef2e45c8cfed9e04594b341b0d676e7a00fdd84c94e42a"
   },
   "php-app/app/Models/User.php": {
-    "captureGroups": 25,
-    "digest": "641b8f77fc29b102d2c4d4f04cfea8f5a64f769c0d53da9282c0d9505e1e7dd9"
+    "captureGroups": 27,
+    "digest": "b6b08be1af66cbd757cfd715389725952c0e2a8e5e910ed715594c0b07570a37"
   },
   "php-app/app/Services/UserService.php": {
-    "captureGroups": 37,
-    "digest": "4c20f536c2df20a9fc1cac33aa48a06535898dcf4f46c62067c8ffd9deab5dbd"
+    "captureGroups": 38,
+    "digest": "80b8557e183052f25222cfda8879e08b1613752001f58670ce7b3dbf4b8bee28"
   },
   "php-app/app/Traits/HasTimestamps.php": {
     "captureGroups": 11,
@@ -108,8 +108,8 @@
     "digest": "0c8a7c7edaa20009b71f22fef98230119a4738d2a21c8b88d64047c3c932fd36"
   },
   "php-child-extends-parent/src/Child.php": {
-    "captureGroups": 4,
-    "digest": "4943bc0abc98546bb82d98e17260d686805a6aa644aabf2b86ad75dc8334b73b"
+    "captureGroups": 5,
+    "digest": "07f4216630a17fddb627eff217aa81f089b5e1fc6a9f82d727a6ae91693f8e38"
   },
   "php-child-extends-parent/src/Parent.php": {
     "captureGroups": 7,
@@ -240,12 +240,12 @@
     "digest": "47af1c30a957f15a2a5ebbddd80c0214a4f68c15f08699fc81cdbfaefa4a70b5"
   },
   "php-grandparent-resolution/app/Models/B.php": {
-    "captureGroups": 4,
-    "digest": "d6326a8eb65bfa8da20d9fb0e5ce07c61eeabd5d53cc94faaebbc3dda0274359"
+    "captureGroups": 5,
+    "digest": "eea22a8993a483f264d7bed26999be9d4d0cb9ad48a30ef85bc09b5049b274c8"
   },
   "php-grandparent-resolution/app/Models/C.php": {
-    "captureGroups": 4,
-    "digest": "92fb1dabd5e6dc6eb4115d26303c96ba3d5e34ef9d0ccd965f531b5cf34b7390"
+    "captureGroups": 5,
+    "digest": "497307bd7e5c75da828297baabfc1dc2a36865ba358583a4bc39b605ddaacc16"
   },
   "php-grandparent-resolution/app/Models/Greeting.php": {
     "captureGroups": 7,
@@ -292,16 +292,16 @@
     "digest": "f32de8a30558f2678e73c68d7db9c6eab827fd8d5f7655b906a76066c8421bef"
   },
   "php-method-enrichment/src/Models/Dog.php": {
-    "captureGroups": 8,
-    "digest": "ffe9909633e018ae077b685a83d18dde30d30b818068b7ef6674cbd184ebdf33"
+    "captureGroups": 9,
+    "digest": "04aabc879f65c14e581ab782acfedf74335ba2905402a5fbfcf15bf5308f57d5"
   },
   "php-method-enrichment/src/app.php": {
     "captureGroups": 11,
     "digest": "52791f6945c8c4ae083b816bd3af239bce44f0e97cbf80cdc119f4f366015138"
   },
   "php-mro-arity-mismatch/app/Models/ChildModel.php": {
-    "captureGroups": 15,
-    "digest": "e007097393563883393a2469befbbe76568fa25dce87d15cc808a877edc0177c"
+    "captureGroups": 16,
+    "digest": "eabbdb94047d99d03b7e5cafcde4b0f89666695ca4c3b97ea7e68148999c1c00"
   },
   "php-mro-arity-mismatch/app/Models/Orphan.php": {
     "captureGroups": 9,
@@ -364,8 +364,8 @@
     "digest": "e047de645ae2b8029a4bb31a61bbc556f58da066d346a2e57101d22cb8dcbb6a"
   },
   "php-parent-resolution/app/Models/User.php": {
-    "captureGroups": 8,
-    "digest": "b34ddf79f02bc1f8a233c91e0d7ad7471cc50912897d619b03c9c60e111de2e6"
+    "captureGroups": 10,
+    "digest": "9e8891046e8311bcc07fd1f726e8f28dac37c2c2a6e28ed08b780ff475dbe60a"
   },
   "php-parent-vs-trait/app/Auditable.php": {
     "captureGroups": 7,
@@ -376,8 +376,8 @@
     "digest": "d7f05cb3f8cf09740fd7063932cc4fccb5b6fff553093b64a341e2503ec42f2d"
   },
   "php-parent-vs-trait/app/Child.php": {
-    "captureGroups": 14,
-    "digest": "8b0149c1d5d54d5d2cb743bbf43d424bc19cf758f4dde04105084c0903117825"
+    "captureGroups": 16,
+    "digest": "e3e9273efaf6c06ed241dc88d0754b167a64197731a4ccc18be43672fab07547"
   },
   "php-phpdoc-attribute-return-type/Models.php": {
     "captureGroups": 11,
@@ -452,8 +452,8 @@
     "digest": "70b05bbb0ad6e8c1ba62d3355dbc1ffa6ac01c9e85ac22e43a07e387eddf401e"
   },
   "php-super-resolution/app/Models/User.php": {
-    "captureGroups": 9,
-    "digest": "e62c49645b1ef609bb915c355b06379d996c030c3eaacbe40ca49d0d0b323e64"
+    "captureGroups": 10,
+    "digest": "56d657425e80ae4e58ffe139f90afab5a8527e191bc4b76662f5ce4cbbca4cbb"
   },
   "php-this-receiver-disambiguation/AdminService.php": {
     "captureGroups": 15,
@@ -468,16 +468,16 @@
     "digest": "147924d3638edc63eef1a009943fae66a87ac85d02ae533428646c644e81c2bb"
   },
   "php-transitive-traits/app/Models/Consumer.php": {
-    "captureGroups": 17,
-    "digest": "a447ed654cc0e074c2f0d93b0d371953e823c9a77da559e841741f5b73b97058"
+    "captureGroups": 18,
+    "digest": "c4524f4fa18f6e7f0fd76a11920a6a65ab547ab4cf0fa5799b42b7678e14db08"
   },
   "php-transitive-traits/app/Traits/TraitA.php": {
-    "captureGroups": 7,
-    "digest": "53ca5a3b0407c54a2d6ce80a83eee592c32443795a01186bc9c4cac680e050b7"
+    "captureGroups": 8,
+    "digest": "485735b607fbe569527952fe697b33723626de3e974807e0bd9d84f63b789f65"
   },
   "php-transitive-traits/app/Traits/TraitB.php": {
-    "captureGroups": 7,
-    "digest": "abafc915f22428f94e82ca1450902b6ef0599557e05aea345f388392b8097bf2"
+    "captureGroups": 8,
+    "digest": "ad387364baf5195af56688cf53956d40b4da193bad28a37b148963fbea68cbea"
   },
   "php-transitive-traits/app/Traits/TraitC.php": {
     "captureGroups": 7,

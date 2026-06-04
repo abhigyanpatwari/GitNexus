@@ -713,12 +713,14 @@ describe('COBOL full system extraction', () => {
       expect(getRelationships(result, 'IMPORTS').length).toBe(2);
     });
 
-    it('produces exactly 25 total ACCESSES edges', () => {
-      // 4 move-read + 5 move-write + 1 move-corresponding-read + 1 move-corresponding-write
+    it('produces exactly 28 total ACCESSES edges', () => {
+      // Original: 4 move-read + 5 move-write + 1 move-corresponding-read + 1 move-corresponding-write
       // + 1 file-read + 1 map + 1 queue-write
       // + 1 receive-into + 2 send-from + 1 search + 1 sort-using + 1 sort-giving
       // + 2 procedure-using + 1 sql-select + 2 call-using
-      expect(getRelationships(result, 'ACCESSES').length).toBe(25);
+      // plus arithmetic: +1 arithmetic-read (WS-AMOUNT) + 1 arithmetic-write (CUST-BALANCE)
+      // plus ADD TO read+write: +1 arithmetic-read for CUST-BALANCE (TO operand is both read+written)
+      expect(getRelationships(result, 'ACCESSES').length).toBe(28);
     });
   });
 

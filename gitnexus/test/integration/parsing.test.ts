@@ -697,8 +697,12 @@ describe('parsing', () => {
       it('record_struct with public modifier is exported', () => {
         const modifier = mockNode('modifier', 'public');
         const nameNode = mockNode('identifier', 'Coord');
+        // tree-sitter-c-sharp emits `record_declaration` for `record`, `record
+        // struct`, and `record class` alike (verified via real parse, #1920) —
+        // there is no separate `record_struct_declaration` node type, so the
+        // export check sees a `record_declaration`.
         const recStruct = mockNode(
-          'record_struct_declaration',
+          'record_declaration',
           'public record struct Coord {}',
           undefined,
           [modifier, nameNode],
@@ -709,8 +713,10 @@ describe('parsing', () => {
       it('record_class with public modifier is exported', () => {
         const modifier = mockNode('modifier', 'public');
         const nameNode = mockNode('identifier', 'UserRecord');
+        // `record class` also parses to `record_declaration` (see note above);
+        // there is no `record_class_declaration` node in tree-sitter-c-sharp.
         const recClass = mockNode(
-          'record_class_declaration',
+          'record_declaration',
           'public record class UserRecord {}',
           undefined,
           [modifier, nameNode],

@@ -48,6 +48,10 @@
 
 import Parser from 'tree-sitter';
 import JS from 'tree-sitter-javascript';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from '../../ts-js-hoc-utils.js';
 
 const JS_GRAMMAR = JS as Parameters<Parser['setLanguage']>[0];
 
@@ -154,10 +158,13 @@ const JAVASCRIPT_SCOPE_QUERY = `
 ;; Those are filtered out emit-side in captures.ts via
 ;; isArrayMethodCallbackArrow (member-expression callee whose property
 ;; is a known Array method), so only the @declaration.const survives.
+;; Excludes common array methods (map, filter, reduce, etc.) to avoid
+;; false positives like \`const x = arr.map(a => ...)\`.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -165,14 +172,36 @@ const JAVASCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @declaration.name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (arrow_function) @declaration.function)))))
 
@@ -181,13 +210,37 @@ const JAVASCRIPT_SCOPE_QUERY = `
     (variable_declarator
       name: (identifier) @declaration.name
       value: (call_expression
+        function: (identifier)
         arguments: (arguments
           (function_expression) @declaration.function)))))
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @declaration.name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (arrow_function) @declaration.function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @declaration.name
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @callee)
+        arguments: (arguments
+          (function_expression) @declaration.function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (arrow_function) @declaration.function))))
 
@@ -195,8 +248,63 @@ const JAVASCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (call_expression
+      function: (identifier)
       arguments: (arguments
         (function_expression) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; HOC-wrapped default exports (JS parity with TS patterns in
+;; languages/typescript/query.ts). The emit phase rewrites
+;; @declaration.name to a file-derived name so wrapper helpers do not
+;; become the graph-visible symbol name.
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Variable / constant declarations (non-function values).
 (lexical_declaration
@@ -338,7 +446,8 @@ const JAVASCRIPT_SCOPE_QUERY = `
   constructor: (identifier) @reference.name) @reference.call.constructor
 
 (new_expression
-  constructor: (member_expression) @reference.call.constructor.qualified) @reference.call.constructor
+  constructor: (member_expression
+    property: (property_identifier) @reference.name) @reference.call.constructor.qualified) @reference.call.constructor
 
 ;; Write access: obj.field = value
 (assignment_expression

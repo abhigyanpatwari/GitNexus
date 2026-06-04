@@ -12,10 +12,13 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
+  buildConcreteTypedefDefinitionRanges,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
+  isSuppressedConcreteTypedefDuplicate,
+  qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
   type EnclosingClassInfo,
@@ -66,6 +69,11 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
+import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from './ts-js-hoc-utils.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -290,10 +298,16 @@ const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
 ): EnclosingClassInfo | null => {
   const cached = classInfoCache.get(node);
   if (cached !== undefined) return cached;
-  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
+  const result = findEnclosingClassInfo(
+    node,
+    filePath,
+    resolveEnclosingOwner,
+    getQualifiedOwnerName,
+  );
   classInfoCache.set(node, result);
   return result;
 };
@@ -481,6 +495,7 @@ const processParsingSequential = async (
       logger.warn({ queryError }, `Query error for ${file.path}:`);
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor).
     //
@@ -492,6 +507,7 @@ const processParsingSequential = async (
     // lifecycle and flush-site ownership rules.
     const typeEnv = provider.fieldExtractor
       ? buildTypeEnv(tree, language, {
+          filePath: file.path,
           enclosingFunctionFinder: provider.enclosingFunctionFinder,
           extractFunctionName: provider.methodExtractor?.extractFunctionName,
         })
@@ -503,6 +519,8 @@ const processParsingSequential = async (
       match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
+
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) return;
 
       const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
@@ -535,9 +553,49 @@ const processParsingSequential = async (
       ) {
         return;
       }
+      const exportDefaultCall =
+        nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
+          ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
+          : undefined;
+      const defaultExportHocName = (() => {
+        if (exportDefaultCall === undefined) return null;
+        const argList = exportDefaultCall.childForFieldName?.('arguments');
+        const callback = argList?.namedChildren.find(
+          (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+        );
+        if (callback === undefined) return null;
+
+        const callee = exportDefaultCall.childForFieldName?.('function');
+        if (
+          callee?.type === 'identifier' &&
+          DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
+        ) {
+          return null;
+        }
+        if (callee?.type === 'member_expression') {
+          const property = callee.childForFieldName?.('property');
+          if (
+            property?.type === 'property_identifier' &&
+            ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+          ) {
+            return null;
+          }
+        }
+
+        return deriveDefaultExportHocName(file.path);
+      })();
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) return;
-      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
+      if (
+        !nameNode &&
+        nodeLabel !== 'Constructor' &&
+        !extractedClassSymbol &&
+        !defaultExportHocName
+      ) {
+        return;
+      }
+      const nodeName =
+        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
 
       const startLine = definitionNodeForRange
         ? definitionNodeForRange.startPosition.row + lineOffset
@@ -551,24 +609,71 @@ const processParsingSequential = async (
         nodeLabel === 'Constructor' ||
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
+      // #1978: when the language opts into qualified node ids, thread the
+      // class-extractor's qualifier into the enclosing-owner walk so a nested
+      // member resolves to its owner's *qualified* id (Outer.Inner) — matching
+      // the qualified class node id computed below. Gated on the flag, so the
+      // owner walk and its cache entry are byte-identical when the flag is off.
+      const getQualifiedOwnerName =
+        provider.classExtractor?.qualifiedNodeId === true
+          ? (node: SyntaxNode, simpleName: string): string | null =>
+              provider.classExtractor!.extractQualifiedName(node, simpleName)
+          : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
             nameNode || definitionNodeForRange,
             file.path,
             provider.resolveEnclosingOwner,
+            getQualifiedOwnerName,
           )
         : null;
-      const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const enclosingClassId =
+        enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
       const objectLiteralOwnerInfo =
         !enclosingClassId && nodeLabel === 'Method' && definitionNode
           ? findObjectLiteralBindingInfo(definitionNode, file.path)
           : null;
 
+      // #1978: a class-like node opts into a fully-qualified node id (Outer.Inner)
+      // when the language enables qualifiedNodeId, so same-tail nested types in one
+      // file stay distinct. Hoisted ABOVE the node-id/qualifiedName use below and
+      // derived from the SAME extractQualifiedName the owner edge uses, so the
+      // member's owner id and the class node id agree. The order is load-bearing.
+      const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
+      const qualifiedTypeName =
+        extractedClassSymbol?.qualifiedName ??
+        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
+          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
+          : undefined);
+
       // Qualify method/property IDs with enclosing class name to avoid collisions
-      // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak"
-      const qualifiedName = enclosingClassInfo
-        ? `${enclosingClassInfo.className}.${nodeName}`
-        : nodeName;
+      // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak".
+      // Class-like nodes use their own fully-qualified path as the id key when the
+      // language enables qualifiedNodeId (#1978); everything else is unchanged.
+      // #1982: a Rust inherent-impl node is keyed by its target's RAW tail by
+      // default, so two bare same-tail impls under different mods collapse onto
+      // one Impl node. For an UNSCOPED bare target (type_identifier), qualify the
+      // Impl node id by the enclosing `mod_item` scope — byte-identical to the
+      // owner-walk id (ast-helpers `findEnclosingClassInfo`), so HAS_METHOD stays
+      // anchored. SCOPED targets (`impl a::Inner`) keep their full raw text and
+      // are NOT routed here (#1975).
+      const rustImplQualifiedName =
+        nodeLabel === 'Impl' &&
+        definitionNode?.type === 'impl_item' &&
+        nameNode?.type === 'type_identifier'
+          ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
+          : undefined;
+
+      const qualifiedName =
+        rustImplQualifiedName !== undefined
+          ? rustImplQualifiedName
+          : isClassLikeLabel &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              qualifiedTypeName !== undefined
+            ? qualifiedTypeName
+            : enclosingClassInfo
+              ? `${enclosingClassInfo.className}.${nodeName}`
+              : nodeName;
 
       // Extract method metadata for Function/Method/Constructor nodes BEFORE generating
       // the node ID — parameterCount is needed to disambiguate overloaded methods.
@@ -727,12 +832,6 @@ const processParsingSequential = async (
         nodeLabel,
         `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${constraintsTag}${parameterShapeTag}`,
       );
-      const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
-      const qualifiedTypeName =
-        extractedClassSymbol?.qualifiedName ??
-        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
-          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
@@ -828,23 +927,28 @@ const processParsingSequential = async (
         qualifiedName: qualifiedTypeName,
       });
 
-      const fileId = generateId('File', file.path);
-
-      const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-
-      const relationship: GraphRelationship = {
-        id: relId,
-        sourceId: fileId,
-        targetId: nodeId,
-        type: 'DEFINES',
-        confidence: 1.0,
-        reason: '',
-      };
-
-      graph.addRelationship(relationship);
-
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
       const ownerIdForMemberEdge = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? null;
+
+      // Only emit File -> Symbol DEFINES for top-level symbols. Class members
+      // are reachable via Class -> Member (HAS_METHOD / HAS_PROPERTY), so a
+      // direct File -> Member edge would bypass the class in the graph and
+      // produce a flat radial layout instead of the correct File->Class->Member
+      // hierarchy (issue #1944).
+      if (!ownerIdForMemberEdge) {
+        const fileId = generateId('File', file.path);
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+        const relationship: GraphRelationship = {
+          id: relId,
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        };
+        graph.addRelationship(relationship);
+      }
+
       if (ownerIdForMemberEdge) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         graph.addRelationship({
