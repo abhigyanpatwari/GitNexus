@@ -215,3 +215,69 @@ Route::group([
     );
   });
 });
+
+describe('Laravel controller qualified-name resolution (RING4-2 follow-up)', () => {
+  const routeFor = (source: string, routePath: string) =>
+    extractLaravelRoutes(parser.parse(source), 'routes/web.php').find(
+      (r) => r.routePath === routePath,
+    );
+
+  it('resolves an aliased controller import to its normalized FQN', () => {
+    const route = routeFor(
+      `<?php
+use App\\Http\\Controllers\\OrderController as Orders;
+Route::get('/orders', [Orders::class, 'index']);
+`,
+      '/orders',
+    );
+    expect(route?.controllerName).toBe('Orders');
+    expect(route?.controllerQualifiedName).toBe('App.Http.Controllers.OrderController');
+  });
+
+  it('resolves a plain (non-aliased) controller import to its normalized FQN', () => {
+    const route = routeFor(
+      `<?php
+use App\\Http\\Controllers\\OrderController;
+Route::get('/orders', [OrderController::class, 'index']);
+`,
+      '/orders',
+    );
+    expect(route?.controllerName).toBe('OrderController');
+    expect(route?.controllerQualifiedName).toBe('App.Http.Controllers.OrderController');
+  });
+
+  it('captures an inline qualified ::class reference as the normalized FQN', () => {
+    const route = routeFor(
+      `<?php
+Route::get('/orders', [\\App\\Admin\\OrderController::class, 'index']);
+`,
+      '/orders',
+    );
+    expect(route?.controllerQualifiedName).toBe('App.Admin.OrderController');
+  });
+
+  it('leaves controllerQualifiedName null for a bare short name with no use import', () => {
+    const route = routeFor(
+      `<?php
+Route::get('/orders', [OrderController::class, 'index']);
+`,
+      '/orders',
+    );
+    expect(route?.controllerName).toBe('OrderController');
+    expect(route?.controllerQualifiedName ?? null).toBeNull();
+  });
+
+  it('threads the FQN through resource routes', () => {
+    const routes = extractLaravelRoutes(
+      parser.parse(`<?php
+use App\\Http\\Controllers\\PhotoController as Photos;
+Route::resource('/photos', Photos::class);
+`),
+      'routes/web.php',
+    ).filter((r) => r.routePath === '/photos');
+    expect(routes.length).toBeGreaterThan(0);
+    for (const r of routes) {
+      expect(r.controllerQualifiedName).toBe('App.Http.Controllers.PhotoController');
+    }
+  });
+});
