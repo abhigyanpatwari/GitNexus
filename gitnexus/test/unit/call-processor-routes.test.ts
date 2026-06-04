@@ -184,28 +184,84 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(edges[0].targetId).toBe('method:OrderController.index#1');
   });
 
-  it('aliased / import-disambiguated controller name → no edge (RING4-2 global-resolution convergence)', async () => {
+  it('aliased controller resolves via controllerQualifiedName → edge emitted', async () => {
     // An aliased import `use App\\Http\\Controllers\\OrderController as Orders;`
-    // + `[Orders::class, 'index']` yields controllerName='Orders'. The class is
-    // registered under its DECLARED name 'OrderController', so
-    // lookupClassByName('Orders') is empty → no edge. The legacy import-scoped
-    // tier resolved the alias via the routes-file `use` binding and emitted the
-    // edge; global-only resolution intentionally cannot (the per-file import map
-    // was deleted with the tiered resolver — see processRoutesFromExtracted JSDoc).
-    // This pins the documented missed-edge convergence so it can't silently change.
+    // + `[Orders::class, 'index']` yields controllerName='Orders' but the extractor
+    // also threads controllerQualifiedName='App.Http.Controllers.OrderController'
+    // (the alias resolved to its FQN). The class is registered under that FQN, so
+    // lookupClassByQualifiedName resolves it → edge — restoring what the legacy
+    // import-scoped tier emitted (RING4-2 follow-up).
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
-    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    const FQN = 'App.Http.Controllers.OrderController';
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class', {
+      qualifiedName: FQN,
+    });
     model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index', 'Method', {
       ownerId: 'class:OrderController',
     });
 
     await processRoutesFromExtracted(
       graph,
-      [makeRoute({ controllerName: 'Orders', methodName: 'index' })],
+      [makeRoute({ controllerName: 'Orders', controllerQualifiedName: FQN, methodName: 'index' })],
       model,
     );
 
-    expect(routeCallsEdges(graph)).toHaveLength(0);
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.index');
+    expect(edges[0].confidence).toBeCloseTo(0.5, 5);
+  });
+
+  it('globally-duplicated short name disambiguated by controllerQualifiedName → edge to the specific controller', async () => {
+    // Two OrderControllers in different namespaces share the short name. The route
+    // carries the FQN of the one its `use` import selected, so the edge targets
+    // that specific class's method — not the other, and not a skip.
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    const ADMIN_FQN = 'App.Admin.OrderController';
+    const PUBLIC_FQN = 'App.Http.Controllers.OrderController';
+    model.symbols.add('app/Admin/OrderController.php', 'OrderController', 'class:Admin.OrderController', 'Class', {
+      qualifiedName: ADMIN_FQN,
+    });
+    model.symbols.add('app/Admin/OrderController.php', 'index', 'method:Admin.OrderController.index', 'Method', {
+      ownerId: 'class:Admin.OrderController',
+    });
+    model.symbols.add('app/Http/Controllers/OrderController.php', 'OrderController', 'class:Public.OrderController', 'Class', {
+      qualifiedName: PUBLIC_FQN,
+    });
+    model.symbols.add('app/Http/Controllers/OrderController.php', 'index', 'method:Public.OrderController.index', 'Method', {
+      ownerId: 'class:Public.OrderController',
+    });
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ controllerName: 'OrderController', controllerQualifiedName: ADMIN_FQN, methodName: 'index' })],
+      model,
+    );
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:Admin.OrderController.index');
+  });
+
+  it('controllerQualifiedName set but no class matches → falls back to short-name resolution', async () => {
+    // A stale/unmatched FQN must not block the short-name fallback when that is unique.
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['index']); // 'OrderController' registered, no FQN
+    await processRoutesFromExtracted(
+      graph,
+      [
+        makeRoute({
+          controllerName: 'OrderController',
+          controllerQualifiedName: 'App.Nonexistent.OrderController',
+          methodName: 'index',
+        }),
+      ],
+      model,
+    );
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.index');
   });
 });

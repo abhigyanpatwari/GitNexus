@@ -24,6 +24,7 @@ import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/pa
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getTreeSitterBufferSize } from './constants.js';
@@ -86,44 +87,26 @@ const ROUTE_EDGE_CONFIDENCE = 0.5;
  * Create CALLS edges from extracted framework routes (e.g. Laravel) to their
  * controller methods. Runs for all languages — independent of call resolution.
  *
- * Resolves the controller class by global name via the type registry
- * (`Registry.lookup` equivalent) and the method within the controller's file
- * via the symbol table — replacing the retired tiered name resolver
- * (RING4-2 #943).
+ * Resolution is registry-based (RING4-2 #943 retired the tiered resolver):
+ *   - Controller: **qualified-first**. When the routes file disambiguated the
+ *     controller, the Laravel extractor threads `route.controllerQualifiedName`
+ *     (a `use` import — incl. aliased `use … as X;` — or an inline qualified
+ *     `::class`, normalized to the registry's dot-joined key shape). The emitter
+ *     resolves it via `model.types.lookupClassByQualifiedName`, which picks the
+ *     specific class even when the short name is globally duplicated (the common
+ *     admin/public `OrderController` split) or aliased. It falls back to the
+ *     global short-name lookup (`lookupClassByName`), which still skips on
+ *     ambiguity (`length !== 1`) — so a bare, genuinely ambiguous short name
+ *     with no `use`/FQN correctly produces no (wrong) edge.
+ *   - Method: resolved within the controller's own file via the symbol table
+ *     (the legacy emitter only accepted same-file method resolutions).
  *
- * Intentional convergence (RING4-2): the legacy resolver could resolve a
- * controller at the *import-scoped* tier (0.9) by consulting the routes file's
- * named-import binding (`use App\Http\Controllers\OrderController;`, including
- * aliased `use … as Orders;`). That per-file import map was deleted with the
- * tiered resolver, so all route controllers now resolve by **global class
- * name** at a flat {@link ROUTE_EDGE_CONFIDENCE}. Accepted consequences:
- *   1. An imported controller resolving to a *unique* global class keeps its
- *      edge (same target) but the confidence collapses 0.9 → 0.5.
- *   2. An import-disambiguated controller whose short name is *not* globally
- *      unique now loses its edge entirely (not just confidence): two
- *      `OrderController`s in different namespaces → `lookupClassByName` returns
- *      2 → the emitter skips. The legacy import-scoped tier resolved these to
- *      the specific imported class and emitted the edge; global resolution
- *      cannot, because the disambiguating per-file `use` map is gone. (This is
- *      stricter than — not the same as — the legacy *global*-tier `>1 → skip`
- *      guard, which only applied when no `use` binding existed.)
- *   3. An aliased import (`use … as Orders; [Orders::class, 'm']`) resolves the
- *      *alias* token as the class name; since the class is registered under its
- *      declared name, `lookupClassByName('Orders')` is empty → no edge.
- * All three produce only *missing* edges, never a wrong target. The patterns
- * (multi-namespace same-short-name controllers, aliased controller imports)
- * are uncommon, and re-disambiguating would require re-introducing the deleted
- * per-file import map — out of scope for the registry-only resolution model.
- *
- * Confidence-threshold impact: route CALLS edges are filtered by the
- * process-trace (`MIN_TRACE_CONFIDENCE`) and large-graph community
- * (`MIN_CONFIDENCE_LARGE`) gates, both 0.5. A *resolved* route edge lands at
- * exactly 0.5 and still passes (`>= 0.5` / not `< 0.5`), so the 0.9 → 0.5
- * flattening does not change its downstream treatment. The only edge that
- * crosses the gate is the narrow imported-controller-with-unresolved-method
- * case, whose guessed edge drops 0.9×0.8=0.72 → 0.5×0.8=0.4 and is excluded
- * from process traces / large-graph communities — an acceptable loss for an
- * already-heuristic edge whose target method could not be resolved.
+ * Edge confidence is a flat {@link ROUTE_EDGE_CONFIDENCE}. Route CALLS edges
+ * are gated downstream by the process-trace (`MIN_TRACE_CONFIDENCE`) and
+ * large-graph community (`MIN_CONFIDENCE_LARGE`) thresholds (both 0.5); a
+ * resolved edge lands at exactly 0.5 and passes (`>= 0.5`). The guessed-method
+ * fallback edge (`× 0.8` = 0.4) sits below the gate and is excluded from those
+ * passes — acceptable for an edge whose target method could not be resolved.
  */
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,
@@ -140,12 +123,24 @@ export const processRoutesFromExtracted = async (
 
     if (!route.controllerName || !route.methodName) continue;
 
-    // Controller resolves by global class name. Refuse ambiguous matches —
-    // mirrors the legacy global-tier "candidates.length > 1 → skip" guard.
-    const controllerDefs = model.types.lookupClassByName(route.controllerName);
-    if (controllerDefs.length !== 1) continue;
+    // Resolve the controller class. Qualified-first: when the routes file
+    // disambiguated the controller (a `use` import or inline `::class` FQN, both
+    // normalized to the registry's dot-joined key shape by the extractor), look
+    // it up by qualified name — this resolves aliased imports and same-short-name
+    // controllers in different namespaces. Fall back to the global short-name
+    // lookup, which still refuses ambiguous matches (`length !== 1 → skip`),
+    // mirroring the legacy global tier.
+    let controllerDef: SymbolDefinition | undefined;
+    if (route.controllerQualifiedName) {
+      const qualifiedDefs = model.types.lookupClassByQualifiedName(route.controllerQualifiedName);
+      if (qualifiedDefs.length === 1) controllerDef = qualifiedDefs[0];
+    }
+    if (!controllerDef) {
+      const controllerDefs = model.types.lookupClassByName(route.controllerName);
+      if (controllerDefs.length !== 1) continue;
+      controllerDef = controllerDefs[0];
+    }
 
-    const controllerDef = controllerDefs[0];
     const confidence = ROUTE_EDGE_CONFIDENCE;
 
     // Method must live in the controller's own file (the legacy emitter only
