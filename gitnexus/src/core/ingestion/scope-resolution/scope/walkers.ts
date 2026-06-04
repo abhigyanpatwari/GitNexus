@@ -391,18 +391,13 @@ function resolveQualifiedInheritanceBase(
       // `namespacePrefix` sidecar — prefer the candidate in the SAME enclosing
       // namespace as the deriving class. Bridge-held: `def.qualifiedName` and the
       // index keys are untouched; still refuse when the sidecar can't pick a unique.
-      const childPrefix = (enclosingClassDef as { namespacePrefix?: string } | undefined)
-        ?.namespacePrefix;
+      const childPrefix = enclosingClassDef?.namespacePrefix;
       if (childPrefix !== undefined && childPrefix.length > 0) {
         let nsUnique: SymbolDefinition | undefined;
         let nsCount = 0;
         for (const id of ids) {
           const def = scopes.defs.get(id);
-          if (
-            def !== undefined &&
-            isClassLike(def.type) &&
-            (def as { namespacePrefix?: string }).namespacePrefix === childPrefix
-          ) {
+          if (def !== undefined && isClassLike(def.type) && def.namespacePrefix === childPrefix) {
             nsUnique = def;
             nsCount++;
           }
@@ -878,7 +873,7 @@ export function tagNamespacePrefixes(parsed: ParsedFile): void {
       const q = def.qualifiedName;
       if (q === undefined || q.length === 0) continue;
       if (q === prefix || q.startsWith(`${prefix}.`)) continue; // already namespaced
-      (def as { namespacePrefix?: string }).namespacePrefix = prefix;
+      def.namespacePrefix = prefix;
     }
   }
 
@@ -902,8 +897,8 @@ export function tagNamespacePrefixes(parsed: ParsedFile): void {
       const q = def.qualifiedName;
       if (q === undefined || q.length === 0) continue;
       if (q === fullPrefix || q.startsWith(`${fullPrefix}.`)) continue; // already namespaced
-      if ((def as { namespacePrefix?: string }).namespacePrefix !== undefined) continue;
-      (def as { namespacePrefix?: string }).namespacePrefix = fullPrefix;
+      if (def.namespacePrefix !== undefined) continue;
+      def.namespacePrefix = fullPrefix;
     }
   }
 }

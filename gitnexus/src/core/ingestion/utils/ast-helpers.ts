@@ -44,6 +44,18 @@ export const qualifyRustImplTargetByModScope = (
 };
 
 /**
+ * #1991: scope-label predicate that single-sources the `nodeLabel === 'Trait'`
+ * checks in parsing-processor.ts / parse-worker.ts. A Ruby `module` maps to the
+ * `Trait` registry label but is NOT a typeDeclaration, so `extractQualifiedName`
+ * bails on it; these node labels are instead qualified via the scope walk
+ * (`qualifyScopeName`) so same-tail nested modules get distinct ids. Keeping the
+ * literal in one place stops the four hand-maintained copies (two each in the
+ * sequential and worker definition paths) from drifting apart. Pure predicate —
+ * value-identical to the inlined `nodeLabel === 'Trait'`.
+ */
+export const isQualifiableScopeLabel = (nodeLabel: string): boolean => nodeLabel === 'Trait';
+
+/**
  * Ordered list of definition capture keys for tree-sitter query matches.
  * Used to extract the definition node from a capture map.
  */
@@ -523,12 +535,18 @@ export const findEnclosingClassInfo = (
               : implTarget;
           if (baseType?.type === 'type_identifier') {
             // Bare target (`impl Inner` or `impl<T> Inner<T>`): qualify by mod scope.
+            // #1992 follow-up: qualify `className` too (not just `classId`). The
+            // method node id is keyed `${className}.${name}`, so a bare tail collapses
+            // two same-tail bare impls that ALSO share a method name (`a::Inner::m` +
+            // `b::Inner::m` both → `Inner.m`) onto one Method node (graph addNode is
+            // first-write-wins). Qualifying className → `a.Inner.m` / `b.Inner.m` keeps
+            // them distinct. Symmetric: the call-resolution fallback rebuilds the same
+            // `${className}.${name}` from the same enclosing-impl walk, so def and call
+            // ids still agree. Owner edge anchors on `classId` (already qualified).
+            const qualified = qualifyRustImplTargetByModScope(current, baseType.text);
             return {
-              classId: generateId(
-                'Impl',
-                `${filePath}:${qualifyRustImplTargetByModScope(current, baseType.text)}`,
-              ),
-              className: baseType.text,
+              classId: generateId('Impl', `${filePath}:${qualified}`),
+              className: qualified,
             };
           }
           if (baseType?.type === 'scoped_type_identifier' && implTarget.type !== 'generic_type') {

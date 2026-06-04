@@ -2184,6 +2184,83 @@ describe('Rust generic inherent-impl ownership — worker path parity (issue #19
 });
 
 // ---------------------------------------------------------------------------
+// F3 (#1992 follow-up) — same-tail generic impls that ALSO share a method name
+// must materialize DISTINCT method (Function) nodes.
+//
+// `${className}.${methodName}` keys the method node id (Rust `fn`s carry the
+// `Function` label). Before this fix the bare inherent-impl arm set `className` to
+// the bare tail (`Inner`), so two same-tail generic impls under sibling mods that
+// each define `fn m` both keyed `Function:…:Inner.m#0` and collapsed onto ONE node
+// (graph addNode is first-write-wins) — the second `m` was silently dropped and
+// both HAS_METHOD edges targeted the survivor. The owner `classId` was already
+// mod-qualified, so HAS_METHOD *sources* stayed distinct, which masked the
+// collision (sourceId-only assertions passed). Qualifying `className`
+// (`a.Inner` / `b.Inner`) keys `a.Inner.m` / `b.Inner.m`, so both nodes survive
+// with distinct ids. Structure-phase, so it holds on both resolver legs and the
+// worker path.
+// ---------------------------------------------------------------------------
+
+describe('Rust same-tail generic impls with shared method name — distinct nodes (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
+      () => {},
+    );
+  }, 60000);
+
+  it('materializes two distinct `m` method nodes (no first-write-wins collapse)', () => {
+    // Pre-fix: only one `m` Function node survives (the second is dropped on the
+    // colliding id) — length is 1, so toBe(2) fails on the pre-fix base.
+    const methods = getNodesByLabel(result, 'Function').filter((n) => n === 'm');
+    expect(methods.length).toBe(2);
+  });
+
+  it('owns each `m` through its own mod-qualified Impl node (distinct source AND target)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'm');
+    expect(hm.length).toBe(2);
+    // Owner edges were always distinct (classId is mod-qualified)…
+    expect(hm[0].rel.sourceId).not.toBe(hm[1].rel.sourceId);
+    const sources = [hm[0].rel.sourceId, hm[1].rel.sourceId].sort();
+    expect(sources[0]).toContain('a.Inner');
+    expect(sources[1]).toContain('b.Inner');
+    // …but the TARGET node collapsed pre-fix — this is the F3 assertion.
+    expect(hm[0].rel.targetId).not.toBe(hm[1].rel.targetId);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// Same fixture forced through the WORKER pool — the impl owner walk + node-id
+// keying is shared structure-phase logic, so the distinct-node guarantee must hold
+// on the worker path too (parse-worker.ts mirrors parsing-processor.ts).
+describe('Rust same-tail generic impls with shared method name — worker path parity (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('materializes two distinct `m` method nodes on the worker path', () => {
+    const methods = getNodesByLabel(result, 'Function').filter((n) => n === 'm');
+    expect(methods.length).toBe(2);
+    const hm = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'm');
+    expect(hm.length).toBe(2);
+    expect(hm[0].rel.sourceId).not.toBe(hm[1].rel.sourceId);
+    expect(hm[0].rel.targetId).not.toBe(hm[1].rel.targetId);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // F71 — union declarations resolve as Struct nodes (issue #1934)
 //
 // A `union` is deliberately captured as a Struct-labeled node (see the
