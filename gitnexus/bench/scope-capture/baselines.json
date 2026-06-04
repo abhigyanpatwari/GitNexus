@@ -28,10 +28,10 @@
     "scaling_budget": 1.5
   },
   "rust": {
-    "fingerprint": "56ffc1c069af10cac3c82a32f3d148322ea570e116ebaae67315445f05407fef",
+    "fingerprint": "b00aea0f2dbff6a77d3aa709f7f90e8a70649f7e789a8de725d9b1958ebe12bc",
     "scaling_budget": 1.5,
     "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) — legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical.",
-    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED — @declaration.macro/@reference.macro + MacroRegistry → USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126)."
+    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED — @declaration.macro/@reference.macro + MacroRegistry → USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126). #1992: + rust-nested-tail-collision-generic and rust-generic-impl-same-method-name (F3) fixtures — pure fixture-corpus drift, no scope-extractor change; fixture_count 127->129, fingerprint 56ffc1c0->b00aea0f."
   },
   "php": {
     "fingerprint": "f9c8eaf6d1084f9b95a9fb97ccce5e618a24d936c85fb8af4b96c73a560f7a7f",

@@ -523,12 +523,18 @@ export const findEnclosingClassInfo = (
               : implTarget;
           if (baseType?.type === 'type_identifier') {
             // Bare target (`impl Inner` or `impl<T> Inner<T>`): qualify by mod scope.
+            // #1992 follow-up: qualify `className` too (not just `classId`). The
+            // method node id is keyed `${className}.${name}`, so a bare tail collapses
+            // two same-tail bare impls that ALSO share a method name (`a::Inner::m` +
+            // `b::Inner::m` both → `Inner.m`) onto one Method node (graph addNode is
+            // first-write-wins). Qualifying className → `a.Inner.m` / `b.Inner.m` keeps
+            // them distinct. Symmetric: the call-resolution fallback rebuilds the same
+            // `${className}.${name}` from the same enclosing-impl walk, so def and call
+            // ids still agree. Owner edge anchors on `classId` (already qualified).
+            const qualified = qualifyRustImplTargetByModScope(current, baseType.text);
             return {
-              classId: generateId(
-                'Impl',
-                `${filePath}:${qualifyRustImplTargetByModScope(current, baseType.text)}`,
-              ),
-              className: baseType.text,
+              classId: generateId('Impl', `${filePath}:${qualified}`),
+              className: qualified,
             };
           }
           if (baseType?.type === 'scoped_type_identifier' && implTarget.type !== 'generic_type') {
