@@ -230,7 +230,9 @@ export async function callOpenCodeLLM(
 ): Promise<LLMResponse> {
   const commandInfo = getDetectedCommand('opencode');
   if (!commandInfo) {
-    throw new Error('OpenCode CLI not found. Install OpenCode CLI and ensure `opencode` is on PATH.');
+    throw new Error(
+      'OpenCode CLI not found. Install OpenCode CLI and ensure `opencode` is on PATH.',
+    );
   }
 
   const workingDirectory = config.workingDirectory || process.cwd();
