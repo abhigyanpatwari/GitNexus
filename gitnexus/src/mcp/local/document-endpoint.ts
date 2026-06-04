@@ -2203,6 +2203,58 @@ async function extractDownstreamApis(
             resolvedFrom = resolvedFrom ? `${resolvedFrom}+variable-name-heuristic` : 'variable-name-heuristic';
           }
         }
+        // === CALLS-graph resolver (#93) — INSERTED 2026-06-04 ===
+        // Walk the CALLS graph from the call site Method → callee Method →
+        // containing Class → Route node. If a Route is found for the callee's
+        // class, use that class as the service name. This is more accurate
+        // than the class-name heuristic (which derives from the caller's
+        // enclosing class) because it identifies the actual target controller
+        // of the HTTP call via the call graph. Falls through to the
+        // class-name heuristic if the graph returns no rows.
+        if (serviceName === 'unknown-service' && node.uid && node.kind === 'Method' && executeQuery) {
+          try {
+            // Query has a leading comment marker (calls-graph-route #93)
+            // — recognised by unit-test mocks. Cypher block comment form.
+            const callsGraphQuery = `
+              /* calls-graph-route #93 */
+              MATCH (caller:Method {id: $callerUid})-[:CodeRelation {type: 'CALLS'}]->(callee:Method)
+              MATCH (cls:Class)-[:CodeRelation {type: 'HAS_METHOD'}]->(callee)
+              MATCH (r:Route)-[:CodeRelation {type: 'CALLS'}]->(callee)
+              WHERE r.controllerName = cls.name
+              RETURN cls.name AS className, r.httpMethod AS httpMethod, r.routePath AS routePath
+              LIMIT 1
+            `;
+            const graphRows = await executeQuery(repoId, callsGraphQuery, { callerUid: node.uid });
+            if (Array.isArray(graphRows) && graphRows.length > 0) {
+              // Narrow the row shape: executeQuery returns Promise<any[]>, so row
+              // is implicitly any. The CALLS-graph query aliases columns explicitly
+              // (cls.name AS className, r.httpMethod AS httpMethod, r.routePath AS
+              // routePath), so we read by alias and validate the type at use site.
+              // The previous `row.className ?? row[0]` form silently fell through
+              // to the next cell on null and assumed an untyped array shape.
+              type CallsGraphRouteRow = { className?: unknown; httpMethod?: unknown; routePath?: unknown };
+              const row = graphRows[0] as CallsGraphRouteRow | undefined;
+              const resolvedClassName: string | undefined =
+                typeof row?.className === 'string' ? row.className : undefined;
+              if (resolvedClassName) {
+                // Skip if this resolves to the current endpoint's own controller (self-reference)
+                const derivedFromResolved = serviceNameFromClassName(resolvedClassName);
+                if (currentController && derivedFromResolved && serviceNameFromClassName(currentController) === derivedFromResolved) {
+                  // Self-reference: do not resolve via graph; fall through to class-name heuristic
+                  if (DEBUG) console.error(`[GitNexus DEBUG] CALLS-graph resolver: skipping self-reference ${resolvedClassName}`);
+                } else {
+                  serviceName = resolvedClassName;
+                  resolvedFrom = resolvedFrom ? `${resolvedFrom}+calls-graph-route` : 'calls-graph-route';
+                  if (DEBUG) console.error(`[GitNexus DEBUG] CALLS-graph resolver: resolved ${resolvedClassName} for ${node.uid}`);
+                }
+              }
+            }
+          } catch (e) {
+            if (DEBUG) console.error('[GitNexus DEBUG] CALLS-graph resolver failed:', e);
+            // Fall through to class-name heuristic on any error
+          }
+        }
+        // === END CALLS-graph resolver (#93) ===
         // Last-resort: derive from enclosing class name
         if (serviceName === 'unknown-service' && className) {
           const derived = serviceNameFromClassName(className);
