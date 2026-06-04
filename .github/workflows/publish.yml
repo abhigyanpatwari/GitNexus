@@ -257,7 +257,7 @@ jobs:
   # ── Phase 3: reusable CI gate ──────────────────────────────────────────────
   # Runs for both rc (when guard says go) and stable. No `secrets:` passed —
   # ci.yml and its entire reusable-workflow chain (ci-quality, ci-tests,
-  # ci-e2e, ci-scope-parity, ci-report) reference zero `secrets.*` values;
+  # ci-e2e, ci-report) reference zero `secrets.*` values;
   # passing any would be unused surface. GITHUB_TOKEN is implicit.
   ci:
     needs: [route, rc-guard]

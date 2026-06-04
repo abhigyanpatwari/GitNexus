@@ -100,17 +100,12 @@ function preEmitInheritanceEdges(
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
-  // Seed the dedup set with both inheritance edge types already in the graph
-  // (e.g. emitted by the legacy heritage path in sequential mode). Keying by
-  // edge type lets us add IMPLEMENTS without colliding with EXTENDS and keeps
-  // this pass a no-op when the legacy path already produced the same edge.
+  // Tracks inheritance edges emitted during this pass so the structural
+  // interface-implementation pass (emitDetectedInterfaceImplementations) and
+  // repeated `inherits` sites don't double-emit. Starts empty: this pre-pass is
+  // the authoritative inheritance emitter — no EXTENDS/IMPLEMENTS edges exist in
+  // the graph before it runs (the legacy heritage path was removed in #942).
   const existing = new Set<string>();
-  for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
-    existing.add(`EXTENDS:${rel.sourceId}->${rel.targetId}`);
-  }
-  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
-    existing.add(`IMPLEMENTS:${rel.sourceId}->${rel.targetId}`);
-  }
 
   for (const site of scopes.referenceSites) {
     if (site.kind !== 'inherits') continue;
@@ -150,10 +145,7 @@ function preEmitInheritanceEdges(
     if (callerGraphId === undefined || targetGraphId === undefined) continue;
     // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
     // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
-    // deriving from a class-like is EXTENDS. This matches the legacy heritage
-    // emitters (`resolveExtendsType` maps Interface→IMPLEMENTS; the trait-impl
-    // branch of `resolveAndAddHeritageEdge` maps trait use → IMPLEMENTS), so the
-    // registry-primary path matches the legacy DAG. The discriminator is purely
+    // deriving from a class-like is EXTENDS. The discriminator is purely
     // symbol-kind-driven (no language is named here, per AGENTS.md): a base that
     // resolves to neither an Interface nor a Trait symbol always takes the
     // EXTENDS branch, so such languages are unchanged.

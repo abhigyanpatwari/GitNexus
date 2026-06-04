@@ -27,7 +27,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { typescriptCallConfig } from '../call-extractors/configs/typescript-javascript.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   interpretTsImport,
   interpretTsTypeBinding,
@@ -90,7 +89,6 @@ export const vueProvider = defineLanguage({
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: VUE_BUILT_INS,
   // Scope-resolution pipeline hooks (RFC #909 Ring 3)
   emitScopeCaptures: emitVueScopeCaptures,

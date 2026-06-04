@@ -31,7 +31,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { rustVariableConfig } from '../variable-extractors/configs/rust.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { rustCallConfig } from '../call-extractors/configs/rust.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitRustScopeCaptures,
   rustArityCompatibility,
@@ -180,7 +179,6 @@ export const rustProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(rustVariableConfig),
   classExtractor: createClassExtractor(rustClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Rust),
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRustScopeCaptures,

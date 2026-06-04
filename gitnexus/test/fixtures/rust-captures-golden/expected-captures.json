@@ -101,7 +101,7 @@
   },
   "rust-child-extends-parent/src/child.rs": {
     "captureGroups": 13,
-    "digest": "0d60bdf7a88460ee3eebdd48debee9ebb163cfe3f7a22f53323dcef535b6c6b7"
+    "digest": "4af705aa98a718b54c1e8a2037989c747c3e4e6bb8ba833cdf6672a1f8983cec"
   },
   "rust-child-extends-parent/src/main.rs": {
     "captureGroups": 17,

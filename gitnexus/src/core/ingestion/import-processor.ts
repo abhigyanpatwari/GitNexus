@@ -26,7 +26,6 @@ import type {
 import type { NamedBinding } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import { isDev } from './utils/env.js';
-import { isRegistryPrimary } from './registry-primary-flag.js';
 
 import { logger } from '../logger.js';
 // Type: Map<FilePath, Set<ResolvedFilePath>>
@@ -109,7 +108,12 @@ function createImportEdgeHelpers(graph: KnowledgeGraph, importMap: ImportMap) {
 
   const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
     const language = getLanguageFromFilename(filePath);
-    if (language !== null && isRegistryPrimary(language)) return;
+    // Legacy IMPORTS-edge emission. Superseded for every language by the
+    // scope-resolution imports-to-edges bridge (RING4-1 #942 removed the legacy
+    // resolution path). Skipped for all known languages; the only remaining
+    // path is null-language files, which never resolve imports — so this is
+    // effectively inert and kept solely to avoid a behavioral diff.
+    if (language !== null) return;
     const sourceId = generateId('File', filePath);
     const targetId = generateId('File', resolvedPath);
     const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);

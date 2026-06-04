@@ -4,11 +4,11 @@ How we structure tests and which commands to run locally and in CI.
 
 ## Packages
 
-| Package        | Path           | Runner   | Notes                          |
-| -------------- | -------------- | -------- | ------------------------------ |
-| CLI + MCP core | `gitnexus/`    | Vitest   | Primary test surface in CI     |
-| Web UI         | `gitnexus-web/`| Vitest   | Unit/component tests           |
-| Web UI E2E     | `gitnexus-web/`| Playwright | Run when changing UI flows   |
+| Package        | Path            | Runner     | Notes                      |
+| -------------- | --------------- | ---------- | -------------------------- |
+| CLI + MCP core | `gitnexus/`     | Vitest     | Primary test surface in CI |
+| Web UI         | `gitnexus-web/` | Vitest     | Unit/component tests       |
+| Web UI E2E     | `gitnexus-web/` | Playwright | Run when changing UI flows |
 
 ## Test lanes
 
@@ -16,25 +16,25 @@ How we structure tests and which commands to run locally and in CI.
 
 From `gitnexus/`:
 
-| Command                  | What it runs                                         | When to use                     |
-| ------------------------ | ---------------------------------------------------- | ------------------------------- |
-| `npm test`               | Full suite (all 3 vitest projects)                   | Before opening a PR             |
-| `npm run test:unit`      | Unit tests only (`test/unit/`)                       | Tight development loop          |
-| `npm run test:integration` | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
-| `npm run test:coverage`  | Full suite + v8 coverage with thresholds             | Checking coverage impact        |
-| `npm run test:parity`    | Scope-resolution parity for all migrated languages   | After changing resolver or scope code |
-| `npm run test:cross-platform` | Platform-sensitive subset only                  | Debugging a Windows/macOS issue |
-| `npm run test:watch`     | Vitest in watch mode                                 | Active development              |
+| Command                       | What it runs                                       | When to use                           |
+| ----------------------------- | -------------------------------------------------- | ------------------------------------- |
+| `npm test`                    | Full suite (all 3 vitest projects)                 | Before opening a PR                   |
+| `npm run test:unit`           | Unit tests only (`test/unit/`)                     | Tight development loop                |
+| `npm run test:integration`    | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
+| `npm run test:coverage`       | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
+| `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
+| `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
+| `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
 
 ### `gitnexus-web/` commands
 
 From `gitnexus-web/`:
 
-| Command               | What it runs                      | When to use                    |
-| ---------------------- | --------------------------------- | ------------------------------ |
-| `npm test`             | Unit/component tests (vitest)     | After changing web code        |
-| `npm run test:coverage`| Unit tests + coverage             | Checking coverage impact       |
-| `npm run test:e2e`     | Playwright browser tests          | After changing UI flows (requires `gitnexus serve` + `npm run dev`) |
+| Command                 | What it runs                  | When to use                                                         |
+| ----------------------- | ----------------------------- | ------------------------------------------------------------------- |
+| `npm test`              | Unit/component tests (vitest) | After changing web code                                             |
+| `npm run test:coverage` | Unit tests + coverage         | Checking coverage impact                                            |
+| `npm run test:e2e`      | Playwright browser tests      | After changing UI flows (requires `gitnexus serve` + `npm run dev`) |
 
 ### Before opening a PR
 
@@ -59,11 +59,11 @@ Skip with `git commit --no-verify` (use sparingly).
 
 `gitnexus/vitest.config.ts` defines three projects for safety isolation:
 
-| Project    | Files                         | Parallelism | Purpose                                       |
-| ---------- | ----------------------------- | ----------- | ---------------------------------------------- |
-| `lbug-db`  | Native LadybugDB integration tests (explicit list) | Sequential  | Prevents file-lock conflicts from native mmap addon |
-| `cli-e2e`  | `skills-e2e.test.ts`          | Sequential  | CLI process spawning requires serial execution |
-| `default`  | Everything else               | Parallel    | Fast execution for pure logic and parser tests |
+| Project   | Files                                              | Parallelism | Purpose                                             |
+| --------- | -------------------------------------------------- | ----------- | --------------------------------------------------- |
+| `lbug-db` | Native LadybugDB integration tests (explicit list) | Sequential  | Prevents file-lock conflicts from native mmap addon |
+| `cli-e2e` | `skills-e2e.test.ts`                               | Sequential  | CLI process spawning requires serial execution      |
+| `default` | Everything else                                    | Parallel    | Fast execution for pure logic and parser tests      |
 
 When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to the `lbug-db` project's explicit include list and the `default` project's exclude list.
 
@@ -74,21 +74,11 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 - **Resolver / parity** — Language-specific call-resolution tests in `test/integration/resolvers/`.
 - **E2E (web)** — Critical user paths only; prefer `data-testid` attributes for stable selectors. Tests run against real backend (`gitnexus serve`) and Vite dev server.
 
-## Scope-resolution parity
+## Scope-resolution tests
 
-Migrated languages (listed in `MIGRATED_LANGUAGES` in `src/core/ingestion/registry-primary-flag.ts`) are tested in both legacy and registry-primary modes on every PR.
+Every language resolves calls and inheritance through the scope-resolution pipeline — the legacy call-resolution DAG and the per-language `REGISTRY_PRIMARY_<LANG>` flag were removed in RING4-1 (#942). Each language's resolver test lives at `test/integration/resolvers/<slug>.test.ts` and runs once, on the single scope-resolution path, as part of the normal `tests` job (`vitest test/**/*.test.ts`).
 
-For each migrated language, CI runs the resolver test file twice:
-1. `REGISTRY_PRIMARY_<LANG>=0` — legacy DAG path
-2. `REGISTRY_PRIMARY_<LANG>=1` — registry-primary path
-
-Both must pass. Known legacy gaps are listed in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES` in `test/integration/resolvers/helpers.ts` and are automatically skipped in legacy mode.
-
-Adding a language to `MIGRATED_LANGUAGES` automatically enrolls it in parity — no workflow or config edit needed. The test file must exist at `test/integration/resolvers/<slug>.test.ts`.
-
-Run parity locally: `cd gitnexus && npm run test:parity`
-
-Run for a single language: `cd gitnexus && npx tsx scripts/run-parity.ts --language python`
+Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/registry.ts` (`SCOPE_RESOLVERS`) and add the resolver test file — no workflow or config edit needed.
 
 ## Cross-platform testing
 
@@ -120,12 +110,12 @@ To check the cross-platform list is up to date, run `npm run test:cross-platform
 
 GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 
-| Workflow              | Jobs                           | Purpose                                         |
-| --------------------- | ------------------------------ | ------------------------------------------------ |
-| `ci-quality.yml`      | format, lint, typecheck, typecheck-web, workflow-convention | Code quality gates |
+| Workflow              | Jobs                                                              | Purpose                                                               |
+| --------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `ci-quality.yml`      | format, lint, typecheck, typecheck-web, workflow-convention       | Code quality gates                                                    |
 | `ci-tests.yml`        | ubuntu/coverage, cross-platform (Win/Mac), packaged-install-smoke | Full suite + coverage on Ubuntu; platform-sensitive subset on Win/Mac |
-| `ci-scope-parity.yml` | discover, parity               | Scope-resolution parity for all migrated languages |
-| `ci-e2e.yml`          | e2e (chromium)                 | Playwright E2E, gated on `gitnexus-web/**` changes |
+| `ci-scope-parity.yml` | discover, parity                                                  | Scope-resolution parity for all migrated languages                    |
+| `ci-e2e.yml`          | e2e (chromium)                                                    | Playwright E2E, gated on `gitnexus-web/**` changes                    |
 
 The `CI Gate` job in `ci.yml` is the single required check for branch protection. It requires quality, tests, e2e, and scope-parity to all pass.
 

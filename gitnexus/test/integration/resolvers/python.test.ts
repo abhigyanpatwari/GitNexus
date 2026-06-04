@@ -1,14 +1,13 @@
 /**
  * Python: relative imports + class inheritance + ambiguous module disambiguation
  */
-import { describe, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -16,11 +15,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-// Mirrors `csharp.test.ts`: skips tests in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.python`
-// when the legacy-resolver parity sweep runs (`REGISTRY_PRIMARY_PYTHON=0`). For the
-// default registry-primary CI run this is a transparent passthrough to vitest's `it`.
-const it = createResolverParityIt('python');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
@@ -90,17 +84,16 @@ describe('Python relative import & heritage resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Qualified / generic bases (#1951). The registry-primary synth previously
-// DROPPED these shapes — only bare `identifier` bases emitted, so production
-// silently omitted their inheritance edges while the legacy @heritage leg
-// captured them. service.py exercises the three now-handled shapes plus a bare
-// control, each base defined in a sibling module:
+// Qualified / generic bases (#1951). An earlier synth DROPPED these shapes —
+// only bare `identifier` bases emitted, so production silently omitted their
+// inheritance edges. service.py exercises the three now-handled shapes plus a
+// bare control, each base defined in a sibling module:
 //   - Service: `base_mod.Model`   (attribute base, trailing id -> Model)
 //   - Nested:  `a.b.Base`         (nested attribute base, recurse -> Base)
 //   - Gen:     `Container[str]`   (subscript base, value: field -> Container)
 //   - Plain:   `Container`        (bare control, byte-identical capture)
-// Runs under BOTH legs (createResolverParityIt) so the synth's bare-name text
-// is asserted equal to the legacy normalizeSupertypeName reduction.
+// Scope-resolution (the single path since #942) owns these edges; the synth's
+// bare-name text is asserted to match the documented per-shape reduction.
 // ---------------------------------------------------------------------------
 
 describe('Python qualified-base heritage resolution (#1951)', () => {
@@ -2172,7 +2165,7 @@ describe('Python cross-file binding propagation', () => {
 // Module import: `import models; models.User()` should produce CALLS edges
 // even when multiple imported modules export a class with the same name.
 // Python's `import models` is a namespace import — moduleAliasMap maps the
-// module alias to its source file, enabling resolveCallTarget to disambiguate
+// module alias to its source file, enabling scope-resolution to disambiguate
 // `models.User()` from `auth.User()` when both modules export `User`.
 // ---------------------------------------------------------------------------
 
@@ -2666,7 +2659,7 @@ describe('Python abstract dispatch', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — child.parent_method() via C3 parent walk
+// SM-9: inherited method resolution — child.parent_method() via C3 parent walk
 // ---------------------------------------------------------------------------
 
 describe('Python Child extends Parent — inherited method resolution (SM-9)', () => {
