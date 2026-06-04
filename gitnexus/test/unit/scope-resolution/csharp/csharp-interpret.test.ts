@@ -71,4 +71,12 @@ describe('interpretCsharpTypeBinding — type normalization (F41 analog #1928)',
   it('preserves a collection-accessor suffix (`data.Values`)', () => {
     expect(raw('data.Values')).toBe('data.Values');
   });
+
+  it('strips nested types through a generic outer (`Ns.Outer<int>.Inner` → `Inner`)', () => {
+    // Prior generic-aware strip sliced at the first `<` and regressed to
+    // `Outer<int>.Inner` (unresolvable). Last `.` at bracket depth 0 fixes both
+    // this shape and the F41 `Dictionary<string, Ns.User>` case (#2046 P3).
+    expect(raw('Ns.Outer<int>.Inner')).toBe('Inner');
+    expect(raw('Outer.Inner')).toBe('Inner');
+  });
 });

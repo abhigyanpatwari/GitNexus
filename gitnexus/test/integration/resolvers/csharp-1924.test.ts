@@ -56,10 +56,45 @@ describe('C# explicit constructor initializer resolution (F38, mirror of Java #1
     expect(['Class', 'Constructor']).toContain(baseCall!.targetLabel);
   });
 
-  it('resolves `: this()` to the sibling Child constructor', () => {
+  it('resolves `: this()` to a DISTINCT sibling Child constructor (no self-loop)', () => {
     const calls = getRelationships(result, 'CALLS');
     const thisCall = calls.find((c) => c.target === 'Child' && c.source === 'Child');
     expect(thisCall).toBeDefined();
-    expect(['Class', 'Constructor']).toContain(thisCall!.targetLabel);
+    expect(thisCall!.targetLabel).toBe('Constructor');
+    expect(thisCall!.rel.sourceId).not.toBe(thisCall!.rel.targetId);
+    expect(thisCall!.rel.sourceId).toMatch(/Child\.Child#1/);
+    expect(thisCall!.rel.targetId).toMatch(/Child\.Child#0/);
+  });
+});
+
+describe('C# interface-only `: base()` must not target an interface (#2046)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-interface-only-base'), () => {});
+  }, 60000);
+
+  it('emits no CALLS edge to IFoo from `: base()` on `class C : IFoo`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.some((c) => c.target === 'IFoo')).toBe(false);
+    expect(calls.some((c) => c.targetLabel === 'Interface')).toBe(false);
+  });
+});
+
+describe('C# qualified constructor resolves by qualifier, not same-tail local (#2046)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-namespace-qualified-ctor'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves `new B.Foo()` to the Foo in namespace B, not the colliding A.Foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hit = calls.find((c) => c.source === 'Make' && c.target === 'Foo');
+    expect(hit).toBeDefined();
+    expect(hit!.targetFilePath).toBe('B/Foo.cs');
   });
 });

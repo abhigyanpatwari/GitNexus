@@ -129,17 +129,20 @@ function stripGeneric(text: string): string {
  *  receiver's generic type based on the suffix — `data.Values` →
  *  element type of `data`'s Dictionary<K,V>. */
 function stripQualifier(text: string): string {
-  // Only strip the qualifier of the OUTER type name — never reach into generic
-  // type arguments. A qualified type ARGUMENT (`Dictionary<string, Ns.User>`)
-  // must keep its `<...>` intact (the collection-accessor unwrap needs the value
-  // type), and `lastIndexOf('.')` over the whole string would otherwise cut
-  // inside it and corrupt it into `User>` (F41 analog of Java #1928). Reduce only
-  // the segment before the first `<`; re-attach the generic suffix unchanged.
-  const ltIdx = text.indexOf('<');
-  const base = ltIdx === -1 ? text : text.slice(0, ltIdx);
-  const lastDot = base.lastIndexOf('.');
-  if (lastDot === -1) return text;
-  const tail = base.slice(lastDot + 1);
+  // Strip only the outermost qualifier: the last `.` at generic nesting depth 0.
+  // This preserves F41 (never cut inside `Dictionary<string, Ns.User>`) AND
+  // nested types through a generic outer (`Ns.Outer<int>.Inner` → `Inner`, not
+  // `Outer<int>.Inner` — #2046 P3).
+  let depth = 0;
+  let lastDotAtDepth0 = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '<') depth++;
+    else if (c === '>') depth = Math.max(0, depth - 1);
+    else if (c === '.' && depth === 0) lastDotAtDepth0 = i;
+  }
+  if (lastDotAtDepth0 === -1) return text;
+  const tail = text.slice(lastDotAtDepth0 + 1);
   if (COLLECTION_ACCESSOR_SUFFIXES.has(tail)) return text;
-  return ltIdx === -1 ? tail : tail + text.slice(ltIdx);
+  return tail;
 }

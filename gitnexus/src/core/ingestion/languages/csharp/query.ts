@@ -41,6 +41,12 @@ const CSHARP_SCOPE_QUERY = `
 (namespace_declaration) @scope.namespace
 (file_scoped_namespace_declaration) @scope.namespace
 
+(namespace_declaration
+  name: (_) @declaration.name) @declaration.namespace
+
+(file_scoped_namespace_declaration
+  name: (_) @declaration.name) @declaration.namespace
+
 (class_declaration) @scope.class
 (interface_declaration) @scope.class
 (struct_declaration) @scope.class

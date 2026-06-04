@@ -212,6 +212,14 @@ export function emitCsharpScopeCaptures(
       const nameNode = qNode === undefined ? null : terminalTypeNameNode(qNode);
       if (nameNode !== null) {
         grouped['@reference.name'] = nodeToCapture('@reference.name', nameNode);
+        const qText = qNode.text.trim();
+        if (qText.length > 0 && qText !== nameNode.text) {
+          grouped['@reference.qualified-name'] = syntheticCapture(
+            '@reference.qualified-name',
+            qNode,
+            qText,
+          );
+        }
       }
     }
 
@@ -298,10 +306,11 @@ export function emitCsharpScopeCaptures(
  * keyword token), so the target is resolved structurally:
  *   - `this(...)` → the enclosing type's own simple name.
  *   - `base(...)` → the enclosing class/record's base type, reduced to its bare
- *     simple name via `terminalTypeNameNode`. C# base lists do not syntactically
- *     separate the base class from interfaces; the base class is idiomatically
- *     first, and an interface target simply finds no constructor (no edge) rather
- *     than a wrong one. An absent base list is skipped.
+ *     simple name via `terminalTypeNameNode`. C# requires the base class first in
+ *     a mixed list (`class C : Base, IFoo`); interface-only lists (`class C : IFoo`)
+ *     imply implicit `System.Object` — no `@reference` is emitted when the first
+ *     non-builtin base would be an interface-only target (resolution also drops
+ *     Interface-typed constructor targets in `free-call-fallback`).
  * Arity is attached for overload disambiguation, mirroring `new X(...)`.
  */
 function synthesizeCsharpConstructorInitializerReferences(root: SyntaxNode): CaptureMatch[] {
@@ -328,14 +337,19 @@ function synthesizeCsharpConstructorInitializerReferences(root: SyntaxNode): Cap
     } else {
       const baseList = findNamedChild(enclosingType, 'base_list');
       if (baseList === null) return;
+      // Prefer the first non-builtin entry (idiomatically the base class). When
+      // the list is interface-only (`class C : IFoo`), do not synthesize a
+      // `base(...)` ref — valid C# chains to implicit Object, not IFoo (#2046).
+      let sawNonBuiltin = false;
       for (const base of baseList.namedChildren) {
         if (base === null) continue;
         const n = terminalTypeNameNode(base);
-        if (n !== null && !BUILTIN_TYPE_NAMES.has(n.text)) {
-          targetNameNode = n;
-          break;
-        }
+        if (n === null || BUILTIN_TYPE_NAMES.has(n.text)) continue;
+        sawNonBuiltin = true;
+        targetNameNode = n;
+        break;
       }
+      if (!sawNonBuiltin) return;
     }
     if (targetNameNode === null) return;
 

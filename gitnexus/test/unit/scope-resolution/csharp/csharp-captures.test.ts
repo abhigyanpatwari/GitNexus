@@ -16,6 +16,7 @@ function ctorRefs(src: string) {
     .map((m) => ({
       name: m['@reference.name']?.text,
       qualified: m['@reference.call.constructor.qualified']?.text,
+      qualifiedName: m['@reference.qualified-name']?.text,
       arity: m['@reference.arity']?.text,
     }));
 }
@@ -36,6 +37,7 @@ describe('emitCsharpScopeCaptures — qualified constructor names (F35)', () => 
     const foo = refs.find((r) => r.name === 'Foo');
     expect(foo).toBeDefined();
     expect(foo!.qualified).toBe('Ns.Foo');
+    expect(foo!.qualifiedName).toBe('Ns.Foo');
     expect(refs.some((r) => r.name === 'Ns.Foo' || r.name === 'Ns')).toBe(false);
   });
 

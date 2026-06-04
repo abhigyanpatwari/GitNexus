@@ -24,7 +24,11 @@ import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { normalizeQualifiedName } from '../../utils/qualified-name.js';
+import {
+  normalizeQualifiedName,
+  splitQualifiedName,
+  stripTrailingTypeArguments,
+} from '../../utils/qualified-name.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -353,7 +357,7 @@ function resolveQualifiedInheritanceBase(
   scopes: ScopeResolutionIndexes,
   enclosingClassDef?: SymbolDefinition,
 ): SymbolDefinition | undefined {
-  const normalized = normalizeQualifiedName(rawQualifiedName);
+  const normalized = stripTrailingTypeArguments(normalizeQualifiedName(rawQualifiedName));
   // No qualifier after normalization → nothing the simple-tail walk doesn't do.
   if (normalized.length === 0 || !normalized.includes('.')) return undefined;
 
@@ -365,12 +369,26 @@ function resolveQualifiedInheritanceBase(
   const enclosing = isRootAnchored
     ? []
     : enclosingScopeSegments(startScope, scopes, enclosingClassDef);
-  // Candidate keys: longest enclosing prefix first, then the root-anchored form.
+  // Candidate keys: longest enclosing prefix first for *relative* qualified
+  // bases (`Outer.Inner` inside `NS.Outer.Derived` → `NS.Outer.Inner`). When the
+  // qualifier names a *different* namespace than the enclosing scope (`new B.Foo()`
+  // inside `namespace A` → `B.Foo`, not `A.Foo`), try the raw normalized key
+  // FIRST so same-tail local bindings don't win (#2046 / #1991).
+  const normParts = splitQualifiedName(normalized);
+  const isRelativeToEnclosing =
+    enclosing.length > 0 &&
+    normParts.length > 0 &&
+    normParts[0] === enclosing[enclosing.length - 1];
   const keys: string[] = [];
+  if (!isRelativeToEnclosing) {
+    keys.push(normalized);
+  }
   for (let i = enclosing.length; i >= 1; i--) {
     keys.push([...enclosing.slice(0, i), normalized].join('.'));
   }
-  keys.push(normalized);
+  if (!keys.includes(normalized)) {
+    keys.push(normalized);
+  }
 
   for (const key of keys) {
     const ids = scopes.qualifiedNames.get(key);
