@@ -1,8 +1,7 @@
 /**
  * Regression tests for PHP scope-resolution coverage gaps (issue #1931).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
-import path from 'path';
+import { describe, it, expect } from 'vitest';
 import { emitPhpScopeCaptures } from '../../../src/core/ingestion/languages/php/index.js';
 import type { CaptureMatch } from 'gitnexus-shared';
 
