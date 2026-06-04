@@ -1,20 +1,21 @@
 /**
  * Phase: crossFile
  *
- * Cross-file binding propagation: seeds downstream files with resolved
- * type bindings from upstream exports. Files are processed in topological
- * import order so upstream bindings are available when downstream files
- * are re-resolved.
+ * Accumulator disposal anchor. The legacy cross-file call re-resolution that
+ * this phase used to run (`runCrossFileBindingPropagation`) was owned by the
+ * call-resolution DAG and skipped every registry-primary language; RING4-1
+ * (#942) deleted the DAG, so the propagation is gone and this phase now only
+ * disposes the `BindingAccumulator`. It is kept as a phase (rather than folded
+ * into `parse`) so disposal stays sequenced after every accumulator consumer.
  *
  * @deps    parse, routes, tools, orm (waits for all post-parse phases)
- * @reads   exportedTypeMap, allPaths, totalFiles
- * @writes  graph (refined CALLS edges via re-resolution)
+ * @reads   totalFiles, bindingAccumulator
+ * @writes  nothing (disposal only)
  *
  * **Accumulator ownership / residual risk.** This phase is the sole
  * disposer of the `BindingAccumulator` produced by `parse`. The dispose
  * call lives inside a `finally` block in `execute()` so that a throw
- * inside `runCrossFileBindingPropagation` (or anywhere else in the body)
- * still releases the accumulator's heap. The dependency declaration
+ * anywhere in the body still releases the accumulator's heap. The dependency declaration
  * (`deps: ['parse', 'routes', 'tools', 'orm']`) plus the runner's
  * topological scheduling guarantee that every other consumer of the
  * accumulator has finished before this phase starts, so disposing here

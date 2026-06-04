@@ -2,11 +2,17 @@
  * `REGISTRY_PRIMARY_<LANG>` per-language feature flags for the scope-based
  * resolution rollout (RFC §6.1 Ring 3; Ring 2 PKG #924).
  *
- * This module is the single source of truth for whether a given language
- * has been flipped to registry-primary call resolution. When a language's
- * flag is true, its files route through `Registry.lookup` (RFC §4) instead
- * of the legacy call-resolution DAG; when false (the default), the legacy
- * DAG runs unchanged.
+ * This module is the single source of truth for which languages run the
+ * scope-resolution pipeline (`Registry.lookup`, RFC §4). Every production
+ * language is in `MIGRATED_LANGUAGES`, so `isRegistryPrimary` defaults to
+ * `true` for all of them.
+ *
+ * Historical note: this flag once switched a language between the legacy
+ * call-resolution DAG (flag off) and scope-resolution (flag on). RING4-1
+ * (#942) deleted the legacy DAG, so there is no longer an alternate path —
+ * an explicit `REGISTRY_PRIMARY_<LANG>=0` override now simply disables
+ * scope-resolution for that language (no fallback). Removing this flag
+ * entirely is tracked as follow-up cleanup.
  *
  * ## Contract
  *
@@ -22,19 +28,11 @@
  *     overhead is negligible; skipping caching keeps test isolation
  *     trivial (no `resetFlagCache()` coordination needed).
  *
- * ## Integration site
+ * ## Consumers
  *
- * `call-processor.ts` integration lands in **#921** (`finalize-orchestrator`)
- * where the `SemanticModel` becomes accessible and `Registry.lookup` can
- * actually be called with a populated context. This module ships the flag
- * primitive in isolation so #921 has a clean, tested utility to consult.
- *
- * ## Shadow mode is orthogonal
- *
- * Shadow mode (`GITNEXUS_SHADOW_MODE=1`, introduced in #923) runs BOTH
- * legacy and registry paths regardless of the per-language flag, so the
- * parity dashboard has signal even for un-flipped languages. That logic
- * lives in `shadow-harness.ts` (#923), not here.
+ * `isRegistryPrimary` is consulted by the scope-resolution phase (to decide
+ * which languages it runs for) and by `parse-impl.ts` (to gate per-language
+ * deferred import accumulation).
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';

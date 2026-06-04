@@ -45,15 +45,12 @@ import {
 } from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
-  ExtractedAssignment,
-  ExtractedCall,
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
   ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
-  FileConstructorBindings,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
 import type {
@@ -980,9 +977,9 @@ export async function runChunkedParseAndResolve(
   // `resolutionContext` (`ctx`) returned below is a distinct object — it owns
   // the fully-populated, post-parse `importMap` / `namedImportMap` /
   // `packageMap` / `moduleAliasMap` / `model`, and never references
-  // `importCtx`. Cross-file re-resolution in cross-file-impl.ts consumes only
-  // `ctx` (via `processCalls`), so clearing the suffix index / resolveCache /
-  // normalizedFileList here cannot lose import matches downstream.
+  // `importCtx`. Downstream consumers (the scope-resolution phase, route
+  // extraction) consume only `ctx`, never `importCtx`, so clearing the suffix
+  // index / resolveCache / normalizedFileList here cannot lose import matches.
   importCtx.resolveCache.clear();
   importCtx.index = EMPTY_INDEX;
   importCtx.normalizedFileList = [];
