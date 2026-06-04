@@ -1637,6 +1637,82 @@ describe('Ruby inline module-nested same-tail collision — worker path parity (
 });
 
 // ---------------------------------------------------------------------------
+// Same-tail NESTED mixin MODULE collision — distinct Trait nodes (issue #1991)
+//
+// `module App; module Loggable; class S; include Loggable; end; end` +
+// `module Web; module Loggable; class T; include Loggable; end; end`. The
+// structure phase never qualified `module` (Trait) node ids, so both Loggable
+// modules collapsed onto one Trait:app.rb:Loggable node and the bare-name mixin
+// reference cross-wired IMPLEMENTS (first-wins tail). Asserts two distinct Trait
+// nodes and each class IMPLEMENTS its OWN module (positive target identity), not
+// just dangle-free. The IMPLEMENTS routing is registry-primary.
+// ---------------------------------------------------------------------------
+
+describe('Ruby same-tail nested mixin-module collision — distinct Trait nodes (issue #1991)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-tail-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('materializes App.Loggable and Web.Loggable as two distinct Trait nodes', () => {
+    const qns = getNodesByLabelFull(result, 'Trait')
+      .map((n) => n.properties.qualifiedName)
+      .filter((q) => q === 'App.Loggable' || q === 'Web.Loggable')
+      .sort();
+    expect(qns).toEqual(['App.Loggable', 'Web.Loggable']);
+  });
+
+  it('routes S -> App.Loggable and T -> Web.Loggable (no cross-wire, R2)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS', 'HAS_METHOD'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const targetQnOf = (className: string) => {
+      const e = impl.find((x) => x.source === className && x.target === 'Loggable');
+      expect(e, `IMPLEMENTS from ${className}`).toBeDefined();
+      return result.graph.getNode(e!.rel.targetId)?.properties.qualifiedName;
+    };
+    expect(targetQnOf('S')).toBe('App.Loggable');
+    expect(targetQnOf('T')).toBe('Web.Loggable');
+    expect(impl.filter((x) => x.source === 'S')).toHaveLength(1);
+    expect(impl.filter((x) => x.source === 'T')).toHaveLength(1);
+  });
+});
+
+// Same fixture through the WORKER pool — the __heritage__ marker owner + the
+// qualified module node id must survive worker serialization (#1991 R2/R15).
+describe('Ruby same-tail nested mixin-module collision — worker path parity (issue #1991)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-tail-collision'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool for the same-tail mixin-module fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('routes S -> App.Loggable and T -> Web.Loggable on the worker path (no cross-wire)', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const targetQnOf = (className: string) => {
+      const e = impl.find((x) => x.source === className && x.target === 'Loggable');
+      expect(e, `IMPLEMENTS from ${className}`).toBeDefined();
+      return result.graph.getNode(e!.rel.targetId)?.properties.qualifiedName;
+    };
+    expect(targetQnOf('S')).toBe('App.Loggable');
+    expect(targetQnOf('T')).toBe('Web.Loggable');
+    expect(impl.filter((x) => x.source === 'S')).toHaveLength(1);
+    expect(impl.filter((x) => x.source === 'T')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Nested mixin included by SHORT name — IMPLEMENTS edge must not drop (#1982).
 //
 // `module App; module Loggable; end; class Service; include Loggable; end; end`

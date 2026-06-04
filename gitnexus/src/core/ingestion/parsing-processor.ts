@@ -18,6 +18,7 @@ import {
   findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   isSuppressedConcreteTypedefDuplicate,
+  isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -606,7 +607,13 @@ const processParsingSequential = async (
       const getQualifiedOwnerName =
         provider.classExtractor?.qualifiedNodeId === true
           ? (node: SyntaxNode, simpleName: string): string | null =>
-              provider.classExtractor!.extractQualifiedName(node, simpleName)
+              // #1991: a Ruby `module` owner is not a typeDeclaration, so
+              // extractQualifiedName returns null; fall back to the scope walk so a
+              // method inside a nested module owns through the SAME qualified Trait
+              // id its node uses (App.Loggable), not a dangling bare id.
+              provider.classExtractor!.extractQualifiedName(node, simpleName) ??
+              provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
+              null
           : undefined;
       const enclosingClassInfo = needsOwner
         ? cachedFindEnclosingClassInfo(
@@ -633,7 +640,16 @@ const processParsingSequential = async (
         extractedClassSymbol?.qualifiedName ??
         (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
           ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
+          : // #1991: a Ruby `module` maps to Trait (class-like registry) but is not a
+            // typeDeclaration, so extractQualifiedName bails. Qualify it via the scope
+            // walk so two same-tail nested mixin modules get distinct ids. Gated on
+            // qualifiedNodeId, so languages without the flag are unaffected.
+            isQualifiableScopeLabel(nodeLabel) &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              classNodeForSymbol
+            ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
+              undefined)
+            : undefined);
 
       // Qualify method/property IDs with enclosing class name to avoid collisions
       // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak".
@@ -656,7 +672,10 @@ const processParsingSequential = async (
       const qualifiedName =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
-          : isClassLikeLabel &&
+          : // #1991: include Trait so a Ruby mixin module's qualified scope id keys
+            // the node, mirroring the class-like path (qualifiedTypeName is computed
+            // for Trait above).
+            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName

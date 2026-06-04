@@ -1,4 +1,3 @@
-[![CI](https://github.com/Arvuno/gitnexus/actions/workflows/ci.yml/badge.svg)](https://github.com/Arvuno/gitnexus/actions)
 # GitNexus
 
 **⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
@@ -22,6 +21,9 @@
   </a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/abhigyanpatwari/GitNexus">
     <img src="https://api.securityscorecards.dev/projects/github.com/abhigyanpatwari/GitNexus/badge" alt="OpenSSF Scorecard"/>
+  </a>
+  <a href="https://github.com/abhigyanpatwari/GitNexus/actions/workflows/ci.yml">
+    <img src="https://github.com/abhigyanpatwari/GitNexus/actions/workflows/ci.yml/badge.svg" alt="CI Workflows"/>
   </a>
 
   <p><strong>Enterprise (SaaS & Self-hosted)</strong> - <a href="https://akonlabs.com">akonlabs.com</a></p>

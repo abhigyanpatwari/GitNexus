@@ -43,6 +43,10 @@
     "captureGroups": 12,
     "digest": "1c47e7020939a6cd6bb18f3732b51a16f4c75ded0fe9883a87d6706a2c624d1f"
   },
+  "php-anonymous-class/anon.php": {
+    "captureGroups": 5,
+    "digest": "0628d6520b02da49ace196f582704c3ffe88aadb3ea20cff642699aa122d5f7f"
+  },
   "php-app/app/Contracts/Loggable.php": {
     "captureGroups": 7,
     "digest": "46cf7e385db7656514b796908134a50f4a536f3adda64196e17d8c54f5cd5e3a"
@@ -52,8 +56,8 @@
     "digest": "40bbdb3fc0ec9b5a9bb8fbdf4a053099ac926951ecd746f2436569add3f0e3d5"
   },
   "php-app/app/Enums/UserRole.php": {
-    "captureGroups": 7,
-    "digest": "aadf56b87d67191b13f4e3f9fae7e8097f4c8a81d13135645ceb8c5be1063a9b"
+    "captureGroups": 10,
+    "digest": "203eb6943ff7527cc52ad93df040a4d15dbcf16beb9e78914401069c54f20bb8"
   },
   "php-app/app/Models/BaseModel.php": {
     "captureGroups": 18,
@@ -142,6 +146,14 @@
   "php-constructor-type-inference/app/Services/AppService.php": {
     "captureGroups": 15,
     "digest": "26181127fe9e9bf04431a7cc801624bde9dd284049627bb7ca0a4c9234141eec"
+  },
+  "php-coverage/enum-and-anon.php": {
+    "captureGroups": 9,
+    "digest": "83318a2833a16be704f15c2a32c0bbc9cfe0aacf693d1b82413a2eabf5ffed24"
+  },
+  "php-coverage/multi-import.php": {
+    "captureGroups": 7,
+    "digest": "4d72fbfba40f2e083aa55d1c48bb500aeb7dd615de18b48b00eaca5b26a2001e"
   },
   "php-deep-field-chain/Models.php": {
     "captureGroups": 26,
@@ -265,7 +277,7 @@
   },
   "php-grouped-imports/app/Services/Main.php": {
     "captureGroups": 15,
-    "digest": "65ea5a0c2fd2b523ab1bf2e3f632bd3debeb7613c88496362016f9e590b64972"
+    "digest": "b315d87f85f0899ed3883ec529b86a57f2d1a88d41b2b615e707307e2889c049"
   },
   "php-local-shadow/app/Services/Main.php": {
     "captureGroups": 9,
