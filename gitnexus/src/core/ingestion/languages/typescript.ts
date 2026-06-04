@@ -1,9 +1,8 @@
 /**
  * TypeScript and JavaScript language providers.
  *
- * Both languages share the same type extraction config (typescriptConfig),
- * export checker (tsExportChecker), and named binding extractor
- * (extractTsNamedBindings). They differ in file extensions, tree-sitter
+ * Both languages share the same type extraction config (typescriptConfig)
+ * and export checker (tsExportChecker). They differ in file extensions, tree-sitter
  * queries (TypeScript grammar has interface/type nodes), and language ID.
  */
 
