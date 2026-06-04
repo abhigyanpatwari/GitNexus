@@ -177,6 +177,8 @@ export const javaMethodConfig: MethodExtractionConfig = {
 const KOTLIN_VIS = new Set<MethodVisibility>(['public', 'private', 'protected', 'internal']);
 
 function kotlinParameterHasDefaultValue(param: SyntaxNode): boolean {
+  // tree-sitter-kotlin inlines `_function_value_parameter`, so `=` and its
+  // expression are siblings of `parameter`, not children of the parameter.
   for (let sibling = param.nextSibling; sibling !== null; sibling = sibling.nextSibling) {
     if (sibling.type === ',' || sibling.type === ')') return false;
     if (sibling.type === '=') return true;
