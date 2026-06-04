@@ -20,7 +20,7 @@ fi
 
 if [ -n "$CLI_CHANGED" ]; then
   echo "pre-commit: typechecking gitnexus..."
-  cd "$ROOT/gitnexus" && ./node_modules/.bin/tsc --noEmit || exit 1
+  cd "$ROOT" && ./node_modules/.bin/tsc -p gitnexus/tsconfig.json --noEmit || exit 1
 fi
 
 echo "pre-commit: all checks passed"

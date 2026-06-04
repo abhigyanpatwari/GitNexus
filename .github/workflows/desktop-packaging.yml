@@ -1,0 +1,178 @@
+name: Desktop Packaging
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/desktop-packaging.yml
+      - gitnexus-desktop/**
+      - gitnexus/**
+      - gitnexus-web/**
+      - gitnexus-shared/**
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Validate desktop package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gitnexus-desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: gitnexus-desktop
+
+      - name: Typecheck desktop package
+        run: npm run typecheck
+        working-directory: gitnexus-desktop
+
+      - name: Run desktop unit tests
+        run: npm test
+        working-directory: gitnexus-desktop
+
+  package:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    needs: validate
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows NSIS
+            command: npm run build:win
+            artifact_name: gitnexus-desktop-windows
+            installer_glob: gitnexus-desktop/release/*/GitNexus Desktop Setup *.exe
+            artifact_paths: |
+              gitnexus-desktop/release/*/GitNexus Desktop Setup *.exe
+              gitnexus-desktop/release/*/win-unpacked/**
+          - os: macos-latest
+            label: macOS DMG
+            command: npm run build:mac
+            artifact_name: gitnexus-desktop-macos
+            installer_glob: gitnexus-desktop/release/*/*.dmg
+            artifact_paths: |
+              gitnexus-desktop/release/*/*.dmg
+              gitnexus-desktop/release/*/mac*/**
+          - os: ubuntu-latest
+            label: Linux AppImage
+            command: npm run build:linux
+            artifact_name: gitnexus-desktop-linux
+            installer_glob: gitnexus-desktop/release/*/*.AppImage
+            artifact_paths: |
+              gitnexus-desktop/release/*/*.AppImage
+              gitnexus-desktop/release/*/linux-unpacked/**
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            gitnexus-shared/package-lock.json
+            gitnexus/package-lock.json
+            gitnexus-web/package-lock.json
+            gitnexus-desktop/package-lock.json
+
+      - name: Install shared dependencies
+        run: npm ci
+        working-directory: gitnexus-shared
+
+      - name: Build shared package
+        run: npm run build
+        working-directory: gitnexus-shared
+
+      - name: Install GitNexus dependencies
+        run: npm ci
+        working-directory: gitnexus
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: gitnexus-desktop
+
+      - name: Build unpacked desktop bundle
+        run: npm run build:dir
+        working-directory: gitnexus-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Inspect rebuilt native modules (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $releaseDir = Get-ChildItem gitnexus-desktop/release -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+          if (-not $releaseDir) {
+            Write-Host "No release directory found."
+            exit 0
+          }
+
+          $runtimeNodeModules = Join-Path $releaseDir.FullName 'win-unpacked\resources\gitnexus\node_modules'
+          Write-Host "Inspecting native modules under $runtimeNodeModules"
+
+          if (-not (Test-Path $runtimeNodeModules)) {
+            Write-Host "Runtime node_modules directory not found."
+            exit 0
+          }
+
+          Get-ChildItem $runtimeNodeModules -Recurse -Filter '*.node' |
+            Select-Object FullName, LastWriteTime |
+            Format-Table -AutoSize
+
+      - name: Start Xvfb
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: Smoke test unpacked desktop bundle
+        run: node scripts/smoke-unpacked.mjs
+        working-directory: gitnexus-desktop
+
+      - name: Build desktop package
+        run: ${{ matrix.command }}
+        working-directory: gitnexus-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attest desktop artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
+        with:
+          subject-path: ${{ matrix.installer_glob }}

@@ -1,0 +1,39 @@
+{
+  "name": "gitnexus-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron desktop shell for GitNexus",
+  "author": "Abhigyan Patwari",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "main": "dist/main/main.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "predev": "node scripts/ensure-gitnexus-runtime.mjs --cleanup-dev-port",
+    "dev": "npx --yes -p electron@41.2.1 -p electron-vite@5.0.0 electron-vite dev --outDir=dist",
+    "start": "npx --yes -p electron@41.2.1 -p electron-vite@5.0.0 electron-vite preview --outDir=dist",
+    "bundle": "npx --yes -p electron@41.2.1 -p electron-vite@5.0.0 electron-vite build --outDir=dist",
+    "build": "node scripts/package.mjs --dir",
+    "build:dir": "node scripts/package.mjs --dir",
+    "build:win": "node scripts/package.mjs --win nsis",
+    "build:mac": "node scripts/package.mjs --mac dmg",
+    "build:linux": "node scripts/package.mjs --linux AppImage",
+    "build:all": "node scripts/package.mjs --win nsis --mac dmg --linux AppImage",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.vitest.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "41.2.1",
+    "electron-builder": "26.8.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0",
+    "vitest": "^4.0.18"
+  }
+}

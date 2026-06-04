@@ -1,0 +1,59 @@
+appId: io.github.abhigyanpatwari.gitnexus.desktop
+productName: GitNexus Desktop
+directories:
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: '${env.GITNEXUS_DESKTOP_WEB_DIST}'
+    to: gitnexus-web
+    filter:
+      - '**/*'
+  - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_DIST}'
+    to: gitnexus/dist
+    filter:
+      - '**/*'
+  - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_NODE_MODULES}'
+    to: gitnexus/node_modules
+    filter:
+      - '**/*'
+  - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_HOOKS}'
+    to: gitnexus/hooks
+    filter:
+      - '**/*'
+  - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_SKILLS}'
+    to: gitnexus/skills
+    filter:
+      - '**/*'
+  - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_VENDOR}'
+    to: gitnexus/vendor
+    filter:
+      - '**/*'
+  - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_PACKAGE_JSON}'
+    to: gitnexus/package.json
+  - from: 'build/icon.png'
+    to: icon.png
+  - from: 'build/icon.ico'
+    to: icon.ico
+asar: false
+npmRebuild: false
+afterPack: scripts/after-pack.mjs
+win:
+  signAndEditExecutable: false
+  icon: build/icon.ico
+  target:
+    - nsis
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  target:
+    - dmg
+linux:
+  category: Development
+  icon: build/icon.png
+  target:
+    - AppImage
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

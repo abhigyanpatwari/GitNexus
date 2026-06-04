@@ -105,8 +105,11 @@ gitnexus/vendor/**/node_modules/
 
 local_docs/
 
+undefined/
+_bmad/
 # Local agent scratch / review prompts (never commit)
 .tmp/
 .agents/
 .context/
 gitnexus/web/
+.pi/

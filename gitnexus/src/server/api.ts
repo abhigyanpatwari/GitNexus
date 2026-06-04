@@ -29,7 +29,6 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
@@ -39,6 +38,10 @@ import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
+
+export const shouldEnableMcpHttp = (): boolean => {
+  return process.env.GITNEXUS_DISABLE_MCP_HTTP !== '1';
+};
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -723,7 +726,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
+  let cleanupMcp: () => Promise<void> = async () => {};
+
+  // Desktop packaged runtime disables MCP HTTP because the SDK import tree
+  // currently trips Electron's embedded Node resolver during server startup.
+  if (shouldEnableMcpHttp()) {
+    const { mountMCPEndpoints } = await import('./mcp-http.js');
+    cleanupMcp = mountMCPEndpoints(app, backend);
+  }
+
   const jobManager = new JobManager();
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
@@ -1854,8 +1865,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // to the caller instead of crashing with an unhandled 'error' event.
   await new Promise<void>((resolve, reject) => {
     const server = app.listen(port, host, () => {
+      const addr = server.address();
+      const actualPort: number = addr && typeof addr !== 'string' ? addr.port : port;
       const displayHost = host === '::' || host === '0.0.0.0' ? 'localhost' : host;
-      console.log(`GitNexus server running on http://${displayHost}:${port}`);
+      console.log(`GITNEXUS_PORT=${actualPort}`);
+      console.log(`GitNexus server running on http://${displayHost}:${actualPort}`);
       resolve();
     });
     server.on('error', (err) => reject(err));
