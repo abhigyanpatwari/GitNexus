@@ -50,6 +50,10 @@ Objective:
 
 - Add opt-in, non-hook, server-side freshness orchestration so registered repository indexes do not silently go stale.
 
+Expanded research checkpoint:
+
+- 2026-06-05: Decision-grade readiness research increased using Superpowers/research discipline, local source inspection, Context7/official Node docs, GitHub PR/issue evidence, and focused test-surface review.
+
 Expected behavior:
 
 - Detect stale registered repos through existing Git commit/index metadata.
@@ -57,6 +61,17 @@ Expected behavior:
 - Default disabled or dry-run until explicitly enabled.
 - Provide enough observable state for verification.
 - Treat native filesystem watching as optional acceleration only, not the correctness mechanism.
+
+Recommended first implementation slice:
+
+- Wire an opt-in server-side freshness orchestrator around existing registered repos, staleness checks, scheduler, queue, and operation ledger.
+- Run periodic sweep/staleness detection first; do not depend on native file events for correctness.
+- Use `listRegisteredRepos({ validate: true })` or equivalent validated registry loading before selecting targets.
+- Use `checkStalenessAsync(entry.path, entry.lastCommit)` or equivalent existing freshness primitive to select stale repos.
+- Dispatch reindex work through the existing `ReindexQueue` and `startReindexJob` pathway, factored into a local helper if needed.
+- Do not call the HTTP API from inside the server process.
+- Extend `ReindexTrigger` with an explicit auto/freshness trigger if auto-reindex operations need to be filterable and auditable.
+- Keep dry-run default true and enabled default false unless MAIN explicitly changes the rollout policy.
 
 Known local source surfaces:
 
@@ -82,6 +97,9 @@ Required new or confirmed tests before completion:
 - repeated same-repo freshness events coalesce
 - different-repo concurrency remains bounded by existing queue semantics
 - generated/index/dependency paths remain ignored
+- operation records expose the auto-reindex trigger distinctly from direct user requests
+- registry validation skips or prunes invalid repo entries before scheduling
+- native watcher failures do not block sweep-based freshness recovery
 
 Stop rules:
 

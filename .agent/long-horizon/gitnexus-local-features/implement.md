@@ -46,6 +46,17 @@ Every feature must distinguish:
 
 Use Context7 first for current library, SDK, CLI, or API behavior when relevant. Use official docs, source, GitHub issues/PRs, and web search as needed. Public enterprise positioning is evidence for expected value only; it is not proof of local OSS behavior.
 
+Research passes must be explicitly evidence-routed:
+
+1. local source and tests for current behavior
+2. Context7 or official docs for version-sensitive platform/API behavior
+3. GitHub issues, PRs, release notes, and source for project history and failure modes
+4. broader web/community evidence only as secondary context
+
+Use relevant Codex/Superpowers/research skills when they apply. For this work, `using-superpowers`, `autoresearch`, `writing-plans`, and `verification-before-completion` are part of the expected discipline. Do not create a separate research workspace unless MAIN asks for it; write durable conclusions into this four-file bundle.
+
+Record objective time evidence for decision-grade passes: start/end timestamp, source classes checked, commands run, and what changed the conclusion.
+
 ## Implementation Loop
 
 For each approved feature:
