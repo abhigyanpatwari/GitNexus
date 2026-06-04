@@ -19,14 +19,12 @@ import { isKotlinStaticOnly } from './owners.js';
 /**
  * Kotlin scope resolver for RFC #909 Ring 3.
  *
- * **Migration status:** Kotlin is in `MIGRATED_LANGUAGES`. Default
- * production resolution flows through the scope-resolution pipeline;
- * the legacy DAG is consulted only when the per-language env var
- * (`REGISTRY_PRIMARY_KOTLIN=0`) explicitly forces the legacy parity
- * run for CI comparison.
+ * Kotlin resolves via the scope-resolution registry — production
+ * resolution flows through the scope-resolution pipeline as the sole
+ * call-resolution path.
  *
- * **Forced-mode parity (`REGISTRY_PRIMARY_KOTLIN=1`):** 208/208
- * fixtures pass after the migration sub-issues #1758–#1763, the
+ * **Coverage:** 208/208 fixtures pass after the migration sub-issues
+ * #1758–#1763, the
  * companion/instance dispatch fix #1756, and the lambda scopes
  * fix #1757. Covers core import, receiver, companion, default-param,
  * vararg, constructor, local assignment-chain, collection-iteration,

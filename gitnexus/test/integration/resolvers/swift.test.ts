@@ -1232,11 +1232,9 @@ describe.skipIf(!swiftAvailable)('Swift multi-clause if-let / guard-let binding'
 // Extension.swift) with a colliding Decoy.base so resolution depends purely on
 // `self == Bar`.
 //
-// The HAS_METHOD hoisting assertion passes BOTH legs (not skipped). The
-// `self.base() -> Bar.base` resolution is registry-primary-only (the legacy
-// DAG leaves the cross-file extension self-call unresolved), so that exact
-// test is registered in the `swift` skip-set in helpers.ts (verified
-// empirically under REGISTRY_PRIMARY_SWIFT=0).
+// The HAS_METHOD hoisting assertion and the `self.base() -> Bar.base`
+// resolution both run on the scope-resolution path, which resolves the
+// cross-file extension self-call via `self == Bar`.
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar)', () => {

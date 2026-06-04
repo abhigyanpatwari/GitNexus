@@ -15,10 +15,10 @@ type VitestIt = typeof vitestIt;
  * Returns the vitest `it` for a language's resolver integration tests.
  *
  * Historically this wrapped `it` to skip known-failing cases on the legacy
- * `REGISTRY_PRIMARY_<LANG>=0` DAG leg. The legacy call-resolution DAG was
- * removed in RING4-1 (#942), so there is a single resolution path and every
- * case runs unconditionally. The thin wrapper is retained so the per-language
- * resolver test files keep a stable, language-tagged entry point.
+ * call-resolution DAG leg. That DAG was removed in RING4-1 (#942), so there
+ * is a single (scope-resolution) resolution path and every case runs
+ * unconditionally. The thin wrapper is retained so the per-language resolver
+ * test files keep a stable, language-tagged entry point.
  */
 export function createResolverParityIt(_languageSlug: string): VitestIt {
   return vitestIt;

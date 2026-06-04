@@ -2566,17 +2566,13 @@ describe('Kotlin companion vs instance cross-file dispatch (#1756 / U6)', () => 
 // Case 4 simple typeBinding `r.getAll()`) must continue to emit.
 //
 // **Empirical case-coverage observations** (probe at commit pre-U3, test
-// run 2026-05-22): in **registry-primary** mode, the existing pipeline
-// already emits zero crossover edges for the fixture shapes below even
-// without U3's filter wired at Cases 0 / 3b / 5. In **legacy DAG** mode
-// (REGISTRY_PRIMARY_KOTLIN=0), the same shapes leak crossover edges for
-// the `useChainTypeBindingCrossover` and `useValueReceiverCrossover`
-// scenarios — confirming that *some* suppression mechanism in the
-// registry-primary path is already catching them (most likely U2's
-// Case-4 filter for `l.create("nope")`, since `val l = ...` produces a
-// typeBinding routing through Case 4; the compound and chain shapes
-// are suppressed by the receiver resolver not binding to the static-
-// only def in the first place).
+// run 2026-05-22): the scope-resolution pipeline already emits zero
+// crossover edges for the fixture shapes below even without U3's filter
+// wired at Cases 0 / 3b / 5 — confirming that *some* suppression mechanism
+// is already catching them (most likely U2's Case-4 filter for
+// `l.create("nope")`, since `val l = ...` produces a typeBinding routing
+// through Case 4; the compound and chain shapes are suppressed by the
+// receiver resolver not binding to the static-only def in the first place).
 //
 // Per the remediation plan's "be honest about which paths are actually
 // exercised by tests vs which are added defensively" guidance, the

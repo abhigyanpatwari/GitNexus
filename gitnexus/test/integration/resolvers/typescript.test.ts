@@ -430,14 +430,9 @@ describe('TypeScript named import disambiguation', () => {
 
 // ---------------------------------------------------------------------------
 // Side-effect imports: `import './polyfill'` produces an IMPORTS edge but
-// no local binding (parity with the legacy DAG, which counts side-effect
-// imports as module-reachability dependencies).
-//
-// This describe runs under both `REGISTRY_PRIMARY_TYPESCRIPT=0` (legacy
-// DAG) and `=1` (registry-primary) via the CI parity gate
-// (`.github/workflows/ci-scope-parity.yml`). Both modes must emit the
-// same IMPORTS edges; the registry-primary path emits no extra
-// `BindingRef`s for the side-effect kind.
+// no local binding (side-effect imports count as module-reachability
+// dependencies). The scope-resolution path emits no extra `BindingRef`s for
+// the side-effect kind.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript side-effect imports', () => {
@@ -2871,16 +2866,10 @@ describe('TypeScript literal dynamic import resolution (registry-primary)', () =
     const imports = getRelationships(result, 'IMPORTS').filter(
       (e) => e.sourceFilePath === 'src/app.ts',
     );
-    // Literal dynamic-import resolution is a registry-primary feature
-    // (interpreter emits `dynamic-resolved`, finalize pre-finalizes it
-    // as a file-level terminal). The legacy DAG path
-    // (`REGISTRY_PRIMARY_TYPESCRIPT=0`) does not link literal
-    // `import('…')` calls to a target file — accept that here so the
-    // CI parity gate stays green; the registry-primary path remains the
-    // authoritative guarantee.
-    if (process.env['REGISTRY_PRIMARY_TYPESCRIPT'] !== '0') {
-      expect(imports.map((e) => e.targetFilePath)).toContain('src/feature.ts');
-    }
+    // Literal dynamic-import resolution: the interpreter emits
+    // `dynamic-resolved` and finalize pre-finalizes it as a file-level
+    // terminal, linking literal `import('…')` calls to a target file.
+    expect(imports.map((e) => e.targetFilePath)).toContain('src/feature.ts');
   });
 });
 

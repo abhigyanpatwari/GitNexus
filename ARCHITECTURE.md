@@ -178,7 +178,7 @@ References: `semantic-model.ts` file-head (full write/read contract); `contract/
 
 ## Scope-Resolution Pipeline (RFC #909 Ring 3)
 
-Language-agnostic registry-primary resolver. This is the resolution path for every language — it owns CALLS/ACCESSES/USES emission and inheritance edges. Adding a language is one interface implementation (`ScopeResolver`) plus two registrations — no changes to shared code, no new pipeline phase.
+Language-agnostic scope-resolution resolver. This is the resolution path for every language — it owns CALLS/ACCESSES/USES emission and inheritance edges. Adding a language is one interface implementation (`ScopeResolver`) plus one registration in the `SCOPE_RESOLVERS` map — no changes to shared code, no new pipeline phase. (RING4-1 #942 removed the legacy call-resolution DAG and the per-language `MIGRATED_LANGUAGES` flag, so `SCOPE_RESOLVERS` registration is all that's needed.)
 
 ### Pipeline stages
 

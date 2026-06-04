@@ -25,17 +25,16 @@
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
  *      `gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts`
- *      (the `SCOPE_RESOLVERS` map).
- *   4. Add `SupportedLanguages.YourLang` to `MIGRATED_LANGUAGES` in
- *      `registry-primary-flag.ts`.
- *   5. Verify the resolver integration test at
+ *      (the `SCOPE_RESOLVERS` map). That registration is all it takes — the
+ *      `scopeResolutionPhase` runs every registered resolver.
+ *   4. Verify the resolver integration test at
  *      `gitnexus/test/integration/resolvers/<lang>.test.ts` passes (it runs
  *      in the standard test suite). Scope-resolution is the only resolution
  *      path — the legacy call-resolution DAG was removed in RING4-1 #942.
  *
  * No new pipeline phase, no orchestrator copy-paste, no workflow
  * change. The generic `scopeResolutionPhase` auto-discovers everything via
- * `MIGRATED_LANGUAGES`.
+ * the `SCOPE_RESOLVERS` map.
  *
  * ## ScopeResolver vs LanguageProvider
  *

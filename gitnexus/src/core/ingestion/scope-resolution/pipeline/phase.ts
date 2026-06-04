@@ -3,23 +3,20 @@
  *
  * Generic registry-primary resolution phase (RFC #909 Ring 3).
  *
- * For every language in `MIGRATED_LANGUAGES` (per-language flag set)
- * whose provider is registered in `SCOPE_RESOLVERS`:
+ * For every language whose provider is registered in `SCOPE_RESOLVERS`:
  *   1. Filter scanned files by language extension.
  *   2. Read file contents.
  *   3. Drive the scope-based pipeline end-to-end via the generic
  *      `runScopeResolution(input, provider)` orchestrator.
  *   4. Emit IMPORTS / CALLS / ACCESSES / INHERITS / USES edges.
  *
- * Pairs with the per-language gates in `import-processor.ts` and
- * `call-processor.ts` that skip files when their language is registry-
- * primary, so we don't double-emit edges from both code paths.
+ * This is the sole resolution path — RING4-1 (#942) deleted the legacy
+ * call-resolution DAG, so there is no longer a per-language flag gating
+ * registry-vs-legacy.
  *
- * Adding a language is two changes:
- *   - Implement `ScopeResolver` in `languages/<lang>/scope-resolver.ts`
- *     and register it in `scope-resolution/pipeline/registry.ts`.
- *   - Add the language to `MIGRATED_LANGUAGES` in
- *     `registry-primary-flag.ts`.
+ * Adding a language is one change: implement `ScopeResolver` in
+ * `languages/<lang>/scope-resolver.ts` and register it in
+ * `scope-resolution/pipeline/registry.ts`.
  *
  * @deps    parse  (needs Symbol nodes already in the graph so emit-references
  *                  can attach edges to existing Function/Method/Class nodes)
@@ -31,7 +28,6 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from '../../pipeline
 import { getPhaseOutput } from '../../pipeline-phases/types.js';
 import type { StructureOutput } from '../../pipeline-phases/structure.js';
 import type { ParseOutput } from '../../pipeline-phases/parse.js';
-import { isRegistryPrimary } from '../../registry-primary-flag.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
@@ -51,7 +47,7 @@ export interface ScopeResolutionOutput {
   readonly referenceEdgesEmitted: number;
   /** Additive stream of resolver diagnostics; does not affect graph edges. */
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
-  /** Per-language breakdown for telemetry / shadow-parity. */
+  /** Per-language breakdown for telemetry. */
   readonly perLanguage: ReadonlyMap<
     SupportedLanguages,
     {
@@ -74,17 +70,15 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
   name: 'scopeResolution',
   // Depends on `parse` because emit-references attaches edges to
-  // already-existing Symbol nodes (Function/Method/Class). The legacy
-  // `parse` phase still creates those nodes; we only replace the
-  // import + call resolution layer.
+  // already-existing Symbol nodes (Function/Method/Class) that the `parse`
+  // phase creates.
   //
-  // Also depends on `crossFile` — we don't read crossFile's output
-  // directly (we have our own cross-file resolution), but crossFile
-  // writes EXTENDS edges that `buildMro` consumes via
-  // `iterRelationshipsByType('EXTENDS')`. Declaring the dep pins the
-  // ordering explicitly: without it, Kahn's runner could schedule
-  // scopeResolution before crossFile (both unblock after parse), and
-  // the MRO walk would miss heritage edges crossFile later adds.
+  // The `crossFile` dep is retained for stable ordering but is no longer
+  // load-bearing: inheritance (EXTENDS/IMPLEMENTS) edges are now emitted by
+  // this phase's own `preEmitInheritanceEdges` before `buildMro` runs, and
+  // since RING4-1 (#942) `crossFile` only disposes the BindingAccumulator
+  // (the legacy cross-file re-resolution it used to run was deleted with the
+  // call-resolution DAG).
   deps: ['parse', 'crossFile', 'structure'],
 
   async execute(
@@ -152,7 +146,6 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalScopeLangs = 0;
     const allScannedPaths = new Set(scannedFiles.map((f) => f.path));
     for (const [lang] of SCOPE_RESOLVERS) {
-      if (!isRegistryPrimary(lang)) continue;
       const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
       if (count > 0) {
         totalScopeLangs++;
@@ -173,8 +166,6 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     }
 
     for (const [lang, provider] of SCOPE_RESOLVERS) {
-      if (!isRegistryPrimary(lang)) continue;
-
       // Standalone providers (COBOL, JCL) don't emit graph edges yet
       // through the scope-resolution path. This is the canonical guard:
       // runScopeResolution is never called for standalone providers, which

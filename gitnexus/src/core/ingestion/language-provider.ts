@@ -318,9 +318,8 @@ interface LanguageProviderConfig {
    * routing (scope / declaration / import / type-binding / reference)
    * lands on coherent records.
    *
-   * Required for any provider participating in scope-based resolution.
-   * Providers that have not yet migrated continue to run through the
-   * legacy DAG path (feature-flagged per `REGISTRY_PRIMARY_<LANG>`).
+   * Required for any provider participating in scope-based resolution
+   * (the sole resolution path).
    *
    * **Sync return.** Tree-sitter query execution and COBOL's regex
    * tagger are both synchronous; no current or foreseeable provider
@@ -328,7 +327,7 @@ interface LanguageProviderConfig {
    * `parse-worker.ts` (#920) invoke it inline in its already-sync
    * per-file loop without cascading `async` through the batch pipeline.
    *
-   * Default: undefined (language continues to use legacy DAG).
+   * Default: undefined (no scope-based captures emitted for this language).
    */
   readonly emitScopeCaptures?: (
     sourceText: string,

@@ -10,9 +10,8 @@
  *   - vue-cross-file      — composable functions, class models, multi-
  *     component app with cross-file CALLS chains.
  *
- * The `createResolverParityIt` wrapper runs each test under BOTH the
- * legacy DAG path (REGISTRY_PRIMARY_VUE=0) and the registry-primary
- * path (default) so the CI scope-parity gate can compare them.
+ * The `createResolverParityIt` wrapper runs each test against the
+ * scope-resolution path (the only resolution path).
  */
 
 import { describe, expect, beforeAll } from 'vitest';

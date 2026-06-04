@@ -1,7 +1,7 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -625,11 +625,9 @@ describe('C# base resolution', () => {
     expect(baseSave).toBeDefined();
     // Pin the canonical edge-reason for super/base calls. The super-branch
     // of receiver-bound-calls resolves through the MRO chain (not through
-    // imports), which the legacy DAG's tier classifier places in the
-    // `'global'` bucket (see `toResolveResult` in `call-processor.ts`).
-    // Emitting `'global'` unconditionally keeps the same-graph parity
-    // guarantee (ARCHITECTURE.md § Scope-Resolution Pipeline) and matches
-    // the legacy path under `REGISTRY_PRIMARY_CSHARP=0`.
+    // imports), which the scope-resolution pipeline classifies into the
+    // `'global'` bucket. Emitting `'global'` unconditionally keeps the
+    // same-graph guarantee (ARCHITECTURE.md § Scope-Resolution Pipeline).
     expect(baseSave!.rel.reason).toBe('global');
     const repoSave = calls.find(
       (c) => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs',
@@ -2389,26 +2387,14 @@ describe('C# struct overload dispatch (implicit-this narrowing)', () => {
   it('Run() -> Add emits CALLS edges to distinct Add overloads (implicit-this narrowing)', () => {
     const calls = getRelationships(result, 'CALLS');
     const runToAdd = calls.filter((c) => c.source === 'Run' && c.target === 'Add');
-    // The registry-primary pipeline exercises `pickImplicitThisOverload`
+    // The scope-resolution pipeline exercises `pickImplicitThisOverload`
     // + `narrowOverloadCandidates` and MUST resolve both Add(int) and
     // Add(int, int) to distinct targets. A silent regression in either
     // helper would drop an edge or merge both onto one target — pin
     // exact counts so either failure mode surfaces immediately.
-    // The legacy DAG path (REGISTRY_PRIMARY_CSHARP=0) does not
-    // implement implicit-`this` struct overload narrowing, so we
-    // accept any count there; the registry-primary path remains the
-    // authoritative guarantee.
-    if (process.env['REGISTRY_PRIMARY_CSHARP'] !== '0') {
-      expect(runToAdd.length).toBe(2);
-      const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
-      expect(targetIds.size).toBe(2);
-    } else {
-      expect(runToAdd.length).toBeLessThanOrEqual(2);
-      if (runToAdd.length >= 2) {
-        const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
-        expect(targetIds.size).toBe(runToAdd.length);
-      }
-    }
+    expect(runToAdd.length).toBe(2);
+    const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
   });
 });
 
@@ -2694,67 +2680,22 @@ describe('C# spurious import edges (#1881)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// #1881 on the LEGACY DAG leg, forced in-process so it runs under `npm test`
-// (not only the CI parity matrix). `isRegistryPrimary` reads `process.env`
-// per call with no caching, so stubbing the flag before the pipeline run
-// routes C# import resolution through `csharpNamespaceStrategy` (#8).
+// #1881: spurious import edges on the no-csproj direct-match path. The
+// scope-resolution pipeline ran an ungated direct-match before the gate, so a
+// path-aligned `Legacy/System/Threading/Tasks.cs` satisfied `using
+// System.Threading.Tasks;`. The gate-first ordering must now block it.
+// Fixture ships NO .csproj.
 // ---------------------------------------------------------------------------
 
-describe('C# spurious import edges — legacy DAG leg (#1881, #8)', () => {
+describe('C# spurious import edges — no-csproj direct-match (#1881, Codex F2)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    vi.stubEnv('REGISTRY_PRIMARY_CSHARP', '0');
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-spurious-edges'), () => {});
-  }, 60000);
-
-  afterAll(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it('does not emit IMPORTS from System.Threading.Tasks to a local Tasks.cs', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const spurious = imports.find(
-      (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Legacy/Tasks.cs',
-    );
-    expect(spurious).toBeUndefined();
-  });
-
-  it('still emits the legitimate in-repo edge OrderService.cs -> Models/User.cs', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const legit = imports.find(
-      (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Models/User.cs',
-    );
-    expect(legit).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #1881 / Codex F2: in the NO-CSPROJ path the registry leg ran an ungated
-// direct-match before the gate, so a path-aligned `Legacy/System/Threading/
-// Tasks.cs` satisfied `using System.Threading.Tasks;`. Both legs must now block
-// it (gate-first), proving the legs are equivalent. Fixture ships NO .csproj.
-// ---------------------------------------------------------------------------
-
-describe('C# spurious import edges — no-csproj direct-match, registry leg (#1881, Codex F2)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    // Pin to the registry leg: only progressive stripping resolves a no-csproj
-    // namespace import, so the legit-edge assertion below is registry-specific.
-    // Pinning also keeps this deterministic under the parity matrix's legacy run.
-    vi.stubEnv('REGISTRY_PRIMARY_CSHARP', '1');
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'csharp-spurious-edges-no-csproj'),
       () => {},
     );
   }, 60000);
-
-  afterAll(() => {
-    vi.unstubAllEnvs();
-  });
 
   it('does not emit IMPORTS from System.Threading.Tasks to a path-aligned Legacy/System/Threading/Tasks.cs', () => {
     const imports = getRelationships(result, 'IMPORTS');
@@ -2774,42 +2715,5 @@ describe('C# spurious import edges — no-csproj direct-match, registry leg (#18
         e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Models/User.cs',
     );
     expect(legit).toBeDefined();
-  });
-});
-
-describe('C# spurious import edges — no-csproj direct-match, legacy DAG leg (#1881, Codex F2, #8)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    vi.stubEnv('REGISTRY_PRIMARY_CSHARP', '0');
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'csharp-spurious-edges-no-csproj'),
-      () => {},
-    );
-  }, 60000);
-
-  afterAll(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it('does not emit IMPORTS from System.Threading.Tasks to a path-aligned Legacy/System/Threading/Tasks.cs', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const spurious = imports.find(
-      (e) =>
-        e.sourceFilePath === 'Services/OrderService.cs' &&
-        e.targetFilePath === 'Legacy/System/Threading/Tasks.cs',
-    );
-    expect(spurious).toBeUndefined();
-  });
-
-  it('ingested the fixture so the absence of the spurious edge is meaningful (anti-vacuity)', () => {
-    // The legacy DAG leg cannot resolve a no-csproj namespace import to a file
-    // (`using MyApp.Models;` targets a directory of types — only the registry
-    // leg's progressive stripping resolves it without a csproj RootNamespace, a
-    // known registry-superiority gap). So the anti-vacuity guard here asserts
-    // the three fixture files were ingested as graph nodes, proving the spurious
-    // edge is absent because the gate blocked it — not because nothing parsed.
-    const files = getNodesByLabel(result, 'File');
-    expect(files.length).toBeGreaterThanOrEqual(3);
   });
 });

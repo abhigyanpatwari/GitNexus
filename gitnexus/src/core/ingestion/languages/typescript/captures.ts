@@ -448,9 +448,7 @@ export function emitTsScopeCaptures(
  * generic-wrapped for implements).
  *
  * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
- * — the legacy query captures neither, so the registry path keeps parity with
- * the legacy DAG under the CI scope-parity gate (REGISTRY_PRIMARY_TYPESCRIPT=0
- * vs =1). The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * by the synth. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
  * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
  * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
  * are emitted with the same `inherits` kind here. The base lookup name is

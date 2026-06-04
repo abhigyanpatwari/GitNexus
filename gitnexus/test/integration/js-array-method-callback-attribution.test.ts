@@ -12,16 +12,14 @@
  * binding is value-only and the inner call falls through to the File scope —
  * exactly the Zustand module-level-call behavior already pinned for TS.
  *
- * SCOPE: this asserts the registry-primary CALLS-edge ATTRIBUTION change only.
- * The duplicate *graph node* (`Function:exportData`) is created by the legacy
+ * SCOPE: this asserts the scope-resolution CALLS-edge ATTRIBUTION change only.
+ * The duplicate *graph node* (`Function:exportData`) is created by the
  * parse-worker node path, which this change does not touch; collapsing it is
  * the deferred node-creation migration. Accordingly this file makes NO node-
  * count assertion.
  *
- * Registry-primary-only correctness win: under the forced-legacy parity flag
- * (`REGISTRY_PRIMARY_JAVASCRIPT=0`) the legacy DAG still emits the phantom
- * attribution, so the suite is skipped there (mirrors the per-language
- * expected-failure handling in `resolvers/helpers.ts`).
+ * The scope-resolution path attributes the inner call to the File scope rather
+ * than emitting the phantom attribution.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';

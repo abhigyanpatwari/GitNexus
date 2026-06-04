@@ -35,7 +35,6 @@ import {
 import { createResolutionContext } from '../model/resolution-context.js';
 import { ASTCache, createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
-import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import {
@@ -676,11 +675,16 @@ export async function runChunkedParseAndResolve(
         }
         const skipFile = new Set<string>();
         const checkFile = new Set<string>();
+        // Legacy deferred-import accumulation. Imports for every known language
+        // are resolved by the scope-resolution phase (RING4-1 #942 removed the
+        // legacy resolution path), so known-language files are never accumulated
+        // here; only null-language files (no parser) would be, which never have
+        // resolvable imports — so this path is effectively inert.
         const shouldAccumulate = (filePath: string): boolean => {
           if (checkFile.has(filePath)) return true;
           if (skipFile.has(filePath)) return false;
           const lang = getLanguageFromFilename(filePath);
-          if (lang !== null && isRegistryPrimary(lang)) {
+          if (lang !== null) {
             skipFile.add(filePath);
             return false;
           }

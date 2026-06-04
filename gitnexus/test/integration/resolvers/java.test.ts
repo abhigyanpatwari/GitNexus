@@ -614,11 +614,9 @@ describe('Java variadic call resolution', () => {
   });
 
   it('0-arg call to format(int, String...) still resolves in legacy mode (arity rejection is registry-only)', () => {
-    // In REGISTRY_PRIMARY_JAVA=1 mode, `requiredParameterCount = 1` causes
-    // `javaArityCompatibility` to return 'incompatible' for 0-arg calls,
-    // preventing the CALLS edge. In default (legacy) mode, arity is not
-    // enforced so the edge is created. This test documents the legacy
-    // behavior; the negative assertion is a flip-blocker for registry-primary.
+    // When `requiredParameterCount = 1`, `javaArityCompatibility` returns
+    // 'incompatible' for 0-arg calls, which would prevent the CALLS edge.
+    // This test documents the current resolution behavior for this shape.
     const calls = getRelationships(result, 'CALLS');
     const zeroArgFmtCall = calls.find((c) => c.target === 'format' && c.source === 'badCall');
     expect(zeroArgFmtCall).toBeDefined();
