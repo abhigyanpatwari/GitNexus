@@ -22,8 +22,8 @@ export const RESOLVE_CACHE_CAP = 100_000;
  * - TypeScript/JavaScript: rewrites tsconfig path aliases
  * - Rust: converts crate::/super::/self:: to relative paths
  *
- * Java wildcards and Go package imports are handled separately in processImports
- * because they resolve to multiple files.
+ * Java wildcards and Go package imports are handled by the scope-resolution
+ * phase because they resolve to multiple files.
  */
 export const resolveImportPath = (
   currentFile: string,
@@ -98,8 +98,8 @@ export const resolveImportPath = (
     } else if (importPath.startsWith('{') && importPath.endsWith('}')) {
       // Top-level grouped imports: use {crate::a, crate::b}
       // Iterate each part and return the first that resolves. This function returns a single
-      // string, so callers that need ALL edges must intercept before reaching here (see the
-      // Rust grouped-import blocks in processImports / processImportsBatch). This fallback
+      // string, so callers that need ALL edges must intercept before reaching here (the
+      // scope-resolution phase handles Rust grouped-import blocks). This fallback
       // handles any path that reaches resolveImportPath directly.
       const inner = importPath.slice(1, -1);
       const parts = inner
@@ -150,7 +150,8 @@ export const resolveImportPath = (
   }
 
   // ---- Generic package/absolute import resolution (suffix matching) ----
-  // Java wildcards are handled in processImports, not here
+  // Java wildcards are handled by the scope-resolution phase, not here; this
+  // resolver returns null for `.*` so it never produces a single-file match.
   if (importPath.endsWith('.*')) {
     return cache(null);
   }

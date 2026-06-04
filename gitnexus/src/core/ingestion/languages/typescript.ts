@@ -1,9 +1,8 @@
 /**
  * TypeScript and JavaScript language providers.
  *
- * Both languages share the same type extraction config (typescriptConfig),
- * export checker (tsExportChecker), and named binding extractor
- * (extractTsNamedBindings). They differ in file extensions, tree-sitter
+ * Both languages share the same type extraction config (typescriptConfig)
+ * and export checker (tsExportChecker). They differ in file extensions, tree-sitter
  * queries (TypeScript grammar has interface/type nodes), and language ID.
  */
 
@@ -24,7 +23,6 @@ import {
   typescriptImportConfig,
   javascriptImportConfig,
 } from '../import-resolvers/configs/typescript-javascript.js';
-import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -337,7 +335,6 @@ export const typescriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(typescriptImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -398,7 +395,6 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(javascriptImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({

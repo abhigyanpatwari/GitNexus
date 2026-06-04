@@ -24,9 +24,10 @@ export type CallRoutingResult = RubyCallRouting | null;
 
 /**
  * Per-language call router.
- * IMPORTANT: Call-routed imports bypass preprocessImportPath(), so any router that
- * returns an importPath MUST validate it independently (length cap, control-char
- * rejection). See routeRubyCall for the reference implementation.
+ * IMPORTANT: Call-routed imports are NOT sanitized by the standard import-path
+ * cleaner, so any router that returns an importPath MUST validate it
+ * independently (length cap, control-char rejection). See routeRubyCall for the
+ * reference implementation.
  */
 export type CallRouter = (calledName: string, callNode: SyntaxNode) => CallRoutingResult;
 

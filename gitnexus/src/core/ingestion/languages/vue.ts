@@ -19,7 +19,6 @@ import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js
 import { tsExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { vueImportConfig } from '../import-resolvers/configs/typescript-javascript.js';
-import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
@@ -84,7 +83,6 @@ export const vueProvider = defineLanguage({
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(vueImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),

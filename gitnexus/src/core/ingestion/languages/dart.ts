@@ -2,7 +2,6 @@
  * Dart Language Provider
  *
  * Dart traits:
- *   - importSemantics: 'wildcard-leaf' (Dart imports bring everything public into scope)
  *   - exportChecker: public if no leading underscore
  *   - Dart SDK imports (dart:*) and external packages are skipped
  *   - enclosingFunctionFinder: Dart's tree-sitter grammar places function_body
@@ -119,7 +118,6 @@ export const dartProvider = defineLanguage({
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
   importResolver: createImportResolver(dartImportConfig),
-  importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(dartCallConfig),
   fieldExtractor: createFieldExtractor(dartFieldConfig),
   methodExtractor: createMethodExtractor(dartMethodConfig),

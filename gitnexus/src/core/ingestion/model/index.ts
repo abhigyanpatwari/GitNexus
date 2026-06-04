@@ -59,14 +59,6 @@ export {
   createFieldRegistry,
 } from './field-registry.js';
 
-// Named-import types and package-dir helper. Re-exported so barrel
-// consumers don't need to reach into a specific model file.
-export {
-  type NamedImportBinding,
-  type NamedImportMap,
-  isFileInPackageDir,
-} from './resolution-context.js';
-
 // Behavior-grouped dispatch table for SymbolTable.add() routing.
 // See registration-table.ts module JSDoc for the behavior group taxonomy
 // and "how to add a new NodeLabel" checklist.

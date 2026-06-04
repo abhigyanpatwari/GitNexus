@@ -57,10 +57,10 @@ describe('C# heritage resolution', () => {
 
   it('resolves all CALLS from CreateUser via import-resolved, unique-global, or interface-dispatch', () => {
     const calls = getRelationships(result, 'CALLS');
-    // C# non-aliased `using Namespace;` imports don't populate NamedImportMap
-    // (namespace-scoped imports can't bind to individual symbols).
-    // Calls resolve via directory-based PackageMap (import-resolved) when ambiguous,
-    // or via unique-global when the symbol name is globally unique.
+    // C# non-aliased `using Namespace;` imports don't bind to individual symbols
+    // (namespace-scoped imports import the whole namespace, not named members).
+    // Calls resolve via directory-based namespace resolution (import-resolved) when
+    // ambiguous, or via unique-global when the symbol name is globally unique.
     // _repo.Save() also emits interface-dispatch to User.Save (IRepository has one impl in-repo).
     for (const call of calls) {
       expect(['import-resolved', 'global', 'interface-dispatch']).toContain(call.rel.reason);

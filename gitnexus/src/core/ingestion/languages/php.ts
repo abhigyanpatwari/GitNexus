@@ -25,7 +25,6 @@ import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { phpImportConfig } from '../import-resolvers/configs/php.js';
-import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
@@ -288,7 +287,6 @@ export const phpProvider = defineLanguage({
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
   importResolver: createImportResolver(phpImportConfig),
-  namedBindingExtractor: extractPhpNamedBindings,
   callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),

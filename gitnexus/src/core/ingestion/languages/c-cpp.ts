@@ -382,7 +382,6 @@ export const cProvider = defineLanguage({
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cImportConfig),
-  importSemantics: 'wildcard-transitive',
   callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
   methodExtractor: createMethodExtractor({
@@ -451,7 +450,6 @@ export const cppProvider = defineLanguage({
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cppImportConfig),
-  importSemantics: 'wildcard-transitive',
   mroStrategy: 'leftmost-base',
   callExtractor: createCallExtractor(cppCallConfig),
   fieldExtractor: createFieldExtractor(cppFieldConfig),
