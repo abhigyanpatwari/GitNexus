@@ -10,6 +10,7 @@ import {
   findGitRootByDotGit,
   parseRepoNameFromUrl,
   sanitizeRepoName,
+  getDefaultBranch,
 } from '../../src/storage/git.js';
 
 // Mock child_process.execSync
@@ -68,6 +69,34 @@ describe('git utilities', () => {
     it('trims whitespace from output', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('  sha256hash  \n'));
       expect(getCurrentCommit('/project')).toBe('sha256hash');
+    });
+  });
+
+  describe('getDefaultBranch (#243)', () => {
+    it('strips the origin/ prefix from the symbolic ref', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('origin/develop\n'));
+      expect(getDefaultBranch('/project')).toBe('develop');
+      expect(mockExecSync).toHaveBeenCalledWith(
+        'git symbolic-ref --short refs/remotes/origin/HEAD',
+        expect.objectContaining({ cwd: '/project', windowsHide: true }),
+      );
+    });
+
+    it('handles a branch name that itself contains a slash', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('origin/release/1.2\n'));
+      expect(getDefaultBranch('/project')).toBe('release/1.2');
+    });
+
+    it('returns null when origin/HEAD is not set (git throws)', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
+      });
+      expect(getDefaultBranch('/no-origin-head')).toBeNull();
+    });
+
+    it('returns null on empty output', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
+      expect(getDefaultBranch('/project')).toBeNull();
     });
   });
 

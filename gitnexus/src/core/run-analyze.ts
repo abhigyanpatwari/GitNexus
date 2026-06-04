@@ -107,6 +107,13 @@ export interface AnalyzeOptions {
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
   /**
+   * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
+   * regression-compare example uses the configured branch instead of a
+   * hardcoded "main" (#243). Resolved by the CLI; `undefined` here keeps the
+   * "main" fallback for non-CLI callers (e.g. the server analyze worker).
+   */
+  defaultBranch?: string;
+  /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
    * this alias instead of the path-derived basename.
@@ -1027,6 +1034,7 @@ export async function runFullAnalysis(
           skipAgentsMd: options.skipAgentsMd,
           skipSkills: options.skipSkills,
           noStats: options.noStats,
+          defaultBranch: options.defaultBranch,
         },
       );
     } catch {
