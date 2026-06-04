@@ -80,6 +80,8 @@ export function resolveDefGraphId(
     parameterTypeClasses?: readonly ParameterTypeClass[];
     templateArguments?: readonly string[];
     templateConstraints?: unknown;
+    /** #1982 bridge-held namespace path; see `SymbolDefinition.namespacePrefix`. */
+    namespacePrefix?: string;
   },
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
@@ -149,7 +151,7 @@ export function resolveDefGraphId(
     // namespace-prefixed key (tagged by `tagNamespacePrefixes`) BEFORE the
     // simple-name fallback, so same-tail nested bases don't collapse across
     // sibling namespace members via `simpleKey`.
-    const nsPrefix = (def as { namespacePrefix?: string }).namespacePrefix;
+    const nsPrefix = def.namespacePrefix;
     if (nsPrefix !== undefined && nsPrefix.length > 0) {
       const nsHit = nodeLookup.get(qualifiedKey(filePath, def.type, `${nsPrefix}.${qn}`));
       if (nsHit !== undefined) return nsHit;

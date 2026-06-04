@@ -195,10 +195,11 @@ export function emitKotlinScopeCaptures(
  * delegation specifiers so the registry-primary scope-resolution path emits
  * EXTENDS / IMPLEMENTS edges (mirrors C# `synthesizeCsharpInheritanceReferences`
  * and C++ `emitCppInheritanceCaptures`). Without this, Kotlin inheritance edges
- * came only from the legacy `@heritage.*` path, which the worker pipeline drops
- * for registry-primary languages → 0 inheritance edges in worker mode (#1951).
+ * came only from the legacy heritage-capture leg (removed in #942), which the
+ * worker pipeline drops for registry-primary languages → 0 inheritance edges in
+ * worker mode (#1951).
  *
- * Scope mirrors the legacy KOTLIN_QUERIES `@heritage.extends` patterns exactly
+ * Scope mirrors the legacy KOTLIN_QUERIES heritage patterns exactly
  * (the config-driven `kotlinHeritageShapes`: `user_type`,
  * `constructor_invocation`, `explicit_delegation`). Each `delegation_specifier`
  * child of a `class_declaration`, in one of three forms —
@@ -256,7 +257,7 @@ function synthesizeKotlinInheritanceReferences(rootNode: SyntaxNode): CaptureMat
  * The bare simple-name `type_identifier` of a `user_type`. Strips generic
  * type arguments (`Base<T>` → `Base`) and qualifier tails (`pkg.Base` → `Base`)
  * by taking the LAST direct `type_identifier` child, matching the legacy
- * `(user_type (type_identifier) @heritage.extends)` capture and V1's
+ * heritage capture of a `user_type`'s `type_identifier` and V1's
  * simple-name `findClassBindingInScope` contract.
  */
 function kotlinUserTypeNameNode(userType: SyntaxNode): SyntaxNode | null {

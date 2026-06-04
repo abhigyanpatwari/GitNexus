@@ -6,7 +6,6 @@
  *
  * Key Swift traits:
  *   - importSemantics: 'wildcard-leaf' (Swift imports entire modules)
- *   - heritageDefaultEdge: 'IMPLEMENTS' (protocols are more common than class inheritance)
  *   - implicitImportWirer: all files in the same SPM target see each other
  */
 
@@ -31,7 +30,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { swiftVariableConfig } from '../variable-extractors/configs/swift.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { swiftCallConfig } from '../call-extractors/configs/swift.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitSwiftScopeCaptures,
   interpretSwiftImport,
@@ -329,7 +327,6 @@ export const swiftProvider = defineLanguage({
   exportChecker: swiftExportChecker,
   importResolver: createImportResolver(swiftImportConfig),
   importSemantics: 'wildcard-leaf',
-  heritageDefaultEdge: 'IMPLEMENTS',
   callExtractor: createCallExtractor(swiftCallConfig),
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({
@@ -338,7 +335,6 @@ export const swiftProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(swiftVariableConfig),
   classExtractor: createClassExtractor(swiftClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Swift),
   implicitImportWirer: wireSwiftImplicitImports,
   orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,

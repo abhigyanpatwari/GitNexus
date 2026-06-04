@@ -27,9 +27,8 @@ concurrency:
 # Each concern lives in its own workflow file for maintainability:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
 #   ci-tests.yml         — unit + integration tests with coverage + cross-platform
+#                          (includes the scope-resolution resolver tests)
 #   ci-e2e.yml           — E2E tests (only when gitnexus-web/ changes)
-#   ci-scope-parity.yml  — RFC #909 Ring 3 parity gate: legacy DAG + registry-primary
-#                          both pass, per migrated language in the JSON registry
 #
 # Shared setup is DRY via .github/actions/setup-gitnexus composite action.
 
@@ -49,11 +48,6 @@ jobs:
     permissions:
       contents: read
 
-  scope-parity:
-    uses: ./.github/workflows/ci-scope-parity.yml
-    permissions:
-      contents: read
-
   # ── Save PR metadata for the reporting workflow ─────────────────
   # The ci-report.yml workflow (triggered by workflow_run) needs the
   # PR number and job results to post a comment.  We save them as an
@@ -62,7 +56,7 @@ jobs:
   save-pr-meta:
     name: Save PR Metadata
     if: always() && github.event_name == 'pull_request'
-    needs: [quality, tests, e2e, scope-parity]
+    needs: [quality, tests, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -73,14 +67,12 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
-          SCOPE_PARITY: ${{ needs.scope-parity.result }}
         run: |
           mkdir -p pr-meta
           echo "$PR_NUMBER"      > pr-meta/pr_number
           echo "$QUALITY"        > pr-meta/quality_result
           echo "$TESTS"          > pr-meta/tests_result
           echo "$E2E"            > pr-meta/e2e_result
-          echo "$SCOPE_PARITY"   > pr-meta/scope_parity_result
           # TODO(post-merge): remove backward-compat copies once ci-report.yml
           # on main reads underscore names.
           # Backward-compat: ci-report.yml on main still reads hyphenated
@@ -103,7 +95,7 @@ jobs:
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, tests, e2e, scope-parity]
+    needs: [quality, tests, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -117,14 +109,15 @@ jobs:
           # reusable workflow, so `needs.tests.result` below blocks the merge
           # on an ABI mismatch. (`jobs.<id>.result` cannot be exposed as a
           # workflow_call output, so the gate is enforced transitively here.)
+          # The scope-resolution resolver tests also run inside the `tests`
+          # workflow (RING4-1 #942 removed the separate scope-parity gate),
+          # so a resolver regression makes TESTS != success and blocks here.
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
-          SCOPE_PARITY: ${{ needs.scope-parity.result }}
         run: |
           echo "Quality:        $QUALITY"
           echo "Tests:          $TESTS"
           echo "E2E:            $E2E"
-          echo "Scope parity:   $SCOPE_PARITY"
           # A failed `abi-assert` job (#1922) inside the tests reusable
           # workflow makes TESTS != success, so this clause also blocks the
           # merge on a tree-sitter ABI mismatch.
@@ -135,16 +128,5 @@ jobs:
           fi
           if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then
             echo "::error::E2E job failed"
-            exit 1
-          fi
-          # scope-parity is a reusable workflow. With an empty migrated-
-          # languages list, its parity matrix is skipped and the outer
-          # workflow still reports `success`. If any entry's legacy-DAG or
-          # registry-primary run fails, the workflow reports `failure`.
-          # Accept only `success`; `skipped` would mean the entire
-          # discover job was skipped too (upstream failure), which should
-          # still block.
-          if [[ "$SCOPE_PARITY" != "success" ]]; then
-            echo "::error::Scope-resolution parity gate failed (RFC #909 Ring 3)"
             exit 1
           fi

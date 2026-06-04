@@ -363,24 +363,6 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(names).toContain('Vec');
     });
 
-    it('captures trait impl heritage', async () => {
-      await loadLanguage(SupportedLanguages.Rust);
-      const code = `trait Display { fn fmt(&self); }\nstruct Foo;\nimpl Display for Foo { fn fmt(&self) {} }`;
-      const provider = getProvider(SupportedLanguages.Rust);
-      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
-      // Look for heritage captures
-      const heritageCaptures: string[] = [];
-      for (const match of matches) {
-        for (const capture of match.captures) {
-          if (capture.name.startsWith('heritage.')) {
-            heritageCaptures.push(`${capture.name}:${capture.node.text}`);
-          }
-        }
-      }
-      expect(heritageCaptures).toContain('heritage.trait:Display');
-      expect(heritageCaptures).toContain('heritage.class:Foo');
-    });
-
     it('captures modules, consts, and statics', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const code = `mod utils { pub fn helper() {} }\npub const MAX: usize = 100;\nstatic INSTANCE: i32 = 0;`;
@@ -567,41 +549,6 @@ describe('Tree-sitter multi-language parsing', () => {
       }
       // 2 imports + 1 re-export = 3 import.source captures
       expect(imports.length).toBe(3);
-    });
-
-    // ── Heritage extraction ────────────────────────────────────────────
-
-    it('extracts heritage (extends, implements, with)', async () => {
-      if (!(await loadDartOrSkip())) return;
-      const { matches } = parseAndQuery(parser, readFixture('simple.dart'), dartQueries());
-
-      const heritage: { class: string; parent: string }[] = [];
-      for (const match of matches) {
-        const captures: Record<string, string> = {};
-        for (const c of match.captures) captures[c.name] = c.node.text;
-        if (captures['heritage.extends']) {
-          heritage.push({
-            class: captures['heritage.class'],
-            parent: captures['heritage.extends'],
-          });
-        }
-        if (captures['heritage.implements']) {
-          heritage.push({
-            class: captures['heritage.class'],
-            parent: captures['heritage.implements'],
-          });
-        }
-        if (captures['heritage.trait']) {
-          heritage.push({ class: captures['heritage.class'], parent: captures['heritage.trait'] });
-        }
-      }
-
-      const pairs = heritage.map((h) => `${h.class}->${h.parent}`);
-      expect(pairs).toContain('Dog->Animal');
-      expect(pairs).toContain('Dog->Describable');
-      expect(pairs).toContain('Duck->Animal');
-      expect(pairs).toContain('Duck->Swimming');
-      expect(pairs).toContain('Duck->Flying');
     });
 
     // ── Call extraction ────────────────────────────────────────────────

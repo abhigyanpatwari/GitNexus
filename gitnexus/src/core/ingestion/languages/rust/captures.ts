@@ -170,8 +170,8 @@ export function emitRustScopeCaptures(
 /**
  * Synthesize `@reference.inherits` captures from Rust trait `impl` blocks so
  * the registry-primary scope-resolution path can emit the IMPLEMENTS edge for
- * `impl Trait for Struct` (mirrors the legacy `@heritage.trait`/`@heritage.class`
- * path, which the worker pipeline drops for registry-primary languages — #1951).
+ * `impl Trait for Struct` (mirrors the legacy heritage-capture leg, removed in
+ * #942, which the worker pipeline drops for registry-primary languages — #1951).
  *
  * Rust inheritance is structurally unlike a base list on a type declaration:
  * the relationship lives on `impl_item { trait: T, type: S }`, meaning
@@ -217,8 +217,8 @@ function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
 
 /**
  * Normalize a `trait:` / `type:` impl_item field to the base's trailing bare
- * `type_identifier`, matching exactly the node shapes the legacy `@heritage`
- * query accepts (kept at parity — see the `impl_item` heritage arm in
+ * `type_identifier`, matching exactly the node shapes the legacy heritage
+ * query accepted (kept at parity — see the `impl_item` heritage arm in
  * tree-sitter-queries.ts):
  *   - `type_identifier`                                  → the node itself
  *   - `scoped_type_identifier name: (type_identifier)`   → the trailing `name:` id

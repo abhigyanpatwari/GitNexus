@@ -15,10 +15,13 @@
  */
 
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
+import { HERITAGE_MARKER_PREFIX } from '../../utils/heritage-marker.js';
 
 /** Marker prefix carried on a side-effect `ParsedImport.targetRaw` for
- *  `implements`/`with` heritage, consumed by `emitDartHeritageEdges`. */
-export const DART_HERITAGE_PREFIX = '__heritage__:';
+ *  `implements`/`with` heritage, consumed by `emitDartHeritageEdges`. Aliased to
+ *  the shared codec prefix (#1994) so the Dart wire prefix has a single source of
+ *  truth and cannot desync from `encodeMarker`/`decodeMarker`. */
+export const DART_HERITAGE_PREFIX = HERITAGE_MARKER_PREFIX;
 
 function stripQuotes(s: string): string {
   return s.replace(/^['"]|['"]$/g, '');

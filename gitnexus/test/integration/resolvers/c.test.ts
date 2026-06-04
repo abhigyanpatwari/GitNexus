@@ -1,19 +1,16 @@
 /**
  * C: struct + include-based imports + function calls across files
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('c');
 
 // ---------------------------------------------------------------------------
 // C structs + include-based imports + cross-file function calls
