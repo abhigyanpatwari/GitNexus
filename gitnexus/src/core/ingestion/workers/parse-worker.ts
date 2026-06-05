@@ -14,6 +14,7 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { extractSpringRoutes } from './spring-route-extractor.js';
+import { collectGoImplementsHeritage, collectGoCompositionHeritage } from './go-relationships.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -2721,17 +2722,28 @@ const processFileGroup = (
           // Go struct embedding: the query matches ALL field_declarations with
           // type_identifier, but only anonymous fields (no name) are embedded.
           // Named fields like `Breed string` also match — skip them.
+          // For Go (issue #26), anonymous fields emit a COMPOSITION edge via
+          // the post-pass collectGoCompositionHeritage rather than EXTENDS.
+          // Other languages do not embed types via anonymous fields, so the
+          // original `extends` emission is preserved for them.
           const extendsNode = captureMap['heritage.extends'];
           const fieldDecl = extendsNode.parent;
-          const isNamedField = fieldDecl?.type === 'field_declaration'
-            && fieldDecl.childForFieldName('name');
-          if (!isNamedField) {
-            result.heritage.push({
-              filePath: file.path,
-              className: captureMap['heritage.class'].text,
-              parentName: captureMap['heritage.extends'].text,
-              kind: 'extends',
-            });
+          const isAnonymousField = fieldDecl?.type === 'field_declaration'
+            && !fieldDecl.childForFieldName('name');
+          if (isAnonymousField) {
+            if (language !== SupportedLanguages.Go) {
+              // Non-Go languages do not embed types via anonymous fields.
+              // This branch is unreachable in practice; keep guard for safety.
+              result.heritage.push({
+                filePath: file.path,
+                className: captureMap['heritage.class'].text,
+                parentName: captureMap['heritage.extends'].text,
+                kind: 'extends',
+              });
+            }
+            // For Go, COMPOSITION is emitted in the post-pass below
+            // (collectGoCompositionHeritage). The `continue` at the bottom
+            // still fires because heritage.extends is captured.
           }
         }
         if (captureMap['heritage.implements']) {
@@ -2945,6 +2957,41 @@ const processFileGroup = (
       const expressRoutes = extractExpressRoutes(tree, file.path);
       if (expressRoutes.length > 0) {
         result.decoratorRoutes.push(...expressRoutes);
+      }
+    }
+
+    // Go-specific relationship passes (issue #20 + #26).
+    // Runs AFTER the main match loop so per-file struct method sets are stable
+    // and AST-derived interface method sets are authoritative. The Go query's
+    // `definition.method` capture collapses interface methods with struct
+    // methods of the same name (one Method node per file:method), so we
+    // re-walk interface_type bodies here to recover interface method sets.
+    if (language === SupportedLanguages.Go) {
+      const fileSymbols = result.symbols.filter((s) => s.filePath === file.path);
+      // IMPLEMENTS via method-set superset (#20)
+      const implementsItems = collectGoImplementsHeritage(file.path, tree.rootNode, fileSymbols);
+      for (const it of implementsItems) {
+        result.heritage.push({
+          filePath: it.filePath,
+          className: it.className,
+          parentName: it.parentName,
+          kind: it.kind,
+        });
+      }
+      // COMPOSITION for anonymous struct fields (#26).
+      // Replaces the previous EXTENDS emission from the Go heritage query —
+      // see the heritage query de-duplication in this same loop: anonymous
+      // fields no longer reach `result.heritage` as 'extends' because we
+      // skip them when `fieldDecl.childForFieldName('name')` is truthy.
+      // (See heritage.extends branch above for the field-name guard.)
+      const compositionItems = collectGoCompositionHeritage(file.path, tree.rootNode);
+      for (const it of compositionItems) {
+        result.heritage.push({
+          filePath: it.filePath,
+          className: it.className,
+          parentName: it.parentName,
+          kind: it.kind,
+        });
       }
     }
   }

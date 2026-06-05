@@ -127,6 +127,8 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
+  // Structural composition: owner has a field/embedding of the target (e.g. Go anonymous field).
+  | 'COMPOSITION'
 
 export interface GraphNode {
   id:  string,

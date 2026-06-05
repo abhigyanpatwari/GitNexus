@@ -60,7 +60,7 @@ export const VALID_NODE_LABELS = new Set([
 export const VALID_RELATION_TYPES = new Set([
   'CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY',
   'OVERRIDES', 'ACCESSES', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL',
-  'ENTRY_POINT_OF', 'WRAPS', 'CONTAINS'
+  'ENTRY_POINT_OF', 'WRAPS', 'CONTAINS', 'COMPOSITION'
 ]);
 
 /**
@@ -79,6 +79,7 @@ export const IMPACT_RELATION_CONFIDENCE: Record<string, number> = {
   HAS_PROPERTY: 0.95,  // structural containment (field in class)
   ACCESSES: 0.8,       // may be indirect read/write
   CONTAINS: 0.95,      // folder/file structural containment
+  COMPOSITION: 0.9,    // structural ownership (e.g. Go embedding)
 };
 
 /** Regex to detect write operations in user-supplied Cypher queries */

@@ -343,6 +343,7 @@ relationships:
   - OVERRIDES: Method overrides another Method (MRO)
   - MEMBER_OF: Symbol belongs to community
   - STEP_IN_PROCESS: Symbol is step N in process
+  - COMPOSITION: Owner has a field/embedding of the target (e.g. Go anonymous field, struct embedding)
 
 relationship_table: "All relationships use a single CodeRelation table with a 'type' property. Properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)"
 

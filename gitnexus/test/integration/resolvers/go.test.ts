@@ -61,11 +61,15 @@ describe('Go package import & call resolution', () => {
     ]);
   });
 
-  it('emits exactly 1 EXTENDS edge for struct embedding: Admin → User', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.length).toBe(1);
-    expect(extends_[0].source).toBe('Admin');
-    expect(extends_[0].target).toBe('User');
+  it('emits exactly 1 COMPOSITION edge for struct embedding: Admin → User (issue #26)', () => {
+    const composition = getRelationships(result, 'COMPOSITION');
+    expect(composition.length).toBe(1);
+    expect(composition[0].source).toBe('Admin');
+    expect(composition[0].target).toBe('User');
+  });
+
+  it('emits no EXTENDS edges (Go struct embedding is COMPOSITION, not EXTENDS)', () => {
+    expect(getRelationships(result, 'EXTENDS').length).toBe(0);
   });
 
   it('does not emit IMPLEMENTS edges (Go uses structural typing)', () => {
@@ -447,11 +451,11 @@ describe('Go parent resolution (struct embedding)', () => {
     expect(getNodesByLabel(result, 'Struct')).toEqual(['BaseModel', 'User']);
   });
 
-  it('emits EXTENDS edge: User → BaseModel (struct embedding)', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.length).toBe(1);
-    expect(extends_[0].source).toBe('User');
-    expect(extends_[0].target).toBe('BaseModel');
+  it('emits COMPOSITION edge: User → BaseModel (struct embedding, issue #26)', () => {
+    const composition = getRelationships(result, 'COMPOSITION');
+    expect(composition.length).toBe(1);
+    expect(composition[0].source).toBe('User');
+    expect(composition[0].target).toBe('BaseModel');
   });
 });
 
