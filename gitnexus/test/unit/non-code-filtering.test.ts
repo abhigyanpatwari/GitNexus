@@ -605,3 +605,101 @@ describe('semanticSearch filtering', () => {
     expect(results[0].nodeId).toBe('Function:src/app.ts:main');
   });
 });
+
+// ── Issue #51: CLAUDE.md / AGENTS.md regression guard ─────────────────
+//
+// PR #103 (commit ef41fc0) added a filter in detectChanges() at
+// local-backend.ts:1902-1903:
+//   if (type === 'File' && fileType && fileType !== 'code') continue;
+//
+// This block asserts the canonical non-code files of interest (CLAUDE.md and
+// AGENTS.md — both classified as `documentation` by getFileType()) are still
+// filtered out of changed_symbols. A future refactor that drops the filter
+// will break this test.
+
+describe('Issue #51: CLAUDE.md / AGENTS.md filter in detectChanges()', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockExecuteQuery.mockResolvedValue([]);
+    mockExecuteParameterized.mockResolvedValue([]);
+    backend = await createBackend();
+  });
+
+  it('filters out CLAUDE.md and AGENTS.md File nodes (fileType=documentation)', async () => {
+    const { execFileSync } = await import('child_process');
+    // Simulate a dirty tree containing CLAUDE.md, AGENTS.md, and a real code file
+    (execFileSync as any).mockReturnValue(
+      [
+        'CLAUDE.md',
+        'AGENTS.md',
+        'src/feature.ts',
+      ].join('\n')
+    );
+
+    mockExecuteParameterized.mockImplementation(
+      async (_repoId: string, query: string, _params?: any) => {
+        if (query.includes('n.filePath CONTAINS $filePath')) {
+          return [
+            { id: 'File:CLAUDE.md', name: 'CLAUDE.md', type: 'File', filePath: 'CLAUDE.md', fileType: 'documentation' },
+            { id: 'File:AGENTS.md', name: 'AGENTS.md', type: 'File', filePath: 'AGENTS.md', fileType: 'documentation' },
+            { id: 'Function:src/feature.ts:doWork', name: 'doWork', type: 'Function', filePath: 'src/feature.ts', fileType: null },
+          ];
+        }
+        if (query.includes('STEP_IN_PROCESS')) return [];
+        return [];
+      }
+    );
+
+    const result = await backend.callTool('detect_changes', { scope: 'unstaged' });
+    const symbols = (result as any).changed_symbols ?? [];
+
+    // The two canonical non-code files must be filtered out
+    expect(symbols.some((s: any) => s.filePath === 'CLAUDE.md')).toBe(false);
+    expect(symbols.some((s: any) => s.filePath === 'AGENTS.md')).toBe(false);
+    // No File node for either may survive
+    const fileSymbols = symbols.filter((s: any) => s.type === 'File');
+    expect(fileSymbols.some((s: any) => s.filePath === 'CLAUDE.md')).toBe(false);
+    expect(fileSymbols.some((s: any) => s.filePath === 'AGENTS.md')).toBe(false);
+    // The legitimate code symbol passes through
+    expect(symbols.some((s: any) => s.name === 'doWork' && s.type === 'Function')).toBe(true);
+  });
+
+  it('names CLAUDE.md and AGENTS.md explicitly in the exclusion contract', async () => {
+    // Sentinel test: a future maintainer who removes the filter
+    // (e.g. by changing the predicate to `fileType !== 'code' && fileType !== 'documentation'`)
+    // will trip the per-file check at the bottom of this test. The test name and
+    // the strings below are the contract.
+    const canonicalNonCodeFiles = ['CLAUDE.md', 'AGENTS.md'];
+
+    const { execFileSync } = await import('child_process');
+    (execFileSync as any).mockReturnValue(
+      [
+        'CLAUDE.md',
+        'AGENTS.md',
+      ].join('\n')
+    );
+
+    mockExecuteParameterized.mockImplementation(
+      async (_repoId: string, query: string, _params?: any) => {
+        if (query.includes('n.filePath CONTAINS $filePath')) {
+          return [
+            { id: 'File:CLAUDE.md', name: 'CLAUDE.md', type: 'File', filePath: 'CLAUDE.md', fileType: 'documentation' },
+            { id: 'File:AGENTS.md', name: 'AGENTS.md', type: 'File', filePath: 'AGENTS.md', fileType: 'documentation' },
+          ];
+        }
+        if (query.includes('STEP_IN_PROCESS')) return [];
+        return [];
+      }
+    );
+
+    const result = await backend.callTool('detect_changes', { scope: 'unstaged' });
+    const symbols = (result as any).changed_symbols ?? [];
+
+    for (const filePath of canonicalNonCodeFiles) {
+      expect(symbols.some((s: any) => s.filePath === filePath)).toBe(false);
+    }
+    expect(symbols.length).toBe(0);
+  });
+});
