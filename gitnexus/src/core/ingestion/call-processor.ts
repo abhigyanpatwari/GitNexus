@@ -1823,7 +1823,7 @@ export const processDecoratorRoutesWithRepoId = (
     const routePath = route.path;
     if (!routePath) continue;
     const httpMethod = (route.decorator || 'get').toUpperCase();
-    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'ALL'].includes(httpMethod)) continue;
+    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE', 'ALL'].includes(httpMethod)) continue;
 
     const routeId = generateId('Route', `${route.filePath}:${route.decorator}:${routePath}`);
     graph.addNode({
@@ -1837,11 +1837,12 @@ export const processDecoratorRoutesWithRepoId = (
         startLine: route.lineNumber,
         lineNumber: route.lineNumber,
         repoId,
-        // Spec-named Route fields (M2). For decorator routes the HTTP method
-        // (e.g. 'GET') is the closest analogue to handlerMethod, and the file
-        // name minus extension is the closest analogue to controllerClass.
+        // Spec-named Route fields (M2). controllerClass falls back to the file
+        // name minus extension; handlerMethod prefers the real handler function
+        // name (FastAPI/Gin set route.handlerName) and falls back to the HTTP
+        // verb for plain Express/Hono routes that have no named handler.
         controllerClass: deriveControllerClassFromFile(route.filePath),
-        handlerMethod: httpMethod,
+        handlerMethod: route.handlerName ?? httpMethod,
         isControllerClass: false,
         prefix: '',
       },

@@ -429,6 +429,13 @@ export interface ExtractedDecoratorRoute {
   method?: string;
   path?: string;
   lineNumber?: number;
+  /**
+   * Optional handler function name (e.g. FastAPI `list_users`, Gin `listUsers`).
+   * Framework routes whose receiver is a local app/router variable (not a
+   * controller class) flow through the decorator-route path; when present this
+   * is used as the Route node's handlerMethod instead of the HTTP verb.
+   */
+  handlerName?: string;
 }
 
 /** Tool definition for MCP */

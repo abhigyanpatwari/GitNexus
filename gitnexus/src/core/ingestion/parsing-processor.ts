@@ -16,6 +16,8 @@ import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, ExtractedDecoratorRoute, ExtractedToolDef, FileConstructorBindings, FileTypeEnvBindings, ExtractedORMQuery, ExtractedExpoNav } from './workers/parse-worker.js';
 import { extractClassFields, extractMethodParameterAnnotations, extractORMQueries } from './workers/parse-worker.js';
 import { extractExpressRoutes } from './route-extractors/express.js';
+import { extractFastApiRoutes } from './route-extractors/python.js';
+import { extractGinRoutes } from './route-extractors/go.js';
 import { extractSpringRoutes, collectFileConstants } from './workers/spring-route-extractor.js';
 import { extractLaravelRoutes } from './workers/parse-worker.js';
 import { extractAngularMetadata } from './extractors/angular-metadata.js';
@@ -345,6 +347,40 @@ const processParsingSequential = async (
       const expressRoutes = extractExpressRoutes(tree, file.path);
       if (expressRoutes.length > 0) {
         allDecoratorRoutes.push(...expressRoutes);
+      }
+    }
+
+    // Extract FastAPI (#79, #5) and Gin (#80, #6) routes.
+    //
+    // These frameworks register routes on a local app/router VARIABLE
+    // (`app.get(...)`, `r.GET(...)`) rather than a controller CLASS, so they
+    // flow through the decorator-route path (processDecoratorRoutesWithRepoId)
+    // which builds Route nodes directly — NOT processRoutesFromExtracted, whose
+    // controller-class resolution is Spring-specific and silently drops these.
+    // The real handler function name is carried via handlerName.
+    //
+    // This also gives the active sequential path parity with the (large-repo
+    // only) worker pool, where #146 originally wired these extractors.
+    if (language === SupportedLanguages.Python) {
+      for (const r of extractFastApiRoutes(tree, file.path)) {
+        allDecoratorRoutes.push({
+          filePath: r.filePath,
+          decorator: r.httpMethod,
+          path: r.routePath,
+          lineNumber: r.lineNumber,
+          handlerName: r.methodName ?? undefined,
+        });
+      }
+    }
+    if (language === SupportedLanguages.Go) {
+      for (const r of extractGinRoutes(tree, file.path)) {
+        allDecoratorRoutes.push({
+          filePath: r.filePath,
+          decorator: r.httpMethod,
+          path: r.routePath,
+          lineNumber: r.lineNumber,
+          handlerName: r.methodName ?? undefined,
+        });
       }
     }
 
