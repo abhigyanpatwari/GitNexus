@@ -1275,7 +1275,40 @@ describe('local agent CLI calls', () => {
     expect(response.content).toBe('fallback text');
   });
 
-  it('fails on malformed OpenCode JSON output', async () => {
+  it('ignores non-JSON stdout lines when OpenCode text events are present', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(
+            [
+              'permission requested: write access denied',
+              JSON.stringify({ type: 'text', part: { text: 'Hello from opencode' } }),
+              '~ https://opencode.ai/share/abc123',
+            ].join('\n'),
+          ),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    const response = await callOpenCodeLLM('hello', { workingDirectory: process.cwd() });
+
+    expect(response.content).toBe('Hello from opencode');
+  });
+
+  it('fails with no text output when OpenCode only writes non-JSON stdout lines', async () => {
     const child = new EventEmitter() as any;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -1295,7 +1328,7 @@ describe('local agent CLI calls', () => {
     const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
 
     await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
-      'OpenCode CLI returned malformed JSON event: not-json',
+      'OpenCode CLI returned no text output',
     );
   });
 
@@ -1308,7 +1341,12 @@ describe('local agent CLI calls', () => {
       queueMicrotask(() => {
         child.stdout.emit(
           'data',
-          Buffer.from(JSON.stringify({ type: 'error', error: { message: 'permission denied' } })),
+          Buffer.from(
+            JSON.stringify({
+              type: 'error',
+              error: { name: 'PermissionDenied', data: { message: 'permission denied' } },
+            }),
+          ),
         );
         child.emit('close', 0);
       });
@@ -1350,6 +1388,33 @@ describe('local agent CLI calls', () => {
 
     await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
       'OpenCode CLI returned no text output',
+    );
+  });
+
+  it('falls back to the OpenCode error name when the nested message is missing', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify({ type: 'error', error: { name: 'PermissionDenied' } })),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
+      'OpenCode CLI returned error event: PermissionDenied',
     );
   });
 

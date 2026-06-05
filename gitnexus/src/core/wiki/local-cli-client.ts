@@ -168,6 +168,10 @@ interface OpenCodeEvent {
   message?: string;
   error?: {
     message?: string;
+    name?: string;
+    data?: {
+      message?: string;
+    };
   };
   part?: {
     type?: string;
@@ -188,11 +192,16 @@ function parseOpenCodeEventStream(output: string): string {
     try {
       event = JSON.parse(line) as OpenCodeEvent;
     } catch {
-      throw new Error(`OpenCode CLI returned malformed JSON event: ${line.slice(0, 200)}`);
+      continue;
     }
 
     if (event.type === 'error') {
-      const message = event.message || event.error?.message || event.part?.text || line;
+      const message =
+        event.error?.data?.message ||
+        event.error?.name ||
+        event.message ||
+        event.part?.text ||
+        line;
       throw new Error(`OpenCode CLI returned error event: ${message}`);
     }
 
@@ -237,6 +246,9 @@ export async function callOpenCodeLLM(
 
   const workingDirectory = config.workingDirectory || process.cwd();
   const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
+  // OpenCode does not expose a Codex-style read-only sandbox / no-tools flag,
+  // so we rely on its non-interactive permission model and tolerate any
+  // non-JSON stdout warnings in the parser.
   const args = ['run', '--format', 'json', '--dir', workingDirectory];
 
   if (config.model) {
