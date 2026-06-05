@@ -304,4 +304,85 @@ public class TestController {
       expect(routeNodes.length).toBe(1);
     });
   });
+
+  // ============================================================================
+  // Test 5: WI-90 inherited class-level @RequestMapping prefix
+  // ============================================================================
+  describe('WI-90 inherited class-level prefix', () => {
+    it('inherits superclass @RequestMapping prefix for @RestController subclass', async () => {
+      // Base class is plain @Controller with @RequestMapping("/api")
+      // Subclass is @RestController with no class-level mapping, plus a @GetMapping.
+      // Expected: route is created with path "/api/users".
+      const source = `
+package org.example.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@Controller
+@RequestMapping("/api")
+public class BaseApiController { }
+
+@RestController
+public class UserController extends BaseApiController {
+    @GetMapping("/users")
+    public List<String> list() { return java.util.Collections.emptyList(); }
+}
+`;
+      const filePath = 'org/example/web/UserController.java';
+      const tree = parseJava(source);
+
+      // Register the subclass only (the base class is not a real controller
+      // from the routing perspective; routes belong to the concrete subclass).
+      ctx.symbols.add(filePath, 'UserController',
+        'Class:org/example/web/UserController.java:UserController', 'Class');
+      ctx.symbols.add(filePath, 'list',
+        'Method:org/example/web/UserController.java:list', 'Method', {
+          ownerId: 'Class:org/example/web/UserController.java:UserController',
+        });
+
+      const routes = extractSpringRoutes(tree, filePath);
+      await processRoutesFromExtracted(graph, routes, ctx);
+
+      const routeNodes = graph.nodes.filter(n => n.label === 'Route');
+      expect(routeNodes.length).toBe(1);
+      expect(routeNodes[0].properties.routePath).toBe('/api/users');
+      // The inherited flag should be set because the prefix came from a superclass
+      expect(routeNodes[0].properties.isInherited).toBe(true);
+    });
+
+    it('inherits superclass prefix from a plain @Controller base class', async () => {
+      const source = `
+package org.example.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@Controller
+@RequestMapping("/v1")
+public class BaseController { }
+
+@RestController
+public class OrderController extends BaseController {
+    @PostMapping("/orders")
+    public String create() { return "ok"; }
+}
+`;
+      const filePath = 'org/example/web/OrderController.java';
+      const tree = parseJava(source);
+
+      ctx.symbols.add(filePath, 'OrderController',
+        'Class:org/example/web/OrderController.java:OrderController', 'Class');
+      ctx.symbols.add(filePath, 'create',
+        'Method:org/example/web/OrderController.java:create', 'Method', {
+          ownerId: 'Class:org/example/web/OrderController.java:OrderController',
+        });
+
+      const routes = extractSpringRoutes(tree, filePath);
+      await processRoutesFromExtracted(graph, routes, ctx);
+
+      const routeNodes = graph.nodes.filter(n => n.label === 'Route');
+      expect(routeNodes.length).toBe(1);
+      expect(routeNodes[0].properties.routePath).toBe('/v1/orders');
+      expect(routeNodes[0].properties.isInherited).toBe(true);
+    });
+  });
 });
