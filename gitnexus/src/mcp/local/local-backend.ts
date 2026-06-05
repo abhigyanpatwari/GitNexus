@@ -1577,7 +1577,15 @@ export class LocalBackend {
       LIMIT 30
     `, { symId });
 
-    // Expand incoming refs for Class/Interface nodes: callers via Constructor/File/Method
+    // Expand incoming refs for Class/Interface nodes: callers via Constructor/File/Method.
+    //
+    // (#13) ALSO expand for any non-class target (Method/Function/etc.) — the
+    // base incoming query above may return file-level IMPORTS edges (File A
+    // imports File B which contains `target`), but the user wants the calling
+    // METHOD inside File A, not the file itself. The drill-down below walks
+    // the file's methods and surfaces any method-level CALLS edges to the
+    // target. This makes `context(name="someMethod")` return the caller
+    // method's name+filePath instead of just the file.
     if (isClassLike) {
       try {
         // Run all three incoming-ref queries in parallel — they are
@@ -1635,6 +1643,46 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('context:class-incoming-expansion', e);
+      }
+    } else {
+      // (#13) Non-class target (Method/Function/etc.) — the base incoming
+      // query may have surfaced file-level IMPORTS callers only. Drill into
+      // the target's owning file to find methods that have direct CALLS
+      // edges to the target. This makes `context(name="someMethod")` return
+      // the calling method (not just the caller file).
+      //
+      // The WHERE clause filters the target to Method/Function/Constructor
+      // by checking the label-prefix in the uid (LadybugDB label() functions
+      // are unreliable inside OPTIONAL MATCH; uid prefix is the convention
+      // the rest of the codebase uses for these node types).
+      try {
+        const methodIncoming = await executeParameterized(repo.id, `
+          // Walk method-level CALLS edges pointing at the target. We do not
+          // need the target's owning file — the CALLS edge source already
+          // carries filePath via the caller node. This is the "calling
+          // METHOD (not just the calling file)" path requested by #13.
+          MATCH (callerMethod)-[calls:CodeRelation {type: 'CALLS'}]->(target {id: $symId})
+          WHERE callerMethod.id <> $symId
+            AND (callerMethod.id STARTS WITH 'method:'
+                 OR callerMethod.id STARTS WITH 'function:'
+                 OR callerMethod.id STARTS WITH 'ctor:')
+          RETURN 'CALLS' AS relType, callerMethod.id AS uid, callerMethod.name AS name,
+                 callerMethod.filePath AS filePath, labels(callerMethod)[0] AS kind,
+                 target.name AS targetMethod
+          LIMIT 30
+        `, { symId });
+
+        if (methodIncoming.length > 0) {
+          const seenKeys = new Set(
+            incomingRows.map((r: any) => `${r.relType || r[0]}:${r.uid || r[1]}`),
+          );
+          for (const r of methodIncoming) {
+            const key = `${r.relType || r[0]}:${r.uid || r[1]}`;
+            if (!seenKeys.has(key)) { seenKeys.add(key); incomingRows.push(r); }
+          }
+        }
+      } catch (e) {
+        logQueryError('context:method-incoming-drilldown', e);
       }
     }
 
@@ -3712,6 +3760,44 @@ export class LocalBackend {
           if (rid && !visited.has(rid)) {
             visited.add(rid);
             frontier.push(rid);
+          }
+        }
+
+        // (#36) Seed frontier with interfaces the class implements AND
+        // their owning files. In typical Java/Spring code, callers depend
+        // on the interface, not the implementation — and the caller's
+        // file-level IMPORTS edge points to the INTERFACE FILE, not the
+        // interface node itself. Without seeding the interface's file,
+        // the BFS would never see `callerFile -[IMPORTS]-> interfaceFile`.
+        // We also seed the interface node so callers via IMPLEMENTS
+        // (other classes implementing the same interface) are reached.
+        if (symType === 'Class') {
+          const [ifaceRows, ifaceFileRows] = await Promise.all([
+            executeParameterized(repo.id, `
+              MATCH (n)-[impl:CodeRelation {type: 'IMPLEMENTS'}]->(iface:Interface)
+              WHERE n.id = $symId
+              RETURN iface.id AS id, iface.name AS name, labels(iface)[0] AS type, iface.filePath AS filePath
+            `, { symId }).catch((e) => { logQueryError('impact:interface-seed', e); return []; }),
+            executeParameterized(repo.id, `
+              MATCH (n)-[impl:CodeRelation {type: 'IMPLEMENTS'}]->(iface:Interface)
+              WHERE n.id = $symId
+              MATCH (f:File)-[d2:CodeRelation {type: 'DEFINES'}]->(iface)
+              RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+            `, { symId }).catch((e) => { logQueryError('impact:interface-file-seed', e); return []; }),
+          ]);
+          for (const r of ifaceRows) {
+            const rid = r.id || r[0];
+            if (rid && !visited.has(rid)) {
+              visited.add(rid);
+              frontier.push(rid);
+            }
+          }
+          for (const r of ifaceFileRows) {
+            const rid = r.id || r[0];
+            if (rid && !visited.has(rid)) {
+              visited.add(rid);
+              frontier.push(rid);
+            }
           }
         }
       } catch (e) {
