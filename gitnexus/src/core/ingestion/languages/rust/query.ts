@@ -134,11 +134,34 @@ const RUST_SCOPE_QUERY = `
     name: (identifier) @reference.name)) @reference.call.free
 
 ;; References — constructor calls (struct literal)
-;; Covers bare names (Foo {}), scoped (foo::bar::Baz {}), and turbofish
-;; (Foo::<T> {}) — the name: field resolves to the trailing identifier
-;; in all cases through tree-sitter-rust's grammar.
+;; tree-sitter-rust gives struct_expression.name one of three node types
+;; (type_identifier | scoped_type_identifier | generic_type_with_turbofish);
+;; the turbofish form additionally nests either a type_identifier or a
+;; scoped_identifier. We enumerate all four shapes below so the capture is
+;; always the trailing identifier (resolved scope-aware), not the full path:
+;;   bare              Foo {}
+;;   scoped            foo::bar::Baz {}
+;;   turbofish         Foo::<T> {}
+;;   scoped+turbofish  foo::Bar::<T> {}
 (struct_expression
-  name: (_) @reference.name) @reference.call.constructor
+  name: (type_identifier) @reference.name) @reference.call.constructor
+
+;; Scoped struct (foo::bar::Baz {})
+(struct_expression
+  name: (scoped_type_identifier
+    name: (type_identifier) @reference.name)) @reference.call.constructor
+
+;; Turbofish struct (Foo::<T> {})
+(struct_expression
+  name: (generic_type_with_turbofish
+    type: (type_identifier) @reference.name)) @reference.call.constructor
+
+;; Scoped + turbofish struct (foo::Bar::<T> {}) — the turbofish wraps a
+;; scoped_identifier whose tail is an identifier (not a type_identifier).
+(struct_expression
+  name: (generic_type_with_turbofish
+    type: (scoped_identifier
+      name: (identifier) @reference.name))) @reference.call.constructor
 
 ;; References — macro invocations (disjoint namespace from functions)
 ;; Resolved via MacroRegistry → Macro defs only (never fn of the same name).
