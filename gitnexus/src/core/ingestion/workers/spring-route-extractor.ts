@@ -776,3 +776,224 @@ export function extractSpringRoutes(
   walk(tree.rootNode);
   return routes;
 }
+
+// ============================================================================
+// WI-90: cross-file @RequestMapping inheritance (repo-wide pass)
+//
+// The single-tree `extractSpringRoutes` above only sees one file and emits
+// routes for methods physically present in each class body. A @RestController
+// that `extends` a base controller declared in ANOTHER file therefore loses
+// every inherited handler. The functions below run AFTER all Java files are
+// parsed: they build a repo-wide class registry and emit synthetic routes for
+// inherited mapped methods, with the concrete subclass as the controller.
+// `extractSpringRoutes` / `extractRoutesFromClass` are intentionally left
+// untouched so the same-file behavior (and the #144 negative test) is preserved.
+// ============================================================================
+
+/** A mapped (route-bearing) method recorded for cross-file inheritance. */
+interface SpringMappedMethod {
+  methodName: string;
+  httpMethods: string[];        // already fanned out (['GET'] or ['GET','POST'])
+  methodPath: string;           // raw path BEFORE prefix combine
+  rawConstantPath: boolean;     // methodPath.includes('.') → use as-is, don't combine
+  produces?: string[];
+  consumes?: string[];
+  lineNumber: number;
+}
+
+/** One class declaration recorded in the repo-wide Spring registry. */
+export interface SpringClassRegistryEntry {
+  className: string;
+  filePath: string;
+  classPrefix: string | null;   // own class-level @RequestMapping prefix, else null
+  isController: boolean;        // has @RestController or @Controller
+  superclassName: string | null;
+  ownMethodNames: Set<string>;  // method names physically declared in this class body
+  mappedMethods: SpringMappedMethod[];
+}
+
+/** Collect the route-bearing methods of one class body (additive — mirrors the
+ *  per-method annotation loop in extractRoutesFromClass without changing it). */
+function buildSpringClassRegistryEntry(
+  classDecl: Parser.SyntaxNode,
+  filePath: string,
+  constants: Map<string, string>,
+): SpringClassRegistryEntry | null {
+  const className = classDecl.childForFieldName('name')?.text
+    ?? classDecl.children.find(c => c.type === 'identifier')?.text;
+  if (!className) return null;
+
+  const classAnnotations = getClassAnnotations(classDecl);
+  // @FeignClient classes never contribute routes (mirror extractRoutesFromClass).
+  for (const ann of classAnnotations) {
+    const nameNode = ann.children.find(c => c.type === 'identifier');
+    if (nameNode && nameNode.text === 'FeignClient') return null;
+  }
+  const isController = classAnnotations.some(ann => {
+    const nameNode = ann.children.find(c => c.type === 'identifier');
+    return !!nameNode && (nameNode.text === 'RestController' || nameNode.text === 'Controller');
+  });
+
+  const classPrefix = getClassRequestMappingPrefix(classDecl, constants);
+  const superclassName = getSuperclassName(classDecl);
+
+  const ownMethodNames = new Set<string>();
+  const mappedMethods: SpringMappedMethod[] = [];
+
+  const classBody = classDecl.children.find(c =>
+    c.type === 'class_body' || c.type === 'interface_body' || c.type === 'enum_body');
+  if (classBody) {
+    for (const member of classBody.children) {
+      if (member.type !== 'method_declaration') continue;
+      const methodName = getMethodName(member);
+      if (!methodName) continue;
+      ownMethodNames.add(methodName);
+
+      for (const child of member.children) {
+        if (child.type !== 'modifiers') continue;
+        for (const modChild of child.children) {
+          if (modChild.type !== 'marker_annotation' && modChild.type !== 'annotation') continue;
+          const ann = modChild;
+          const nameNode = ann.children.find(c => c.type === 'identifier');
+          if (!nameNode) continue;
+          const annotationName = nameNode.text;
+
+          if (HTTP_METHOD_ANNOTATIONS.has(annotationName)) {
+            const methodPath = extractAnnotationPath(ann, constants) ?? '';
+            const produces = extractArrayOrString(ann, 'produces', constants);
+            const consumes = extractArrayOrString(ann, 'consumes', constants);
+            mappedMethods.push({
+              methodName,
+              httpMethods: [HTTP_METHOD_ANNOTATIONS.get(annotationName)!],
+              methodPath,
+              rawConstantPath: methodPath.includes('.'),
+              lineNumber: ann.startPosition.row + 1,
+              ...(produces.length > 0 ? { produces } : {}),
+              ...(consumes.length > 0 ? { consumes } : {}),
+            });
+          } else if (annotationName === 'RequestMapping') {
+            const methodPath = extractAnnotationPath(ann, constants) ?? '';
+            const httpMethods = extractRequestMappingMethod(ann);
+            const produces = extractArrayOrString(ann, 'produces', constants);
+            const consumes = extractArrayOrString(ann, 'consumes', constants);
+            mappedMethods.push({
+              methodName,
+              httpMethods,
+              methodPath,
+              rawConstantPath: methodPath.includes('.'),
+              lineNumber: ann.startPosition.row + 1,
+              ...(produces.length > 0 ? { produces } : {}),
+              ...(consumes.length > 0 ? { consumes } : {}),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return { className, filePath, classPrefix, isController, superclassName, ownMethodNames, mappedMethods };
+}
+
+/**
+ * Build a repo-wide registry of Spring class declarations across all parsed
+ * Java files. Reuses already-parsed trees (no second parse).
+ */
+export function buildSpringClassRegistry(
+  javaFiles: Array<{ filePath: string; tree: Parser.Tree }>,
+  constants: Map<string, string>,
+): Map<string, SpringClassRegistryEntry> {
+  const registry = new Map<string, SpringClassRegistryEntry>();
+
+  const walk = (node: Parser.SyntaxNode, filePath: string): void => {
+    if (node.type === 'class_declaration') {
+      const entry = buildSpringClassRegistryEntry(node, filePath, constants);
+      if (entry) registry.set(entry.className, entry); // last-writer-wins on name collision
+    }
+    for (const child of node.children) walk(child, filePath);
+  };
+
+  for (const { filePath, tree } of javaFiles) {
+    walk(tree.rootNode, filePath);
+  }
+  return registry;
+}
+
+/** Resolve the effective class-level prefix for a controller: its own prefix,
+ *  else the nearest ancestor prefix (Spring merges @RequestMapping up the chain). */
+function resolveEffectiveSpringPrefix(
+  entry: SpringClassRegistryEntry,
+  registry: Map<string, SpringClassRegistryEntry>,
+): string | null {
+  if (entry.classPrefix !== null) return entry.classPrefix;
+  const visited = new Set<string>([entry.className]);
+  let current = entry.superclassName;
+  let depth = 0;
+  while (current && !visited.has(current) && depth < 10) {
+    visited.add(current);
+    depth++;
+    const ancestor = registry.get(current);
+    if (!ancestor) break;
+    if (ancestor.classPrefix !== null) return ancestor.classPrefix;
+    current = ancestor.superclassName;
+  }
+  return null;
+}
+
+/**
+ * Emit synthetic ExtractedRoutes for handler methods a controller inherits from
+ * base classes defined in OTHER files. Each controller walks its superclass
+ * chain (cycle-guarded, depth-capped); for each ancestor mapped method not
+ * already provided by the subclass or a nearer ancestor, one route per HTTP
+ * method is emitted with the concrete subclass as controller and isInherited:true.
+ */
+export function extractInheritedSpringRoutes(
+  registry: Map<string, SpringClassRegistryEntry>,
+): ExtractedRoute[] {
+  const routes: ExtractedRoute[] = [];
+
+  for (const entry of registry.values()) {
+    if (!entry.isController) continue;
+
+    const effectivePrefix = resolveEffectiveSpringPrefix(entry, registry);
+    // own methods (and, as we walk, nearer-ancestor methods) win over farther ones
+    const emitted = new Set<string>(entry.ownMethodNames);
+
+    const visited = new Set<string>([entry.className]);
+    let current = entry.superclassName;
+    let depth = 0;
+    while (current && !visited.has(current) && depth < 10) {
+      visited.add(current);
+      depth++;
+      const ancestor = registry.get(current);
+      if (!ancestor) break;
+
+      for (const mm of ancestor.mappedMethods) {
+        if (emitted.has(mm.methodName)) continue;
+        for (const httpMethod of mm.httpMethods) {
+          const routePath = mm.rawConstantPath
+            ? mm.methodPath
+            : combinePaths(effectivePrefix, mm.methodPath);
+          routes.push({
+            filePath: entry.filePath,
+            httpMethod,
+            routePath,
+            controllerName: entry.className,
+            methodName: mm.methodName,
+            middleware: [],
+            prefix: effectivePrefix,
+            lineNumber: mm.lineNumber,
+            isControllerClass: true,
+            isInherited: true,
+            ...(mm.produces && mm.produces.length > 0 ? { produces: mm.produces } : {}),
+            ...(mm.consumes && mm.consumes.length > 0 ? { consumes: mm.consumes } : {}),
+          });
+        }
+        emitted.add(mm.methodName);
+      }
+
+      current = ancestor.superclassName;
+    }
+  }
+
+  return routes;
+}

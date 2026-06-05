@@ -19,7 +19,7 @@ import { extractExpressRoutes } from './route-extractors/express.js';
 import { extractFastApiRoutes } from './route-extractors/python.js';
 import { extractGinRoutes } from './route-extractors/go.js';
 import { extractAngularRoutes, isAngularFile } from './route-extractors/angular.js';
-import { extractSpringRoutes, collectFileConstants } from './workers/spring-route-extractor.js';
+import { extractSpringRoutes, collectFileConstants, buildSpringClassRegistry, extractInheritedSpringRoutes } from './workers/spring-route-extractor.js';
 import { extractLaravelRoutes } from './workers/parse-worker.js';
 import { extractAngularMetadata } from './extractors/angular-metadata.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
@@ -722,6 +722,28 @@ const processParsingSequential = async (
       .map(([lang, count]) => `${lang}: ${count}`)
       .join(', ');
     console.warn(`  Skipped unsupported languages: ${summary}`);
+  }
+
+  // WI-90: repo-wide cross-file @RequestMapping inheritance. Build a class
+  // registry from the already-parsed Java trees and emit routes for handler
+  // methods inherited from a base controller declared in another file. Deduped
+  // against routes already produced by the per-file pass.
+  if (javaFileMap.size > 0) {
+    const springRegistry = buildSpringClassRegistry(
+      Array.from(javaFileMap.entries()).map(([filePath, { tree }]) => ({ filePath, tree })),
+      javaConstants,
+    );
+    const inheritedRoutes = extractInheritedSpringRoutes(springRegistry);
+    if (inheritedRoutes.length > 0) {
+      const seenRouteKeys = new Set(allRoutes.map(r => `${r.filePath}:${r.httpMethod}:${r.routePath}`));
+      for (const r of inheritedRoutes) {
+        const key = `${r.filePath}:${r.httpMethod}:${r.routePath}`;
+        if (!seenRouteKeys.has(key)) {
+          seenRouteKeys.add(key);
+          allRoutes.push(r);
+        }
+      }
+    }
   }
 
   return {

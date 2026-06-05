@@ -15,7 +15,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
-import { extractSpringRoutes } from '../../src/core/ingestion/workers/spring-route-extractor.js';
+import { extractSpringRoutes, buildSpringClassRegistry, extractInheritedSpringRoutes } from '../../src/core/ingestion/workers/spring-route-extractor.js';
 import { processRoutesFromExtracted } from '../../src/core/ingestion/call-processor.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
@@ -383,6 +383,182 @@ public class OrderController extends BaseController {
       expect(routeNodes.length).toBe(1);
       expect(routeNodes[0].properties.routePath).toBe('/v1/orders');
       expect(routeNodes[0].properties.isInherited).toBe(true);
+    });
+  });
+
+  // ============================================================================
+  // Test 6: WI-90 CROSS-FILE inherited handler methods (#90)
+  // Base controller + its handlers live in a DIFFERENT file from the subclass.
+  // ============================================================================
+  describe('WI-90: cross-file inheritance', () => {
+    const noConstants = new Map<string, string>();
+
+    it('S1: emits inherited Route nodes for handlers defined in a base file', async () => {
+      const baseFile = 'org/example/web/BaseProductController.java';
+      const subFile = 'org/example/web/ProductController.java';
+      const baseSrc = `
+package org.example.web;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/api")
+public class BaseProductController {
+    @GetMapping("/products")
+    public String list() { return "list"; }
+
+    @GetMapping("/products/{id}")
+    public String get() { return "get"; }
+}
+`;
+      const subSrc = `
+package org.example.web;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ProductController extends BaseProductController {
+    @GetMapping("/products/suggest")
+    public String suggest() { return "suggest"; }
+}
+`;
+      const baseTree = parseJava(baseSrc);
+      const subTree = parseJava(subSrc);
+
+      // Register symbols: subclass Class (sub file), base Class + handler methods (base file).
+      ctx.symbols.add(subFile, 'ProductController', `Class:${subFile}:ProductController`, 'Class');
+      ctx.symbols.add(subFile, 'suggest', `Method:${subFile}:suggest`, 'Method', {
+        ownerId: `Class:${subFile}:ProductController`,
+      });
+      ctx.symbols.add(baseFile, 'BaseProductController', `Class:${baseFile}:BaseProductController`, 'Class');
+      ctx.symbols.add(baseFile, 'list', `Method:${baseFile}:list`, 'Method', {
+        ownerId: `Class:${baseFile}:BaseProductController`,
+      });
+      ctx.symbols.add(baseFile, 'get', `Method:${baseFile}:get`, 'Method', {
+        ownerId: `Class:${baseFile}:BaseProductController`,
+      });
+
+      const ownRoutes = [
+        ...extractSpringRoutes(subTree, subFile, noConstants),
+        ...extractSpringRoutes(baseTree, baseFile, noConstants),
+      ];
+      const registry = buildSpringClassRegistry(
+        [{ filePath: subFile, tree: subTree }, { filePath: baseFile, tree: baseTree }],
+        noConstants,
+      );
+      const inherited = extractInheritedSpringRoutes(registry);
+
+      // The two base handlers are emitted as inherited routes for the subclass.
+      expect(inherited.length).toBe(2);
+      expect(inherited.every(r => r.controllerName === 'ProductController')).toBe(true);
+      expect(inherited.every(r => r.isInherited === true)).toBe(true);
+      expect(inherited.every(r => r.isControllerClass === true)).toBe(true);
+      expect(inherited.map(r => r.routePath).sort()).toEqual(['/api/products', '/api/products/{id}']);
+
+      // Dedup (mirrors parsing-processor) then process. Base's own routes have
+      // isControllerClass:false (dropped); the subclass owns /products/suggest;
+      // the two inherited routes create Route nodes.
+      const seen = new Set(ownRoutes.map(r => `${r.filePath}:${r.httpMethod}:${r.routePath}`));
+      const allRoutes = [...ownRoutes];
+      for (const r of inherited) {
+        const key = `${r.filePath}:${r.httpMethod}:${r.routePath}`;
+        if (!seen.has(key)) { seen.add(key); allRoutes.push(r); }
+      }
+      await processRoutesFromExtracted(graph, allRoutes, ctx);
+
+      const routeNodes = graph.nodes.filter(n => n.label === 'Route');
+      const paths = routeNodes.map(n => n.properties.routePath).sort();
+      expect(paths).toContain('/api/products');
+      expect(paths).toContain('/api/products/{id}');
+      expect(paths).toContain('/products/suggest');
+
+      // CALLS edges from the inherited Route nodes to the base handler methods.
+      const callsTargets = graph.relationships.filter(r => r.type === 'CALLS').map(r => r.targetId);
+      expect(callsTargets).toContain(`Method:${baseFile}:list`);
+      expect(callsTargets).toContain(`Method:${baseFile}:get`);
+    });
+
+    it('S2: a subclass override is not duplicated by an inherited route', async () => {
+      const baseFile = 'org/example/web/BaseB.java';
+      const subFile = 'org/example/web/SubB.java';
+      const baseSrc = `
+package org.example.web;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/api")
+public class BaseB {
+    @GetMapping("/items")
+    public String items() { return "base"; }
+}
+`;
+      const subSrc = `
+package org.example.web;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class SubB extends BaseB {
+    @GetMapping("/items")
+    public String items() { return "override"; }
+}
+`;
+      const baseTree = parseJava(baseSrc);
+      const subTree = parseJava(subSrc);
+
+      ctx.symbols.add(subFile, 'SubB', `Class:${subFile}:SubB`, 'Class');
+      ctx.symbols.add(subFile, 'items', `Method:${subFile}:items`, 'Method', {
+        ownerId: `Class:${subFile}:SubB`,
+      });
+      ctx.symbols.add(baseFile, 'BaseB', `Class:${baseFile}:BaseB`, 'Class');
+
+      const registry = buildSpringClassRegistry(
+        [{ filePath: subFile, tree: subTree }, { filePath: baseFile, tree: baseTree }],
+        noConstants,
+      );
+      const inherited = extractInheritedSpringRoutes(registry);
+      // 'items' is overridden in the subclass → NOT inherited.
+      expect(inherited.length).toBe(0);
+
+      const ownRoutes = extractSpringRoutes(subTree, subFile, noConstants);
+      await processRoutesFromExtracted(graph, [...ownRoutes, ...inherited], ctx);
+      const routeNodes = graph.nodes.filter(n => n.label === 'Route');
+      expect(routeNodes.length).toBe(1); // only the subclass's own /api/items
+    });
+
+    it('S3: inherited @RequestMapping(method={GET,POST}) fans out', async () => {
+      const baseFile = 'org/example/web/BaseC.java';
+      const subFile = 'org/example/web/SubC.java';
+      const baseSrc = `
+package org.example.web;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/api")
+public class BaseC {
+    @RequestMapping(value = "/x", method = { RequestMethod.GET, RequestMethod.POST })
+    public String handle() { return "x"; }
+}
+`;
+      const subSrc = `
+package org.example.web;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class SubC extends BaseC { }
+`;
+      const baseTree = parseJava(baseSrc);
+      const subTree = parseJava(subSrc);
+
+      ctx.symbols.add(subFile, 'SubC', `Class:${subFile}:SubC`, 'Class');
+      ctx.symbols.add(baseFile, 'BaseC', `Class:${baseFile}:BaseC`, 'Class');
+      ctx.symbols.add(baseFile, 'handle', `Method:${baseFile}:handle`, 'Method', {
+        ownerId: `Class:${baseFile}:BaseC`,
+      });
+
+      const registry = buildSpringClassRegistry(
+        [{ filePath: subFile, tree: subTree }, { filePath: baseFile, tree: baseTree }],
+        noConstants,
+      );
+      const inherited = extractInheritedSpringRoutes(registry);
+      expect(inherited.length).toBe(2);
+      expect(inherited.map(r => r.httpMethod).sort()).toEqual(['GET', 'POST']);
+      expect(inherited.every(r => r.routePath === '/api/x')).toBe(true);
     });
   });
 });
