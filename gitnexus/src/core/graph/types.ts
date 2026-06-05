@@ -127,6 +127,11 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
+  // Angular @NgModule metadata edges (#32)
+  | 'DECLARES'
+  | 'IMPORTS_MODULE'
+  | 'PROVIDES'
+  | 'BOOTSTRAPS'
 
 export interface GraphNode {
   id:  string,

@@ -18,6 +18,8 @@ import { extractClassFields, extractMethodParameterAnnotations, extractORMQuerie
 import { extractExpressRoutes } from './route-extractors/express.js';
 import { extractSpringRoutes, collectFileConstants } from './workers/spring-route-extractor.js';
 import { extractLaravelRoutes } from './workers/parse-worker.js';
+import { extractAngularMetadata } from './extractors/angular-metadata.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
@@ -37,6 +39,7 @@ export interface WorkerExtractedData {
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
   typeEnvBindings: FileTypeEnvBindings[];
+  angularMetadata: import('./workers/parse-worker.js').ExtractedAngularEdge[];
 }
 
 // ============================================================================
@@ -58,7 +61,7 @@ const processParsingWithWorkers = async (
     if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
-  if (parseableFiles.length === 0) return { imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], expoNavCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [] };
+  if (parseableFiles.length === 0) return { imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], expoNavCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [], angularMetadata: [] };
 
   const total = files.length;
 
@@ -83,6 +86,7 @@ const processParsingWithWorkers = async (
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
   const allTypeEnvBindings: FileTypeEnvBindings[] = [];
+  const allAngularMetadata: import('./workers/parse-worker.js').ExtractedAngularEdge[] = [];
   let symbolCount = 0;
   let fileCount = 0;
   for (const result of chunkResults) {
@@ -123,6 +127,7 @@ const processParsingWithWorkers = async (
     if (result.ormQueries) allORMQueries.push(...result.ormQueries);
     allConstructorBindings.push(...result.constructorBindings);
     if (result.typeEnvBindings) allTypeEnvBindings.push(...result.typeEnvBindings);
+    if (result.angularMetadata) allAngularMetadata.push(...result.angularMetadata);
   }
 
   // Count nodes by label
@@ -155,7 +160,7 @@ const processParsingWithWorkers = async (
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, assignments: allAssignments, heritage: allHeritage, routes: allRoutes, fetchCalls: allFetchCalls, expoNavCalls: allExpoNavCalls, decoratorRoutes: allDecoratorRoutes, toolDefs: allToolDefs, ormQueries: allORMQueries, constructorBindings: allConstructorBindings, typeEnvBindings: allTypeEnvBindings };
+  return { imports: allImports, calls: allCalls, assignments: allAssignments, heritage: allHeritage, routes: allRoutes, fetchCalls: allFetchCalls, expoNavCalls: allExpoNavCalls, decoratorRoutes: allDecoratorRoutes, toolDefs: allToolDefs, ormQueries: allORMQueries, constructorBindings: allConstructorBindings, typeEnvBindings: allTypeEnvBindings, angularMetadata: allAngularMetadata };
 };
 
 // ============================================================================
@@ -238,6 +243,7 @@ const processParsingSequential = async (
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allExpoNavCalls: ExtractedExpoNav[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
+  const allAngularMetadata: import('./workers/parse-worker.js').ExtractedAngularEdge[] = [];
 
   // ── Pre-pass: collect all Java file constants and trees for cross-file resolution ──
   const javaConstants = new Map<string, string>();
@@ -342,6 +348,14 @@ const processParsingSequential = async (
       }
     }
 
+    // Extract Angular @NgModule metadata edges (#32)
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      const angularMetadata = extractAngularMetadata(tree, file.path);
+      if (angularMetadata.length > 0) {
+        allAngularMetadata.push(...angularMetadata);
+      }
+    }
+
     // Extract ORM queries (Prisma and Supabase)
     const extractedORMQueries = extractORMQueries(tree, file.path);
     if (extractedORMQueries.length > 0) {
@@ -349,7 +363,12 @@ const processParsingSequential = async (
     }
 
     const provider = getProvider(language);
-    const queryString = provider.treeSitterQueries;
+    // .tsx files use a different grammar (tree-sitter-tsx) which has JSX
+    // node types. Use TSX_QUERIES (which extends TYPESCRIPT_QUERIES) for
+    // .tsx files. Issue #107.
+    const queryString = (language === SupportedLanguages.TypeScript && file.path.endsWith('.tsx'))
+      ? (LANGUAGE_QUERIES[`${language}:tsx`] ?? provider.treeSitterQueries)
+      : provider.treeSitterQueries;
     if (!queryString) {
       continue;
     }
@@ -663,6 +682,7 @@ const processParsingSequential = async (
     ormQueries: allORMQueries,
     constructorBindings: [],
     typeEnvBindings: [],
+    angularMetadata: allAngularMetadata,
   };
 };
 

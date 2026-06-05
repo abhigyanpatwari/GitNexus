@@ -34,6 +34,7 @@ export const DEFINITION_CAPTURE_KEYS = [
   'definition.annotation',
   'definition.constructor',
   'definition.template',
+  'definition.jsx_element',
 ] as const;
 
 /** Extract the definition node from a tree-sitter query capture map. */
@@ -193,6 +194,14 @@ export function getLabelFromCaptures(
   if (captureMap['definition.annotation']) return 'Annotation';
   if (captureMap['definition.constructor']) return 'Constructor';
   if (captureMap['definition.template']) return 'Template';
+  if (captureMap['definition.jsx_element']) {
+    // Native HTML tags start with a lowercase letter; user-defined React
+    // components start with uppercase. Drop the native tags so they don't
+    // pollute the graph.
+    const tagName = captureMap['name']?.text ?? '';
+    if (!/^[A-Z]/.test(tagName)) return null;
+    return 'CodeElement';
+  }
   return 'CodeElement';
 }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   TYPESCRIPT_QUERIES,
+  TSX_QUERIES,
   JAVASCRIPT_QUERIES,
   PYTHON_QUERIES,
   JAVA_QUERIES,
@@ -52,6 +53,32 @@ describe('tree-sitter queries', () => {
     it('captures heritage (extends/implements)', () => {
       expect(TYPESCRIPT_QUERIES).toContain('@heritage.extends');
       expect(TYPESCRIPT_QUERIES).toContain('@heritage.implements');
+    });
+
+    it('captures type alias declarations (Issue #107)', () => {
+      expect(TYPESCRIPT_QUERIES).toContain('type_alias_declaration');
+      expect(TYPESCRIPT_QUERIES).toContain('@definition.type');
+    });
+
+    it('captures React hook bindings with a use[A-Z] predicate (Issue #107)', () => {
+      expect(TYPESCRIPT_QUERIES).toContain('use[A-Z]');
+    });
+  });
+
+  describe('TSX queries', () => {
+    it('captures self-closing JSX elements (Issue #107)', () => {
+      expect(TSX_QUERIES).toContain('jsx_self_closing_element');
+      expect(TSX_QUERIES).toContain('@definition.jsx_element');
+    });
+
+    it('captures non-self-closing JSX element pairs (Issue #107)', () => {
+      expect(TSX_QUERIES).toContain('jsx_element');
+      expect(TSX_QUERIES).toContain('jsx_opening_element');
+    });
+
+    it('inherits the TypeScript queries', () => {
+      expect(TSX_QUERIES).toContain('class_declaration');
+      expect(TSX_QUERIES).toContain('type_alias_declaration');
     });
   });
 

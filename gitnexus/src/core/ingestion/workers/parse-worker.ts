@@ -17,6 +17,9 @@ import { extractSpringRoutes } from './spring-route-extractor.js';
 import { extractExpressRoutes } from '../route-extractors/express.js';
 import { extractFastApiRoutes } from '../route-extractors/python.js';
 import { extractGinRoutes } from '../route-extractors/go.js';
+import { extractAngularRoutes, isAngularFile } from '../route-extractors/angular.js';
+import { extractAngularMetadata, type ExtractedAngularEdge } from '../extractors/angular-metadata.js';
+import { extractAngularCalls } from '../extractors/angular-calls.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -374,6 +377,14 @@ export interface ExtractedRoute {
   consumes?: string[];
 }
 
+/**
+ * Re-export of ExtractedAngularEdge from extractors/angular-metadata.ts.
+ * The Angular module-metadata extractor lives in its own file so it can be
+ * unit-tested without spinning up the worker; this re-export keeps the
+ * existing `parse-worker` import surface for the orchestration layer.
+ */
+export type { ExtractedAngularEdge } from '../extractors/angular-metadata.js';
+
 /** Constructor bindings keyed by filePath for cross-file type resolution */
 export interface FileConstructorBindings {
   filePath: string;
@@ -460,6 +471,8 @@ export interface ParseWorkerResult {
   toolDefs?: ExtractedToolDef[];
   ormQueries?: ExtractedORMQuery[];
   typeEnvBindings?: FileTypeEnvBindings[];
+  /** Angular @NgModule metadata edges (DECLARES / IMPORTS_MODULE / PROVIDES / BOOTSTRAPS) */
+  angularMetadata?: ExtractedAngularEdge[];
 }
 
 export interface ParseWorkerInput {
@@ -549,6 +562,15 @@ const getLabelFromCaptures = (captureMap: Record<string, any>): string | null =>
   if (captureMap['import'] || captureMap['call']) return null;
   if (!captureMap['name']) return null;
 
+  // Native HTML JSX tags (e.g. <div>, <span>, <h1>) start with a lowercase
+  // letter; user-defined React components start with uppercase. Drop the
+  // native tags so they don't pollute the graph (#107 follow-up).
+  if (captureMap['definition.jsx_element']) {
+    const tagName = captureMap['name'].text ?? '';
+    if (!/^[A-Z]/.test(tagName)) return null;
+    return 'CodeElement';
+  }
+
   if (captureMap['definition.function']) return 'Function';
   if (captureMap['definition.class']) return 'Class';
   if (captureMap['definition.interface']) return 'Interface';
@@ -598,6 +620,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     expoNavCalls: [],
     fetchCalls: [],
     decoratorRoutes: [],
+    angularMetadata: [],
   };
 
   // Group by language to minimize setLanguage calls
@@ -645,6 +668,11 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
       regularFiles.push(...langFiles);
     }
 
+    // Pick the right query for the grammar being used. For .ts files we use
+    // TYPESCRIPT_QUERIES; for .tsx files we use TSX_QUERIES (which extends
+    // the base with JSX-specific captures — Issue #107).
+    const tsxQueryString = LANGUAGE_QUERIES[`${language}:tsx`] ?? queryString;
+
     // Process regular files for this language
     if (regularFiles.length > 0) {
       if (isLanguageAvailable(language, regularFiles[0].path)) {
@@ -664,7 +692,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
       if (isLanguageAvailable(language, tsxFiles[0].path)) {
         try {
           setLanguage(language, tsxFiles[0].path);
-          processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
+          processFileGroup(tsxFiles, language, tsxQueryString, result, onFileProcessed);
         } catch (err) {
           // parser unavailable — skip this language group
         }
@@ -2873,6 +2901,45 @@ const processFileGroup = (
       const ginRoutes = extractGinRoutes(tree, file.path);
       if (ginRoutes.length > 0) {
         result.routes.push(...ginRoutes);
+      }
+    }
+
+    // Extract Angular routes from `.ts`/`.tsx` files that import `@angular/router`
+    // or use `RouterModule` / `provideRouter`. Emits `ExtractedRoute` records
+    // (client-side Angular routes have no HTTP method — we use GET).
+    if (language === SupportedLanguages.TypeScript && isAngularFile(file.path, file.content)) {
+      const angularRoutes = extractAngularRoutes(tree, file.path);
+      if (angularRoutes.length > 0) {
+        result.routes.push(...angularRoutes);
+      }
+    }
+
+    // Extract Angular @NgModule metadata edges (#32 — AppModule has no outgoing edges)
+    // For every class decorated with `@NgModule({...})`, emit one edge per
+    // identifier in `declarations` / `imports` / `providers` / `bootstrap` arrays.
+    // Edge types: DECLARES, IMPORTS_MODULE, PROVIDES, BOOTSTRAPS.
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      const angularMetadata = extractAngularMetadata(tree, file.path);
+      if (angularMetadata.length > 0) {
+        result.angularMetadata.push(...angularMetadata);
+      }
+    }
+
+    // Extract Angular CALLS edges (#31).
+    //   @NgModule({ providers: [X, Y] })            → CALLS AppModule → X, Y
+    //   @Component({ template: '(click)="on()"' })  → CALLS AppComponent → on
+    // Emits ExtractedCall records that flow through processCallsFromExtracted.
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      const angularCalls = extractAngularCalls(tree, file.path);
+      for (const ac of angularCalls) {
+        result.calls.push({
+          filePath: ac.filePath,
+          calledName: ac.calledName,
+          sourceId: ac.sourceId,
+          callForm: ac.callForm,
+          ...(ac.receiverName !== undefined ? { receiverName: ac.receiverName } : {}),
+          ...(ac.receiverTypeName !== undefined ? { receiverTypeName: ac.receiverTypeName } : {}),
+        });
       }
     }
   }

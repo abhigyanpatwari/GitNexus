@@ -10,6 +10,7 @@ import {
 import { processCalls, processCallsFromExtracted, processRoutesFromExtracted, processORMQueriesFromExtracted, processExpoRoutesWithRepoId, processExpoRouterNavigations, processDecoratorRoutesWithRepoId, processPHPRoutesWithRepoId, processNextjsRoutesWithRepoId, processNextjsFetchRoutes, processNextjsMiddleware, processToolDefsFromExtracted } from './call-processor.js';
 import type { ExtractedRoute, ExtractedExpoNav, ExtractedORMQuery, ExtractedDecoratorRoute, ExtractedFetchCall, ExtractedToolDef } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
+import { processAngularMetadataFromExtracted } from './angular-metadata-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
@@ -269,6 +270,7 @@ export const runPipelineFromRepo = async (
     const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
     const allFetchCalls: ExtractedFetchCall[] = [];
     const allToolDefs: ExtractedToolDef[] = [];
+    const allAngularMetadata: import('./workers/parse-worker.js').ExtractedAngularEdge[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -374,6 +376,10 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.decoratorRoutes) {
             allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
           }
+          // Accumulate angularMetadata (NgModule edges) for post-processing
+          if (chunkWorkerData.angularMetadata) {
+            allAngularMetadata.push(...chunkWorkerData.angularMetadata);
+          }
           // Accumulate fetchCalls for post-processing
           if (chunkWorkerData.fetchCalls) {
             allFetchCalls.push(...chunkWorkerData.fetchCalls);
@@ -397,6 +403,9 @@ export const runPipelineFromRepo = async (
           }
           if (chunkWorkerData.decoratorRoutes) {
             allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+          }
+          if (chunkWorkerData.angularMetadata) {
+            allAngularMetadata.push(...chunkWorkerData.angularMetadata);
           }
           // Accumulate fetchCalls for sequential path too
           if (chunkWorkerData.fetchCalls) {
@@ -456,6 +465,11 @@ export const runPipelineFromRepo = async (
     // Process Express/Hono routes (decoratorRoutes extracted from JS/TS files)
     if (allDecoratorRoutes.length > 0) {
       processDecoratorRoutesWithRepoId(graph, allDecoratorRoutes, ctx.repoId ?? '');
+    }
+
+    // Process Angular @NgModule metadata edges (#32 — AppModule outgoing edges)
+    if (allAngularMetadata.length > 0) {
+      await processAngularMetadataFromExtracted(graph, allAngularMetadata, ctx);
     }
 
     // Process MCP tool definitions (@mcp.tool() decorators)

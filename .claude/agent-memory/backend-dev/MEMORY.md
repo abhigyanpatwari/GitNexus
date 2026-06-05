@@ -1,0 +1,8 @@
+- [Cross-batch parse-worker state](feedback-cross-batch-parse-worker-state.md) — WI-#7/#43 + WI-#32 share parse-worker.ts; reverting it breaks tsc and integration tests
+- [NgModule edge types](project-ngmodule-edge-types.md) — DECLARES/IMPORTS_MODULE/PROVIDES/BOOTSTRAPS added for #32; new types go in schema.ts REL_TYPES + types.ts RelationshipType union
+- [Angular decorator AST shape](feedback-angular-decorator-ast.md) — tree-sitter-typescript puts decorator + class_declaration as siblings in export_statement, not parent/child
+- [Serena file-rename fights](feedback-serena-file-rename.md) — linter/Serena revert renames when other files still import the old path; pick distinct filenames from the start
+- [TSX queries grammar isolation](feedback-tsx-queries-grammar-isolation.md) — JSX patterns fail in TYPESCRIPT_QUERIES (used for .ts); keep them in a separate TSX_QUERIES string registered under `${TypeScript}:tsx`
+- [React/TSX indexing fixes (Issue #107)](project-react-tsx-indexing-fixes.md) — JSX elements (CodeElement), type_alias_declaration (TypeAlias), and React hook bindings (const = useCallback) added 2026-06
+- [Angular CALLS edge extractor (Issue #31)](project-angular-call-edge-extractor.md) — extractAngularCalls() emits CALLS edges for @NgModule providers and @Component template bindings
+- [Rename accuracy test pattern (Batch G)](feedback-rename-accuracy-batch-g-test-pattern.md) — vi.hoisted fs+rg mocks + query-sniffed executeParameterized for LocalBackend.rename dispatch tests

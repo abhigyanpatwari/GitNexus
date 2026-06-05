@@ -27,7 +27,13 @@ export type NodeTableName = typeof NODE_TABLES[number];
 export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS', 'CROSS_IMPORTS'] as const;
+export const REL_TYPES = [
+  'CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS',
+  'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'OVERRIDES',
+  'MEMBER_OF', 'STEP_IN_PROCESS', 'CROSS_IMPORTS',
+  // Angular metadata edges (#32):
+  'DECLARES', 'IMPORTS_MODULE', 'PROVIDES', 'BOOTSTRAPS',
+] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================

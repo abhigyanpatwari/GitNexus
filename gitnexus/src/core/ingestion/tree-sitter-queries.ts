@@ -22,6 +22,33 @@ export const TYPESCRIPT_QUERIES = `
 (function_signature
   name: (identifier) @name) @definition.function
 
+; React hook bindings (Issue #107): const handleClick = useCallback(...)
+; The variable is a closure - capture it as a Function so the call graph
+; shows MyComponent -> handleClick and handleClick -> useCallback instead
+; of the value falling into the void. Restricted to React Hooks (functions
+; whose name starts with 'use' followed by an uppercase letter) to avoid
+; capturing every 'const X = someCall()' binding.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: [
+        (identifier) @_hook_fn (#match? @_hook_fn "^use[A-Z]")
+        (member_expression
+          property: (property_identifier) @_hook_fn (#match? @_hook_fn "^use[A-Z]"))
+      ]))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression
+        function: [
+          (identifier) @_hook_fn (#match? @_hook_fn "^use[A-Z]")
+          (member_expression
+            property: (property_identifier) @_hook_fn (#match? @_hook_fn "^use[A-Z]"))
+        ])))) @definition.function
+
 (method_definition
   name: (property_identifier) @name) @definition.method
 
@@ -141,6 +168,32 @@ export const TYPESCRIPT_QUERIES = `
     property: (property_identifier) @express_route.method)
   arguments: (arguments
     (string (string_fragment) @express_route.path))) @express_route
+
+; ---- TypeScript-specific gaps (Issue #107) ----
+
+; type X = ... (TypeAlias node). The tree-sitter-typescript grammar exposes
+; these as type_alias_declaration (not the legacy type_alias used by other
+; languages). Without this capture, type aliases are invisible in the graph.
+(type_alias_declaration
+  name: (type_identifier) @name) @definition.type
+`;
+
+// TSX-specific queries (tree-sitter-tsx). The JSX node types only exist in
+// the .tsx grammar; the base .ts grammar rejects them with a query error.
+export const TSX_QUERIES = TYPESCRIPT_QUERIES + `
+
+; React JSX self-closing element: <Button />
+; We capture the tag name so the JSX reference is queryable in the graph.
+; Note: the closing tag of a non-self-closing <Foo></Foo> pair shares the same
+; identifier - we only need one capture per element to avoid duplication.
+(jsx_self_closing_element
+  (identifier) @name) @definition.jsx_element
+
+; React JSX opening element of a non-self-closing pair: <Button>...</Button>.
+; Capture the tag from the OPENING element so we don't double-count.
+(jsx_element
+  (jsx_opening_element
+    (identifier) @name)) @definition.jsx_element
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -1182,8 +1235,11 @@ export const DART_QUERIES = `
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
-export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
+export const LANGUAGE_QUERIES: Record<string, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
+  // TSX files use a separate grammar (tree-sitter-tsx). We extend
+  // TYPESCRIPT_QUERIES with JSX-specific patterns.
+  [`${SupportedLanguages.TypeScript}:tsx`]: TSX_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
   [SupportedLanguages.Python]: PYTHON_QUERIES,
   [SupportedLanguages.Java]: JAVA_QUERIES,
@@ -1197,5 +1253,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
-  [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.Cobol]: '', // Standalone regex processor - no tree-sitter queries
 };
