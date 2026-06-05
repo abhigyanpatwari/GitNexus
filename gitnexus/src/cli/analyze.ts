@@ -17,7 +17,11 @@ import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReuse
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, cleanupOldKuzuFiles } from '../storage/repo-manager.js';
 import { getCurrentCommit, getGitRoot, hasGitDir } from '../storage/git.js';
 import { SCHEMA_VERSION } from '../core/lbug/schema.js';
-import { generateAIContextFiles } from './ai-context.js';
+// (#108) generateAIContextFiles is no longer called from analyze. It still
+// runs from `gitnexus setup` (always) and from `gitnexus analyze --skills`
+// (one-shot convenience for the skills-e2e flow). The plain `analyze` path
+// never writes AGENTS.md / CLAUDE.md — see the comment in analyzeCommand below.
+import { scaffoldAIContextForIndexedRepos } from './scaffold.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
 import fs from 'fs/promises';
 
@@ -420,36 +424,51 @@ export const analyzeCommand = async (
   // Only attempt to update .gitignore when a .git directory is present.
   // Use hasGitDir (filesystem check) rather than git CLI subprocess
   // so we skip correctly for --skip-git folders even if git CLI is available.
+  // The mutation is idempotent: see addToGitignore in repo-manager.ts (#108).
   if (hasGitDir(repoPath)) {
     await addToGitignore(repoPath);
   }
 
-  const projectName = path.basename(repoPath);
-  let aggregatedClusterCount = 0;
-  if (pipelineResult.communityResult?.communities) {
-    const groups = new Map<string, number>();
-    for (const c of pipelineResult.communityResult.communities) {
-      const label = c.heuristicLabel || c.label || 'Unknown';
-      groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+  // (#108) Do NOT call `generateAIContextFiles` here. Writing CLAUDE.md /
+  // AGENTS.md on every analyze mutates tracked files with volatile stats
+  // (symbol/edge/process counts) on every commit — the PostToolUse hook fires
+  // after every commit, so this would churn `git status` and the
+  // ${stats.nodes} symbols, ${stats.edges} relationships header would be
+  // a moving target. AI-context generation is initial-scaffolding work and
+  // belongs in `gitnexus setup` instead. The current authoritative counts
+  // always live in `.gitnexus/meta.json` (gitignored) — point tools there.
+  // We keep `aiContext.files` as a stub so the downstream summary printer
+  // continues to compile and reports nothing for analyze-driven runs.
+  //
+  // Exception: `--skills` is a one-shot convenience flag (used by the
+  // skills-e2e tests and by users who want analyze to also bootstrap the
+  // AGENTS.md / CLAUDE.md / .claude/skills/generated/ tree in a single
+  // command). It explicitly opts in to the same scaffolding that setup
+  // runs, so the volatile counts land in the meta.json we just wrote.
+  const aiContext = { files: [] as string[] };
+  if (options?.skills) {
+    const projectName = path.basename(repoPath);
+    let generatedSkills: GeneratedSkillInfo[] = [];
+    if (pipelineResult.communityResult) {
+      updateBar(99, 'Generating skill files...');
+      try {
+        const skillResult = await generateSkillFiles(repoPath, projectName, pipelineResult);
+        generatedSkills = skillResult.skills;
+      } catch (err: any) {
+        console.log(`  Note: --skills generation failed: ${err.message}`);
+      }
     }
-    aggregatedClusterCount = Array.from(groups.values()).filter(count => count >= 5).length;
+    const skillsByRepo = new Map<string, GeneratedSkillInfo[]>();
+    skillsByRepo.set(repoPath, generatedSkills);
+    const summary = await scaffoldAIContextForIndexedRepos(repoPath, skillsByRepo);
+    for (const name of summary.configured) {
+      aiContext.files.push(`AI context (${name} → AGENTS.md, CLAUDE.md)`);
+    }
+    if (summary.errors.length > 0) {
+      console.log(`  Note: --skills scaffolding reported ${summary.errors.length} error(s):`);
+      for (const err of summary.errors) console.log(`    ! ${err}`);
+    }
   }
-
-  let generatedSkills: GeneratedSkillInfo[] = [];
-  if (options?.skills && pipelineResult.communityResult) {
-    updateBar(99, 'Generating skill files...');
-    const skillResult = await generateSkillFiles(repoPath, projectName, pipelineResult);
-    generatedSkills = skillResult.skills;
-  }
-
-  const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
-    files: pipelineResult.totalFileCount,
-    nodes: stats.nodes,
-    edges: stats.edges,
-    communities: pipelineResult.communityResult?.stats.totalCommunities,
-    clusters: aggregatedClusterCount,
-    processes: pipelineResult.processResult?.stats.totalProcesses,
-  }, generatedSkills);
 
   await closeLbug();
   // Note: we intentionally do NOT call disposeEmbedder() here.
