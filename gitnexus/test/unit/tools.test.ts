@@ -142,8 +142,19 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.inputSchema.required).not.toContain('repos');
   });
 
+  it('endpoints tool has optional repos array parameter for cross-repo queries', () => {
+    // #12: the endpoints tool supports cross-repo filtering via repos[]; the
+    // backend already routes params.repos through callToolMultiRepo. PR #148
+    // exposed the schema param so MCP clients can discover it.
+    const endpointsTool = GITNEXUS_TOOLS.find(t => t.name === 'endpoints')!;
+    expect(endpointsTool.inputSchema.properties.repos).toBeDefined();
+    expect(endpointsTool.inputSchema.properties.repos.type).toBe('array');
+    expect(endpointsTool.inputSchema.properties.repos.items).toEqual({ type: 'string' });
+    expect(endpointsTool.inputSchema.required).not.toContain('repos');
+  });
+
   it('tools without cross-repo support do not have repos parameter', () => {
-    const toolsWithoutRepos = ['detect_changes', 'rename', 'endpoints', 'document-endpoint', 'list_repos'];
+    const toolsWithoutRepos = ['detect_changes', 'rename', 'document-endpoint', 'list_repos'];
     for (const toolName of toolsWithoutRepos) {
       const tool = GITNEXUS_TOOLS.find(t => t.name === toolName)!;
       expect(tool).toBeDefined();
