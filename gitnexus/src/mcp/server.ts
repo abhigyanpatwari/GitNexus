@@ -389,9 +389,13 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   });
 
   // Handle stdio errors — stdin close means the parent process is gone.
+  // Defense-in-depth: the transport also listens for stdin end/close and
+  // handles transport-level cleanup. These listeners handle process-level
+  // shutdown. Both paths are idempotent and safe to fire together.
   // Wrap so the event payload (e.g. an Error for 'error') can never reach
   // process.exit() as a non-numeric exit code, and void the returned promise.
   process.stdin.on('end', () => void shutdown(0));
+  process.stdin.on('close', () => void shutdown(0));
   process.stdin.on('error', () => void shutdown(0));
   process.stdout.on('error', () => void shutdown(0));
 }
