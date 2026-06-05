@@ -22,6 +22,7 @@ import { extractAngularRoutes, isAngularFile } from './route-extractors/angular.
 import { extractSpringRoutes, collectFileConstants, buildSpringClassRegistry, extractInheritedSpringRoutes } from './workers/spring-route-extractor.js';
 import { extractLaravelRoutes } from './workers/parse-worker.js';
 import { extractAngularMetadata } from './extractors/angular-metadata.js';
+import { extractAngularCalls } from './extractors/angular-calls.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
@@ -247,6 +248,7 @@ const processParsingSequential = async (
   const allExpoNavCalls: ExtractedExpoNav[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allAngularMetadata: import('./workers/parse-worker.js').ExtractedAngularEdge[] = [];
+  const allAngularCalls: ExtractedCall[] = []; // #31: Angular CALLS for the sequential path
 
   // ── Pre-pass: collect all Java file constants and trees for cross-file resolution ──
   const javaConstants = new Map<string, string>();
@@ -408,6 +410,23 @@ const processParsingSequential = async (
       const angularMetadata = extractAngularMetadata(tree, file.path);
       if (angularMetadata.length > 0) {
         allAngularMetadata.push(...angularMetadata);
+      }
+    }
+
+    // Extract Angular CALLS edges (#31): DI token -> service, template binding ->
+    // component method. extractAngularCalls was previously only wired into the
+    // worker-pool path; collect the ExtractedCall records here so they flow to
+    // processCallsFromExtracted in the active sequential pipeline path too.
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      for (const ac of extractAngularCalls(tree, file.path)) {
+        allAngularCalls.push({
+          filePath: ac.filePath,
+          calledName: ac.calledName,
+          sourceId: ac.sourceId,
+          callForm: ac.callForm,
+          ...(ac.receiverName !== undefined ? { receiverName: ac.receiverName } : {}),
+          ...(ac.receiverTypeName !== undefined ? { receiverTypeName: ac.receiverTypeName } : {}),
+        });
       }
     }
 
@@ -748,7 +767,9 @@ const processParsingSequential = async (
 
   return {
     imports: [],
-    calls: [],
+    // #31: Angular DI/template CALLS — the only calls the sequential path emits
+    // here (general calls are resolved separately via processCalls re-extraction).
+    calls: allAngularCalls,
     assignments: [],
     heritage: [],
     routes: allRoutes,

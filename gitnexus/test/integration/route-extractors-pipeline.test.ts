@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getNodesByLabelFull, runPipelineFromRepo, type PipelineResult,
+  FIXTURES, getNodesByLabelFull, getRelationships, runPipelineFromRepo, type PipelineResult,
 } from './resolvers/helpers.js';
 
 // FIXTURES points at .../fixtures/lang-resolution; the route fixtures sit one level up.
@@ -93,5 +93,12 @@ describe('Angular client-side route extraction via full pipeline (#7, #43)', () 
     const paths = getNodesByLabelFull(result, 'Route').map(r => String(r.properties.routePath));
     expect(paths.some(p => p.includes('users'))).toBe(true);
     expect(paths.some(p => p.includes(':id'))).toBe(true);
+  });
+
+  it('creates an Angular CALLS edge from @NgModule to its DI provider (#31)', () => {
+    // app.module.ts: @NgModule({ providers: [UserService] }) → CALLS AppModule → UserService.
+    // extractAngularCalls is now wired into the active sequential pipeline path.
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.some(e => e.source === 'AppModule' && e.target === 'UserService')).toBe(true);
   });
 });

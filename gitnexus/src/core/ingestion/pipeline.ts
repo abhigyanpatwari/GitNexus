@@ -278,6 +278,8 @@ export const runPipelineFromRepo = async (
     const allFetchCalls: ExtractedFetchCall[] = [];
     const allToolDefs: ExtractedToolDef[] = [];
     const allAngularMetadata: import('./workers/parse-worker.js').ExtractedAngularEdge[] = [];
+    // #31: Angular CALLS extracted in the sequential parsing pass (DI/template).
+    const allSequentialCalls: import('./workers/parse-worker.js').ExtractedCall[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -414,6 +416,12 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.angularMetadata) {
             allAngularMetadata.push(...chunkWorkerData.angularMetadata);
           }
+          // #31: Angular CALLS extracted by the sequential parsing pass. The
+          // general call graph is resolved via processCalls re-extraction below;
+          // chunkWorkerData.calls carries ONLY the Angular DI/template calls here.
+          if (chunkWorkerData.calls && chunkWorkerData.calls.length > 0) {
+            allSequentialCalls.push(...chunkWorkerData.calls);
+          }
           // Accumulate fetchCalls for sequential path too
           if (chunkWorkerData.fetchCalls) {
             allFetchCalls.push(...chunkWorkerData.fetchCalls);
@@ -477,6 +485,12 @@ export const runPipelineFromRepo = async (
     // Process Angular @NgModule metadata edges (#32 — AppModule outgoing edges)
     if (allAngularMetadata.length > 0) {
       await processAngularMetadataFromExtracted(graph, allAngularMetadata, ctx);
+    }
+
+    // Process Angular CALLS edges (#31 — DI token -> service, template -> method).
+    // Runs after the sequential fallback so component/service symbols exist.
+    if (allSequentialCalls.length > 0) {
+      await processCallsFromExtracted(graph, allSequentialCalls, ctx);
     }
 
     // Process MCP tool definitions (@mcp.tool() decorators)
