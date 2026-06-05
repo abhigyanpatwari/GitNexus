@@ -57,9 +57,10 @@
     "_rebaselined": "#1970 review + tri-review follow-ups: constructor-call retag, cascade calls, built-in suppression, enum scope, #1926 F24/F25, named-ctor dedup (crash fix), container-name binding suppression; heritage file-affinity resolution. Fixtures: member-call-contexts, constructor-body, named-constructor-body, heritage-name-collision, construct-cascade."
   },
   "java": {
-    "fingerprint": "d5cf68e9faf92fffd928c1ee6e584c72cc65918d1f1b5078abb3bfe09ac699bf",
+    "fingerprint": "9b29cafe32873b4902bda311bd089ffc04efe08f13557b966d29544be514080a",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
+    "_rebaselined": "#1956 synth-widening: + java-iface-extends fixture; synthesizeJavaInheritanceReferences now ALSO walks interface_declaration extends_interfaces (interface IA extends IB, IC<T>), matching the #1940 legacy leg. (Earlier U2+review: java-qualified-base fixture covers 2- AND 3-segment qualified bases guarding the legacy end-anchor; synth tail-resolves scoped bases.) Linear (~1.03). (Earliest: java added to bench, exposed+fixed the O(n^2) findNodeAtRange root-walk; 3.09 -> ~0.99.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
+    "_note": "#1928 / #2045: F35 adds qualified + qualified-generic constructor query captures (`new pkg.Foo()`, `new a.b.Foo()`, `new pkg.Box<T>()`); F38 synthesizes `@reference.call.constructor` on `super(...)`/`this(...)` explicit_constructor_invocation nodes; F41 generic-aware stripQualifier in interpret (type-binding normalization). + java-qualified-constructor and java-explicit-constructor fixtures. Pure capture-additive + fixture-corpus drift; scaling stays linear (~1.06)."
   },
   "typescript": {
     "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
