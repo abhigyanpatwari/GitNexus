@@ -256,6 +256,23 @@ export class CoverageStore {
     return result;
   }
 
+  /** Get merged branch coverage across multiple runs (union — max hit count per branch). */
+  getMergedBranchHits(runIds: string[]): Map<string, Map<string, number>> {
+    const placeholders = runIds.map(() => '?').join(',');
+    const rows = this.db.prepare(
+      `SELECT file_path, branch_id, MAX(hit_count) as max_hits
+       FROM branch_hits WHERE run_id IN (${placeholders})
+       GROUP BY file_path, branch_id`,
+    ).all(...runIds) as { file_path: string; branch_id: string; max_hits: number }[];
+
+    const result = new Map<string, Map<string, number>>();
+    for (const row of rows) {
+      if (!result.has(row.file_path)) result.set(row.file_path, new Map());
+      result.get(row.file_path)!.set(row.branch_id, row.max_hits);
+    }
+    return result;
+  }
+
   close(): void {
     this.db.close();
   }

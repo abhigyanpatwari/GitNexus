@@ -10,11 +10,12 @@ export function mergeRuns(
   mergedMeta: CoverageRunMeta,
 ): string {
   const mergedLineHits = store.getMergedLineHits(runIds);
+  const mergedBranchHits = store.getMergedBranchHits(runIds);
 
   let totalLines = 0;
   let coveredLines = 0;
 
-  const files: Record<string, { lines: Record<string, number> }> = {};
+  const files: Record<string, { lines: Record<string, number>; branches?: Record<string, number> }> = {};
 
   for (const [filePath, lineMap] of mergedLineHits) {
     const lineEntries: Record<string, number> = {};
@@ -24,7 +25,17 @@ export function mergeRuns(
       totalLines++;
       if (hitCount > 0) coveredLines++;
     }
-    files[filePath] = { lines: lineEntries };
+
+    const branchEntries: Record<string, number> | undefined =
+      mergedBranchHits.has(filePath)
+        ? Object.fromEntries(
+            [...mergedBranchHits.get(filePath)!.entries()].map(
+              ([branchId, count]) => [branchId, count],
+            ),
+          )
+        : undefined;
+
+    files[filePath] = { lines: lineEntries, branches: branchEntries };
   }
 
   const merged: CanonicalCoverage = {
