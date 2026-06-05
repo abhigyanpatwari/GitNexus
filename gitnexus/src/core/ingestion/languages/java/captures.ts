@@ -216,7 +216,104 @@ export function emitJavaScopeCaptures(
     out.push(grouped);
   }
 
-  return [...resolveVarTypeBindings(out), ...synthesizeJavaInheritanceReferences(tree.rootNode)];
+  return [
+    ...resolveVarTypeBindings(out),
+    ...synthesizeJavaInheritanceReferences(tree.rootNode),
+    ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
+  ];
+}
+
+/**
+ * Synthesize `@reference.call.constructor` captures for explicit constructor
+ * invocations — `super(...)` and `this(...)` (F38 #1928). tree-sitter-java
+ * models these as `explicit_constructor_invocation` nodes, which the scope
+ * query does not match, so the chained-constructor CALLS edges (subclass ctor →
+ * superclass ctor; ctor → sibling overload) were silently dropped.
+ *
+ * The grammar gives no constructor *name* at the call site (the child is a bare
+ * `(super)` / `(this)` token), so the target name is resolved structurally:
+ *   - `this(...)`  → the enclosing type's own simple name (constructor symbols
+ *                    are keyed by the declaring class name).
+ *   - `super(...)` → the enclosing class's superclass simple-name tail (reusing
+ *                    `javaBaseLookupNameNode` so qualified/generic supers reduce
+ *                    to the bare class name, matching the EXTENDS synth). An
+ *                    implicit `Object` super (no `superclass` field) has no
+ *                    in-graph symbol, so it is skipped rather than emitting a
+ *                    dangling reference.
+ * Arity is attached so overloaded constructors disambiguate downstream, mirroring
+ * the call-site arity synthesized for `new X(...)`.
+ */
+function synthesizeJavaExplicitConstructorReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'explicit_constructor_invocation') {
+      emitJavaExplicitConstructorRef(out, node);
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+  return out;
+}
+
+const TYPE_DECL_NODE_TYPES = new Set([
+  'class_declaration',
+  'enum_declaration',
+  'record_declaration',
+]);
+
+function emitJavaExplicitConstructorRef(out: CaptureMatch[], node: SyntaxNode): void {
+  const ctor = node.childForFieldName('constructor');
+  if (ctor === null) return;
+
+  const enclosingType = findEnclosingTypeDeclaration(node);
+  if (enclosingType === null) return;
+
+  let targetNameNode: SyntaxNode | null = null;
+  if (ctor.type === 'this') {
+    targetNameNode = enclosingType.childForFieldName('name');
+  } else if (ctor.type === 'super') {
+    // Only class_declaration carries a `superclass` field; enum/record cannot
+    // declare an explicit superclass, so `super(...)` there has no resolvable
+    // target symbol.
+    const superclass = enclosingType.childForFieldName('superclass');
+    if (superclass === null) return;
+    for (const base of superclass.namedChildren) {
+      if (base === null) continue;
+      const nameNode = javaBaseLookupNameNode(base);
+      if (nameNode !== null) {
+        targetNameNode = nameNode;
+        break;
+      }
+    }
+  }
+  if (targetNameNode === null) return;
+
+  const argList = node.childForFieldName('arguments');
+  const args =
+    argList === null
+      ? []
+      : argList.namedChildren.filter(
+          (c) => c !== null && c.type !== 'block_comment' && c.type !== 'line_comment',
+        );
+
+  out.push({
+    '@reference.call.constructor': nodeToCapture('@reference.call.constructor', node),
+    '@reference.name': nodeToCapture('@reference.name', targetNameNode),
+    '@reference.arity': syntheticCapture('@reference.arity', node, String(args.length)),
+  });
+}
+
+function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
+  let cur: SyntaxNode | null = node.parent;
+  while (cur !== null) {
+    if (TYPE_DECL_NODE_TYPES.has(cur.type)) return cur;
+    cur = cur.parent;
+  }
+  return null;
 }
 
 /**

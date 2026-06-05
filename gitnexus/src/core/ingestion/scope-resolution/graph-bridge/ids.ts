@@ -55,6 +55,16 @@ function isCallerAnchorLabel(label: NodeLabel): boolean {
 }
 
 /**
+ * Callables whose same-name overloads occupy distinct graph nodes keyed by
+ * parameter types / shape. Must mirror `isOverloadableCallable` in
+ * `node-lookup.ts` so registration and lookup agree (Constructor included —
+ * #1928 F38).
+ */
+function isOverloadableCallable(label: NodeLabel | undefined): boolean {
+  return label === 'Function' || label === 'Method' || label === 'Constructor';
+}
+
+/**
  * Look up a `SymbolDefinition` in the graph node lookup.
  *
  * Tries the type-prefixed fully-qualified key FIRST. That's the only
@@ -107,7 +117,7 @@ export function resolveDefGraphId(
       if (cHit !== undefined) return cHit;
     }
     if (
-      (def.type === 'Function' || def.type === 'Method') &&
+      isOverloadableCallable(def.type) &&
       def.parameterTypes !== undefined &&
       def.parameterTypeClasses !== undefined
     ) {
@@ -120,9 +130,12 @@ export function resolveDefGraphId(
     }
     // Overload disambiguation: when the def carries parameter types,
     // try the parameter-typed key first so same-name same-arity
-    // overloads route to their distinct graph nodes.
+    // overloads route to their distinct graph nodes. Constructors are
+    // included so a `this(int)`/`super(int)` chain or `new Foo(int)`
+    // resolves to the matching ctor overload instead of first-wins
+    // collapsing onto another `Foo` ctor (a self-loop) — #1928 F38.
     if (
-      (def.type === 'Function' || def.type === 'Method') &&
+      isOverloadableCallable(def.type) &&
       def.parameterTypes !== undefined &&
       def.parameterTypes.length > 0
     ) {

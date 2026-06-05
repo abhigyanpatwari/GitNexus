@@ -99,11 +99,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       // a parameter-types-suffixed key so resolveDefGraphId can find
       // the right overload by matching its def's parameterTypes.
       const pTypes = (props as { parameterTypes?: readonly string[] }).parameterTypes;
-      if (
-        pTypes !== undefined &&
-        pTypes.length > 0 &&
-        (node.label === 'Function' || node.label === 'Method')
-      ) {
+      if (pTypes !== undefined && pTypes.length > 0 && isOverloadableCallable(node.label)) {
         const pKey = qualifiedKey(
           props.filePath,
           node.label,
@@ -115,7 +111,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       const pClasses = (props as { parameterTypeClasses?: readonly ParameterTypeClass[] })
         .parameterTypeClasses;
       const shapeTag = parameterShapeIdTag(pTypes, pClasses);
-      if (shapeTag !== '' && (node.label === 'Function' || node.label === 'Method')) {
+      if (shapeTag !== '' && isOverloadableCallable(node.label)) {
         const shapeKey = qualifiedKey(props.filePath, node.label, `${keyQualified}${shapeTag}`);
         if (!lookup.has(shapeKey)) lookup.set(shapeKey, node.id);
       }
@@ -160,6 +156,18 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     if (!lookup.has(sKey)) lookup.set(sKey, node.id);
   }
   return lookup;
+}
+
+/**
+ * Callables whose same-name overloads must route to distinct graph nodes via
+ * the parameter-types / shape key. Constructors belong here too: a class with
+ * `Foo()` and `Foo(int)` mints distinct `#0`/`#1` Constructor nodes, and a
+ * `this(...)`/`super(...)` edge (or any `new Foo(args)`) must reach the right
+ * one. Without the overload key both ctor nodes collapse onto the first-wins
+ * qualified/simple key, turning a `this()` chain into a self-loop (#1928 F38).
+ */
+function isOverloadableCallable(label: NodeLabel): boolean {
+  return label === 'Function' || label === 'Method' || label === 'Constructor';
 }
 
 export function isLinkableLabel(label: NodeLabel): boolean {
