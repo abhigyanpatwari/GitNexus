@@ -45,6 +45,9 @@ export type NodeProperties = {
   filePath?: string,
   // Cross-repo resolution — identifies which repo this node belongs to
   repoId?: string,
+  // #50: marks a phantom File node that stands in for a symbol owned by an
+  // indexed DEPENDENCY repo (created only when a CrossRepoRegistry is provided).
+  isExternal?: boolean,
   startLine?: number,
   endLine?: number,
   language?: SupportedLanguages,

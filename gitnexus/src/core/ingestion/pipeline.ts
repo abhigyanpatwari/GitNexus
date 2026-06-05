@@ -9,6 +9,7 @@ import {
 } from './import-processor.js';
 import { processCalls, processCallsFromExtracted, processRoutesFromExtracted, processORMQueriesFromExtracted, processExpoRoutesWithRepoId, processExpoRouterNavigations, processDecoratorRoutesWithRepoId, processPHPRoutesWithRepoId, processNextjsRoutesWithRepoId, processNextjsFetchRoutes, processNextjsMiddleware, processToolDefsFromExtracted } from './call-processor.js';
 import type { ExtractedRoute, ExtractedExpoNav, ExtractedORMQuery, ExtractedDecoratorRoute, ExtractedFetchCall, ExtractedToolDef } from './workers/parse-worker.js';
+import type { CrossRepoRegistry } from './cross-repo-registry.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { processAngularMetadataFromExtracted } from './angular-metadata-processor.js';
 import { computeMRO } from './mro-processor.js';
@@ -41,6 +42,12 @@ const AST_CACHE_CAP = 50;
 export interface PipelineOptions {
   /** Skip MRO, community detection, and process extraction for faster test runs. */
   skipGraphPhases?: boolean;
+  /**
+   * #50: when provided, unresolved imports whose package maps to an indexed
+   * dependency repo create an external File node + CROSS_IMPORTS edge. When
+   * omitted (the default), ingestion is single-repo and creates no external nodes.
+   */
+  crossRepoRegistry?: CrossRepoRegistry;
 }
 
 export const runPipelineFromRepo = async (
@@ -312,7 +319,7 @@ export const runPipelineFromRepo = async (
               detail: `${current}/${total} files`,
               stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
             });
-          }, repoPath, importCtx);
+          }, repoPath, importCtx, options?.crossRepoRegistry);
           // Calls + Heritage + Routes — resolve in parallel (no shared mutable state between them)
           // This is safe because each writes disjoint relationship types into idempotent id-keyed Maps,
           // and the single-threaded event loop prevents races between synchronous addRelationship calls.
@@ -391,7 +398,7 @@ export const runPipelineFromRepo = async (
         } else {
           // Sequential path: processImports adds symbols, then heritage/calls are resolved
           // in the sequential fallback loop below (lines 351-365)
-          await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
+          await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths, options?.crossRepoRegistry);
           sequentialChunkPaths.push(chunkPaths);
           sequentialChunkRoutes.push(chunkWorkerData.routes ?? []);
           // Accumulate expoNavCalls and ormQueries for sequential path too
