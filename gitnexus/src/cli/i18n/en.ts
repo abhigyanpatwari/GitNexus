@@ -189,7 +189,7 @@ export const en = {
   'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, or codex (default: openai)',
+    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
   'help.option.wiki.model': 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
