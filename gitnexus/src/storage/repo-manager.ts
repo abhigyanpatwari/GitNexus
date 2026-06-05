@@ -183,23 +183,45 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
   return null;
 };
 
+// The exact .gitignore entry that GitNexus manages. The leading "**/" matches
+// the .gitnexus directory at any nesting depth (submodules, monorepo packages),
+// not just at the repo root. We check for this exact token so a user who has
+// already written `.gitnexus` (without the prefix) doesn't get a duplicate line
+// when GitNexus updates to the canonical form.
+const GITNEXUS_GITIGNORE_ENTRY = '**/.gitnexus';
+
 /**
- * Add .gitnexus to .gitignore if not already present
+ * Add the canonical `**` / `.gitnexus` entry to the repo's .gitignore if not
+ * already present. (The exact token is two asterisks, a slash, and
+ * `.gitnexus` — written without joining to keep this JSDoc block happy.)
+ *
+ * Idempotent: re-running this is a no-op once the entry exists. This matters
+ * because the PostToolUse hook fires `gitnexus analyze` after every commit —
+ * if this function were not idempotent, `.gitignore` would show as modified
+ * on every run and `git status` would never be clean (#108).
+ *
+ * Note on the pattern: any user who *intentionally* wants to commit a fixture
+ * index (e.g. test repos, snapshot data) must use
+ * `git add -f <path>/.gitnexus` because this entry shadows all such paths.
  */
 export const addToGitignore = async (repoPath: string): Promise<void> => {
   const gitignorePath = path.join(repoPath, '.gitignore');
-  
+
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
-    if (content.includes(GITNEXUS_DIR)) return;
-    
-    const newContent = content.endsWith('\n') 
-      ? `${content}${GITNEXUS_DIR}\n`
-      : `${content}\n${GITNEXUS_DIR}\n`;
+    // Check for the exact canonical entry. We deliberately do NOT match a bare
+    // `.gitnexus` substring here — that would silently skip a re-write when the
+    // user has a different `.gitnexus` rule (e.g. a comment, a negation, or a
+    // more specific path). Match on the exact token this function writes.
+    if (content.split('\n').some(line => line.trim() === GITNEXUS_GITIGNORE_ENTRY)) return;
+
+    const newContent = content.endsWith('\n')
+      ? `${content}${GITNEXUS_GITIGNORE_ENTRY}\n`
+      : `${content}\n${GITNEXUS_GITIGNORE_ENTRY}\n`;
     await fs.writeFile(gitignorePath, newContent, 'utf-8');
   } catch {
     // .gitignore doesn't exist, create it
-    await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, 'utf-8');
+    await fs.writeFile(gitignorePath, `${GITNEXUS_GITIGNORE_ENTRY}\n`, 'utf-8');
   }
 };
 

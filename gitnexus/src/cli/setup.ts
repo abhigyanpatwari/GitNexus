@@ -14,6 +14,7 @@ import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { glob } from 'glob';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import { scaffoldAIContextForIndexedRepos } from './scaffold.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -438,6 +439,11 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   }
 }
 
+// ─── Per-repo AI context scaffolding ──────────────────────────────
+// `scaffoldAIContextForIndexedRepos` lives in ./scaffold.ts so both
+// `gitnexus setup` and the one-shot `gitnexus analyze --skills` flag
+// can share the exact same behavior (#108).
+
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async () => {
@@ -461,13 +467,28 @@ export const setupCommand = async () => {
   await setupClaudeCode(result);
   await setupOpenCode(result);
   await setupCodex(result);
-  
+
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
   await installClaudeCodeHooks(result);
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
   await installCodexSkills(result);
+
+  // Initial-scaffolding for AI context files (AGENTS.md, CLAUDE.md) in any
+  // indexed repos under cwd. This is the ONLY place the volatile count header
+  // gets injected on the hot setup path — analyze must never write these
+  // files (#108), though `--skills` may opt in to the same behavior.
+  const aiContextSummary = await scaffoldAIContextForIndexedRepos(process.cwd());
+  for (const name of aiContextSummary.configured) {
+    result.configured.push(`AI context (${name} → AGENTS.md, CLAUDE.md)`);
+  }
+  for (const reason of aiContextSummary.skipped) {
+    result.skipped.push(`AI context (${reason})`);
+  }
+  for (const err of aiContextSummary.errors) {
+    result.errors.push(`AI context (${err})`);
+  }
 
   // Print results
   if (result.configured.length > 0) {
