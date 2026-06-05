@@ -21,6 +21,7 @@ import type { NodeLabel, ParameterTypeClass, ScopeId, SymbolDefinition } from 'g
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
 import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 /**
@@ -88,16 +89,6 @@ function pickCallerCallableDef(
   return scope.ownedDefs.find(
     (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
   );
-}
-
-/**
- * Callables whose same-name overloads occupy distinct graph nodes keyed by
- * parameter types / shape. Must mirror `isOverloadableCallable` in
- * `node-lookup.ts` so registration and lookup agree (Constructor included —
- * #1928 F38).
- */
-function isOverloadableCallable(label: NodeLabel | undefined): boolean {
-  return label === 'Function' || label === 'Method' || label === 'Constructor';
 }
 
 /**
