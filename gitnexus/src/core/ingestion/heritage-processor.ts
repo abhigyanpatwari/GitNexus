@@ -26,6 +26,7 @@ import { SupportedLanguages } from '../../config/supported-languages.js';
 import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedHeritage } from './workers/parse-worker.js';
+import { collectGoImplementsHeritage, collectGoCompositionHeritage, collectGoMethodsFromAST } from './workers/go-relationships.js';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE } from './resolution-context.js';
 
@@ -167,6 +168,14 @@ export const processHeritage = async (
         const className = captureMap['heritage.class'].text;
         const parentClassName = captureMap['heritage.extends'].text;
 
+        // For Go (issue #26), anonymous struct fields emit a COMPOSITION edge
+        // rather than EXTENDS. The composition pass below handles this for
+        // the AST-based path. Skip the EXTENDS branch entirely for Go so
+        // we don't double-emit.
+        if (language === SupportedLanguages.Go) {
+          return;
+        }
+
         const { type: relType, idPrefix } = resolveExtendsType(parentClassName, file.path, ctx, language);
 
         const child = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
@@ -224,6 +233,50 @@ export const processHeritage = async (
         }
       }
     });
+
+    // Go-specific post-pass for the AST-based path (issue #20 + #26).
+    // The worker-based path runs the same helpers in parse-worker.ts; this
+    // branch covers repos too small to spawn the worker pool
+    // (MIN_FILES_FOR_WORKERS / MIN_BYTES_FOR_WORKERS not met).
+    if (language === SupportedLanguages.Go) {
+      // Build file symbols from the AST (Method nodes with receiver type).
+      // The AST-based path doesn't have a global SymbolTable, so we compute
+      // per-file method ownership inline.
+      const fileSymbols = collectGoMethodsFromAST(tree.rootNode, file.path);
+      const implementsItems = collectGoImplementsHeritage(file.path, tree.rootNode, fileSymbols);
+      for (const it of implementsItems) {
+        const child = resolveHeritageId(it.className, file.path, ctx, 'Struct', `${file.path}:${it.className}`);
+        const iface = resolveHeritageId(it.parentName, file.path, ctx, 'Interface', `${file.path}:${it.parentName}`);
+        if (child.id && iface.id && child.id !== iface.id) {
+          graph.addRelationship({
+            id: generateId('IMPLEMENTS', `${child.id}->${iface.id}`),
+            sourceId: child.id,
+            targetId: iface.id,
+            type: 'IMPLEMENTS',
+            confidence: Math.sqrt(child.confidence * iface.confidence),
+            reason: 'method-set',
+          });
+        }
+      }
+      const compositionItems = collectGoCompositionHeritage(file.path, tree.rootNode);
+      for (const it of compositionItems) {
+        const owner = resolveHeritageId(it.className, file.path, ctx, 'Struct', `${file.path}:${it.className}`);
+        let embedded = resolveHeritageId(it.parentName, file.path, ctx, 'Struct', `${file.path}:${it.parentName}`);
+        if (!embedded.id) {
+          embedded = resolveHeritageId(it.parentName, file.path, ctx, 'Interface', `${file.path}:${it.parentName}`);
+        }
+        if (owner.id && embedded.id && owner.id !== embedded.id) {
+          graph.addRelationship({
+            id: generateId('COMPOSITION', `${owner.id}->${embedded.id}`),
+            sourceId: owner.id,
+            targetId: embedded.id,
+            type: 'COMPOSITION',
+            confidence: Math.sqrt(owner.confidence * embedded.confidence),
+            reason: 'anonymous-field',
+          });
+        }
+      }
+    }
 
     // Tree is now owned by the LRU cache — no manual delete needed
   }
@@ -301,6 +354,30 @@ export const processHeritageFromExtracted = async (
           type: 'IMPLEMENTS',
           confidence: Math.sqrt(strct.confidence * trait.confidence),
           reason: h.kind,
+        });
+      }
+    } else if (h.kind === 'composition') {
+      // Go anonymous struct field (issue #26). Emit a COMPOSITION edge
+      // from the owner struct to the embedded type. The owner type is
+      // resolved as Struct (anonymous fields are typed identifiers in Go);
+      // the embedded type is resolved against Struct and Interface since
+      // it could be either. We try both — first match wins.
+      const owner = resolveHeritageId(h.className, h.filePath, ctx, 'Struct', `${h.filePath}:${h.className}`);
+
+      // Try Struct first (most common for embedding)
+      let embedded = resolveHeritageId(h.parentName, h.filePath, ctx, 'Struct', `${h.filePath}:${h.parentName}`);
+      if (!embedded.id || embedded.confidence === 0) {
+        embedded = resolveHeritageId(h.parentName, h.filePath, ctx, 'Interface', `${h.filePath}:${h.parentName}`);
+      }
+
+      if (owner.id && embedded.id && owner.id !== embedded.id) {
+        graph.addRelationship({
+          id: generateId('COMPOSITION', `${owner.id}->${embedded.id}`),
+          sourceId: owner.id,
+          targetId: embedded.id,
+          type: 'COMPOSITION',
+          confidence: Math.sqrt(owner.confidence * embedded.confidence),
+          reason: 'anonymous-field',
         });
       }
     }

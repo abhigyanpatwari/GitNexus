@@ -132,6 +132,8 @@ export type RelationshipType =
   | 'IMPORTS_MODULE'
   | 'PROVIDES'
   | 'BOOTSTRAPS'
+  // Structural composition: owner has a field/embedding of the target (e.g. Go anonymous field).
+  | 'COMPOSITION'
 
 export interface GraphNode {
   id:  string,

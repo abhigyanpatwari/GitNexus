@@ -33,6 +33,8 @@ export const REL_TYPES = [
   'MEMBER_OF', 'STEP_IN_PROCESS', 'CROSS_IMPORTS',
   // Angular metadata edges (#32):
   'DECLARES', 'IMPORTS_MODULE', 'PROVIDES', 'BOOTSTRAPS',
+  // Structural composition (Go anonymous embedding, #26):
+  'COMPOSITION',
 ] as const;
 export type RelType = typeof REL_TYPES[number];
 
