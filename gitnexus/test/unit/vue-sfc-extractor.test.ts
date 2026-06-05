@@ -45,13 +45,12 @@ export default {
     expect(result!.scriptContent).toContain('export default');
   });
 
-  it('prefers <script setup> when both blocks exist', () => {
+  it('combines both blocks when <script> and <script setup> both exist', () => {
     const vue = `<script lang="ts">
 export default {
   inheritAttrs: false,
 };
 </script>
-
 <script setup lang="ts">
 import { ref } from 'vue';
 const name = ref('test');
@@ -61,9 +60,43 @@ const name = ref('test');
 `;
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
+    // F90: both blocks are combined
     expect(result!.isSetup).toBe(true);
     expect(result!.scriptContent).toContain("const name = ref('test')");
-    expect(result!.scriptContent).not.toContain('inheritAttrs');
+    expect(result!.scriptContent).toContain('inheritAttrs');
+  });
+
+  it('returns lang from the script block', () => {
+    const vue = `<script lang="js">
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('js');
+  });
+
+  it('returns empty lang when no lang attribute', () => {
+    const vue = `<script>
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('');
+  });
+
+  it('isSetup is true when at least one block is setup', () => {
+    const vue = `<script lang="ts">
+export default {};
+</script>
+<script setup lang="ts">
+import { ref } from 'vue';
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.isSetup).toBe(true);
   });
 
   it('returns null for .vue files with no <script> block', () => {
