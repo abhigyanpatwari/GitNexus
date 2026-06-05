@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
 import { createKnowledgeGraph } from '../core/graph/graph.js';
 import type { KnowledgeGraph } from '../core/graph/types.js';
+import { loadKnowledgeGraph, saveKnowledgeGraph, removeCoverageFromLbug } from '../core/lbug/lbug-adapter.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -23,6 +24,39 @@ async function getRepoPath(): Promise<string> {
     throw new Error('Unable to determine git repository root.');
   }
   return root;
+}
+
+function getLbugPath(repoPath: string): string {
+  return path.join(repoPath, '.gitnexus', 'lbug');
+}
+
+/**
+ * Load the KnowledgeGraph from LadybugDB, falling back to an empty graph
+ * when the index is not available (e.g. `gitnexus analyze` has not been run).
+ */
+async function tryLoadGraph(lbugPath: string): Promise<KnowledgeGraph> {
+  try {
+    return await loadKnowledgeGraph(lbugPath);
+  } catch {
+    console.warn(
+      'Warning: knowledge graph not available. Run "gitnexus analyze" first for symbol-level coverage.',
+    );
+    return createKnowledgeGraph();
+  }
+}
+
+/**
+ * Persist coverage changes to LadybugDB, swallowing errors so coverage
+ * data in SQLite is still usable even when graph sync fails.
+ */
+async function trySaveGraph(graph: KnowledgeGraph, lbugPath: string): Promise<void> {
+  try {
+    await saveKnowledgeGraph(graph, lbugPath);
+  } catch (err) {
+    console.warn(
+      `Warning: could not save coverage to knowledge graph: ${(err as Error).message}`,
+    );
+  }
 }
 
 function detectFormat(filePath: string): string {
@@ -107,21 +141,18 @@ export function registerCoverageCommands(program: Command): void {
         // Ingest into CoverageStore (SQLite)
         const store = openCoverageStore(repoPath);
         try {
-          // Create an empty in-memory graph for symbol mapping.
-          // Full graph sync to LadybugDB is a TODO — for now, only the
-          // SQLite store receives coverage data.  Symbol-level coverage
-          // mapping depends on a loaded graph and will be addressed when
-          // graph persistence is wired.
-          const graph: KnowledgeGraph = createKnowledgeGraph();
-
-          // TODO: graph persistence — load the graph from LadybugDB before
-          // ingesting so that symbol-coverage, edge-traversal, and
-          // graph-bridge writes actually reach the knowledge graph.
-          // Currently the graph starts empty, so line-to-symbol mapping
-          // produces no results, but line hits and run metadata are still
-          // written to the SQLite store.
+          // Load the knowledge graph from LadybugDB for symbol-level
+          // coverage mapping.  Falls back to an empty graph when the repo
+          // has not been indexed yet (line hits are still recorded).
+          const lbugPath = getLbugPath(repoPath);
+          const graph = await tryLoadGraph(lbugPath);
 
           const ingestedId = ingestCoverage(canonical, { store, graph });
+
+          // Persist coverage changes back to LadybugDB so MCP tools
+          // (coverage_status, coverage_diff) can query symbol coverage.
+          await trySaveGraph(graph, lbugPath);
+
           console.log(`Coverage imported: run "${ingestedId}"`);
           console.log(
             `  ${canonical.run.coveredLines ?? 0} / ${canonical.run.totalLines ?? 0} lines covered ` +
@@ -340,11 +371,10 @@ export function registerCoverageCommands(program: Command): void {
             label: opts.label || `merged:${runIds.join(',')}`,
           };
 
-          // TODO: graph persistence — mergeRuns calls ingestCoverage which
-          // needs a loaded KnowledgeGraph for symbol mapping.  Currently a
-          // fresh empty graph is used, so only line hits are merged.
-          const graph: KnowledgeGraph = createKnowledgeGraph();
+          const lbugPath = getLbugPath(repoPath);
+          const graph = await tryLoadGraph(lbugPath);
           const resultId = mergeRuns(runIds, store, { store, graph }, mergedMeta);
+          await trySaveGraph(graph, lbugPath);
 
           console.log(`Merged ${runIds.length} runs into "${resultId}"`);
           const merged = store.getRun(resultId);
@@ -373,6 +403,10 @@ export function registerCoverageCommands(program: Command): void {
         const repoPath = await getRepoPath();
         const { openCoverageStore } = await import('../core/coverage/index.js');
 
+        const { removeCoverageFromGraph } = await import(
+          '../core/coverage/graph-bridge.js'
+        );
+
         const store = openCoverageStore(repoPath);
         try {
           if (opts.all) {
@@ -381,10 +415,34 @@ export function registerCoverageCommands(program: Command): void {
               console.log('No coverage runs to remove.');
               return;
             }
+
+            // Load the knowledge graph and collect affected symbol node IDs
+            // before removal so we can clear their coverage properties.
+            const lbugPath = getLbugPath(repoPath);
+            const graph = await tryLoadGraph(lbugPath);
+            const affectedNodeIds: string[] = [];
+            for (const node of graph.nodes) {
+              if (node.properties.coverageRatio !== undefined) {
+                affectedNodeIds.push(node.id);
+              }
+            }
+            for (const run of runs) {
+              removeCoverageFromGraph(run.id, graph);
+            }
+            try {
+              await removeCoverageFromLbug(
+                runs.map((r) => r.id),
+                affectedNodeIds,
+                lbugPath,
+              );
+            } catch (err) {
+              console.warn(
+                `Warning: could not remove coverage from knowledge graph: ${(err as Error).message}`,
+              );
+            }
+
             store.deleteAllRuns();
             console.log(`Removed ${runs.length} coverage run(s).`);
-            // TODO: graph persistence — remove all CoverageRun nodes and
-            // COVERED_BY edges from the LadybugDB knowledge graph.
           } else {
             const run = store.getRun(runId);
             if (!run) {
@@ -392,12 +450,28 @@ export function registerCoverageCommands(program: Command): void {
               process.exitCode = 1;
               return;
             }
+
+            // Load the knowledge graph and collect affected symbol node IDs
+            // before removal so we can clear their coverage properties.
+            const lbugPath = getLbugPath(repoPath);
+            const graph = await tryLoadGraph(lbugPath);
+            const affectedNodeIds: string[] = [];
+            for (const node of graph.nodes) {
+              if (node.properties.coverageRatio !== undefined) {
+                affectedNodeIds.push(node.id);
+              }
+            }
+            removeCoverageFromGraph(runId, graph);
+            try {
+              await removeCoverageFromLbug([runId], affectedNodeIds, lbugPath);
+            } catch (err) {
+              console.warn(
+                `Warning: could not remove coverage from knowledge graph: ${(err as Error).message}`,
+              );
+            }
+
             store.deleteRun(runId);
             console.log(`Removed coverage run: ${run.label || runId}`);
-            // TODO: graph persistence — remove the CoverageRun node and
-            // its COVERED_BY edges from the LadybugDB knowledge graph.
-            // Use removeCoverageFromGraph(runId, graph) after loading the
-            // graph from LadybugDB.
           }
         } finally {
           store.close();

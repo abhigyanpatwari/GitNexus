@@ -8,6 +8,8 @@ import os from 'os';
 import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
+import { createKnowledgeGraph } from '../graph/graph.js';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
@@ -2025,4 +2027,388 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
   } finally {
     ensuredFTSIndexes.delete(ftsIndexKey(tableName, indexName));
   }
+};
+
+// ---------------------------------------------------------------------------
+// KnowledgeGraph Persistence — Coverage Subsystem
+// ---------------------------------------------------------------------------
+
+/** Cypher query to load all relationships from LadybugDB. */
+const GRAPH_LOAD_RELATIONSHIP_QUERY =
+  `MATCH (a)-[r:${REL_TABLE_NAME}]->(b) ` +
+  `RETURN a.id AS sourceId, b.id AS targetId, ` +
+  `r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
+
+/**
+ * Return true when a LadybugDB error indicates a missing table/node type
+ * that is safe to ignore during graph loading (e.g. a table not yet created
+ * for a language not used in this repo).
+ */
+const isIgnorableLoadError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes('does not exist') ||
+    message.includes('not found') ||
+    message.includes('No table named')
+  );
+};
+
+/** Build a MATCH query for loading nodes from a specific table. */
+const buildNodeLoadQuery = (table: string): string => {
+  const tn = escapeTableName(table);
+
+  // CoverageRun has its own dedicated columns.
+  if (table === 'CoverageRun') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.timestamp AS timestamp, n.label AS label, n.command AS command, n.durationMs AS durationMs, n.totalExecs AS totalExecs, n.totalLines AS totalLines, n.coveredLines AS coveredLines, n.coverageRatio AS coverageRatio`;
+  }
+
+  // File & Folder have no startLine / coverageRatio.
+  if (table === 'File') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`;
+  }
+  if (table === 'Folder') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+  }
+  if (table === 'Community') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
+  }
+  if (table === 'Process') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
+  }
+  if (table === 'Route') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
+  }
+  if (table === 'Tool') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
+  }
+
+  // All code-symbol tables (Function, Class, Interface, Property, Method,
+  // Section, Struct, Impl, Trait, Macro, Enum, Typedef, Union, Namespace,
+  // TypeAlias, Const, Static, Variable, Record, Delegate, Annotation,
+  // Constructor, Template, Module, CodeElement) share the same column set:
+  // filePath, startLine, endLine, [isExported], content, description,
+  // plus coverage fields coverageRatio, lastCoveredAt.
+  if (table === 'Property') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description, n.declaredType AS declaredType, n.coverageRatio AS coverageRatio, n.lastCoveredAt AS lastCoveredAt`;
+  }
+  if (table === 'Method') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.isExported AS isExported, n.content AS content, n.description AS description, n.parameterCount AS parameterCount, n.returnType AS returnType, n.coverageRatio AS coverageRatio, n.lastCoveredAt AS lastCoveredAt`;
+  }
+  if (table === 'Section') {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.level AS level, n.content AS content, n.description AS description, n.coverageRatio AS coverageRatio, n.lastCoveredAt AS lastCoveredAt`;
+  }
+  if (TABLES_WITH_EXPORTED.has(table)) {
+    return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.isExported AS isExported, n.content AS content, n.description AS description, n.coverageRatio AS coverageRatio, n.lastCoveredAt AS lastCoveredAt`;
+  }
+  // Multi-language tables without isExported
+  return `MATCH (n:${tn}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description, n.coverageRatio AS coverageRatio, n.lastCoveredAt AS lastCoveredAt`;
+};
+
+/** Map a LadybugDB row to a GraphNode. */
+const mapRowToGraphNode = (table: string, row: any): GraphNode => {
+  const props: Record<string, unknown> = {};
+
+  // Every table has `id` as row[0]; most have `name` or `label` as row[1].
+  const id = row.id ?? row[0];
+  const nameOrLabel = row.name ?? row.label ?? row[1];
+  props.name = nameOrLabel;
+
+  if (table === 'File') {
+    props.filePath = row.filePath ?? row[2];
+    props.content = row.content ?? row[3];
+  } else if (table === 'Folder') {
+    props.filePath = row.filePath ?? row[2];
+  } else if (table === 'Community') {
+    props.heuristicLabel = row.heuristicLabel ?? row[2];
+    props.cohesion = row.cohesion ?? row[3];
+    props.symbolCount = row.symbolCount ?? row[4];
+  } else if (table === 'Process') {
+    props.heuristicLabel = row.heuristicLabel ?? row[2];
+    props.processType = row.processType ?? row[3];
+    props.stepCount = row.stepCount ?? row[4];
+    props.communities = row.communities ?? row[5];
+    props.entryPointId = row.entryPointId ?? row[6];
+    props.terminalId = row.terminalId ?? row[7];
+  } else if (table === 'CoverageRun') {
+    props.filePath = '';
+    props.timestamp = row.timestamp ?? row[2];
+    props.label = row.label ?? row[3];
+    props.command = row.command ?? row[4];
+    props.durationMs = row.durationMs ?? row[5];
+    props.totalExecs = row.totalExecs ?? row[6];
+    props.totalLines = row.totalLines ?? row[7];
+    props.coveredLines = row.coveredLines ?? row[8];
+    props.coverageRatio = row.coverageRatio ?? row[9];
+  } else if (table === 'Route') {
+    props.filePath = row.filePath ?? row[2];
+    props.responseKeys = row.responseKeys ?? row[3];
+    props.errorKeys = row.errorKeys ?? row[4];
+    props.middleware = row.middleware ?? row[5];
+  } else if (table === 'Tool') {
+    props.filePath = row.filePath ?? row[2];
+    props.description = row.description ?? row[3];
+  } else if (table === 'Property') {
+    props.filePath = row.filePath ?? row[2];
+    props.startLine = row.startLine ?? row[3];
+    props.endLine = row.endLine ?? row[4];
+    props.content = row.content ?? row[5];
+    props.description = row.description ?? row[6];
+    props.declaredType = row.declaredType ?? row[7];
+    if (row.coverageRatio !== undefined && row.coverageRatio !== null) props.coverageRatio = row.coverageRatio;
+    if (row.lastCoveredAt !== undefined && row.lastCoveredAt !== null) props.lastCoveredAt = row.lastCoveredAt;
+  } else if (table === 'Method') {
+    props.filePath = row.filePath ?? row[2];
+    props.startLine = row.startLine ?? row[3];
+    props.endLine = row.endLine ?? row[4];
+    props.isExported = row.isExported ?? row[5];
+    props.content = row.content ?? row[6];
+    props.description = row.description ?? row[7];
+    props.parameterCount = row.parameterCount ?? row[8];
+    props.returnType = row.returnType ?? row[9];
+    if (row.coverageRatio !== undefined && row.coverageRatio !== null) props.coverageRatio = row.coverageRatio;
+    if (row.lastCoveredAt !== undefined && row.lastCoveredAt !== null) props.lastCoveredAt = row.lastCoveredAt;
+  } else if (table === 'Section') {
+    props.filePath = row.filePath ?? row[2];
+    props.startLine = row.startLine ?? row[3];
+    props.endLine = row.endLine ?? row[4];
+    props.level = row.level ?? row[5];
+    props.content = row.content ?? row[6];
+    props.description = row.description ?? row[7];
+    if (row.coverageRatio !== undefined && row.coverageRatio !== null) props.coverageRatio = row.coverageRatio;
+    if (row.lastCoveredAt !== undefined && row.lastCoveredAt !== null) props.lastCoveredAt = row.lastCoveredAt;
+  } else if (TABLES_WITH_EXPORTED.has(table)) {
+    // Function, Class, Interface, CodeElement
+    props.filePath = row.filePath ?? row[2];
+    props.startLine = row.startLine ?? row[3];
+    props.endLine = row.endLine ?? row[4];
+    props.isExported = row.isExported ?? row[5];
+    props.content = row.content ?? row[6];
+    props.description = row.description ?? row[7];
+    if (row.coverageRatio !== undefined && row.coverageRatio !== null) props.coverageRatio = row.coverageRatio;
+    if (row.lastCoveredAt !== undefined && row.lastCoveredAt !== null) props.lastCoveredAt = row.lastCoveredAt;
+  } else {
+    // Multi-language tables: Struct, Impl, Trait, Macro, Enum, Typedef,
+    // Union, Namespace, TypeAlias, Const, Static, Variable, Record,
+    // Delegate, Annotation, Constructor, Template, Module
+    props.filePath = row.filePath ?? row[2];
+    props.startLine = row.startLine ?? row[3];
+    props.endLine = row.endLine ?? row[4];
+    props.content = row.content ?? row[5];
+    props.description = row.description ?? row[6];
+    if (row.coverageRatio !== undefined && row.coverageRatio !== null) props.coverageRatio = row.coverageRatio;
+    if (row.lastCoveredAt !== undefined && row.lastCoveredAt !== null) props.lastCoveredAt = row.lastCoveredAt;
+  }
+
+  return {
+    id,
+    label: table as GraphNode['label'],
+    properties: props as GraphNode['properties'],
+  };
+};
+
+/** Map a LadybugDB relationship row to a GraphRelationship. */
+const mapRowToGraphRelationship = (row: any): GraphRelationship => ({
+  id: `${row.sourceId}_${row.type}_${row.targetId}`,
+  type: row.type,
+  sourceId: row.sourceId,
+  targetId: row.targetId,
+  confidence: typeof row.confidence === 'number' ? row.confidence : 1.0,
+  reason: row.reason ?? '',
+  step: typeof row.step === 'number' ? row.step : 0,
+});
+
+// ---- Character escaping for Cypher queries ----
+
+const esc = (s: string): string =>
+  s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+
+const escapeCypherValue = (v: unknown): string => {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return `'${esc(String(v))}'`;
+};
+
+/**
+ * Load the full KnowledgeGraph from a LadybugDB database.
+ *
+ * Reads all nodes (across all node tables) and all relationships into an
+ * in-memory KnowledgeGraph.  Uses a read-only connection so the database
+ * stays available for concurrent readers.
+ *
+ * @param dbPath  Path to the LadybugDB database file (e.g. `.gitnexus/lbug`).
+ * @returns A fully populated KnowledgeGraph.
+ */
+export const loadKnowledgeGraph = async (dbPath: string): Promise<KnowledgeGraph> => {
+  return withLbugDb(
+    dbPath,
+    async () => {
+      const graph = createKnowledgeGraph();
+
+      // Load nodes from all tables
+      for (const table of NODE_TABLES) {
+        try {
+          const query = buildNodeLoadQuery(table);
+          const rows = await executeQuery(query);
+          for (const row of rows) {
+            graph.addNode(mapRowToGraphNode(table, row));
+          }
+        } catch (err) {
+          if (!isIgnorableLoadError(err)) throw err;
+        }
+      }
+
+      // Load relationships
+      try {
+        const relRows = await executeQuery(GRAPH_LOAD_RELATIONSHIP_QUERY);
+        for (const row of relRows) {
+          graph.addRelationship(mapRowToGraphRelationship(row));
+        }
+      } catch (err) {
+        if (!isIgnorableLoadError(err)) throw err;
+      }
+
+      return graph;
+    },
+    { readOnly: true },
+  );
+};
+
+/**
+ * Persist coverage-related changes from an in-memory KnowledgeGraph back
+ * to LadybugDB.
+ *
+ * Coverage mutations on the graph (via `writeCoverageToGraph` /
+ * `removeCoverageFromGraph`) add CoverageRun nodes, COVERED_BY
+ * relationships, and coverageRatio / lastCoveredAt properties on symbol
+ * nodes.  This function writes those changes to LadybugDB without
+ * reserialising the entire graph.
+ *
+ * @param graph   The in-memory KnowledgeGraph (post-coverage modifications).
+ * @param dbPath  Path to the LadybugDB database file.
+ */
+export const saveKnowledgeGraph = async (
+  graph: KnowledgeGraph,
+  dbPath: string,
+): Promise<void> => {
+  await withLbugDb(dbPath, async () => {
+    // 1. Upsert CoverageRun nodes —— delete-and-recreate to handle re-imports.
+    for (const node of graph.nodes) {
+      if (node.label !== 'CoverageRun') continue;
+      const p = node.properties;
+      const tn = escapeTableName('CoverageRun');
+
+      // Remove stale node + edges from a previous import of the same run.
+      try {
+        await queryAndDrain(
+          conn!,
+          `MATCH (n:${tn} {id: ${escapeCypherValue(node.id)}}) DETACH DELETE n`,
+        );
+      } catch {
+        // Node may not exist yet — fine.
+      }
+
+      await queryAndDrain(
+        conn!,
+        `CREATE (n:${tn} {id: ${escapeCypherValue(node.id)}, name: ${escapeCypherValue(p.name)}, timestamp: ${escapeCypherValue(p.timestamp)}, label: ${escapeCypherValue(p.label)}, command: ${escapeCypherValue(p.command ?? null)}, durationMs: ${p.durationMs ?? 0}, totalExecs: ${p.totalExecs ?? 0}, totalLines: ${p.totalLines ?? 0}, coveredLines: ${p.coveredLines ?? 0}, coverageRatio: ${p.coverageRatio ?? 0}})`,
+      );
+    }
+
+    // 2. Create COVERED_BY relationships.
+    for (const rel of graph.iterRelationshipsByType('COVERED_BY')) {
+      const sourceNode = graph.getNode(rel.sourceId);
+      const targetNode = graph.getNode(rel.targetId);
+      if (!sourceNode || !targetNode) continue;
+
+      const fromLabel = escapeTableName(sourceNode.label);
+      const toLabel = escapeTableName(targetNode.label);
+
+      try {
+        await queryAndDrain(
+          conn!,
+          `MATCH (a:${fromLabel} {id: ${escapeCypherValue(rel.sourceId)}}), ` +
+            `(b:${toLabel} {id: ${escapeCypherValue(rel.targetId)}}) ` +
+            `CREATE (a)-[:${REL_TABLE_NAME} {type: 'COVERED_BY', confidence: ${rel.confidence}, ` +
+            `reason: '${esc(rel.reason)}', step: ${rel.step}}]->(b)`,
+        );
+      } catch {
+        // Relationship may already exist from a prior import.
+      }
+    }
+
+    // 3. Update coverageRatio / lastCoveredAt on symbol nodes.
+    for (const node of graph.nodes) {
+      if (node.label === 'CoverageRun') continue;
+      const ratio = node.properties.coverageRatio;
+      if (ratio === undefined) continue;
+
+      const label = escapeTableName(node.label);
+      try {
+        await queryAndDrain(
+          conn!,
+          `MATCH (n:${label} {id: ${escapeCypherValue(node.id)}}) ` +
+            `SET n.coverageRatio = ${ratio}, n.lastCoveredAt = ${escapeCypherValue(node.properties.lastCoveredAt ?? null)}`,
+        );
+      } catch {
+        // Node may not exist in LadybugDB yet, or the table may not
+        // support these properties — skip.
+      }
+    }
+
+    // Flush so subsequent readers see the changes.
+    await flushWAL();
+  });
+};
+
+/**
+ * Remove coverage data from LadybugDB.
+ *
+ * Deletes the CoverageRun nodes (which DETACH-deletes their COVERED_BY
+ * edges) and clears coverageRatio / lastCoveredAt on the given symbol
+ * node IDs.
+ *
+ * @param runIds           Run identifiers to remove.
+ * @param affectedNodeIds  Symbol node IDs whose coverage properties
+ *                         should be cleared.
+ * @param dbPath           Path to the LadybugDB database file.
+ */
+export const removeCoverageFromLbug = async (
+  runIds: string[],
+  affectedNodeIds: string[],
+  dbPath: string,
+): Promise<void> => {
+  await withLbugDb(dbPath, async () => {
+    // 1. Delete CoverageRun nodes (DETACH DELETE also removes their
+    //    COVERED_BY edges from the CodeRelation table).
+    const crTable = escapeTableName('CoverageRun');
+    for (const runId of runIds) {
+      const runNodeId = `CoverageRun:${runId}`;
+      try {
+        await queryAndDrain(
+          conn!,
+          `MATCH (n:${crTable} {id: ${escapeCypherValue(runNodeId)}}) DETACH DELETE n`,
+        );
+      } catch {
+        // Node may not exist in LadybugDB (e.g. graph sync was skipped).
+      }
+    }
+
+    // 2. Clear coverageRatio / lastCoveredAt on affected symbol nodes.
+    for (const nodeId of affectedNodeIds) {
+      const rawLabel = nodeId.split(':')[0];
+      if (!rawLabel) continue;
+      const label = escapeTableName(rawLabel);
+      try {
+        await queryAndDrain(
+          conn!,
+          `MATCH (n:${label} {id: ${escapeCypherValue(nodeId)}}) ` +
+            `SET n.coverageRatio = NULL, n.lastCoveredAt = NULL`,
+        );
+      } catch {
+        // Node or property may not exist — skip.
+      }
+    }
+
+    await flushWAL();
+  });
 };
