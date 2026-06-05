@@ -1477,6 +1477,30 @@ export const processAssignmentsFromExtracted = (
 };
 
 /**
+ * Derive a best-effort controller-class name from a route's file path.
+ *
+ * For non-Spring routes the schema contract requires `controllerClass` to be a
+ * string (never undefined). We can't always map a file path to a class
+ * (Express/Hono handlers are often inline arrow functions, Next.js App Router
+ * files export named handlers, etc.), so we use the file's basename minus
+ * extension as a coarse surrogate. This is intentionally lossy — the field is
+ * set to `''` for paths we can't parse.
+ *
+ * Exposed for M2: ensures the 8 non-Spring Route constructors can populate
+ * the field without duplicating path-parse logic at each call site.
+ */
+export const deriveControllerClassFromFile = (filePath: string | undefined): string => {
+  if (!filePath) return '';
+  // Strip directory prefix and query/hash fragments if any.
+  const base = filePath.split(/[?#]/)[0] ?? '';
+  const lastSegment = base.split('/').pop() ?? '';
+  if (!lastSegment) return '';
+  // Strip known multi-dot extensions: .route.ts, .test.tsx, etc.
+  const dotIdx = lastSegment.lastIndexOf('.');
+  return dotIdx > 0 ? lastSegment.slice(0, dotIdx) : lastSegment;
+};
+
+/**
  * Resolve pre-extracted Laravel routes to CALLS edges from route files to controller methods.
  */
 export const processRoutesFromExtracted = async (
@@ -1592,6 +1616,9 @@ export const processRoutesFromExtracted = async (
       if (!methodId) continue;
 
       // Create Route node
+      // #67: expose the full ExtractedRoute field set as node properties so agents
+      // can query them via Cypher. The `controllerName`/`methodName` aliases are
+      // kept for backwards compatibility with the existing public surface.
       const routeId = generateId('Route', `${route.filePath}:${route.httpMethod}:${route.routePath}`);
       graph.addNode({
         id: routeId,
@@ -1600,12 +1627,19 @@ export const processRoutesFromExtracted = async (
           name: `${route.httpMethod} ${route.routePath}`,
           httpMethod: route.httpMethod,
           routePath: route.routePath,
+          // Primary property names used by agents (#67) and the issue spec.
+          controllerClass: route.controllerName,
+          handlerMethod: route.methodName,
+          // Legacy aliases — kept for backwards compatibility with
+          // existing queries (e.g. route-node-e2e.test.ts).
           controllerName: route.controllerName,
           methodName: route.methodName,
           filePath: route.filePath,
           startLine: route.lineNumber,
           lineNumber: route.lineNumber,
           isInherited: route.isInherited ?? false,
+          isControllerClass: route.isControllerClass,
+          prefix: route.prefix ?? null,
           repoId: ctx.repoId,
         },
       });
@@ -1693,6 +1727,12 @@ export const processExpoRoutesWithRepoId = (
         name: routeURL,
         filePath,
         routeType: 'expo-router',
+        // Spec-named Route fields (M2). Non-Spring routes: not a Spring controller,
+        // no prefix, no handler method resolvable from the URL alone.
+        controllerClass: deriveControllerClassFromFile(filePath),
+        handlerMethod: '',
+        isControllerClass: false,
+        prefix: '',
         repoId,
       },
     });
@@ -1743,6 +1783,12 @@ export const processNextjsRoutesWithRepoId = (
         filePath,
         routeType: 'nextjs-app-router',
         repoId,
+        // Spec-named Route fields (M2). Non-Spring routes: not a Spring controller,
+        // no prefix, no handler method resolvable from the URL alone.
+        controllerClass: deriveControllerClassFromFile(filePath),
+        handlerMethod: '',
+        isControllerClass: false,
+        prefix: '',
         ...(responseKeys && responseKeys.length > 0 && { responseKeys }),
         ...(errorKeys && errorKeys.length > 0 && { errorKeys }),
         ...(middleware.length > 0 && { middleware }),
@@ -1791,6 +1837,13 @@ export const processDecoratorRoutesWithRepoId = (
         startLine: route.lineNumber,
         lineNumber: route.lineNumber,
         repoId,
+        // Spec-named Route fields (M2). For decorator routes the HTTP method
+        // (e.g. 'GET') is the closest analogue to handlerMethod, and the file
+        // name minus extension is the closest analogue to controllerClass.
+        controllerClass: deriveControllerClassFromFile(route.filePath),
+        handlerMethod: httpMethod,
+        isControllerClass: false,
+        prefix: '',
       },
     });
     created++;
@@ -1844,6 +1897,11 @@ export const processPHPRoutesWithRepoId = (
         filePath,
         httpMethod: 'GET',
         repoId,
+        // Spec-named Route fields (M2). Non-Spring: no controller, no prefix.
+        controllerClass: deriveControllerClassFromFile(filePath),
+        handlerMethod: '',
+        isControllerClass: false,
+        prefix: '',
         ...(responseKeys !== undefined && { responseKeys }),
         ...(errorKeys !== undefined && { errorKeys }),
       },
@@ -1906,6 +1964,11 @@ export const processDecoratorRoutes = (
         filePath: route.filePath,
         startLine: route.lineNumber,
         lineNumber: route.lineNumber,
+        // Spec-named Route fields (M2). See processDecoratorRoutesWithRepoId above.
+        controllerClass: deriveControllerClassFromFile(route.filePath),
+        handlerMethod: httpMethod,
+        isControllerClass: false,
+        prefix: '',
       },
     });
     created++;
@@ -1976,6 +2039,11 @@ export const processPHPRoutes = (
         routePath: routeURL,
         filePath,
         httpMethod: 'GET',
+        // Spec-named Route fields (M2). See processPHPRoutesWithRepoId above.
+        controllerClass: deriveControllerClassFromFile(filePath),
+        handlerMethod: '',
+        isControllerClass: false,
+        prefix: '',
         ...(responseKeys !== undefined && { responseKeys }),
         ...(errorKeys !== undefined && { errorKeys }),
       },
@@ -2054,6 +2122,11 @@ export const processNextjsRoutes = (
         routePath: routeURL,
         filePath,
         routeType: 'nextjs-app-router',
+        // Spec-named Route fields (M2). See processNextjsRoutesWithRepoId above.
+        controllerClass: deriveControllerClassFromFile(filePath),
+        handlerMethod: '',
+        isControllerClass: false,
+        prefix: '',
         ...(responseKeys && responseKeys.length > 0 && { responseKeys }),
         ...(errorKeys && errorKeys.length > 0 && { errorKeys }),
         ...(middleware.length > 0 && { middleware }),
@@ -2171,6 +2244,11 @@ export const processExpoRoutes = (
         name: routeURL,
         filePath,
         routeType: 'expo-router',
+        // Spec-named Route fields (M2). See processExpoRoutesWithRepoId above.
+        controllerClass: deriveControllerClassFromFile(filePath),
+        handlerMethod: '',
+        isControllerClass: false,
+        prefix: '',
       },
     });
 

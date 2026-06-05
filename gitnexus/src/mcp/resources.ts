@@ -39,6 +39,12 @@ export function getResourceDefinitions(): ResourceDefinition[] {
       description: 'Returns AGENTS.md content for all indexed repos. Useful for setup/onboarding.',
       mimeType: 'text/markdown',
     },
+    {
+      uri: 'gitnexus://schema',
+      name: 'Graph Schema',
+      description: 'Node labels, properties, and relationship types for Cypher queries. Read this BEFORE writing Cypher to avoid guessing non-existent properties. Static, no repo context needed. (Also available per-repo at gitnexus://repo/{name}/schema.)',
+      mimeType: 'text/yaml',
+    },
   ];
 }
 
@@ -92,6 +98,7 @@ export function getResourceTemplates(): ResourceTemplate[] {
 function parseUri(uri: string): { repoName?: string; resourceType: string; param?: string } {
   if (uri === 'gitnexus://repos') return { resourceType: 'repos' };
   if (uri === 'gitnexus://setup') return { resourceType: 'setup' };
+  if (uri === 'gitnexus://schema') return { resourceType: 'schema' };
 
   // Repo-scoped: gitnexus://repo/{name}/context
   const repoMatch = uri.match(/^gitnexus:\/\/repo\/([^/]+)\/(.+)$/);
@@ -126,6 +133,11 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
   // Setup resource — returns AGENTS.md content for all repos
   if (parsed.resourceType === 'setup') {
     return getSetupResource(backend);
+  }
+
+  // Top-level schema resource — static, no repo context needed (#110)
+  if (parsed.resourceType === 'schema') {
+    return getSchemaResource();
   }
 
   const repoName = parsed.repoName;
@@ -304,6 +316,10 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
 
 /**
  * Schema resource — graph structure for Cypher queries
+ *
+ * #110: this is the canonical schema reference for agents. It must
+ * stay in sync with `src/core/lbug/schema.ts` NODE_TABLES / REL_TYPES
+ * and the `Route` properties emitted by `processRoutesFromExtracted`.
  */
 function getSchemaResource(): string {
   return `# GitNexus Graph Schema
@@ -316,17 +332,19 @@ nodes:
   - Interface: Interface/type definitions
   - Method: Class methods
   - CodeElement: Catch-all for other code elements
+  - Route: HTTP endpoints extracted from controllers (e.g. Spring @GetMapping)
   - Community: Auto-detected functional area (Leiden algorithm)
   - Process: Execution flow trace
 
 additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Constructor, Template, Module (use backticks in queries: \`Struct\`, \`Enum\`, etc.)"
 
 node_properties:
-  common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32)"
+  common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32), repoId (STRING)"
   Method: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL)"
   Function: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL)"
   Property: "declaredType (STRING) — the field's type annotation (e.g., 'Address', 'City'). Used for field-access chain resolution."
   Constructor: "parameterCount (INT32)"
+  Route: "httpMethod (STRING — GET/POST/PUT/DELETE/PATCH), routePath (STRING — e.g., '/api/users/{id}'), controllerClass (STRING — controller class name; legacy alias: controllerName), handlerMethod (STRING — handler method name; legacy alias: methodName), filePath (STRING), startLine (INT64), lineNumber (INT64), isInherited (BOOL), isControllerClass (BOOL), prefix (STRING — class-level @RequestMapping prefix), responseKeys (STRING[]), errorKeys (STRING[]), middleware (STRING[]). Example: MATCH (r:Route) WHERE r.httpMethod = 'GET' RETURN r.routePath, r.controllerClass, r.handlerMethod"
   Community: "heuristicLabel (STRING), cohesion (DOUBLE), symbolCount (INT32), keywords (STRING[]), description (STRING), enrichedBy (STRING)"
   Process: "heuristicLabel (STRING), processType (STRING — 'intra_community' or 'cross_community'), stepCount (INT32), communities (STRING[]), entryPointId (STRING), terminalId (STRING)"
 
@@ -335,28 +353,44 @@ relationships:
   - DEFINES: File defines a symbol
   - CALLS: Function/method invocation
   - IMPORTS: Module imports
-  - EXTENDS: Class inheritance
-  - IMPLEMENTS: Interface implementation
+  - EXTENDS: Class inheritance (and Go anonymous-field composition — use COMPOSITION if you specifically want the composition edge)
+  - COMPOSITION: Structural composition (e.g. Go anonymous fields — type STRING, no schema migration needed)
+  - IMPLEMENTS: Interface / protocol implementation
   - HAS_METHOD: Class/Struct/Interface owns a Method
   - HAS_PROPERTY: Class/Struct/Interface owns a Property (field)
   - ACCESSES: Function/Method reads or writes a Property (reason: 'read' or 'write')
   - OVERRIDES: Method overrides another Method (MRO)
   - MEMBER_OF: Symbol belongs to community
   - STEP_IN_PROCESS: Symbol is step N in process
-  - COMPOSITION: Owner has a field/embedding of the target (e.g. Go anonymous field, struct embedding)
+  - CROSS_IMPORTS: Cross-repo module import
+  - HANDLES_ROUTE: Class/Method handles an HTTP route (typed edge alternative to Route node)
+  - FETCHES: Function fetches an HTTP endpoint (reason: 'nextjs-fetch', etc.)
+  - HANDLES_TOOL: Function/Method handles a tool definition
+  - ENTRY_POINT_OF: Symbol is the entry point of a process
+  - WRAPS: Middleware/wrapper chain (e.g. withRateLimit wraps handler)
+  - QUERIES: ORM query (e.g. repository.findById) — target is the entity/table
+  - DECLARES / IMPORTS_MODULE / PROVIDES / BOOTSTRAPS: Angular @NgModule metadata edges
 
-relationship_table: "All relationships use a single CodeRelation table with a 'type' property. Properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)"
+relationship_table: "All relationships use a single CodeRelation table with a 'type' property. Properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32). Filter with {type: 'CALLS'} etc."
+
+tip_route_lookup: "To find routes by HTTP method + path, MATCH on Route nodes. To find route handlers, traverse (Route)-[:CodeRelation {type: 'CALLS'}]->(Method) or use the HANDLES_ROUTE edge type directly."
 
 example_queries:
   find_callers: |
     MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunc"})
     RETURN caller.name, caller.filePath
-  
+
+  find_routes_by_method: |
+    MATCH (r:Route)
+    WHERE r.httpMethod = 'GET'
+    RETURN r.routePath, r.controllerClass, r.handlerMethod
+    ORDER BY r.routePath
+
   find_community_members: |
     MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
     WHERE c.heuristicLabel = "Auth"
     RETURN s.name, labels(s)[0] AS type
-  
+
   trace_process: |
     MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
     WHERE p.heuristicLabel = "LoginFlow"

@@ -238,7 +238,7 @@ export const streamAllCSVsToDisk = async (
   const codeElemWriter = new BufferedCSVWriter(path.join(csvDir, 'codeelement.csv'), codeElementHeader);
   const communityWriter = new BufferedCSVWriter(path.join(csvDir, 'community.csv'), 'id,label,heuristicLabel,keywords,description,enrichedBy,cohesion,symbolCount');
   const processWriter = new BufferedCSVWriter(path.join(csvDir, 'process.csv'), 'id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId');
-  const routeHeader = 'id,name,httpMethod,routePath,controllerName,methodName,filePath,startLine,lineNumber,isInherited,repoId,responseKeys,errorKeys,middleware';
+  const routeHeader = 'id,name,httpMethod,routePath,controllerName,methodName,filePath,startLine,lineNumber,isInherited,repoId,responseKeys,errorKeys,middleware,controllerClass,handlerMethod,isControllerClass,prefix';
   const routeWriter = new BufferedCSVWriter(path.join(csvDir, 'route.csv'), routeHeader);
 
   // Multi-language node types share the same CSV shape (no isExported column)
@@ -361,6 +361,11 @@ export const streamAllCSVsToDisk = async (
           escapeCSVField((node.properties as any).responseKeys || ''),
           escapeCSVField((node.properties as any).errorKeys || ''),
           escapeCSVField((node.properties as any).middleware || ''),
+          // #67: spec-named aliases + ExtractedRoute fields
+          escapeCSVField((node.properties as any).controllerClass || (node.properties as any).controllerName || ''),
+          escapeCSVField((node.properties as any).handlerMethod || (node.properties as any).methodName || ''),
+          (node.properties as any).isControllerClass ? 'true' : 'false',
+          escapeCSVField((node.properties as any).prefix || ''),
         ].join(','));
         break;
       }

@@ -37,9 +37,9 @@ function createMockBackend(overrides: Partial<Record<string, any>> = {}): any {
 // ─── Static definitions ─────────────────────────────────────────────
 
 describe('getResourceDefinitions', () => {
-  it('returns 2 static resources', () => {
+  it('returns 3 static resources', () => {
     const defs = getResourceDefinitions();
-    expect(defs).toHaveLength(2);
+    expect(defs).toHaveLength(3);
   });
 
   it('includes repos resource', () => {
@@ -54,6 +54,14 @@ describe('getResourceDefinitions', () => {
     const setup = defs.find(d => d.uri === 'gitnexus://setup');
     expect(setup).toBeDefined();
     expect(setup!.mimeType).toBe('text/markdown');
+  });
+
+  it('includes top-level schema resource (#110)', () => {
+    const defs = getResourceDefinitions();
+    const schema = defs.find(d => d.uri === 'gitnexus://schema');
+    expect(schema).toBeDefined();
+    expect(schema!.mimeType).toBe('text/yaml');
+    expect(schema!.description).toContain('Cypher');
   });
 
   it('each definition has uri, name, description, mimeType', () => {

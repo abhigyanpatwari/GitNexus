@@ -73,15 +73,16 @@ Results from multi-repo queries include '_repoId' attribution for each item.`,
     name: 'cypher',
     description: `Execute Cypher query against the code knowledge graph.
 
-WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
+WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://schema (static, no repo required) or gitnexus://repo/{name}/schema first for the full schema.
 AFTER THIS: Use context() on result symbols for deeper context.
 
-SCHEMA:
-- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process
+SCHEMA (full reference in gitnexus://schema):
+- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Route, Community, Process
 - Multi-language nodes (use backticks): \`Struct\`, \`Enum\`, \`Trait\`, \`Impl\`, etc.
 - All edges via single CodeRelation table with 'type' property
-- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS
+- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, COMPOSITION, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS, CROSS_IMPORTS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF, WRAPS, QUERIES
 - Edge properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)
+- Route node properties (HTTP endpoints): httpMethod, routePath, controllerClass (alias: controllerName), handlerMethod (alias: methodName), filePath, lineNumber, isInherited, isControllerClass, prefix
 
 EXAMPLES:
 • Find callers of a function:

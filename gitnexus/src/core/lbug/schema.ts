@@ -236,14 +236,22 @@ CREATE NODE TABLE Route (
   responseKeys STRING[],
   errorKeys STRING[],
   middleware STRING[],
+  controllerClass STRING,
+  handlerMethod STRING,
+  isControllerClass BOOLEAN,
+  prefix STRING,
   PRIMARY KEY (id)
 )`;
-// Migration for cross-repo support
+// Migration for cross-repo support + (#67) Route property aliases
 export const ROUTE_SCHEMA_MIGRATION = `
 ALTER TABLE Route ADD COLUMN IF NOT EXISTS repoId STRING;
 ALTER TABLE Route ADD COLUMN IF NOT EXISTS responseKeys STRING[];
 ALTER TABLE Route ADD COLUMN IF NOT EXISTS errorKeys STRING[];
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS middleware STRING[]`;
+ALTER TABLE Route ADD COLUMN IF NOT EXISTS middleware STRING[];
+ALTER TABLE Route ADD COLUMN IF NOT EXISTS controllerClass STRING;
+ALTER TABLE Route ADD COLUMN IF NOT EXISTS handlerMethod STRING;
+ALTER TABLE Route ADD COLUMN IF NOT EXISTS isControllerClass BOOLEAN;
+ALTER TABLE Route ADD COLUMN IF NOT EXISTS prefix STRING`;
 
 // ============================================================================
 // MULTI-LANGUAGE NODE TABLE SCHEMAS
