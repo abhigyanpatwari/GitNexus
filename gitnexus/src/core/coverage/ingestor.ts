@@ -49,14 +49,17 @@ export function ingestCoverage(
   // 3. Aggregate per-symbol coverage
   const symbolCoverage = aggregateSymbolCoverage(lineMappings);
 
+  // 3.5. Map branches to graph nodes
+  const branchResults = mapBranches(branchHitRecords, opts.graph);
+
   // 4. Map edges
   const coveredNodeIds = new Set(symbolCoverage.keys());
   const edgeTraversals = mapCoveredEdges(coveredNodeIds, opts.graph, runId);
   updateEdgeTraversalCounts(edgeTraversals, opts.graph, runId);
 
-  // 5. Write to graph
+  // 5. Write to graph (including branch results)
   writeCoverageToGraph(
-    { runMeta: coverage.run, symbolUpdates: symbolCoverage },
+    { runMeta: coverage.run, symbolUpdates: symbolCoverage, branchResults },
     opts.graph,
   );
 

@@ -2,9 +2,18 @@
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { CoverageRunMeta } from './types.js';
 
+/** Result of mapping a branch hit to a graph node. */
+export interface BranchMappingResult {
+  nodeId: string;
+  branchId: string;
+  hitCount: number;
+  relatedEdges: string[];
+}
+
 export interface GraphCoverageUpdate {
   runMeta: CoverageRunMeta;
   symbolUpdates: Map<string, { totalLines: number; coveredLines: number; ratio: number }>;
+  branchResults?: BranchMappingResult[];
 }
 
 export function writeCoverageToGraph(update: GraphCoverageUpdate, graph: KnowledgeGraph): string {
@@ -53,6 +62,29 @@ export function writeCoverageToGraph(update: GraphCoverageUpdate, graph: Knowled
     totalCovered += coverage.coveredLines;
   }
 
+  // Write branch coverage to nodes
+  if (update.branchResults && update.branchResults.length > 0) {
+    const nodeBranches = new Map<string, { total: number; covered: number }>();
+    for (const br of update.branchResults) {
+      const existing = nodeBranches.get(br.nodeId);
+      if (existing) {
+        existing.total += 1;
+        if (br.hitCount > 0) existing.covered += 1;
+      } else {
+        nodeBranches.set(br.nodeId, {
+          total: 1,
+          covered: br.hitCount > 0 ? 1 : 0,
+        });
+      }
+    }
+    for (const [nodeId, agg] of nodeBranches) {
+      const node = graph.getNode(nodeId);
+      if (node) {
+        node.properties.branchCoverage = agg;
+      }
+    }
+  }
+
   const runNode = graph.getNode(runNodeId);
   if (runNode) {
     runNode.properties.totalLines = totalLines;
@@ -76,6 +108,7 @@ export function removeCoverageFromGraph(runId: string, graph: KnowledgeGraph): v
     if (node.properties.coverageRatio !== undefined) {
       node.properties.coverageRatio = undefined;
       node.properties.lastCoveredAt = undefined;
+      node.properties.branchCoverage = undefined;
     }
   }
 
