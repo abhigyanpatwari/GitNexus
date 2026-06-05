@@ -72,3 +72,26 @@ describe('Gin route extraction via full pipeline (#80, #6)', () => {
     expect(paths.some(p => typeof p === 'string' && p.includes('/users/'))).toBe(true);
   });
 });
+
+describe('Angular client-side route extraction via full pipeline (#7, #43)', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'angular-basic'), () => {});
+  }, 60000);
+
+  it('creates Route nodes for Angular routes (end-to-end, not just the extractor)', () => {
+    const routes = getNodesByLabelFull(result, 'Route');
+    expect(routes.length).toBeGreaterThan(0);
+  });
+
+  it('marks every Angular client-side route as GET', () => {
+    const routes = getNodesByLabelFull(result, 'Route');
+    expect(routes.every(r => r.properties.httpMethod === 'GET')).toBe(true);
+  });
+
+  it('captures the users + nested :id route paths', () => {
+    const paths = getNodesByLabelFull(result, 'Route').map(r => String(r.properties.routePath));
+    expect(paths.some(p => p.includes('users'))).toBe(true);
+    expect(paths.some(p => p.includes(':id'))).toBe(true);
+  });
+});

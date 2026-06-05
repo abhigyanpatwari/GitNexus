@@ -18,6 +18,7 @@ import { extractClassFields, extractMethodParameterAnnotations, extractORMQuerie
 import { extractExpressRoutes } from './route-extractors/express.js';
 import { extractFastApiRoutes } from './route-extractors/python.js';
 import { extractGinRoutes } from './route-extractors/go.js';
+import { extractAngularRoutes, isAngularFile } from './route-extractors/angular.js';
 import { extractSpringRoutes, collectFileConstants } from './workers/spring-route-extractor.js';
 import { extractLaravelRoutes } from './workers/parse-worker.js';
 import { extractAngularMetadata } from './extractors/angular-metadata.js';
@@ -374,6 +375,24 @@ const processParsingSequential = async (
     }
     if (language === SupportedLanguages.Go) {
       for (const r of extractGinRoutes(tree, file.path)) {
+        allDecoratorRoutes.push({
+          filePath: r.filePath,
+          decorator: r.httpMethod,
+          path: r.routePath,
+          lineNumber: r.lineNumber,
+          handlerName: r.methodName ?? undefined,
+        });
+      }
+    }
+
+    // Extract Angular client-side routes (#7, #43). Angular routes map a path to
+    // a component (httpMethod is always GET, there is no server handler method),
+    // so like FastAPI/Gin they cannot go through processRoutesFromExtracted
+    // (methodName is null → dropped) and instead build Route nodes via the
+    // decorator-route path. extractAngularRoutes was previously only wired into
+    // the worker pool, so normal Angular repos produced zero Route nodes.
+    if (language === SupportedLanguages.TypeScript && isAngularFile(file.path, file.content)) {
+      for (const r of extractAngularRoutes(tree, file.path)) {
         allDecoratorRoutes.push({
           filePath: r.filePath,
           decorator: r.httpMethod,
