@@ -86,6 +86,16 @@ export default {};
     expect(result!.lang).toBe('');
   });
 
+  it('jsx lang triggers JS grammar (maps to lang=js)', () => {
+    const vue = `<script lang="jsx">
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('js');
+  });
+
   it('ts lang returns empty (only js/jsx triggers JS grammar)', () => {
     const vue = `<script lang="ts">
 export default {};

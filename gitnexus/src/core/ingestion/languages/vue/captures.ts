@@ -68,8 +68,9 @@ export function emitVueScopeCaptures(
   if (extracted === null) return [];
 
   // Select captures based on script lang attribute.
-  // Only use JavaScript when ALL blocks are explicitly lang="js" or "jsx".
-  if (extracted.lang === 'js') {
+  // Use TS grammar unless ALL blocks explicitly request JS/JSX.
+  // Mixed-lang: TS handles JS natively; JS grammar chokes on TS syntax.
+  if (extracted.lang === 'js' || extracted.lang === 'jsx') {
     return emitJsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
   }
   return emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
