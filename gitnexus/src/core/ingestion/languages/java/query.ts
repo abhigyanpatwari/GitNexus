@@ -214,8 +214,23 @@ const JAVA_SCOPE_QUERY = `
   type: (generic_type
     (type_identifier) @reference.name)) @reference.call.constructor
 
+;; References — qualified constructor calls: new pkg.Foo(), new a.b.Foo() (F35 #1928)
+;; tree-sitter-java parses \`pkg.Foo\` as a scoped_type_identifier whose final
+;; child is the simple type. Bind that tail as @reference.name (trailing \`.\`
+;; anchor = last child) so resolution targets \`Foo\`, not the raw \`pkg.Foo\` text.
+;; Mirrors the TS/JS new-expression qualified-constructor capture.
 (object_creation_expression
-  type: (scoped_type_identifier) @reference.call.constructor.qualified) @reference.call.constructor
+  type: (scoped_type_identifier
+    (type_identifier) @reference.name .) @reference.call.constructor.qualified) @reference.call.constructor
+
+;; References — qualified + generic constructor calls: new pkg.Box<T>() (F35 #1928)
+;; The base is a generic_type whose first child is a scoped_type_identifier, so
+;; neither the simple-generic nor the plain-scoped arm above matches it. Bind the
+;; scoped tail as @reference.name.
+(object_creation_expression
+  type: (generic_type
+    (scoped_type_identifier
+      (type_identifier) @reference.name .) @reference.call.constructor.qualified)) @reference.call.constructor
 
 ;; References — method references: User::getName, obj::method
 (method_reference

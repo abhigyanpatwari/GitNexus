@@ -74,10 +74,14 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
-  // Strip qualifier first so that `com.example.BaseModel<T>` becomes
-  // `BaseModel<T>` before stripGeneric — the JVM-erasure fallback pattern
-  // requires an unqualified identifier at the start of the string.
-  const rawType = stripGeneric(stripQualifier(typeCap.text.trim()));
+  // Strip generics BEFORE the qualifier (F41 #1928). Stripping the qualifier
+  // first uses `lastIndexOf('.')`, which for a qualified *type argument*
+  // (`Map<String, com.example.User>`) cuts inside the generic and yields a
+  // corrupted `User>`. Unwrapping generics first reduces the string to a single
+  // (possibly qualified) class name, then the qualifier strip leaves the bare
+  // simple name. `stripGeneric`'s erasure fallback is qualifier-tolerant so a
+  // qualified generic base (`com.example.BaseModel<T>`) still reduces correctly.
+  const rawType = stripQualifier(stripGeneric(typeCap.text.trim()));
 
   // Skip `var` — tree-sitter-java parses `var` as type_identifier with
   // text "var". When used without a constructor initializer, there's no
@@ -127,8 +131,10 @@ function stripGeneric(text: string): string {
   // `BaseModel<T>` → `BaseModel`, `Builder<Self>` → `Builder`.
   // This mirrors JVM type erasure — the raw class name is the resolvable symbol.
   // The pattern matches up to the first `<` to handle nested generics safely
-  // (e.g. `BaseModel<List<String>>` → `BaseModel`).
-  const fallback = text.match(/^([A-Za-z_$][A-Za-z0-9_$]*)<.+>$/s);
+  // (e.g. `BaseModel<List<String>>` → `BaseModel`). The base is allowed to be
+  // qualified (`com.example.BaseModel<T>` → `com.example.BaseModel`) since the
+  // caller strips the qualifier afterwards (F41 #1928).
+  const fallback = text.match(/^((?:[A-Za-z_$][A-Za-z0-9_$]*\.)*[A-Za-z_$][A-Za-z0-9_$]*)<.+>$/s);
   if (fallback !== null) return fallback[1].trim();
 
   return text;

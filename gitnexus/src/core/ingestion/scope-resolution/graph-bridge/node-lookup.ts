@@ -162,7 +162,10 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
  * Callables whose same-name overloads must route to distinct graph nodes via
  * the parameter-types / shape key. Constructors belong here too: a class with
  * `Foo()` and `Foo(int)` mints distinct `#0`/`#1` Constructor nodes, and a
- * `: this(...)` / `new Foo(args)` edge must reach the right one (#2046 / #1928).
+ * `: this(...)` / `: base(...)` (C#) or `this(...)`/`super(...)` (Java) edge,
+ * or any `new Foo(args)`, must reach the right one. Without the overload key
+ * both ctor nodes collapse onto the first-wins qualified/simple key, turning a
+ * ctor chain into a self-loop (#1928 F38 / #2046).
  */
 function isOverloadableCallable(label: NodeLabel): boolean {
   return label === 'Function' || label === 'Method' || label === 'Constructor';

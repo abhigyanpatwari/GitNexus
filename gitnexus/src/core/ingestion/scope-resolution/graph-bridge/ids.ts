@@ -54,11 +54,6 @@ function isCallerAnchorLabel(label: NodeLabel): boolean {
   );
 }
 
-/** Mirrors `isOverloadableCallable` in `node-lookup.ts` (Constructor included). */
-function isOverloadableCallable(label: NodeLabel | undefined): boolean {
-  return label === 'Function' || label === 'Method' || label === 'Constructor';
-}
-
 function rangeContainsPoint(
   range: { startLine: number; startCol: number; endLine: number; endCol: number },
   at: { startLine: number; startCol: number },
@@ -93,6 +88,16 @@ function pickCallerCallableDef(
   return scope.ownedDefs.find(
     (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
   );
+}
+
+/**
+ * Callables whose same-name overloads occupy distinct graph nodes keyed by
+ * parameter types / shape. Must mirror `isOverloadableCallable` in
+ * `node-lookup.ts` so registration and lookup agree (Constructor included —
+ * #1928 F38).
+ */
+function isOverloadableCallable(label: NodeLabel | undefined): boolean {
+  return label === 'Function' || label === 'Method' || label === 'Constructor';
 }
 
 /**
@@ -161,7 +166,11 @@ export function resolveDefGraphId(
     }
     // Overload disambiguation: when the def carries parameter types,
     // try the parameter-typed key first so same-name same-arity
-    // overloads route to their distinct graph nodes (Constructors included).
+    // overloads route to their distinct graph nodes. Constructors are
+    // included so a C# `: this(int)` / `: base(int)` chain, a Java
+    // `this(int)`/`super(int)` chain, or `new Foo(int)` resolves to the
+    // matching ctor overload instead of first-wins collapsing onto
+    // another `Foo` ctor (a self-loop) — #1928 F38 / #2046.
     if (
       isOverloadableCallable(def.type) &&
       def.parameterTypes !== undefined &&
