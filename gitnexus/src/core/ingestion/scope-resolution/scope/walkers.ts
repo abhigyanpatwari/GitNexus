@@ -425,6 +425,31 @@ function resolveQualifiedInheritanceBase(
       return undefined; // genuine tie → refuse, don't guess
     }
   }
+
+  // Qualifier-vs-sidecar fallback (#2046). Languages whose class `qualifiedName`
+  // is the SIMPLE name (C#) never populate a qualified key in the index, so the
+  // keyed loop above can't see `B.Foo`. Resolve the simple TAIL and break the
+  // same-tail collision by matching the explicit qualifier (`B`) against each
+  // candidate's `namespacePrefix` sidecar. Commit only on a unique match — a
+  // still-ambiguous qualifier refuses (never guesses a wrong EXTENDS/CALLS edge).
+  const tail = normParts[normParts.length - 1];
+  const qualifier = normParts.slice(0, -1).join('.');
+  if (tail !== undefined && qualifier.length > 0) {
+    const tailIds = scopes.qualifiedNames.get(tail);
+    let qUnique: SymbolDefinition | undefined;
+    let qCount = 0;
+    for (const id of tailIds) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      const np = def.namespacePrefix;
+      if (np === undefined || np.length === 0) continue;
+      if (np === qualifier || np.endsWith(`.${qualifier}`)) {
+        qUnique = def;
+        qCount++;
+      }
+    }
+    if (qCount === 1) return qUnique;
+  }
   return undefined;
 }
 
