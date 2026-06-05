@@ -88,7 +88,10 @@ export class CompatibleStdioServerTransport implements Transport {
     // If stdin is already closed (parent died before we registered listeners),
     // the 'end'/'close' event was already emitted and will never fire again.
     // Close the transport immediately to avoid orphaned processes.
-    if ((this._stdin as NodeJS.ReadStream).readableEnded || (this._stdin as NodeJS.ReadStream).destroyed) {
+    if (
+      (this._stdin as NodeJS.ReadStream).readableEnded ||
+      (this._stdin as NodeJS.ReadStream).destroyed
+    ) {
       this._started = true;
       await this.close();
       return;
