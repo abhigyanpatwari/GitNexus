@@ -63,6 +63,16 @@ export async function streamIngest(
       accumulator.files[file].lines[lineNum.toString()] =
         (accumulator.files[file].lines[lineNum.toString()] ?? 0) + count;
 
+      // Branch data: "lineNumber:branchId" -> hitCount
+      if (parsed.branch && typeof parsed.branch === 'string') {
+        const branchId = parsed.branch as string;
+        if (!accumulator.files[file].branches) {
+          accumulator.files[file].branches = {};
+        }
+        accumulator.files[file].branches![branchId] =
+          (accumulator.files[file].branches![branchId] ?? 0) + count;
+      }
+
       accumulator.totalLines++;
       if (count > 0) accumulator.coveredLines++;
     } catch {
