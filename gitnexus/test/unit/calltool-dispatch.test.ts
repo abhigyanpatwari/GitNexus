@@ -2288,6 +2288,7 @@ describe('LocalBackend.resolveRepoFromCache — cwd resolution', () => {
     vi.clearAllMocks();
     // clearAllMocks wipes the module-level mockResolvedValue — restore it so query() doesn't throw
     (searchFTSFromLbug as any).mockResolvedValue([]);
+    (cleanupOldKuzuFiles as any).mockResolvedValue({ found: false, needsReindex: false });
     backend = new LocalBackend();
   });
 
