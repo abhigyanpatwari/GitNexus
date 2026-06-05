@@ -24,8 +24,9 @@
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1924 F16: record primary-constructor base bindings now exclude constructor arguments; capture fingerprint changes, scaling remains linear. | #2036 review follow-up: csharp-record-base now exercises primary-constructor base dispatch end to end; +2 capture groups, scaling remains linear.",
-    "fingerprint": "701b4274643a9a5ee03a71e9fc0dede28a89524eedb976affc48df72bdd4adcc",
-    "scaling_budget": 1.5
+    "fingerprint": "2bb5bc8c19cb8eb08c9590545ad8a1968a7152951f7e12746e2d7901d542fed9",
+    "scaling_budget": 1.5,
+    "_note": "#2046: F35 qualified-constructor captures now emit @reference.qualified-name + a simple-name @reference.name on `new Ns.Foo()`/`new A.B.Foo()`; namespace_declaration/file_scoped_namespace_declaration now emit @declaration.namespace name captures (feeding the non-destructive namespacePrefix sidecar for `new B.Foo()` same-tail disambiguation). + csharp-interface-only-base and csharp-namespace-qualified-ctor fixtures. Pure capture-additive + fixture-corpus drift; scaling stays linear (~1.11)."
   },
   "rust": {
     "fingerprint": "ac610bbe97666bf285923479dd7b43a2fe4c5354aae8df1bcbafdc04fb220f82",

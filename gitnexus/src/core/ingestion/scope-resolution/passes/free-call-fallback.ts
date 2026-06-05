@@ -39,7 +39,7 @@ import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findCallableBindingsAndAdlBlocker,
-  findClassBindingInScope,
+  resolveInheritanceBaseInScope,
 } from '../scope/walkers.js';
 import {
   isOverloadAmbiguousAfterNormalization,
@@ -114,8 +114,13 @@ export function emitFreeCallFallback(
       // the same two targets; see test expectations.
       let fnDef: SymbolDefinition | undefined;
       if (site.callForm === 'constructor') {
-        const classDef = findClassBindingInScope(site.inScope, site.name, scopes);
-        if (classDef !== undefined) {
+        const classDef = resolveInheritanceBaseInScope(
+          site.inScope,
+          site.name,
+          scopes,
+          site.rawQualifiedName,
+        );
+        if (classDef !== undefined && classDef.type !== 'Interface') {
           // Most languages link `Type(...)` to the explicit Constructor def
           // when one exists (else the Class). Languages that model the call
           // as a reference to the type itself opt into
@@ -123,7 +128,7 @@ export function emitFreeCallFallback(
           fnDef =
             options.constructorCallTargetsClass === true
               ? classDef
-              : pickConstructorOrClass(classDef, workspaceIndex, scopes);
+              : pickConstructorOrClass(classDef, workspaceIndex, scopes, site.arity);
         } else if (options.allowGlobalFallback === true) {
           // The constructed type may live in a sibling/imported file that is
           // not in the call-site's lexical scope-chain bindings. Fall back to
@@ -133,9 +138,11 @@ export function emitFreeCallFallback(
           const globalClass = pickUniqueGlobalClass(site.name, globalClassesBySimpleName);
           if (globalClass !== undefined) {
             fnDef =
-              options.constructorCallTargetsClass === true
-                ? globalClass
-                : pickConstructorOrClass(globalClass, workspaceIndex, scopes);
+              globalClass.type === 'Interface'
+                ? undefined
+                : options.constructorCallTargetsClass === true
+                  ? globalClass
+                  : pickConstructorOrClass(globalClass, workspaceIndex, scopes, site.arity);
           }
         }
       }
@@ -379,7 +386,7 @@ export function emitFreeCallFallback(
         handledSites.add(siteKey(parsed.filePath, site));
         continue;
       }
-      const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
+      const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
       if (callerGraphId === undefined) continue;
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
       if (tgtGraphId === undefined) continue;
@@ -662,22 +669,29 @@ function pickConstructorOrClass(
   classDef: SymbolDefinition,
   workspaceIndex: WorkspaceResolutionIndex,
   scopes?: ScopeResolutionIndexes,
+  callArity?: number,
 ): SymbolDefinition {
   const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
   if (classScope === undefined) return classDef;
+  const ctors: SymbolDefinition[] = [];
   for (const def of classScope.ownedDefs) {
-    if (def.type === 'Constructor') return def;
+    if (def.type === 'Constructor') ctors.push(def);
   }
   if (scopes !== undefined) {
     for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
       const childScope = scopes.scopeTree.getScope(childId);
       if (childScope === undefined || childScope.kind === 'Class') continue;
       for (const def of childScope.ownedDefs) {
-        if (def.type === 'Constructor') return def;
+        if (def.type === 'Constructor') ctors.push(def);
       }
     }
   }
-  return classDef;
+  if (ctors.length === 0) return classDef;
+  if (callArity !== undefined) {
+    const narrowed = narrowByArity(ctors, callArity);
+    if (narrowed !== undefined) return narrowed;
+  }
+  return ctors[0]!;
 }
 
 /** Find a unique workspace-wide class-like def by simple name, for a

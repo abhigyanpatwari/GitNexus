@@ -20,6 +20,7 @@
 
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 
@@ -156,18 +157,6 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     if (!lookup.has(sKey)) lookup.set(sKey, node.id);
   }
   return lookup;
-}
-
-/**
- * Callables whose same-name overloads must route to distinct graph nodes via
- * the parameter-types / shape key. Constructors belong here too: a class with
- * `Foo()` and `Foo(int)` mints distinct `#0`/`#1` Constructor nodes, and a
- * `this(...)`/`super(...)` edge (or any `new Foo(args)`) must reach the right
- * one. Without the overload key both ctor nodes collapse onto the first-wins
- * qualified/simple key, turning a `this()` chain into a self-loop (#1928 F38).
- */
-function isOverloadableCallable(label: NodeLabel): boolean {
-  return label === 'Function' || label === 'Method' || label === 'Constructor';
 }
 
 export function isLinkableLabel(label: NodeLabel): boolean {

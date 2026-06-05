@@ -21,6 +21,7 @@ import type { NodeLabel, ParameterTypeClass, ScopeId, SymbolDefinition } from 'g
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
 import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 /**
@@ -54,14 +55,40 @@ function isCallerAnchorLabel(label: NodeLabel): boolean {
   );
 }
 
-/**
- * Callables whose same-name overloads occupy distinct graph nodes keyed by
- * parameter types / shape. Must mirror `isOverloadableCallable` in
- * `node-lookup.ts` so registration and lookup agree (Constructor included —
- * #1928 F38).
- */
-function isOverloadableCallable(label: NodeLabel | undefined): boolean {
-  return label === 'Function' || label === 'Method' || label === 'Constructor';
+function rangeContainsPoint(
+  range: { startLine: number; startCol: number; endLine: number; endCol: number },
+  at: { startLine: number; startCol: number },
+): boolean {
+  if (at.startLine < range.startLine || at.startLine > range.endLine) return false;
+  if (at.startLine === range.startLine && at.startCol < range.startCol) return false;
+  if (at.startLine === range.endLine && at.startCol > range.endCol) return false;
+  return true;
+}
+
+/** Pick the callable that owns `atRange` when multiple overloads share a class scope. */
+function pickCallerCallableDef(
+  scope: {
+    readonly id: ScopeId;
+    readonly range: { startLine: number; startCol: number; endLine: number; endCol: number };
+    readonly ownedDefs: readonly SymbolDefinition[];
+  },
+  scopes: ScopeResolutionIndexes,
+  atRange?: { startLine: number; startCol: number },
+): SymbolDefinition | undefined {
+  if (atRange !== undefined) {
+    for (const childId of scopes.scopeTree.getChildren(scope.id)) {
+      const child = scopes.scopeTree.getScope(childId);
+      if (child === undefined || child.kind !== 'Function') continue;
+      if (!rangeContainsPoint(child.range, atRange)) continue;
+      const childCallable = child.ownedDefs.find(
+        (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
+      );
+      if (childCallable !== undefined) return childCallable;
+    }
+  }
+  return scope.ownedDefs.find(
+    (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
+  );
 }
 
 /**
@@ -131,9 +158,10 @@ export function resolveDefGraphId(
     // Overload disambiguation: when the def carries parameter types,
     // try the parameter-typed key first so same-name same-arity
     // overloads route to their distinct graph nodes. Constructors are
-    // included so a `this(int)`/`super(int)` chain or `new Foo(int)`
-    // resolves to the matching ctor overload instead of first-wins
-    // collapsing onto another `Foo` ctor (a self-loop) — #1928 F38.
+    // included so a C# `: this(int)` / `: base(int)` chain, a Java
+    // `this(int)`/`super(int)` chain, or `new Foo(int)` resolves to the
+    // matching ctor overload instead of first-wins collapsing onto
+    // another `Foo` ctor (a self-loop) — #1928 F38 / #2046.
     if (
       isOverloadableCallable(def.type) &&
       def.parameterTypes !== undefined &&
@@ -197,6 +225,7 @@ export function resolveCallerGraphId(
   startScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
+  atRange?: { startLine: number; startCol: number },
 ): string | undefined {
   let current: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
@@ -211,11 +240,9 @@ export function resolveCallerGraphId(
     // Prefer Function/Method/Constructor anchors; fall back to
     // Class/Interface/Struct/Enum. Variable/Property are NOT valid
     // caller anchors — see `isCallerAnchorLabel` for why.
-    const fnDef = scope.ownedDefs.find(
-      (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
-    );
+    const fnDef = pickCallerCallableDef(scope, scopes, atRange);
     if (fnDef !== undefined) {
-      const id = resolveDefGraphId(scope.filePath, fnDef, nodeLookup);
+      const id = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
       if (id !== undefined) return id;
     }
     const classDef = scope.ownedDefs.find((d) => isCallerAnchorLabel(d.type));
