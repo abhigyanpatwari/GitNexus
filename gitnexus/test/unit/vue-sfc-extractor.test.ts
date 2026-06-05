@@ -86,6 +86,29 @@ export default {};
     expect(result!.lang).toBe('');
   });
 
+  it('ts lang returns empty (only js/jsx triggers JS grammar)', () => {
+    const vue = `<script lang="ts">
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('');
+  });
+
+  it('mixed js + ts blocks return empty lang (TypeScript wins)', () => {
+    const vue = `<script lang="js">
+export default {};
+</script>
+<script setup lang="ts">
+import { ref } from 'vue';
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('');
+  });
+
   it('isSetup is true when at least one block is setup', () => {
     const vue = `<script lang="ts">
 export default {};
@@ -97,6 +120,8 @@ import { ref } from 'vue';
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
     expect(result!.isSetup).toBe(true);
+    // ts blocks — lang should be empty
+    expect(result!.lang).toBe('');
   });
 
   it('returns null for .vue files with no <script> block', () => {

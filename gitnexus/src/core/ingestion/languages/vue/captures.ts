@@ -59,18 +59,16 @@ export function emitVueScopeCaptures(
   }
 
   if (sourceMeta?.sourceKind === 'pre-extracted-script') {
-    // Worker path: the parse worker passes langs via sourceMeta.setupLang
-    const lang = sourceMeta?.setupLang ?? '';
-    if (lang === 'js') {
-      return emitJsScopeCaptures(sourceText, filePath, cachedTree);
-    }
+    // Worker-mode path: the parse worker always uses TypeScript grammar for
+    // .vue files. Lang-based grammar selection is a sequential-path feature.
     return emitTsScopeCaptures(sourceText, filePath, cachedTree);
   }
 
   const extracted = extractVueScript(sourceText);
   if (extracted === null) return [];
 
-  // Select captures based on script lang attribute
+  // Select captures based on script lang attribute.
+  // Only use JavaScript when ALL blocks are explicitly lang="js" or "jsx".
   if (extracted.lang === 'js') {
     return emitJsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
   }

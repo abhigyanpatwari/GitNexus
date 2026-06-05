@@ -263,10 +263,11 @@ export function extractVueScript(vueContent: string): VueScriptExtraction | null
   const setupBlocks = blocks.filter((b) => b.isSetup);
   const ordered = [...nonSetupBlocks, ...setupBlocks];
   const combinedContent = ordered.map((b) => b.content).join('\n');
-  const lineOffset = blocks[0].lineOffset; // use first block's offset
-  // Return first block's lang (if all blocks agree on lang, this is
-  // correct; if they disagree, the template compiler will catch it).
-  const lang = blocks[0].lang;
+  const lineOffset = ordered[0].lineOffset;
+  // Only use JavaScript grammar when ALL blocks are explicitly lang="js"
+  // or lang="jsx". If any block omits lang or uses ts/tsx, TypeScript wins.
+  const allBlocksJs = blocks.length > 0 && blocks.every((b) => b.lang === 'js' || b.lang === 'jsx');
+  const lang = allBlocksJs ? 'js' : '';
 
   return {
     scriptContent: combinedContent,

@@ -473,3 +473,37 @@ describe('Vue cross-file composable and class resolution', () => {
     expect(files.some((f) => f.endsWith('models.ts'))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F90 — dual-script merge (<script> + <script setup>)
+// ---------------------------------------------------------------------------
+
+describe('F90 — dual-script (<script> + <script setup>)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(VUE_SCOPE_FIXTURES, 'vue-dual-script'), () => {});
+  }, 60000);
+
+  it('includes symbols from both the non-setup and setup blocks', () => {
+    const funcs = getNodesByLabel(result, 'Function');
+    expect(funcs).toContain('ref'); // from <script setup> import
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F92 — JS-lang script block (<script lang="js">)
+// ---------------------------------------------------------------------------
+
+describe('F92 — JS-lang script block', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(VUE_SCOPE_FIXTURES, 'vue-js-lang'), () => {});
+  }, 60000);
+
+  it('parses <script lang="js"> content', () => {
+    const funcs = getNodesByLabel(result, 'Function');
+    expect(funcs).toContain('createApp');
+  });
+});
