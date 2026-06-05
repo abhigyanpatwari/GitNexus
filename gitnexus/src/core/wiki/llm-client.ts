@@ -16,7 +16,8 @@ export type LLMProvider =
   | 'custom'
   | 'cursor'
   | 'claude'
-  | 'codex';
+  | 'codex'
+  | 'opencode';
 
 export interface LLMConfig {
   apiKey: string;
@@ -59,9 +60,14 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
         ? savedConfig.claudeModel
         : savedProvider === 'codex'
           ? savedConfig.codexModel
-          : undefined;
+          : savedProvider === 'opencode'
+            ? savedConfig.opencodeModel
+            : undefined;
   const localProvider =
-    savedProvider === 'cursor' || savedProvider === 'claude' || savedProvider === 'codex';
+    savedProvider === 'cursor' ||
+    savedProvider === 'claude' ||
+    savedProvider === 'codex' ||
+    savedProvider === 'opencode';
 
   const apiKey =
     overrides?.apiKey ||

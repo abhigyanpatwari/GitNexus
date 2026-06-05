@@ -1,5 +1,5 @@
 /**
- * Unit tests for wiki CLI flags: --provider cursor/claude/codex, --review, --verbose
+ * Unit tests for wiki CLI flags: --provider cursor/claude/codex/opencode, --review, --verbose
  *
  * Tests the new wiki provider infrastructure without requiring an actual
  * local agent CLI binary or LLM API key. All external dependencies are mocked.
@@ -190,6 +190,36 @@ describe('resolveLLMConfig', () => {
 
     expect(config.provider).toBe('codex');
     expect(config.model).toBe('gpt-5.4');
+  });
+
+  it('uses opencodeModel when provider is opencode', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'opencode',
+        opencodeModel: 'openai/gpt-5.4-mini',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'opencode' });
+
+    expect(config.provider).toBe('opencode');
+    expect(config.model).toBe('openai/gpt-5.4-mini');
+  });
+
+  it('does not inherit HTTP model defaults for OpenCode local provider', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'openai',
+        model: 'minimax/minimax-m2.5',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'opencode' });
+
+    expect(config.provider).toBe('opencode');
+    expect(config.model).toBe('');
   });
 
   it('does not inherit HTTP model defaults for local CLI providers', async () => {
@@ -760,6 +790,16 @@ describe('CLI config round-trip with cursor provider', () => {
     expect(loaded.apiKey).toBeUndefined();
   });
 
+  it('saves and loads opencode provider config correctly', async () => {
+    const config = { provider: 'opencode', opencodeModel: 'openai/gpt-5.4-mini' };
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+
+    const loaded = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(loaded.provider).toBe('opencode');
+    expect(loaded.opencodeModel).toBe('openai/gpt-5.4-mini');
+    expect(loaded.apiKey).toBeUndefined();
+  });
+
   it('saves openai provider config with model and apiKey', async () => {
     const config = {
       provider: 'openai',
@@ -941,6 +981,55 @@ describe('WikiGenerator invokeLLM routing', () => {
     expect(result.content).toBe('codex response');
   });
 
+  it('routes to callOpenCodeLLM when provider is opencode', async () => {
+    const cursorClient = await import('../../src/core/wiki/cursor-client.js');
+    const localClient = await import('../../src/core/wiki/local-cli-client.js');
+    const llmClient = await import('../../src/core/wiki/llm-client.js');
+
+    const cursorSpy = vi
+      .spyOn(cursorClient, 'callCursorLLM')
+      .mockResolvedValue({ content: 'cursor response' });
+    const claudeSpy = vi
+      .spyOn(localClient, 'callClaudeLLM')
+      .mockResolvedValue({ content: 'claude response' });
+    const codexSpy = vi
+      .spyOn(localClient, 'callCodexLLM')
+      .mockResolvedValue({ content: 'codex response' });
+    const opencodeSpy = vi
+      .spyOn(localClient, 'callOpenCodeLLM')
+      .mockResolvedValue({ content: 'opencode response' });
+    const openaiSpy = vi
+      .spyOn(llmClient, 'callLLM')
+      .mockResolvedValue({ content: 'openai response' });
+
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const storagePath = path.join(tmpDir, 'storage');
+    const wikiDir = path.join(storagePath, 'wiki');
+    await fs.mkdir(wikiDir, { recursive: true });
+
+    const repoPath = path.join(tmpDir, 'repo');
+    await fs.mkdir(repoPath, { recursive: true });
+
+    const generator = new WikiGenerator(repoPath, storagePath, path.join(storagePath, 'lbug'), {
+      apiKey: '',
+      baseUrl: '',
+      model: 'openai/gpt-5.4-mini',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'opencode',
+    });
+
+    const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
+
+    expect(opencodeSpy).toHaveBeenCalledTimes(1);
+    expect(codexSpy).not.toHaveBeenCalled();
+    expect(claudeSpy).not.toHaveBeenCalled();
+    expect(cursorSpy).not.toHaveBeenCalled();
+    expect(openaiSpy).not.toHaveBeenCalled();
+    expect(result.content).toBe('opencode response');
+  });
+
   it('routes to callLLM when provider is openai', async () => {
     const cursorClient = await import('../../src/core/wiki/cursor-client.js');
     const localClient = await import('../../src/core/wiki/local-cli-client.js');
@@ -1017,6 +1106,13 @@ describe('local agent CLI calls', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.OPENCODE;
+    delete process.env.OPENCODE_PID;
+    delete process.env.OPENCODE_PROCESS_ROLE;
+    delete process.env.OPENCODE_RUN_ID;
+    delete process.env.OPENCODE_EXPERIMENTAL_WEBSOCKETS;
+    delete process.env.OPENCODE_SERVER_PASSWORD;
+    delete process.env.OPENCODE_SERVER_USERNAME;
   });
 
   it('throws when Claude CLI is not in PATH', async () => {
@@ -1043,6 +1139,283 @@ describe('local agent CLI calls', () => {
     const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
 
     await expect(callCodexLLM('hello', {})).rejects.toThrow('Codex CLI not found');
+  });
+
+  it('throws when OpenCode CLI is not in PATH', async () => {
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockImplementation(() => {
+        throw new Error('not found');
+      }),
+      spawn: vi.fn(),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callOpenCodeLLM('hello', {})).rejects.toThrow('OpenCode CLI not found');
+  });
+
+  it('spawns OpenCode run, strips only credential env vars, and parses JSON text events', async () => {
+    process.env.OPENCODE = '1';
+    process.env.OPENCODE_PID = '4242';
+    process.env.OPENCODE_PROCESS_ROLE = 'worker';
+    process.env.OPENCODE_RUN_ID = 'run-123';
+    process.env.OPENCODE_EXPERIMENTAL_WEBSOCKETS = 'true';
+    process.env.OPENCODE_SERVER_PASSWORD = 'secret';
+    process.env.OPENCODE_SERVER_USERNAME = 'opencode';
+
+    const jsonOutput = [
+      JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }),
+      JSON.stringify({ type: 'text', part: { type: 'text', text: 'Hello' } }),
+      JSON.stringify({ type: 'text', part: { type: 'text', text: ' world' } }),
+      JSON.stringify({ type: 'step_finish', part: { type: 'step-finish', reason: 'stop' } }),
+    ].join('\n');
+
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn((stdinText?: string) => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from(jsonOutput));
+        child.emit('close', 0);
+      });
+      return stdinText;
+    });
+
+    const spawnSpy = vi.fn(() => child);
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: spawnSpy,
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    const response = await callOpenCodeLLM(
+      'hello',
+      { model: 'openai/gpt-5.4-mini', workingDirectory: process.cwd() },
+      'system prompt',
+    );
+
+    expect(response.content).toBe('Hello world');
+    expect(child.stdin.end).toHaveBeenCalledWith('system prompt\n\n---\n\nhello');
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    expect(args).toContain('run');
+    expect(args).toContain('--format');
+    expect(args).toContain('json');
+    expect(args).toContain('--dir');
+    expect(args).toContain(process.cwd());
+    expect(args).toContain('--model');
+    expect(args).toContain('openai/gpt-5.4-mini');
+
+    const spawnOptions = spawnSpy.mock.calls[0][2] as { env: Record<string, string | undefined> };
+    expect(spawnOptions.env.OPENCODE).toBe('1');
+    expect(spawnOptions.env.OPENCODE_PID).toBe('4242');
+    expect(spawnOptions.env.OPENCODE_PROCESS_ROLE).toBe('worker');
+    expect(spawnOptions.env.OPENCODE_RUN_ID).toBe('run-123');
+    expect(spawnOptions.env.OPENCODE_EXPERIMENTAL_WEBSOCKETS).toBe('true');
+    expect(spawnOptions.env.OPENCODE_SERVER_PASSWORD).toBeUndefined();
+    expect(spawnOptions.env.OPENCODE_SERVER_USERNAME).toBeUndefined();
+  });
+
+  it('omits --model when OpenCode config does not specify one', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify({ type: 'text', part: { type: 'text', text: 'OK' } })),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    const spawnSpy = vi.fn(() => child);
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: spawnSpy,
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    const response = await callOpenCodeLLM('hello', { workingDirectory: process.cwd() });
+
+    expect(response.content).toBe('OK');
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    expect(args).not.toContain('--model');
+  });
+
+  it('parses OpenCode text events even when part.type is omitted', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify({ type: 'text', part: { text: 'fallback text' } })),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    const response = await callOpenCodeLLM('hello', { workingDirectory: process.cwd() });
+
+    expect(response.content).toBe('fallback text');
+  });
+
+  it('ignores non-JSON stdout lines when OpenCode text events are present', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(
+            [
+              'permission requested: write access denied',
+              JSON.stringify({ type: 'text', part: { text: 'Hello from opencode' } }),
+              '~ https://opencode.ai/share/abc123',
+            ].join('\n'),
+          ),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    const response = await callOpenCodeLLM('hello', { workingDirectory: process.cwd() });
+
+    expect(response.content).toBe('Hello from opencode');
+  });
+
+  it('fails with no text output when OpenCode only writes non-JSON stdout lines', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('not-json'));
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
+      'OpenCode CLI returned no text output',
+    );
+  });
+
+  it('surfaces OpenCode error events', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(
+            JSON.stringify({
+              type: 'error',
+              error: { name: 'PermissionDenied', data: { message: 'permission denied' } },
+            }),
+          ),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
+      'OpenCode CLI returned error event: permission denied',
+    );
+  });
+
+  it('fails when OpenCode returns no text events', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify({ type: 'step_finish', part: { type: 'step-finish' } })),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
+      'OpenCode CLI returned no text output',
+    );
+  });
+
+  it('falls back to the OpenCode error name when the nested message is missing', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify({ type: 'error', error: { name: 'PermissionDenied' } })),
+        );
+        child.emit('close', 0);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callOpenCodeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callOpenCodeLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
+      'OpenCode CLI returned error event: PermissionDenied',
+    );
   });
 
   it('uses Codex config overrides instead of removed approval flags', async () => {
