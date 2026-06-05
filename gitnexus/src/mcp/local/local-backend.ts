@@ -95,6 +95,23 @@ function logQueryError(context: string, err: unknown): void {
   console.error(`GitNexus [${context}]: ${msg}`);
 }
 
+/**
+ * Shape of a single incoming reference entry — the unified form used
+ * by `categorize()` (real graph rows) and the synthetic Class/Interface
+ * self-reference (added in `rename` for #72). The same shape is also
+ * what the rename loop iterates over in `allIncoming`. Keeping the
+ * fields uniform means the loop's per-entry logic is identical for
+ * graph-sourced and synthetic entries; only the `__synthetic` flag
+ * distinguished them historically, but that flag was never read and
+ * has been dropped to reduce dead weight.
+ */
+export interface IncomingRef {
+  filePath: string;
+  name: string;
+  uid: string;
+  kind: string;
+}
+
 export interface CodebaseContext {
   projectName: string;
   stats: {
@@ -1656,11 +1673,11 @@ export class LocalBackend {
     } catch (e) { logQueryError('context:process-participation', e); }
     
     // Helper to categorize refs
-    const categorize = (rows: any[]) => {
-      const cats: Record<string, any[]> = {};
+    const categorize = (rows: any[]): Record<string, IncomingRef[]> => {
+      const cats: Record<string, IncomingRef[]> = {};
       for (const row of rows) {
         const relType = (row.relType || row[0] || '').toLowerCase();
-        const entry = {
+        const entry: IncomingRef = {
           uid: row.uid || row[1],
           name: row.name || row[2],
           filePath: row.filePath || row[3],
@@ -3340,11 +3357,48 @@ export class LocalBackend {
     }
 
     // All incoming refs from graph (callers, importers, etc.)
-    const allIncoming = [
+    //
+    // (#72) For Class/Interface symbols, we explicitly add
+    // the sym's own definition file as a synthetic incoming
+    // entry. This is so the loop below scans the WHOLE file
+    // for word-bounded matches of `oldName`, catching:
+    //   - the class declaration (already added by the
+    //     definition edit at sym.startLine, but only if
+    //     that line passes both substring and regex gates)
+    //   - field declarations referencing the class
+    //     (e.g. `private BondServiceImpl instance;`)
+    //   - constructor invocations
+    //     (e.g. `return new BondServiceImpl();`)
+    //   - static method calls
+    //     (e.g. `BondServiceImpl.staticMethod()`)
+    // The text-search phase (Step 3) skips any file in
+    // `graphFiles`, which includes `sym.filePath`, so the
+    // graph phase is the only chance to surface these
+    // intra-file references. Without this entry, only the
+    // line at `sym.startLine` is captured (via the
+    // definition edit), and other uses in the same file
+    // are permanently missed.
+    //
+    // The synthetic entry uses the same shape as the real
+    // graph entries (`{ filePath, name, uid, kind }`) so
+    // the loop below treats it identically. The `seenEdits`
+    // Set (#37) dedupes the synthetic entry's edit at
+    // `sym.startLine` against the earlier definition edit.
+    const symIsClassLike = sym.kind === 'Class' || sym.kind === 'Interface';
+    const allIncoming: IncomingRef[] = [
+      ...(symIsClassLike && sym.filePath
+        ? [{
+            filePath: sym.filePath,
+            name: sym.name,
+            uid: sym.uid,
+            kind: sym.kind,
+          }]
+        : []),
       ...(lookupResult.incoming.calls || []),
       ...(lookupResult.incoming.imports || []),
       ...(lookupResult.incoming.extends || []),
       ...(lookupResult.incoming.implements || []),
+      ...(lookupResult.incoming.accesses || []),
     ];
     
     let graphEdits = changes.size > 0 ? 1 : 0; // count definition edit
@@ -3371,9 +3425,39 @@ export class LocalBackend {
             if (refRegex.test(lines[i])) {
               refRegex.lastIndex = 0;
               addEdit(ref.filePath, i + 1, lines[i].trim(), lines[i].replace(refRegex, new_name).trim(), 'graph');
+              // (#62) (#63) Do NOT break here. Previous code
+              // exited the inner line loop after the first
+              // substring match — even when the regex gate
+              // (#60) rejected it as a false positive. That
+              // caused two distinct bugs:
+              //
+              //   #62 — `getAllBondCategory` matches
+              //     String.includes('getAllBond') and the regex
+              //     gate rejects it, but the `break` still fired,
+              //     skipping later actual call sites of
+              //     `getAllBond` in the same file. Symptom:
+              //     false positives, missed call sites.
+              //
+              //   #63 — even when a true match was found, the
+              //     `break` exited the loop, so subsequent
+              //     occurrences of the same name on later
+              //     lines were never visited. The text-search
+              //     phase skips files already covered by the
+              //     graph (`graphFiles`), so duplicates in
+              //     graph-covered files were permanently
+              //     missed. Symptom: only the first occurrence
+              //     per file was edited.
+              //
+              // Continue scanning all lines in the file. The
+              // `seenEdits` Set (added in #37) dedupes
+              // identical edits, and the regex gate
+              // prevents no-op edits. The `graphEdits++`
+              // counter lives INSIDE the regex-success branch
+              // so it now counts only genuine edits (matches
+              // the `text_search` counter's behavior and
+              // makes the metric meaningful).
+              graphEdits++;
             }
-            graphEdits++;
-            break; // one edit per file from graph refs
           }
         }
       } catch (e) { logQueryError('rename:read-ref', e); }
