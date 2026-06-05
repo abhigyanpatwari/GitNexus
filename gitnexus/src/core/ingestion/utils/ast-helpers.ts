@@ -210,6 +210,17 @@ export function getLabelFromCaptures(
 export const findEnclosingClassId = (node: any, filePath: string): string | null => {
   let current = node.parent;
   while (current) {
+    // Go (#77): fields of an anonymous/local struct — `var input struct{...}`,
+    // `x := struct{...}{}`, or an anonymous-struct parameter — belong to that
+    // inline struct literal, NOT to any enclosing method receiver or named type.
+    // A named `type T struct{...}` has its struct_type directly under a type_spec;
+    // every anonymous variant sits under var_spec / composite_literal /
+    // parameter_declaration instead. Stop here so these fields get no (false)
+    // HAS_PROPERTY owner edge to the enclosing struct. Go-only node type → inert
+    // for all other languages.
+    if (current.type === 'struct_type' && current.parent?.type !== 'type_spec') {
+      return null;
+    }
     // Go: method_declaration has a receiver parameter with the struct type
     if (current.type === 'method_declaration') {
       const receiver = current.childForFieldName?.('receiver');

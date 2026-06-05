@@ -213,4 +213,66 @@ describe('CrossRepoRegistry — reverseDepMap & findConsumers', () => {
     // No one registered "orphan-lib" as a repo, so no consumers for it
     expect(registry.findConsumers('orphan-lib')).toEqual([]);
   });
+
+  // ─── T-CR-08: artifactId differs from repo name by a prefix (#46) ───
+  it('T-CR-08: artifactId resolves to its prefixed provider repo, lists all consumers, no self-ref', async () => {
+    // Maven artifactId "exception-handler" ≠ repo name "bond-exception-handler".
+    // Two distinct consumers declare the same dependency.
+    readManifestMock.mockImplementation(async (path: string) => {
+      if (path.includes('bond-trading')) {
+        return manifest('tcbs-bond-trading', ['com.tcbs.bond.trading:exception-handler']);
+      }
+      if (path.includes('bond-amqp')) {
+        return manifest('tcbs-bond-amqp', ['com.tcbs.bond.trading:exception-handler']);
+      }
+      if (path.includes('exception-handler')) {
+        return manifest('bond-exception-handler', []);
+      }
+      return null;
+    });
+
+    await registry.initialize([
+      { repoId: 'tcbs-bond-trading', repoPath: '/repos/tcbs-bond-trading' },
+      { repoId: 'tcbs-bond-amqp', repoPath: '/repos/tcbs-bond-amqp' },
+      { repoId: 'bond-exception-handler', repoPath: '/repos/bond-exception-handler' },
+    ]);
+
+    // Provider correctness: artifactId "exception-handler" binds to the prefixed
+    // repo "bond-exception-handler" (before #46 this returned [] — wrong provider).
+    expect(registry.findConsumers('bond-exception-handler').sort()).toEqual([
+      'tcbs-bond-amqp', 'tcbs-bond-trading',
+    ]);
+
+    // No repo is ever a cross-repo consumer of itself.
+    expect(registry.findConsumers('tcbs-bond-trading')).not.toContain('tcbs-bond-trading');
+    expect(registry.findConsumers('tcbs-bond-amqp')).not.toContain('tcbs-bond-amqp');
+  });
+
+  // ─── T-CR-09: ambiguous prefix match does not bind (#46) ────────────
+  it('T-CR-09: an ambiguous artifactId suffix match does not remap (stays unresolved)', async () => {
+    // Two repos both end with "-handler"; artifactId "handler" is ambiguous →
+    // resolveArtifactToRepo returns null (require uniqueness) rather than guessing.
+    readManifestMock.mockImplementation(async (path: string) => {
+      if (path.includes('consumer')) {
+        return manifest('consumer', ['com.example:handler']);
+      }
+      if (path.includes('a-handler')) {
+        return manifest('a-handler', []);
+      }
+      if (path.includes('b-handler')) {
+        return manifest('b-handler', []);
+      }
+      return null;
+    });
+
+    await registry.initialize([
+      { repoId: 'consumer', repoPath: '/repos/consumer' },
+      { repoId: 'a-handler', repoPath: '/repos/a-handler' },
+      { repoId: 'b-handler', repoPath: '/repos/b-handler' },
+    ]);
+
+    // Ambiguous → neither provider claims the consumer (no wrong guess).
+    expect(registry.findConsumers('a-handler')).toEqual([]);
+    expect(registry.findConsumers('b-handler')).toEqual([]);
+  });
 });

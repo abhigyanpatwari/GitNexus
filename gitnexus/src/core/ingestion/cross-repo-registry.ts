@@ -123,12 +123,15 @@ export class CrossRepoRegistry {
         for (const dep of entry.manifest.dependencies) {
           if (dep.includes(':')) {
             const artifactId = dep.split(':')[1];
-            // If artifactId matches a registered repo name, use that repo as provider
-            if (this.entries.has(artifactId)) {
-              this.packageToRepo.set(dep, artifactId);
+            // Map the dependency to its PROVIDER repo. Exact artifactId==repoId
+            // wins; otherwise a unique prefix-tolerant match (#46) so e.g.
+            // artifactId `exception-handler` binds to repo `bond-exception-handler`.
+            const providerRepoId = this.resolveArtifactToRepo(artifactId);
+            if (providerRepoId) {
+              this.packageToRepo.set(dep, providerRepoId);
               // Also map groupId for subpackage matching (always overwrite to provider)
               const groupId = dep.split(':')[0];
-              this.packageToRepo.set(groupId, artifactId);
+              this.packageToRepo.set(groupId, providerRepoId);
             }
           }
         }
@@ -144,7 +147,10 @@ export class CrossRepoRegistry {
       if (entry.manifest) {
         for (const dep of entry.manifest.dependencies) {
           const providerRepoId = this.findDepRepo(dep);
-          if (providerRepoId) {
+          // A repo is never a cross-repo consumer of itself (#46): the groupId
+          // fallback in findDepRepo can otherwise resolve a consumer's own
+          // coordinate back to itself, producing a spurious self-reference.
+          if (providerRepoId && providerRepoId !== entry.repoId) {
             let consumers = this.reverseDepMap.get(providerRepoId);
             if (!consumers) {
               consumers = new Set<string>();
@@ -224,12 +230,15 @@ export class CrossRepoRegistry {
         for (const dep of manifest.dependencies) {
           if (dep.includes(':')) {
             const artifactId = dep.split(':')[1];
-            // If artifactId matches a registered repo name, use that repo as provider
-            if (this.entries.has(artifactId)) {
-              this.packageToRepo.set(dep, artifactId);
+            // Map the dependency to its PROVIDER repo. Exact artifactId==repoId
+            // wins; otherwise a unique prefix-tolerant match (#46) so e.g.
+            // artifactId `exception-handler` binds to repo `bond-exception-handler`.
+            const providerRepoId = this.resolveArtifactToRepo(artifactId);
+            if (providerRepoId) {
+              this.packageToRepo.set(dep, providerRepoId);
               // Also map groupId for subpackage matching (always overwrite to provider)
               const groupId = dep.split(':')[0];
-              this.packageToRepo.set(groupId, artifactId);
+              this.packageToRepo.set(groupId, providerRepoId);
             }
           }
         }
@@ -246,7 +255,10 @@ export class CrossRepoRegistry {
       if (manifest) {
         for (const dep of manifest.dependencies) {
           const providerRepoId = this.findDepRepo(dep);
-          if (providerRepoId) {
+          // A repo is never a cross-repo consumer of itself (#46): the groupId
+          // fallback in findDepRepo can otherwise resolve a consumer's own
+          // coordinate back to itself, producing a spurious self-reference.
+          if (providerRepoId && providerRepoId !== entry.repoId) {
             let consumers = this.reverseDepMap.get(providerRepoId);
             if (!consumers) {
               consumers = new Set<string>();
@@ -258,6 +270,26 @@ export class CrossRepoRegistry {
       }
     }
   }
+  /**
+   * Resolve a Maven artifactId to a registered provider repoId (#46).
+   * Maven artifactIds frequently differ from the GitNexus repo name by a prefix
+   * (artifactId `exception-handler` vs repo `bond-exception-handler`). Exact
+   * match wins; otherwise a UNIQUE boundary-suffix match (repo name ends with
+   * `-<artifactId>` or `.<artifactId>`). Ambiguous (>1 candidate) or no match
+   * returns null, so we never remap a dependency to a guessed wrong repo.
+   */
+  private resolveArtifactToRepo(artifactId: string): string | null {
+    if (!artifactId) return null;
+    if (this.entries.has(artifactId)) return artifactId; // exact — unchanged fast path
+    const candidates: string[] = [];
+    for (const repoId of this.entries.keys()) {
+      if (repoId.endsWith('-' + artifactId) || repoId.endsWith('.' + artifactId)) {
+        candidates.push(repoId);
+      }
+    }
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
   /**
    * Find repoId for a dependency given a package prefix or module name.
    *

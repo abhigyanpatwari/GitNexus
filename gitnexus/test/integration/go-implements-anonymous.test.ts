@@ -237,3 +237,31 @@ describe('Go anonymous struct fields emit COMPOSITION (issue #26)', () => {
     expect(valMethods).not.toContain('Common');
   });
 });
+
+// =============================================================================
+// Issue #77 — local/anonymous struct fields must not pollute HAS_PROPERTY
+// =============================================================================
+describe('Go local/anonymous struct fields do NOT pollute HAS_PROPERTY (#77)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-anon-local'),
+      () => {},
+    );
+  }, 60000);
+
+  it('attributes only the real struct field (service) to UserHandler', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter(e => e.source === 'UserHandler')
+      .map(e => e.target)
+      .sort();
+    expect(owned).toEqual(['service']);
+  });
+
+  it('does not create HAS_PROPERTY edges for the local struct fields Name/Email', () => {
+    const targets = getRelationships(result, 'HAS_PROPERTY').map(e => e.target);
+    expect(targets).not.toContain('Name');
+    expect(targets).not.toContain('Email');
+  });
+});

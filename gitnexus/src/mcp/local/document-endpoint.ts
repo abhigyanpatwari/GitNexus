@@ -697,6 +697,18 @@ export async function findHandlerByPathPattern(
             const parsed = parseMethodLevelMapping(content, upperMethod);
             const annotationPath = parsed?.routePath;
 
+            // #81: reject candidates whose CONCRETE HTTP method disagrees with the
+            // request. The Method-search Cypher matches any handler whose content
+            // contains 'RequestMapping' + the path fragment, so a @GetMapping("/{id}")
+            // handler can surface for a DELETE request; parseMethodLevelMapping has
+            // already recovered its real verb ('GET'), which the old code discarded.
+            // '*' = bare @RequestMapping (genuinely method-ambiguous) → keep and let
+            // scoreCandidate's existing ambiguity penalty handle it.
+            const parsedMethod = parsed?.httpMethod;
+            if (parsedMethod && parsedMethod !== '*' && parsedMethod.toUpperCase() !== upperMethod) {
+              continue;
+            }
+
             if (!annotationPath) continue; // Skip if no annotation path found
 
             // Get class-level prefix (cached)
