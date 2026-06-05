@@ -138,7 +138,17 @@ const RUST_SCOPE_QUERY = `
 ;; (Foo::<T> {}) — the name: field resolves to the trailing identifier
 ;; in all cases through tree-sitter-rust's grammar.
 (struct_expression
-  name: (_) @reference.name) @reference.call.constructor
+  name: (type_identifier) @reference.name) @reference.call.constructor
+
+;; Scoped struct (foo::bar::Baz {})
+(struct_expression
+  name: (scoped_type_identifier
+    name: (type_identifier) @reference.name)) @reference.call.constructor
+
+;; Turbofish struct (Foo::<T> {})
+(struct_expression
+  name: (generic_type_with_turbofish
+    type: (type_identifier) @reference.name)) @reference.call.constructor
 
 ;; References — macro invocations (disjoint namespace from functions)
 ;; Resolved via MacroRegistry → Macro defs only (never fn of the same name).
