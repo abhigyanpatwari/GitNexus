@@ -47,6 +47,41 @@ export function clearStaticNames(): void {
 }
 
 /**
+ * Per-pass memo: `moduleScope` → owning `ParsedFile`, keyed on the
+ * `parsedFiles` array identity.
+ *
+ * The shared finalize Phase-4 loop calls `expandsWildcardTo`
+ * (→ `expandCWildcardNames`) ONCE PER RESOLVED `#include` edge, every time
+ * with the SAME `parsedFiles` reference (wired at scope-resolution
+ * `run.ts` — `allFilePaths`/`parsedFiles` are built once per pass). The old
+ * `parsedFiles.find(...)` therefore did a full O(F) scan per edge →
+ * O(R_include × F) overall; at Linux-kernel scale (F ≈ 63k C files, tens of
+ * thousands of resolved includes) that is ~10^10+ comparisons on a single
+ * thread — the dominant term in the scope-resolution finalize grind.
+ *
+ * Building the lookup once collapses it to O(R_include + F). `WeakMap`-keyed
+ * on the array so the index is reclaimed with the pass — no cross-pass
+ * staleness (mirrors the {@link clearStaticNames} discipline for server-mode
+ * / multi-repo reuse), and a fresh array transparently rebuilds.
+ */
+const moduleScopeIndexByPass = new WeakMap<readonly ParsedFile[], Map<ScopeId, ParsedFile>>();
+
+function moduleScopeIndex(parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> {
+  let index = moduleScopeIndexByPass.get(parsedFiles);
+  if (index === undefined) {
+    index = new Map<ScopeId, ParsedFile>();
+    // First-wins to preserve `Array.find` semantics (returns the first match).
+    // `moduleScope` is unique per file in practice, so collisions are absent;
+    // the guard only formalises identical behaviour to the prior `.find`.
+    for (const p of parsedFiles) {
+      if (!index.has(p.moduleScope)) index.set(p.moduleScope, p);
+    }
+    moduleScopeIndexByPass.set(parsedFiles, index);
+  }
+  return index;
+}
+
+/**
  * Return the names visible through a C wildcard import (`#include`).
  * All module-scope defs from the target file are visible EXCEPT those
  * declared with `static` storage class (file-local linkage in C).
@@ -55,7 +90,7 @@ export function expandCWildcardNames(
   targetModuleScope: ScopeId,
   parsedFiles: readonly ParsedFile[],
 ): readonly string[] {
-  const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
+  const target = moduleScopeIndex(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
 
   const seen = new Set<string>();

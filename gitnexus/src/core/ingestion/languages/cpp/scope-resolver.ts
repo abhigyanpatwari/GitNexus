@@ -44,6 +44,40 @@ import {
 } from './user-defined-conversions.js';
 
 /**
+ * Per-pass memo of the augmented `#include`-resolution file set
+ * (`allFilePaths` ∪ header paths), keyed on the two stable source sets.
+ * `resolveImportTarget` is called once per C++ `#include`; the old code rebuilt
+ * a fresh ~F-entry `Set` on every call AND defeated the shared
+ * `resolveCImportTarget` suffix-index memo (in `c/import-target.ts`) by handing
+ * it a new set identity each time. Both inputs are stable per pass, so the
+ * union is built once and reused. `WeakMap`-keyed → reclaimed with the pass.
+ * (Twin of the C resolver's `augmentedFilePaths`.)
+ */
+const augmentedPathsByPass = new WeakMap<
+  ReadonlySet<string>,
+  WeakMap<ReadonlySet<string>, ReadonlySet<string>>
+>();
+
+function augmentedFilePaths(
+  allFilePaths: ReadonlySet<string>,
+  headerPaths: ReadonlySet<string>,
+): ReadonlySet<string> {
+  let byHeaders = augmentedPathsByPass.get(allFilePaths);
+  if (byHeaders === undefined) {
+    byHeaders = new WeakMap();
+    augmentedPathsByPass.set(allFilePaths, byHeaders);
+  }
+  let augmented = byHeaders.get(headerPaths);
+  if (augmented === undefined) {
+    const set = new Set(allFilePaths);
+    for (const h of headerPaths) set.add(h);
+    augmented = set;
+    byHeaders.set(headerPaths, augmented);
+  }
+  return augmented;
+}
+
+/**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
  * the generic `runScopeResolution` orchestrator (RFC #909 Ring 3).
  *
@@ -79,9 +113,11 @@ export const cppScopeResolver: ScopeResolver = {
     // detection but are importable from .cpp files via #include.
     const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
     if (headerPaths !== undefined && headerPaths.size > 0) {
-      const augmented = new Set(allFilePaths);
-      for (const h of headerPaths) augmented.add(h);
-      return resolveCppImportTarget(targetRaw, fromFile, augmented);
+      return resolveCppImportTarget(
+        targetRaw,
+        fromFile,
+        augmentedFilePaths(allFilePaths, headerPaths),
+      );
     }
     return resolveCppImportTarget(targetRaw, fromFile, allFilePaths);
   },

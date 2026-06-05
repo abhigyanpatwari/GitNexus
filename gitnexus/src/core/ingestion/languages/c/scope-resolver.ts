@@ -10,6 +10,42 @@ import { expandCWildcardNames, isStaticName, clearStaticNames } from './static-l
 import { applyCStaticLinkageSideChannel } from './capture-side-channel.js';
 
 /**
+ * Per-pass memo of the augmented `#include`-resolution file set
+ * (`allFilePaths` ∪ header `.h` paths), keyed on the two stable source sets.
+ *
+ * `resolveImportTarget` is called once per C `#include`; the old code rebuilt
+ * a fresh ~F-entry `Set` on EVERY call (O(R × (F+H)) inserts + GC churn) and,
+ * worse, defeated `resolveCImportTarget`'s own per-set suffix-index memo by
+ * handing it a new set identity each time. Both `allFilePaths` (built once in
+ * scope-resolution `run.ts`) and the header set (`loadResolutionConfig`
+ * result) are stable per pass, so the union is built once and reused.
+ * `WeakMap`-keyed → reclaimed with the pass (no cross-pass staleness).
+ */
+const augmentedPathsByPass = new WeakMap<
+  ReadonlySet<string>,
+  WeakMap<ReadonlySet<string>, ReadonlySet<string>>
+>();
+
+function augmentedFilePaths(
+  allFilePaths: ReadonlySet<string>,
+  headerPaths: ReadonlySet<string>,
+): ReadonlySet<string> {
+  let byHeaders = augmentedPathsByPass.get(allFilePaths);
+  if (byHeaders === undefined) {
+    byHeaders = new WeakMap();
+    augmentedPathsByPass.set(allFilePaths, byHeaders);
+  }
+  let augmented = byHeaders.get(headerPaths);
+  if (augmented === undefined) {
+    const set = new Set(allFilePaths);
+    for (const h of headerPaths) set.add(h);
+    augmented = set;
+    byHeaders.set(headerPaths, augmented);
+  }
+  return augmented;
+}
+
+/**
  * C `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
  * the generic `runScopeResolution` orchestrator (RFC #909 Ring 3).
  *
@@ -55,9 +91,11 @@ export const cScopeResolver: ScopeResolver = {
     // targets .h files classified as C++ in language detection.
     const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
     if (headerPaths !== undefined && headerPaths.size > 0) {
-      const augmented = new Set(allFilePaths);
-      for (const h of headerPaths) augmented.add(h);
-      return resolveCImportTarget(targetRaw, fromFile, augmented);
+      return resolveCImportTarget(
+        targetRaw,
+        fromFile,
+        augmentedFilePaths(allFilePaths, headerPaths),
+      );
     }
     return resolveCImportTarget(targetRaw, fromFile, allFilePaths);
   },

@@ -276,11 +276,37 @@ export function isCppDefGloballyVisible(filePath: string, nodeId: string): boole
  * does, mirror this filter or harden registration so class/namespace
  * members never enter `localDefs` unqualified.
  */
+/**
+ * Per-pass memo: `moduleScope` → owning `ParsedFile`, keyed on the
+ * `parsedFiles` array identity. The shared finalize Phase-4 loop calls
+ * `expandsWildcardTo` (→ this) ONCE PER RESOLVED `#include` edge with the same
+ * `parsedFiles` reference; the old `parsedFiles.find(...)` was therefore O(F)
+ * per edge → O(R·F) overall (at kernel scale the ~25–30k `.h` headers are
+ * classified C++, so this fires hard — the C twin in `c/static-linkage.ts`).
+ * Building the lookup once collapses it to O(R+F). `WeakMap`-keyed so it is
+ * reclaimed with the pass (no cross-pass staleness; mirrors
+ * {@link clearFileLocalNames}).
+ */
+const moduleScopeIndexByPass = new WeakMap<readonly ParsedFile[], Map<ScopeId, ParsedFile>>();
+
+function moduleScopeIndex(parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> {
+  let index = moduleScopeIndexByPass.get(parsedFiles);
+  if (index === undefined) {
+    index = new Map<ScopeId, ParsedFile>();
+    // First-wins to preserve `Array.find` semantics (returns the first match).
+    for (const p of parsedFiles) {
+      if (!index.has(p.moduleScope)) index.set(p.moduleScope, p);
+    }
+    moduleScopeIndexByPass.set(parsedFiles, index);
+  }
+  return index;
+}
+
 export function expandCppWildcardNames(
   targetModuleScope: ScopeId,
   parsedFiles: readonly ParsedFile[],
 ): readonly string[] {
-  const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
+  const target = moduleScopeIndex(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
 
   // Build nodeId → owning Scope map from the structural scope tree.
