@@ -83,9 +83,15 @@ export type NodeProperties = {
   httpMethod?: string,
   routePath?: string,
   controllerName?: string,
+  // #67: spec-named aliases of the above — also exposed on Route nodes.
+  controllerClass?: string,
   methodName?: string,
+  handlerMethod?: string,
   lineNumber?: number,
   isInherited?: boolean,
+  isControllerClass?: boolean,
+  // @RequestMapping prefix (e.g. /api/v1) — from ExtractedRoute.prefix
+  prefix?: string,
   // Response shape (top-level keys from NextResponse.json({...}) / res.json({...}))
   responseKeys?: string[],
   // Error response shape (top-level keys from .json() calls with status >= 400)

@@ -205,8 +205,9 @@ describe('streamAllCSVsToDisk — Route node handling', () => {
       // Verify the header row of route.csv matches the expected schema columns
       const csvContent = await fs.readFile(routeEntry!.csvPath, 'utf-8');
       const headerRow = csvContent.split('\n')[0];
+      // #67: header now includes controllerClass/handlerMethod/isControllerClass/prefix
       expect(headerRow).toBe(
-        'id,name,httpMethod,routePath,controllerName,methodName,filePath,startLine,lineNumber,isInherited,repoId,responseKeys,errorKeys,middleware'
+        'id,name,httpMethod,routePath,controllerName,methodName,filePath,startLine,lineNumber,isInherited,repoId,responseKeys,errorKeys,middleware,controllerClass,handlerMethod,isControllerClass,prefix'
       );
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
