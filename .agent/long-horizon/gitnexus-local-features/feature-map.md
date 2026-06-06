@@ -34,8 +34,8 @@ Supporting evidence:
 | --- | --- |
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
-| Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1 |
-| Pause point | Task 6 local V1 is complete; executable test generation remains blocked behind a later output-policy Goal |
+| Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E local V1, and Task 7 OCaml readiness |
+| Pause point | Task 6 executable test generation and Task 7 OCaml source implementation remain blocked behind later approval Goals |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -49,13 +49,13 @@ Supporting evidence:
 
 | Order | Feature | Research Depth | Disposition | Implementation Status | Gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Auto-Reindexing | Decision-grade completed for first slice | `now` | Approved slice implemented locally, verified, uncommitted | Snapshot/commit boundary before broadening |
-| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `now` | Core status/dry-run-first planner/runner implemented locally, verified, uncommitted | Decide next Task 2 slice or snapshot |
-| 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
-| 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
-| 5 | Auto Regression Forensics | Light scoping only | `local V1 complete` | Report core and thin local CLI wrapper implemented locally | Commit/Goal completion, then Task 6 readiness |
-| 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented locally | Pause before executable generated-test policy |
-| 7 | OCaml Support | Light scoping only | `next readiness` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
+| 1 | Auto-Reindexing | Decision-grade completed for first slice | `local V1 complete` | Approved first slice implemented, verified, and snapshotted | Do not broaden without a new Goal |
+| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `local V1 complete` | Core status/dry-run-first planner/runner implemented, verified, and snapshotted | Decide next Task 2 slice only through a new Goal |
+| 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | No unified graph expansion without new approval |
+| 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
+| 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
+| 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented, verified, and committed | Pause before executable generated-test policy |
+| 7 | OCaml Support | Light scoping completed | `next with approval` | Readiness mapped; not implemented | Needs MAIN approval for parser/dependency/write-set boundary |
 
 ## Dependency Map
 
@@ -92,7 +92,7 @@ Current status:
 - Approved by MAIN on 2026-06-05.
 - Implemented locally with TDD.
 - Focused tests and build passed.
-- Still uncommitted/unsnapshotted in the shared branch.
+- Snapshotted in the shared branch as part of the local-features checkpoint history.
 
 Intended local capability:
 
@@ -121,13 +121,12 @@ Verification recorded:
 
 Open risks:
 
-- WIP is uncommitted, so the feature boundary is not durable in git.
-- Next agents must not mix more feature source edits into this slice without a snapshot decision.
+- Next agents must not mix more feature source edits into this slice without a new Goal.
 - Runtime/Podman behavior still requires later operational validation if MAIN asks for promoted runtime use.
 
 Next gate:
 
-- Snapshot or commit the Task 1 WIP before significant Task 3/4 source work.
+- Do not broaden Task 1 without a new Goal and explicit write set.
 
 ### Task 2 - Auto-Updating Code Wiki
 
@@ -179,14 +178,14 @@ Open decisions:
 
 Next gate:
 
-- Decide the next Task 2 boundary and either snapshot current Task 2 WIP or request a new `MAIN | READY_FOR_IMPLEMENTATION` write set for the next slice.
+- Decide the next Task 2 boundary through a new Goal if MAIN wants API/server wiring or mutation behavior.
 
 ### Task 3 - Multi-Repo Support Improvements
 
 Current status:
 
-- Next tranche after Task 2.
-- Docs-only README tool-surface reconciliation implemented and verified.
+- First docs slice complete.
+- Docs-only README tool-surface reconciliation implemented, verified, and snapshotted.
 - Current readiness says the first useful slice is README MCP tool-surface reconciliation, not unified cross-repo graph expansion.
 
 Intended local capability:
@@ -221,15 +220,14 @@ Open risks:
 
 Next gate:
 
-- Snapshot the current WIP boundary before broadening to the next feature, or record an explicit MAIN no-snapshot decision.
 - If MAIN wants actual unified cross-repo graph behavior later, create a new decision-grade architecture plan first.
 
 ### Task 4 - PR Impact / Blast Radius
 
 Current status:
 
-- Readiness refresh started after Tasks 1-3 first slices.
-- Source work remains blocked until the WIP snapshot/no-snapshot boundary is resolved and the exact implementation Goal/write set is active.
+- Local V1 complete.
+- Report core and thin local `gitnexus pr-impact` CLI wrapper implemented, verified, and committed.
 - Brainstorm note now frames V1 as deterministic `diff ranges -> symbols -> impact -> report`.
 - Recommended command name is `pr-impact`, not `pr-review`, to avoid confusion with review/swarms.
 
@@ -295,7 +293,7 @@ Smallest safe implementation candidate:
 - Add a thin `gitnexus pr-impact` CLI wrapper only after report core passes.
 - Do not add MCP exposure, GitHub PR comments/checks, PR URL ingestion, Codex remediation, generated tests, or UI in V1.
 
-Proposed future write set:
+Implemented V1 source surfaces:
 
 | File | Purpose |
 | --- | --- |
@@ -314,13 +312,10 @@ Open risks:
 - Stale/ambiguous graph identity must produce `UNKNOWN`, not overconfident output.
 - Large hubs require summary-first/pagination behavior.
 - Deleted-symbol support may require old-side/base-graph lookup; stop if it expands into a broad base-index architecture.
-- Existing Task 1 and Task 2 source WIP remains unsnapshotted; source work for Task 4 should not begin until that boundary is resolved.
 
 Next gate:
 
-- Complete the readiness Goal and verify the focused baseline tests.
-- Resolve snapshot/no-snapshot boundary for existing WIP.
-- Create the next Goal only after the implementation slice is known and the boundary is clear.
+- Do not add MCP exposure, GitHub PR comments/checks, PR URL ingestion, Codex remediation, generated tests, or UI without a new Goal and approval boundary.
 
 ### Task 5 - Auto Regression Forensics
 
@@ -439,26 +434,58 @@ Next gate:
 
 Current status:
 
-- Deferred.
+- Readiness mapped.
 - Separate language-provider/parser onboarding project.
+- Source implementation blocked until MAIN approves dependency route and exact write set.
 
 Intended local capability:
 
 - Add OCaml indexing support only if parser/provider/dependency/test burden is accepted.
 
+Readiness result:
+
+- Feasible in principle through `tree-sitter-ocaml`.
+- Not a minor parser toggle; it touches shared language identity, extension detection, parser loading, parse-worker dispatch, provider registration, queries/captures, import/module semantics, type/call extraction, fixtures, and tests.
+- `.ml` and `.mli` must both be in V1 scope because the official grammar exposes separate implementation and interface grammars.
+
 Known local gaps:
 
 | Gap | Meaning |
 | --- | --- |
-| Language enum/registry | OCaml is not currently present in the inspected language surfaces |
-| Extension mapping | `.ml`, `.mli`, and related files would need mapping |
-| Parser/provider | Tree-sitter/provider dependency must be selected and approved |
-| Queries/resolvers | Symbol/call/import extraction requires language-specific queries |
-| Fixtures/parity tests | Need representative OCaml fixtures and graph expectations |
+| Language enum/registry | `gitnexus-shared/src/languages.ts` and provider registry do not include OCaml |
+| Extension mapping | `.ml` and `.mli` are not mapped in `gitnexus-shared/src/language-detection.ts` |
+| Parser/provider | `tree-sitter-ocaml` route must be selected and approved before dependency/source edits |
+| Grammar selection | `.ml` and `.mli` need file-path-aware grammar selection similar in spirit to TS/TSX |
+| Queries/resolvers | Symbol/call/import extraction requires language-specific query and provider work |
+| Fixtures/parity tests | Need representative OCaml fixtures and graph expectations before broadening |
+
+External evidence:
+
+| Source | What it contributes |
+| --- | --- |
+| https://github.com/tree-sitter/tree-sitter-ocaml | Official OCaml grammar exists; README documents implementation/interface/type grammars; MIT license |
+| `npm view tree-sitter-ocaml ...` | npm latest is `0.24.2`, MIT, peer `tree-sitter` `^0.22.4` |
+| https://raw.githubusercontent.com/tree-sitter/tree-sitter-ocaml/master/package.json | Repository master metadata is `0.25.0`, MIT, ESM package, peer `tree-sitter` `^0.25.0` |
+| https://github.com/abhigyanpatwari/GitNexus/pull/305 | Language support analogue showing CLI/web parity, grammar provenance, type extraction, resolver, syntax, and coverage expectations |
+| https://github.com/abhigyanpatwari/GitNexus/pull/317 | Language support caution showing parser/registry wiring is insufficient without type/import/member CALLS correctness |
+
+Recommended first approved slice:
+
+- Experimental OCaml support for `.ml` and `.mli`.
+- Minimal graph correctness for modules, values/functions, types, direct calls, open/import-like module references, and interface declarations.
+- Parser ABI smoke, query compilation, focused fixtures, and build verification.
+
+Deferred:
+
+- Dune project model.
+- PPX expansion.
+- Full functor/module alias semantics.
+- Generated-code handling.
+- Production classification.
 
 Next gate:
 
-- Keep separate from Tasks 1-6. If reprioritized, produce a language-onboarding plan before adding dependencies or source.
+- MAIN must approve the parser/dependency strategy and exact source/test write set before any OCaml implementation Goal is created.
 
 ## Current WIP Boundary
 
@@ -468,11 +495,12 @@ Current uncommitted source WIP includes:
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates for the Task 6 post-CLI boundary and Task 7 baton.
+- Long-horizon bundle updates for Task 7 OCaml readiness.
 
 Boundary rule:
 
-- Before broadening Task 6 into CLI, inventory extraction, browser execution, or generated test files, commit or deliberately snapshot the Task 6 report-core boundary.
+- Before broadening Task 6 into inventory extraction, browser execution, or generated test files, create a new output-policy Goal.
+- Before starting Task 7 OCaml source work, MAIN must approve the parser/dependency/write-set boundary.
 
 ## Source Surface Map By Area
 
@@ -508,18 +536,18 @@ Boundary rule:
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
 | Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core and CLI wrapper implemented; future generated-file output policy remains unresolved |
-| Task 7 parser/provider plan | Decide OCaml parser/provider, dependency policy, fixtures, and graph expectations |
+| Task 7 parser/provider plan | Readiness complete; dependency/write-set approval required before implementation |
 
 ## Next Actions
 
 Immediate:
 
-1. Commit the Task 6 post-CLI boundary documentation.
-2. Complete the active Task 6 post-CLI boundary Goal with the Goal tool.
-3. Create the next sequential Task 7 OCaml Support readiness Goal.
+1. Commit the Task 7 OCaml readiness documentation.
+2. Complete the active Task 7 readiness Goal with the Goal tool.
+3. Create an OCaml implementation Goal only if MAIN approves the dependency/write-set boundary; otherwise record `NO_NEXT_GOAL_CREATED`.
 
 Recommended next feature work:
 
-1. Scope Task 7 readiness only: current language registry/provider gaps, parser/dependency options, expected-vs-actual, smallest safe slice or defer verdict.
-2. Keep OCaml source implementation blocked until readiness names parser/provider choice, fixtures, tests, dependency approval, and exact write set.
+1. Seek or record MAIN approval for the OCaml dependency/write-set boundary.
+2. If approved, create a focused OCaml implementation Goal and proceed TDD.
 3. Keep Task 6 executable generated-test work deferred until a later output-policy Goal.

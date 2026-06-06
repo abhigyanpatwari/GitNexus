@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 End-to-End Test Generation local V1 complete; next baton target is Task 7 OCaml Support readiness
+- Mode: Task 7 OCaml Support readiness complete; OCaml implementation is blocked pending parser/dependency/write-set approval
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, and the Task 6 E2E proposal/report core are implemented locally. Executable test generation remains blocked until a later output-policy Goal.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, and the Task 6 E2E proposal/report core are implemented locally. Executable test generation remains blocked until a later output-policy Goal. OCaml implementation remains blocked until MAIN approves the parser/dependency/write-set boundary.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -31,7 +31,7 @@ Current state:
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
-- Next baton target is Task 7 OCaml Support readiness.
+- Task 7 OCaml Support readiness is complete.
 - End-to-End Test Generation is `next` for a local proposal/report core only; executable generated tests remain deferred. OCaml Support remains `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
@@ -71,6 +71,78 @@ Current state:
 - 2026-06-06T13:34+01:00: Task 6 post-core boundary review completed. Recommendation: implement a thin local `gitnexus e2e-test-plan` CLI wrapper over local JSON inputs next. Defer richer existing-spec inventory extraction and all executable test-file generation.
 - 2026-06-06T13:37+01:00: Task 6 thin local `gitnexus e2e-test-plan` CLI wrapper implemented with TDD. It reads local target, PR Impact, existing-scenarios, route-evidence, and optional Regression Forensics JSON and emits Markdown or JSON. Generated Playwright files, browser execution, automatic spec parsing, MCP, CI, and GitHub automation remain deferred.
 - 2026-06-06T13:40+01:00: Task 6 post-CLI boundary review completed. Decision: Task 6 local V1 is complete enough to pause before executable generated-test policy. Next baton target is Task 7 OCaml Support readiness.
+- 2026-06-06T13:41+01:00: Task 7 OCaml Support readiness completed. Decision: OCaml is feasible in principle through `tree-sitter-ocaml`, but source implementation requires MAIN approval for native dependency strategy, exact write set, `experimental` classification, and `.ml`/`.mli` V1 scope.
+
+### 2026-06-06T13:41+01:00 - Task 7 OCaml Support Readiness
+
+Goal:
+
+- Determine whether OCaml support is ready for source implementation and what the safe first slice would be.
+
+Evidence gathered:
+
+- Local source:
+  - `gitnexus-shared/src/languages.ts`
+  - `gitnexus-shared/src/language-detection.ts`
+  - `gitnexus-shared/src/scope-resolution/language-classification.ts`
+  - `gitnexus/src/core/ingestion/languages/index.ts`
+  - `gitnexus/src/core/ingestion/language-provider.ts`
+  - `gitnexus/src/core/tree-sitter/parser-loader.ts`
+  - `gitnexus/src/core/ingestion/workers/parse-worker.ts`
+  - `gitnexus/src/core/ingestion/tree-sitter-queries.ts`
+  - parser/query/language tests under `gitnexus/test`.
+- External sources:
+  - https://github.com/tree-sitter/tree-sitter-ocaml
+  - https://raw.githubusercontent.com/tree-sitter/tree-sitter-ocaml/master/package.json
+  - https://raw.githubusercontent.com/tree-sitter/tree-sitter-ocaml/master/tree-sitter.json
+  - https://pypi.org/project/tree-sitter-ocaml/0.24.1/
+  - https://github.com/abhigyanpatwari/GitNexus/pull/305
+  - https://github.com/abhigyanpatwari/GitNexus/pull/317
+- Local registry command:
+  - `npm view tree-sitter-ocaml version license peerDependencies dependencies dist-tags --json`
+
+Findings:
+
+| Area | Finding |
+| --- | --- |
+| Feasibility | `tree-sitter-ocaml` exists, is MIT licensed, and exposes separate grammars for `.ml`, `.mli`, and type syntax. |
+| Local support | No OCaml enum, extension mapping, syntax map, provider, parser-loader row, parse-worker grammar, query set, fixture, or tests exist locally. |
+| Dependency risk | npm latest is `0.24.2` with peer `tree-sitter` `^0.22.4`; repository master metadata is `0.25.0` with peer `tree-sitter` `^0.25.0`. GitNexus must test native ABI/runtime compatibility before adopting it. |
+| Implementation shape | A safe V1 is a full language-onboarding slice, not just adding a package. |
+| Acceptance bar | Parser smoke, `.ml`/`.mli` grammar selection, minimal captures, import/module behavior, type/member/call extraction, and fixture/golden tests are required. |
+
+Decision:
+
+- Keep OCaml source implementation blocked until MAIN approves:
+  - dependency route: npm `tree-sitter-ocaml`, vendored grammar, or another named parser path,
+  - write set covering shared language files, parser loader, parse worker, provider/query files, fixtures, and focused tests,
+  - initial classification as `experimental`,
+  - `.ml` and `.mli` as required V1 surfaces.
+
+Recommended first approved implementation slice:
+
+- Experimental OCaml support for `.ml` and `.mli` with:
+  - shared enum/extension/syntax mapping,
+  - grammar selection for implementation vs interface files,
+  - provider registration,
+  - minimal captures for modules, values/functions, types, direct calls, and open/import-like module references,
+  - parser ABI smoke and focused query/fixture tests.
+
+Deferred:
+
+- Dune/project model inference.
+- PPX expansion.
+- Full module alias and functor-aware resolution.
+- Generated-code handling.
+- Production classification.
+
+Verification:
+
+- `git diff --check` must pass after this documentation update.
+
+Next Goal:
+
+- Do not create an OCaml implementation Goal unless MAIN approves the dependency/write-set boundary above. If approval is not granted, record `NO_NEXT_GOAL_CREATED` and leave OCaml deferred.
 
 ### 2026-06-06T13:40+01:00 - Task 6 Post-CLI Boundary
 

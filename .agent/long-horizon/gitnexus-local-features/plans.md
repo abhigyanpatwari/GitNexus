@@ -24,20 +24,20 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, and Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper have completed their first local slices. The next baton target is Task 7 OCaml Support readiness.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, and Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper have completed their first local slices. Task 7 OCaml Support readiness is complete; source implementation is blocked until MAIN approves the parser/dependency/write-set boundary.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
 
 | Order | Feature | Research depth | Disposition | Current implementation status |
 | --- | --- | --- | --- | --- |
-| 1 | Auto-Reindexing | `decision-grade now` | `now` | Approved slice implemented locally; verification passed; unsnapshotted |
-| 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
-| 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
+| 1 | Auto-Reindexing | `decision-grade completed for first slice` | `local V1 complete` | Approved slice implemented, verified, and snapshotted |
+| 2 | Auto-Updating Code Wiki | `medium completed for first slice` | `local V1 complete` | Core status/dry-run-first planner/runner implemented and verified; no server/API wiring yet |
+| 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 5 | Auto Regression Forensics | `light scoping only` | `local V1 complete` | Report core and thin local CLI wrapper implemented locally; commit/Goal completion pending |
-| 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented locally |
-| 7 | OCaml Support | `light scoping only` | `next readiness` | Research-only; no parser/provider/dependency/source edits yet |
+| 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
+| 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented, verified, and committed |
+| 7 | OCaml Support | `light scoping completed` | `next with approval` | Readiness mapped; parser/dependency/write-set approval required before source edits |
 
 ## Feature Goal Contracts
 
@@ -774,6 +774,101 @@ Blocked stop condition:
 
 - Stop if parser dependency, provider scope, fixture burden, or parity requirements are unclear or unapproved.
 - Report the dependency and language-onboarding approvals needed to continue.
+
+### Task 7 Readiness Result - OCaml Support
+
+Timestamp: 2026-06-06T13:41+01:00
+
+Readiness outcome:
+
+- OCaml support is feasible in principle because the public `tree-sitter-ocaml` grammar exists and exposes separate implementation, interface, and type grammars.
+- OCaml support is not a small config toggle. It is a full GitNexus language-onboarding project affecting shared language identity, extension detection, parser loading, parse-worker grammar dispatch, provider registration, query/capture design, import/module handling, type/call extraction, fixtures, and parity tests.
+- Source implementation should not start until MAIN approves adding or vendoring `tree-sitter-ocaml` and the exact write set.
+
+Expected vs actual:
+
+| Area | Expected for OCaml support | Actual local state |
+| --- | --- | --- |
+| Shared language identity | `SupportedLanguages.OCaml` exists and is shared across CLI/web/type surfaces | `gitnexus-shared/src/languages.ts` has no OCaml enum member |
+| Extension detection | `.ml` and `.mli` map to OCaml; syntax highlighting has a stable identifier | `gitnexus-shared/src/language-detection.ts` has no OCaml extension or syntax map entry |
+| Provider registry | `ocamlProvider` is registered in the exhaustive provider table | `gitnexus/src/core/ingestion/languages/index.ts` has no OCaml provider |
+| Parser loader | Native grammar source loads the right grammar for `.ml` and `.mli` | `parser-loader.ts` has no OCaml `SOURCES` row; parse worker has no OCaml grammar import/dispatch |
+| Queries and extraction | OCaml definitions, imports/modules, calls, types, and ownership are captured with tests | `tree-sitter-queries.ts` has no OCaml query set; no OCaml-specific type/import/call configs exist |
+| Fixtures/tests | Representative `.ml`/`.mli` fixtures prove graph shape and capture behavior | No OCaml fixtures, parser smoke cases, query tests, or scope-resolution tests exist |
+
+External parser evidence:
+
+| Source | Evidence | Planning consequence |
+| --- | --- | --- |
+| https://github.com/tree-sitter/tree-sitter-ocaml | Official tree-sitter grammar repository; README says it defines grammars for implementations (`.ml`), interfaces (`.mli`), and types; latest GitHub release shown as `v0.25.0` on 2026-05-09; license MIT | Feasible parser source exists, but GitNexus must handle at least `.ml` and `.mli` grammar selection |
+| https://raw.githubusercontent.com/tree-sitter/tree-sitter-ocaml/master/package.json | Current package metadata names `tree-sitter-ocaml` `0.25.0`, `type: "module"`, `main: "bindings/node"`, MIT license, peer `tree-sitter` `^0.25.0` on master | Native package may not match GitNexus's current `tree-sitter` runtime; compatibility must be tested before dependency approval |
+| `npm view tree-sitter-ocaml version license peerDependencies dependencies dist-tags --json` | npm latest is `0.24.2`, MIT, peer `tree-sitter` `^0.22.4`, deps `node-addon-api` and `node-gyp-build` | npm package is viable-looking but still a dependency addition with native binding/ABI risk |
+| https://pypi.org/project/tree-sitter-ocaml/0.24.1/ | Python package also documents separate implementation/interface/type grammars and MIT metadata | Corroborates grammar shape; not a direct Node dependency choice |
+| https://github.com/abhigyanpatwari/GitNexus/pull/305 | Zig language-support PR shows first-class language support touched CLI/web parity, grammar provenance, query capture parity, syntax highlighting, type extraction, resolver plumbing, and focused coverage | OCaml acceptance must include graph correctness and parity tests, not only parser load |
+| https://github.com/abhigyanpatwari/GitNexus/pull/317 | Scala language-support review found parser/registry wiring insufficient without type extraction, import resolution, member CALLS, and language-specific tests | OCaml should not be accepted with only enum/provider/parser wiring |
+
+Source ownership map:
+
+| Surface | Likely role in an approved OCaml implementation |
+| --- | --- |
+| `gitnexus-shared/src/languages.ts` | Add `SupportedLanguages.OCaml` |
+| `gitnexus-shared/src/language-detection.ts` | Add `.ml`, `.mli`, and syntax map handling |
+| `gitnexus-shared/src/scope-resolution/language-classification.ts` | Classify OCaml; likely `experimental` for the first local slice |
+| `gitnexus/src/core/tree-sitter/parser-loader.ts` | Add grammar source rows and select `ocaml` vs `ocaml_interface` by file path |
+| `gitnexus/src/core/ingestion/workers/parse-worker.ts` | Import/load OCaml grammar(s) inside worker dispatch |
+| `gitnexus/src/core/ingestion/languages/index.ts` | Register `ocamlProvider` in the exhaustive provider table |
+| `gitnexus/src/core/ingestion/languages/ocaml.ts` and possible `languages/ocaml/*` | Provider, query helpers, import/type/call semantics, and any scope hooks |
+| `gitnexus/src/core/ingestion/tree-sitter-queries.ts` | Add `OCAML_QUERIES` and `LANGUAGE_QUERIES` row if the legacy query path remains required |
+| `gitnexus/src/core/ingestion/*-extractors/configs` | Add configs only where needed for type/member/field/call/heredity semantics |
+| `gitnexus/test/fixtures/sample-code` and scope-resolution fixtures | Add `.ml`/`.mli` fixtures with modules, values, types, classes/objects, calls, and interface declarations |
+| `gitnexus/test/unit/parser-loader-abi.test.ts` and tree-sitter/query tests | Add parser smoke and capture tests so grammar drift is detected |
+
+Recommended first implementation target, after approval:
+
+- Add an experimental OCaml language slice for `.ml` and `.mli` that proves parser loading, extension detection, provider registration, minimal symbol extraction, import/module capture, direct-call capture, type/value capture, and fixture/golden tests.
+- Treat `.mli` as required for V1 because the official grammar exposes a separate interface grammar and real OCaml APIs are often declared there.
+- Defer Dune/project model inference, PPX expansion, full module alias semantics, functor-aware resolution, and generated-code handling.
+
+Smallest safe implementation slice:
+
+1. Add a focused failing test proving `.ml` and `.mli` detection plus parser-loader grammar selection are absent.
+2. Add parser/dependency support only after MAIN approves the native package or vendored grammar route.
+3. Add an `experimental` OCaml provider with minimal queries for:
+   - module declarations,
+   - value/function bindings,
+   - type declarations,
+   - class/object declarations if readily supported by the grammar,
+   - open/import-like module references,
+   - direct calls.
+4. Add fixtures with expected capture/golden assertions before broad resolver work.
+5. Run focused language tests, parser ABI smoke, query compilation, and build.
+
+Focused TDD plan for the next approved Goal:
+
+- Red 1: language detection returns `null` for `src/user.ml` and `src/user.mli`; expected OCaml.
+- Red 2: parser-loader has no OCaml smoke case and `isLanguageAvailable(OCaml)` cannot compile/load.
+- Red 3: query fixture for a small `.ml` file cannot capture module/function/type definitions.
+- Red 4: `.mli` fixture cannot select the interface grammar or capture exposed values/types.
+- Green: add minimal provider/parser/query code to pass each focused case.
+- Refactor only after focused tests and `npm run build` are green.
+
+Risks and stop rules:
+
+- Dependency risk: `tree-sitter-ocaml` is a native package. npm latest reports peer `tree-sitter` `^0.22.4`, while the repository master package reports peer `^0.25.0`; GitNexus's current runtime must be tested before adopting either path.
+- ESM/subpath risk: the package metadata uses `type: "module"` and `main: "bindings/node"`. GitNexus may need an explicit subpath or `createRequire` handling similar to existing grammar quirks.
+- Grammar-selection risk: `.ml` and `.mli` are separate grammars. A single `SupportedLanguages.OCaml` value may need file-path-aware grammar selection like TS/TSX.
+- Correctness risk: parser load is insufficient. Scala PR evidence shows type/member/import/CALLS correctness must be proven.
+- Scope stop: stop before implementation if MAIN has not approved dependency strategy and exact write set.
+
+Next Goal recommendation:
+
+- Create an implementation Goal only if MAIN explicitly approves:
+  - dependency route: npm `tree-sitter-ocaml`, vendored grammar, or another named path,
+  - write set covering shared language files, parser loader, parse worker, provider/query files, fixtures, and focused tests,
+  - initial classification as `experimental`,
+  - `.ml` and `.mli` as required V1 surfaces.
+
+If MAIN does not approve that boundary, record `NO_NEXT_GOAL_CREATED` and leave OCaml deferred.
 
 ## Interim Task - Disable Hidden Bare-GitNexus Router
 
