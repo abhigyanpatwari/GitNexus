@@ -11,12 +11,12 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 4 PR Impact / Blast Radius readiness refresh completed; Task 1 and Task 2 source WIP remains verified but unsnapshotted, and Task 3 docs-only README slice is verified
+- Mode: Task 4 PR Impact / Blast Radius local V1 report/CLI slice completed and committed; next baton target is Task 5 Auto Regression Forensics readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, and Multi-Repo Support Improvements first slices are implemented locally. Task 4 readiness is complete; Task 4 source edits remain closed until the WIP snapshot/no-snapshot boundary is resolved and the exact implementation Goal/write set is active.
-- Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, and PR Impact / Blast Radius first slices are implemented locally. Further implementation remains closed until the next feature readiness map is complete and the exact implementation Goal/write set is active.
+- Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
 
@@ -30,9 +30,9 @@ Current state:
 - 2026-06-05: Host/npm GitNexus CLI was updated from `1.6.6-rc.53` to the pinned local runtime version `1.6.6-rc.109`. npm also reported the package dist-tags as `latest: 1.6.5` and `rc: 1.6.6-rc.148`; this task did not retarget the runtime or source branch to rc.148.
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
-- Current execution tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, then Task 3 Multi-Repo Support Improvements.
-- Pause for MAIN review before starting Task 4 PR Impact / Blast Radius source work.
-- Auto Regression Forensics, End-to-End Test Generation, and OCaml Support remain `defer`.
+- Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, then Task 4 PR Impact / Blast Radius.
+- Next baton target is Task 5 Auto Regression Forensics readiness.
+- End-to-End Test Generation and OCaml Support remain `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
 - 2026-06-05T10:55+01:00 GitHub PR/issue deepening confirmed that OSS PostToolUse staleness behavior is notification-only and intentionally distinct from Enterprise Auto-reindexing.
@@ -61,6 +61,7 @@ Current state:
 - 2026-06-06T12:17+01:00: Checkpoint snapshot created at commit `568e24de` (`checkpoint local features through task 4 readiness`). The tree was clean immediately after the commit.
 - 2026-06-06T12:23+01:00: Task 4 PR Impact report-core slice implemented with TDD. CLI wrapper is not added yet; that should be the next sequential Goal if desired.
 - 2026-06-06T12:29+01:00: Task 4 thin `gitnexus pr-impact` CLI wrapper implemented with TDD. MCP and GitHub automation remain deferred.
+- 2026-06-06T12:38+01:00: Task 4 CLI wrapper committed as `39d77845` (`feat: add pr impact cli command`). Goal baton rule strengthened: future completed/blocked Goals must be followed by an actual Goal tool call for the next Goal, or a documented `NO_NEXT_GOAL_CREATED` blocker.
 
 ### 2026-06-06T12:29+01:00 - Task 4 PR Impact CLI Wrapper Implemented
 

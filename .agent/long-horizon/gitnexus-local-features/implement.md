@@ -39,6 +39,11 @@ Use Codex Goals as the feature-level completion contract for this workstream.
 - Keep one active feature Goal at a time.
 - Create the next Goal only after the current Goal is achieved or legitimately blocked and the next feature/slice boundary is known.
 - Do not pre-create multiple Goals for the feature backlog.
+- Goal baton rule: after a Goal is marked `complete` or `blocked`, the supervisor turn must not end until one of these is true:
+  - `NEXT_GOAL_CREATED`: `get_goal` confirms no active Goal, the next approved implementation slice is known, and the next Goal has been created.
+  - `READINESS_GOAL_CREATED`: implementation is not ready, but the next research/readiness boundary is known and a readiness Goal has been created.
+  - `NO_NEXT_GOAL_CREATED`: no defensible next Goal exists, and `documentation.md` records the exact blocker and what would unlock progress.
+- Baton audit checklist: call `get_goal`, read `plans.md`, `documentation.md`, and `feature-map.md`, choose implementation/readiness/no-next, then document the result before final response.
 - The active Goal Contract is recorded in `plans.md`.
 - `documentation.md` records the current checkpoint truth for that Goal.
 - Non-interactive `codex exec` worker runs must repeat the active Goal Contract in the prompt.

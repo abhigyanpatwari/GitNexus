@@ -1,7 +1,7 @@
-<!-- version: 1.9.2 -->
-<!-- Last updated: 2026-06-05 -->
+<!-- version: 1.9.3 -->
+<!-- Last updated: 2026-06-06 -->
 
-Last reviewed: 2026-06-05
+Last reviewed: 2026-06-06
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -36,6 +36,8 @@ For the local enterprise-feature workstream:
 - Use branch `local/gitnexus-local-features`.
 - Work one implementation feature at a time on the shared branch.
 - Use one active feature Goal at a time. The Goal Contract for the feature lives in `plans.md`.
+- Goal baton rule: after marking any Goal complete or blocked, do not end the turn until the next Goal is created, or `NO_NEXT_GOAL_CREATED` is documented with the exact blocker.
+- Baton audit steps: call `get_goal`, read `plans.md`, `documentation.md`, and `feature-map.md`, then create the next implementation Goal if approved, otherwise create the next readiness/research Goal if one is defensible.
 - Use non-interactive `codex exec` worker runs only inside the active feature Goal and only with the current long-horizon bundle as required context.
 - Implementation is blocked until `MAIN | READY_FOR_IMPLEMENTATION` names the approved write scope.
 - After approval, use TDD for behavior changes: failing test first, verify red, minimal green implementation, verify green, then refactor while tests stay green.
@@ -83,6 +85,7 @@ commits, or posts.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-06 | 1.9.3 | Added Goal Baton rule requiring the next Goal or an explicit `NO_NEXT_GOAL_CREATED` blocker after every completed/blocked Goal. |
 | 2026-06-05 | 1.9.2 | Removed `gitnexus-host` from active workflow; bare `gitnexus` is the host/npm route and `gitnexus-podman` is the Podman route. |
 | 2026-06-05 | 1.9.1 | Added Goal-backed non-interactive Codex worker-run rule for the local-features workflow. |
 | 2026-06-05 | 1.9.0 | Added explicit `gitnexus-host`/`gitnexus-podman` routing, long-horizon local-features workflow, TDD gate, and replaced stale analyze guidance. |

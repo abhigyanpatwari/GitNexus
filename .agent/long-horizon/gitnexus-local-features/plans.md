@@ -10,6 +10,7 @@ Created: 2026-06-05
 - Implement one feature at a time on the shared branch.
 - Run the work through one active feature Goal at a time; each feature's Goal Contract is below.
 - Goal lifecycle is sequential: finish the current readiness or implementation Goal, mark it complete, then create the next Goal only after the next feature/slice boundary is known. Do not pre-create a backlog of active Goals.
+- Goal baton rule: after every completed or blocked Goal, create the next implementation Goal if the next approved slice is known; otherwise create the next readiness/research Goal if one is defensible. If neither is possible, record `NO_NEXT_GOAL_CREATED` in `documentation.md` with the blocker.
 - Each Goal Contract below uses the strong six-part form: outcome, verification surface, constraints, boundaries, iteration policy, and blocked stop condition.
 - Non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this four-file bundle before acting.
 - Comprehensive feature map: `feature-map.md` is the single-place map for feature status, dependencies, source surfaces, tests, gates, evidence files, and next actions.
@@ -23,8 +24,8 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, and Task 3 Multi-Repo Support Improvements have completed their first local slices. Task 4 PR Impact / Blast Radius local V1 report core is implemented; the thin `gitnexus pr-impact` CLI wrapper is implemented locally and awaiting checkpoint commit.
-- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) was created on 2026-06-06T12:23+01:00. The current active Goal is the CLI wrapper checkpoint; MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, and Task 4 PR Impact / Blast Radius have completed their first local slices. The next baton target is Task 5 Auto Regression Forensics readiness.
+- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
 
@@ -33,8 +34,8 @@ Created: 2026-06-05
 | 1 | Auto-Reindexing | `decision-grade now` | `now` | Approved slice implemented locally; verification passed; unsnapshotted |
 | 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
-| 4 | PR Impact / Blast Radius | `medium now` | `now - local V1 active` | Report core implemented and committed; thin local CLI wrapper implemented and awaiting checkpoint commit |
-| 5 | Auto Regression Forensics | `light scoping only` | `defer` | Research-only; waits for PR impact/risk schema or MAIN reprioritization |
+| 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
+| 5 | Auto Regression Forensics | `light scoping only` | `readiness next` | Research/readiness Goal should define failure-evidence contract now that PR Impact V1 exists |
 | 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
 
