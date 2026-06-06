@@ -54,7 +54,7 @@ Supporting evidence:
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
 | 5 | Auto Regression Forensics | Light scoping only | `local V1 complete` | Report core and thin local CLI wrapper implemented locally | Commit/Goal completion, then Task 6 readiness |
-| 6 | End-to-End Test Generation | Light scoping completed for first slice | `now - CLI boundary active` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core implemented locally | Next recommended slice is thin local CLI wrapper; no executable generated tests |
+| 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented locally | Post-CLI boundary review next; no executable generated tests |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
 ## Dependency Map
@@ -379,6 +379,7 @@ Current status:
 - Readiness completed for a first local slice.
 - Target app/framework/runtime contract now exists for the first track: `gitnexus-web` with existing Playwright Chromium E2E infrastructure.
 - Deterministic proposal/report core implemented locally with TDD.
+- Thin local `gitnexus e2e-test-plan` CLI wrapper implemented locally with TDD.
 
 Intended local capability:
 
@@ -415,6 +416,8 @@ Candidate first source surfaces:
 | `gitnexus/src/core/e2e-test-generation/report.ts` | Implemented deterministic proposal schema, ranking, caveats, Markdown/JSON rendering |
 | `gitnexus/test/unit/e2e-test-generation-report.test.ts` | Implemented golden schema/Markdown/ranking/no-executable-code tests |
 | `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md` | Implemented checked-in expected Markdown |
+| `gitnexus/src/cli/e2e-test-plan.ts` | Implemented local JSON-in/Markdown-or-JSON-out wrapper |
+| `gitnexus/test/unit/e2e-test-plan-cli.test.ts` | Implemented CLI Markdown/JSON tests |
 
 Verification recorded:
 
@@ -422,12 +425,15 @@ Verification recorded:
 | --- | --- |
 | Focused E2E test-plan report tests | Passed, 1 file, 3 tests |
 | Adjacent E2E/Regression/PR report tests | Passed, 4 files, 13 tests |
+| Focused E2E test-plan CLI tests | Passed, 1 file, 2 tests |
+| Combined CLI/report/help tests | Passed, 6 files, 27 tests |
 | `git diff --check` | Passed |
 | `npm run build` | Passed |
 
 Next gate:
 
-- Implement a thin local `gitnexus e2e-test-plan` CLI wrapper if continuing Task 6.
+- Commit the CLI wrapper and complete the active Goal.
+- Create a post-CLI boundary Goal to decide whether to pause for generated-test output policy or move to Task 7 OCaml Support readiness.
 - Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred.
 
 ### Task 7 - OCaml Support
@@ -459,11 +465,13 @@ Next gate:
 
 Current uncommitted source WIP includes:
 
-- None at this checkpoint.
+| Feature | Source/Test WIP |
+| --- | --- |
+| End-to-End Test Generation | `gitnexus/src/cli/e2e-test-plan.ts`, CLI registration/help/locales, `gitnexus/test/unit/e2e-test-plan-cli.test.ts` |
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates for the Task 6 post-core boundary and next baton.
+- Long-horizon bundle updates for the Task 6 CLI checkpoint and next baton.
 
 Boundary rule:
 
@@ -502,19 +510,19 @@ Boundary rule:
 | Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
-| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core implemented; CLI wrapper is next; future generated-file output policy remains unresolved |
+| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core and CLI wrapper implemented; future generated-file output policy remains unresolved |
 | Task 7 parser/provider plan | Decide OCaml parser/provider, dependency policy, fixtures, and graph expectations |
 
 ## Next Actions
 
 Immediate:
 
-1. Commit the Task 6 post-core boundary documentation.
-2. Complete the active Task 6 post-core boundary Goal with the Goal tool.
-3. Create the next sequential implementation Goal for the thin local `gitnexus e2e-test-plan` CLI wrapper.
+1. Commit the Task 6 CLI wrapper slice after final verification.
+2. Complete the active Task 6 CLI Goal with the Goal tool.
+3. Create the next sequential post-CLI boundary Goal.
 
 Recommended next feature work:
 
-1. Implement the Task 6 CLI wrapper with local JSON inputs and Markdown/JSON output.
+1. Decide whether to pause before generated-test output policy or move to Task 7 OCaml Support readiness.
 2. Keep generated Playwright file writing, browser execution, MCP exposure, GitHub/CI automation, automatic spec parsing, and `gitnexus-web/e2e` changes deferred until a later explicit Goal.
-3. After the CLI wrapper, decide whether to pause before Task 7 OCaml Support or define an output-policy readiness Goal for executable test generation.
+3. If continuing executable test generation later, start with output policy and flake/review rules before any source edits.

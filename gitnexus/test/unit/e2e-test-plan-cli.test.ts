@@ -1,0 +1,146 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const readFileSyncMock = vi.fn();
+const writeSyncMock = vi.fn();
+
+vi.mock('node:fs', () => ({
+  readFileSync: readFileSyncMock,
+  writeSync: writeSyncMock,
+}));
+
+const targetJson = {
+  app: 'gitnexus-web',
+  framework: 'playwright',
+  browser: 'chromium',
+  backendUrl: 'http://localhost:4747',
+  frontendUrl: 'http://localhost:5173',
+  fixturePolicy: 'CI mini fixture repo indexed before E2E run',
+};
+
+const prImpactJson = {
+  schema_version: 'pr-impact.v1alpha1',
+  verdict: 'BLOCK',
+  diff: { scope: 'compare', baseRef: 'main', headRef: 'HEAD', filesChanged: 1 },
+  graph: { freshness: 'fresh' },
+  summary: {
+    files_changed: 1,
+    mapped_symbols: 1,
+    unmatched_ranges: 0,
+    deleted_symbols: 0,
+    new_symbols: 0,
+    impact_entries: 1,
+    api_impact_entries: 1,
+  },
+  mapped_symbols: [
+    {
+      id: 'Function:src/components/GraphCanvas.tsx:renderGraph',
+      name: 'renderGraph',
+      kind: 'Function',
+      filePath: 'src/components/GraphCanvas.tsx',
+      changeType: 'modified',
+    },
+  ],
+  unmatched_ranges: [],
+  new_symbols: [],
+  deleted_symbols: [],
+  impacts: [
+    {
+      symbolId: 'Function:src/components/GraphCanvas.tsx:renderGraph',
+      symbolName: 'renderGraph',
+      risk: 'MEDIUM',
+      direct: 2,
+      processesAffected: 1,
+      testReference: 'unknown_or_unreferenced',
+    },
+  ],
+  api_impacts: [
+    {
+      route: '/api/repos',
+      risk: 'HIGH',
+      consumers: 2,
+      mismatches: 0,
+    },
+  ],
+  test_signal: { status: 'unknown_or_unreferenced' },
+  caveats: ['High-risk impact has no known graph-derived test reference.'],
+};
+
+const existingScenariosJson = [
+  {
+    name: 'Server Connection & Graph Loading > selects a repo from landing',
+    filePath: 'gitnexus-web/e2e/server-connect.spec.ts',
+    covers: ['/api/repos'],
+  },
+];
+
+const routeEvidenceJson = [
+  {
+    route: '/api/repos',
+    consumers: 2,
+    mismatches: 0,
+    evidence: 'route_map shows repo list consumers',
+  },
+];
+
+describe('e2e-test-plan CLI command', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    readFileSyncMock.mockReset();
+    writeSyncMock.mockReset();
+  });
+
+  it('reads local JSON inputs and writes Markdown', async () => {
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath === 'target.json') return JSON.stringify(targetJson);
+      if (filePath === 'pr-impact.json') return JSON.stringify(prImpactJson);
+      if (filePath === 'existing.json') return JSON.stringify(existingScenariosJson);
+      if (filePath === 'routes.json') return JSON.stringify(routeEvidenceJson);
+      throw new Error(`unexpected path ${filePath}`);
+    });
+
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await e2eTestPlanCommand({
+      targetJson: 'target.json',
+      prImpactJson: 'pr-impact.json',
+      existingScenariosJson: 'existing.json',
+      routeEvidenceJson: 'routes.json',
+      format: 'markdown',
+    });
+
+    expect(readFileSyncMock).toHaveBeenNthCalledWith(1, 'target.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenNthCalledWith(2, 'pr-impact.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenNthCalledWith(3, 'existing.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenNthCalledWith(4, 'routes.json', 'utf-8');
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    expect(output).toContain('# GitNexus E2E Test Plan Report');
+    expect(output).toContain('Schema: e2e-test-plan.v1alpha1');
+    expect(output).toContain('Add E2E scenario for changed surface renderGraph');
+  });
+
+  it('writes JSON when requested', async () => {
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath === 'target.json') return JSON.stringify(targetJson);
+      if (filePath === 'pr-impact.json') return JSON.stringify(prImpactJson);
+      if (filePath === 'existing.json') return JSON.stringify(existingScenariosJson);
+      if (filePath === 'routes.json') return JSON.stringify(routeEvidenceJson);
+      throw new Error(`unexpected path ${filePath}`);
+    });
+
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await e2eTestPlanCommand({
+      targetJson: 'target.json',
+      prImpactJson: 'pr-impact.json',
+      existingScenariosJson: 'existing.json',
+      routeEvidenceJson: 'routes.json',
+      format: 'json',
+    });
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    const parsed = JSON.parse(output);
+    expect(parsed.schema_version).toBe('e2e-test-plan.v1alpha1');
+    expect(parsed.source_reports.pr_impact_schema_version).toBe('pr-impact.v1alpha1');
+  });
+});

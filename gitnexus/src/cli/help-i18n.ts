@@ -31,6 +31,7 @@ const COMMAND_DESCRIPTION_KEYS = {
   'detect-changes': 'help.command.detectChanges.description',
   'pr-impact': 'help.command.prImpact.description',
   'regression-forensics': 'help.command.regressionForensics.description',
+  'e2e-test-plan': 'help.command.e2eTestPlan.description',
   'eval-server': 'help.command.evalServer.description',
   group: 'help.command.group.description',
   'group create': 'help.command.group.create.description',
@@ -124,6 +125,15 @@ const OPTION_DESCRIPTION_KEYS = {
   'regression-forensics|--pr-impact-json <path>':
     'help.option.regressionForensics.prImpactJson',
   'regression-forensics|-f, --format <format>': 'help.option.regressionForensics.format',
+  'e2e-test-plan|--target-json <path>': 'help.option.e2eTestPlan.targetJson',
+  'e2e-test-plan|--pr-impact-json <path>': 'help.option.e2eTestPlan.prImpactJson',
+  'e2e-test-plan|--existing-scenarios-json <path>':
+    'help.option.e2eTestPlan.existingScenariosJson',
+  'e2e-test-plan|--route-evidence-json <path>':
+    'help.option.e2eTestPlan.routeEvidenceJson',
+  'e2e-test-plan|--regression-forensics-json <path>':
+    'help.option.e2eTestPlan.regressionForensicsJson',
+  'e2e-test-plan|-f, --format <format>': 'help.option.e2eTestPlan.format',
   'eval-server|-p, --port <port>': 'help.option.port',
   'eval-server|--host <host>': 'help.option.evalServer.host',
   'eval-server|--idle-timeout <seconds>': 'help.option.evalServer.idleTimeout',

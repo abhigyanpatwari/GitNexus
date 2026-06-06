@@ -270,6 +270,17 @@ program
     createLbugLazyAction(() => import('./regression-forensics.js'), 'regressionForensicsCommand'),
   );
 
+program
+  .command('e2e-test-plan')
+  .description('Generate a local deterministic E2E test plan report')
+  .requiredOption('--target-json <path>', 'Path to local target contract JSON')
+  .requiredOption('--pr-impact-json <path>', 'Path to local PR impact JSON')
+  .requiredOption('--existing-scenarios-json <path>', 'Path to local E2E scenario inventory JSON')
+  .requiredOption('--route-evidence-json <path>', 'Path to local route/API evidence JSON')
+  .option('--regression-forensics-json <path>', 'Path to local regression forensics JSON')
+  .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .action(createLbugLazyAction(() => import('./e2e-test-plan.js'), 'e2eTestPlanCommand'));
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program

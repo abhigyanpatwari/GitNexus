@@ -134,6 +134,8 @@ export const en = {
   'help.command.prImpact.description': 'Generate a local deterministic PR impact report',
   'help.command.regressionForensics.description':
     'Generate a local deterministic regression forensics report',
+  'help.command.e2eTestPlan.description':
+    'Generate a local deterministic E2E test plan report',
   'help.command.evalServer.description':
     'Start lightweight HTTP server for fast tool calls during evaluation',
   'help.command.group.description': 'Manage repository groups for cross-index impact analysis',
@@ -233,6 +235,14 @@ export const en = {
   'help.option.regressionForensics.failureJson': 'Path to local failure evidence JSON',
   'help.option.regressionForensics.prImpactJson': 'Path to local PR impact JSON',
   'help.option.regressionForensics.format': 'Output format: markdown or json',
+  'help.option.e2eTestPlan.targetJson': 'Path to local target contract JSON',
+  'help.option.e2eTestPlan.prImpactJson': 'Path to local PR impact JSON',
+  'help.option.e2eTestPlan.existingScenariosJson':
+    'Path to local E2E scenario inventory JSON',
+  'help.option.e2eTestPlan.routeEvidenceJson': 'Path to local route/API evidence JSON',
+  'help.option.e2eTestPlan.regressionForensicsJson':
+    'Path to local regression forensics JSON',
+  'help.option.e2eTestPlan.format': 'Output format: markdown or json',
   'help.option.evalServer.host':
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',

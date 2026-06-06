@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 End-to-End Test Generation local proposal/report core implemented; post-core boundary recommends a thin local CLI wrapper next
+- Mode: Task 6 End-to-End Test Generation local proposal/report core and thin CLI wrapper implemented; next baton target is Task 6 post-CLI boundary review
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -31,7 +31,7 @@ Current state:
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
-- Next baton target is Task 6 thin local `gitnexus e2e-test-plan` CLI wrapper.
+- Next baton target is Task 6 post-CLI boundary review.
 - End-to-End Test Generation is `next` for a local proposal/report core only; executable generated tests remain deferred. OCaml Support remains `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
@@ -69,6 +69,72 @@ Current state:
 - 2026-06-06T13:28+01:00: Task 6 End-to-End Test Generation readiness completed. Recommendation: first source slice should be a deterministic proposal/report core over PR Impact, optional Regression Forensics, route/API evidence, existing E2E inventory, and the `gitnexus-web` Playwright contract. Do not generate executable test files in V1.
 - 2026-06-06T13:31+01:00: Task 6 E2E test proposal/report core implemented with TDD. It emits `e2e-test-plan.v1alpha1` JSON/Markdown proposals only; no executable Playwright files, browser execution, CLI/MCP exposure, CI mutation, or GitHub automation.
 - 2026-06-06T13:34+01:00: Task 6 post-core boundary review completed. Recommendation: implement a thin local `gitnexus e2e-test-plan` CLI wrapper over local JSON inputs next. Defer richer existing-spec inventory extraction and all executable test-file generation.
+- 2026-06-06T13:37+01:00: Task 6 thin local `gitnexus e2e-test-plan` CLI wrapper implemented with TDD. It reads local target, PR Impact, existing-scenarios, route-evidence, and optional Regression Forensics JSON and emits Markdown or JSON. Generated Playwright files, browser execution, automatic spec parsing, MCP, CI, and GitHub automation remain deferred.
+
+### 2026-06-06T13:37+01:00 - Task 6 E2E Test Plan CLI Wrapper Implemented
+
+Goal:
+
+- Implement the thin local `gitnexus e2e-test-plan` CLI wrapper over the committed report core.
+
+Files changed:
+
+- `gitnexus/src/cli/e2e-test-plan.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts`
+- `gitnexus/src/cli/i18n/en.ts`
+- `gitnexus/src/cli/i18n/zh-CN.ts`
+- `gitnexus/test/unit/e2e-test-plan-cli.test.ts`
+
+Implemented behavior:
+
+- New local command: `gitnexus e2e-test-plan`.
+- Required local inputs:
+  - `--target-json <path>`
+  - `--pr-impact-json <path>`
+  - `--existing-scenarios-json <path>`
+  - `--route-evidence-json <path>`
+- Optional local input:
+  - `--regression-forensics-json <path>`
+- Output format:
+  - `--format markdown`
+  - `--format json`
+  - default is Markdown.
+
+Not implemented:
+
+- No generated executable Playwright files.
+- No browser execution.
+- No automatic existing-spec parsing.
+- No MCP tool.
+- No GitHub PR comments/checks.
+- No token-bearing automation.
+- No CI workflow mutation.
+- No new dependency.
+- No `gitnexus-web/e2e` changes.
+
+TDD / verification:
+
+```powershell
+npm test -- test/unit/e2e-test-plan-cli.test.ts
+npm test -- test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts test/unit/regression-forensics-report.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/cli-index-help.test.ts
+git diff --check
+npm run build
+```
+
+Results:
+
+- Initial red test failed because `src/cli/e2e-test-plan.js` did not exist.
+- Focused E2E test-plan CLI tests passed: 1 file, 2 tests.
+- Combined CLI/report/help tests passed: 6 files, 27 tests.
+- Diff whitespace check passed.
+- Build passed.
+
+Next boundary:
+
+- Commit the CLI wrapper implementation.
+- Mark the active Goal complete with the Goal tool.
+- Create a post-CLI boundary Goal to decide whether to pause before executable generated-test policy or move to Task 7 OCaml Support readiness.
 
 ### 2026-06-06T13:34+01:00 - Task 6 Post-Core Boundary
 
