@@ -279,6 +279,9 @@ program
   .requiredOption('--route-evidence-json <path>', 'Path to local route/API evidence JSON')
   .option('--regression-forensics-json <path>', 'Path to local regression forensics JSON')
   .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .option('--write-specs', 'Write generated Playwright specs (explicit opt-in)')
+  .option('--spec-output-dir <path>', 'Directory for generated Playwright specs')
+  .option('--force', 'Overwrite existing generated specs')
   .action(createLbugLazyAction(() => import('./e2e-test-plan.js'), 'e2eTestPlanCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────

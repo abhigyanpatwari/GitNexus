@@ -2,9 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const readFileSyncMock = vi.fn();
 const writeSyncMock = vi.fn();
+const existsSyncMock = vi.fn();
+const mkdirSyncMock = vi.fn();
+const writeFileSyncMock = vi.fn();
 
 vi.mock('node:fs', () => ({
+  existsSync: existsSyncMock,
+  mkdirSync: mkdirSyncMock,
   readFileSync: readFileSyncMock,
+  writeFileSync: writeFileSyncMock,
   writeSync: writeSyncMock,
 }));
 
@@ -85,7 +91,10 @@ const routeEvidenceJson = [
 describe('e2e-test-plan CLI command', () => {
   beforeEach(() => {
     vi.resetModules();
+    existsSyncMock.mockReset();
+    mkdirSyncMock.mockReset();
     readFileSyncMock.mockReset();
+    writeFileSyncMock.mockReset();
     writeSyncMock.mockReset();
   });
 
@@ -142,5 +151,41 @@ describe('e2e-test-plan CLI command', () => {
     const parsed = JSON.parse(output);
     expect(parsed.schema_version).toBe('e2e-test-plan.v1alpha1');
     expect(parsed.source_reports.pr_impact_schema_version).toBe('pr-impact.v1alpha1');
+  });
+
+  it('writes generated Playwright specs only when explicitly requested', async () => {
+    existsSyncMock.mockReturnValue(false);
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath === 'target.json') return JSON.stringify(targetJson);
+      if (filePath === 'pr-impact.json') return JSON.stringify(prImpactJson);
+      if (filePath === 'existing.json') return JSON.stringify([]);
+      if (filePath === 'routes.json') return JSON.stringify(routeEvidenceJson);
+      throw new Error(`unexpected path ${filePath}`);
+    });
+
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await e2eTestPlanCommand({
+      targetJson: 'target.json',
+      prImpactJson: 'pr-impact.json',
+      existingScenariosJson: 'existing.json',
+      routeEvidenceJson: 'routes.json',
+      writeSpecs: true,
+      specOutputDir: 'gitnexus-web/e2e/generated',
+      format: 'markdown',
+    });
+
+    expect(mkdirSyncMock).toHaveBeenCalledWith('gitnexus-web/e2e/generated', {
+      recursive: true,
+    });
+    expect(writeFileSyncMock).toHaveBeenCalledWith(
+      'gitnexus-web/e2e/generated/route-api-repos.generated.spec.ts',
+      expect.stringContaining('Generated E2E plan: Exercise route /api/repos'),
+      'utf-8',
+    );
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    expect(output).toContain('Generated specs written: 1');
+    expect(output).toContain('Blocked proposals: 1');
   });
 });

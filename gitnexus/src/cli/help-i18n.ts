@@ -134,6 +134,9 @@ const OPTION_DESCRIPTION_KEYS = {
   'e2e-test-plan|--regression-forensics-json <path>':
     'help.option.e2eTestPlan.regressionForensicsJson',
   'e2e-test-plan|-f, --format <format>': 'help.option.e2eTestPlan.format',
+  'e2e-test-plan|--write-specs': 'help.option.e2eTestPlan.writeSpecs',
+  'e2e-test-plan|--spec-output-dir <path>': 'help.option.e2eTestPlan.specOutputDir',
+  'e2e-test-plan|--force': 'help.option.e2eTestPlan.force',
   'eval-server|-p, --port <port>': 'help.option.port',
   'eval-server|--host <host>': 'help.option.evalServer.host',
   'eval-server|--idle-timeout <seconds>': 'help.option.evalServer.idleTimeout',

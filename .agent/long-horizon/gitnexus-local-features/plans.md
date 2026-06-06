@@ -991,6 +991,7 @@ Suggested future write set after approval:
 | `gitnexus/test/fixtures/e2e-test-generation/generated-route.spec.ts` | Golden generated Playwright fixture. |
 | `gitnexus/src/cli/e2e-test-plan.ts` | Add opt-in write mode only after renderer passes. |
 | `gitnexus/test/unit/e2e-test-plan-cli.test.ts` | CLI write-mode tests with mocked filesystem. |
+| `gitnexus/src/cli/index.ts`, `gitnexus/src/cli/help-i18n.ts`, locale files | Required only if the write mode is exposed as real CLI flags. |
 
 Do not include in the first implementation slice:
 
@@ -1023,6 +1024,49 @@ Stop rules:
 - Stop if generated output requires credentials, external services, live indexed repos, or non-deterministic graph/canvas assertions.
 - Stop if the future implementation would need to change `gitnexus-web/playwright.config.ts` or CI before the renderer is proven.
 - Stop if a proposal cannot be mapped to stable role/test-id/text locators or deterministic mocked backend data.
+
+Implementation checkpoint:
+
+- 2026-06-06T19:45+01:00: Deterministic generated-spec renderer and explicit CLI write mode implemented with TDD.
+- Initial renderer red test failed because `src/core/e2e-test-generation/spec-renderer.js` did not exist.
+- Initial CLI red test failed because `--write-specs` did not write files.
+- Implemented behavior:
+  - pure `renderE2EGeneratedSpecs()` renderer,
+  - deterministic output path `gitnexus-web/e2e/generated/<proposal-id>.generated.spec.ts`,
+  - golden generated Playwright fixture for `/api/repos`,
+  - policy-block diagnostics for unsupported symbol proposals, credential/secret evidence, unsafe target paths, and overwrite attempts,
+  - force-only overwrite for existing generated specs,
+  - explicit `--write-specs`, `--spec-output-dir`, and `--force` CLI flags,
+  - mocked-filesystem CLI write-mode tests.
+- The implementation boundary expanded from the draft write set only to make the CLI mode actually callable: `gitnexus/src/cli/index.ts`, `gitnexus/src/cli/help-i18n.ts`, and locale files were updated for option registration/help.
+- Still out of scope:
+  - browser execution,
+  - Playwright config changes,
+  - CI changes,
+  - MCP/API exposure,
+  - GitHub automation,
+  - live-backend generated specs,
+  - generated specs beyond the deterministic mocked `/api/repos` fixture path.
+
+Verification:
+
+```powershell
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts
+npm test -- test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-spec-renderer.test.ts
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts test/unit/cli-index-help.test.ts
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused renderer: 1 file, 4 tests passed.
+- CLI + renderer: 2 files, 7 tests passed.
+- CLI/help/report/renderer: 4 files, 22 tests passed.
+- Focused Task 6 suite: 3 files, 10 tests passed.
+- Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
+- Diff whitespace check passed.
 
 ### Task 7 Approval Packet - OCaml Implementation Goal
 

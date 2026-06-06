@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 executable generated-test output policy readiness
+- Mode: Task 6 deterministic generated Playwright spec renderer implemented locally
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, and Task 7 OCaml experimental language support V1 are implemented locally. Task 6 executable generated-test output now has a readiness policy; implementation remains blocked until MAIN approves the exact renderer/write-mode slice.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, MCP/API exposure, and GitHub automation remain deferred.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -78,6 +78,7 @@ Current state:
 - 2026-06-06T19:35+01:00: Post-tranche consolidation recommends the next Goal as Task 6 executable generated-test output policy readiness. This is not implementation approval; it should define whether and how `e2e-test-plan.v1alpha1` proposals may become executable Playwright files.
 - 2026-06-06T19:35+01:00: Task 6 executable-output policy readiness recorded in `plans.md`. Recommendation: future implementation should start with a pure deterministic Playwright spec renderer for `gitnexus-web` mocked-backend route proposals, with optional explicit CLI write mode only after renderer tests pass.
 - 2026-06-06T19:38+01:00: Task 6 executable-output policy readiness committed as `4f3fec63` (`docs: define e2e executable output policy`).
+- 2026-06-06T19:45+01:00: Task 6 deterministic generated Playwright spec renderer and explicit `gitnexus e2e-test-plan --write-specs` mode implemented with TDD. The implementation is limited to deterministic mocked `/api/repos` route specs and policy-block diagnostics; browser execution, CI mutation, MCP/API, GitHub automation, and live-backend generation remain deferred.
 
 ### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
 

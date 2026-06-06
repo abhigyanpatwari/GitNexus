@@ -243,6 +243,10 @@ export const en = {
   'help.option.e2eTestPlan.regressionForensicsJson':
     'Path to local regression forensics JSON',
   'help.option.e2eTestPlan.format': 'Output format: markdown or json',
+  'help.option.e2eTestPlan.writeSpecs':
+    'Write generated Playwright specs (explicit opt-in)',
+  'help.option.e2eTestPlan.specOutputDir': 'Directory for generated Playwright specs',
+  'help.option.e2eTestPlan.force': 'Overwrite existing generated specs',
   'help.option.evalServer.host':
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',
