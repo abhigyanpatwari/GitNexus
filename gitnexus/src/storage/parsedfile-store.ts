@@ -35,7 +35,7 @@ import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { mapReplacer, mapReviver } from './parse-cache.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
@@ -53,7 +53,10 @@ const STORE_DIRNAME = 'parsedfile-store';
  * pass, no second walk). The pool is per-load; the interned strings stay shared
  * through the retained `ParsedFile` references after the pool is dropped.
  */
-const makeInterningReviver = (pool: Map<string, string>) => {
+const makeInterningReviver = (
+  pool: Map<string, string>,
+  defPool: Map<string, SymbolDefinition>,
+) => {
   return (key: string, value: unknown): unknown => {
     if (typeof value === 'string') {
       const hit = pool.get(value);
@@ -61,7 +64,30 @@ const makeInterningReviver = (pool: Map<string, string>) => {
       pool.set(value, value);
       return value;
     }
-    return mapReviver(key, value);
+    const revived = mapReviver(key, value);
+    // Collapse the THREE serialized copies of each `SymbolDefinition` back to one
+    // shared object, keyed on the def-exclusive `nodeId`. A def is serialized in
+    // `localDefs`, in its owning `scope.ownedDefs`, and inside `scope.bindings[].def`;
+    // in the live extractor those are ONE object by reference, but `JSON.parse`
+    // rebuilds three distinct objects (string interning alone leaves the object
+    // duplication intact — ~3× the def-object heap on the disk-backed path).
+    // Re-sharing is byte-identical to resolution: every consumer reads defs BY
+    // VALUE (`nodeId`/`type`), never by object identity, and the authoritative
+    // resolver index is built from `localDefs` only. `nodeId` is def-exclusive in
+    // the scope-resolution schema; the `filePath` check guards future shapes.
+    if (
+      revived !== null &&
+      typeof revived === 'object' &&
+      typeof (revived as { nodeId?: unknown }).nodeId === 'string' &&
+      typeof (revived as { filePath?: unknown }).filePath === 'string'
+    ) {
+      const def = revived as SymbolDefinition;
+      const seen = defPool.get(def.nodeId);
+      if (seen !== undefined) return seen;
+      defPool.set(def.nodeId, def);
+      return def;
+    }
+    return revived;
   };
 };
 
@@ -75,7 +101,13 @@ const makeInterningReviver = (pool: Map<string, string>) => {
  * if neither is available, so it never throws.
  */
 let cachedGc: (() => void) | null | undefined;
-const forceGc = (): void => {
+/**
+ * Best-effort synchronous GC. Uses `globalThis.gc` when `--expose-gc` is set,
+ * else lazily wires it via `v8.setFlagsFromString('--expose-gc')` + a fresh
+ * `vm` context. Exported so scope-resolution can reclaim a finished language's
+ * ParsedFiles at the per-language eviction boundary (#1741 / kernel memory work).
+ */
+export const forceGc = (): void => {
   const g = (globalThis as { gc?: () => void }).gc;
   if (typeof g === 'function') {
     g();
@@ -189,8 +221,13 @@ export const loadParsedFilesForPaths = async (
   // (one `int` / one repeated filePath for the whole language), which is where
   // most of the saving comes from. Dropped when this function returns.
   const pool = new Map<string, string>();
-  const reviver = makeInterningReviver(pool);
   for (let i = 0; i < shards.length; i++) {
+    // Per-shard def pool: a SymbolDefinition's three serialized copies live within
+    // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
+    // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
+    // shards), reintroducing the leak; per-shard drops them with the shard.
+    const defPool = new Map<string, SymbolDefinition>();
+    const reviver = makeInterningReviver(pool, defPool);
     let parsed: ParsedFile[];
     try {
       const raw = await fs.readFile(path.join(dir, shards[i]), 'utf-8');

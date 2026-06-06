@@ -9,6 +9,7 @@
  */
 
 import path from 'path';
+import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
@@ -84,13 +85,45 @@ const installFatalHandlers = (): void => {
   });
 };
 
-const HEAP_MB = 16384;
+/** Historical floor for the re-exec heap cap — the auto-sizer never goes below
+ *  this, so small boxes / CI never regress. */
+const DEFAULT_HEAP_MB = 16384;
+
+/**
+ * RAM-aware re-exec heap cap (MB): `0.75 × effective RAM`, clamped to
+ * `>= DEFAULT_HEAP_MB`. Kept BELOW physical RAM on purpose — a cap `>=` RAM makes
+ * V8 collect lazily and inflate the heap into swap-thrash (observed analyzing the
+ * Linux kernel at a 30GB cap on a 31GB box). `constrainedBytes` is the cgroup
+ * limit or `null`; it is honored only as a real, smaller-than-physical cap, because
+ * `process.constrainedMemory()` returns a huge sentinel when UNCONSTRAINED.
+ */
+export function computeHeapCapMb(totalBytes: number, constrainedBytes: number | null): number {
+  const effectiveBytes =
+    constrainedBytes !== null && constrainedBytes > 0 && constrainedBytes < totalBytes
+      ? constrainedBytes
+      : totalBytes;
+  const effectiveMb = Math.floor(effectiveBytes / (1024 * 1024));
+  return Math.max(DEFAULT_HEAP_MB, Math.floor(0.75 * effectiveMb));
+}
+
+function readConstrainedBytes(): number | null {
+  if (typeof process.constrainedMemory !== 'function') return null;
+  const c = process.constrainedMemory();
+  return typeof c === 'number' && c > 0 ? c : null;
+}
+
+const HEAP_MB = computeHeapCapMb(os.totalmem(), readConstrainedBytes());
 const TEST_RESPAWN_HEAP_MB = Number(process.env.GITNEXUS_TEST_RESPAWN_HEAP_MB);
 const RESPAWN_HEAP_MB =
   Number.isFinite(TEST_RESPAWN_HEAP_MB) && TEST_RESPAWN_HEAP_MB > 0
     ? Math.floor(TEST_RESPAWN_HEAP_MB)
     : HEAP_MB;
 const HEAP_FLAG = `--max-old-space-size=${RESPAWN_HEAP_MB}`;
+/** Larger semi-space (young-gen) cuts minor-GC frequency + promotion churn during
+ *  the multi-million-node graph build/emit. Allowed in NODE_OPTIONS (unlike
+ *  --stack-size), so it propagates to the re-exec env cleanly. */
+const SEMI_SPACE_MB = 128;
+const SEMI_FLAG = `--max-semi-space-size=${SEMI_SPACE_MB}`;
 /** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
 const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
@@ -440,7 +473,8 @@ const forceHeapOOMForTestIfEnabled = (): void => {
 // `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
 const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 
-/** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
+/** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
+ *  if we're currently below that. A user-supplied NODE_OPTIONS heap wins (no re-exec). */
 async function ensureHeap(): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
@@ -448,25 +482,26 @@ async function ensureHeap(): Promise<boolean> {
   const v8Heap = v8.getHeapStatistics().heap_size_limit;
   if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
 
-  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+,
-  // so pass it only as a direct CLI argument, not via the environment.
-  const cliFlags = [HEAP_FLAG];
+  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
+  // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
+  const cliFlags = [HEAP_FLAG, SEMI_FLAG];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   const childArgs = [...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
-    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim(),
+    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
       cliError(
-        `  Analysis likely ran out of memory.\n` +
-          `  Retry with a larger heap if your machine allows it:\n` +
-          `    NODE_OPTIONS="--max-old-space-size=24576" gitnexus analyze [your-args]\n` +
-          `    (Windows: set NODE_OPTIONS=--max-old-space-size=24576 && gitnexus analyze [your-args])\n` +
+        `  Analysis likely ran out of memory (heap cap auto-sized to ${RESPAWN_HEAP_MB}MB ≈ 0.75x RAM).\n` +
+          `  This repository's working set exceeds available RAM. Use a machine with more RAM,\n` +
+          `  or override the cap (a cap above physical RAM causes swap-thrash — use with care):\n` +
+          `    NODE_OPTIONS="--max-old-space-size=<MB>" gitnexus analyze [your-args]\n` +
+          `    (Windows: set NODE_OPTIONS=--max-old-space-size=<MB> && gitnexus analyze [your-args])\n` +
           `  If this persists, it may be a native crash unrelated to heap size.\n`,
         { recoveryHint: 'heap-oom-respawn' },
       );

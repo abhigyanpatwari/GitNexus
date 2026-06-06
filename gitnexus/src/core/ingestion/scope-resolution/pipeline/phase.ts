@@ -38,6 +38,7 @@ import { logHeapProbe } from '../../utils/heap-probe.js';
 import {
   clearParsedFileStore,
   loadParsedFilesForPaths,
+  forceGc,
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
 
@@ -157,8 +158,27 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalScopeFiles = 0;
     let totalScopeLangs = 0;
     const allScannedPaths = new Set(scannedFiles.map((f) => f.path));
+    // Partition scanned files by language ONCE (O(F)). The previous code
+    // re-filtered all scannedFiles per language for the precount AND again in the
+    // per-language loop below — O(languages × files), ~2.3M getLanguageFromFilename
+    // calls on the Linux kernel. Bucketing once collapses that to O(F).
+    // Language-agnostic: keyed by the provider-supplied SupportedLanguages value.
+    const filesByLang = new Map<
+      NonNullable<ReturnType<typeof getLanguageFromFilename>>,
+      (typeof scannedFiles)[number][]
+    >();
+    for (const f of scannedFiles) {
+      const fileLang = getLanguageFromFilename(f.path);
+      if (fileLang === null) continue;
+      let bucket = filesByLang.get(fileLang);
+      if (bucket === undefined) {
+        bucket = [];
+        filesByLang.set(fileLang, bucket);
+      }
+      bucket.push(f);
+    }
     for (const [lang] of SCOPE_RESOLVERS) {
-      const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
+      const count = filesByLang.get(lang)?.length ?? 0;
       if (count > 0) {
         totalScopeLangs++;
         totalScopeFiles += count;
@@ -182,7 +202,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // so the previous per-language rebuild burned that CPU+heap N times and, on
     // a huge repo, a tiny language's full-graph copy overlapped the next
     // language's — a real contributor to the scope-resolution memory peak.
+    // Bracket the whole-graph node-lookup build with probes — scanning every
+    // graph node is the silent multi-minute step before the first per-language
+    // marker on huge repos, so make it observable.
+    logHeapProbe(
+      'scope-setup-nodeLookup-start',
+      `langs=${totalScopeLangs} files=${totalScopeFiles}`,
+    );
     const sharedNodeLookup = totalScopeFiles > 0 ? buildGraphNodeLookup(ctx.graph) : undefined;
+    logHeapProbe('scope-setup-nodeLookup-end', `langs=${totalScopeLangs}`);
 
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       // Standalone providers (COBOL, JCL) don't emit graph edges yet
@@ -193,7 +221,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // SCOPE_RESOLVERS.
       if (provider.languageProvider.parseStrategy === 'standalone') continue;
 
-      const primaryLangFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
+      const primaryLangFiles = filesByLang.get(lang) ?? [];
       if (primaryLangFiles.length === 0) continue;
       const primaryFilePaths = primaryLangFiles.map((f) => f.path);
 
@@ -374,6 +402,17 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       for (const fp of filePaths) {
         preExtractedByPath.delete(fp);
       }
+      // This language's ParsedFiles are now unreachable (runScopeResolution has
+      // returned and the Map entries are deleted). Force a GC HERE so a heavy
+      // language's ~17-20GB set (e.g. C/C++ on the Linux kernel) is reclaimed
+      // BEFORE the next language's store-load — instead of leaving V8 to collect
+      // it lazily under the next pass's allocation pressure (which, at a cap >=
+      // RAM, degrades into swap-thrash). Collects only dead objects: the live
+      // cross-file index of the next pass is untouched. The pre/post probe
+      // confirms whether old-space fragmentation defeats the reclaim.
+      logHeapProbe('lang-release-pre-gc', `lang=${lang}`);
+      forceGc();
+      logHeapProbe('lang-release-post-gc', `lang=${lang}`);
       logHeapProbe('scope-lang-end', `lang=${lang} filesProcessed=${stats.filesProcessed}`);
 
       processedScopeFiles += langFileCount;

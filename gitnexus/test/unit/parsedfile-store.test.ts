@@ -257,4 +257,117 @@ describe('parsedfile-store', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  // U3 def-object dedup: each SymbolDefinition is serialized THREE times — in
+  // ParsedFile.localDefs, in the owning scope.ownedDefs, and inside
+  // scope.bindings[].def (BindingRef) — but is ONE object by reference in the
+  // live extractor. JSON.parse rebuilds three distinct objects; the load reviver
+  // must re-share them by nodeId (collapsing ~3× the def-object heap on the
+  // disk-backed/kernel path). Re-sharing is byte-identical to resolution because
+  // every consumer reads defs by value (nodeId/type), never by object identity.
+  it("re-shares a def's three serialized copies into one object on load", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const def = {
+        nodeId: 'Function:a.c:fn',
+        filePath: 'a.c',
+        type: 'Function',
+        qualifiedName: 'fn',
+      };
+      const pf = {
+        filePath: 'a.c',
+        moduleScope: 'a.c:module',
+        parsedImports: [],
+        localDefs: [def], // copy 1
+        referenceSites: [],
+        scopes: [
+          {
+            id: 'a.c:module',
+            parent: null,
+            kind: 'Module',
+            range: { startLine: 1, startCol: 0, endLine: 9, endCol: 0 },
+            filePath: 'a.c',
+            bindings: new Map([['fn', [{ def }]]]), // copy 3 (BindingRef.def)
+            ownedDefs: [def], // copy 2
+            imports: [],
+            typeBindings: new Map(),
+          },
+        ],
+      } as unknown as ParsedFile;
+
+      persistParsedFileShardSync(dir, 'w1-0', [pf]);
+      const loaded = (await loadParsedFilesForPaths(dir, new Set(['a.c']))).get('a.c')!;
+
+      const fromLocal = loaded.localDefs[0];
+      const scope = loaded.scopes[0];
+      const fromOwned = scope.ownedDefs[0];
+      const fromBinding = scope.bindings.get('fn')![0].def;
+
+      // All three deserialized copies are re-shared into ONE object.
+      expect(fromLocal).toBe(fromOwned);
+      expect(fromLocal).toBe(fromBinding);
+      // Value-identical to what was written.
+      expect(fromLocal).toEqual({
+        nodeId: 'Function:a.c:fn',
+        filePath: 'a.c',
+        type: 'Function',
+        qualifiedName: 'fn',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps defs with distinct nodeIds as distinct objects (no over-collapsing)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const def1 = {
+        nodeId: 'Function:a.c:fn1',
+        filePath: 'a.c',
+        type: 'Function',
+        qualifiedName: 'fn1',
+      };
+      const def2 = {
+        nodeId: 'Function:a.c:fn2',
+        filePath: 'a.c',
+        type: 'Function',
+        qualifiedName: 'fn2',
+      };
+      const pf = {
+        filePath: 'a.c',
+        moduleScope: 'a.c:module',
+        parsedImports: [],
+        localDefs: [def1, def2],
+        referenceSites: [],
+        scopes: [
+          {
+            id: 'a.c:module',
+            parent: null,
+            kind: 'Module',
+            range: { startLine: 1, startCol: 0, endLine: 9, endCol: 0 },
+            filePath: 'a.c',
+            bindings: new Map([
+              ['fn1', [{ def: def1 }]],
+              ['fn2', [{ def: def2 }]],
+            ]),
+            ownedDefs: [def1, def2],
+            imports: [],
+            typeBindings: new Map(),
+          },
+        ],
+      } as unknown as ParsedFile;
+
+      persistParsedFileShardSync(dir, 'w1-0', [pf]);
+      const loaded = (await loadParsedFilesForPaths(dir, new Set(['a.c']))).get('a.c')!;
+
+      expect(loaded.localDefs[0]).not.toBe(loaded.localDefs[1]);
+      expect(loaded.localDefs[0].nodeId).toBe('Function:a.c:fn1');
+      expect(loaded.localDefs[1].nodeId).toBe('Function:a.c:fn2');
+      // Each still re-shares with its own ownedDefs copy.
+      expect(loaded.localDefs[0]).toBe(loaded.scopes[0].ownedDefs[0]);
+      expect(loaded.localDefs[1]).toBe(loaded.scopes[0].ownedDefs[1]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
