@@ -111,6 +111,8 @@ export interface IncomingRef {
   name: string;
   uid: string;
   kind: string;
+  /** Method on the target that the caller invokes (populated for method-level CALLS entries from the IMPLEMENTS walk and the #56 method-incoming path). */
+  targetMethod?: string;
 }
 
 export interface CodebaseContext {
@@ -1604,17 +1606,33 @@ export class LocalBackend {
     // the file's methods and surfaces any method-level CALLS edges to the
     // target. This makes `context(name="someMethod")` return the caller
     // method's name+filePath instead of just the file.
+    // The 4th IMPLEMENTS walk is only meaningful for Class targets
+    // (impl classes whose interface methods are called via interface-typed
+    // receivers — D5 resolution in call-processor.ts:951 makes the CALLS
+    // edge point at the interface Method, not the impl Method). For
+    // Interface targets the existing methodIncoming path already covers
+    // incoming CALLS, so we skip the extra query there. (#23, #34)
+    const isClassTarget = isClassLike && (
+      resolvedLabel === 'Class' || symId.startsWith('class:')
+    );
+
     if (isClassLike) {
       try {
-        // Run all three incoming-ref queries in parallel — they are
+        // Run all incoming-ref queries in parallel — they are
         // independent. The third query (#56) covers callers of the
         // class's METHODS — without it, a query like
         // `context(name="CashServiceV2Impl")` returns no incoming
         // refs even though 8 controllers call its methods at the
-        // method level. We aggregate those method-level CALLS edges
-        // into the class context, similar to how outgoing
-        // `has_method` already shows method-level outgoing edges.
-        const [ctorIncoming, fileIncoming, methodIncoming] = await Promise.all([
+        // method level. The fourth query (WI-K23/K34) follows
+        // `Class-[:IMPLEMENTS]->Interface-[:HAS_METHOD]->Method<-[:CALLS]`
+        // so that callers of an interface method (e.g.
+        // `userService.getUsers()`) are visible when the user queries
+        // the impl class `UserServiceImpl`. We aggregate those
+        // method-level CALLS edges into the class context, similar to
+        // how outgoing `has_method` already shows method-level outgoing
+        // edges. The seenKeys dedup ensures callers found via both
+        // methodIncoming and implIncoming appear ONCE.
+        const queries: Array<Promise<any[]>> = [
           executeParameterized(repo.id, `
             MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -1647,15 +1665,40 @@ export class LocalBackend {
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind, target.name AS targetMethod
             LIMIT 30
           `, { symId }),
-        ]);
+        ];
+
+        // (WI-K23/K34) Follow IMPLEMENTS outgoing from the impl class
+        // to its interfaces, then down HAS_METHOD to the interface's
+        // Method nodes, then up CALLS to find the callers. This
+        // surfaces method-level CALLS that the D5 tier in
+        // call-processor.ts:951 routes to the interface method —
+        // callers of an interface method are otherwise invisible when
+        // querying the impl class. Only runs for Class targets (the
+        // METHOD-typed-impl's outgoing IMPLEMENTS); Interface targets
+        // are covered by methodIncoming above. Single hop only
+        // (invariant 3 in k-hgo-impl-calls-traversal.md).
+        if (isClassTarget) {
+          queries.push(executeParameterized(repo.id, `
+            MATCH (n)-[impl:CodeRelation {type: 'IMPLEMENTS'}]->(iface:Interface)
+            WHERE n.id = $symId
+            MATCH (iface)-[hm:CodeRelation {type: 'HAS_METHOD'}]->(target:Method)
+            MATCH (caller)-[r:CodeRelation {type: 'CALLS'}]->(target)
+            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind, target.name AS targetMethod
+            LIMIT 30
+          `, { symId }));
+        }
+
+        const [ctorIncoming, fileIncoming, methodIncoming, implIncoming] = await Promise.all(queries);
 
         // Deduplicate by (relType, uid) — a caller can have multiple relation
         // types to the same target (e.g. both IMPORTS and CALLS), and each
-        // must be preserved so every category appears in the output.
+        // must be preserved so every category appears in the output. The
+        // implIncoming entries are appended only when the Class target
+        // implements at least one interface; otherwise the array is empty.
         const seenKeys = new Set(
           incomingRows.map((r: any) => `${r.relType || r[0]}:${r.uid || r[1]}`),
         );
-        for (const r of [...ctorIncoming, ...fileIncoming, ...methodIncoming]) {
+        for (const r of [...ctorIncoming, ...fileIncoming, ...methodIncoming, ...(implIncoming ?? [])]) {
           const key = `${r.relType || r[0]}:${r.uid || r[1]}`;
           if (!seenKeys.has(key)) { seenKeys.add(key); incomingRows.push(r); }
         }
@@ -1732,6 +1775,10 @@ export class LocalBackend {
           filePath: row.filePath || row[3],
           kind: row.kind || row[4],
         };
+        // Preserve targetMethod when present (set by method-level CALLS queries —
+        // the #56 path and the WI-K23/K34 IMPLEMENTS walk). Optional because
+        // file-level IMPORTS/EXTENDS rows do not carry a target method.
+        if (row.targetMethod) entry.targetMethod = row.targetMethod;
         if (!cats[relType]) cats[relType] = [];
         cats[relType].push(entry);
       }

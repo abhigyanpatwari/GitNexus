@@ -390,18 +390,79 @@ export { collectFileTypeInfo, extractTypeName, collectInterfaceMethodNames };
 export { generateId };
 
 /**
+ * Walk the AST and collect MethodSymbol entries for the method_elems
+ * that live directly inside a Go interface body.
+ *
+ * WI-H88 / Issue #88: Go interface body methods parse as `method_elem`
+ * (a different node type from `method_declaration`) and have NO
+ * receiver parameter_list. The only way to attribute them is by walking
+ * up to the enclosing `type_declaration > type_spec > interface_type`
+ * and reading the type_spec's `name` field. This helper isolates that
+ * structurally different walker so `collectGoMethodsFromAST` can stay
+ * focused on the receiver-bearing `method_declaration` path.
+ */
+export const collectGoInterfaceMethodSymbols = (
+  rootNode: Parser.SyntaxNode,
+  filePath: string,
+): MethodSymbol[] => {
+  const defs: MethodSymbol[] = [];
+  walk(rootNode, (n) => {
+    if (n.type !== 'method_elem') return;
+    const nameNode = n.childForFieldName('name') ?? n.children.find((c) => c.type === 'field_identifier');
+    if (!nameNode) return;
+    let cur: Parser.SyntaxNode | null = n.parent;
+    let ownerId: string | undefined;
+    while (cur) {
+      if (cur.type === 'type_declaration') {
+        let typeSpec: Parser.SyntaxNode | null = null;
+        for (let i = 0; i < cur.namedChildCount; i++) {
+          const c = cur.namedChild(i);
+          if (c?.type === 'type_spec') { typeSpec = c; break; }
+        }
+        if (typeSpec) {
+          const tn = typeSpec.childForFieldName('type');
+          const nm = typeSpec.childForFieldName('name');
+          if (nm && tn?.type === 'interface_type') {
+            ownerId = generateId('Interface', `${filePath}:${nm.text}`);
+            break;
+          }
+        }
+      }
+      cur = cur.parent;
+    }
+    if (ownerId) {
+      defs.push({
+        nodeId: generateId('Method', `${filePath}:${nameNode.text}`),
+        filePath,
+        type: 'Method',
+        ownerId,
+      });
+    }
+  });
+  return defs;
+};
+
+/**
  * Build a per-file SymbolDefinition list by walking the AST for method
  * declarations and resolving their owning struct/interface.
  *
  * Used by the AST-based heritage-processor fallback (the worker-based
  * path already has a populated SymbolTable). The output shape matches
  * the SymbolDefinition contract expected by collectGoImplementsHeritage.
+ *
+ * Compositionally, this function delegates to two focused walkers:
+ *   - `collectGoInterfaceMethodSymbols` for `method_elem` (interface body)
+ *   - the inline `method_declaration` walker (struct methods + same-file
+ *     interface methods rendered as `method_declaration` with no receiver)
  */
 export const collectGoMethodsFromAST = (
   rootNode: Parser.SyntaxNode,
   filePath: string,
 ): MethodSymbol[] => {
-  const defs: MethodSymbol[] = [];
+  const defs: MethodSymbol[] = [
+    ...collectGoInterfaceMethodSymbols(rootNode, filePath),
+  ];
+
   walk(rootNode, (n) => {
     if (n.type !== 'method_declaration') return;
     const nameNode = n.childForFieldName('name') ?? n.children.find((c) => c.type === 'field_identifier');
@@ -456,4 +517,168 @@ export const collectGoMethodsFromAST = (
     }
   });
   return defs;
+};
+
+// ============================================================================
+// WI-H85 / Issue #85 — cross-file Go IMPLEMENTS detection (two-pass)
+// ============================================================================
+
+/**
+ * One interface entry in the cross-file registry. The set of method
+ * names is the interface's effective method set (own methods + methods
+ * promoted from any embedded interfaces, mirroring `collectFileTypeInfo`).
+ */
+export interface GoInterfaceMethodEntry {
+  readonly name: string;
+  readonly filePath: string;
+  readonly methods: ReadonlySet<string>;
+}
+
+/**
+ * Build a global registry of {interface name -> method set} for ALL
+ * .go files in a batch. The registry is used by
+ * `collectGoImplementsCrossFile` to match struct method sets against
+ * interfaces defined in OTHER files.
+ *
+ * This is the pre-pass of the two-pass IMPLEMENTS detector. The per-file
+ * `collectGoImplementsHeritage` pass remains authoritative for same-file
+ * pairs; this pre-pass is additive.
+ */
+export const collectGoInterfaceMethods = (
+  files: ReadonlyArray<{ path: string; rootNode: Parser.SyntaxNode }>,
+): GoInterfaceMethodEntry[] => {
+  const entries: GoInterfaceMethodEntry[] = [];
+  for (const { path, rootNode } of files) {
+    const { interfaces } = collectFileTypeInfo(rootNode);
+    for (const [name, methods] of interfaces) {
+      entries.push({ name, filePath: path, methods });
+    }
+  }
+  return entries;
+};
+
+/**
+ * Cross-file IMPLEMENTS item. Distinct from `GoImplementsHeritageItem`
+ * so the heritage-processor / parse-worker can apply the cross-file
+ * confidence (0.7) directly and tag the reason as
+ * 'cross-file-structural-match'.
+ */
+export interface GoCrossFileImplementsHeritageItem {
+  readonly filePath: string;
+  readonly className: string;
+  readonly parentName: string;
+  readonly parentFilePath: string;
+  readonly kind: 'cross-file-implements';
+  /** Confidence 0.7 — lower than same-file (0.95) to flag as less certain */
+  readonly confidence: number;
+}
+
+/**
+ * Cross-file Go IMPLEMENTS detector (WI-H85 / issue #85). For each
+ * struct in the file, compare its method set against EVERY interface
+ * in the global registry. Pairs that share the same file are skipped
+ * (invariant 1 — the same-file pass is authoritative).
+ *
+ * Algorithm:
+ *   1. Compute the file's struct method set (own + promoted).
+ *   2. For each interface in the registry whose filePath !== this
+ *      file's path, check if the struct's method set is a superset.
+ *   3. Emit one item per match.
+ *
+ * Guards (matching the same-file pass):
+ *   - Empty struct method set → no emit (EdgeCase #3)
+ *   - Empty interface method set → no emit (EdgeCase #4)
+ *   - Interface in same file as struct → skip (invariant 1)
+ *   - Diamond interface inheritance → not handled in v1 (EdgeCase #5)
+ *   - Signature matching → v1 uses name-only (AD-10, documented limitation)
+ *
+ * v1 uses name-only method comparison. Confidence 0.7 reflects the
+ * structural-typing intent being clear but signature-level proof being
+ * absent.
+ */
+export const collectGoImplementsCrossFile = (
+  filePath: string,
+  rootNode: Parser.SyntaxNode,
+  fileSymbols: ReadonlyArray<MethodSymbol>,
+  globalRegistry: ReadonlyArray<GoInterfaceMethodEntry>,
+  sameFilePairs: ReadonlySet<string> = new Set(),
+): GoCrossFileImplementsHeritageItem[] => {
+  if (globalRegistry.length === 0) return [];
+
+  // 1. Build per-file struct method set (mirrors collectGoImplementsHeritage)
+  const { interfaces: localInterfaces, structInterfaceEmbeds } = collectFileTypeInfo(rootNode);
+  const structOwnMethods = new Map<string, Set<string>>();
+  for (const s of fileSymbols) {
+    if (s.type !== 'Method') continue;
+    if (!s.ownerId) continue;
+    if (s.filePath !== filePath) continue;
+    const prefix = `Struct:${filePath}:`;
+    if (!s.ownerId.startsWith(prefix)) continue;
+    const structName = s.ownerId.slice(prefix.length);
+    let set = structOwnMethods.get(structName);
+    if (!set) { set = new Set(); structOwnMethods.set(structName, set); }
+    const methodPrefix = `Method:${filePath}:`;
+    const rawName = s.nodeId.startsWith(methodPrefix)
+      ? s.nodeId.slice(methodPrefix.length)
+      : s.nodeId;
+    const methodName = rawName.split(':')[0] ?? rawName;
+    set.add(methodName);
+  }
+
+  // 2. Collect struct names declared in this file
+  const allStructNames = new Set<string>();
+  walk(rootNode, (n) => {
+    if (n.type !== 'type_declaration') return;
+    let typeSpec: Parser.SyntaxNode | null = null;
+    for (let i = 0; i < n.namedChildCount; i++) {
+      const c = n.namedChild(i);
+      if (c?.type === 'type_spec') { typeSpec = c; break; }
+    }
+    if (!typeSpec) return;
+    const nameNode = typeSpec.childForFieldName('name');
+    const typeNode = typeSpec.childForFieldName('type');
+    if (nameNode && typeNode?.type === 'struct_type') {
+      allStructNames.add(nameNode.text);
+    }
+  });
+
+  if (allStructNames.size === 0) return [];
+
+  const items: GoCrossFileImplementsHeritageItem[] = [];
+
+  for (const structName of allStructNames) {
+    const ownMethods = structOwnMethods.get(structName) ?? new Set<string>();
+    const structMethodSet = computeStructMethodSet(
+      structName, ownMethods, structInterfaceEmbeds, localInterfaces,
+    );
+    if (structMethodSet.size === 0) continue;  // EdgeCase #3
+
+    for (const iface of globalRegistry) {
+      if (iface.methods.size === 0) continue;  // EdgeCase #4
+      if (iface.filePath === filePath) continue; // invariant 1: same-file handled by first pass
+      if (iface.methods.size > structMethodSet.size) continue;
+      // Dedup against same-file pair (invariant 7)
+      if (sameFilePairs.has(`${structName}->${iface.name}`)) continue;
+
+      let isSuperset = true;
+      for (const m of iface.methods) {
+        if (!structMethodSet.has(m)) { isSuperset = false; break; }
+      }
+      if (isSuperset) {
+        items.push({
+          filePath,
+          className: structName,
+          parentName: iface.name,
+          parentFilePath: iface.filePath,
+          kind: 'cross-file-implements',
+          confidence: 0.7,
+        });
+      }
+    }
+  }
+
+  if (isVerboseIngestionEnabled() && items.length > 0) {
+    console.debug(`[go-relationships] ${filePath}: ${items.length} cross-file IMPLEMENTS edges derived from global method-set registry`);
+  }
+  return items;
 };

@@ -20,7 +20,7 @@ import { extractGinRoutes } from '../route-extractors/go.js';
 import { extractAngularRoutes, isAngularFile } from '../route-extractors/angular.js';
 import { extractAngularMetadata, type ExtractedAngularEdge } from '../extractors/angular-metadata.js';
 import { extractAngularCalls } from '../extractors/angular-calls.js';
-import { collectGoImplementsHeritage, collectGoCompositionHeritage } from './go-relationships.js';
+import { collectGoImplementsHeritage, collectGoCompositionHeritage, collectGoInterfaceMethods, collectGoImplementsCrossFile, type GoInterfaceMethodEntry, type GoCrossFileImplementsHeritageItem } from './go-relationships.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -2299,16 +2299,47 @@ const processFileGroup = (
     return;
   }
 
+  // Pre-pass (WI-H85): if this group is Go, build a global registry
+  // of Go interface method sets across the entire group. The per-file
+  // loop below reuses the trees parsed here to avoid a second parse.
+  // This registry enables the cross-file IMPLEMENTS detector to match
+  // structs against interfaces defined in other files.
+  const goGlobalRegistry: GoInterfaceMethodEntry[] = [];
+  // WI-H85 pre-pass tree cache: maps file path → parsed Tree. The
+  // per-file loop checks this first; if a tree is present it skips
+  // `parser.parse()` entirely, eliminating the wasted re-parse that
+  // the previous implementation paid (it only kept `rootNode` and
+  // re-parsed to get a fresh `Tree` for the main loop).
+  const goPreParsedTrees = new Map<string, Parser.Tree>();
+  if (language === SupportedLanguages.Go) {
+    for (const file of files) {
+      if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
+      try {
+        const t = parser.parse(file.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(file.content.length),
+        });
+        goPreParsedTrees.set(file.path, t);
+      } catch {
+        // Skip un-parseable files; the per-file loop logs a warning.
+      }
+    }
+    const registryEntries: Array<{ path: string; rootNode: Parser.SyntaxNode }> = [];
+    for (const [p, t] of goPreParsedTrees) registryEntries.push({ path: p, rootNode: t.rootNode });
+    goGlobalRegistry.push(...collectGoInterfaceMethods(registryEntries));
+  }
+
   for (const file of files) {
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
 
-    let tree;
-    try {
-      tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
-    } catch (err) {
-      console.warn(`Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
+    let tree = goPreParsedTrees.get(file.path);
+    if (!tree) {
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+      } catch (err) {
+        console.warn(`Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
     }
 
     result.fileCount++;
@@ -2976,12 +3007,41 @@ const processFileGroup = (
       const fileSymbols = result.symbols.filter((s) => s.filePath === file.path);
       // IMPLEMENTS via method-set superset (#20)
       const implementsItems = collectGoImplementsHeritage(file.path, tree.rootNode, fileSymbols);
+      // Track same-file pairs for cross-file dedup (invariant 7).
+      const sameFilePairs = new Set<string>();
       for (const it of implementsItems) {
+        sameFilePairs.add(`${it.className}->${it.parentName}`);
         result.heritage.push({
           filePath: it.filePath,
           className: it.className,
           parentName: it.parentName,
           kind: it.kind,
+        });
+      }
+      // WI-H85 / Issue #85: cross-file Go IMPLEMENTS second pass.
+      // The same-file pass above is authoritative for same-file pairs.
+      // This second pass adds cross-file pairs at confidence 0.7 and
+      // tags them with kind 'cross-file-implements' + a confidence
+      // payload so the consumer (processHeritageFromExtracted) can
+      // apply the cross-file confidence directly.
+      const crossFileItems = collectGoImplementsCrossFile(
+        file.path,
+        tree.rootNode,
+        fileSymbols,
+        goGlobalRegistry,
+        sameFilePairs,
+      );
+      for (const it of crossFileItems) {
+        // Encode confidence and parentFilePath in the kind string so the
+        // downstream consumer can recover them. The consumer
+        // (processHeritageFromExtracted) parses this back to the typed
+        // shape via `crossFileItems[i].confidence` / `.parentFilePath`.
+        // The format is: `cross-file-implements|<parentFilePath>|<confidence>`
+        result.heritage.push({
+          filePath: it.filePath,
+          className: it.className,
+          parentName: it.parentName,
+          kind: `cross-file-implements|${it.parentFilePath}|${it.confidence}`,
         });
       }
       // COMPOSITION for anonymous struct fields (#26).

@@ -473,6 +473,12 @@ export const GO_QUERIES = `
 ; Functions & Methods
 (function_declaration name: (identifier) @name) @definition.function
 (method_declaration name: (field_identifier) @name) @definition.method
+; WI-H88 / Issue #88: Go interface body methods (e.g. \`type Namer interface { GetName() string }\`)
+; parse as \`method_elem\` — a different node type from \`method_declaration\`.
+; The name is a \`field_identifier\` (per the Go grammar). Without this, interface
+; methods are never captured as \`definition.method\` and never become Method nodes
+; or HAS_METHOD edges in the graph.
+(method_elem name: (field_identifier) @name) @definition.method
 
 ; Types
 (type_declaration (type_spec name: (type_identifier) @name type: (struct_type))) @definition.struct

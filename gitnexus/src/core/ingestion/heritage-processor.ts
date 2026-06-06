@@ -26,7 +26,7 @@ import { SupportedLanguages } from '../../config/supported-languages.js';
 import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedHeritage } from './workers/parse-worker.js';
-import { collectGoImplementsHeritage, collectGoCompositionHeritage, collectGoMethodsFromAST } from './workers/go-relationships.js';
+import { collectGoImplementsHeritage, collectGoCompositionHeritage, collectGoMethodsFromAST, collectGoInterfaceMethods, collectGoImplementsCrossFile, type GoInterfaceMethodEntry, type GoCrossFileImplementsHeritageItem } from './workers/go-relationships.js';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE } from './resolution-context.js';
 
@@ -100,6 +100,36 @@ export const processHeritage = async (
   const parser = await loadParser();
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
+
+  // Pre-pass (WI-H85): parse all .go files up front and build a global
+  // registry of Go interface method sets. The per-file loop below
+  // reuses the ASTCache entries populated here, avoiding a second parse.
+  // This registry enables the cross-file IMPLEMENTS detector to match
+  // structs against interfaces defined in other files. The per-file
+  // `collectGoImplementsHeritage` pass remains authoritative for
+  // same-file pairs; this registry is additive.
+  const goRootNodes = new Map<string, Parser.SyntaxNode>();
+  const goGlobalRegistry: GoInterfaceMethodEntry[] = [];
+  for (const f of files) {
+    if (getLanguageFromFilename(f.path) !== SupportedLanguages.Go) continue;
+    let tree = astCache.get(f.path);
+    if (!tree) {
+      try {
+        tree = parser.parse(f.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(f.content.length),
+        });
+        astCache.set(f.path, tree);
+      } catch {
+        continue;
+      }
+    }
+    goRootNodes.set(f.path, tree.rootNode);
+  }
+  if (goRootNodes.size > 0) {
+    const registryEntries: Array<{ path: string; rootNode: Parser.SyntaxNode }> = [];
+    for (const [p, rn] of goRootNodes) registryEntries.push({ path: p, rootNode: rn });
+    goGlobalRegistry.push(...collectGoInterfaceMethods(registryEntries));
+  }
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -244,7 +274,10 @@ export const processHeritage = async (
       // per-file method ownership inline.
       const fileSymbols = collectGoMethodsFromAST(tree.rootNode, file.path);
       const implementsItems = collectGoImplementsHeritage(file.path, tree.rootNode, fileSymbols);
+      // Track same-file pairs for cross-file dedup (invariant 7).
+      const sameFilePairs = new Set<string>();
       for (const it of implementsItems) {
+        sameFilePairs.add(`${it.className}->${it.parentName}`);
         const child = resolveHeritageId(it.className, file.path, ctx, 'Struct', `${file.path}:${it.className}`);
         const iface = resolveHeritageId(it.parentName, file.path, ctx, 'Interface', `${file.path}:${it.parentName}`);
         if (child.id && iface.id && child.id !== iface.id) {
@@ -255,6 +288,32 @@ export const processHeritage = async (
             type: 'IMPLEMENTS',
             confidence: Math.sqrt(child.confidence * iface.confidence),
             reason: 'method-set',
+          });
+        }
+      }
+      // WI-H85 / Issue #85: cross-file Go IMPLEMENTS second pass.
+      // The same-file pass above is authoritative for same-file pairs.
+      // This second pass adds cross-file pairs at confidence 0.7 and
+      // tags them with reason 'cross-file-structural-match' so callers
+      // can distinguish the two sources.
+      const crossFileItems = collectGoImplementsCrossFile(
+        file.path,
+        tree.rootNode,
+        fileSymbols,
+        goGlobalRegistry,
+        sameFilePairs,
+      );
+      for (const it of crossFileItems) {
+        const child = resolveHeritageId(it.className, file.path, ctx, 'Struct', `${file.path}:${it.className}`);
+        const iface = resolveHeritageId(it.parentName, it.parentFilePath, ctx, 'Interface', `${it.parentFilePath}:${it.parentName}`);
+        if (child.id && iface.id && child.id !== iface.id) {
+          graph.addRelationship({
+            id: generateId('IMPLEMENTS', `${child.id}->${iface.id}`),
+            sourceId: child.id,
+            targetId: iface.id,
+            type: 'IMPLEMENTS',
+            confidence: it.confidence,
+            reason: 'cross-file-structural-match',
           });
         }
       }
@@ -340,6 +399,26 @@ export const processHeritageFromExtracted = async (
           type: 'IMPLEMENTS',
           confidence: Math.sqrt(cls.confidence * iface.confidence),
           reason: '',
+        });
+      }
+    } else if (h.kind.startsWith('cross-file-implements|')) {
+      // WI-H85 / Issue #85: cross-file Go IMPLEMENTS (worker path).
+      // The kind encodes parentFilePath and confidence:
+      //   `cross-file-implements|<parentFilePath>|<confidence>`
+      const parts = h.kind.split('|');
+      const parentFilePath = parts[1] ?? h.filePath;
+      const confidence = Number.parseFloat(parts[2] ?? '0.7');
+      const strct = resolveHeritageId(h.className, h.filePath, ctx, 'Struct', `${h.filePath}:${h.className}`);
+      const iface = resolveHeritageId(h.parentName, parentFilePath, ctx, 'Interface', `${parentFilePath}:${h.parentName}`);
+
+      if (strct.id && iface.id && strct.id !== iface.id) {
+        graph.addRelationship({
+          id: generateId('IMPLEMENTS', `${strct.id}->${iface.id}`),
+          sourceId: strct.id,
+          targetId: iface.id,
+          type: 'IMPLEMENTS',
+          confidence,
+          reason: 'cross-file-structural-match',
         });
       }
     } else if (h.kind === 'trait-impl' || h.kind === 'include' || h.kind === 'extend' || h.kind === 'prepend') {
