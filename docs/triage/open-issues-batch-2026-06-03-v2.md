@@ -1,10 +1,12 @@
 ---
 title: Open Issues Batch Triage v2 — 2026-06-03
 date: 2026-06-03
+last_updated: 2026-06-06
 author: arch
-status: triage
+status: in-progress
 supersedes: open-issues-batch-2026-06-03.md
 scope: 86 open issues (80 original + 6 from 2026-06-03 usage audit), repo ngocvo3103/GitNexus
+progress: 70/86 closed · 16 open (see "Progress — 2026-06-06")
 ---
 
 # Triage of 86 Open Issues — v2 (Re-batched by "fixable together")
@@ -42,7 +44,51 @@ adjacent issues** that changes the plan.
 
 ---
 
-## Batch A — Verify-and-Close / Re-enable tests  ⟵ DO FIRST (near-zero code)
+## Progress — 2026-06-06 (updated)
+
+**70 of 86 triaged issues CLOSED · 16 open.** (Plus 3 newer follow-ups not in this triage: #141, #143, #145.)
+
+Two waves of fix work landed since 2026-06-03:
+
+1. **Prior merges** (`#136–#140` and the `bugfix/NN-*` document-endpoint branches) closed **Batch B** in full and scattered issues (#30, #37, #56, #60, #61, #106, #109).
+2. **2026-06-06 merge session** — merged **all 11 open PRs into `main-afk` one-by-one** (union-resolving conflicts; **no existing functionality removed** — HARD RULE), then implemented completion fixes for issues the PRs *over-claimed*. PRs #142, #144, #146–#154 → **51 issues genuinely fixed + closed.** Suite **5,715 pass / 0 fail**, tsc clean, index refreshed.
+
+   Completion work beyond the raw merges (the PRs claimed these but didn't actually deliver end-to-end):
+   - **#5/#6/#7/#43/#31/#79/#80** — FastAPI, Gin, and Angular route extractors + Angular CALLS were wired only into the **dormant worker-pool path**; re-wired into the **active sequential path** (FastAPI/Gin/Angular routes ride the decorator-route channel since their receiver is an app/router variable, not a controller class). See `.claude/agent-memory/arch/project-ingestion-dual-path-gotcha.md`.
+   - **#150 HARD-RULE** — the merge of #150 silently dropped non-Go `EXTENDS` edges in the worker path; restored during the merge.
+   - **#90** (cross-file Spring `@RequestMapping` inheritance) and **#50** (gated cross-repo `CROSS_IMPORTS` edges + external File nodes, in-memory `isExternal` flag) — designed via `/at-planning` (`docs/designs/` + `docs/plans/cross-file-spring-and-cross-repo-imports.md`), then implemented additively/gated.
+   - **#81** document-endpoint HTTP-method gate · **#46** cross-repo artifactId prefix-tolerant match · **#77** Go local/anonymous-struct `HAS_PROPERTY` guard · **#102** populated the empty Go fixture + un-skipped the Issue-#19 test.
+
+### Batch status
+
+| Batch | Status | Remaining open |
+|---|---|---|
+| A Verify/un-skip | ✅ DONE (4/4) | — |
+| B document-endpoint | ⚠️ 12/14 | #45, #15 |
+| C Spring route | ✅ DONE (5/5) | — *(this session, PR #144 + #81/#90)* |
+| D Language extractors | ⚠️ 6/8 | #84, #33 |
+| E Angular / TypeScript | ✅ DONE (8/8) | — *(this session, PR #147 + #31)* |
+| F Cross-repo | ✅ DONE (7/7) | — *(this session, PR #148 + #46/#50)* |
+| G Rename | ✅ DONE (6/6) | — *(62/63/72 PR #149; 37/60/61 prior)* |
+| H Typing / pollution | ⚠️ 4/9 | #76, #83, #85, #86, #88 |
+| I Cypher surface | ⚠️ 2/7 | #29, #68, #69, #73, #82 |
+| J Param plumbing | ✅ DONE (10/10) | — *(this session, PR #152)* |
+| K IMPLEMENTS/CALLS | ⚠️ 3/5 | #23, #34 |
+| L Index health | ✅ DONE (3/3) | — *(108 PR #154; 106/109 prior)* |
+
+### Remaining 16 — grouped for the next session
+
+- **B / document-endpoint (2):** #45 (ai_context wrong downstream HTTP methods), #15 (downstream APIs show unresolved code expressions). Both depend on the CALLS-based downstream resolver from #93 (now merged) — should now be tractable.
+- **D / re-test siblings (2):** #84 (FastAPI DI self-referencing CALLS), #33 (Go service methods zero incoming CALLS). Re-test against the merged #146/#150 first — may already be partially resolved.
+- **H / Python & Go typing (5):** #76 (Python methods as Function not Method), #86 (Python parameterCount/returnType not queryable), #83 (Python Interface dup at import sites), #85 (Go IMPLEMENTS not created), #88 (Go interface methods not indexed). #85 likely co-fixes with the merged #20; #83 aligns with the closed #87.
+- **I / Cypher engine (5):** #29 (`type()`), #68 (`labels()` empty), #69 (OVERRIDES 0), #73 (cluster `labels()`), #82 (`count{}` parser). Mostly LadybugDB/Kùzu engine limits — triage as document-or-workaround per [[db-is-ladybugdb]].
+- **K / traversal (2):** #23 (Spring CALLS resolves to interface not impl), #34 (Spring service context shows only IMPORTS). Corollary of the merged #36/#56 IMPLEMENTS walk.
+
+> Status badges (✅ DONE / ⚠️ PARTIAL) are mirrored on each batch heading below. Original batch plans are retained as the working spec for the remaining 16.
+
+---
+
+## Batch A — Verify-and-Close / Re-enable tests  ✅ DONE (4/4)
 
 These are already fixed by merged PRs, or gated behind a `describe.skip`. Cheapest wins in the backlog.
 
@@ -63,7 +109,7 @@ regression tests for #21/#51. Likely closes 3–4 issues for ~half a day of work
 
 ---
 
-## Batch B — document-endpoint (single PR, ordered commits)  [HIGH]
+## Batch B — document-endpoint (single PR, ordered commits)  ⚠️ PARTIAL 12/14 (#45, #15 open)  [HIGH]
 
 All in `src/mcp/local/document-endpoint.ts`. Co-ship; keep the fallback logic isolated per
 [[route-fix-regression]]. Sub-groups = commit boundaries.
@@ -90,7 +136,7 @@ resolution via CALLS graph) — land C #93 first, then B's #45/#15 can reuse the
 
 ---
 
-## Batch C — Spring route extractor (single PR, ordered commits)  [HIGH]
+## Batch C — Spring route extractor (single PR, ordered commits)  ✅ DONE (5/5, PR #144)  [HIGH]
 
 `src/core/ingestion/route-extractors/spring.ts` + `workers/spring-route-extractor.ts`. Must co-ship —
 the canonical [[route-fix-regression]] hazard.
@@ -108,7 +154,7 @@ assert GET/DELETE/PATCH counts match expected. **Unblocks** Batch B #45/#15.
 
 ---
 
-## Batch D — New / broken language route extractors  [HIGH]
+## Batch D — New / broken language route extractors  ⚠️ PARTIAL 6/8 (#84, #33 open)  [HIGH]
 
 Independent new files per language → **parallel PRs**. The "endpoints empty" symptoms (#5/#6) are
 resolved by the extractor itself.
@@ -135,7 +181,7 @@ resolved by the extractor itself.
 
 ---
 
-## Batch E — Angular / TypeScript extractor (single PR)  [HIGH/MED]
+## Batch E — Angular / TypeScript extractor (single PR)  ✅ DONE (8/8, PR #147 + #31)  [HIGH/MED]
 
 | # | Title |
 |---|-------|
@@ -154,7 +200,7 @@ indexing gap (symbols absent from the graph) — fold into the same extractor pa
 
 ---
 
-## Batch F — Cross-repo / registry (single PR)  [HIGH/MED]
+## Batch F — Cross-repo / registry (single PR)  ✅ DONE (7/7, PR #148 + #46/#50)  [HIGH/MED]
 
 | # | Title |
 |---|-------|
@@ -173,7 +219,7 @@ resolution root** (~172 occurrences across sessions) — co-fix: a cwd-containme
 
 ---
 
-## Batch G — Rename accuracy (single PR)  [HIGH/MED]
+## Batch G — Rename accuracy (single PR)  ✅ DONE (6/6, PR #149 + prior #138–140)  [HIGH/MED]
 
 | # | Title |
 |---|-------|
@@ -189,7 +235,7 @@ test per issue (the rename tool already has dedicated coverage to extend).
 
 ---
 
-## Batch H — Interface/Class typing & property pollution (single PR)  [MED]
+## Batch H — Interface/Class typing & property pollution (single PR)  ⚠️ PARTIAL 4/9 (#76, #83, #85, #86, #88 open)  [MED]
 
 Schema-typing refactor in the Go/Python extractors.
 
@@ -210,7 +256,7 @@ Schema-typing refactor in the Go/Python extractors.
 
 ---
 
-## Batch I — Cypher / graph-engine surface  [LOW]
+## Batch I — Cypher / graph-engine surface  ⚠️ PARTIAL 2/7 (#29, #68, #69, #73, #82 open)  [LOW]
 
 Likely bounded by LadybugDB/Kùzu capability ([[db-is-ladybugdb]]). Triage each as
 **"engine can't → document+close"** vs **"client workaround → fix+test."**
@@ -231,7 +277,7 @@ property schema (or a `gitnexus_schema` helper) so agents stop guessing property
 
 ---
 
-## Batch J — Tool parameter plumbing & quick wins  [LOW/MED]
+## Batch J — Tool parameter plumbing & quick wins  ✅ DONE (10/10, PR #152)  [LOW/MED]
 
 Scattered small fixes grouped by tool. Several are 1-liners (dead code / validation).
 
@@ -252,7 +298,7 @@ Scattered small fixes grouped by tool. Several are 1-liners (dead code / validat
 
 ---
 
-## Batch K — IMPLEMENTS / CALLS traversal (impact & context)  [MED, architectural]
+## Batch K — IMPLEMENTS / CALLS traversal (impact & context)  ⚠️ PARTIAL 3/5 (#23, #34 open)  [MED, architectural]
 
 Shared root: impl classes show no callers because traversal stops at the interface / file-level edge.
 
@@ -269,7 +315,7 @@ the CALLS-edge-resolution corollary. One focused architectural PR.
 
 ---
 
-## Batch L — Index health & analyze ergonomics (single PR or two)  [HIGH/MED]
+## Batch L — Index health & analyze ergonomics (single PR or two)  ✅ DONE (3/3, PR #154 + prior)  [HIGH/MED]
 
 New from the 2026-06-03 cross-session usage audit. Shared theme: the index/analyze lifecycle —
 staleness is **silent**, and `analyze` has destructive/noisy side effects.
@@ -289,6 +335,8 @@ changes scoped — do not touch ingestion output ([[route-fix-regression]]).
 ---
 
 ## Recommended sequence
+
+> **As of 2026-06-06:** orders 1–7 are largely DONE. Remaining work is the partials in **B, D, H, I, K** (16 issues — see [Progress — 2026-06-06](#progress--2026-06-06-updated)). Suggested next-session order for the remainder: **D re-test (#84/#33)** → **K (#23/#34)** and **H Go (#85/#88)** (share the IMPLEMENTS/CALLS root) → **B (#45/#15)** (now unblocked by merged #93) → **H Python (#76/#83/#86)** → **I (#29/#68/#69/#73/#82)** (mostly engine-blocked → document-or-workaround).
 
 | Order | Batch | Why |
 |-------|-------|-----|
@@ -310,3 +358,8 @@ a per-PR verify gate ⇒ the bottleneck is review absorption, not fix generation
 All 86 open issues placed exactly once:
 A(4) B(14) C(5) D(8) E(8) F(7) G(6) H(9) I(7) J(10) K(5) L(3) = **86**.
 (v1's 80 + usage-audit #105→F, #106→L, #107→E, #108→L, #109→L, #110→I.)
+
+**Closure as of 2026-06-06 — 70 closed / 16 open:**
+A(4/4) B(12/14) C(5/5) D(6/8) E(8/8) F(7/7) G(6/6) H(4/9) I(2/7) J(10/10) K(3/5) L(3/3) = **70 closed**.
+Open 16: **#15, #23, #29, #33, #34, #45, #68, #69, #73, #76, #82, #83, #84, #85, #86, #88.**
+(Newer follow-ups outside this triage, also open: #141, #143, #145.)
