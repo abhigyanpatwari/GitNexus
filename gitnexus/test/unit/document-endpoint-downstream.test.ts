@@ -327,11 +327,14 @@ describe('extractDownstreamApis — CALLS-graph resolver (#93)', () => {
         kind: 'Method',
         filePath: 'src/services/ProductController.java',
         depth: 0,
-        content: 'public String callProduct() { return client.config(); }',
+        content: 'public String callProduct() { return client.url; }',
         metadata: {
           ...emptyMetadata(),
-          // Bypass every earlier heuristic: client and config are both generic
-          httpCallDetails: [{ httpMethod: 'GET', urlExpression: 'client.config()' }],
+          // Bypass every earlier heuristic: client and url are both generic;
+          // 'client.url' has '.' which makes variableName return null. The
+          // endpoint 'GET client.url' does NOT match the B15 unresolved-
+          // expression regex (no parentheses), so the entry survives.
+          httpCallDetails: [{ httpMethod: 'GET', urlExpression: 'client.url' }],
         },
         callees: [],
       }],
@@ -401,10 +404,10 @@ describe('extractDownstreamApis — CALLS-graph resolver (#93)', () => {
         kind: 'Method',
         filePath: 'src/services/ProductController.java',
         depth: 0,
-        content: 'public String callProduct() { return client.config(); }',
+        content: 'public String callProduct() { return client.url; }',
         metadata: {
           ...emptyMetadata(),
-          httpCallDetails: [{ httpMethod: 'GET', urlExpression: 'client.config()' }],
+          httpCallDetails: [{ httpMethod: 'GET', urlExpression: 'client.url' }],
         },
         callees: [],
       }],
@@ -535,10 +538,10 @@ describe('extractDownstreamApis — CALLS-graph resolver (#93)', () => {
         kind: 'Function', // not a Method
         filePath: 'src/utils/ProductController.java',
         depth: 0,
-        content: 'function helper() { return client.config(); }',
+        content: 'function helper() { return client.url; }',
         metadata: {
           ...emptyMetadata(),
-          httpCallDetails: [{ httpMethod: 'GET', urlExpression: 'client.config()' }],
+          httpCallDetails: [{ httpMethod: 'GET', urlExpression: 'client.url' }],
         },
         callees: [],
       }],

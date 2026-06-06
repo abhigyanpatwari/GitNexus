@@ -2257,6 +2257,14 @@ async function extractDownstreamApis(
                 } else {
                   serviceName = resolvedClassName;
                   resolvedFrom = resolvedFrom ? `${resolvedFrom}+calls-graph-route` : 'calls-graph-route';
+                  // WI-B143 / Issue #143: populate endpoint from the resolved
+                  // route's httpMethod + routePath (the query already returns
+                  // both). The `endpoint` variable is `let`, so the assignment
+                  // is allowed; `normalizeEndpoint` (called later) will pick
+                  // up the new value.
+                  if (typeof row?.httpMethod === 'string' && typeof row?.routePath === 'string') {
+                    endpoint = `${row.httpMethod} ${row.routePath}`;
+                  }
                   if (DEBUG) console.error(`[GitNexus DEBUG] CALLS-graph resolver: resolved ${resolvedClassName} for ${node.uid}`);
                 }
               }
@@ -2275,6 +2283,28 @@ async function extractDownstreamApis(
             if (currentController && serviceNameFromClassName(currentController) === derived) {
               continue;
             }
+            // WI-B45 / Issue #45: route-count gate. The class-name heuristic
+            // is a last-resort fallback; it matches the CALLER's enclosing
+            // class to derive a service name. When >1 Route node in this repo
+            // shares the same controllerName fragment, the heuristic is
+            // ambiguous — skip the emit to prevent over-match. The CALLS-
+            // graph resolver is unaffected (it has a 1:1 mapping).
+            if (executeQuery) {
+              try {
+                const routeCountResult = await executeQuery(repoId, `
+                  MATCH (r:Route) WHERE r.controllerName CONTAINS $className
+                  RETURN count(r) AS cnt
+                `, { className });
+                const routeCount = Number(routeCountResult[0]?.cnt ?? 0);
+                if (routeCount > 1) {
+                  if (DEBUG) console.error(`[GitNexus DEBUG] WI-B45: skipping class-name-heuristic emit for ${className} (route count=${routeCount})`);
+                  continue;
+                }
+              } catch (e) {
+                if (DEBUG) console.error('[GitNexus DEBUG] WI-B45: route-count query failed:', e);
+                // On error, fall through and emit (preserve fallback path)
+              }
+            }
             serviceName = derived;
             resolvedFrom = resolvedFrom ? `${resolvedFrom}+class-name-heuristic` : 'class-name-heuristic';
           }
@@ -2283,6 +2313,28 @@ async function extractDownstreamApis(
 
       const normalized = normalizeEndpoint(endpoint);
       const displayName = deriveDisplayName(resolvedValue, normalized.serviceName, serviceName);
+
+      // WI-B15 / Issue #15: unresolved-expression filter. Drop entries whose
+      // endpoint matches a code-expression pattern (e.g. `.toString()`) AND
+      // whose `resolvedFrom` is WEAK (i.e. not statically-resolved via
+      // static-final, value-annotation, or calls-graph-route). Strongly-
+      // resolved entries and clean-path entries are preserved.
+      //
+      // Concatenations like `value-annotation+calls-graph-route` are STRONG
+      // (any strong token makes the whole value strong).
+      const STRONG_RESOLVED_FROM_TOKENS = [
+        'static-final', 'value-annotation', 'cross-class-value-annotation',
+        'calls-graph-route', 'feign-lookup', 'stringbuilder-tostring-trace',
+      ];
+      const isUnresolvedExpression = (s: string): boolean => /\.\w+\(\)/.test(s);
+      const isWeakResolvedFrom = (rf: string | undefined): boolean => {
+        if (!rf) return true;
+        return !STRONG_RESOLVED_FROM_TOKENS.some(t => rf.includes(t));
+      };
+      if (isUnresolvedExpression(normalized.endpoint) && isWeakResolvedFrom(resolvedFrom)) {
+        if (DEBUG) console.error(`[GitNexus DEBUG] WI-B15: dropping entry with unresolved endpoint ${normalized.endpoint} (resolvedFrom=${resolvedFrom})`);
+        continue;
+      }
 
       // Dedup by final service+type+endpoint (different URL expressions may resolve to same endpoint)
       const outputDedupKey = `${serviceName}|REST|${normalized.endpoint}`;
