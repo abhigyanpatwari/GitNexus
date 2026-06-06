@@ -24,7 +24,7 @@ Created: 2026-06-05
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
 - Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, and Task 3 Multi-Repo Support Improvements have completed their first local slices. Task 4 PR Impact / Blast Radius readiness is complete; Task 4 source work waits for a snapshot/no-snapshot boundary and the exact implementation Goal.
-- WIP boundary review on 2026-06-06T12:12+01:00 recommends checkpointing the current dirty tree before Task 4 source work. If MAIN chooses not to snapshot, record `MAIN | NO_SNAPSHOT_APPROVED` in `documentation.md` before creating the Task 4 implementation Goal.
+- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. The next sequential Goal may be the Task 4 `pr-impact` implementation Goal, using the exact report-core slice below.
 
 ## Feature Queue
 

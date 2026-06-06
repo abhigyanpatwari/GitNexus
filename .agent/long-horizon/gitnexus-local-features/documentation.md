@@ -58,6 +58,46 @@ Current state:
 - 2026-06-06T11:10+01:00: Active Task 4 PR Impact / Blast Radius readiness Goal started. Source edits remain blocked during readiness.
 - 2026-06-06T11:15+01:00: Task 4 PR Impact / Blast Radius readiness refresh completed and verified. Source implementation remains blocked until the WIP snapshot/no-snapshot boundary is resolved and the next implementation Goal is created.
 - 2026-06-06T12:12+01:00: WIP boundary review started as the next sequential Goal. Dirty tree buckets were identified; recommendation is to create a checkpoint/snapshot before Task 4 PR Impact source work.
+- 2026-06-06T12:17+01:00: Checkpoint snapshot created at commit `568e24de` (`checkpoint local features through task 4 readiness`). The tree was clean immediately after the commit.
+
+### 2026-06-06T12:17+01:00 - Checkpoint Snapshot Created
+
+Snapshot commit:
+
+- `568e24de` - `checkpoint local features through task 4 readiness`
+
+Included boundary:
+
+- Long-horizon/control docs and research artifacts.
+- Project workflow/routing cleanup, including `AGENTS.md` and removal of unnecessary `CLAUDE.md`.
+- Task 1 Auto-Reindexing implementation and tests.
+- Task 2 Auto-Updating Code Wiki planner/runner implementation and tests.
+- Task 3 README MCP/group tool-surface reconciliation.
+- Task 4 PR Impact / Blast Radius readiness documentation.
+
+Verification before commit:
+
+```powershell
+git diff --check
+npm test -- test/unit/reindex-auto-sweep.test.ts test/unit/reindex-watcher.test.ts test/unit/reindex-control.test.ts test/unit/reindex-operations.test.ts test/unit/reindex-api-wiring.test.ts test/unit/reindex-freshness-wiring.test.ts test/unit/staleness.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-flags.test.ts test/unit/wiki-grouping-batch.test.ts test/unit/wiki-mermaid-sanitizer.test.ts test/unit/wiki-llm-client.test.ts test/unit/tools.test.ts test/unit/group/group-tools.test.ts test/unit/mcp/group-repo-routing.test.ts test/unit/resources.test.ts test/unit/parse-diff-hunks.test.ts test/unit/detect-changes-worktree.test.ts test/unit/impact-confidence.test.ts test/unit/impact-pagination.test.ts test/unit/tool-direct-cli.test.ts test/unit/cli-index-help.test.ts test/integration/api-impact-e2e.test.ts
+git add -A
+git diff --cached --stat
+git diff --cached --name-status
+git commit -m "checkpoint local features through task 4 readiness"
+git status --short --branch
+```
+
+Results:
+
+- Diff whitespace check passed.
+- Focused validation passed: 23 test files, 366 tests.
+- Commit `568e24de` created.
+- Working tree was clean immediately after the checkpoint commit.
+
+Next boundary:
+
+- It is now safe to create the next sequential Task 4 PR Impact implementation Goal.
+- The next implementation Goal should use the exact `pr-impact` report-core slice recorded in `plans.md`.
 
 ### 2026-06-06T12:12+01:00 - WIP Boundary Review
 
