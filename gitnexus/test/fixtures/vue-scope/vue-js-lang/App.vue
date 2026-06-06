@@ -2,6 +2,7 @@
   <div>Hello</div>
 </template>
 <script lang="js">
-import { createApp } from 'vue';
-const app = createApp({});
+function greet(name) {
+  return 'Hello ' + name;
+}
 </script>

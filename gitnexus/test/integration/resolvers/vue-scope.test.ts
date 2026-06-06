@@ -487,7 +487,8 @@ describe('F90 — dual-script (<script> + <script setup>)', () => {
 
   it('includes symbols from both the non-setup and setup blocks', () => {
     const funcs = getNodesByLabel(result, 'Function');
-    expect(funcs).toContain('ref'); // from <script setup> import
+    expect(funcs).toContain('legacySetup');
+    expect(funcs).toContain('setupInit');
   });
 });
 
@@ -502,8 +503,8 @@ describe('F92 — JS-lang script block', () => {
     result = await runPipelineFromRepo(path.join(VUE_SCOPE_FIXTURES, 'vue-js-lang'), () => {});
   }, 60000);
 
-  it('parses <script lang="js"> content', () => {
+  it('parses <script lang="js"> content and finds functions', () => {
     const funcs = getNodesByLabel(result, 'Function');
-    expect(funcs).toContain('createApp');
+    expect(funcs).toContain('greet');
   });
 });
