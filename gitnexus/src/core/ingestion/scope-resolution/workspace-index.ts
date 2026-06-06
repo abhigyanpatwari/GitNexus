@@ -39,7 +39,7 @@
  * Build cost is O(totalScopes). Read-only after construction.
  */
 
-import type { ParsedFile, Scope, ScopeId, ScopeTree } from 'gitnexus-shared';
+import type { ParsedFile, Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike } from './scope/walkers.js';
 
 export interface WorkspaceResolutionIndex {
@@ -53,6 +53,16 @@ export interface WorkspaceResolutionIndex {
 
   /** Module scope by file path. */
   readonly moduleScopeByFile: ReadonlyMap<string, Scope>;
+
+  /** Precomputed `simpleName → first module-local callable def` (the
+   *  workspace-wide fallback of `findExportedDefByName`). Materialized here
+   *  ONCE from the resident module scopes so that fallback is an O(1) lookup
+   *  instead of an O(files) scan over every module scope's bindings on each
+   *  unresolved free call — which, under the U6d disk-backed scopeTree, would
+   *  otherwise fault every module scope in from disk per call (the throughput
+   *  killer). "First module-local callable in `moduleScopeByFile` order" is the
+   *  exact semantics the old scan returned, so it is byte-identical. */
+  readonly exportedCallableByName: ReadonlyMap<string, SymbolDefinition>;
 }
 
 /**
@@ -117,6 +127,7 @@ export function buildWorkspaceResolutionIndex(
   const classScopeIdByDefId = new Map<string, ScopeId>();
   const classScopeIdToDefId = new Map<ScopeId, string>();
   const moduleScopeIdByFile = new Map<string, ScopeId>();
+  const exportedCallableByName = new Map<string, SymbolDefinition>();
   // Back-compat (no scopeTree): keep the direct Scope-object maps.
   const classScopeByDefIdDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
   const moduleScopeByFileDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
@@ -126,6 +137,20 @@ export function buildWorkspaceResolutionIndex(
     if (moduleScope !== undefined) {
       moduleScopeIdByFile.set(parsed.filePath, moduleScope.id);
       moduleScopeByFileDirect?.set(parsed.filePath, moduleScope);
+      // Precompute the findExportedDefByName workspace fallback: first
+      // module-local (origin 'local') callable per name, first file wins —
+      // read from the resident bindings here, ONCE.
+      for (const [name, refs] of moduleScope.bindings) {
+        if (exportedCallableByName.has(name)) continue;
+        for (const ref of refs) {
+          if (ref.origin !== 'local') continue;
+          const t = ref.def.type;
+          if (t === 'Function' || t === 'Method' || t === 'Constructor') {
+            exportedCallableByName.set(name, ref.def);
+            break;
+          }
+        }
+      }
     }
 
     for (const scope of parsed.scopes) {
@@ -148,5 +173,5 @@ export function buildWorkspaceResolutionIndex(
       ? moduleScopeByFileDirect!
       : new ScopeByKeyView(moduleScopeIdByFile, scopeTree);
 
-  return { classScopeByDefId, classScopeIdToDefId, moduleScopeByFile };
+  return { classScopeByDefId, classScopeIdToDefId, moduleScopeByFile, exportedCallableByName };
 }
