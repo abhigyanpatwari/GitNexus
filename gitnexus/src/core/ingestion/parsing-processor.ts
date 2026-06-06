@@ -154,6 +154,12 @@ export const dispatchChunkParse = async (
   onFileProgress?: FileProgressCallback,
   /** Populated in-place with the raw results (parse-cache capture). */
   outRawResults?: ParseWorkerResult[],
+  /**
+   * Content hash of this parse chunk. When set, the workers tag their durable
+   * ParsedFile shards with it so a future warm cache hit can restore them
+   * (#2038). `undefined` ⇒ no durable write (tests / no-cache path).
+   */
+  chunkHash?: string,
 ): Promise<ParseWorkerResult[]> => {
   const parseableFiles: ParseWorkerInput[] = [];
   for (const file of files) {
@@ -168,6 +174,7 @@ export const dispatchChunkParse = async (
     (filesProcessed) => {
       onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
     },
+    chunkHash,
   );
 
   // Capture raw results for the incremental parse cache before merging.

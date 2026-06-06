@@ -29,6 +29,23 @@
  * cache uses (Scope.bindings / Scope.typeBindings are `Map`s). The store is
  * cleared at the start of each parse and after scope-resolution consumes it, so
  * it never lingers and never goes stale across runs.
+ *
+ * ## Durable sibling store (`parsedfile-cache/`, warm-cache coverage)
+ *
+ * The run-scoped store above is only populated when the parse workers actually
+ * run. On a warm re-analyze where every chunk is a parse-cache HIT, no worker
+ * runs, the run-scoped store was cleared at parse start, and the cached
+ * `ParseWorkerResult` carries no `ParsedFile`s (the worker emptied them after
+ * its store write) — so scope-resolution would find an empty store and fall
+ * back to main-thread `extractParsedFile`, re-opening the #1983 OOM. To close
+ * that gap we ALSO write the worker's ParsedFiles to a second, CONTENT-ADDRESSED
+ * store keyed by the parse chunk hash (`getDurableParsedFileDir`), which mirrors
+ * the parse cache's lifecycle (persists across runs, pruned by `usedKeys`,
+ * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's durable
+ * shards are byte-COPIED into the run-scoped store (no re-parse, no
+ * re-serialize → byte-identical), so scope-resolution streams them exactly as
+ * on a cold run. Content-addressing makes stale reuse impossible: a changed
+ * file changes its chunk hash, which misses BOTH stores and re-dispatches.
  */
 
 import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
@@ -39,6 +56,8 @@ import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { mapReplacer, mapReviver } from './parse-cache.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
+const DURABLE_DIRNAME = 'parsedfile-cache';
+const DURABLE_INDEX_FILENAME = 'index.json';
 
 /**
  * Build a JSON.parse reviver that (a) interns every string against a shared
@@ -250,4 +269,152 @@ export const loadParsedFilesForPaths = async (
     }
   }
   return out;
+};
+
+// ─── Durable, content-addressed sibling store (warm-cache coverage) ──────────
+//
+// Layout: `<durableDir>/<chunkHash>/<chunkHash>-w<tid>-<seq>.json` plus a
+// top-level `<durableDir>/index.json` = `{version, keys:[chunkHash…]}`. One
+// subdir per chunk hash so a chunk's (possibly several) shards collect and
+// prune as a unit, and so `readdir(<chunkHash>/)` is O(shards-of-this-chunk),
+// not O(all-history). Shards are byte-identical to run-scoped shards (same
+// `serializeParsedFileShard`); restore is a verbatim copy, never a re-serialize.
+
+interface DurableParsedFileIndex {
+  version: string;
+  keys: string[];
+}
+
+/** Durable store dir — a sibling of `parsedfile-store/`, NEVER cleared per run. */
+export const getDurableParsedFileDir = (storagePath: string): string =>
+  path.join(storagePath, DURABLE_DIRNAME);
+
+const durableChunkDir = (durableDir: string, chunkHash: string): string =>
+  path.join(durableDir, chunkHash);
+
+// Per-process set of durable chunk subdirs already `mkdir`ed (mirrors
+// `createdStoreDirs`) so the worker doesn't `mkdirSync` on every shard.
+const createdDurableDirs = new Set<string>();
+
+/**
+ * Synchronous durable-shard writer for use INSIDE a parse worker, alongside
+ * {@link persistParsedFileShardSync}. Writes the SAME bytes to a content-addressed
+ * durable location keyed by the parse chunk hash so a future warm hit can reuse
+ * them. `chunkHash`+`threadId`+`shardSeq` is collision-free across the
+ * N-shards-per-chunk fan-out and across worker-death retries — the same
+ * uniqueness that makes the run-scoped `w<tid>-<seq>` name safe, prefixed by
+ * content. No-op for an empty chunk.
+ */
+export const persistDurableParsedFileShardSync = (
+  durableDir: string,
+  chunkHash: string,
+  threadId: number,
+  shardSeq: number,
+  parsedFiles: readonly ParsedFile[],
+): void => {
+  const payload = serializeParsedFileShard(parsedFiles);
+  if (payload === null) return;
+  const dir = durableChunkDir(durableDir, chunkHash);
+  if (!createdDurableDirs.has(dir)) {
+    mkdirSync(dir, { recursive: true });
+    createdDurableDirs.add(dir);
+  }
+  writeFileSync(path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`), payload, 'utf-8');
+};
+
+/**
+ * Restore a cached chunk's durable shards into the run-scoped store on a warm
+ * hit. A verbatim byte copy (no parse, no re-serialize), so the restored
+ * ParsedFiles are byte-identical to a cold run and `loadParsedFilesForPaths`
+ * (which keys on `filePath`, not shard name) gives scope-resolution full
+ * coverage. The durable shard names already carry the chunk hash, so they never
+ * collide with the worker's run-scoped `w<tid>-<seq>` shards. Returns the number
+ * of shards restored (0 ⇒ no durable coverage for this chunk; caller treats it
+ * as a miss).
+ */
+export const restoreDurableParsedFileShard = async (
+  durableDir: string,
+  runStoragePath: string,
+  chunkHash: string,
+): Promise<number> => {
+  const src = durableChunkDir(durableDir, chunkHash);
+  let shards: string[];
+  try {
+    shards = (await fs.readdir(src)).filter((f) => f.endsWith('.json'));
+  } catch {
+    return 0; // no durable shards for this chunk
+  }
+  if (shards.length === 0) return 0;
+  const dst = getParsedFileStoreDir(runStoragePath);
+  await fs.mkdir(dst, { recursive: true });
+  for (const name of shards) {
+    await fs.copyFile(path.join(src, name), path.join(dst, name));
+  }
+  return shards.length;
+};
+
+/**
+ * Read the durable index and return the set of chunk hashes it vouches for,
+ * gated on `expectedVersion` (`PARSE_CACHE_VERSION`). A version mismatch or a
+ * missing/corrupt index returns the empty set — the caller then treats every
+ * chunk as a durable miss and re-dispatches workers (NEVER the main-thread
+ * `extractParsedFile` fallback), which rewrites the durable store under the new
+ * version. Mirrors `loadParseCache`'s version-invalidation contract.
+ */
+export const loadDurableParsedFileIndex = async (
+  durableDir: string,
+  expectedVersion: string,
+): Promise<Set<string>> => {
+  try {
+    const raw = await fs.readFile(path.join(durableDir, DURABLE_INDEX_FILENAME), 'utf-8');
+    const idx = JSON.parse(raw) as DurableParsedFileIndex;
+    if (idx?.version !== expectedVersion || !Array.isArray(idx.keys)) return new Set();
+    return new Set(idx.keys);
+  } catch {
+    return new Set();
+  }
+};
+
+/**
+ * Prune the durable store to `keepKeys` and rewrite its index. `keepKeys` must
+ * be the parse cache's surviving on-disk keys (so the two stores stay coherent:
+ * a chunk is "cached" iff BOTH its parse-cache shard and its durable shards
+ * exist; a quarantined chunk — no parse-cache shard — drops its durable subdir
+ * here and re-dispatches next run). Only subdirs with ≥1 shard are indexed
+ * (mirrors `saveParseCache`'s written-keys discipline — never vouch for a chunk
+ * hash with no backing shard). The index write is tmp+rename atomic.
+ */
+export const pruneAndSaveDurableParsedFileStore = async (
+  durableDir: string,
+  version: string,
+  keepKeys: ReadonlySet<string>,
+): Promise<void> => {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(durableDir);
+  } catch {
+    return; // nothing written this run
+  }
+  const survivors: string[] = [];
+  for (const name of entries) {
+    if (name === DURABLE_INDEX_FILENAME) continue;
+    const full = path.join(durableDir, name);
+    if (keepKeys.has(name)) {
+      try {
+        const shards = (await fs.readdir(full)).filter((f) => f.endsWith('.json'));
+        if (shards.length > 0) {
+          survivors.push(name);
+          continue;
+        }
+      } catch {
+        /* not a readable dir → drop below */
+      }
+    }
+    await fs.rm(full, { recursive: true, force: true });
+  }
+  const idx: DurableParsedFileIndex = { version, keys: survivors };
+  const tmp = path.join(durableDir, `${DURABLE_INDEX_FILENAME}.tmp`);
+  await fs.mkdir(durableDir, { recursive: true });
+  await fs.writeFile(tmp, JSON.stringify(idx), 'utf-8');
+  await fs.rename(tmp, path.join(durableDir, DURABLE_INDEX_FILENAME));
 };

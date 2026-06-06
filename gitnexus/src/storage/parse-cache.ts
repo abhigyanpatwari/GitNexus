@@ -44,10 +44,17 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
  * On version mismatch, `loadParseCache` returns an empty cache and the
  * next save overwrites the on-disk file with the new version baked in.
  */
-// Bumped to 4 in #1983: on-disk shards omit legacy DAG fields (`calls`,
-// `assignments`, `constructorBindings`, worker `parsedFiles`) that are no
-// longer consumed after RING4-1 (#942). Scope-resolution re-extracts
-// `ParsedFile` on the main thread.
+// Bumped to 4 in #1983: on-disk parse-cache shards omit legacy DAG fields
+// (`calls`, `assignments`, `constructorBindings`) unused after RING4-1 (#942)
+// and the worker `parsedFiles` (the worker writes those to the disk ParsedFile
+// store instead). #2038 added a DURABLE, content-addressed ParsedFile store
+// (`parsedfile-cache/`, see parsedfile-store.ts) keyed by chunk hash that
+// mirrors THIS cache's lifecycle — version-gated by PARSE_CACHE_VERSION, pruned
+// in lockstep to the surviving keys. On a warm parse-cache hit the chunk's
+// ParsedFiles are restored from it, so scope-resolution does NOT re-extract on
+// the main thread (the #1983 OOM). Because the two stores share this version,
+// any future change to the `ParsedFile` serialization shape MUST bump
+// SCHEMA_BUMP so both invalidate in lockstep.
 const SCHEMA_BUMP = 4;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
@@ -339,7 +346,7 @@ export const loadParseCache = async (storagePath: string): Promise<ParseCache> =
  * reparses. This is not a single atomic swap of the whole tree, but avoids
  * leaving a half-written shard set visible to readers.
  */
-export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<void> => {
+export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<string[]> => {
   await fs.mkdir(storagePath, { recursive: true });
   const cacheDir = getCacheDirPath(storagePath);
   const tmpDir = `${cacheDir}.tmp`;
@@ -386,6 +393,10 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   await fs.rm(cacheDir, { recursive: true, force: true });
   await fs.rename(tmpDir, cacheDir);
   await fs.rm(getLegacyCachePath(storagePath), { force: true });
+  // The authoritative final key set actually backed by a shard on disk.
+  // Callers (the durable ParsedFile store) prune to exactly these so the two
+  // content-addressed stores stay coherent — a chunk is cached iff BOTH have it.
+  return writtenKeys;
 };
 
 /**

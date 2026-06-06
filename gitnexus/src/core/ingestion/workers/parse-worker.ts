@@ -101,7 +101,10 @@ import {
 import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
-import { persistParsedFileShardSync } from '../../../storage/parsedfile-store.js';
+import {
+  persistParsedFileShardSync,
+  persistDurableParsedFileShardSync,
+} from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
 
 import { logger } from '../../logger.js';
@@ -119,6 +122,13 @@ export type { ExtractedRoute } from '../route-extractors/laravel.js';
 const PARSED_FILE_STORE_STORAGE_PATH: string | undefined = (
   workerData as { parsedFileStoreStoragePath?: string } | undefined
 )?.parsedFileStoreStoragePath;
+// Durable, content-addressed ParsedFile store dir (#2038 warm-cache coverage).
+// When set AND the flush carries a chunk hash, the worker ALSO writes its
+// ParsedFiles to `<durableDir>/<chunkHash>/` so a future warm parse-cache hit
+// restores them without re-parsing. `undefined` ⇒ no durable write.
+const DURABLE_PARSED_FILE_STORAGE_PATH: string | undefined = (
+  workerData as { durableParsedFileStoragePath?: string } | undefined
+)?.durableParsedFileStoragePath;
 let shardSeq = 0;
 
 // ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
@@ -362,7 +372,9 @@ export interface ParseWorkerInput {
   content: string;
 }
 
-type WorkerIncomingMessage = { type: 'sub-batch'; files: ParseWorkerInput[] } | { type: 'flush' };
+type WorkerIncomingMessage =
+  | { type: 'sub-batch'; files: ParseWorkerInput[] }
+  | { type: 'flush'; chunkHash?: string };
 
 // ============================================================================
 // Worker-local parser + language map
@@ -2367,13 +2379,33 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
       // fallback). The write is synchronous: blocking this dedicated worker
       // thread protects the main thread and avoids threading async through the
       // accumulate path; per-job write time is small vs the parse it follows.
-      if (PARSED_FILE_STORE_STORAGE_PATH && accumulated.parsedFiles.length > 0) {
-        persistParsedFileShardSync(
-          PARSED_FILE_STORE_STORAGE_PATH,
-          `w${threadId}-${shardSeq++}`,
-          accumulated.parsedFiles,
-        );
-        accumulated.parsedFiles = [];
+      if (
+        (PARSED_FILE_STORE_STORAGE_PATH || DURABLE_PARSED_FILE_STORAGE_PATH) &&
+        accumulated.parsedFiles.length > 0
+      ) {
+        const seq = shardSeq++;
+        // #2038 warm-cache coverage: ALSO write a durable, content-addressed
+        // shard keyed by chunk hash so a future warm parse-cache hit (no worker
+        // runs) can restore these ParsedFiles without re-parsing. Same bytes,
+        // same `seq`, so durable and run-scoped shards correlate. Only when the
+        // flush carried a chunk hash (content-addressed dispatch).
+        if (DURABLE_PARSED_FILE_STORAGE_PATH && typeof msg.chunkHash === 'string') {
+          persistDurableParsedFileShardSync(
+            DURABLE_PARSED_FILE_STORAGE_PATH,
+            msg.chunkHash,
+            threadId,
+            seq,
+            accumulated.parsedFiles,
+          );
+        }
+        if (PARSED_FILE_STORE_STORAGE_PATH) {
+          persistParsedFileShardSync(
+            PARSED_FILE_STORE_STORAGE_PATH,
+            `w${threadId}-${seq}`,
+            accumulated.parsedFiles,
+          );
+          accumulated.parsedFiles = [];
+        }
       }
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse

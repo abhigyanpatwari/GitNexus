@@ -110,6 +110,7 @@ export interface WorkerPool {
   dispatch<TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
   ): Promise<TResult[]>;
 
   /** Terminate all workers. Must be called when done. */
@@ -221,6 +222,16 @@ export interface WorkerPoolOptions {
    * the result (small-repo / no-storage path).
    */
   parsedFileStoreStoragePath?: string;
+  /**
+   * Directory for the DURABLE, content-addressed ParsedFile store
+   * (`getDurableParsedFileDir`). When set (alongside a chunk hash on the
+   * dispatch), the worker ALSO writes its ParsedFiles to a content-addressed
+   * shard keyed by chunk hash so a future warm parse-cache hit can restore
+   * them without re-parsing (#2038 warm-cache coverage). Baked into every
+   * worker's `workerData` exactly like {@link parsedFileStoreStoragePath}.
+   * `undefined` ⇒ no durable write.
+   */
+  durableParsedFileStoragePath?: string;
 }
 
 export class WorkerPoolDispatchError extends Error {
@@ -327,6 +338,16 @@ interface WorkerJob<TInput> {
   estimatedBytes: number;
   attempt: number;
   splitDepth: number;
+  /**
+   * Content hash of the parse chunk these items belong to (when the caller
+   * dispatches per content-addressed chunk). Threaded into the worker's
+   * `flush` message so the worker can additionally write a durable,
+   * content-addressed ParsedFile shard for warm-cache reuse. Carried through
+   * every job-derivation site (split/requeue) so a split sub-job still tags
+   * its durable shard with the chunk hash. `undefined` ⇒ no durable write
+   * (tests / no-cache / no storage path).
+   */
+  chunkHash?: string;
   timeoutMs: number;
   /**
    * Running total of timeoutMs across all attempts/splits/respawn-retries
@@ -752,6 +773,7 @@ function createJobs<TInput>(
   maxItems: number,
   maxBytes: number,
   timeoutMs: number,
+  chunkHash?: string,
 ): WorkerJob<TInput>[] {
   const jobs: WorkerJob<TInput>[] = [];
   let startIndex = 0;
@@ -766,6 +788,7 @@ function createJobs<TInput>(
       estimatedBytes: batchBytes,
       attempt: 0,
       splitDepth: 0,
+      chunkHash,
       timeoutMs,
       cumulativeTimeoutMs: timeoutMs,
     });
@@ -833,12 +856,17 @@ export const createWorkerPool = (
   // factory — via `workerData`, read once at worker init. The `(url) => Worker`
   // signature is unchanged so the zero-arg test factories keep working.
   const parsedFileStoreStoragePath = options?.parsedFileStoreStoragePath;
+  const durableParsedFileStoragePath = options?.durableParsedFileStoragePath;
+  const workerStoreData =
+    parsedFileStoreStoragePath || durableParsedFileStoragePath
+      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath }
+      : undefined;
   const spawnWorker =
     options?.workerFactory ??
     ((url: URL) =>
       new Worker(url, {
         stderr: true,
-        workerData: parsedFileStoreStoragePath ? { parsedFileStoreStoragePath } : undefined,
+        workerData: workerStoreData,
       }));
   /** Spawn + wire stderr capture in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
@@ -1005,6 +1033,7 @@ export const createWorkerPool = (
   const dispatch = async <TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
   ): Promise<TResult[]> => {
     // Await the initial-spawn readiness gate (F13). On first dispatch
     // this blocks for up to WORKER_READY_TIMEOUT_MS while every initial
@@ -1059,6 +1088,7 @@ export const createWorkerPool = (
       poolOptions.subBatchSize,
       poolOptions.subBatchMaxBytes,
       poolOptions.subBatchIdleTimeoutMs,
+      chunkHash,
     );
 
     return new Promise<TResult[]>((resolve, reject) => {
@@ -1301,6 +1331,7 @@ export const createWorkerPool = (
           estimatedBytes: filtered.reduce((sum, item) => sum + estimateItemBytes(item), 0),
           attempt: job.attempt,
           splitDepth: job.splitDepth,
+          chunkHash: job.chunkHash,
           timeoutMs: job.timeoutMs,
           cumulativeTimeoutMs: job.cumulativeTimeoutMs,
         });
@@ -1437,6 +1468,7 @@ export const createWorkerPool = (
             estimatedBytes: firstItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
             attempt: job.attempt,
             splitDepth: job.splitDepth + 1,
+            chunkHash: job.chunkHash,
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           };
@@ -1446,6 +1478,7 @@ export const createWorkerPool = (
             estimatedBytes: secondItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
             attempt: job.attempt,
             splitDepth: job.splitDepth + 1,
+            chunkHash: job.chunkHash,
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           };
@@ -1791,7 +1824,10 @@ export const createWorkerPool = (
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();
-            worker.postMessage({ type: 'flush' });
+            // Carry the chunk hash on the flush so the worker can write a
+            // durable, content-addressed ParsedFile shard (warm-cache reuse)
+            // at the flush boundary where `accumulated.parsedFiles` is complete.
+            worker.postMessage({ type: 'flush', chunkHash: job.chunkHash });
           } else if (msg.type === 'error') {
             settled = true;
             cleanup();

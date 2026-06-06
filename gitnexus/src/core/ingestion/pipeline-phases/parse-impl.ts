@@ -26,8 +26,15 @@ import {
   computeChunkHash,
   loadParseCacheChunk,
   persistParseCacheChunk,
+  PARSE_CACHE_VERSION,
 } from '../../../storage/parse-cache.js';
-import { clearParsedFileStore, persistParsedFileChunk } from '../../../storage/parsedfile-store.js';
+import {
+  clearParsedFileStore,
+  persistParsedFileChunk,
+  getDurableParsedFileDir,
+  loadDurableParsedFileIndex,
+  restoreDurableParsedFileShard,
+} from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
 import type { WorkerExtractedData } from '../parsing-processor.js';
 import {
@@ -438,6 +445,10 @@ export async function runChunkedParseAndResolve(
       // fallback (return ParsedFiles in the result).
       workerPool = createWorkerPool(workerUrl, effectivePoolSize, {
         parsedFileStoreStoragePath: parsedFileStorePath,
+        // Durable, content-addressed shard dir for warm-cache reuse (#2038).
+        // Initialized below before the chunk loop (same deferred-init pattern
+        // as `parsedFileStorePath`); this closure only runs from the loop.
+        durableParsedFileStoragePath: durableParsedFileDir,
         // Fan each chunk across the whole pool (#worker-idle): without this a
         // chunk smaller than the 8 MB sub-batch cap became a single job on a
         // single worker. Honors an explicit `subBatchMaxBytes` / env override.
@@ -497,6 +508,19 @@ export async function runChunkedParseAndResolve(
   // behavior). Cleared up-front so a prior run's shards never leak in.
   const parsedFileStorePath = parseCache?.storagePath;
   if (parsedFileStorePath) await clearParsedFileStore(parsedFileStorePath);
+  // Durable, content-addressed ParsedFile store (#2038 warm-cache coverage) —
+  // a sibling of the run-scoped store, NOT cleared per run. Workers write a
+  // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
+  // shards into the run-scoped store so scope-resolution streams them without
+  // re-parsing. `durableHitKeys` is the prior run's index, version-gated by
+  // PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk re-dispatches, which
+  // repopulates the durable store — never the main-thread extract fallback).
+  const durableParsedFileDir =
+    parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
+  const durableHitKeys =
+    durableParsedFileDir !== undefined
+      ? await loadDurableParsedFileIndex(durableParsedFileDir, PARSE_CACHE_VERSION)
+      : new Set<string>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
 
@@ -721,7 +745,17 @@ export async function runChunkedParseAndResolve(
       // corresponds to a live chunk in the current scan) before saving.
       if (parseCache && chunkHash) parseCache.usedKeys.add(chunkHash);
 
-      if (cachedRaw && cachedRaw.length > 0) {
+      // A parse-cache hit may skip the workers ONLY if the chunk's ParsedFiles
+      // are recoverable without a main-thread re-parse: restored from a durable
+      // shard (store path) or carried in the cached result (no-store path). If a
+      // cached chunk's durable shards are missing — first run after the durable
+      // store was introduced, or a pruned/version-stale shard — fall through to
+      // a worker re-dispatch to repopulate them. NEVER let scope-resolution
+      // re-extract on the main thread (the #1983 OOM the durable store closes).
+      const durableHit =
+        chunkHash !== null && durableParsedFileDir !== undefined && durableHitKeys.has(chunkHash);
+
+      if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
         // chunk FIRST so deferred aggregation stays in chunk order, then merge
         // + apply this hit inline (no worker dispatch to overlap).
@@ -752,6 +786,22 @@ export async function runChunkedParseAndResolve(
             nodesCreated: graph.nodeCount,
           },
         });
+        // Restore the chunk's durable ParsedFile shards into the run-scoped
+        // store so scope-resolution finds full coverage with ZERO main-thread
+        // re-parse. A verbatim byte copy — byte-identical to a cold run.
+        if (durableHit && durableParsedFileDir && parsedFileStorePath && chunkHash) {
+          const restored = await restoreDurableParsedFileShard(
+            durableParsedFileDir,
+            parsedFileStorePath,
+            chunkHash,
+          );
+          if (restored === 0) {
+            logger.warn(
+              `parsedfile-cache: durable shards missing for cached chunk ` +
+                `${chunkHash.slice(0, 8)} — scope-resolution will re-extract these files`,
+            );
+          }
+        }
         await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store
@@ -780,7 +830,13 @@ export async function runChunkedParseAndResolve(
         // merge + parse-cache write-guard + aggregation all run in
         // `finalizeWorkerChunk`, in chunk order. The pool is the sole parse
         // path — `getOrCreateWorkerPool` returns a pool or throws.
-        const dispatchPromise = dispatchChunkParse(chunkFiles, activeWorkerPool, progressForChunk);
+        const dispatchPromise = dispatchChunkParse(
+          chunkFiles,
+          activeWorkerPool,
+          progressForChunk,
+          undefined,
+          chunkHash ?? undefined,
+        );
         // Mark handled so a rejection during the overlap drain below isn't
         // flagged as unhandled; the `await` re-throws it for real handling.
         dispatchPromise.catch(() => {});
