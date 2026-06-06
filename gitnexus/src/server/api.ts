@@ -29,6 +29,7 @@ import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
+import { checkStalenessAsync } from '../core/git-staleness.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
@@ -53,6 +54,8 @@ import {
   type ReindexTrigger,
 } from './reindex-operations.js';
 import { startPendingRerun } from './reindex-follow-up.js';
+import { readReindexWatcherConfigFromEnv } from './reindex-watcher.js';
+import { runAutoReindexSweep } from './reindex-auto-sweep.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -2015,6 +2018,43 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     return job;
   };
 
+  const reindexWatcherConfig = readReindexWatcherConfigFromEnv();
+  const runAutoReindexSweepOnce = async () => {
+    try {
+      const result = await runAutoReindexSweep({
+        dryRun: reindexWatcherConfig.dryRun,
+        embeddings: reindexWatcherConfig.embeddings,
+        loadRepos: () => listRegisteredRepos({ validate: true }),
+        checkStaleness: checkStalenessAsync,
+        requestQueue: (repoKey) => reindexQueue.request(repoKey),
+        startReindex: (repo, repoKey, requestedOptions) =>
+          startReindexJob(repo, repoKey, requestedOptions, { trigger: 'auto-reindex' }),
+      });
+      if (result.stale.length > 0) {
+        logger.info(
+          {
+            event: 'reindex.auto_sweep',
+            stale: result.stale.length,
+            fresh: result.fresh.length,
+            dryRun: result.dryRun.length,
+            started: result.started.length,
+          },
+          'reindex.auto_sweep',
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, 'reindex auto sweep failed:');
+    }
+  };
+  const autoReindexSweepTimer = reindexWatcherConfig.enabled
+    ? setInterval(() => {
+        void runAutoReindexSweepOnce();
+      }, reindexWatcherConfig.sweepMs)
+    : undefined;
+  if (reindexWatcherConfig.enabled) {
+    void runAutoReindexSweepOnce();
+  }
+
   // POST /api/reindex — reindex an already-registered local repository
   app.post('/api/reindex', createRouteLimiter({ limit: 20 }), async (req, res) => {
     try {
@@ -2356,6 +2396,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     const shutdown = async () => {
       console.log('\nShutting down...');
       server.close();
+      if (autoReindexSweepTimer) clearInterval(autoReindexSweepTimer);
       jobManager.dispose();
       embedJobManager.dispose();
       await cleanupMcp();

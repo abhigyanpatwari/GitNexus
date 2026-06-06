@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { ReindexOperationRegistry } from '../../src/server/reindex-operations.js';
+import {
+  ReindexOperationRegistry,
+  isReindexTrigger,
+} from '../../src/server/reindex-operations.js';
 
 const target = {
   repoKey: 'deepwiki-open:c:/users/steve/projects/deepwiki-open',
@@ -25,6 +28,25 @@ describe('reindex operation registry', () => {
       requestedAt: 1000,
     });
     expect(record).not.toHaveProperty('cancelled');
+  });
+
+  it('accepts auto-reindex as a distinct operation trigger', () => {
+    const registry = new ReindexOperationRegistry({ now: () => 1000 });
+
+    expect(isReindexTrigger('auto-reindex')).toBe(true);
+
+    const record = registry.create({
+      id: 'auto-1',
+      ...target,
+      trigger: 'auto-reindex',
+    });
+
+    expect(record).toMatchObject({
+      id: 'auto-1',
+      trigger: 'auto-reindex',
+      status: 'queued',
+    });
+    expect(registry.list({ trigger: 'auto-reindex' }).map((op) => op.id)).toEqual(['auto-1']);
   });
 
   it('tracks coalesced duplicates without allocating phantom child jobs', () => {

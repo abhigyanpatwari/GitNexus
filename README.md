@@ -295,7 +295,7 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 
 ### What Your AI Agent Gets
 
-**16 tools** exposed via MCP (11 per-repo + 5 group):
+**13 MCP tools** exposed to agents (11 per-repo + 2 group-specific):
 
 | Tool              | What It Does                                                     | `repo` Param |
 | ----------------- | ---------------------------------------------------------------- | ------------ |
@@ -306,13 +306,16 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 | `detect_changes`  | Git-diff impact — maps changed lines to affected processes       | Optional     |
 | `rename`          | Multi-file coordinated rename with graph + text search           | Optional     |
 | `cypher`          | Raw Cypher graph queries                                         | Optional     |
+| `api_impact`     | Pre-change impact report for an API route handler                | Optional     |
+| `route_map`      | API route to handler and consumer mappings                       | Optional     |
+| `tool_map`       | MCP/RPC tool definitions and handlers                            | Optional     |
+| `shape_check`    | Response shape vs consumer property access mismatches            | Optional     |
 | `group_list`      | List configured repository groups                                | —            |
 | `group_sync`      | Extract contracts and match across repos/services                | —            |
-| `group_contracts` | Inspect extracted contracts and cross-links                      | —            |
-| `group_query`     | Search execution flows across all repos in a group               | —            |
-| `group_status`    | Check staleness of repos in a group                              | —            |
 
 > When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
+
+For group analysis through MCP, use `query`, `context`, or `impact` with `repo: "@<groupName>"`, or `repo: "@<groupName>/<memberPath>"` to scope to one member path from `group.yaml`. Group contract and status inspection is exposed through resources below. The CLI still provides `gitnexus group query`, `gitnexus group contracts`, and `gitnexus group status` commands for terminal workflows.
 
 **Resources** for instant context:
 
@@ -325,6 +328,8 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 | `gitnexus://repo/{name}/processes`      | All execution flows                                  |
 | `gitnexus://repo/{name}/process/{name}` | Full process trace with steps                        |
 | `gitnexus://repo/{name}/schema`         | Graph schema for Cypher queries                      |
+| `gitnexus://group/{name}/contracts`     | Group contract registry and cross-links              |
+| `gitnexus://group/{name}/status`        | Per-repo index and contract staleness for a group    |
 
 **2 MCP prompts** for guided workflows:
 

@@ -19,7 +19,7 @@ For this task, the canonical multi-document environment is:
 
 Build independently implemented local GitNexus features inspired by public enterprise-style positioning, while keeping the work versioned, sequential, reviewable, and tied to the real source repo.
 
-The first implementation candidate is Auto-Reindexing. PR Review / Blast Radius and Auto-Updating Code Wiki are next candidates after graph freshness is solved. Deferred candidates remain research-only until reprioritized.
+The current execution tranche is Auto-Reindexing, then Auto-Updating Code Wiki, then Multi-Repo Support Improvements. Pause for MAIN review before starting PR Impact / Blast Radius source work. Deferred candidates remain research-only until reprioritized.
 
 ## Branch And Source Of Truth
 
@@ -43,12 +43,12 @@ The `podman\gitnexus` planning files are useful history, but they are no longer 
 
 ## Candidate Features
 
-1. Auto-Reindexing - `now`, decision-grade research complete enough to propose first.
-2. PR Review / Blast Radius - `next`, report-first over existing graph primitives.
-3. Auto-Updating Code Wiki - `next`, refresh orchestration after graph freshness exists.
-4. Auto Regression Forensics - `defer`.
-5. End-to-End Test Generation - `defer`.
-6. Multi-Repo Support Improvements - `defer`.
+1. Auto-Reindexing - `now`, implemented locally and awaiting snapshot/commit boundary.
+2. Auto-Updating Code Wiki - `now`, core status/dry-run-first planner/runner implemented locally; next slice or snapshot decision required.
+3. Multi-Repo Support Improvements - `next tranche`, reconcile current group/status/contracts/docs/tool-surface reality without unified graph expansion.
+4. PR Impact / Blast Radius - `pause before starting`, report-first over deterministic diff-to-graph primitives after Tasks 1-3 and MAIN review.
+5. Auto Regression Forensics - `defer`.
+6. End-to-End Test Generation - `defer`.
 7. OCaml Support - `defer`.
 
 ## Done When

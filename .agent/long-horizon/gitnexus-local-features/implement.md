@@ -32,6 +32,111 @@ Planning and documentation edits to this bundle are allowed when they directly i
 - Implement features sequentially.
 - Keep commits scoped: planning-only commits first, then one feature slice at a time.
 
+## Goal-Backed Non-Interactive Workflow
+
+Use Codex Goals as the feature-level completion contract for this workstream.
+
+- Keep one active feature Goal at a time.
+- Create the next Goal only after the current Goal is achieved or legitimately blocked and the next feature/slice boundary is known.
+- Do not pre-create multiple Goals for the feature backlog.
+- The active Goal Contract is recorded in `plans.md`.
+- `documentation.md` records the current checkpoint truth for that Goal.
+- Non-interactive `codex exec` worker runs must repeat the active Goal Contract in the prompt.
+- Worker runs must read `AGENTS.md`, `prompt.md`, `plans.md`, this file, and `documentation.md` before acting.
+- Worker runs must not switch features, widen scope, or start implementation without `MAIN | READY_FOR_IMPLEMENTATION`.
+- A Goal is complete only when its verification surface passes or its blocker is recorded clearly.
+
+Minimum Goal standard:
+
+- A durable objective.
+- A verifiable stopping condition.
+
+Strong Goal standard for this workstream:
+
+- Outcome: what must be true when the Goal is done.
+- Verification surface: the tests, commands, reports, artifacts, or source evidence that prove the outcome.
+- Constraints: what must not regress or be changed.
+- Boundaries: allowed files, repos, tools, data, branches, and routes.
+- Iteration policy: how the agent chooses the next useful action after each checkpoint.
+- Blocked stop condition: when the agent must stop, what evidence it must report, and what would unlock progress.
+
+Operational additions required for non-interactive worker runs:
+
+- Reading list: point the worker at the files, docs, issues, logs, and evidence it must read first.
+- Checkpoints: require short progress logs after meaningful work blocks.
+- Compact status reports: name the current checkpoint, what was verified, what remains, and whether the worker is blocked.
+
+Default worker prompt skeleton:
+
+```text
+Active Goal:
+<copy the feature Goal Contract from plans.md>
+
+Required context:
+- Read AGENTS.md first.
+- Read .agent/long-horizon/gitnexus-local-features/prompt.md.
+- Read .agent/long-horizon/gitnexus-local-features/plans.md.
+- Read .agent/long-horizon/gitnexus-local-features/implement.md.
+- Read .agent/long-horizon/gitnexus-local-features/documentation.md.
+- Work only on the active feature.
+- Use branch local/gitnexus-local-features.
+- Do not implement source changes unless MAIN | READY_FOR_IMPLEMENTATION names this feature and write scope.
+
+Required response:
+- checkpoint reached
+- skills/tools used
+- commands run
+- evidence found
+- files changed, if any
+- verification result
+- blocker status
+- recommended next step
+```
+
+Default local `codex exec` shape:
+
+```powershell
+@'
+<worker prompt skeleton filled with the active Goal Contract>
+'@ | codex exec `
+  --cd "C:\Users\steve\projects\gitnexus\source-rc109-integration" `
+  --sandbox workspace-write `
+  --json `
+  -
+```
+
+Research-only runs should state that source mutation is out of scope. Implementation runs may use `workspace-write` only after MAIN opens the write scope. Do not use `danger-full-access` for routine worker runs.
+
+Local CLI verification on 2026-06-05 showed this workstation's `codex exec` supports `--cd`, `--sandbox`, `--json`, and stdin prompts. It does not expose `--ask-for-approval`; do not include that option in worker-run commands unless a later local `codex exec --help` confirms it exists.
+
+## Skills And Tool Routing
+
+For goal-backed worker runs, point agents to these local context files first:
+
+- `AGENTS.md`
+- `.agent/long-horizon/gitnexus-local-features/prompt.md`
+- `.agent/long-horizon/gitnexus-local-features/plans.md`
+- `.agent/long-horizon/gitnexus-local-features/implement.md`
+- `.agent/long-horizon/gitnexus-local-features/documentation.md`
+- `.agent/long-horizon/gitnexus-local-features/enterprise-feature-intended-functions-scratchpad.md` when detailed research evidence is needed
+
+Use these skill families when available:
+
+- Superpowers workflow skills: `using-superpowers`, `writing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, and `executing-plans`.
+- Research skills: `autoresearch`, `ara-research-manager`, and `ara-rigor-reviewer` for evidence capture, synthesis, and adversarial review.
+- OpenAI/Codex docs skill: `openai-docs` when Codex Goals, `codex exec`, AGENTS.md, skills, or other OpenAI product behavior matters.
+- GitNexus workflow skills from `C:\Users\steve\.agents\skills`: `gitnexus-guide`, `gitnexus-exploring`, `gitnexus-impact-analysis`, `gitnexus-debugging`, `gitnexus-refactoring`, `gitnexus-pr-review`, and `gitnexus-cli`.
+
+Use these tools in this order when relevant:
+
+1. Local source, tests, architecture docs, and this four-file bundle.
+2. GitNexus graph tools or CLI with explicit routes: bare `gitnexus` for host/npm indexes and `gitnexus-podman` for Podman indexes.
+3. `ctx7` / Context7 for current library, SDK, CLI, API, or platform behavior.
+4. Official docs, source, release notes, GitHub issues, and GitHub PRs.
+5. Broader web/community evidence only as secondary context.
+
+For this host multi-repo index, graph queries should specify `--repo gitnexus-local-features` when needed.
+
 ## Research Discipline
 
 Every feature must distinguish:

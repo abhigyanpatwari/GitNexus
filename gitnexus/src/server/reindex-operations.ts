@@ -1,5 +1,5 @@
 export const REINDEX_OPERATION_STATUSES = ['queued', 'analyzing', 'complete', 'failed'] as const;
-export const REINDEX_OPERATION_TRIGGERS = ['direct', 'pending-rerun'] as const;
+export const REINDEX_OPERATION_TRIGGERS = ['direct', 'pending-rerun', 'auto-reindex'] as const;
 
 export type ReindexOperationStatus = (typeof REINDEX_OPERATION_STATUSES)[number];
 export type ReindexTrigger = (typeof REINDEX_OPERATION_TRIGGERS)[number];

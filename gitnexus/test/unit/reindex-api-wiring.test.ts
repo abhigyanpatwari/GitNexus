@@ -89,6 +89,26 @@ describe('reindex API wiring', () => {
     expect(helper?.[0]).toMatch(/options:\s*workerOptions/);
   });
 
+  it('wires opt-in auto reindex sweep through validated registry, staleness, queue, and auto trigger', async () => {
+    const source = await readSource();
+
+    expect(source).toMatch(/readReindexWatcherConfigFromEnv/);
+    expect(source).toMatch(/runAutoReindexSweep/);
+    expect(source).toMatch(/checkStalenessAsync/);
+    expect(source).toMatch(/listRegisteredRepos\(\{ validate: true \}\)/);
+    expect(source).toMatch(/trigger: 'auto-reindex'/);
+    expect(source).toMatch(/setInterval/);
+    expect(source).toMatch(/clearInterval/);
+
+    const autoSweepBlock = source.match(/const runAutoReindexSweepOnce = async[\s\S]{0,2800}const autoReindexSweepTimer/);
+    expect(autoSweepBlock?.[0]).toMatch(/runAutoReindexSweep/);
+    expect(autoSweepBlock?.[0]).toMatch(/dryRun:\s*reindexWatcherConfig\.dryRun/);
+    expect(autoSweepBlock?.[0]).toMatch(/embeddings:\s*reindexWatcherConfig\.embeddings/);
+    expect(autoSweepBlock?.[0]).toMatch(/requestQueue:\s*\(repoKey\) => reindexQueue\.request\(repoKey\)/);
+    expect(autoSweepBlock?.[0]).toMatch(/startReindexJob\(repo, repoKey, requestedOptions, \{ trigger: 'auto-reindex' \}\)/);
+    expect(autoSweepBlock?.[0]).not.toMatch(/fetch\(/);
+  });
+
   it('keeps worker and embedding errors failure-shaped instead of marking complete', async () => {
     const source = await readSource();
     const helper = source.match(/const startReindexJob = [\s\S]{0,16000}return job;\s*};/);

@@ -1,7 +1,7 @@
-<!-- version: 1.7.0 -->
-<!-- Last updated: 2026-04-23 -->
+<!-- version: 1.9.2 -->
+<!-- Last updated: 2026-06-05 -->
 
-Last reviewed: 2026-04-23
+Last reviewed: 2026-06-05
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -28,9 +28,32 @@ For multi-step work, state up front:
 
 On long threads, *"Remember: apply all AGENTS.md rules"* re-weights these instructions against context dilution.
 
+## GitNexus Local-Features Workflow
+
+For the local enterprise-feature workstream:
+
+- The long-horizon control bundle is `.agent/long-horizon/gitnexus-local-features/`.
+- Use branch `local/gitnexus-local-features`.
+- Work one implementation feature at a time on the shared branch.
+- Use one active feature Goal at a time. The Goal Contract for the feature lives in `plans.md`.
+- Use non-interactive `codex exec` worker runs only inside the active feature Goal and only with the current long-horizon bundle as required context.
+- Implementation is blocked until `MAIN | READY_FOR_IMPLEMENTATION` names the approved write scope.
+- After approval, use TDD for behavior changes: failing test first, verify red, minimal green implementation, verify green, then refactor while tests stay green.
+- Git hooks are not the implementation route for Auto-Reindexing or this workstream.
+
+GitNexus routing on this workstation:
+
+- `gitnexus` is the host/npm CLI and host-local index route.
+- `gitnexus-podman` is the explicit Podman-backed runtime/index route.
+- `gitnexus-host` was quarantined as a redundant compatibility helper; do not use it in new workflow.
+- Do not treat bare `gitnexus` as the Podman route.
+- When the host index has multiple repositories, pass `--repo gitnexus-local-features` for graph queries when needed.
+
 ## Claude Code hooks
 
 **PreToolUse** hooks can block tools (e.g. `git_commit`) until checks pass. Adapt to this repo: `cd gitnexus && npm test` before commit.
+
+For the local-features workstream above, do not use hooks as the implementation mechanism.
 
 ## Context budget
 
@@ -60,6 +83,9 @@ commits, or posts.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-05 | 1.9.2 | Removed `gitnexus-host` from active workflow; bare `gitnexus` is the host/npm route and `gitnexus-podman` is the Podman route. |
+| 2026-06-05 | 1.9.1 | Added Goal-backed non-interactive Codex worker-run rule for the local-features workflow. |
+| 2026-06-05 | 1.9.0 | Added explicit `gitnexus-host`/`gitnexus-podman` routing, long-horizon local-features workflow, TDD gate, and replaced stale analyze guidance. |
 | 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
 | 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |
 | 2026-04-20 | 1.6.0 | Added scope-resolution pipeline pointer (RFC #909 Ring 3); Python migrated to registry-primary. |
@@ -77,7 +103,8 @@ commits, or posts.
 
 This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+> On Steve's workstation/local-features branch, if any GitNexus tool warns the index is stale, use the explicit route for the target index:
+> `gitnexus analyze` for host-local repos, or `gitnexus-podman analyze /workspace/<repo>` for Podman-mounted repos.
 
 ## Always Do
 
@@ -154,7 +181,7 @@ This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relati
 ```bash
 cd gitnexus && npm run dev                 # CLI: tsx watch mode
 cd gitnexus-web && npm run dev             # Web UI: Vite on port 5173
-npx gitnexus serve                         # HTTP API on port 4747 (from any indexed repo)
+gitnexus serve                             # Host/npm HTTP API on port 4747 (from any indexed repo)
 ```
 
 ### Testing
