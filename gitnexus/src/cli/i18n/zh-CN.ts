@@ -108,6 +108,8 @@ export const zhCN = {
   'help.option.help': '显示命令帮助',
   'help.option.version': '输出版本号',
   'help.command.setup.description': '一次性设置：为 Cursor、Claude Code、OpenCode、Codex 配置 MCP',
+  'help.command.uninstall.description':
+    '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
   'help.command.analyze.description': '索引仓库（完整分析）',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
@@ -174,6 +176,7 @@ export const zhCN = {
   'help.option.port': '端口号',
   'help.option.serve.host': '绑定地址（默认：127.0.0.1；远程访问可用 0.0.0.0）',
   'help.option.force.confirmation': '跳过确认提示',
+  'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
   'help.option.clean.lbugSidecars': '清理已隔离的 LadybugDB missing-shadow WAL sidecar',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',

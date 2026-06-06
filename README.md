@@ -223,6 +223,7 @@ args = ["-y", "gitnexus@latest", "mcp"]
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
+gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
