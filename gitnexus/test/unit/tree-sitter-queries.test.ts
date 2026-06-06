@@ -13,6 +13,7 @@ import {
   RUBY_QUERIES,
   SWIFT_QUERIES,
   DART_QUERIES,
+  OCAML_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
 
 describe('tree-sitter queries', () => {
@@ -355,6 +356,26 @@ describe('tree-sitter queries', () => {
 
     it('captures lambda body calls (() => expr)', () => {
       expect(DART_QUERIES).toContain('function_expression_body');
+    });
+  });
+
+  describe('OCaml queries', () => {
+    it('captures modules, values, types, imports, and calls', () => {
+      expect(OCAML_QUERIES).toContain('module_binding');
+      expect(OCAML_QUERIES).toContain('@definition.module');
+      expect(OCAML_QUERIES).toContain('type_binding');
+      expect(OCAML_QUERIES).toContain('@definition.type');
+      expect(OCAML_QUERIES).toContain('let_binding');
+      expect(OCAML_QUERIES).toContain('@definition.function');
+      expect(OCAML_QUERIES).toContain('@definition.const');
+      expect(OCAML_QUERIES).toContain('open_module');
+      expect(OCAML_QUERIES).toContain('@import.source');
+      expect(OCAML_QUERIES).toContain('application_expression');
+      expect(OCAML_QUERIES).toContain('@call.name');
+    });
+
+    it('captures interface value specifications', () => {
+      expect(OCAML_QUERIES).toContain('value_specification');
     });
   });
 

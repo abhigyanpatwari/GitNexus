@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 7 OCaml Support approval packet prepared; OCaml implementation is blocked pending explicit MAIN approval
+- Mode: Task 7 OCaml experimental language support V1 implemented locally
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, and the Task 6 E2E proposal/report core are implemented locally. Executable test generation remains blocked until a later output-policy Goal. OCaml implementation remains blocked until MAIN approves the parser/dependency/write-set boundary.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, and Task 7 OCaml experimental language support V1 are implemented locally. Executable test generation remains blocked until a later output-policy Goal.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -73,6 +73,62 @@ Current state:
 - 2026-06-06T13:40+01:00: Task 6 post-CLI boundary review completed. Decision: Task 6 local V1 is complete enough to pause before executable generated-test policy. Next baton target is Task 7 OCaml Support readiness.
 - 2026-06-06T13:41+01:00: Task 7 OCaml Support readiness completed. Decision: OCaml is feasible in principle through `tree-sitter-ocaml`, but source implementation requires MAIN approval for native dependency strategy, exact write set, `experimental` classification, and `.ml`/`.mli` V1 scope.
 - 2026-06-06T13:48+01:00: Task 7 OCaml implementation approval packet prepared. Recommendation: use npm `tree-sitter-ocaml@0.22.0` for the first experimental local slice because it peers on `tree-sitter: 0.21`, matching GitNexus's current `tree-sitter@0.21.1` runtime family. Do not upgrade core `tree-sitter` in this slice.
+- 2026-06-06T19:26+01:00: Task 7 OCaml experimental language support V1 implemented with TDD. `tree-sitter-ocaml@0.22.0` installed without upgrading core `tree-sitter@0.21.1`; package smoke showed actual exports `ocaml` and `interface` rather than README's `ocaml_interface`, so implementation uses the actual `interface` export for `.mli`.
+
+### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
+
+Goal:
+
+- Implement the approved experimental OCaml language-support slice for `.ml` and `.mli`.
+
+Implemented:
+
+- Added `SupportedLanguages.OCaml`.
+- Added `.ml` and `.mli` detection and OCaml syntax mapping.
+- Classified OCaml as `experimental`.
+- Added `tree-sitter-ocaml@0.22.0` without upgrading core `tree-sitter@0.21.1`.
+- Added parser-loader and parse-worker grammar dispatch:
+  - `.ml` -> `tree-sitter-ocaml`.`ocaml`
+  - `.mli` -> `tree-sitter-ocaml`.`interface`
+- Added an experimental OCaml provider and minimal query support for:
+  - modules,
+  - type declarations,
+  - value/function bindings,
+  - `open` module references,
+  - direct calls,
+  - interface value specifications.
+- Added focused `.ml` and `.mli` fixtures and tests.
+
+Not implemented:
+
+- Dune/project model.
+- PPX expansion.
+- Full module alias/functor semantics.
+- Generated-code handling.
+- Production classification.
+- Web UI/WASM parity beyond successful build.
+- MCP/API exposure.
+
+Important implementation note:
+
+- `tree-sitter-ocaml@0.22.0` README text describes `ocaml_interface`, but the actual package export is `interface`. The implementation uses the verified export.
+
+Verification:
+
+- Red test confirmed before implementation:
+  - `npm test -- test/unit/ocaml-language-support.test.ts` failed because `.ml` / `.mli` returned `null` and parser-loader reported unsupported OCaml.
+- Green tests:
+  - `npm test -- test/unit/ocaml-language-support.test.ts`
+  - `npm test -- test/unit/ocaml-language-support.test.ts test/unit/parser-loader-abi.test.ts test/unit/tree-sitter-queries.test.ts test/integration/tree-sitter-languages.test.ts`
+    - Passed: 4 files, 153 tests.
+  - `npm run build`
+    - Passed with existing Vite chunk-size and ineffective dynamic-import warnings.
+  - `git diff --check`
+    - Passed.
+
+Follow-up boundary:
+
+- Future OCaml work should use a new Goal for import/module resolution depth, functor semantics, Dune awareness, or production classification.
 
 ### 2026-06-06T13:48+01:00 - Task 7 OCaml Approval Packet
 

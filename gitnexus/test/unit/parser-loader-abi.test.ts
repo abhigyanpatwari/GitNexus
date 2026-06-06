@@ -117,6 +117,18 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'fun main() {}\n',
     rootType: 'source_file',
   },
+  [SupportedLanguages.OCaml]: {
+    language: SupportedLanguages.OCaml,
+    filePath: 'simple.ml',
+    snippet: 'let main () = print_endline "hello"\n',
+    rootType: 'compilation_unit',
+  },
+  [`${SupportedLanguages.OCaml}:interface`]: {
+    language: SupportedLanguages.OCaml,
+    filePath: 'simple.mli',
+    snippet: 'val main : unit -> unit\n',
+    rootType: 'compilation_unit',
+  },
 };
 
 describe('parser-loader ABI load-smoke (#1922)', () => {

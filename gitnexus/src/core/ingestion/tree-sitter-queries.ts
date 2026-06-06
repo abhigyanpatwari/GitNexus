@@ -1824,6 +1824,40 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+// OCaml queries - works with tree-sitter-ocaml implementation and interface grammars.
+// V1 intentionally captures foundational graph evidence only: modules,
+// value/function bindings, type declarations, open-module references, direct calls,
+// and `.mli` value specifications.
+export const OCAML_QUERIES = `
+(module_definition
+  (module_binding
+    name: (module_name) @name)) @definition.module
+
+(type_definition
+  (type_binding
+    name: (type_constructor) @name)) @definition.type
+
+(value_definition
+  (let_binding
+    pattern: (value_name) @name
+    (parameter))) @definition.function
+
+(value_definition
+  (let_binding
+    pattern: (value_name) @name)) @definition.const
+
+(value_specification
+  (value_name) @name) @definition.function
+
+(open_module
+  (module_path
+    (module_name) @import.source)) @import
+
+(application_expression
+  function: (value_path
+    (value_name) @call.name)) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1842,5 +1876,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
+  [SupportedLanguages.OCaml]: OCAML_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

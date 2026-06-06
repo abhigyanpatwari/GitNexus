@@ -669,6 +669,41 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('OCaml', () => {
+    it('parses implementation files with modules, functions, types, imports, and calls', async () => {
+      await loadLanguage(SupportedLanguages.OCaml, 'simple.ml');
+      const content = readFixture('simple.ml');
+      const provider = getProvider(SupportedLanguages.OCaml);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const names = defs.map((d) => d.name);
+      expect(names).toEqual(expect.arrayContaining(['UserService', 'user', 'create_user', 'greet']));
+
+      const imports: string[] = [];
+      const calls: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+          if (capture.name === 'call.name') calls.push(capture.node.text);
+        }
+      }
+      expect(imports).toContain('UserService');
+      expect(calls).toEqual(expect.arrayContaining(['print_endline', 'create_user', 'greet']));
+    });
+
+    it('parses interface files with the OCaml interface grammar', async () => {
+      await loadLanguage(SupportedLanguages.OCaml, 'simple.mli');
+      const content = readFixture('simple.mli');
+      const provider = getProvider(SupportedLanguages.OCaml);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const names = defs.map((d) => d.name);
+      expect(names).toEqual(expect.arrayContaining(['UserService', 'user', 'create_user', 'greet']));
+    });
+  });
+
   describe('cross-language assertions', () => {
     it('all supported languages produce at least one definition from fixtures', async () => {
       const langFixtures: [SupportedLanguages, string, string?][] = [
@@ -682,6 +717,7 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
+        [SupportedLanguages.OCaml, 'simple.ml'],
         // Dart and Swift are excluded — they are optionalDependencies that may not be installed
       ];
 

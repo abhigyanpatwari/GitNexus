@@ -10,6 +10,7 @@
  *   - production: javascript, typescript, python, java, c, cpp, csharp, go,
  *                 ruby, rust, php, kotlin, swift, dart
  *   - experimental: vue (embedded-language / SFC complexity),
+ *                   ocaml (initial parser/provider slice),
  *                   cobol (regex-provider path)
  *   - quarantined: (none)
  */
@@ -40,6 +41,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Swift]: 'production',
     [SupportedLanguages.Dart]: 'production',
     [SupportedLanguages.Vue]: 'experimental',
+    [SupportedLanguages.OCaml]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
   };
 

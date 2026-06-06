@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 executable test generation remains blocked behind a later output-policy Goal; Task 7 OCaml implementation awaits explicit MAIN approval of the prepared packet |
+| Pause point | Task 6 executable test generation remains blocked behind a later output-policy Goal; deeper OCaml semantics require a new Goal |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -55,7 +55,7 @@ Supporting evidence:
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
 | 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented, verified, and committed | Pause before executable generated-test policy |
-| 7 | OCaml Support | Light scoping completed plus approval packet | `next with approval` | Readiness and approval packet mapped; not implemented | Needs MAIN approval phrase from `plans.md` |
+| 7 | OCaml Support | Light scoping completed plus approval packet | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally | Deeper OCaml semantics require a new Goal |
 
 ## Dependency Map
 
@@ -434,10 +434,9 @@ Next gate:
 
 Current status:
 
-- Readiness mapped.
-- Approval packet prepared.
+- Experimental V1 implemented locally.
 - Separate language-provider/parser onboarding project.
-- Source implementation blocked until MAIN approves dependency route and exact write set.
+- Deeper source work requires a new Goal and write set.
 
 Intended local capability:
 
@@ -477,6 +476,12 @@ Recommended first approved slice:
 - Minimal graph correctness for modules, values/functions, types, direct calls, open/import-like module references, and interface declarations.
 - Parser ABI smoke, query compilation, focused fixtures, and build verification.
 
+Implemented V1 notes:
+
+- The actual `tree-sitter-ocaml@0.22.0` package exports `ocaml` and `interface`; implementation uses `interface` for `.mli`.
+- OCaml is classified as `experimental`.
+- Focused OCaml tests and existing language safety tests pass.
+
 Deferred:
 
 - Dune project model.
@@ -487,7 +492,7 @@ Deferred:
 
 Next gate:
 
-- MAIN must approve the parser/dependency strategy and exact source/test write set before any OCaml implementation Goal is created. The approval phrase is drafted in `plans.md`.
+- Do not broaden OCaml beyond the experimental V1 without a new Goal.
 
 ## Current WIP Boundary
 

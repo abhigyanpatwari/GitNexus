@@ -111,6 +111,18 @@ const SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'Vue parsing piggybacks on `tree-sitter-typescript`. Check the install and native binding.',
   },
+  [SupportedLanguages.OCaml]: {
+    load: () => _require('tree-sitter-ocaml').ocaml,
+    unavailableNote:
+      'OCaml implementation parsing requires `tree-sitter-ocaml` (the `ocaml` export). ' +
+      'Check that the package and its native binding installed cleanly (`npm ci`).',
+  },
+  [`${SupportedLanguages.OCaml}:interface`]: {
+    load: () => _require('tree-sitter-ocaml').interface,
+    unavailableNote:
+      'OCaml interface parsing requires `tree-sitter-ocaml` (the `interface` export). ' +
+      'Check that the package and its native binding installed cleanly (`npm ci`).',
+  },
 
   // tree-sitter-c is a required dependency, but its native binding has
   // historically been ABI-incompatible with the bundled tree-sitter@0.21.1
@@ -208,7 +220,9 @@ const logFailure = (key: string, result: LoadResult): void => {
 export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string =>
   language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
     ? `${language}:tsx`
-    : language;
+    : language === SupportedLanguages.OCaml && filePath?.endsWith('.mli')
+      ? `${language}:interface`
+      : language;
 
 const loadGrammar = (key: string): LoadResult => {
   const cached = loadCache.get(key);

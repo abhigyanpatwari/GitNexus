@@ -37,7 +37,7 @@ Created: 2026-06-05
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented, verified, and committed |
-| 7 | OCaml Support | `light scoping completed` | `next with approval` | Readiness mapped; parser/dependency/write-set approval required before source edits |
+| 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally; deeper OCaml semantics deferred |
 
 ## Feature Goal Contracts
 
