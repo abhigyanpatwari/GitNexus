@@ -53,7 +53,7 @@ const STORE_DIRNAME = 'parsedfile-store';
  * pass, no second walk). The pool is per-load; the interned strings stay shared
  * through the retained `ParsedFile` references after the pool is dropped.
  */
-const makeInterningReviver = (
+export const makeInterningReviver = (
   pool: Map<string, string>,
   defPool: Map<string, SymbolDefinition>,
 ) => {
