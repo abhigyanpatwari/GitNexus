@@ -502,12 +502,12 @@ Current uncommitted source WIP includes:
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates for Task 7 OCaml readiness.
+- None at this checkpoint.
 
 Boundary rule:
 
 - Before broadening Task 6 into inventory extraction, browser execution, or generated test files, create a new output-policy Goal.
-- Before starting Task 7 OCaml source work, MAIN must approve the parser/dependency/write-set boundary.
+- Before broadening Task 7 beyond experimental `.ml` / `.mli` support, create a new Goal for the exact OCaml semantics, dependency, and test boundary.
 
 ## Source Surface Map By Area
 
@@ -549,12 +549,12 @@ Boundary rule:
 
 Immediate:
 
-1. Commit the Task 7 OCaml approval-packet documentation.
-2. Complete the active approval-packet Goal with the Goal tool.
-3. Create an OCaml implementation Goal only if MAIN approves the dependency/write-set boundary with the drafted phrase; otherwise record `NO_NEXT_GOAL_CREATED`.
+1. Complete a post-tranche consolidation Goal that verifies the seven local V1 slices are committed, documented, and sequenced cleanly.
+2. Produce a next-slice recommendation instead of silently starting deeper feature work.
+3. Create the next implementation Goal only after the next exact slice and write set are named.
 
 Recommended next feature work:
 
-1. Seek or record MAIN approval for the OCaml dependency/write-set boundary in `plans.md`.
-2. If approved, create a focused OCaml implementation Goal and proceed TDD.
-3. Keep Task 6 executable generated-test work deferred until a later output-policy Goal.
+1. Decide whether the next implementation slice should be Task 6 executable generated-test output policy, Task 2 wiki server/API wiring, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
+2. For whichever slice is chosen, write a fresh Goal Contract with outcome, verification surface, constraints, boundaries, iteration policy, and blocked stop condition.
+3. Keep generated executable tests, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the relevant Goal opens that scope.
