@@ -24,7 +24,7 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, and Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper have completed their first local slices. The next baton target is Task 6 post-CLI boundary review.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, and Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper have completed their first local slices. The next baton target is Task 7 OCaml Support readiness.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
@@ -37,7 +37,7 @@ Created: 2026-06-05
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 5 | Auto Regression Forensics | `light scoping only` | `local V1 complete` | Report core and thin local CLI wrapper implemented locally; commit/Goal completion pending |
 | 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented locally |
-| 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
+| 7 | OCaml Support | `light scoping only` | `next readiness` | Research-only; no parser/provider/dependency/source edits yet |
 
 ## Feature Goal Contracts
 
@@ -677,6 +677,25 @@ CLI implementation checkpoint:
   - `npm run build`
 - Generated Playwright spec files, browser execution, automatic spec parsing/inventory extraction, MCP exposure, GitHub automation, CI workflow mutation, `gitnexus-web/e2e` changes, and new dependencies remain out of scope.
 - Next baton target after commit/Goal completion: Task 6 post-CLI boundary review.
+
+Post-CLI boundary checkpoint:
+
+- 2026-06-06T13:40+01:00: After CLI commit `8b2e26dc`, Task 6 local V1 is complete enough to pause.
+- Completed local V1:
+  - deterministic `e2e-test-plan.v1alpha1` report core,
+  - thin local `gitnexus e2e-test-plan` CLI wrapper.
+- Deferred Task 6 work:
+  - generated executable Playwright files,
+  - browser execution,
+  - automatic existing-spec inventory parsing,
+  - MCP/API exposure,
+  - GitHub comments/checks,
+  - CI workflow mutation,
+  - `gitnexus-web/e2e` changes.
+- Rationale:
+  - Continuing Task 6 now would require generated-output ownership/review rules, flake strategy, browser execution policy, and CI/GitHub boundaries.
+  - Task 7 is the final candidate feature and should be readiness-mapped before reopening deeper Task 6 policy work.
+- Next baton target: Task 7 OCaml Support readiness/research only.
 
 Implementation approval boundary used for the CLI Goal:
 

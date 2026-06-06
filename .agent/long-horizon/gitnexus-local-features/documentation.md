@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 End-to-End Test Generation local proposal/report core and thin CLI wrapper implemented; next baton target is Task 6 post-CLI boundary review
+- Mode: Task 6 End-to-End Test Generation local V1 complete; next baton target is Task 7 OCaml Support readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -31,7 +31,7 @@ Current state:
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
-- Next baton target is Task 6 post-CLI boundary review.
+- Next baton target is Task 7 OCaml Support readiness.
 - End-to-End Test Generation is `next` for a local proposal/report core only; executable generated tests remain deferred. OCaml Support remains `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
@@ -70,6 +70,46 @@ Current state:
 - 2026-06-06T13:31+01:00: Task 6 E2E test proposal/report core implemented with TDD. It emits `e2e-test-plan.v1alpha1` JSON/Markdown proposals only; no executable Playwright files, browser execution, CLI/MCP exposure, CI mutation, or GitHub automation.
 - 2026-06-06T13:34+01:00: Task 6 post-core boundary review completed. Recommendation: implement a thin local `gitnexus e2e-test-plan` CLI wrapper over local JSON inputs next. Defer richer existing-spec inventory extraction and all executable test-file generation.
 - 2026-06-06T13:37+01:00: Task 6 thin local `gitnexus e2e-test-plan` CLI wrapper implemented with TDD. It reads local target, PR Impact, existing-scenarios, route-evidence, and optional Regression Forensics JSON and emits Markdown or JSON. Generated Playwright files, browser execution, automatic spec parsing, MCP, CI, and GitHub automation remain deferred.
+- 2026-06-06T13:40+01:00: Task 6 post-CLI boundary review completed. Decision: Task 6 local V1 is complete enough to pause before executable generated-test policy. Next baton target is Task 7 OCaml Support readiness.
+
+### 2026-06-06T13:40+01:00 - Task 6 Post-CLI Boundary
+
+Goal:
+
+- Decide whether to continue Task 6 immediately or move to Task 7 readiness.
+
+Decision:
+
+- Pause Task 6 source work after local V1:
+  - `e2e-test-plan.v1alpha1` report core,
+  - thin local `gitnexus e2e-test-plan` CLI wrapper.
+- Move next to Task 7 OCaml Support readiness.
+
+Rationale:
+
+- Task 6 now has a bounded local report/CLI surface matching the established PR Impact and Regression Forensics pattern.
+- The next Task 6 steps would require new policy decisions:
+  - generated executable Playwright file ownership,
+  - review rules,
+  - flake strategy,
+  - browser execution policy,
+  - CI/GitHub integration boundaries,
+  - whether automatic existing-spec parsing is acceptable.
+- Task 7 is the final candidate feature and should receive readiness mapping before returning to deeper Task 6 output-policy work.
+
+Deferred Task 6 work:
+
+- Generated Playwright files.
+- Browser execution.
+- Automatic existing-spec inventory parsing.
+- MCP/API exposure.
+- GitHub comments/checks.
+- CI workflow mutation.
+- `gitnexus-web/e2e` changes.
+
+Next Goal:
+
+- Task 7 OCaml Support readiness/research only.
 
 ### 2026-06-06T13:37+01:00 - Task 6 E2E Test Plan CLI Wrapper Implemented
 
@@ -134,7 +174,7 @@ Next boundary:
 
 - Commit the CLI wrapper implementation.
 - Mark the active Goal complete with the Goal tool.
-- Create a post-CLI boundary Goal to decide whether to pause before executable generated-test policy or move to Task 7 OCaml Support readiness.
+- Post-CLI boundary completed below; next baton target is Task 7 OCaml Support readiness.
 
 ### 2026-06-06T13:34+01:00 - Task 6 Post-Core Boundary
 

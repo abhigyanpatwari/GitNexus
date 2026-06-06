@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1 |
-| Pause point | Task 6 readiness is complete; executable test generation remains blocked behind a later output-policy Goal |
+| Pause point | Task 6 local V1 is complete; executable test generation remains blocked behind a later output-policy Goal |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -54,8 +54,8 @@ Supporting evidence:
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
 | 5 | Auto Regression Forensics | Light scoping only | `local V1 complete` | Report core and thin local CLI wrapper implemented locally | Commit/Goal completion, then Task 6 readiness |
-| 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented locally | Post-CLI boundary review next; no executable generated tests |
-| 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
+| 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented locally | Pause before executable generated-test policy |
+| 7 | OCaml Support | Light scoping only | `next readiness` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
 ## Dependency Map
 
@@ -432,8 +432,7 @@ Verification recorded:
 
 Next gate:
 
-- Commit the CLI wrapper and complete the active Goal.
-- Create a post-CLI boundary Goal to decide whether to pause for generated-test output policy or move to Task 7 OCaml Support readiness.
+- Move to Task 7 OCaml Support readiness.
 - Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred.
 
 ### Task 7 - OCaml Support
@@ -465,13 +464,11 @@ Next gate:
 
 Current uncommitted source WIP includes:
 
-| Feature | Source/Test WIP |
-| --- | --- |
-| End-to-End Test Generation | `gitnexus/src/cli/e2e-test-plan.ts`, CLI registration/help/locales, `gitnexus/test/unit/e2e-test-plan-cli.test.ts` |
+- None at this checkpoint.
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates for the Task 6 CLI checkpoint and next baton.
+- Long-horizon bundle updates for the Task 6 post-CLI boundary and Task 7 baton.
 
 Boundary rule:
 
@@ -517,12 +514,12 @@ Boundary rule:
 
 Immediate:
 
-1. Commit the Task 6 CLI wrapper slice after final verification.
-2. Complete the active Task 6 CLI Goal with the Goal tool.
-3. Create the next sequential post-CLI boundary Goal.
+1. Commit the Task 6 post-CLI boundary documentation.
+2. Complete the active Task 6 post-CLI boundary Goal with the Goal tool.
+3. Create the next sequential Task 7 OCaml Support readiness Goal.
 
 Recommended next feature work:
 
-1. Decide whether to pause before generated-test output policy or move to Task 7 OCaml Support readiness.
-2. Keep generated Playwright file writing, browser execution, MCP exposure, GitHub/CI automation, automatic spec parsing, and `gitnexus-web/e2e` changes deferred until a later explicit Goal.
-3. If continuing executable test generation later, start with output policy and flake/review rules before any source edits.
+1. Scope Task 7 readiness only: current language registry/provider gaps, parser/dependency options, expected-vs-actual, smallest safe slice or defer verdict.
+2. Keep OCaml source implementation blocked until readiness names parser/provider choice, fixtures, tests, dependency approval, and exact write set.
+3. Keep Task 6 executable generated-test work deferred until a later output-policy Goal.
