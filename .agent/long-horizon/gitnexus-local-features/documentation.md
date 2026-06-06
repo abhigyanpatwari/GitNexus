@@ -60,6 +60,71 @@ Current state:
 - 2026-06-06T12:12+01:00: WIP boundary review started as the next sequential Goal. Dirty tree buckets were identified; recommendation is to create a checkpoint/snapshot before Task 4 PR Impact source work.
 - 2026-06-06T12:17+01:00: Checkpoint snapshot created at commit `568e24de` (`checkpoint local features through task 4 readiness`). The tree was clean immediately after the commit.
 - 2026-06-06T12:23+01:00: Task 4 PR Impact report-core slice implemented with TDD. CLI wrapper is not added yet; that should be the next sequential Goal if desired.
+- 2026-06-06T12:29+01:00: Task 4 thin `gitnexus pr-impact` CLI wrapper implemented with TDD. MCP and GitHub automation remain deferred.
+
+### 2026-06-06T12:29+01:00 - Task 4 PR Impact CLI Wrapper Implemented
+
+Goal:
+
+- Expose the committed PR Impact report core through a thin local CLI command.
+
+Files changed:
+
+- `gitnexus/src/cli/pr-impact.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts`
+- `gitnexus/src/cli/i18n/en.ts`
+- `gitnexus/src/cli/i18n/zh-CN.ts`
+- `gitnexus/test/unit/pr-impact-cli.test.ts`
+
+Implemented behavior:
+
+- New local command: `gitnexus pr-impact`.
+- Options:
+  - `--scope <scope>` for `unstaged`, `staged`, `all`, or `compare`.
+  - `--base-ref <ref>` for compare mode.
+  - `--repo <name>` for explicit repo targeting.
+  - `--format <format>` for `markdown` or `json`.
+- The command calls existing backend tools:
+  - `detect_changes` for changed symbols,
+  - `impact` with upstream depth 5 and tests included for each changed symbol,
+  - `api_impact` for API/route-like changed files.
+- The command uses the report core from `gitnexus/src/core/pr-impact/report.ts`.
+- Help/i18n wiring was added for English and Simplified Chinese.
+
+Not implemented:
+
+- No MCP tool.
+- No GitHub PR URL ingestion.
+- No PR comments/checks.
+- No token-bearing automation.
+- No web UI.
+- No generated remediation/tests.
+
+TDD / verification:
+
+```powershell
+npm test -- test/unit/pr-impact-cli.test.ts
+npm test -- test/unit/pr-impact-cli.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/tool-direct-cli.test.ts test/unit/cli-index-help.test.ts
+npm test -- test/unit/pr-impact-cli.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/parse-diff-hunks.test.ts test/unit/detect-changes-worktree.test.ts test/unit/impact-confidence.test.ts test/unit/impact-pagination.test.ts test/unit/tool-direct-cli.test.ts test/unit/cli-index-help.test.ts test/integration/api-impact-e2e.test.ts
+git diff --check
+npm run build
+```
+
+Results:
+
+- Initial red test failed because `src/cli/pr-impact.js` did not exist.
+- CLI test passed: 1 file, 2 tests.
+- Focused CLI/report/help tests passed: 5 files, 27 tests.
+- Broader PR Impact/CLI baseline passed: 10 files, 111 tests.
+- Diff whitespace check passed.
+- Build passed.
+
+Next boundary:
+
+- Commit the CLI wrapper slice.
+- After commit, Task 4 V1 local CLI/report slice is complete.
+- Any next PR Impact work should be a new Goal: richer deletion/base-graph integration, public MCP exposure, GitHub ingestion, GitHub automation, or Codex remediation.
 
 ### 2026-06-06T12:23+01:00 - Task 4 PR Impact Report Core Implemented
 

@@ -251,6 +251,15 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
+program
+  .command('pr-impact')
+  .description('Generate a local deterministic PR impact report')
+  .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare')
+  .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .action(createLbugLazyAction(() => import('./pr-impact.js'), 'prImpactCommand'));
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program

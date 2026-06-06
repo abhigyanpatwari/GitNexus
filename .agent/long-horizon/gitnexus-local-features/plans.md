@@ -23,8 +23,8 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, and Task 3 Multi-Repo Support Improvements have completed their first local slices. Task 4 PR Impact / Blast Radius readiness is complete; Task 4 source work waits for a snapshot/no-snapshot boundary and the exact implementation Goal.
-- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core implementation is now complete locally; the next sequential Goal should be a thin `gitnexus pr-impact` CLI wrapper if MAIN wants CLI exposure.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, and Task 3 Multi-Repo Support Improvements have completed their first local slices. Task 4 PR Impact / Blast Radius local V1 report core is implemented; the thin `gitnexus pr-impact` CLI wrapper is implemented locally and awaiting checkpoint commit.
+- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) was created on 2026-06-06T12:23+01:00. The current active Goal is the CLI wrapper checkpoint; MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
 
@@ -33,7 +33,7 @@ Created: 2026-06-05
 | 1 | Auto-Reindexing | `decision-grade now` | `now` | Approved slice implemented locally; verification passed; unsnapshotted |
 | 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
-| 4 | PR Impact / Blast Radius | `medium now` | `now - readiness active` | Tight V1 brainstorm exists; readiness refresh maps exact source/test/report boundary before source work |
+| 4 | PR Impact / Blast Radius | `medium now` | `now - local V1 active` | Report core implemented and committed; thin local CLI wrapper implemented and awaiting checkpoint commit |
 | 5 | Auto Regression Forensics | `light scoping only` | `defer` | Research-only; waits for PR impact/risk schema or MAIN reprioritization |
 | 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
@@ -165,7 +165,7 @@ Suggested first write set after snapshot/no-snapshot gate:
 | `gitnexus/test/unit/pr-impact-diff-mapping.test.ts` | Deleted symbols, unmatched ranges, new symbols, range overlap |
 | `gitnexus/test/fixtures/pr-impact/*` | Checked-in fixture diffs and golden reports |
 
-Implementation checkpoint:
+Implementation checkpoints:
 
 - 2026-06-06T12:23+01:00: Report core and diff-mapping helper implemented with TDD.
 - Implemented files:
@@ -179,7 +179,23 @@ Implementation checkpoint:
   - nearby diff/impact/API baseline: 7 files, 91 tests
   - `git diff --check`
   - `npm run build`
-- CLI wrapper not implemented yet.
+- Commit: `25873c96` (`feat: add pr impact report core`).
+- 2026-06-06T12:29+01:00: Thin local `gitnexus pr-impact` CLI wrapper implemented with TDD.
+- Implemented files:
+  - `gitnexus/src/cli/pr-impact.ts`
+  - `gitnexus/src/cli/index.ts`
+  - `gitnexus/src/cli/help-i18n.ts`
+  - `gitnexus/src/cli/i18n/en.ts`
+  - `gitnexus/src/cli/i18n/zh-CN.ts`
+  - `gitnexus/test/unit/pr-impact-cli.test.ts`
+- Verification passed:
+  - initial red test failed because `src/cli/pr-impact.js` did not exist
+  - CLI test: 1 file, 2 tests
+  - focused CLI/report/help tests: 5 files, 27 tests
+  - broader PR Impact/CLI baseline: 10 files, 111 tests
+  - `git diff --check`
+  - `npm run build`
+- MCP exposure, GitHub PR URL ingestion, GitHub comments/checks, token automation, web UI, generated remediation, and generated tests remain out of this V1 slice.
 
 Focused test plan:
 
