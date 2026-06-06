@@ -79,6 +79,7 @@ Current state:
 - 2026-06-06T19:35+01:00: Task 6 executable-output policy readiness recorded in `plans.md`. Recommendation: future implementation should start with a pure deterministic Playwright spec renderer for `gitnexus-web` mocked-backend route proposals, with optional explicit CLI write mode only after renderer tests pass.
 - 2026-06-06T19:38+01:00: Task 6 executable-output policy readiness committed as `4f3fec63` (`docs: define e2e executable output policy`).
 - 2026-06-06T19:45+01:00: Task 6 deterministic generated Playwright spec renderer and explicit `gitnexus e2e-test-plan --write-specs` mode implemented with TDD. The implementation is limited to deterministic mocked `/api/repos` route specs and policy-block diagnostics; browser execution, CI mutation, MCP/API, GitHub automation, and live-backend generation remain deferred.
+- 2026-06-06T19:47+01:00: Task 6 generated-spec renderer committed as `ac1b43a5` (`feat: add e2e generated spec renderer`).
 
 ### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
 
