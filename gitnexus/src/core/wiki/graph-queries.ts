@@ -62,7 +62,7 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
   const rows = await executeQuery(REPO_ID, `
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
-    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    RETURN f.filePath AS filePath, n.name AS name, labels(n) AS type
     ORDER BY f.filePath
   `);
 

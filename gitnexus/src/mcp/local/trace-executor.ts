@@ -620,7 +620,7 @@ async function findSymbolByName(
 
   const query = `
     MATCH (n) ${whereClause}
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+    RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath
     LIMIT 10
   `;
 
@@ -693,7 +693,7 @@ async function findSymbolByUid(
   const contentField = includeContent ? ', n.content AS content' : '';
   const baseQuery = `
     MATCH (n {id: $uid})
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine${contentField}
     LIMIT 1
   `;
@@ -851,7 +851,7 @@ async function fetchNodeInfo(
   const baseQuery = `
     MATCH (n)
     WHERE n.id IN $uids
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine
   `;
 

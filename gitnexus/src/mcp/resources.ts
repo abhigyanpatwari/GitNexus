@@ -359,7 +359,7 @@ relationships:
   - HAS_METHOD: Class/Struct/Interface owns a Method
   - HAS_PROPERTY: Class/Struct/Interface owns a Property (field)
   - ACCESSES: Function/Method reads or writes a Property (reason: 'read' or 'write')
-  - OVERRIDES: Method overrides another Method (MRO)
+  - OVERRIDES: Class resolves method override via MRO (Class → inherited Method)
   - MEMBER_OF: Symbol belongs to community
   - STEP_IN_PROCESS: Symbol is step N in process
   - CROSS_IMPORTS: Cross-repo module import

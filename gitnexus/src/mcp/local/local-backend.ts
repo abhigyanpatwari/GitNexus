@@ -1152,7 +1152,7 @@ export class LocalBackend {
         const symbols = await executeParameterized(repo.id, `
           MATCH (n)
           WHERE n.filePath = $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.fileType AS fileType
+          RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.fileType AS fileType
           LIMIT 3
         `, { filePath: fullPath });
         
@@ -1480,7 +1480,7 @@ export class LocalBackend {
     if (uid) {
       symbols = await executeParameterized(repo.id, `
         MATCH (n {id: $uid})
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
+        RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 1
       `, { uid });
     } else {
@@ -1501,7 +1501,7 @@ export class LocalBackend {
 
       symbols = await executeParameterized(repo.id, `
         MATCH (n) ${whereClause}
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
+        RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 10
       `, queryParams);
     }
@@ -1857,7 +1857,7 @@ export class LocalBackend {
       const members = await executeParameterized(repo.id, `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        RETURN DISTINCT n.name AS name, labels(n) AS type, n.filePath AS filePath
         LIMIT 30
       `, { clusterName: name });
       
@@ -1889,7 +1889,7 @@ export class LocalBackend {
       const procId = proc.id || proc[0];
       const steps = await executeParameterized(repo.id, `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
+        RETURN n.name AS name, labels(n) AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
       `, { procId });
       
@@ -2007,7 +2007,7 @@ export class LocalBackend {
       try {
         const symbols = await executeParameterized(repo.id, `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.fileType AS fileType
+          RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath, n.fileType AS fileType
           LIMIT 20
         `, { filePath: normalizedFile });
         for (const sym of symbols) {
@@ -2158,7 +2158,7 @@ export class LocalBackend {
       try {
         const symbols = await executeParameterized(repo.id, `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+          RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath,
                  n.startLine AS startLine, n.endLine AS endLine
           LIMIT 50
         `, { filePath: normalizedFile });
@@ -3701,7 +3701,7 @@ export class LocalBackend {
     if (isQualified) {
       const uidRows = await executeParameterized(repo.id, `
         MATCH (n) WHERE n.id = $targetName
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath
         LIMIT 1
       `, { targetName: target }).catch((e) => { logQueryError('impact:uid-resolution', e); return []; });
       if (uidRows.length > 0) {
@@ -3802,7 +3802,7 @@ export class LocalBackend {
         const rows = await executeParameterized(repo.id, `
           MATCH (n)
           WHERE n.name = $targetName
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath
           LIMIT 1
         `, { targetName });
         if (rows.length > 0) {
@@ -4201,7 +4201,7 @@ export class LocalBackend {
     const members = await executeParameterized(repo.id, `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-      RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+      RETURN DISTINCT n.name AS name, labels(n) AS type, n.filePath AS filePath
       LIMIT 30
     `, { clusterName: name });
 
@@ -4240,7 +4240,7 @@ export class LocalBackend {
     const procId = proc.id || proc[0];
     const steps = await executeParameterized(repo.id, `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-      RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
+      RETURN n.name AS name, labels(n) AS type, n.filePath AS filePath, r.step AS step
       ORDER BY r.step
     `, { procId });
 

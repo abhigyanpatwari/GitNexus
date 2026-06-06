@@ -123,7 +123,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         const symbols = await executeQuery(repoId, `
           MATCH (n) WHERE n.filePath = '${escaped}'
           AND n.name CONTAINS '${pattern.replace(/'/g, "''").split(/\s+/)[0]}'
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath
           LIMIT 3
         `);
         for (const sym of symbols) {
