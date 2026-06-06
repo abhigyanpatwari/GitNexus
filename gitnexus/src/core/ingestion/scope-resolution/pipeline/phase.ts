@@ -339,6 +339,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           resolutionConfig,
           prebuiltNodeLookup: sharedNodeLookup,
           preExtractedParsedFiles: preExtractedByPath,
+          scopeIndexStorePath: parsedFileStorePath,
           recordResolutionOutcome: (outcome) => {
             resolutionOutcomes.push(outcome);
           },

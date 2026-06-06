@@ -46,6 +46,9 @@ import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/w
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
+import { parseTruthyEnv } from '../../utils/env.js';
+import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
+import { forceGc } from '../../../../storage/parsedfile-store.js';
 
 import { logger } from '../../../logger.js';
 
@@ -285,6 +288,15 @@ interface RunScopeResolutionInput {
    * Cache miss is safe — falls back to fresh extract.
    */
   readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
+  /**
+   * U6d (out-of-core scope index). When set AND `GITNEXUS_DISK_SCOPE_INDEX` is
+   * enabled, the per-language `scopeTree` is sealed to a disk-backed store at
+   * this path after resolve (before emit), and the heavy `Scope.bindings`
+   * payload is dropped from heap — lowering the per-language peak (kernel:
+   * ~20→~12 GB) so the analysis fits on smaller-RAM machines. Same storage path
+   * as the ParsedFile store; a sibling `scope-index-store/` dir.
+   */
+  readonly scopeIndexStorePath?: string;
   /**
    * Optional additive diagnostics sink. Resolver passes call this when they
    * intentionally suppress an edge; the graph remains unchanged.
@@ -566,13 +578,39 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
   logHeapProbe('sr-post-resolve', `lang=${provider.language}`);
 
+  // ── U6d: out-of-core seal boundary ─────────────────────────────────────
+  // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
+  // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
+  // `scopeTree.getScope` (a point lookup), so seal the TransitionalScopeTree to
+  // disk now and drop the resident scopes. The scopes are pinned from THREE
+  // sides: (1) the model's frozen `scopeTree` — released by `seal()` nulling its
+  // resident backing from the inside; (2) `input.preExtractedParsedFiles` (held
+  // by the caller for its own post-run release) — released here since run.ts is
+  // its last reader after extract; (3) this function's `parsedFiles` — replaced
+  // by a scope-stripped copy that keeps only what emit reads (referenceSites /
+  // filePath / localDefs). All three released → the heavy payload is collectible.
+  let emitParsedFiles: readonly ParsedFile[] = parsedFiles;
+  if (
+    input.scopeIndexStorePath !== undefined &&
+    parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX) &&
+    indexes.scopeTree instanceof TransitionalScopeTree
+  ) {
+    logHeapProbe('sr-seal-pre', `lang=${provider.language}`);
+    indexes.scopeTree.seal(input.scopeIndexStorePath);
+    emitParsedFiles = parsedFiles.map((p) => ({ ...p, scopes: [] }));
+    parsedFiles.length = 0;
+    if (preExtracted !== undefined) (preExtracted as Map<string, ParsedFile>).clear();
+    forceGc();
+    logHeapProbe('sr-seal-post', `lang=${provider.language}`);
+  }
+
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
-    parsedFiles,
+    emitParsedFiles,
     postHeritageNodeLookup,
     handledSites,
     provider,
@@ -587,7 +625,7 @@ export function runScopeResolution(
       ? provider.emitUnresolvedReceiverEdges(
           graph,
           indexes,
-          parsedFiles,
+          emitParsedFiles,
           postHeritageNodeLookup,
           handledSites,
           readonlyModel,
@@ -596,7 +634,7 @@ export function runScopeResolution(
   const freeCallExtras = emitFreeCallFallback(
     graph,
     indexes,
-    parsedFiles,
+    emitParsedFiles,
     postHeritageNodeLookup,
     referenceIndex,
     handledSites,
@@ -631,7 +669,7 @@ export function runScopeResolution(
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
   // Runs last so the full graph — including import edges — is visible.
   if (provider.emitPostResolutionEdges !== undefined) {
-    provider.emitPostResolutionEdges(graph, parsedFiles, postHeritageNodeLookup, indexes, {
+    provider.emitPostResolutionEdges(graph, emitParsedFiles, postHeritageNodeLookup, indexes, {
       fileContents: getFileContents(),
       resolutionConfig,
     });

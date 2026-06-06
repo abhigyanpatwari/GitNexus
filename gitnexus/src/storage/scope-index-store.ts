@@ -29,6 +29,7 @@
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
+import { buildScopeTree } from 'gitnexus-shared';
 import { mapReplacer } from './parse-cache.js';
 import { makeInterningReviver } from './parsedfile-store.js';
 
@@ -183,5 +184,72 @@ export class DiskBackedScopeTree implements ScopeTree {
       if (oldest !== undefined) this.lru.delete(oldest);
     }
     return decoded;
+  }
+}
+
+/**
+ * A `ScopeTree` that starts fully resident (validated by `buildScopeTree`, used
+ * by finalize / propagate / resolve, which may mutate `Scope.typeBindings` in
+ * place) and then {@link seal}s to a {@link DiskBackedScopeTree} just before emit.
+ *
+ * Sealing is what actually frees the ~17-20 GB of `Scope.bindings`: the resident
+ * tree is held BY THE MODEL'S frozen index bundle, so it cannot be swapped out
+ * from the outside. This wrapper IS that held object — `seal()` mutates its own
+ * (non-frozen) internal field to null the resident tree from the inside, after
+ * persisting it, so the model's reference now points at the disk-backed serving
+ * path and the heavy scopes become collectible (once the emit-side ParsedFiles
+ * also drop their `scopes`). Idempotent; a no-op before `seal()` keeps today's
+ * fully-resident behavior byte-identical.
+ */
+export class TransitionalScopeTree implements ScopeTree {
+  private resident: ScopeTree | null;
+  private disk: DiskBackedScopeTree | null = null;
+
+  constructor(scopes: readonly Scope[]) {
+    this.resident = buildScopeTree(scopes); // validates invariants + serves the resident phase
+  }
+
+  /** Persist the resident scopes, switch to disk-backed serving, and drop the
+   *  resident tree so its scope/binding payload can be reclaimed. Idempotent. */
+  seal(storagePath: string, maxResidentShards?: number): void {
+    if (this.disk !== null || this.resident === null) return;
+    const skeleton = persistScopeShards(storagePath, [...this.resident.byId.values()]);
+    this.disk = new DiskBackedScopeTree(storagePath, skeleton, maxResidentShards);
+    this.resident = null;
+  }
+
+  get sealed(): boolean {
+    return this.disk !== null;
+  }
+
+  private get active(): ScopeTree {
+    const t: ScopeTree | null = this.disk ?? this.resident;
+    if (t === null)
+      throw new Error(
+        'TransitionalScopeTree has no active backing (resident dropped without seal).',
+      );
+    return t;
+  }
+
+  get size(): number {
+    return this.active.size;
+  }
+  get byId(): ReadonlyMap<ScopeId, Scope> {
+    return this.active.byId; // throws in disk mode (DiskBackedScopeTree.byId)
+  }
+  has(id: ScopeId): boolean {
+    return this.active.has(id);
+  }
+  getScope(id: ScopeId): Scope | undefined {
+    return this.active.getScope(id);
+  }
+  getParent(id: ScopeId): Scope | undefined {
+    return this.active.getParent(id);
+  }
+  getChildren(id: ScopeId): readonly ScopeId[] {
+    return this.active.getChildren(id);
+  }
+  getAncestors(id: ScopeId): readonly ScopeId[] {
+    return this.active.getAncestors(id);
   }
 }

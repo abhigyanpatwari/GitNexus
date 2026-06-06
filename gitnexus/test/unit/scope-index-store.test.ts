@@ -12,7 +12,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildScopeTree } from 'gitnexus-shared';
 import type { Scope, ScopeId, SymbolDefinition, BindingRef } from 'gitnexus-shared';
-import { persistScopeShards, DiskBackedScopeTree } from '../../src/storage/scope-index-store.js';
+import {
+  persistScopeShards,
+  DiskBackedScopeTree,
+  TransitionalScopeTree,
+} from '../../src/storage/scope-index-store.js';
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'scope-index-store-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -104,5 +108,42 @@ describe('DiskBackedScopeTree — value-faithful stand-in for buildScopeTree', (
 
   it('byId throws (debug-only path, incompatible with disk mode)', () => {
     expect(() => disk.byId).toThrow(/byId is unsupported/);
+  });
+});
+
+describe('TransitionalScopeTree — resident → sealed(disk) transition', () => {
+  const reference = buildScopeTree(ALL);
+
+  it('serves value-identically to buildScopeTree BEFORE seal (resident phase)', () => {
+    const t = new TransitionalScopeTree(ALL);
+    expect(t.sealed).toBe(false);
+    expect(t.size).toBe(reference.size);
+    for (const s of ALL) {
+      expect(t.getScope(s.id)).toEqual(reference.getScope(s.id));
+      expect(t.getChildren(s.id)).toEqual(reference.getChildren(s.id));
+    }
+    // byId works in the resident phase (delegates to buildScopeTree).
+    expect(t.byId.size).toBe(reference.byId.size);
+  });
+
+  it('serves value-identically AFTER seal (disk phase) + drops resident byId', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'transitional-seal-'));
+    try {
+      const t = new TransitionalScopeTree(ALL);
+      t.seal(dir, 1); // tiny LRU → forces shard eviction + reload
+      expect(t.sealed).toBe(true);
+      expect(t.size).toBe(reference.size);
+      for (const s of ALL) {
+        expect(t.getScope(s.id)).toEqual(reference.getScope(s.id));
+        expect(t.getChildren(s.id)).toEqual(reference.getChildren(s.id));
+      }
+      // Disk mode: byId is unsupported (the debug emit path is incompatible).
+      expect(() => t.byId).toThrow(/byId is unsupported/);
+      // Seal is idempotent.
+      t.seal(dir);
+      expect(t.getScope(ALL[0].id)).toEqual(reference.getScope(ALL[0].id));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
