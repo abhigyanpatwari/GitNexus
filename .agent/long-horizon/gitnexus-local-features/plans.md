@@ -917,6 +917,113 @@ Required approval before implementation:
 
 - A later `MAIN | READY_FOR_IMPLEMENTATION` must name the exact generated-test output policy, write set, fixture strategy, and verification commands before executable test generation begins.
 
+### Task 6 Executable Output Policy Readiness
+
+Timestamp: 2026-06-06T19:35+01:00
+
+Goal:
+
+- Define whether and how `e2e-test-plan.v1alpha1` proposals may become executable Playwright files.
+- Keep this as readiness/policy only; do not generate specs in this Goal.
+
+Evidence inspected:
+
+| Evidence | Finding |
+| --- | --- |
+| `gitnexus/src/core/e2e-test-generation/report.ts` | Current V1 builds deterministic JSON/Markdown proposals, ranks route/symbol scenarios, and explicitly says executable Playwright files are out of scope. |
+| `gitnexus/src/cli/e2e-test-plan.ts` | Current CLI reads local JSON inputs and emits Markdown/JSON only; it does not write files. |
+| `gitnexus/test/unit/e2e-test-generation-report.test.ts` | Tests assert schema, deterministic Markdown, ranking, graph-stale caveat, and no executable Playwright code. |
+| `gitnexus-web/playwright.config.ts` | Existing E2E lane uses `testDir: ./e2e`, Chromium only, `baseURL: http://localhost:5173`, retained trace/screenshot/video, and ignores manual/debug specs. |
+| `gitnexus-web/package.json` | Existing script is `npm run test:e2e` -> `playwright test`; no generator script exists. |
+| `gitnexus-web/e2e/*.spec.ts` | Existing specs use `@playwright/test`, `BACKEND_URL`/`FRONTEND_URL`, `page.route` for mocked backend flows, availability checks with `test.skip`, role/text/test-id locators, `test.slow` for long live-backend flows, and screenshots through `testInfo.outputPath`. |
+| Context7 `/microsoft/playwright` docs | Playwright supports codegen, role/text/test-id locators, `getByTestId`, baseURL, and webServer config; generated tests still require human-quality locator/assertion choices. |
+
+Expected vs actual:
+
+| Requirement before executable generation | Current state | Policy consequence |
+| --- | --- | --- |
+| Target app/framework known | `gitnexus-web` + Playwright Chromium is established. | Use this as the only V1 executable target. |
+| Output location known | Current proposals target `gitnexus-web/e2e/<slug>.spec.ts`; no generated-output subdirectory exists. | Use a dedicated generated subdirectory or deterministic filename policy before writing anything. |
+| Stable selector policy known | Existing specs prefer roles/text/test-id locators; Playwright docs support role/test-id locators. | Generated specs must prefer role/test-id locators and avoid CSS/class/canvas-coordinate selectors unless a human-authored scenario explicitly allows them. |
+| Fixture/data policy known | Existing tests either mock backend routes or skip unless live services/repos exist. | Generated V1 specs should default to mocked backend route fixtures; live-backend tests require explicit opt-in. |
+| App launch policy known | Config assumes servers on 4747/5173 but does not start them via Playwright `webServer`. | Do not generate tests that require new launch orchestration until a launch contract is approved. |
+| Safety around secrets known | Existing local E2E patterns do not require credentials. | Generated specs must not embed credentials, tokens, absolute personal paths, or external services. |
+| Deterministic review surface known | Current report core has golden Markdown; executable output has no golden fixture yet. | First implementation slice must generate files from fixture inputs and compare exact golden spec text. |
+| Flake strategy known | Existing specs use explicit waits, skip checks, screenshots, and `test.slow` for long live flows. | Generated V1 should emit conservative waits/assertions and avoid timing-sensitive graph/canvas assertions. |
+
+Policy decisions for future executable generation:
+
+| Policy area | Decision |
+| --- | --- |
+| Generation mode | Add a separate opt-in command/flag later; never make `gitnexus e2e-test-plan` write files by default. |
+| Default output | Markdown/JSON remains default. Executable spec output must require an explicit `--write-specs` or equivalent implementation-specific flag. |
+| Output path | Prefer `gitnexus-web/e2e/generated/` for generated specs so generated files are reviewable and visually separated from hand-written specs. |
+| File naming | Use stable slugs from proposal ids, e.g. `route-api-repos.generated.spec.ts` or `symbol-render-graph.generated.spec.ts`; never overwrite hand-written specs. |
+| Overwrite behavior | Refuse to overwrite an existing generated spec unless an explicit force flag is approved later. |
+| Test template | Use `import { test, expect } from '@playwright/test';`, describe blocks matching proposal titles, and include source evidence comments only when concise and non-secret. |
+| Selectors | Prefer `getByRole`, `getByTestId`, accessible names, and visible text already present in existing specs. Do not generate brittle class selectors or canvas-coordinate assertions. |
+| Backend data | Prefer `page.route` mocked backend responses for deterministic generated V1 specs. Live-backend specs require a separate live fixture contract. |
+| App URLs | Use existing `BACKEND_URL` / `FRONTEND_URL` conventions and Playwright `baseURL`; do not hard-code machine-specific paths. |
+| Generated assertions | Require at least one web-first assertion per generated scenario; do not emit action-only smoke tests. |
+| Unsafe cases | Emit "policy blocked" diagnostics rather than specs when a proposal needs auth, secrets, external network, non-deterministic canvas assertions, unknown fixture data, or live indexed repos. |
+| Provenance | Include source schema versions and proposal ids in generated metadata/comments or sidecar JSON, but do not include raw private diffs. |
+
+Smallest future implementation slice:
+
+1. Add a pure spec renderer that accepts one `E2ETestPlanReport` and returns deterministic generated spec text plus blocked diagnostics.
+2. Support only mocked-backend route proposals for `gitnexus-web` in V1.
+3. Add golden tests for:
+   - generated route spec text,
+   - stable output path/name,
+   - refusal to overwrite hand-written specs,
+   - blocked unsafe proposals,
+   - no credentials/absolute paths,
+   - no CSS/canvas-coordinate selectors.
+4. Add an optional CLI write mode only after renderer tests pass.
+5. Keep browser execution, Playwright config changes, CI changes, MCP, GitHub automation, and live-backend generation out of the first executable-output slice.
+
+Suggested future write set after approval:
+
+| File | Purpose |
+| --- | --- |
+| `gitnexus/src/core/e2e-test-generation/spec-renderer.ts` | Pure deterministic spec renderer and policy-block diagnostics. |
+| `gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts` | Golden generated-spec tests and safety policy tests. |
+| `gitnexus/test/fixtures/e2e-test-generation/generated-route.spec.ts` | Golden generated Playwright fixture. |
+| `gitnexus/src/cli/e2e-test-plan.ts` | Add opt-in write mode only after renderer passes. |
+| `gitnexus/test/unit/e2e-test-plan-cli.test.ts` | CLI write-mode tests with mocked filesystem. |
+
+Do not include in the first implementation slice:
+
+- `gitnexus-web/e2e` generated files checked in from live generation.
+- Playwright browser execution.
+- `playwright.config.ts` webServer changes.
+- CI workflow mutation.
+- GitHub PR comments/checks.
+- MCP/API exposure.
+- Generated tests that depend on credentials, real external services, or machine-specific paths.
+
+Suggested MAIN approval text for later:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: End-to-End Test Generation executable output policy
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: deterministic generated Playwright spec renderer for `gitnexus-web` mocked-backend route proposals only, plus optional explicit CLI write mode after renderer tests pass.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/spec-renderer.ts
+- gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-route.spec.ts
+- gitnexus/src/cli/e2e-test-plan.ts
+- gitnexus/test/unit/e2e-test-plan-cli.test.ts
+Constraints: no browser execution, no Playwright config changes, no CI changes, no MCP/API exposure, no GitHub automation, no live-backend generated specs, no credentials, no absolute personal paths, no new dependency, no overwriting hand-written specs, and TDD required.
+```
+
+Stop rules:
+
+- Stop if generated output requires credentials, external services, live indexed repos, or non-deterministic graph/canvas assertions.
+- Stop if the future implementation would need to change `gitnexus-web/playwright.config.ts` or CI before the renderer is proven.
+- Stop if a proposal cannot be mapped to stable role/test-id/text locators or deterministic mocked backend data.
+
 ### Task 7 Approval Packet - OCaml Implementation Goal
 
 Timestamp: 2026-06-06T13:48+01:00

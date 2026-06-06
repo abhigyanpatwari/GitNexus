@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Post-tranche consolidation after Task 7 OCaml experimental language support V1
+- Mode: Task 6 executable generated-test output policy readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, and Task 7 OCaml experimental language support V1 are implemented locally. Executable test generation remains blocked until a later output-policy Goal.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, and Task 7 OCaml experimental language support V1 are implemented locally. Task 6 executable generated-test output now has a readiness policy; implementation remains blocked until MAIN approves the exact renderer/write-mode slice.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -32,7 +32,7 @@ Current state:
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
 - Task 7 OCaml Support readiness is complete.
-- End-to-End Test Generation is `next` for a local proposal/report core only; executable generated tests remain deferred. OCaml Support remains `defer`.
+- End-to-End Test Generation has completed proposal/report and thin CLI local V1. Executable generated-test output has a readiness policy but remains implementation-blocked until an exact renderer/write-mode Goal is opened. OCaml Support has completed experimental `.ml` / `.mli` local V1; deeper semantics remain deferred.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
 - 2026-06-05T10:55+01:00 GitHub PR/issue deepening confirmed that OSS PostToolUse staleness behavior is notification-only and intentionally distinct from Enterprise Auto-reindexing.
@@ -76,6 +76,7 @@ Current state:
 - 2026-06-06T19:26+01:00: Task 7 OCaml experimental language support V1 implemented with TDD. `tree-sitter-ocaml@0.22.0` installed without upgrading core `tree-sitter@0.21.1`; package smoke showed actual exports `ocaml` and `interface` rather than README's `ocaml_interface`, so implementation uses the actual `interface` export for `.mli`.
 - 2026-06-06T19:31+01:00: Task 7 OCaml implementation committed as `5f543c17` (`feat: add experimental ocaml language support`) and the active Goal was marked complete. The next defensible Goal is post-tranche consolidation and next-slice recommendation; do not start deeper feature work until a new exact slice and write set are named.
 - 2026-06-06T19:35+01:00: Post-tranche consolidation recommends the next Goal as Task 6 executable generated-test output policy readiness. This is not implementation approval; it should define whether and how `e2e-test-plan.v1alpha1` proposals may become executable Playwright files.
+- 2026-06-06T19:35+01:00: Task 6 executable-output policy readiness recorded in `plans.md`. Recommendation: future implementation should start with a pure deterministic Playwright spec renderer for `gitnexus-web` mocked-backend route proposals, with optional explicit CLI write mode only after renderer tests pass.
 
 ### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
 
