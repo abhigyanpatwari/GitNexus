@@ -2942,9 +2942,7 @@ export function createUtf8User(): void {
 }
 `,
     });
-    result = await runPipelineFromRepo(repoDir, () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
-    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
   }, 120000);
 
   afterAll(() => {

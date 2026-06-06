@@ -6,10 +6,7 @@ import {
   walkRepositoryPaths,
   readFileContents,
 } from '../../src/core/ingestion/filesystem-walker.js';
-import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
-import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
+import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
 import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
@@ -120,13 +117,10 @@ describe('ignore + language-skip E2E', () => {
         content,
       }));
 
-      // Phase 3: parse (sequential — no worker pool)
-      const graph = createKnowledgeGraph();
-      const symbolTable = createSymbolTable();
-      const astCache = createASTCache();
-
-      // Should NOT throw even if Swift grammar is unavailable
-      await processParsing(graph, files, symbolTable, astCache);
+      // Phase 3: parse through the worker pool (the sole parse path).
+      // Should NOT throw even if the Swift grammar is unavailable — the
+      // worker skips files whose native parser can't load.
+      const { graph } = await parseFilesWithWorkers(files);
 
       // TypeScript files should produce Function nodes
       const nodes = graph.nodes;

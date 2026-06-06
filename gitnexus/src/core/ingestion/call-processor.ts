@@ -39,6 +39,34 @@ const MAX_TYPE_NAME_LENGTH = 256;
  *  Consumed by the cross-file re-resolution / enrichment pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
 
+/** Record one exported graph node into the incremental ExportedTypeMap. */
+export const accumulateExportedTypesFromParsedNode = (
+  result: ExportedTypeMap,
+  node: { id: string; properties?: Record<string, unknown> },
+  symbolTable: SymbolTableReader,
+): void => {
+  if (!node.properties?.isExported) return;
+  if (!node.properties?.filePath || !node.properties?.name) return;
+  const filePath = node.properties.filePath as string;
+  const name = node.properties.name as string;
+  if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
+  const defs = symbolTable.lookupExactAll(filePath, name);
+  const def = defs.find((d) => d.nodeId === node.id) ?? defs[0];
+  if (!def) return;
+  const typeName = def.returnType ?? def.declaredType;
+  if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;
+  const simpleType = extractReturnTypeName(typeName) ?? typeName;
+  if (!simpleType) return;
+  let fileExports = result.get(filePath);
+  if (!fileExports) {
+    fileExports = new Map();
+    result.set(filePath, fileExports);
+  }
+  if (fileExports.size < MAX_EXPORTS_PER_FILE) {
+    fileExports.set(name, simpleType);
+  }
+};
+
 /** Build ExportedTypeMap from graph nodes — used for the worker path where the
  *  sequential TypeEnv is not available in the main thread. Collects
  *  returnType/declaredType from exported symbols with known types. */
@@ -48,29 +76,7 @@ export function buildExportedTypeMapFromGraph(
 ): ExportedTypeMap {
   const result: ExportedTypeMap = new Map();
   graph.forEachNode((node) => {
-    if (!node.properties?.isExported) return;
-    if (!node.properties?.filePath || !node.properties?.name) return;
-    const filePath = node.properties.filePath as string;
-    const name = node.properties.name as string;
-    if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
-    // For callable symbols, use returnType; for properties/variables, use declaredType.
-    // Use lookupExactAll + nodeId match to handle same-name methods in different classes.
-    const defs = symbolTable.lookupExactAll(filePath, name);
-    const def = defs.find((d) => d.nodeId === node.id) ?? defs[0];
-    if (!def) return;
-    const typeName = def.returnType ?? def.declaredType;
-    if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;
-    // Extract simple type name (strip Promise<>, etc.) — reuse shared utility
-    const simpleType = extractReturnTypeName(typeName) ?? typeName;
-    if (!simpleType) return;
-    let fileExports = result.get(filePath);
-    if (!fileExports) {
-      fileExports = new Map();
-      result.set(filePath, fileExports);
-    }
-    if (fileExports.size < MAX_EXPORTS_PER_FILE) {
-      fileExports.set(name, simpleType);
-    }
+    accumulateExportedTypesFromParsedNode(result, node, symbolTable);
   });
   return result;
 }

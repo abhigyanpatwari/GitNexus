@@ -106,3 +106,62 @@ describe('C static function isolation', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// C static-linkage survives the worker→main boundary (#1983 / worker-only path)
+//
+// The worker pool is now the SOLE parse path. C `static`-linkage is tracked in
+// a module-level map populated by `emitCScopeCaptures` INSIDE the worker
+// (`markStaticName`). Without the capture side-channel, that map is lost across
+// the MessageChannel and the main-thread `isStaticName` reads empty, so a
+// file-local `static` function becomes eligible for cross-file global free-call
+// resolution — a FALSE CALLS edge.
+//
+// This fixture isolates that leak (which `c-static-isolation` above does NOT
+// exercise — there the colliding name resolves via `#include` before the global
+// fallback runs). Here `caller.c` calls `compute()` with no include of
+// `local.c`; the only legitimate cross-file target is `lib.c`'s free `compute`.
+// `local.c`'s `static compute` MUST stay file-local.
+//
+// Without the c-cpp.ts `collectCaptureSideChannel` + c/scope-resolver.ts
+// `applyCaptureSideChannel` wiring, this test fails: `caller_entry` resolves to
+// `compute@local.c`.
+// ---------------------------------------------------------------------------
+
+describe('C static-linkage survives the worker→main boundary (#1983)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'c-static-linkage-worker'), () => {});
+  }, 60000);
+
+  it('parses via the worker pool (the path the side-channel covers)', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('does NOT emit a cross-file CALLS edge to the file-local static compute', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    // The caller's `compute()` must resolve to lib.c's free function, never to
+    // local.c's `static` (file-local) one.
+    const callerToCompute = calls.filter(
+      (r) => r.source === 'caller_entry' && r.target === 'compute',
+    );
+    // The free `compute` in lib.c is the only valid cross-file target.
+    expect(callerToCompute.length).toBeGreaterThan(0);
+    for (const edge of callerToCompute) {
+      expect(edge.targetFilePath).toContain('lib.c');
+      expect(edge.targetFilePath).not.toContain('local.c');
+    }
+
+    // Belt-and-suspenders: NO edge anywhere may reach local.c's static compute
+    // from outside local.c (the intra-file local_entry → compute call is fine).
+    const leakedToStatic = calls.filter(
+      (r) =>
+        r.target === 'compute' &&
+        r.targetFilePath.includes('local.c') &&
+        !r.sourceFilePath.includes('local.c'),
+    );
+    expect(leakedToStatic).toEqual([]);
+  });
+});

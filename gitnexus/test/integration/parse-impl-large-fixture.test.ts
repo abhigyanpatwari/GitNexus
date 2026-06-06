@@ -12,15 +12,13 @@
  * wall-clock so a regression that re-introduces the hang fails this
  * test loudly instead of slipping past via inequality assertions.
  *
- * Scope note: this test runs the sequential-fallback path (skipWorkers).
- * The full "real workers + actually-pathological file" scenario from
- * the plan requires a built `dist/parse-worker.js` and ~60s wall-clock
- * per run, which is more appropriate for a CI-integration job than a
- * vitest. Once the dist worker is wired into the test harness (a Phase 2
- * follow-up), this file can be extended to swap skipWorkers off. The
- * load-bearing invariants verified here — multi-chunk parsing
- * completes within a bounded budget and produces all expected symbols
- * — catch the bulk of the regressions B3 was concerned about.
+ * This runs the real worker pool (the sole parse path since the sequential
+ * parser was removed) on a multi-chunk fixture, BOUNDED by a wall-clock so a
+ * regression that re-introduces the hang fails loudly instead of slipping past
+ * via inequality assertions. The load-bearing invariants — multi-chunk parsing
+ * completes within a bounded budget and produces all expected symbols — catch
+ * the bulk of the regressions B3 was concerned about. Needs the dist worker
+ * (integration tier).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -94,9 +92,7 @@ async function runFixture(): Promise<{
     // surfaces the actual regression class.
     const start = Date.now();
     await Promise.race([
-      runChunkedParseAndResolve(graph, scanned, files, files.length, repoPath, start, () => {}, {
-        skipWorkers: true,
-      }),
+      runChunkedParseAndResolve(graph, scanned, files, files.length, repoPath, start, () => {}, {}),
       new Promise<never>((_, reject) =>
         setTimeout(
           () =>

@@ -104,6 +104,56 @@ export function markCppDependentPackBase(filePath: string, className: string): v
   perFile.add(className);
 }
 
+/**
+ * Plain-data, JSON-serializable snapshot of the per-file capture-time
+ * two-phase-lookup state. Carried on `ParsedFile.captureSideChannel` across the
+ * worker→main boundary (#1983). The resolved `dependentBaseNodeIds` index is
+ * rebuilt by `populateCppDependentBases` (workspace pass) after all files have
+ * their `populateOwners` applied, so only the two capture-time maps cross.
+ *
+ * Nested `Map`/`Set` are flattened to arrays here so the snapshot stays plain
+ * JSON (avoids relying on the parsedfile-store's Map/Set replacer for nested
+ * structures): `dependentBases` is `[className, [baseName, qualifiers[]][]][]`.
+ */
+export interface CppTwoPhaseSideChannel {
+  readonly dependentBases: readonly [string, readonly [string, readonly string[]][]][];
+  readonly dependentPackBaseClasses: readonly string[];
+}
+
+/** Snapshot this file's two-phase-lookup capture state for the side-channel. */
+export function collectCppTwoPhaseSideChannel(filePath: string): CppTwoPhaseSideChannel {
+  const perFile = dependentBasesByFile.get(filePath);
+  const dependentBases: [string, [string, string[]][]][] = [];
+  if (perFile !== undefined) {
+    for (const [className, bases] of perFile) {
+      const baseEntries: [string, string[]][] = [];
+      for (const [baseName, quals] of bases) {
+        baseEntries.push([baseName, [...quals]]);
+      }
+      dependentBases.push([className, baseEntries]);
+    }
+  }
+  const pack = dependentPackBaseClassesByFile.get(filePath);
+  return {
+    dependentBases,
+    dependentPackBaseClasses: pack === undefined ? [] : [...pack],
+  };
+}
+
+/** Restore this file's two-phase-lookup capture state from the side-channel. */
+export function applyCppTwoPhaseSideChannel(filePath: string, data: CppTwoPhaseSideChannel): void {
+  for (const [className, baseEntries] of data.dependentBases) {
+    for (const [baseName, quals] of baseEntries) {
+      for (const qualifier of quals) {
+        markCppDependentBase(filePath, className, baseName, qualifier);
+      }
+    }
+  }
+  for (const className of data.dependentPackBaseClasses) {
+    markCppDependentPackBase(filePath, className);
+  }
+}
+
 /** Clear two-phase-lookup state. Called from `clearFileLocalNames`. */
 export function clearCppDependentBases(): void {
   dependentBasesByFile.clear();

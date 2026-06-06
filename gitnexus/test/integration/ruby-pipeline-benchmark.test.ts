@@ -9,7 +9,7 @@
  * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/ruby-pipeline-benchmark.test.ts
  *
  * The benchmark uses workers (production path) by default. Set
- * skipWorkers to test the sequential fallback path.
+ * a single-worker pool (the sequential parser was removed).
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';

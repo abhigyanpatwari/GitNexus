@@ -163,10 +163,11 @@ export function emitTsScopeCaptures(
   filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Skip the parse when the caller (parse phase's scopeTreeCache) already
-  // produced a Tree for this source. Cache miss = re-parse, same as before.
-  // The cachedTree parameter is typed as `unknown` at the LanguageProvider
-  // contract layer; cast here at the use site.
+  // Reuse a pre-parsed Tree when the caller passes one via `cachedTree`; a
+  // miss re-parses. (The cache is currently always empty — its only producer,
+  // the sequential parser, was removed — so this re-parses in practice.) The
+  // cachedTree parameter is typed `unknown` at the LanguageProvider contract
+  // layer; cast here at the use site.
   //
   // Grammar selection: `.tsx` files are parsed with the TSX grammar,
   // `.ts` files with the TypeScript grammar. The two grammars have

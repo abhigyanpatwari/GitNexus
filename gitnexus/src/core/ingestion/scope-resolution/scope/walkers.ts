@@ -1008,24 +1008,16 @@ export function findExportedDefByName(
     }
     currentId = scope.parent;
   }
-  // Workspace-wide fallback: iterate every file's Module scope (via
-  // the scope-tied `moduleScopeByFile` lookup) and return the first
-  // locally-declared callable binding matching `name`. First-seen-
-  // by-file wins; bindings filtered to `origin === 'local'` and the
-  // callable types Function/Method/Constructor. We walk scopes here
-  // rather than consult `SemanticModel.symbols.lookupCallableByName`
-  // because the `origin === 'local'` module-export-visibility filter
-  // is a scope concept the raw symbol index doesn't express.
-  for (const [, moduleScope] of index.moduleScopeByFile) {
-    const refs = moduleScope.bindings.get(name);
-    if (refs === undefined) continue;
-    for (const ref of refs) {
-      if (ref.origin !== 'local') continue;
-      const t = ref.def.type;
-      if (t === 'Function' || t === 'Method' || t === 'Constructor') return ref.def;
-    }
-  }
-  return undefined;
+  // Workspace-wide fallback: the first locally-declared callable binding
+  // matching `name` across every file's Module scope (first-seen-by-file wins;
+  // `origin === 'local'`, callable types Function/Method/Constructor). This is
+  // precomputed ONCE into `index.exportedCallableByName` — byte-identical to the
+  // old per-call scan over `moduleScopeByFile`, but O(1) and disk-read-free
+  // (the old scan faulted every module scope in from disk under the out-of-core scope index). We use
+  // this scope-derived index rather than `SemanticModel.symbols.lookupCallableByName`
+  // because the `origin === 'local'` module-export-visibility filter is a scope
+  // concept the raw symbol index doesn't express.
+  return index.exportedCallableByName.get(name);
 }
 
 /**
