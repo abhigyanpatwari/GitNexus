@@ -53,7 +53,7 @@ Supporting evidence:
 | 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `now` | Core status/dry-run-first planner/runner implemented locally, verified, uncommitted | Decide next Task 2 slice or snapshot |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
-| 5 | Auto Regression Forensics | Light scoping only | `now - readiness active` | Readiness in progress | PR Impact V1 exists; next step is deterministic failure-evidence report core planning |
+| 5 | Auto Regression Forensics | Light scoping only | `now - local V1 active` | Report core implemented locally | Deterministic failure-evidence report core awaits checkpoint commit; no CLI/MCP/GitHub automation |
 | 6 | End-to-End Test Generation | Light scoping only | `defer` | Not implemented | Needs target app/test framework/runtime contract |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
@@ -326,8 +326,8 @@ Next gate:
 
 Current status:
 
-- Readiness active.
-- Research-only until the deterministic report-core write set is approved through the active Goal.
+- Deterministic report core implemented locally with TDD.
+- No CLI/MCP/GitHub/CI automation implemented.
 - PR Impact V1 report/CLI now exists and can provide the first graph/risk dependency.
 
 Intended local capability:
@@ -346,8 +346,8 @@ Dependencies:
 
 Next gate:
 
-- Complete readiness by locking the failure-evidence contract and first source slice.
-- Recommended first implementation slice after readiness: pure `regression-forensics` report core with fixture-backed JSON/Markdown tests, no CLI/MCP/GitHub/CI automation.
+- Checkpoint the report-core implementation commit.
+- Next possible Goal after checkpoint: decide whether to expose a thin local CLI wrapper, enrich report inputs, or move to Task 6 readiness.
 
 ### Task 6 - End-to-End Test Generation
 

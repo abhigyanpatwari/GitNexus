@@ -63,6 +63,76 @@ Current state:
 - 2026-06-06T12:29+01:00: Task 4 thin `gitnexus pr-impact` CLI wrapper implemented with TDD. MCP and GitHub automation remain deferred.
 - 2026-06-06T12:38+01:00: Task 4 CLI wrapper committed as `39d77845` (`feat: add pr impact cli command`). Goal baton rule strengthened: future completed/blocked Goals must be followed by an actual Goal tool call for the next Goal, or a documented `NO_NEXT_GOAL_CREATED` blocker.
 - 2026-06-06T12:49+01:00: Active Task 5 Auto Regression Forensics readiness Goal created with the Goal tool. First readiness pass recommends a pure deterministic report-core slice over failure evidence plus PR Impact V1 data.
+- 2026-06-06T13:02+01:00: Task 5 Auto Regression Forensics report-core slice implemented with TDD. CLI/MCP/GitHub/CI automation remain deferred.
+
+### 2026-06-06T13:02+01:00 - Task 5 Regression Forensics Report Core Implemented
+
+Goal:
+
+- Implement the first Task 5 source slice: pure deterministic report core only.
+
+Files changed:
+
+- `gitnexus/src/core/regression-forensics/report.ts`
+- `gitnexus/test/unit/regression-forensics-report.test.ts`
+- `gitnexus/test/fixtures/regression-forensics/golden-basic-report.md`
+
+Implemented behavior:
+
+- Experimental schema version: `regression-forensics.v1alpha1`.
+- Deterministic JSON report with:
+  - failure command,
+  - exit code,
+  - failing tests,
+  - failure excerpt,
+  - environment,
+  - known-good/known-bad refs,
+  - linked PR Impact summary,
+  - candidate causes,
+  - confidence,
+  - caveats,
+  - recommendation.
+- Deterministic Markdown rendering with golden fixture coverage.
+- Confidence is capped when known-good or failing-test evidence is missing.
+- Stale PR Impact graph evidence lowers confidence.
+- Report text explicitly treats findings as candidate causes, not proven root cause.
+
+Not implemented:
+
+- No CLI command.
+- No MCP tool.
+- No GitHub PR comments/checks.
+- No token-bearing automation.
+- No CI workflow mutation.
+- No automatic bisect.
+- No live test execution.
+- No generated fixes/remediation.
+
+TDD / verification:
+
+```powershell
+npm test -- test/unit/regression-forensics-report.test.ts
+npm test -- test/unit/regression-forensics-report.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts
+git diff --check
+npm run build
+```
+
+Results:
+
+- Initial red test failed because `src/core/regression-forensics/report.js` did not exist.
+- Focused Regression Forensics tests passed: 1 file, 3 tests.
+- Adjacent Regression Forensics + PR Impact report tests passed: 3 files, 10 tests.
+- Diff whitespace check passed.
+- Build passed.
+
+Next boundary:
+
+- Commit the report-core implementation.
+- Apply the Goal Baton rule after Goal completion.
+- Next possible Goal should be chosen from:
+  - thin local `gitnexus regression-forensics` CLI wrapper,
+  - richer input parsing for CI/eval artifacts,
+  - Task 6 End-to-End Test Generation readiness.
 
 ### 2026-06-06T12:49+01:00 - Task 5 Auto Regression Forensics Readiness Started
 

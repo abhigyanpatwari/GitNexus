@@ -35,7 +35,7 @@ Created: 2026-06-05
 | 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 5 | Auto Regression Forensics | `light scoping only` | `now - readiness active` | Readiness should define a deterministic failure-evidence-to-graph report core; no CI/GitHub automation in first slice |
+| 5 | Auto Regression Forensics | `light scoping only` | `now - local V1 active` | Deterministic report core implemented locally and awaiting checkpoint commit; no CI/GitHub automation |
 | 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
 
@@ -375,6 +375,21 @@ Focused test plan:
 4. Red test for PR Impact `BLOCK`/`NEEDS_DISCUSSION` evidence increasing confidence.
 5. Red test for missing known-good ref lowering confidence but not failing report creation.
 6. Red test that recommendations avoid claiming root cause when evidence is incomplete.
+
+Implementation checkpoint:
+
+- 2026-06-06T13:02+01:00: Report core implemented with TDD.
+- Implemented files:
+  - `gitnexus/src/core/regression-forensics/report.ts`
+  - `gitnexus/test/unit/regression-forensics-report.test.ts`
+  - `gitnexus/test/fixtures/regression-forensics/golden-basic-report.md`
+- Verification passed:
+  - initial red test failed because `src/core/regression-forensics/report.js` did not exist
+  - focused Regression Forensics tests: 1 file, 3 tests
+  - adjacent Regression Forensics + PR Impact report tests: 3 files, 10 tests
+  - `git diff --check`
+  - `npm run build`
+- CLI, MCP, GitHub/CI automation, automatic bisect, live test execution, and remediation remain out of this V1 slice.
 
 Risks and stop rules:
 
