@@ -24,7 +24,7 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, and Task 4 PR Impact / Blast Radius have completed their first local slices. The next baton target is Task 5 Auto Regression Forensics readiness.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, and Task 5 Auto Regression Forensics have completed their first local slices. The next baton target is Task 6 End-to-End Test Generation readiness after Task 5 CLI commit/Goal completion.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
@@ -35,7 +35,7 @@ Created: 2026-06-05
 | 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 5 | Auto Regression Forensics | `light scoping only` | `now - CLI boundary active` | Report core implemented and committed; next recommended Goal is a thin local CLI wrapper over local JSON inputs |
+| 5 | Auto Regression Forensics | `light scoping only` | `local V1 complete` | Report core and thin local CLI wrapper implemented locally; commit/Goal completion pending |
 | 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
 
@@ -426,7 +426,31 @@ Post-core boundary checkpoint:
   - `--format <format>`: `markdown` or `json`, default `markdown`.
 - CLI should not infer, execute, fetch, or mutate anything. It only loads files, builds the report, and writes stdout.
 
-Implementation approval boundary to use for the next Goal:
+CLI implementation checkpoint:
+
+- 2026-06-06T13:08+01:00: Thin local `gitnexus regression-forensics` CLI wrapper implemented with TDD.
+- Implemented files:
+  - `gitnexus/src/cli/regression-forensics.ts`
+  - `gitnexus/src/cli/index.ts`
+  - `gitnexus/src/cli/help-i18n.ts`
+  - `gitnexus/src/cli/i18n/en.ts`
+  - `gitnexus/src/cli/i18n/zh-CN.ts`
+  - `gitnexus/test/unit/regression-forensics-cli.test.ts`
+- Implemented behavior:
+  - `gitnexus regression-forensics --failure-json <path> --pr-impact-json <path>`
+  - `--format markdown|json`, default `markdown`
+  - local JSON input only
+  - optional `knownGoodRef` / `knownBadRef` pass-through from failure JSON
+- Verification passed:
+  - initial red test failed because `src/cli/regression-forensics.js` did not exist
+  - focused CLI test: 1 file, 2 tests
+  - combined CLI/report/help tests: 5 files, 24 tests
+  - `git diff --check`
+  - `npm run build`
+- MCP exposure, GitHub PR comments/checks, token automation, CI workflow mutation, automatic bisect, live test execution, generated remediation, and new dependencies remain out of this V1 slice.
+- Next baton target after commit/Goal completion: Task 6 End-to-End Test Generation readiness.
+
+Implementation approval boundary used for the CLI Goal:
 
 ```text
 MAIN | READY_FOR_IMPLEMENTATION

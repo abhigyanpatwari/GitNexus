@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 4 PR Impact / Blast Radius local V1 report/CLI slice completed and committed; next baton target is Task 5 Auto Regression Forensics readiness
+- Mode: Task 5 Auto Regression Forensics local V1 report/CLI slice implemented; next baton target is Task 6 End-to-End Test Generation readiness after commit/Goal completion
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, and PR Impact / Blast Radius first slices are implemented locally. Further implementation remains closed until the next feature readiness map is complete and the exact implementation Goal/write set is active.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, and Auto Regression Forensics first local slices are implemented locally. Further implementation remains closed until the next feature readiness map is complete and the exact implementation Goal/write set is active.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -30,8 +30,8 @@ Current state:
 - 2026-06-05: Host/npm GitNexus CLI was updated from `1.6.6-rc.53` to the pinned local runtime version `1.6.6-rc.109`. npm also reported the package dist-tags as `latest: 1.6.5` and `rc: 1.6.6-rc.148`; this task did not retarget the runtime or source branch to rc.148.
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
-- Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, then Task 4 PR Impact / Blast Radius.
-- Next baton target is Task 5 Auto Regression Forensics readiness.
+- Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
+- Next baton target is Task 6 End-to-End Test Generation readiness.
 - End-to-End Test Generation and OCaml Support remain `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
@@ -65,6 +65,68 @@ Current state:
 - 2026-06-06T12:49+01:00: Active Task 5 Auto Regression Forensics readiness Goal created with the Goal tool. First readiness pass recommends a pure deterministic report-core slice over failure evidence plus PR Impact V1 data.
 - 2026-06-06T13:02+01:00: Task 5 Auto Regression Forensics report-core slice implemented with TDD. CLI/MCP/GitHub/CI automation remain deferred.
 - 2026-06-06T13:05+01:00: Task 5 report-core committed as `dcc5fd24` (`feat: add regression forensics report core`). Active post-core boundary Goal recommends a thin local `gitnexus regression-forensics` CLI wrapper next, with local JSON inputs only.
+- 2026-06-06T13:08+01:00: Task 5 thin local `gitnexus regression-forensics` CLI wrapper implemented with TDD. It reads local `--failure-json` and `--pr-impact-json` files and emits Markdown or JSON. MCP, GitHub/CI automation, automatic bisect, live test execution, and remediation remain deferred.
+
+### 2026-06-06T13:08+01:00 - Task 5 Regression Forensics CLI Wrapper Implemented
+
+Goal:
+
+- Implement the thin local `gitnexus regression-forensics` CLI wrapper over the committed report core.
+
+Files changed:
+
+- `gitnexus/src/cli/regression-forensics.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts`
+- `gitnexus/src/cli/i18n/en.ts`
+- `gitnexus/src/cli/i18n/zh-CN.ts`
+- `gitnexus/test/unit/regression-forensics-cli.test.ts`
+
+Implemented behavior:
+
+- New local command: `gitnexus regression-forensics`.
+- Required local inputs:
+  - `--failure-json <path>`
+  - `--pr-impact-json <path>`
+- Output format:
+  - `--format markdown`
+  - `--format json`
+  - default is Markdown.
+- Failure JSON may include optional `knownGoodRef` / `knownBadRef`, which are passed into the report core as ref metadata.
+
+Not implemented:
+
+- No MCP tool.
+- No GitHub PR comments/checks.
+- No token-bearing automation.
+- No CI workflow mutation.
+- No automatic bisect.
+- No live test execution.
+- No generated fixes/remediation.
+- No new dependency.
+
+TDD / verification:
+
+```powershell
+npm test -- test/unit/regression-forensics-cli.test.ts
+npm test -- test/unit/regression-forensics-cli.test.ts test/unit/regression-forensics-report.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/cli-index-help.test.ts
+git diff --check
+npm run build
+```
+
+Results:
+
+- Initial red test failed because `src/cli/regression-forensics.js` did not exist.
+- Focused Regression Forensics CLI tests passed: 1 file, 2 tests.
+- Combined CLI/report/help tests passed: 5 files, 24 tests.
+- Diff whitespace check passed.
+- Build passed.
+
+Next boundary:
+
+- Commit the CLI wrapper implementation.
+- Mark the active Goal complete with the Goal tool.
+- Create the next sequential Goal with the Goal tool: Task 6 End-to-End Test Generation readiness.
 
 ### 2026-06-06T13:05+01:00 - Task 5 Post-Core Boundary
 

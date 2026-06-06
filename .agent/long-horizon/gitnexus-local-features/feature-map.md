@@ -34,8 +34,8 @@ Supporting evidence:
 | --- | --- |
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
-| Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements |
-| Pause point | Pause for MAIN review before Task 4 PR Impact / Blast Radius source work |
+| Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1 |
+| Pause point | Next pause/research gate is Task 6 End-to-End Test Generation readiness; no source implementation before its readiness map and Goal boundary |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -53,7 +53,7 @@ Supporting evidence:
 | 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `now` | Core status/dry-run-first planner/runner implemented locally, verified, uncommitted | Decide next Task 2 slice or snapshot |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
-| 5 | Auto Regression Forensics | Light scoping only | `now - CLI boundary active` | Report core committed | Next recommended slice is thin local CLI wrapper over local JSON inputs |
+| 5 | Auto Regression Forensics | Light scoping only | `local V1 complete` | Report core and thin local CLI wrapper implemented locally | Commit/Goal completion, then Task 6 readiness |
 | 6 | End-to-End Test Generation | Light scoping only | `defer` | Not implemented | Needs target app/test framework/runtime contract |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
@@ -327,7 +327,8 @@ Next gate:
 Current status:
 
 - Deterministic report core implemented and committed with TDD.
-- No CLI/MCP/GitHub/CI automation implemented.
+- Thin local `gitnexus regression-forensics` CLI wrapper implemented with TDD.
+- No MCP/GitHub/CI automation implemented.
 - PR Impact V1 report/CLI now exists and can provide the first graph/risk dependency.
 
 Intended local capability:
@@ -344,10 +345,32 @@ Dependencies:
 | Git history/bisect model | Needs known-good/known-bad or equivalent |
 | Graph freshness | Stale graph would invalidate causal claims |
 
+Implemented local V1 surfaces:
+
+| Surface | Status |
+| --- | --- |
+| `gitnexus/src/core/regression-forensics/report.ts` | Deterministic report core with experimental `regression-forensics.v1alpha1` schema |
+| `gitnexus/src/cli/regression-forensics.ts` | Thin local CLI wrapper over local JSON files |
+| `gitnexus/test/unit/regression-forensics-report.test.ts` | Report schema/Markdown/confidence tests |
+| `gitnexus/test/unit/regression-forensics-cli.test.ts` | CLI local JSON Markdown/JSON tests |
+| `gitnexus/test/fixtures/regression-forensics/golden-basic-report.md` | Golden Markdown fixture |
+
+Verification recorded:
+
+| Check | Result |
+| --- | --- |
+| Report-core focused tests | Passed, 1 file, 3 tests |
+| Report-core adjacent PR Impact tests | Passed, 3 files, 10 tests |
+| CLI focused tests | Passed, 1 file, 2 tests |
+| Combined CLI/report/help tests | Passed, 5 files, 24 tests |
+| `git diff --check` | Passed |
+| `npm run build` | Passed |
+
 Next gate:
 
-- Implement a thin local `gitnexus regression-forensics` CLI wrapper only after the active boundary Goal is complete.
-- CLI V1 should read `--failure-json` and `--pr-impact-json`, output Markdown/JSON, and avoid live CI/GitHub/test/bisect behavior.
+- Commit the CLI wrapper slice and complete the active Goal.
+- Create the next sequential Goal for Task 6 End-to-End Test Generation readiness.
+- Keep richer Task 5 parsing, MCP exposure, GitHub comments/checks, live CI/test execution, automatic bisect, and remediation deferred.
 
 ### Task 6 - End-to-End Test Generation
 
@@ -405,19 +428,15 @@ Current uncommitted source WIP includes:
 
 | Feature | Source/Test WIP |
 | --- | --- |
-| Auto-Reindexing | `reindex-auto-sweep.ts`, reindex operation/API wiring, related tests |
-| Auto-Updating Code Wiki | `wiki/auto-refresh.ts`, `wiki-auto-refresh.test.ts` |
+| Auto Regression Forensics | `gitnexus/src/cli/regression-forensics.ts`, CLI registration/help/locales, `gitnexus/test/unit/regression-forensics-cli.test.ts` |
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates.
-- AGENTS/workflow/routing cleanup.
-- PR Impact brainstorm and research scratchpads.
-- This comprehensive feature map.
+- Long-horizon bundle updates for the Task 5 CLI checkpoint and next baton.
 
 Boundary rule:
 
-- Before broadening into Task 3 implementation or Task 4 source work, create a deliberate snapshot/commit boundary or record an explicit MAIN decision to continue with unsnapshotted WIP.
+- Before broadening into Task 6 readiness or any new source implementation, commit or deliberately snapshot the Task 5 CLI wrapper boundary.
 
 ## Source Surface Map By Area
 
@@ -427,7 +446,7 @@ Boundary rule:
 | Wiki | `gitnexus/src/core/wiki/*`, `gitnexus/src/cli/wiki.ts`, wiki tests | Task 2 |
 | Groups/multi-repo | group registry/sync/status/contracts source, MCP resources, architecture docs, group tests | Task 3 |
 | Diff/impact/API impact | `detect_changes`, `impact`, `api_impact`, CLI/MCP wiring, graph traversal tests | Task 4 |
-| Regression/evals | `eval/`, test/CI surfaces, possible report/evidence fixtures | Task 5 |
+| Regression/evals | `eval/`, test/CI surfaces, regression forensics report/CLI source, possible report/evidence fixtures | Task 5 |
 | E2E generation | existing E2E tests, route maps, browser/test framework docs | Task 6 |
 | Language support | language registry, ingestion provider patterns, parser queries, fixture tests | Task 7 |
 
@@ -449,9 +468,9 @@ Boundary rule:
 | --- | --- |
 | Task 3 source ownership | Completed for first docs slice; no further source mapping needed unless MAIN expands scope |
 | Task 3 smallest useful slice | Decide whether improvement is docs reconciliation, CLI ergonomics, status output, tests, or MCP/resource alignment |
-| Task 4 source implementation | After readiness completes, resolve snapshot/no-snapshot boundary and create a source Goal for the exact first slice |
-| Task 4 fixture design | Checked-in diff fixtures and golden Markdown/JSON reports are required before completion of the first source slice |
-| Task 5 evidence contract | Define known-good/known-bad/failing-test/CI input contract |
+| Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
+| Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
+| Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
 | Task 6 runtime contract | Pick approved app launch surface, E2E framework, fixtures, and sandbox rules |
 | Task 7 parser/provider plan | Decide OCaml parser/provider, dependency policy, fixtures, and graph expectations |
 
@@ -459,12 +478,12 @@ Boundary rule:
 
 Immediate:
 
-1. Record this map in `plans.md` and `documentation.md`.
-2. Verify the map references all seven candidate features and does not imply implementation permission.
-3. Complete Task 4 readiness mapping; decide whether to snapshot current Task 1 and Task 2 WIP before any Task 4 source implementation.
+1. Commit the Task 5 Regression Forensics CLI wrapper slice after final verification.
+2. Complete the active Task 5 CLI Goal with the Goal tool.
+3. Create the next sequential Goal for Task 6 End-to-End Test Generation readiness.
 
 Recommended next feature work:
 
-1. Resolve the WIP snapshot/no-snapshot boundary before Task 4 source work.
-2. Create the next sequential Goal for the exact `pr-impact` implementation slice.
-3. Keep PR Impact V1 local/report-first; GitHub automation remains later.
+1. Scope Task 6 readiness only: target app/runtime/framework contract, dependency on PR Impact and Regression Forensics, smallest safe first slice, and stop rules.
+2. Keep any Task 6 source implementation blocked until the readiness map and exact Goal/write set are complete.
+3. Keep PR Impact and Regression Forensics future GitHub/CI/MCP automation deferred unless MAIN opens a new boundary.

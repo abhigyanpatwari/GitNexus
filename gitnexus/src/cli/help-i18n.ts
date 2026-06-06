@@ -30,6 +30,7 @@ const COMMAND_DESCRIPTION_KEYS = {
   cypher: 'help.command.cypher.description',
   'detect-changes': 'help.command.detectChanges.description',
   'pr-impact': 'help.command.prImpact.description',
+  'regression-forensics': 'help.command.regressionForensics.description',
   'eval-server': 'help.command.evalServer.description',
   group: 'help.command.group.description',
   'group create': 'help.command.group.create.description',
@@ -118,6 +119,11 @@ const OPTION_DESCRIPTION_KEYS = {
   'pr-impact|-b, --base-ref <ref>': 'help.option.detectChanges.baseRef',
   'pr-impact|-r, --repo <name>': 'help.option.repo.target',
   'pr-impact|-f, --format <format>': 'help.option.prImpact.format',
+  'regression-forensics|--failure-json <path>':
+    'help.option.regressionForensics.failureJson',
+  'regression-forensics|--pr-impact-json <path>':
+    'help.option.regressionForensics.prImpactJson',
+  'regression-forensics|-f, --format <format>': 'help.option.regressionForensics.format',
   'eval-server|-p, --port <port>': 'help.option.port',
   'eval-server|--host <host>': 'help.option.evalServer.host',
   'eval-server|--idle-timeout <seconds>': 'help.option.evalServer.idleTimeout',

@@ -260,6 +260,16 @@ program
   .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
   .action(createLbugLazyAction(() => import('./pr-impact.js'), 'prImpactCommand'));
 
+program
+  .command('regression-forensics')
+  .description('Generate a local deterministic regression forensics report')
+  .requiredOption('--failure-json <path>', 'Path to local failure evidence JSON')
+  .requiredOption('--pr-impact-json <path>', 'Path to local PR impact JSON')
+  .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .action(
+    createLbugLazyAction(() => import('./regression-forensics.js'), 'regressionForensicsCommand'),
+  );
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program
