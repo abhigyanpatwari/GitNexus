@@ -9,11 +9,10 @@ import {
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
-// TODO(#102): Go field-extractor fix from 5a92e58/#97 is in main-afk ancestry but the
-// fixture pipeline still produces zero Struct/Method nodes for the `go-handler-service-field`
-// fixture. Re-test gate from triage v2 caught this. Keep .skip until Batch D-go re-extracts
-// the fix or the fixture is updated. Verified red on 2026-06-03 (4/4 cases fail).
-describe.skip('Go handler → service field chain resolution (Issue #19)', () => {
+// #102: the `go-handler-service-field` fixture is now populated (order_handler.go +
+// order_service.go, same package), so the Go field-chain resolver fix (#97/5a92e58)
+// can be exercised end-to-end and the test is un-skipped.
+describe('Go handler → service field chain resolution (Issue #19)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
