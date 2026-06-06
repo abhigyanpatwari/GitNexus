@@ -1,5 +1,5 @@
 /**
- * Disk-backed scope store + lazy `ScopeTree` (U6d — kernel scope-resolution
+ * Disk-backed scope store + lazy `ScopeTree` (out-of-core scope index — kernel scope-resolution
  * out-of-core index).
  *
  * ## Why this exists
@@ -17,7 +17,7 @@
  * {@link persistScopeShards} writes the scopes to per-file JSON shards (one file
  * = one shard, so a file's whole parent-chain — which never crosses filePath —
  * stays within one shard) using the same `mapReplacer` + def-interning reviver
- * the ParsedFile store proved byte-identical (#1983 / U3). {@link DiskBackedScopeTree}
+ * the ParsedFile store proved byte-identical (#1983 / def-object interning). {@link DiskBackedScopeTree}
  * serves `getScope` from a bounded LRU of decoded shards plus a small resident
  * skeleton (`scopeId -> {shard, childIds, parent}`), so only the working set of
  * scopes is resident, not all of them.

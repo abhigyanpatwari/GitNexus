@@ -58,7 +58,7 @@ export interface WorkspaceResolutionIndex {
    *  workspace-wide fallback of `findExportedDefByName`). Materialized here
    *  ONCE from the resident module scopes so that fallback is an O(1) lookup
    *  instead of an O(files) scan over every module scope's bindings on each
-   *  unresolved free call — which, under the U6d disk-backed scopeTree, would
+   *  unresolved free call — which, under the disk-backed scopeTree, would
    *  otherwise fault every module scope in from disk per call (the throughput
    *  killer). "First module-local callable in `moduleScopeByFile` order" is the
    *  exact semantics the old scan returned, so it is byte-identical. */
@@ -68,7 +68,7 @@ export interface WorkspaceResolutionIndex {
 /**
  * A `ReadonlyMap<K, Scope>` view backed by a `K → ScopeId` map plus a
  * `ScopeTree`, holding **no `Scope` objects of its own** — `.get` fetches via
- * `scopeTree.getScope(id)`. U6d: the previous `Map<K, Scope>` form pinned every
+ * `scopeTree.getScope(id)`. Out-of-core scope index: the previous `Map<K, Scope>` form pinned every
  * class + module `Scope` (and its heavy `bindings` payload) through emit, which
  * defeated the disk-backed scope seal (the scopes stayed resident via this
  * index). Delegating to the `scopeTree` means the index pins only ids, so once
@@ -116,7 +116,7 @@ class ScopeByKeyView<K> implements ReadonlyMap<K, Scope> {
 /**
  * Build the workspace scope-lookup index. When `scopeTree` is supplied (the live
  * pipeline), the `Scope`-valued maps are id-backed views that delegate to it —
- * so this index never pins `Scope` objects and the U6d disk seal can actually
+ * so this index never pins `Scope` objects and the disk seal can actually
  * reclaim them. Without it (unit tests), the legacy direct `Map<K, Scope>` form
  * is returned unchanged.
  */

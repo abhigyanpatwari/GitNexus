@@ -224,13 +224,13 @@ describe('streamAllCSVsToDisk', () => {
 });
 
 /**
- * U6a — `GITNEXUS_SORT_GRAPH_OUTPUT` makes the CSV a pure function of the
+ * Deterministic output — `GITNEXUS_SORT_GRAPH_OUTPUT` makes the CSV a pure function of the
  * graph's node/edge SET (id-sorted) instead of of insertion order. This is the
- * structural enabler for the out-of-core / windowed resolve (U6b+): with it on,
+ * structural enabler for the out-of-core / windowed resolve: with it on,
  * a windowed emit that produces the same edge set in a different order yields
  * byte-identical CSV. Default off = today's insertion-order bytes exactly.
  */
-describe('streamAllCSVsToDisk — U6a deterministic output ordering', () => {
+describe('streamAllCSVsToDisk — deterministic output ordering', () => {
   // Folder nodes: single-line CSV rows (no multi-line `content` column), so the
   // id is the first comma-separated field and split('\n') is safe. ids are
   // deliberately NOT in insertion order (c, a, b).
@@ -293,7 +293,7 @@ describe('streamAllCSVsToDisk — U6a deterministic output ordering', () => {
 
     const onFwd = await run(NODES, RELS, true, 'u6a-on-fwd');
     const onRev = await run(nodesRev, relsRev, true, 'u6a-on-rev');
-    // SORTED: byte-for-byte identical regardless of insertion order — the U6a property.
+    // SORTED: byte-for-byte identical regardless of insertion order — the deterministic-output property.
     expect(onRev.folderIds).toEqual(onFwd.folderIds);
     expect(onRev.relRows).toEqual(onFwd.relRows);
 

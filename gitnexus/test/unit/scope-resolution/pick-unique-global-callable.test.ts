@@ -1,8 +1,8 @@
 /**
  * Unit tests for `pickUniqueGlobalCallable` + its per-pass `scopeDefsCache`
- * memo (U4 — kernel scope-resolution throughput, 2026-06-06).
+ * memo (free-call candidate cache — kernel scope-resolution throughput, 2026-06-06).
  *
- * U4 memoizes the post-filter candidate list keyed (simpleName, callerFilePath)
+ * It memoizes the post-filter candidate list keyed (simpleName, callerFilePath)
  * so repeated free calls of the same name from one file reuse the same-name
  * bucket scan instead of re-walking a (potentially huge) bucket per site. The
  * memo is behavior-PRESERVING: the candidate list is a pure function of
@@ -141,7 +141,7 @@ const CALLS: ReadonlyArray<readonly [name: string, file: string, arity: number |
   ['missing', 'x.c', 0], // miss → undefined
 ];
 
-describe('pickUniqueGlobalCallable — scopeDefsCache memo (U4)', () => {
+describe('pickUniqueGlobalCallable — scopeDefsCache memo', () => {
   it('resolves a unique simple-name match', () => {
     expect(callUnmemoized('probe', 'x.c', 1)?.nodeId).toBe('def:probe');
   });

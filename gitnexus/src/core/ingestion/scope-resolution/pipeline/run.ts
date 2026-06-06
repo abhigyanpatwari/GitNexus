@@ -289,7 +289,7 @@ interface RunScopeResolutionInput {
    */
   readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
   /**
-   * U6d (out-of-core scope index). When set AND `GITNEXUS_DISK_SCOPE_INDEX` is
+   * Out-of-core scope index (disk-backed scope seal). When set AND `GITNEXUS_DISK_SCOPE_INDEX` is
    * enabled, the per-language `scopeTree` is sealed to a disk-backed store at
    * this path after resolve (before emit), and the heavy `Scope.bindings`
    * payload is dropped from heap — lowering the per-language peak (kernel:
@@ -515,7 +515,7 @@ export function runScopeResolution(
   // attributed correctly) and AFTER finalize (so module-scope
   // bindings are available).
   // Pass the scopeTree so the index's class/module Scope lookups are id-backed
-  // views that delegate to it (U6d) — the index pins no Scope objects, so the
+  // views that delegate to it (out-of-core scope index) — the index pins no Scope objects, so the
   // disk seal can reclaim them. Byte-identical: the view returns the same Scope
   // the resident tree holds (or a value-identical revived one in disk mode).
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree);
@@ -582,7 +582,7 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
   logHeapProbe('sr-post-resolve', `lang=${provider.language}`);
 
-  // ── U6d: out-of-core seal boundary ─────────────────────────────────────
+  // ── Out-of-core scope seal boundary ─────────────────────────────────────
   // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
   // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
   // `scopeTree.getScope` (a point lookup), so seal the TransitionalScopeTree to

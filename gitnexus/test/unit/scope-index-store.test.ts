@@ -1,5 +1,5 @@
 /**
- * U6d — `DiskBackedScopeTree` must be a behavior-identical, value-faithful
+ * Out-of-core scope index — `DiskBackedScopeTree` must be a behavior-identical, value-faithful
  * stand-in for the in-heap `buildScopeTree` for the methods scope-resolution
  * calls (`getScope`, `getChildren`, `getParent`, `getAncestors`, `has`, `size`).
  * Every scope-resolution consumer reads a `Scope` BY VALUE, so a round-trip

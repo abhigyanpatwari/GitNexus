@@ -1013,7 +1013,7 @@ export function findExportedDefByName(
   // `origin === 'local'`, callable types Function/Method/Constructor). This is
   // precomputed ONCE into `index.exportedCallableByName` — byte-identical to the
   // old per-call scan over `moduleScopeByFile`, but O(1) and disk-read-free
-  // (the old scan faulted every module scope in from disk under U6d). We use
+  // (the old scan faulted every module scope in from disk under the out-of-core scope index). We use
   // this scope-derived index rather than `SemanticModel.symbols.lookupCallableByName`
   // because the `origin === 'local'` module-export-visibility filter is a scope
   // concept the raw symbol index doesn't express.

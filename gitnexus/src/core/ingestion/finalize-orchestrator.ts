@@ -116,7 +116,7 @@ export function finalizeScopeModel(
     moduleEntries.push({ filePath: file.filePath, moduleScopeId: file.moduleScope });
   }
 
-  // U6d: when the out-of-core scope index is enabled, build a TransitionalScopeTree
+  // Out-of-core scope index: when enabled, build a TransitionalScopeTree
   // (validated + fully resident now; sealed to disk by run.ts just before emit so
   // the heavy Scope.bindings payload is reclaimed). Default off → the in-heap
   // buildScopeTree result exactly, byte-identical.

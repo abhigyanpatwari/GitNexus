@@ -258,7 +258,7 @@ describe('parsedfile-store', () => {
     }
   });
 
-  // U3 def-object dedup: each SymbolDefinition is serialized THREE times — in
+  // Def-object dedup: each SymbolDefinition is serialized THREE times — in
   // ParsedFile.localDefs, in the owning scope.ownedDefs, and inside
   // scope.bindings[].def (BindingRef) — but is ONE object by reference in the
   // live extractor. JSON.parse rebuilds three distinct objects; the load reviver

@@ -21,13 +21,13 @@ import { NodeTableName } from './schema.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 
 /**
- * U6a — optional deterministic output ordering (out-of-core / windowed-resolve
+ * Deterministic output ordering — optional (out-of-core / windowed-resolve
  * enabler). When `GITNEXUS_SORT_GRAPH_OUTPUT` is set, nodes and relationships
  * are emitted sorted by their (unique, dedup-key) graph `id` rather than in
  * graph-insertion order, making the CSV a pure function of the graph's node/edge
  * SET instead of of emit order. Default off returns the iterator untouched, so
  * the bytes are identical to today. With it on, a windowed/out-of-core emit
- * (U6b+) need only reproduce the same edge SET, not the global insertion order —
+ * (the later windowed-resolve work) need only reproduce the same edge SET, not the global insertion order —
  * which removes "CSV row order == Map insertion order" as a byte-identical
  * hazard for every later windowing step.
  */
@@ -239,7 +239,7 @@ export const streamAllCSVsToDisk = async (
   repoPath: string,
   csvDir: string,
 ): Promise<StreamedCSVResult> => {
-  // U6a: deterministic (id-sorted) node/relationship row order when enabled;
+  // Deterministic (id-sorted) node/relationship row order when enabled;
   // default off = today's graph-insertion order (byte-identical).
   const sortOutput = parseTruthyEnv(process.env.GITNEXUS_SORT_GRAPH_OUTPUT);
   // Remove stale CSVs from previous crashed runs, then recreate
