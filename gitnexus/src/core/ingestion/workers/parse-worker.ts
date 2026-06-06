@@ -84,7 +84,7 @@ import {
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
-import type { VariableExtractorContext } from '../variable-types.js';
+import type { VariableExtractorContext, VariableInfo } from '../variable-types.js';
 import {
   buildMethodProps,
   arityForIdFromInfo,
@@ -1210,7 +1210,8 @@ const processFileGroup = (
     // Track start indices of definition nodes already processed by higher-priority captures
     // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
     // patterns overlap with the same source range.
-    const processedDefinitionNodes = new Set<number>();
+    const processedDefinitionNodes = new Set<string>();
+    const variableInfoCache = new Map<number, Map<string, VariableInfo>>();
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -1651,20 +1652,6 @@ const processFileGroup = (
         continue;
       }
 
-      // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
-      // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
-      // Skip variable captures whose definition node was already processed.
-      if (
-        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
-        definitionNode &&
-        processedDefinitionNodes.has(definitionNode.startIndex)
-      ) {
-        continue;
-      }
-      if (definitionNode) {
-        processedDefinitionNodes.add(definitionNode.startIndex);
-      }
-
       const exportDefaultCall =
         nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
           ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
@@ -1706,6 +1693,25 @@ const processFileGroup = (
 
       const nodeName =
         extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
+      // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
+      // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
+      // Multi-name declarations share the same definition node, so include the emitted name.
+      if (definitionNode) {
+        const definitionBaseKey = `${definitionNode.startIndex}`;
+        if (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') {
+          const definitionNameKey = `${definitionBaseKey}:${nodeName}`;
+          if (
+            processedDefinitionNodes.has(definitionBaseKey) ||
+            processedDefinitionNodes.has(definitionNameKey)
+          ) {
+            continue;
+          }
+          processedDefinitionNodes.add(definitionNameKey);
+        } else {
+          processedDefinitionNodes.add(definitionBaseKey);
+        }
+      }
+
       const startLine = definitionNode
         ? definitionNode.startPosition.row + lineOffset
         : nameNode
@@ -1980,11 +1986,20 @@ const processFileGroup = (
         definitionNode &&
         provider.variableExtractor
       ) {
-        const varCtx: VariableExtractorContext = {
-          filePath: file.path,
-          language,
-        };
-        const varInfo = provider.variableExtractor.extract(definitionNode, varCtx);
+        let variableInfoByName = variableInfoCache.get(definitionNode.startIndex);
+        if (!variableInfoByName) {
+          const varCtx: VariableExtractorContext = {
+            filePath: file.path,
+            language,
+          };
+          variableInfoByName = new Map(
+            provider.variableExtractor
+              .extractAll(definitionNode, varCtx)
+              .map((info) => [info.name, info]),
+          );
+          variableInfoCache.set(definitionNode.startIndex, variableInfoByName);
+        }
+        const varInfo = variableInfoByName.get(nodeName);
         if (varInfo) {
           if (varInfo.type) declaredType = varInfo.type;
           methodProps.visibility = varInfo.visibility;

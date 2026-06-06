@@ -267,6 +267,76 @@ describe('VariableExtractor — Go', () => {
     expect(info!.type).toBe('int');
   });
 
+  it('extracts every name from multi-name const declarations', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nconst X, Y,Z,A,B = 1, 2,3,4,5');
+    const constNode = tree.rootNode.namedChildren.find(
+      (child) => child.type === 'const_declaration',
+    );
+    expect(constNode).toBeDefined();
+
+    const infos = extractor.extractAll(constNode!, ctx);
+    expect(infos.map((info) => info.name)).toEqual(['X', 'Y', 'Z', 'A', 'B']);
+    for (const info of infos) {
+      expect(info.isConst).toBe(true);
+      expect(info.isMutable).toBe(false);
+      expect(info.visibility).toBe('public');
+      expect(info.type).toBeNull();
+    }
+  });
+
+  it('extracts every name from multi-name var declarations with a shared type', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nvar a, b int');
+    const varNode = tree.rootNode.namedChildren.find((child) => child.type === 'var_declaration');
+    expect(varNode).toBeDefined();
+
+    const infos = extractor.extractAll(varNode!, ctx);
+    expect(infos.map((info) => info.name)).toEqual(['a', 'b']);
+    for (const info of infos) {
+      expect(info.isConst).toBe(false);
+      expect(info.isMutable).toBe(true);
+      expect(info.visibility).toBe('package');
+      expect(info.type).toBe('int');
+    }
+  });
+
+  it('preserves per-spec types in grouped multi-name var declarations', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nvar (\n  a, b int\n  c string\n)');
+    const varNode = tree.rootNode.namedChildren.find((child) => child.type === 'var_declaration');
+    expect(varNode).toBeDefined();
+
+    const infos = extractor.extractAll(varNode!, ctx);
+    expect(infos.map((info) => [info.name, info.type])).toEqual([
+      ['a', 'int'],
+      ['b', 'int'],
+      ['c', 'string'],
+    ]);
+
+    const cInfo = infos.find((info) => info.name === 'c');
+    expect(cInfo).toBeDefined();
+    expect(cInfo!.isConst).toBe(false);
+    expect(cInfo!.isMutable).toBe(true);
+    expect(cInfo!.visibility).toBe('package');
+  });
+
+  it('matches parse-worker nodeName selection for grouped multi-name vars', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nvar (\n  a, b int\n  c string\n)');
+    const varNode = tree.rootNode.namedChildren.find((child) => child.type === 'var_declaration');
+    expect(varNode).toBeDefined();
+
+    const selected = extractor.extractAll(varNode!, ctx).find((info) => info.name === 'c');
+    expect(selected).toMatchObject({
+      name: 'c',
+      type: 'string',
+      visibility: 'package',
+      isConst: false,
+      isMutable: true,
+    });
+  });
+
   it('detects lowercase as package-private', () => {
     parser.setLanguage(Go);
     const tree = parser.parse('package main\nconst maxSize = 100');
