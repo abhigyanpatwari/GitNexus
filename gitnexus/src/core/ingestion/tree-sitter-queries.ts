@@ -835,8 +835,9 @@ export const GO_QUERIES = `
 (call_expression function: (selector_expression field: (field_identifier) @call.name)) @call
 
 ; Const/var declarations
-(const_declaration (const_spec name: (identifier) @name)) @definition.const
-(var_declaration (var_spec name: (identifier) @name)) @definition.variable
+(const_declaration (const_spec (identifier) @name)) @definition.const
+(var_declaration (var_spec (identifier) @name)) @definition.variable
+(var_declaration (var_spec_list (var_spec (identifier) @name))) @definition.variable
 
 ; Short variable declaration: x := 5
 (short_var_declaration left: (expression_list (identifier) @name)) @definition.variable

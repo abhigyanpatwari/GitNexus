@@ -77,13 +77,17 @@ export function createVariableExtractor(config: VariableExtractionConfig): Varia
     },
 
     extract(node: SyntaxNode, context: VariableExtractorContext): VariableInfo | null {
-      if (!allNodeTypes.has(node.type)) return null;
+      return this.extractAll(node, context)[0] ?? null;
+    },
 
-      const name = config.extractName(node);
-      if (!name) return null;
+    extractAll(node: SyntaxNode, context: VariableExtractorContext): VariableInfo[] {
+      if (!allNodeTypes.has(node.type)) return [];
 
-      const type = config.extractType(node) ?? null;
-      const visibility = config.extractVisibility(node);
+      const names = config.extractNames
+        ? config.extractNames(node)
+        : [config.extractName(node)].filter((name): name is string => Boolean(name));
+      if (names.length === 0) return [];
+
       // isConst/isStatic: node type membership is a hint, but config.isConst/isStatic
       // has final say. For languages where const and non-const share a node type
       // (e.g., TS lexical_declaration for both const and let), config.isConst disambiguates.
@@ -92,17 +96,17 @@ export function createVariableExtractor(config: VariableExtractionConfig): Varia
       const isMutable = config.isMutable(node);
       const scope = determineScope(node);
 
-      return {
+      return names.map((name) => ({
         name,
-        type,
-        visibility,
+        type: config.extractTypeForName?.(node, name) ?? config.extractType(node) ?? null,
+        visibility: config.extractVisibilityForName?.(node, name) ?? config.extractVisibility(node),
         isConst,
         isStatic,
         isMutable,
         scope,
         sourceFile: context.filePath,
         line: node.startPosition.row + 1,
-      };
+      }));
     },
   };
 }
