@@ -7,7 +7,7 @@
  * byte-identical to resolution. This locks that contract.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildScopeTree } from 'gitnexus-shared';
@@ -16,6 +16,8 @@ import {
   persistScopeShards,
   DiskBackedScopeTree,
   TransitionalScopeTree,
+  clearScopeIndexStore,
+  getScopeIndexStoreDir,
 } from '../../src/storage/scope-index-store.js';
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'scope-index-store-'));
@@ -142,6 +144,63 @@ describe('TransitionalScopeTree — resident → sealed(disk) transition', () =>
       // Seal is idempotent.
       t.seal(dir);
       expect(t.getScope(ALL[0].id)).toEqual(reference.getScope(ALL[0].id));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('scope-index-store cleanup — no stale shards survive a seal', () => {
+  const jsonShards = (storagePath: string): string[] =>
+    readdirSync(getScopeIndexStoreDir(storagePath))
+      .filter((f) => f.endsWith('.json'))
+      .sort();
+
+  it('removes a stale shard left by a prior run', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'scope-index-stale-'));
+    try {
+      const store = getScopeIndexStoreDir(dir);
+      mkdirSync(store, { recursive: true });
+      // A leftover shard from a previous run that this seal will NOT rewrite.
+      writeFileSync(path.join(store, 's99.json'), '[]', 'utf-8');
+
+      persistScopeShards(dir, fileScopes('a.ts')); // writes s0.json, clears first
+
+      expect(existsSync(path.join(store, 's99.json'))).toBe(false); // stale gone
+      expect(existsSync(path.join(store, 's0.json'))).toBe(true); // fresh present
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a re-seal with FEWER files leaves no tail shards (s1/s2 from the prior seal)', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'scope-index-fewer-'));
+    try {
+      // First seal: 3 files → s0, s1, s2.
+      persistScopeShards(dir, [
+        ...fileScopes('a.ts'),
+        ...fileScopes('b.ts'),
+        ...fileScopes('c.ts'),
+      ]);
+      expect(jsonShards(dir)).toEqual(['s0.json', 's1.json', 's2.json']);
+
+      // Re-seal with 1 file → only s0 should remain; s1/s2 must be cleared.
+      persistScopeShards(dir, fileScopes('a.ts'));
+      expect(jsonShards(dir)).toEqual(['s0.json']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clearScopeIndexStore removes the store dir and is idempotent', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'scope-index-clear-'));
+    try {
+      persistScopeShards(dir, fileScopes('a.ts'));
+      expect(existsSync(getScopeIndexStoreDir(dir))).toBe(true);
+      clearScopeIndexStore(dir);
+      expect(existsSync(getScopeIndexStoreDir(dir))).toBe(false);
+      clearScopeIndexStore(dir); // no throw when already absent
+      expect(existsSync(getScopeIndexStoreDir(dir))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

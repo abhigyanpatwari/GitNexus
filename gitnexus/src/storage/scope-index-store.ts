@@ -26,7 +26,7 @@
  * resident `buildScopeTree` path is untouched otherwise.
  */
 
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
 import { buildScopeTree } from 'gitnexus-shared';
@@ -46,6 +46,21 @@ interface ScopeSkeletonEntry {
 export const getScopeIndexStoreDir = (storagePath: string): string =>
   path.join(storagePath, STORE_DIRNAME);
 
+/**
+ * Remove any prior seal's scope shards so a fresh seal starts clean. The shard
+ * names are sequential (`s<n>.json`) and the index resets per `persistScopeShards`
+ * call, so without this a seal that writes FEWER shards than a previous one (a
+ * later language with fewer files, or a later run of a shrunken repo) would leave
+ * stale tail shards on disk indefinitely — pure garbage the disk-backed tree
+ * never reads, but multi-GB on kernel-scale repos. Idempotent; synchronous to
+ * fit the main-thread seal path. Safe to call before each seal: the previously
+ * sealed language has finished emit and been released before the next seal runs,
+ * so its `DiskBackedScopeTree` never reads these shards again.
+ */
+export const clearScopeIndexStore = (storagePath: string): void => {
+  rmSync(getScopeIndexStoreDir(storagePath), { recursive: true, force: true });
+};
+
 const EMPTY: readonly ScopeId[] = Object.freeze([]);
 
 /**
@@ -60,6 +75,10 @@ export const persistScopeShards = (
   scopes: readonly Scope[],
 ): ReadonlyMap<ScopeId, ScopeSkeletonEntry> => {
   const dir = getScopeIndexStoreDir(storagePath);
+  // Clear first so a seal that writes fewer shards than the previous one (a
+  // later language with fewer files, or a shrunken repo on re-run) leaves no
+  // stale `s<n>.json` tail behind. See {@link clearScopeIndexStore}.
+  clearScopeIndexStore(storagePath);
   mkdirSync(dir, { recursive: true });
 
   // Group scope objects by filePath, preserving input order within a file.
