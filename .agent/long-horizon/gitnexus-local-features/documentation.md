@@ -59,6 +59,72 @@ Current state:
 - 2026-06-06T11:15+01:00: Task 4 PR Impact / Blast Radius readiness refresh completed and verified. Source implementation remains blocked until the WIP snapshot/no-snapshot boundary is resolved and the next implementation Goal is created.
 - 2026-06-06T12:12+01:00: WIP boundary review started as the next sequential Goal. Dirty tree buckets were identified; recommendation is to create a checkpoint/snapshot before Task 4 PR Impact source work.
 - 2026-06-06T12:17+01:00: Checkpoint snapshot created at commit `568e24de` (`checkpoint local features through task 4 readiness`). The tree was clean immediately after the commit.
+- 2026-06-06T12:23+01:00: Task 4 PR Impact report-core slice implemented with TDD. CLI wrapper is not added yet; that should be the next sequential Goal if desired.
+
+### 2026-06-06T12:23+01:00 - Task 4 PR Impact Report Core Implemented
+
+Goal:
+
+- Implement the first Task 4 source slice: deterministic report core and diff-mapping helper only.
+
+Files changed:
+
+- `gitnexus/src/core/pr-impact/report.ts`
+- `gitnexus/src/core/pr-impact/diff-mapping.ts`
+- `gitnexus/test/unit/pr-impact-report.test.ts`
+- `gitnexus/test/unit/pr-impact-diff-mapping.test.ts`
+- `gitnexus/test/fixtures/pr-impact/golden-basic-report.md`
+
+Implemented behavior:
+
+- Experimental JSON schema version: `pr-impact.v1alpha1`.
+- Deterministic Markdown rendering with golden fixture coverage.
+- Changed-symbol, unmatched-range, new/unmapped-symbol, deleted-symbol, impact, API-impact, test-signal, verdict, and caveat fields.
+- Diff range classification for:
+  - overlapping modified ranges,
+  - unmatched ranges,
+  - old-side deleted ranges,
+  - added ranges that become new/unmapped symbols.
+- Conservative test-reference signal:
+  - `has_test_reference` only when all impact entries have known test references,
+  - otherwise `unknown_or_unreferenced`.
+- Deterministic verdict rules:
+  - `UNKNOWN` for stale/ambiguous graph evidence,
+  - `BLOCK` for deleted symbols with inbound callers, critical API mismatches, or high/critical direct impact without known test reference,
+  - `NEEDS_DISCUSSION` for high-risk unmatched ranges, broad process/fan-in signals, or API impact without clear tests,
+  - `PROCEED` for bounded low-risk evidence.
+- Optional Markdown sections render only when evidence exists.
+
+Not implemented in this slice:
+
+- No CLI command.
+- No MCP tool exposure.
+- No GitHub PR comments, checks, tokens, Actions, or PR URL ingestion.
+- No Codex remediation.
+- No generated tests.
+- No broad rewrite of `detect_changes`.
+
+TDD / verification:
+
+```powershell
+npm test -- test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts
+npm test -- test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/parse-diff-hunks.test.ts test/unit/detect-changes-worktree.test.ts test/unit/impact-confidence.test.ts test/unit/impact-pagination.test.ts test/integration/api-impact-e2e.test.ts
+git diff --check
+npm run build
+```
+
+Results:
+
+- Initial red test failed because `src/core/pr-impact/report.js` and `diff-mapping.js` did not exist.
+- Focused PR Impact tests passed: 2 files, 7 tests.
+- Nearby diff/impact/API baseline passed: 7 files, 91 tests.
+- Diff whitespace check passed.
+- Build passed.
+
+Next boundary:
+
+- Create the next sequential Goal for a thin `gitnexus pr-impact` CLI wrapper if MAIN wants the feature exposed through the local CLI.
+- Keep MCP and GitHub automation deferred.
 
 ### 2026-06-06T12:17+01:00 - Checkpoint Snapshot Created
 
