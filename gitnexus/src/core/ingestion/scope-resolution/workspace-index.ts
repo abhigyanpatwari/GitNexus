@@ -39,7 +39,7 @@
  * Build cost is O(totalScopes). Read-only after construction.
  */
 
-import type { ParsedFile, Scope, ScopeId } from 'gitnexus-shared';
+import type { ParsedFile, Scope, ScopeId, ScopeTree } from 'gitnexus-shared';
 import { isClassLike } from './scope/walkers.js';
 
 export interface WorkspaceResolutionIndex {
@@ -55,26 +55,98 @@ export interface WorkspaceResolutionIndex {
   readonly moduleScopeByFile: ReadonlyMap<string, Scope>;
 }
 
+/**
+ * A `ReadonlyMap<K, Scope>` view backed by a `K → ScopeId` map plus a
+ * `ScopeTree`, holding **no `Scope` objects of its own** — `.get` fetches via
+ * `scopeTree.getScope(id)`. U6d: the previous `Map<K, Scope>` form pinned every
+ * class + module `Scope` (and its heavy `bindings` payload) through emit, which
+ * defeated the disk-backed scope seal (the scopes stayed resident via this
+ * index). Delegating to the `scopeTree` means the index pins only ids, so once
+ * the tree seals to disk the scopes become collectible. Value-identical to a
+ * stored `Scope` (`getScope` returns the same object resident, or a
+ * value-identical revived one from disk), and iteration follows the `idByKey`
+ * insertion order = the old map's order, so consumers are byte-identical.
+ */
+class ScopeByKeyView<K> implements ReadonlyMap<K, Scope> {
+  constructor(
+    private readonly idByKey: ReadonlyMap<K, ScopeId>,
+    private readonly scopeTree: ScopeTree,
+  ) {}
+
+  get(key: K): Scope | undefined {
+    const id = this.idByKey.get(key);
+    return id === undefined ? undefined : this.scopeTree.getScope(id);
+  }
+  has(key: K): boolean {
+    return this.idByKey.has(key);
+  }
+  get size(): number {
+    return this.idByKey.size;
+  }
+  *entries(): MapIterator<[K, Scope]> {
+    for (const [k, id] of this.idByKey) {
+      const s = this.scopeTree.getScope(id);
+      if (s !== undefined) yield [k, s];
+    }
+  }
+  keys(): MapIterator<K> {
+    return this.idByKey.keys();
+  }
+  *values(): MapIterator<Scope> {
+    for (const [, s] of this.entries()) yield s;
+  }
+  forEach(cb: (value: Scope, key: K, map: ReadonlyMap<K, Scope>) => void, thisArg?: unknown): void {
+    for (const [k, s] of this.entries()) cb.call(thisArg, s, k, this);
+  }
+  [Symbol.iterator](): MapIterator<[K, Scope]> {
+    return this.entries();
+  }
+}
+
+/**
+ * Build the workspace scope-lookup index. When `scopeTree` is supplied (the live
+ * pipeline), the `Scope`-valued maps are id-backed views that delegate to it —
+ * so this index never pins `Scope` objects and the U6d disk seal can actually
+ * reclaim them. Without it (unit tests), the legacy direct `Map<K, Scope>` form
+ * is returned unchanged.
+ */
 export function buildWorkspaceResolutionIndex(
   parsedFiles: readonly ParsedFile[],
+  scopeTree?: ScopeTree,
 ): WorkspaceResolutionIndex {
-  const classScopeByDefId = new Map<string, Scope>();
+  const classScopeIdByDefId = new Map<string, ScopeId>();
   const classScopeIdToDefId = new Map<ScopeId, string>();
-  const moduleScopeByFile = new Map<string, Scope>();
+  const moduleScopeIdByFile = new Map<string, ScopeId>();
+  // Back-compat (no scopeTree): keep the direct Scope-object maps.
+  const classScopeByDefIdDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
+  const moduleScopeByFileDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
 
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
-    if (moduleScope !== undefined) moduleScopeByFile.set(parsed.filePath, moduleScope);
+    if (moduleScope !== undefined) {
+      moduleScopeIdByFile.set(parsed.filePath, moduleScope.id);
+      moduleScopeByFileDirect?.set(parsed.filePath, moduleScope);
+    }
 
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
       const cd = scope.ownedDefs.find((d) => isClassLike(d.type));
       if (cd !== undefined) {
-        classScopeByDefId.set(cd.nodeId, scope);
+        classScopeIdByDefId.set(cd.nodeId, scope.id);
         classScopeIdToDefId.set(scope.id, cd.nodeId);
+        classScopeByDefIdDirect?.set(cd.nodeId, scope);
       }
     }
   }
+
+  const classScopeByDefId: ReadonlyMap<string, Scope> =
+    scopeTree === undefined
+      ? classScopeByDefIdDirect!
+      : new ScopeByKeyView(classScopeIdByDefId, scopeTree);
+  const moduleScopeByFile: ReadonlyMap<string, Scope> =
+    scopeTree === undefined
+      ? moduleScopeByFileDirect!
+      : new ScopeByKeyView(moduleScopeIdByFile, scopeTree);
 
   return { classScopeByDefId, classScopeIdToDefId, moduleScopeByFile };
 }

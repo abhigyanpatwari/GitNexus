@@ -514,7 +514,11 @@ export function runScopeResolution(
   // cannot carry. Must run AFTER `populateOwners` (so owned defs are
   // attributed correctly) and AFTER finalize (so module-scope
   // bindings are available).
-  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles);
+  // Pass the scopeTree so the index's class/module Scope lookups are id-backed
+  // views that delegate to it (U6d) — the index pins no Scope objects, so the
+  // disk seal can reclaim them. Byte-identical: the view returns the same Scope
+  // the resident tree holds (or a value-identical revived one in disk mode).
+  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree);
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
   // Cross-file implicit-namespace visibility (C#). Must run before
