@@ -53,11 +53,15 @@ const GO_SCOPE_QUERY = `
 ;; Declarations — variables
 (var_declaration
   (var_spec
-    name: (identifier) @declaration.name)) @declaration.variable
+    (identifier) @declaration.name)) @declaration.variable
+(var_declaration
+  (var_spec_list
+    (var_spec
+      (identifier) @declaration.name))) @declaration.variable
 
 (const_declaration
   (const_spec
-    name: (identifier) @declaration.name)) @declaration.const
+    (identifier) @declaration.name)) @declaration.const
 
 (short_var_declaration
   left: (expression_list (identifier) @declaration.name)) @declaration.variable
