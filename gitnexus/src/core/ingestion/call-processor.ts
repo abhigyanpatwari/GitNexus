@@ -1823,7 +1823,7 @@ export const processDecoratorRoutesWithRepoId = (
     const routePath = route.path;
     if (!routePath) continue;
     const httpMethod = (route.decorator || 'get').toUpperCase();
-    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE', 'ALL'].includes(httpMethod)) continue;
+    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE', 'ALL', 'ROUTE'].includes(httpMethod)) continue;
 
     const routeId = generateId('Route', `${route.filePath}:${route.decorator}:${routePath}`);
     graph.addNode({
@@ -1951,7 +1951,7 @@ export const processDecoratorRoutes = (
 
     // Normalize the HTTP method
     const httpMethod = (route.decorator || 'get').toUpperCase();
-    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'ALL'].includes(httpMethod)) continue;
+    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'ALL', 'ROUTE'].includes(httpMethod)) continue;
 
     // Create Route node
     const routeId = generateId('Route', `${route.filePath}:${route.decorator}:${routePath}`);

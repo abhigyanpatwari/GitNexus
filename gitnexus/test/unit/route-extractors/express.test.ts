@@ -11,23 +11,28 @@
  * AST and verify the function's behavior against a small set of
  * representative source snippets:
  *
- *  1. `app.get('/x', handler)` → one route, decorator='get', path='/x'.
- *  2. `app.post('/x', h1, h2)` (multiple handlers) → one route; the
- *     extractor keys off the first string argument.
- *  3. `router.METHOD('/x', h)` → one route (the extractor is name-agnostic
- *     for the receiver — app vs. router — both produce a route).
- *  4. `app.use(middleware)` (no path string) → zero routes. The extractor
- *     records a route only when a string argument is present; `use` is
- *     treated the same as `.get`/`.post` etc. in this respect. This is
- *     the documented contract; callers that need `use`-as-route can pass
- *     `app.use('/path', mw)` to get a recorded route.
- *  5. `app.use('/path', middleware)` → one route, decorator='use'.
- *  6. `app.METHOD(handler)` with a non-string first arg (e.g. an arrow
- *     function) → zero routes.
- *
  * The first-arg-must-be-string rule is intentional: it matches how the
  * production integration test fixture (`express-route-mapping`) builds
- * Route nodes only for paths that look like real endpoints.
+ * Route nodes only for paths that look like real endpoints. The
+ * first-arg-must-be-string rule is preserved for the OUTER (non-chained)
+ * case; chained verb calls inherit the parent `route()` path
+ * REGARDLESS of their argument shape (invariant 2 + 3).
+ *
+ * Test cases (see `it(...)` blocks below):
+ *  - basic single-verb registration
+ *  - multiple handler args
+ *  - router.METHOD() (receiver-agnostic)
+ *  - app.use(handler) with no path string → 0 routes
+ *  - app.use('/path', middleware) → 1 route with decorator='use'
+ *  - app.METHOD(handler) with non-string first arg → 0 routes
+ *  - co-located `app.use(auth)` + `app.get('/x')` (M4a)
+ *  - chained `.route('/users').get(g).post(c)` → 3 routes (M4b)
+ *  - 2-level chain `.route('/x').get(g)` → 2 routes
+ *  - sibling no-leak `.route('/x').get(g); app.post('/y', h)` → 3 routes
+ *  - AD-3 tie-break: explicit string arg wins over inherited parent path
+ *  - 3-level chain limitation (route + get only, post/put suppressed)
+ *  - NON_EXPRESS+chain: `headers.route('/x').get(h)` → 0 routes
+ *  - sibling-no-string-arg: `.route('/x').get(g); app.post(h)` → 1 route
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -137,31 +142,163 @@ describe('Standalone Express route extractor (#70)', () => {
     });
   });
 
-  it('emits the chained .route("/path").get().post() pattern as multiple routes (CURRENTLY: only the .route call emits — see note)', () => {
+  it('emits the chained .route("/path").get().post() pattern as multiple routes (#M4b fix)', () => {
     // (#M4b) Express's `app.route(path).get(h1).post(h2)` shares one
-    // path string across multiple verbs. The refactored extractor's
-    // header comment (express.ts:46-50) suggests this pattern is
-    // handled, but the walker keys on the FIRST argument of each
-    // call_expression. For `.get(g)` and `.post(c)` the first arg is
-    // an identifier, not a string, so no route is recorded.
-    //
-    // Current behavior: only the outer `app.route('/users')` call emits
-    // a single route (with `decorator: 'route'`). The chained verb
-    // registrations are missed.
-    //
-    // This test pins that gap. The intended fix (track the shared path
-    // from the parent `route(...)` call when descending into the
-    // chain) is a production-code change — tracked separately.
+    // path string across multiple verbs. The walker threads the parent
+    // `route()` call's path through the recursion so chained verb calls
+    // inherit the path even when their first arg is a handler function
+    // (not a string). The outer `app.route('/users')` call also still
+    // emits its own `decorator: 'route'` route (KD-1: preserve outer
+    // emission — see design doc).
     const code = `app.route('/users').get(g).post(c);`;
     const tree = parseJs(code);
     const routes = extractExpressRoutes(tree, 'app.js');
 
-    // Pin current behavior — exactly one route, keyed by 'route'.
+    // Order-tolerance: the recurse-first walker emits `route` before
+    // its verb descendants, but AST shape can vary. Sort by line
+    // number to pin behavior to a deterministic, observable signal.
+    const sorted = [...routes].sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+    expect(sorted).toHaveLength(3);
+    expect(sorted).toMatchObject([
+      { filePath: 'app.js', decorator: 'route', path: '/users' },
+      { filePath: 'app.js', decorator: 'get', path: '/users' },
+      { filePath: 'app.js', decorator: 'post', path: '/users' },
+    ]);
+  });
+
+  it('emits 2 routes for a 2-level chain: app.route(\'/x\').get(g)', () => {
+    // (#D145) 2-level chain (single verb): the outer `app.route('/x')`
+    // emits one route, and the chained `.get(g)` inherits the path and
+    // emits a second. Net: 2 routes.
+    const code = `app.route('/x').get(g);`;
+    const tree = parseJs(code);
+    const routes = extractExpressRoutes(tree, 'app.js');
+
+    const sorted = [...routes].sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+    expect(sorted).toHaveLength(2);
+    expect(sorted).toMatchObject([
+      { filePath: 'app.js', decorator: 'route', path: '/x' },
+      { filePath: 'app.js', decorator: 'get', path: '/x' },
+    ]);
+  });
+
+  it('does NOT leak the route() path to sibling statements', () => {
+    // (#D145, invariant 1) The chained `app.route('/x').get(g)` is
+    // nested inside one statement; the sibling `app.post('/y', h)` is
+    // a SEPARATE top-level statement. The chain path does NOT cross
+    // statement boundaries — the sibling must NOT inherit `/x`. The
+    // sibling has its own string arg `/y`, so emission uses `/y` (no
+    // ambiguity, but the no-leak invariant is the real test).
+    const code = `
+      app.route('/x').get(g);
+      app.post('/y', h);
+    `;
+    const tree = parseJs(code);
+    const routes = extractExpressRoutes(tree, 'app.js');
+
+    const sorted = [...routes].sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+    expect(sorted).toHaveLength(3);
+    expect(sorted).toMatchObject([
+      { filePath: 'app.js', decorator: 'route', path: '/x' },
+      { filePath: 'app.js', decorator: 'get', path: '/x' },
+      { filePath: 'app.js', decorator: 'post', path: '/y' },
+    ]);
+  });
+
+  it('prefers the chained verb\'s own string arg over the inherited parent path (AD-3 tie-break)', () => {
+    // (#D145, AD-3) Pathological case: `.get('/y', h)` after `.route('/x')`.
+    // The chained verb has its own string arg, so the walker uses `/y`
+    // (the explicit string) instead of the inherited `/x`. This matches
+    // how Express actually behaves at runtime — the verb-call arg
+    // overrides the route-chain path.
+    //
+    // The outer `app.route('/x')` call is NOT emitted in this case
+    // because the inner `.get('/y', h)` already covers the `/y` path;
+    // emitting both would be redundant (the bare `route()` registration
+    // has been subsumed by the verb call). Net: 1 route.
+    const code = `app.route('/x').get('/y', h);`;
+    const tree = parseJs(code);
+    const routes = extractExpressRoutes(tree, 'app.js');
+
     expect(routes).toHaveLength(1);
-    expect(routes[0]).toMatchObject({
-      filePath: 'app.js',
-      decorator: 'route',
-      path: '/users',
-    });
+    expect(routes).toMatchObject([
+      { filePath: 'app.js', decorator: 'get', path: '/y' },
+    ]);
+    // AD-3 explicit subsumption: the outer `route()` emission is
+    // suppressed because the inner verb overrides its path.
+    expect(routes.find((r) => r.decorator === 'route')).toBeUndefined();
+  });
+
+  it('documents the 3-level chain limitation (route + get only)', () => {
+    // (#D145, AD-2) 3-level chains (`.route().get().post().put()`) are a
+    // documented limitation. The walker follows the call_expression
+    // chain from each verb down to the `route()` call, counting the
+    // intermediate verbs (`chainBelowCount`). The simplified emission
+    // rule:
+    //   - innermost verb (obj IS the route call) → emits
+    //   - outermost verb with exactly 1 intermediate → emits
+    //   - everything else (3+ intermediates OR outer-with-2+) → suppressed
+    // For the 4-level chain `.route().get().post().put()`:
+    //   - get: chainBelowCount=0 (innermost) → emits
+    //   - post: chainBelowCount=1, verbChainDepth=1 → NOT case a
+    //     (chainBelowCount=1) AND NOT case b (verbChainDepth !== 0)
+    //     → suppressed
+    //   - put: chainBelowCount=2, verbChainDepth=0 → NOT case a
+    //     (chainBelowCount=2) AND NOT case b (chainBelowCount !== 1)
+    //     → suppressed
+    // Net: 2 routes (route + get).
+    const code = `app.route('/x').get(g).post(c).put(p);`;
+    const tree = parseJs(code);
+    const routes = extractExpressRoutes(tree, 'app.js');
+
+    const sorted = [...routes].sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+    expect(sorted).toHaveLength(2);
+    expect(sorted).toMatchObject([
+      { filePath: 'app.js', decorator: 'route', path: '/x' },
+      { filePath: 'app.js', decorator: 'get', path: '/x' },
+    ]);
+    // 3-level explicit: post/put are not just absent from the array —
+    // the walker must NOT have produced a route for them at all.
+    expect(routes.find((r) => r.decorator === 'post')).toBeUndefined();
+    expect(routes.find((r) => r.decorator === 'put')).toBeUndefined();
+  });
+
+  it('suppresses the entire chain when rooted in a non-Express object', () => {
+    // (MAJOR test gap) The NON_EXPRESS pattern check must extend to
+    // CHAINED calls. `headers.route('/x').get(h)` looks like a route
+    // registration on first glance — `route` and `get` are both
+    // EXPRESS_METHODS — but the chain is rooted in `headers` (a
+    // non-Express object). The walker must NOT emit any route for
+    // either call, AND must not recurse into the chain and
+    // accidentally emit a `route` node for the inner call.
+    const code = `headers.route('/x').get(h);`;
+    const tree = parseJs(code);
+    const routes = extractExpressRoutes(tree, 'app.js');
+
+    expect(routes).toHaveLength(0);
+  });
+
+  it('emits only the chained-verb route when a sibling has no string arg', () => {
+    // (MAJOR test gap) `app.route('/x').get(g)` is a valid 2-level
+    // chain emitting 2 routes. The SIBLING `app.post(h)` has no
+    // string arg and so must NOT emit anything on its own. Net: 2
+    // routes (route + get), not 3.
+    //
+    // This pins the invariant that a sibling statement's verb call
+    // is governed by the FIRST-ARG-MUST-BE-STRING rule, not by
+    // chain inheritance. The chained-verb emission is independent.
+    const code = `
+      app.route('/x').get(g);
+      app.post(h);
+    `;
+    const tree = parseJs(code);
+    const routes = extractExpressRoutes(tree, 'app.js');
+
+    const sorted = [...routes].sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+    expect(sorted).toHaveLength(2);
+    expect(sorted).toMatchObject([
+      { filePath: 'app.js', decorator: 'route', path: '/x' },
+      { filePath: 'app.js', decorator: 'get', path: '/x' },
+    ]);
   });
 });
