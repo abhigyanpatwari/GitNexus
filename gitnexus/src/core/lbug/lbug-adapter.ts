@@ -366,6 +366,13 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType, parameters, annotations, parameterAnnotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Function') {
+    // #86: Function carries parameterCount + returnType. Column order MUST
+    // match the functionHeader in csv-generator.ts:251 and the row layout in
+    // csv-generator.ts:Function switch case. A mismatch would silently shift
+    // fields (e.g. parameterCount would receive a quoted content blob).
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType, repoId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Class') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, fields, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -419,6 +426,12 @@ export const insertNodeToLbug = async (
       // any extra fields while making the new typed fields type-safe at the access site.
       const p = properties as Partial<NodeProperties> & Record<string, unknown>;
       query = `CREATE (n:Route {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, httpMethod: ${escapeValue(p.httpMethod ?? '')}, routePath: ${escapeValue(p.routePath ?? '')}, controllerName: ${escapeValue(p.controllerName ?? '')}, methodName: ${escapeValue(p.methodName ?? '')}, filePath: ${escapeValue(properties.filePath)}, startLine: ${p.startLine ?? 0}, lineNumber: ${p.lineNumber ?? 0}, isInherited: ${!!p.isInherited}, repoId: ${escapeValue(p.repoId ?? '')}, responseKeys: ${escapeValue(p.responseKeys ?? [])}, errorKeys: ${escapeValue(p.errorKeys ?? [])}, middleware: ${escapeValue(p.middleware ?? [])}, controllerClass: ${escapeValue(p.controllerClass ?? '')}, handlerMethod: ${escapeValue(p.handlerMethod ?? '')}, isControllerClass: ${!!p.isControllerClass}, prefix: ${escapeValue(p.prefix ?? '')}})`;
+    } else if (label === 'Function') {
+      // #86: Function-specific INSERT — carries parameterCount + returnType
+      // (and optional repoId for cross-repo). Branched out of TABLES_WITH_EXPORTED
+      // so the 8-column template below stays correct for Class/Interface/CodeElement.
+      const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
+      query = `CREATE (n:Function {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}, parameterCount: ${typeof properties.parameterCount === 'number' ? properties.parameterCount : 0}, returnType: ${escapeValue(properties.returnType ?? '')}, repoId: ${escapeValue(properties.repoId ?? '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
       query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
@@ -495,6 +508,12 @@ export const batchInsertNodesToLbug = async (
           // any extra fields while making the new typed fields type-safe at the access site.
           const p = properties as Partial<NodeProperties> & Record<string, unknown>;
           query = `MERGE (n:Route {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.httpMethod = ${escapeValue(p.httpMethod)}, n.routePath = ${escapeValue(p.routePath)}, n.controllerName = ${escapeValue(p.controllerName)}, n.methodName = ${escapeValue(p.methodName)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${p.startLine ?? 0}, n.lineNumber = ${p.lineNumber ?? 0}, n.isInherited = ${!!p.isInherited}, n.repoId = ${escapeValue(p.repoId ?? '')}, n.responseKeys = ${escapeValue(p.responseKeys ?? [])}, n.errorKeys = ${escapeValue(p.errorKeys ?? [])}, n.middleware = ${escapeValue(p.middleware ?? [])}, n.controllerClass = ${escapeValue(p.controllerClass ?? '')}, n.handlerMethod = ${escapeValue(p.handlerMethod ?? '')}, n.isControllerClass = ${!!p.isControllerClass}, n.prefix = ${escapeValue(p.prefix ?? '')}`;
+        } else if (label === 'Function') {
+          // #86: Function-specific MERGE — carries parameterCount + returnType
+          // (and optional repoId for cross-repo). Branched out of TABLES_WITH_EXPORTED
+          // so the 8-column template below stays correct for Class/Interface/CodeElement.
+          const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
+          query = `MERGE (n:Function {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}, n.parameterCount = ${typeof properties.parameterCount === 'number' ? properties.parameterCount : 0}, n.returnType = ${escapeValue(properties.returnType ?? '')}, n.repoId = ${escapeValue(properties.repoId ?? '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;

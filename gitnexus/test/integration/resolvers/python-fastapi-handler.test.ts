@@ -27,9 +27,16 @@ describe('FastAPI handler → service CALLS resolution (Issue #18)', () => {
   });
 
   it('detects handler functions and service methods', () => {
+    // WI-H76: handler functions (get_users, create_user in routes/handlers.py) are module-level
+    // — stay Function. service methods (UserService.get_users, etc.) are class methods — now Method.
+    // The test asserts the symbols are discoverable; use label-flexible lookup.
     const functions = getNodesByLabel(result, 'Function');
     expect(functions).toContain('get_users');
     expect(functions).toContain('create_user');
+    // Service methods should also be discoverable as Method nodes.
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('get_users');
+    expect(methods).toContain('create_user');
   });
 
   it('resolves service.get_users() → UserService.get_users (NOT self-reference)', () => {

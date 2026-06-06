@@ -17,6 +17,7 @@ import { pythonExportChecker } from '../export-detection.js';
 import { resolvePythonImport } from '../import-resolvers/python.js';
 import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
+import { isPythonClassMethod } from '../utils/ast-helpers.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { pythonConfig as pythonFieldConfig } from '../field-extractors/configs/python.js';
 
@@ -39,4 +40,9 @@ export const pythonProvider = defineLanguage({
   mroStrategy: 'c3',
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
   builtInNames: BUILT_INS,
+  labelOverride: (functionNode, defaultLabel) => {
+    if (defaultLabel !== 'Function') return defaultLabel;
+    if (isPythonClassMethod(functionNode)) return 'Method';
+    return defaultLabel;
+  },
 });

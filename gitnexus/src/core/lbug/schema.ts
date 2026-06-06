@@ -89,12 +89,20 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  parameterCount INT32,
+  returnType STRING,
   repoId STRING,
   PRIMARY KEY (id)
 )`;
 // Migration for cross-repo support
 export const FUNCTION_SCHEMA_MIGRATION = `
 ALTER TABLE Function ADD COLUMN IF NOT EXISTS repoId STRING`;
+// #86: Migration for parameterCount/returnType so existing DBs pick up the
+// new columns without a re-create. Matches METHOD_SCHEMA_MIGRATION_2's
+// additive pattern; IF NOT EXISTS keeps the migration idempotent.
+export const FUNCTION_SCHEMA_MIGRATION_2 = `
+ALTER TABLE Function ADD COLUMN IF NOT EXISTS parameterCount INT32;
+ALTER TABLE Function ADD COLUMN IF NOT EXISTS returnType STRING`;
 
 export const CLASS_SCHEMA = `
 CREATE NODE TABLE Class (

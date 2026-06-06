@@ -153,6 +153,22 @@ export function isKotlinClassMethod(captureNode: { parent?: any } | null | undef
   return false;
 }
 
+/** Check if a Python function_definition capture is nested in a class_definition (i.e., a method).
+ *  Python's tree-sitter grammar emits `function_definition` for both module-level functions
+ *  and methods inside a class body. Walks up the parent chain looking for a `class_definition`
+ *  ancestor. Returns true when the captured definition node is class-nested.
+ *  Decorators (@staticmethod, @classmethod) don't change class-nesting, so this also covers
+ *  static/classmethod. Nested classes (class A: class B: def foo()) also count — the nearest
+ *  class_definition ancestor makes `foo` a Method of `B`. */
+export function isPythonClassMethod(captureNode: { parent?: any } | null | undefined): boolean {
+  let ancestor = captureNode?.parent;
+  while (ancestor) {
+    if (ancestor.type === 'class_definition') return true;
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
+
 /**
  * Determine the graph node label from a tree-sitter capture map.
  * Handles language-specific reclassification via the provider's labelOverride hook

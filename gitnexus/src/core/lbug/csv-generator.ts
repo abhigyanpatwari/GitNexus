@@ -229,7 +229,13 @@ export const streamAllCSVsToDisk = async (
   const fileWriter = new BufferedCSVWriter(path.join(csvDir, 'file.csv'), 'id,name,filePath,content');
   const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
   const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
-  const functionWriter = new BufferedCSVWriter(path.join(csvDir, 'function.csv'), codeElementHeader);
+  // #86: Function gets its own header (parameterCount + returnType) so the
+  // COPY query can include them. The trailing repoId is left empty by the
+  // writer (we don't currently track per-File-function repoId) and backfilled
+  // by the lbug-adapter if/when cross-repo support needs it. The CSV header
+  // order MUST match the COPY column list in lbug-adapter.ts:getCopyQuery.
+  const functionHeader = 'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType,repoId';
+  const functionWriter = new BufferedCSVWriter(path.join(csvDir, 'function.csv'), functionHeader);
   const classHeader = 'id,name,filePath,startLine,endLine,isExported,content,description,fields,annotations';
   const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), classHeader);
   const interfaceWriter = new BufferedCSVWriter(path.join(csvDir, 'interface.csv'), codeElementHeader);
@@ -255,6 +261,10 @@ export const streamAllCSVsToDisk = async (
     'Interface': interfaceWriter,
     'CodeElement': codeElemWriter,
   };
+
+  // #86: Function needs a dedicated case (not the codeWriterMap fallthrough)
+  // because its CSV header is wider than Interface/CodeElement. The map still
+  // routes to the right writer, but the row layout must be matched here.
 
   const seenFileIds = new Set<string>();
 
@@ -326,6 +336,29 @@ export const streamAllCSVsToDisk = async (
           escapeCSVField((node.properties as any).parameters || ''),
           escapeCSVField((node.properties as any).annotations || ''),
           escapeCSVField((node.properties as any).parameterAnnotations || ''),
+        ].join(','));
+        break;
+      }
+      case 'Function': {
+        // #86: Function rows use a wider CSV header than the generic
+        // codeWriterMap fallthrough. Column order MUST match functionHeader
+        // above and the COPY query in lbug-adapter.ts:getCopyQuery.
+        const content = await extractContent(node, contentCache);
+        await functionWriter.addRow([
+          escapeCSVField(node.id),
+          escapeCSVField(node.properties.name || ''),
+          escapeCSVField(node.properties.filePath || ''),
+          escapeCSVNumber(node.properties.startLine, -1),
+          escapeCSVNumber(node.properties.endLine, -1),
+          node.properties.isExported ? 'true' : 'false',
+          escapeCSVField(content),
+          escapeCSVField((node.properties as any).description || ''),
+          escapeCSVNumber(node.properties.parameterCount, 0),
+          escapeCSVField(node.properties.returnType || ''),
+          // repoId is the last column; populated for cross-repo use, empty
+          // for single-repo ingestion. Use (any) cast since NodeProperties
+          // doesn't strictly carry it.
+          escapeCSVField((node.properties as any).repoId || ''),
         ].join(','));
         break;
       }

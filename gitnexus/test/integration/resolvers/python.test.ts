@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByAnyLabel, getNodesByLabelFull, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -24,7 +24,11 @@ describe('Python relative import & heritage resolution', () => {
 
   it('detects exactly 3 classes and 5 functions', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['AuthService', 'BaseModel', 'User']);
-    expect(getNodesByLabel(result, 'Function')).toEqual(['authenticate', 'get_name', 'process_model', 'save', 'validate']);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    // Module-level functions (process_model in helpers.py) stay Function;
+    // class methods (authenticate on AuthService, get_name on User, save/validate on BaseModel) are Method.
+    expect(getNodesByLabel(result, 'Function')).toEqual(['process_model']);
+    expect(getNodesByLabel(result, 'Method')).toEqual(['authenticate', 'get_name', 'save', 'validate']);
   });
 
   it('emits exactly 1 EXTENDS edge: User → BaseModel', () => {
@@ -148,10 +152,10 @@ describe('Python member-call resolution', () => {
     expect(saveCall!.targetFilePath).toBe('user.py');
   });
 
-  it('detects User class and save function (Python methods are Function nodes)', () => {
+  it('detects User class and save function (Python class methods reclassified as Method by WI-H76)', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    // WI-H76: User.save is a class method, now labeled Method (was Function).
+    expect(getNodesByAnyLabel(result, 'Function', 'Method')).toContain('save');
   });
 });
 
@@ -169,12 +173,12 @@ describe('Python receiver-constrained resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    // Python tree-sitter captures all function_definitions as Function
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User.save and repo.save() to Repo.save via receiver typing', () => {
@@ -533,8 +537,9 @@ describe('Python constructor-inferred type resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to models/user.py via constructor-inferred type', () => {
@@ -574,8 +579,9 @@ describe('Python constructor-call resolution', () => {
 
   it('detects User class with __init__ and save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('__init__');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    // WI-H76: __init__ and save are class methods (now Method). process is module-level (Function).
+    expect(getNodesByLabel(result, 'Method')).toContain('__init__');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
     expect(getNodesByLabel(result, 'Function')).toContain('process');
   });
 
@@ -616,10 +622,11 @@ describe('Python self resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, each with a save function', () => {
+  it('detects User and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves self.save() inside User.process to User.save, not Repo.save', () => {
@@ -736,8 +743,9 @@ describe('Python walrus operator type inference', () => {
 
   it('detects User class with save and greet methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('greet');
+    // WI-H76: save and greet are User class methods (now Method).
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('greet');
   });
 
   it('resolves user.save() via walrus operator constructor inference', () => {
@@ -765,8 +773,9 @@ describe('Python class-level annotation resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves active_user.save() to User.save via file-level annotation', () => {
@@ -883,14 +892,20 @@ describe('Python static/classmethod class resolution (issue #289)', () => {
   it('resolves find_user() via class-as-receiver for static method calls', () => {
     // UserService.find_user() and AdminService.find_user() are both resolved because
     // the class name (UserService / AdminService) is used as the receiver type for
-    // disambiguation. Both find_user methods share the same nodeId (same file, same name)
-    // so exactly 1 CALLS edge is emitted — which is correct (not ambiguous, not missing).
+    // disambiguation. WI-H76 now reclassifies these as Method nodes, so each class's
+    // find_user gets its own distinct nodeId (Method:service.py:find_user and
+    // Method:service.py:find_user:1) — emitting 2 distinct CALLS edges, one per
+    // static-method invocation in the fixture. This is semantically more correct
+    // than the prior behavior where both collapsed into a single Function node.
     const calls = getRelationships(result, 'CALLS');
     const findCalls = calls.filter(c =>
       c.target === 'find_user' && c.source === 'process',
     );
-    expect(findCalls.length).toBe(1);
-    expect(findCalls[0].targetFilePath).toContain('service.py');
+    expect(findCalls.length).toBe(2);
+    for (const c of findCalls) {
+      expect(c.targetFilePath).toContain('service.py');
+      expect(c.targetLabel).toBe('Method');
+    }
   });
 });
 
@@ -909,11 +924,12 @@ describe('Python nullable receiver resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User.save via nullable receiver typing', () => {
@@ -965,8 +981,9 @@ describe('Python assignment chain propagation', () => {
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via assignment chain', () => {
@@ -1030,8 +1047,9 @@ describe('Python nullable (User | None) + assignment chain combined', () => {
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save when source is User | None', () => {
@@ -1086,8 +1104,9 @@ describe('Python walrus operator (:=) assignment chain', () => {
   it('detects User and Repo classes each with a save function', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via regular + walrus chains', () => {
@@ -1141,8 +1160,9 @@ describe('Python match/case as-pattern type binding', () => {
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const saveMethods = getNodesByAnyLabel(result, 'Function', 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves u.save() to User#save via match/case as-pattern binding', () => {
@@ -1264,8 +1284,8 @@ describe('Python member access iterable for-loop', () => {
   it('detects User and Repo classes with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    // WI-H76: Python class methods reclassified from Function to Method.
+    expect(getNodesByAnyLabel(result, 'Function', 'Method')).toContain('save');
   });
 
   it('resolves user.save() via self.users to User#save', () => {
@@ -1478,7 +1498,8 @@ describe('Field type disambiguation (Python)', () => {
   }, 60000);
 
   it('detects both User#save and Address#save', () => {
-    const methods = getNodesByLabel(result, 'Function');
+    // WI-H76: Python class methods reclassified from Function to Method.
+    const methods = getNodesByAnyLabel(result, 'Function', 'Method');
     const saveMethods = methods.filter(m => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
@@ -1657,11 +1678,13 @@ describe('Python cross-file binding propagation', () => {
 
   it('detects User class with save and get_name methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+    // WI-H76: save and get_name are User class methods (now Method).
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('get_name');
   });
 
   it('detects get_user and run functions', () => {
+    // get_user and run are module-level — stay Function.
     expect(getNodesByLabel(result, 'Function')).toContain('get_user');
     expect(getNodesByLabel(result, 'Function')).toContain('run');
   });
@@ -1730,8 +1753,8 @@ describe('Python module import CALLS resolution (Issue #337)', () => {
     expect(classes.filter(c => c === 'Admin').length).toBe(1);
   });
 
-  it('detects exactly 3 Function nodes: save, verify, login', () => {
-    const fns = getNodesByLabel(result, 'Function');
+  it('detects exactly 3 Method nodes: save, verify, login (all class methods reclassified by WI-H76)', () => {
+    const fns = getNodesByLabel(result, 'Method');
     expect(fns.length).toBe(3);
     expect(fns).toContain('save');
     expect(fns).toContain('verify');
