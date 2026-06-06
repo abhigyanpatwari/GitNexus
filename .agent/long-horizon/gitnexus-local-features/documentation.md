@@ -77,6 +77,7 @@ Current state:
 - 2026-06-06T19:31+01:00: Task 7 OCaml implementation committed as `5f543c17` (`feat: add experimental ocaml language support`) and the active Goal was marked complete. The next defensible Goal is post-tranche consolidation and next-slice recommendation; do not start deeper feature work until a new exact slice and write set are named.
 - 2026-06-06T19:35+01:00: Post-tranche consolidation recommends the next Goal as Task 6 executable generated-test output policy readiness. This is not implementation approval; it should define whether and how `e2e-test-plan.v1alpha1` proposals may become executable Playwright files.
 - 2026-06-06T19:35+01:00: Task 6 executable-output policy readiness recorded in `plans.md`. Recommendation: future implementation should start with a pure deterministic Playwright spec renderer for `gitnexus-web` mocked-backend route proposals, with optional explicit CLI write mode only after renderer tests pass.
+- 2026-06-06T19:38+01:00: Task 6 executable-output policy readiness committed as `4f3fec63` (`docs: define e2e executable output policy`).
 
 ### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
 
