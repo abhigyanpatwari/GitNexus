@@ -17,12 +17,11 @@
  * caller. Asserting the edge directly avoids wiring an entire `withTestLbugDB`
  * fixture for what is effectively a graph-shape assertion.
  *
- * Test set:
- *   - Test A: sequential pipeline produces both edges with the right `ownerId`
- *   - Test B: worker-mode pipeline produces identical edge sets (skipped when
- *     `dist/parse-worker.js` is missing; CI builds it before running tests)
+ * Test set (all through the worker pool — the sole parse path; skipped locally
+ * when `dist/parse-worker.js` is missing, with a CI tripwire so CI never skips):
+ *   - Test A: pipeline produces both edges with the right `ownerId`
  *   - Test C: local-scoped object literal inside a function emits no false-
- *     positive HAS_METHOD (proves U1 boundary guard is load-bearing)
+ *     positive HAS_METHOD (proves the boundary guard is load-bearing)
  *   - Test D: nested object literal binds neither method to outer (safe
  *     under-approximation proof)
  */
@@ -50,12 +49,11 @@ const DIST_WORKER = path.resolve(
 );
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
-// CI tripwire: worker-parity test (Test B below) silently skips when
-// `dist/parse-worker.js` is missing. That's fine locally — devs may not
-// have run `npm run build` — but on CI a missing dist would mean U3
-// (worker-path ownerId emission) is unverified. Fail hard so a missing
-// dist surfaces as a red build, not a green test with a silent skip.
-// Locally, run `npm run build` before this suite to exercise worker mode.
+// CI tripwire: these suites silently skip when `dist/parse-worker.js` is
+// missing. That's fine locally — devs may not have run `npm run build` — but on
+// CI a missing dist would leave worker-path ownerId emission unverified. Fail
+// hard so a missing dist surfaces as a red build, not a silent skip.
+// Locally, run `npm run build` before this suite.
 if (!hasDistWorker && process.env.CI) {
   throw new Error(
     'dist/parse-worker.js missing on CI — worker-parity test would silently skip. ' +
@@ -91,9 +89,9 @@ export function caller(id: string) {
 }
 `;
 
-// ── Test A: sequential pipeline ──────────────────────────────────────────────
+// ── Test A: worker pipeline ──────────────────────────────────────────────────
 
-describe('object-literal owner resolution — sequential pipeline (PR #1718)', () => {
+describe.skipIf(!hasDistWorker)('object-literal owner resolution — worker pipeline', () => {
   let repoRoot: string;
   let result: PipelineResult;
 
@@ -104,7 +102,6 @@ describe('object-literal owner resolution — sequential pipeline (PR #1718)', (
     });
     result = await runPipelineFromRepo(repoRoot, () => undefined, {
       skipGraphPhases: true,
-      skipWorkers: true,
     });
   }, 60000);
 
@@ -160,120 +157,82 @@ describe('object-literal owner resolution — sequential pipeline (PR #1718)', (
   });
 });
 
-// ── Test B: worker-mode parity ───────────────────────────────────────────────
-
-describe.skipIf(!hasDistWorker)('object-literal owner resolution — worker parity', () => {
-  let repoRoot: string;
-  let sequentialResult: PipelineResult;
-  let workerResult: PipelineResult;
-
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/service.ts': SERVICE_TS,
-      'src/consumer.ts': CONSUMER_TS,
-    });
-    sequentialResult = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-      skipWorkers: true,
-    });
-    workerResult = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-      skipWorkers: false,
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-    });
-  }, 90000);
-
-  afterAll(() => removeFixture(repoRoot));
-
-  it('produces the same HAS_METHOD edge set as sequential', () => {
-    const seqEdges = getRelationships(sequentialResult, 'HAS_METHOD')
-      .map((e) => `${e.source}->${e.target}`)
-      .sort();
-    const workerEdges = getRelationships(workerResult, 'HAS_METHOD')
-      .map((e) => `${e.source}->${e.target}`)
-      .sort();
-    expect(workerEdges).toEqual(seqEdges);
-  });
-
-  it('produces the same CALLS edge set as sequential', () => {
-    const seqEdges = getRelationships(sequentialResult, 'CALLS')
-      .map((e) => `${e.source}->${e.target}`)
-      .sort();
-    const workerEdges = getRelationships(workerResult, 'CALLS')
-      .map((e) => `${e.source}->${e.target}`)
-      .sort();
-    expect(workerEdges).toEqual(seqEdges);
-  });
-});
+// (Former Test B — worker-vs-sequential parity — removed: the sequential parser
+// was deleted, so there is no second mode to diff. Test A above already proves
+// the worker path emits the HAS_METHOD / CALLS edges with the right ownerId.)
 
 // ── Test C: negative — local object literal inside a function body ──────────
 
-describe('object-literal owner resolution — negative (local literal)', () => {
-  let repoRoot: string;
-  let result: PipelineResult;
+describe.skipIf(!hasDistWorker)(
+  'object-literal owner resolution — negative (local literal)',
+  () => {
+    let repoRoot: string;
+    let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/p.ts': `export function processAll() {
+    beforeAll(async () => {
+      repoRoot = writeFixture({
+        'src/p.ts': `export function processAll() {
   const handler = { run(id: string) { return id; } };
   return handler;
 }
 `,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-      skipWorkers: true,
-    });
-  }, 60000);
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    }, 60000);
 
-  afterAll(() => removeFixture(repoRoot));
+    afterAll(() => removeFixture(repoRoot));
 
-  it('emits no HAS_METHOD edge targeting `run` (no false-positive owner attribution)', () => {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const targetingRun = hasMethod.filter((e) => e.target === 'run');
-    expect(targetingRun.length).toBe(0);
-  });
-
-  it('the run method node carries no ownerId property', () => {
-    let runNode: { properties: { name: string; ownerId?: string }; label: string } | undefined;
-    result.graph.forEachNode((n) => {
-      if (n.label === 'Method' && n.properties.name === 'run') {
-        runNode = n as typeof runNode;
-      }
+    it('emits no HAS_METHOD edge targeting `run` (no false-positive owner attribution)', () => {
+      const hasMethod = getRelationships(result, 'HAS_METHOD');
+      const targetingRun = hasMethod.filter((e) => e.target === 'run');
+      expect(targetingRun.length).toBe(0);
     });
-    expect(runNode).toBeDefined();
-    expect(runNode!.properties.ownerId).toBe(undefined);
-  });
-});
+
+    it('the run method node carries no ownerId property', () => {
+      let runNode: { properties: { name: string; ownerId?: string }; label: string } | undefined;
+      result.graph.forEachNode((n) => {
+        if (n.label === 'Method' && n.properties.name === 'run') {
+          runNode = n as typeof runNode;
+        }
+      });
+      expect(runNode).toBeDefined();
+      expect(runNode!.properties.ownerId).toBe(undefined);
+    });
+  },
+);
 
 // ── Test D: negative — nested object literal ─────────────────────────────────
 
-describe('object-literal owner resolution — negative (nested literal)', () => {
-  let repoRoot: string;
-  let result: PipelineResult;
+describe.skipIf(!hasDistWorker)(
+  'object-literal owner resolution — negative (nested literal)',
+  () => {
+    let repoRoot: string;
+    let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/n.ts': `export const s = {
+    beforeAll(async () => {
+      repoRoot = writeFixture({
+        'src/n.ts': `export const s = {
   nested: { method(id: string) { return id; } },
   outer(id: string) { return id; },
 };
 `,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-      skipWorkers: true,
-    });
-  }, 60000);
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    }, 60000);
 
-  afterAll(() => removeFixture(repoRoot));
+    afterAll(() => removeFixture(repoRoot));
 
-  it('binds the top-level outer method to s but does NOT bind the nested method', () => {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const fromS = hasMethod
-      .filter((e) => e.source === 's')
-      .map((e) => e.target)
-      .sort();
-    expect(fromS).toEqual(['outer']);
-  });
-});
+    it('binds the top-level outer method to s but does NOT bind the nested method', () => {
+      const hasMethod = getRelationships(result, 'HAS_METHOD');
+      const fromS = hasMethod
+        .filter((e) => e.source === 's')
+        .map((e) => e.target)
+        .sort();
+      expect(fromS).toEqual(['outer']);
+    });
+  },
+);

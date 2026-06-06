@@ -14,3 +14,7 @@ export {
   clearFileLocalNames,
   expandCppWildcardNames,
 } from './file-local-linkage.js';
+export {
+  collectCppCaptureSideChannel,
+  applyCppCaptureSideChannel,
+} from './capture-side-channel.js';

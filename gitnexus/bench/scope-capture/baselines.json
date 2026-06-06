@@ -11,9 +11,10 @@
     "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
   },
   "c": {
-    "fingerprint": "0de009bdbfe095f530fa87eb32bce6ab83092c904f26b3c8fe8d8ab587cf6dc9",
+    "fingerprint": "39f3a8346bb58159e9d79e2db6e1dd34ec6d70028e507ffd39548667dc658aa2",
     "scaling_budget": 1.5,
-    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96."
+    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96.",
+    "_note": "#1983: + c-static-linkage-worker fixture (caller.c/lib.c/lib.h/local.c \u2014 worker-path static-linkage side-channel test). Pure fixture-corpus drift: no c/captures.ts or query change branch-vs-main, existing fixtures' captures byte-identical (c-captures.test.ts 45/45), scaling stays linear (~0.97). The baseline was missed when the fixture landed; regenerated here. fingerprint 0de009b->39f3a83."
   },
   "cpp": {
     "fingerprint": "6d6207ae1df3943c5fae28983e0c294e55225456e7cf39af1d46fda21b6787c4",

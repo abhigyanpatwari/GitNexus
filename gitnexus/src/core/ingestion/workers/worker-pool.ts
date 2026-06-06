@@ -102,13 +102,15 @@ export interface WorkerPool {
    *
    * Files in {@link WorkerPool.getQuarantinedPaths} are filtered out before
    * dispatch — they have already caused a worker death this pool lifetime and
-   * are not safe to re-attempt in workers. The caller is responsible for
-   * routing them (e.g. to sequential fallback); inspect the quarantine
-   * snapshot before and after each dispatch.
+   * are not safe to re-attempt in workers. They are dropped from the run (the
+   * sequential fallback that once re-parsed them was removed); inspect the
+   * quarantine snapshot before and after each dispatch to surface skipped files
+   * in diagnostics.
    */
   dispatch<TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
   ): Promise<TResult[]>;
 
   /** Terminate all workers. Must be called when done. */
@@ -192,8 +194,8 @@ export interface WorkerPoolOptions {
    * Hard ceiling on total wall time the pool will spend retrying / splitting
    * any single job. Combined with `timeoutBackoffFactor`, this prevents
    * exponentially-growing retry waits from accumulating into multi-hour
-   * stalls before the pool finally surfaces the bad file to sequential
-   * fallback. Default 5x `subBatchIdleTimeoutMs`.
+   * stalls before the pool finally quarantines the bad file and proceeds
+   * without it. Default 5x `subBatchIdleTimeoutMs`.
    */
   maxCumulativeTimeoutMs?: number;
   /**
@@ -209,6 +211,27 @@ export interface WorkerPoolOptions {
    * code should leave this unset.
    */
   workerFactory?: (workerUrl: URL) => Worker;
+  /**
+   * Storage path for the disk-backed ParsedFile store (#1983 parallel
+   * serialization). When set, it is baked into every spawned worker's
+   * `workerData` so the worker writes its own ParsedFile shards to disk
+   * instead of returning them over the MessageChannel for the main thread to
+   * serialize. Immutable for the run; captured in the default factory closure
+   * so RESPAWNED workers inherit it automatically (all spawn sites reuse the
+   * same factory). `undefined` ⇒ workers fall back to returning ParsedFiles in
+   * the result (small-repo / no-storage path).
+   */
+  parsedFileStoreStoragePath?: string;
+  /**
+   * Directory for the DURABLE, content-addressed ParsedFile store
+   * (`getDurableParsedFileDir`). When set (alongside a chunk hash on the
+   * dispatch), the worker ALSO writes its ParsedFiles to a content-addressed
+   * shard keyed by chunk hash so a future warm parse-cache hit can restore
+   * them without re-parsing (#2038 warm-cache coverage). Baked into every
+   * worker's `workerData` exactly like {@link parsedFileStoreStoragePath}.
+   * `undefined` ⇒ no durable write.
+   */
+  durableParsedFileStoragePath?: string;
 }
 
 export class WorkerPoolDispatchError extends Error {
@@ -265,6 +288,23 @@ export class WorkerPoolInitializationError extends WorkerPoolDispatchError {
   }
 }
 
+/**
+ * Thrown when a caller asks GitNexus to parse without the worker pool —
+ * `--workers 0`, `GITNEXUS_WORKER_POOL_SIZE=0`, or `skipWorkers: true`.
+ *
+ * GitNexus no longer has a sequential parser: the worker pool (with its
+ * quarantine + respawn/recycle + circuit-breaker resilience) is the SOLE
+ * parse path. These channels used to select an in-process fallback; they are
+ * now hard configuration errors so the operator gets an actionable message
+ * instead of silently parsing through a (deleted) slower path.
+ */
+export class WorkerPoolDisabledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkerPoolDisabledError';
+  }
+}
+
 /** Message shapes sent back by worker threads. */
 type WorkerOutgoingMessage =
   | { type: 'progress'; filesProcessed: number }
@@ -298,6 +338,16 @@ interface WorkerJob<TInput> {
   estimatedBytes: number;
   attempt: number;
   splitDepth: number;
+  /**
+   * Content hash of the parse chunk these items belong to (when the caller
+   * dispatches per content-addressed chunk). Threaded into the worker's
+   * `flush` message so the worker can additionally write a durable,
+   * content-addressed ParsedFile shard for warm-cache reuse. Carried through
+   * every job-derivation site (split/requeue) so a split sub-job still tags
+   * its durable shard with the chunk hash. `undefined` ⇒ no durable write
+   * (tests / no-cache / no storage path).
+   */
+  chunkHash?: string;
   timeoutMs: number;
   /**
    * Running total of timeoutMs across all attempts/splits/respawn-retries
@@ -502,7 +552,7 @@ export function resolveWorkerPoolOptions(
  * The pool size requested via the `GITNEXUS_WORKER_POOL_SIZE` env var, or
  * `undefined` when unset, empty/whitespace, or invalid. Module-internal sizing
  * reader consumed by {@link resolveAutoPoolSize} (the env override) and
- * {@link workerPoolDisabledByEnv} (the sequential-routing gate). Reads only —
+ * {@link workerPoolDisabledByEnv} (the disabled-channel check). Reads only —
  * never mutates `process.env`. Empty/whitespace is treated as *unset* (falls
  * through to the auto formula), not as 0 — an empty assignment (`export
  * GITNEXUS_WORKER_POOL_SIZE=`) is an accident, not a request for zero workers;
@@ -515,12 +565,11 @@ function envWorkerPoolSize(): number | undefined {
 }
 
 /**
- * True when the operator explicitly disabled the worker pool via
- * `GITNEXUS_WORKER_POOL_SIZE=0` — the env-channel equivalent of `--workers 0`.
- * The parse phase's `shouldUseWorkers` gate consults this (only when no
- * explicit `--workers <N>` was passed) to route to sequential parsing instead
- * of constructing a useless size-0 pool that would fail fast on a phantom
- * crash (#1741). An explicit positive `--workers N` always wins.
+ * True when the operator set `GITNEXUS_WORKER_POOL_SIZE=0` — the env-channel
+ * equivalent of `--workers 0`. The parse phase consults this (only when no
+ * explicit `--workers <N>` was passed) and HARD-ERRORS: sequential parsing was
+ * removed, so a disabled pool is an actionable configuration error, not a
+ * silent fallback. An explicit positive `--workers N` always wins.
  */
 export function workerPoolDisabledByEnv(): boolean {
   return envWorkerPoolSize() === 0;
@@ -724,6 +773,7 @@ function createJobs<TInput>(
   maxItems: number,
   maxBytes: number,
   timeoutMs: number,
+  chunkHash?: string,
 ): WorkerJob<TInput>[] {
   const jobs: WorkerJob<TInput>[] = [];
   let startIndex = 0;
@@ -738,6 +788,7 @@ function createJobs<TInput>(
       estimatedBytes: batchBytes,
       attempt: 0,
       splitDepth: 0,
+      chunkHash,
       timeoutMs,
       cumulativeTimeoutMs: timeoutMs,
     });
@@ -800,7 +851,23 @@ export const createWorkerPool = (
   // (see captureWorkerStderr) and attach to readiness-failure messages —
   // instead of the generic "did not report ready" that hid the real cause
   // in #1741. Test factories (workerFactory) are used verbatim.
-  const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url, { stderr: true }));
+  // Bake the (immutable) ParsedFile store path into the factory closure so it
+  // reaches EVERY spawned worker — including respawns, which reuse this same
+  // factory — via `workerData`, read once at worker init. The `(url) => Worker`
+  // signature is unchanged so the zero-arg test factories keep working.
+  const parsedFileStoreStoragePath = options?.parsedFileStoreStoragePath;
+  const durableParsedFileStoragePath = options?.durableParsedFileStoragePath;
+  const workerStoreData =
+    parsedFileStoreStoragePath || durableParsedFileStoragePath
+      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath }
+      : undefined;
+  const spawnWorker =
+    options?.workerFactory ??
+    ((url: URL) =>
+      new Worker(url, {
+        stderr: true,
+        workerData: workerStoreData,
+      }));
   /** Spawn + wire stderr capture in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
     const worker = spawnWorker(url);
@@ -966,6 +1033,7 @@ export const createWorkerPool = (
   const dispatch = async <TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
   ): Promise<TResult[]> => {
     // Await the initial-spawn readiness gate (F13). On first dispatch
     // this blocks for up to WORKER_READY_TIMEOUT_MS while every initial
@@ -1020,6 +1088,7 @@ export const createWorkerPool = (
       poolOptions.subBatchSize,
       poolOptions.subBatchMaxBytes,
       poolOptions.subBatchIdleTimeoutMs,
+      chunkHash,
     );
 
     return new Promise<TResult[]>((resolve, reject) => {
@@ -1262,6 +1331,7 @@ export const createWorkerPool = (
           estimatedBytes: filtered.reduce((sum, item) => sum + estimateItemBytes(item), 0),
           attempt: job.attempt,
           splitDepth: job.splitDepth,
+          chunkHash: job.chunkHash,
           timeoutMs: job.timeoutMs,
           cumulativeTimeoutMs: job.cumulativeTimeoutMs,
         });
@@ -1398,6 +1468,7 @@ export const createWorkerPool = (
             estimatedBytes: firstItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
             attempt: job.attempt,
             splitDepth: job.splitDepth + 1,
+            chunkHash: job.chunkHash,
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           };
@@ -1407,6 +1478,7 @@ export const createWorkerPool = (
             estimatedBytes: secondItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
             attempt: job.attempt,
             splitDepth: job.splitDepth + 1,
+            chunkHash: job.chunkHash,
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           };
@@ -1752,7 +1824,10 @@ export const createWorkerPool = (
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();
-            worker.postMessage({ type: 'flush' });
+            // Carry the chunk hash on the flush so the worker can write a
+            // durable, content-addressed ParsedFile shard (warm-cache reuse)
+            // at the flush boundary where `accumulated.parsedFiles` is complete.
+            worker.postMessage({ type: 'flush', chunkHash: job.chunkHash });
           } else if (msg.type === 'error') {
             settled = true;
             cleanup();

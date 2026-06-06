@@ -164,7 +164,7 @@ export const zhCN = {
   'help.option.analyze.walCheckpointThreshold':
     'analyze 期间 LadybugDB WAL 自动 checkpoint 阈值（字节，整数 >= -1；默认：67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。',
   'help.option.analyze.workers':
-    '解析 worker 池大小。默认：cores-1，最多 16。传 0 禁用 worker（顺序执行）。',
+    '解析 worker 池大小（>=1）。默认：cores-1，最多 16，按仓库规模自适应。',
   'help.option.analyze.embeddingThreads': '限制本地 ONNX 嵌入 CPU 线程数',
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',

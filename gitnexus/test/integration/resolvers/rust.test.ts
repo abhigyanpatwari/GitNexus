@@ -2156,7 +2156,7 @@ describe('Rust generic inherent-impl ownership — worker path parity (issue #19
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
@@ -2235,7 +2235,7 @@ describe('Rust same-tail generic impls with shared method name — worker path p
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
