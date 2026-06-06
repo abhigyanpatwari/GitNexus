@@ -54,7 +54,7 @@ Supporting evidence:
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
 | 5 | Auto Regression Forensics | Light scoping only | `local V1 complete` | Report core and thin local CLI wrapper implemented locally | Commit/Goal completion, then Task 6 readiness |
-| 6 | End-to-End Test Generation | Light scoping completed for first slice | `next` | Readiness recommends deterministic E2E proposal/report core only | Implement report core after Goal creation; no executable generated tests in V1 |
+| 6 | End-to-End Test Generation | Light scoping completed for first slice | `local report core complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core implemented locally | Commit/Goal completion, then post-core boundary review |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
 ## Dependency Map
@@ -378,7 +378,7 @@ Current status:
 
 - Readiness completed for a first local slice.
 - Target app/framework/runtime contract now exists for the first track: `gitnexus-web` with existing Playwright Chromium E2E infrastructure.
-- Source implementation not started yet.
+- Deterministic proposal/report core implemented locally with TDD.
 
 Intended local capability:
 
@@ -412,13 +412,23 @@ Candidate first source surfaces:
 
 | Surface | Purpose |
 | --- | --- |
-| `gitnexus/src/core/e2e-test-generation/report.ts` | Deterministic proposal schema, ranking, caveats, Markdown/JSON rendering |
-| `gitnexus/test/unit/e2e-test-generation-report.test.ts` | Golden schema/Markdown/ranking/no-executable-code tests |
-| `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md` | Checked-in expected Markdown |
+| `gitnexus/src/core/e2e-test-generation/report.ts` | Implemented deterministic proposal schema, ranking, caveats, Markdown/JSON rendering |
+| `gitnexus/test/unit/e2e-test-generation-report.test.ts` | Implemented golden schema/Markdown/ranking/no-executable-code tests |
+| `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md` | Implemented checked-in expected Markdown |
+
+Verification recorded:
+
+| Check | Result |
+| --- | --- |
+| Focused E2E test-plan report tests | Passed, 1 file, 3 tests |
+| Adjacent E2E/Regression/PR report tests | Passed, 4 files, 13 tests |
+| `git diff --check` | Passed |
+| `npm run build` | Passed |
 
 Next gate:
 
-- Create the next implementation Goal for the report core only.
+- Commit the report core and complete the active Goal.
+- Create a post-core boundary Goal.
 - Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred.
 
 ### Task 7 - OCaml Support
@@ -450,15 +460,17 @@ Next gate:
 
 Current uncommitted source WIP includes:
 
-- None at this checkpoint.
+| Feature | Source/Test WIP |
+| --- | --- |
+| End-to-End Test Generation | `gitnexus/src/core/e2e-test-generation/report.ts`, `gitnexus/test/unit/e2e-test-generation-report.test.ts`, `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md` |
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates for the Task 6 readiness checkpoint and next baton.
+- Long-horizon bundle updates for the Task 6 report-core checkpoint and next baton.
 
 Boundary rule:
 
-- Before starting Task 6 source implementation, commit or deliberately snapshot the Task 6 readiness documentation boundary.
+- Before broadening Task 6 into CLI, inventory extraction, browser execution, or generated test files, commit or deliberately snapshot the Task 6 report-core boundary.
 
 ## Source Surface Map By Area
 
@@ -493,19 +505,19 @@ Boundary rule:
 | Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
-| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; future generated-file output policy remains unresolved |
+| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core implemented; future generated-file output policy remains unresolved |
 | Task 7 parser/provider plan | Decide OCaml parser/provider, dependency policy, fixtures, and graph expectations |
 
 ## Next Actions
 
 Immediate:
 
-1. Commit Task 6 readiness documentation.
-2. Complete the active Task 6 readiness Goal with the Goal tool.
-3. Create the next sequential implementation Goal for `e2e-test-plan.v1alpha1` report core only.
+1. Commit the Task 6 report-core implementation after final verification.
+2. Complete the active Task 6 report-core Goal with the Goal tool.
+3. Create the next sequential post-core boundary Goal.
 
 Recommended next feature work:
 
-1. Implement the Task 6 report core with TDD and golden Markdown.
-2. Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred.
-3. After the report core is complete, decide whether a thin local CLI wrapper is useful before any generated-test-file work.
+1. Decide whether the next Task 6 slice should be a thin local CLI wrapper, existing-spec inventory extraction, or a pause before generated-test-file policy.
+2. Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred until a later explicit Goal.
+3. If a CLI wrapper is chosen, keep it local JSON-in/Markdown-or-JSON-out like the prior PR Impact and Regression Forensics wrappers.

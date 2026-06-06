@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 End-to-End Test Generation readiness complete; next baton target is the local deterministic E2E test proposal/report core implementation Goal
+- Mode: Task 6 End-to-End Test Generation local proposal/report core implemented; next baton target is Task 6 post-core boundary review
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, and Auto Regression Forensics first local slices are implemented locally. Task 6 readiness now recommends an E2E proposal/report core; executable test generation remains blocked until a later output-policy Goal.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, and the Task 6 E2E proposal/report core are implemented locally. Executable test generation remains blocked until a later output-policy Goal.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -31,7 +31,7 @@ Current state:
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
-- Next baton target is Task 6 local deterministic E2E test proposal/report core implementation.
+- Next baton target is Task 6 post-core boundary review.
 - End-to-End Test Generation is `next` for a local proposal/report core only; executable generated tests remain deferred. OCaml Support remains `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
@@ -67,6 +67,72 @@ Current state:
 - 2026-06-06T13:05+01:00: Task 5 report-core committed as `dcc5fd24` (`feat: add regression forensics report core`). Active post-core boundary Goal recommends a thin local `gitnexus regression-forensics` CLI wrapper next, with local JSON inputs only.
 - 2026-06-06T13:08+01:00: Task 5 thin local `gitnexus regression-forensics` CLI wrapper implemented with TDD. It reads local `--failure-json` and `--pr-impact-json` files and emits Markdown or JSON. MCP, GitHub/CI automation, automatic bisect, live test execution, and remediation remain deferred.
 - 2026-06-06T13:28+01:00: Task 6 End-to-End Test Generation readiness completed. Recommendation: first source slice should be a deterministic proposal/report core over PR Impact, optional Regression Forensics, route/API evidence, existing E2E inventory, and the `gitnexus-web` Playwright contract. Do not generate executable test files in V1.
+- 2026-06-06T13:31+01:00: Task 6 E2E test proposal/report core implemented with TDD. It emits `e2e-test-plan.v1alpha1` JSON/Markdown proposals only; no executable Playwright files, browser execution, CLI/MCP exposure, CI mutation, or GitHub automation.
+
+### 2026-06-06T13:31+01:00 - Task 6 E2E Test Plan Report Core Implemented
+
+Goal:
+
+- Implement the first Task 6 source slice: pure deterministic E2E test proposal/report core only.
+
+Files changed:
+
+- `gitnexus/src/core/e2e-test-generation/report.ts`
+- `gitnexus/test/unit/e2e-test-generation-report.test.ts`
+- `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md`
+
+Implemented behavior:
+
+- Experimental schema version: `e2e-test-plan.v1alpha1`.
+- Deterministic JSON report with:
+  - target contract metadata,
+  - PR Impact linkage,
+  - optional Regression Forensics linkage,
+  - proposed scenarios,
+  - existing-spec coverage status,
+  - priority,
+  - evidence,
+  - caveats.
+- Deterministic Markdown rendering with golden fixture coverage.
+- Prioritizes high-risk route/API impacts before medium-risk changed surfaces.
+- Marks existing E2E coverage as `covered_by_existing_spec` instead of proposing duplicate work.
+- Caps confidence to `LOW` when PR Impact graph evidence is stale.
+- Explicitly states that V1 proposes scenarios only and does not generate executable test files.
+
+Not implemented:
+
+- No generated Playwright spec files.
+- No browser execution.
+- No CLI command.
+- No MCP tool.
+- No GitHub PR comments/checks.
+- No token-bearing automation.
+- No CI workflow mutation.
+- No new dependency.
+- No `gitnexus-web/e2e` changes.
+
+TDD / verification:
+
+```powershell
+npm test -- test/unit/e2e-test-generation-report.test.ts
+npm test -- test/unit/e2e-test-generation-report.test.ts test/unit/regression-forensics-report.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-diff-mapping.test.ts
+git diff --check
+npm run build
+```
+
+Results:
+
+- Initial red test failed because `src/core/e2e-test-generation/report.js` did not exist.
+- Focused E2E test-plan report tests passed: 1 file, 3 tests.
+- Adjacent E2E/Regression/PR report tests passed: 4 files, 13 tests.
+- Diff whitespace check passed.
+- Build passed.
+
+Next boundary:
+
+- Commit the report-core implementation.
+- Mark the active Goal complete with the Goal tool.
+- Create a post-core boundary Goal to decide whether the next Task 6 slice is a thin local CLI wrapper, richer inventory extraction, or pause before executable generated-test-file policy.
 
 ### 2026-06-06T13:28+01:00 - Task 6 End-to-End Test Generation Readiness
 
