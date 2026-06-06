@@ -64,6 +64,51 @@ Current state:
 - 2026-06-06T12:38+01:00: Task 4 CLI wrapper committed as `39d77845` (`feat: add pr impact cli command`). Goal baton rule strengthened: future completed/blocked Goals must be followed by an actual Goal tool call for the next Goal, or a documented `NO_NEXT_GOAL_CREATED` blocker.
 - 2026-06-06T12:49+01:00: Active Task 5 Auto Regression Forensics readiness Goal created with the Goal tool. First readiness pass recommends a pure deterministic report-core slice over failure evidence plus PR Impact V1 data.
 - 2026-06-06T13:02+01:00: Task 5 Auto Regression Forensics report-core slice implemented with TDD. CLI/MCP/GitHub/CI automation remain deferred.
+- 2026-06-06T13:05+01:00: Task 5 report-core committed as `dcc5fd24` (`feat: add regression forensics report core`). Active post-core boundary Goal recommends a thin local `gitnexus regression-forensics` CLI wrapper next, with local JSON inputs only.
+
+### 2026-06-06T13:05+01:00 - Task 5 Post-Core Boundary
+
+Goal:
+
+- Decide the next exact Goal after the Regression Forensics report core.
+
+Decision:
+
+- Next recommended Goal: thin local `gitnexus regression-forensics` CLI wrapper.
+
+Why:
+
+- The report core is implemented and verified, but currently only available to tests/importers.
+- A CLI wrapper is bounded and useful if it reads local JSON files only.
+- Richer CI artifact parsing, GitHub integration, automatic bisect, live test execution, MCP exposure, and remediation can remain deferred.
+
+Recommended CLI surface:
+
+- `gitnexus regression-forensics --failure-json <path> --pr-impact-json <path> --format markdown`
+- `--failure-json <path>` reads local failure evidence JSON.
+- `--pr-impact-json <path>` reads local PR Impact V1 JSON.
+- `--format <format>` supports `markdown` or `json`, defaulting to `markdown`.
+
+Approved next write set to use if implementing:
+
+- `gitnexus/src/cli/regression-forensics.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts`
+- `gitnexus/src/cli/i18n/en.ts`
+- `gitnexus/src/cli/i18n/zh-CN.ts`
+- `gitnexus/test/unit/regression-forensics-cli.test.ts`
+- long-horizon documentation updates for checkpointing
+
+Constraints:
+
+- No MCP tool.
+- No GitHub PR comments/checks.
+- No token-bearing automation.
+- No CI workflow mutation.
+- No automatic bisect.
+- No live test execution.
+- No generated fixes/remediation.
+- No new dependency.
 
 ### 2026-06-06T13:02+01:00 - Task 5 Regression Forensics Report Core Implemented
 

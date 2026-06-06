@@ -53,7 +53,7 @@ Supporting evidence:
 | 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `now` | Core status/dry-run-first planner/runner implemented locally, verified, uncommitted | Decide next Task 2 slice or snapshot |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
-| 5 | Auto Regression Forensics | Light scoping only | `now - local V1 active` | Report core implemented locally | Deterministic failure-evidence report core awaits checkpoint commit; no CLI/MCP/GitHub automation |
+| 5 | Auto Regression Forensics | Light scoping only | `now - CLI boundary active` | Report core committed | Next recommended slice is thin local CLI wrapper over local JSON inputs |
 | 6 | End-to-End Test Generation | Light scoping only | `defer` | Not implemented | Needs target app/test framework/runtime contract |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
@@ -326,7 +326,7 @@ Next gate:
 
 Current status:
 
-- Deterministic report core implemented locally with TDD.
+- Deterministic report core implemented and committed with TDD.
 - No CLI/MCP/GitHub/CI automation implemented.
 - PR Impact V1 report/CLI now exists and can provide the first graph/risk dependency.
 
@@ -346,8 +346,8 @@ Dependencies:
 
 Next gate:
 
-- Checkpoint the report-core implementation commit.
-- Next possible Goal after checkpoint: decide whether to expose a thin local CLI wrapper, enrich report inputs, or move to Task 6 readiness.
+- Implement a thin local `gitnexus regression-forensics` CLI wrapper only after the active boundary Goal is complete.
+- CLI V1 should read `--failure-json` and `--pr-impact-json`, output Markdown/JSON, and avoid live CI/GitHub/test/bisect behavior.
 
 ### Task 6 - End-to-End Test Generation
 

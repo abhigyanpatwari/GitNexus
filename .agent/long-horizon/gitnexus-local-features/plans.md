@@ -35,7 +35,7 @@ Created: 2026-06-05
 | 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 5 | Auto Regression Forensics | `light scoping only` | `now - local V1 active` | Deterministic report core implemented locally and awaiting checkpoint commit; no CI/GitHub automation |
+| 5 | Auto Regression Forensics | `light scoping only` | `now - CLI boundary active` | Report core implemented and committed; next recommended Goal is a thin local CLI wrapper over local JSON inputs |
 | 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
 
@@ -410,6 +410,38 @@ Approved write set:
 - gitnexus/test/unit/regression-forensics-report.test.ts
 - gitnexus/test/fixtures/regression-forensics/golden-basic-report.md
 Constraints: no CLI/MCP exposure in the first source slice, no GitHub PR comments/checks, no token automation, no CI workflow mutation, no automatic bisect, no live test execution, no generated fixes/remediation, no new dependency, and TDD required.
+```
+
+Post-core boundary checkpoint:
+
+- 2026-06-06T13:05+01:00: After report-core commit `dcc5fd24`, the next defensible Task 5 Goal is a thin local CLI wrapper, not richer parsing or Task 6 yet.
+- Rationale:
+  - The report core is pure and useful but not user-accessible.
+  - A CLI wrapper can stay bounded by reading two local JSON files and rendering Markdown/JSON.
+  - No live CI, GitHub, token, test execution, bisect, MCP, or remediation behavior is required.
+- Recommended command name: `regression-forensics`.
+- V1 CLI input model:
+  - `--failure-json <path>`: local JSON matching `RegressionForensicsFailureInput` plus optional `knownGoodRef` / `knownBadRef`.
+  - `--pr-impact-json <path>`: local JSON produced by `gitnexus pr-impact --format json` or a fixture-equivalent PR Impact V1 report.
+  - `--format <format>`: `markdown` or `json`, default `markdown`.
+- CLI should not infer, execute, fetch, or mutate anything. It only loads files, builds the report, and writes stdout.
+
+Implementation approval boundary to use for the next Goal:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Auto Regression Forensics
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: thin local `gitnexus regression-forensics` CLI wrapper over the committed report core. The wrapper may read local failure-evidence JSON and local PR Impact V1 JSON, produce Markdown or JSON, and register localized CLI help.
+Approved write set:
+- gitnexus/src/cli/regression-forensics.ts
+- gitnexus/src/cli/index.ts
+- gitnexus/src/cli/help-i18n.ts
+- gitnexus/src/cli/i18n/en.ts
+- gitnexus/src/cli/i18n/zh-CN.ts
+- gitnexus/test/unit/regression-forensics-cli.test.ts
+- long-horizon documentation updates needed for checkpointing
+Constraints: no MCP exposure, no GitHub PR comments/checks, no token automation, no CI workflow mutation, no automatic bisect, no live test execution, no generated fixes/remediation, no new dependency, no broad rewrite of report core, and TDD required.
 ```
 
 ### Goal 6 - End-to-End Test Generation
