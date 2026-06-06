@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 7 OCaml Support readiness complete; OCaml implementation is blocked pending parser/dependency/write-set approval
+- Mode: Task 7 OCaml Support approval packet prepared; OCaml implementation is blocked pending explicit MAIN approval
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -72,6 +72,40 @@ Current state:
 - 2026-06-06T13:37+01:00: Task 6 thin local `gitnexus e2e-test-plan` CLI wrapper implemented with TDD. It reads local target, PR Impact, existing-scenarios, route-evidence, and optional Regression Forensics JSON and emits Markdown or JSON. Generated Playwright files, browser execution, automatic spec parsing, MCP, CI, and GitHub automation remain deferred.
 - 2026-06-06T13:40+01:00: Task 6 post-CLI boundary review completed. Decision: Task 6 local V1 is complete enough to pause before executable generated-test policy. Next baton target is Task 7 OCaml Support readiness.
 - 2026-06-06T13:41+01:00: Task 7 OCaml Support readiness completed. Decision: OCaml is feasible in principle through `tree-sitter-ocaml`, but source implementation requires MAIN approval for native dependency strategy, exact write set, `experimental` classification, and `.ml`/`.mli` V1 scope.
+- 2026-06-06T13:48+01:00: Task 7 OCaml implementation approval packet prepared. Recommendation: use npm `tree-sitter-ocaml@0.22.0` for the first experimental local slice because it peers on `tree-sitter: 0.21`, matching GitNexus's current `tree-sitter@0.21.1` runtime family. Do not upgrade core `tree-sitter` in this slice.
+
+### 2026-06-06T13:48+01:00 - Task 7 OCaml Approval Packet
+
+Goal:
+
+- Particularize the next implementation Goal enough for MAIN to approve or reject it without ambiguity.
+
+Additional evidence:
+
+- `gitnexus/package.json` pins `tree-sitter` to `0.21.1`.
+- `npm view tree-sitter-ocaml version versions license peerDependencies dependencies dist-tags --json` shows npm latest `0.24.2`, MIT, peer `tree-sitter` `^0.22.4`.
+- `npm view tree-sitter-ocaml@0.22.0 ... --json` shows version `0.22.0`, MIT, peer `tree-sitter: 0.21`, `main: bindings/node`, `types: bindings/node`, and documented `ocaml` / `ocaml_interface` grammar exports.
+
+Recommendation:
+
+- Request approval for npm `tree-sitter-ocaml@0.22.0` rather than latest.
+- Keep `tree-sitter@0.21.1` unchanged.
+- Add experimental OCaml support for `.ml` and `.mli` only.
+- Use file-path-aware grammar selection for implementation vs interface files.
+- Stop if compatibility requires a core `tree-sitter` runtime upgrade.
+
+Approval phrase drafted in `plans.md`:
+
+- `MAIN | READY_FOR_IMPLEMENTATION: Task 7 OCaml experimental language support V1 is approved on branch local/gitnexus-local-features...`
+
+Verification:
+
+- `git diff --check` must pass after this documentation update.
+
+Next Goal:
+
+- If MAIN gives the approval phrase in `plans.md`, create the Task 7 OCaml implementation Goal.
+- If MAIN does not approve it, record `NO_NEXT_GOAL_CREATED` and leave OCaml deferred.
 
 ### 2026-06-06T13:41+01:00 - Task 7 OCaml Support Readiness
 

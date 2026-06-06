@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 executable test generation and Task 7 OCaml source implementation remain blocked behind later approval Goals |
+| Pause point | Task 6 executable test generation remains blocked behind a later output-policy Goal; Task 7 OCaml implementation awaits explicit MAIN approval of the prepared packet |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -55,7 +55,7 @@ Supporting evidence:
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
 | 6 | End-to-End Test Generation | Light scoping completed for first slice | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented, verified, and committed | Pause before executable generated-test policy |
-| 7 | OCaml Support | Light scoping completed | `next with approval` | Readiness mapped; not implemented | Needs MAIN approval for parser/dependency/write-set boundary |
+| 7 | OCaml Support | Light scoping completed plus approval packet | `next with approval` | Readiness and approval packet mapped; not implemented | Needs MAIN approval phrase from `plans.md` |
 
 ## Dependency Map
 
@@ -435,6 +435,7 @@ Next gate:
 Current status:
 
 - Readiness mapped.
+- Approval packet prepared.
 - Separate language-provider/parser onboarding project.
 - Source implementation blocked until MAIN approves dependency route and exact write set.
 
@@ -472,6 +473,7 @@ External evidence:
 Recommended first approved slice:
 
 - Experimental OCaml support for `.ml` and `.mli`.
+- Dependency route: npm `tree-sitter-ocaml@0.22.0`, because it peers on `tree-sitter: 0.21` and GitNexus currently pins `tree-sitter@0.21.1`.
 - Minimal graph correctness for modules, values/functions, types, direct calls, open/import-like module references, and interface declarations.
 - Parser ABI smoke, query compilation, focused fixtures, and build verification.
 
@@ -485,7 +487,7 @@ Deferred:
 
 Next gate:
 
-- MAIN must approve the parser/dependency strategy and exact source/test write set before any OCaml implementation Goal is created.
+- MAIN must approve the parser/dependency strategy and exact source/test write set before any OCaml implementation Goal is created. The approval phrase is drafted in `plans.md`.
 
 ## Current WIP Boundary
 
@@ -542,12 +544,12 @@ Boundary rule:
 
 Immediate:
 
-1. Commit the Task 7 OCaml readiness documentation.
-2. Complete the active Task 7 readiness Goal with the Goal tool.
-3. Create an OCaml implementation Goal only if MAIN approves the dependency/write-set boundary; otherwise record `NO_NEXT_GOAL_CREATED`.
+1. Commit the Task 7 OCaml approval-packet documentation.
+2. Complete the active approval-packet Goal with the Goal tool.
+3. Create an OCaml implementation Goal only if MAIN approves the dependency/write-set boundary with the drafted phrase; otherwise record `NO_NEXT_GOAL_CREATED`.
 
 Recommended next feature work:
 
-1. Seek or record MAIN approval for the OCaml dependency/write-set boundary.
+1. Seek or record MAIN approval for the OCaml dependency/write-set boundary in `plans.md`.
 2. If approved, create a focused OCaml implementation Goal and proceed TDD.
 3. Keep Task 6 executable generated-test work deferred until a later output-policy Goal.

@@ -870,6 +870,82 @@ Next Goal recommendation:
 
 If MAIN does not approve that boundary, record `NO_NEXT_GOAL_CREATED` and leave OCaml deferred.
 
+### Task 7 Approval Packet - OCaml Implementation Goal
+
+Timestamp: 2026-06-06T13:48+01:00
+
+Recommended parser/dependency route:
+
+- Use npm `tree-sitter-ocaml@0.22.0` for the first local experimental slice.
+- Rationale: GitNexus currently pins `tree-sitter` to `0.21.1`; npm metadata for `tree-sitter-ocaml@0.22.0` declares peer `tree-sitter: 0.21`, while npm latest `0.24.2` declares peer `tree-sitter: ^0.22.4` and repository master `0.25.0` declares peer `^0.25.0`.
+- Do not upgrade GitNexus's core `tree-sitter` runtime in this slice. A runtime upgrade would be a broader cross-language native-binding project.
+- Treat the dependency as a normal dependency unless install/runtime smoke evidence suggests it must follow the optional grammar path.
+
+Exact V1 boundaries:
+
+- Include `.ml` implementation files and `.mli` interface files.
+- Use one shared `SupportedLanguages.OCaml` identity with file-path-aware grammar selection for `ocaml` vs `ocaml_interface`.
+- Classify OCaml as `experimental` for the first slice.
+- Capture only foundational graph evidence:
+  - module declarations,
+  - value/function bindings,
+  - type declarations,
+  - direct calls,
+  - open/import-like module references,
+  - interface declarations from `.mli`.
+- Defer:
+  - Dune/project model,
+  - PPX expansion,
+  - full module alias and functor semantics,
+  - generated-code handling,
+  - production classification,
+  - web UI/WASM parity unless a source compile error proves it is required for the shared package.
+
+Approved write set to request:
+
+| Area | Files |
+| --- | --- |
+| Dependency manifest | `gitnexus/package.json`, `gitnexus/package-lock.json` |
+| Shared language identity | `gitnexus-shared/src/languages.ts`, `gitnexus-shared/src/language-detection.ts`, `gitnexus-shared/src/scope-resolution/language-classification.ts` |
+| Parser dispatch | `gitnexus/src/core/tree-sitter/parser-loader.ts`, `gitnexus/src/core/ingestion/workers/parse-worker.ts` |
+| Provider/queries | `gitnexus/src/core/ingestion/languages/index.ts`, `gitnexus/src/core/ingestion/languages/ocaml.ts`, possible `gitnexus/src/core/ingestion/languages/ocaml/*`, `gitnexus/src/core/ingestion/tree-sitter-queries.ts` |
+| Tests/fixtures | `gitnexus/test/unit/parser-loader-abi.test.ts`, `gitnexus/test/unit/tree-sitter-queries.test.ts`, `gitnexus/test/integration/tree-sitter-languages.test.ts`, OCaml fixtures under `gitnexus/test/fixtures/sample-code` and/or focused scope-resolution fixtures |
+| Docs/checkpoints | `.agent/long-horizon/gitnexus-local-features/*` only for checkpoint updates |
+
+TDD order:
+
+1. Red: add language detection tests for `.ml` and `.mli`.
+2. Red: add parser-loader ABI smoke cases for `.ml` and `.mli` grammar selection.
+3. Red: add query/capture tests for a minimal `.ml` fixture.
+4. Red: add `.mli` fixture test for interface declarations.
+5. Green: add dependency and minimal parser dispatch.
+6. Green: add provider/query code and fixtures.
+7. Refactor: tighten helper boundaries only after focused tests pass.
+
+Verification commands:
+
+```powershell
+cd C:\Users\steve\projects\gitnexus\source-rc109-integration\gitnexus
+npm test -- test/unit/parser-loader-abi.test.ts test/unit/tree-sitter-queries.test.ts test/integration/tree-sitter-languages.test.ts
+npm run build
+cd ..
+git diff --check
+```
+
+Stop rules:
+
+- Stop if `tree-sitter-ocaml@0.22.0` cannot install or load cleanly against GitNexus's current `tree-sitter@0.21.1`.
+- Stop if `tree-sitter-ocaml` exports differ from documented `ocaml` / `ocaml_interface` names.
+- Stop if adding the package forces a core `tree-sitter` runtime upgrade.
+- Stop if V1 cannot capture both `.ml` and `.mli` basics with focused tests.
+- Stop if implementation wants to cross into Dune, PPX, functor semantics, web UI/WASM, MCP/API, or production classification.
+
+Approval phrase needed:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION: Task 7 OCaml experimental language support V1 is approved on branch local/gitnexus-local-features. Approved dependency route is npm tree-sitter-ocaml@0.22.0 without upgrading GitNexus's core tree-sitter runtime. Approved write set is gitnexus/package.json, gitnexus/package-lock.json, gitnexus-shared language detection/classification files, GitNexus parser-loader and parse-worker dispatch, OCaml provider/query files, focused OCaml fixtures/tests, and long-horizon checkpoint docs. V1 must cover .ml and .mli, classify OCaml as experimental, follow TDD, and stop if dependency/runtime compatibility requires a broader tree-sitter upgrade or if scope expands into Dune, PPX, functors, web UI/WASM, MCP/API, or production classification.
+```
+
 ## Interim Task - Disable Hidden Bare-GitNexus Router
 
 Status: completed on 2026-06-05
