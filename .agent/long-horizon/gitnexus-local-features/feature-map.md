@@ -555,6 +555,7 @@ Immediate:
 
 Recommended next feature work:
 
-1. Decide whether the next implementation slice should be Task 6 executable generated-test output policy, Task 2 wiki server/API wiring, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
-2. For whichever slice is chosen, write a fresh Goal Contract with outcome, verification surface, constraints, boundaries, iteration policy, and blocked stop condition.
-3. Keep generated executable tests, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the relevant Goal opens that scope.
+1. Create the next Goal as Task 6 executable generated-test output policy readiness.
+2. Use that Goal to decide whether and how `e2e-test-plan.v1alpha1` proposals may become executable Playwright files.
+3. Keep executable test-file generation blocked during readiness; require a later `MAIN | READY_FOR_IMPLEMENTATION` with exact write set, fixture strategy, selector policy, and verification commands before implementation.
+4. Keep GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the relevant Goal opens that scope.

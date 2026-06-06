@@ -75,6 +75,7 @@ Current state:
 - 2026-06-06T13:48+01:00: Task 7 OCaml implementation approval packet prepared. Recommendation: use npm `tree-sitter-ocaml@0.22.0` for the first experimental local slice because it peers on `tree-sitter: 0.21`, matching GitNexus's current `tree-sitter@0.21.1` runtime family. Do not upgrade core `tree-sitter` in this slice.
 - 2026-06-06T19:26+01:00: Task 7 OCaml experimental language support V1 implemented with TDD. `tree-sitter-ocaml@0.22.0` installed without upgrading core `tree-sitter@0.21.1`; package smoke showed actual exports `ocaml` and `interface` rather than README's `ocaml_interface`, so implementation uses the actual `interface` export for `.mli`.
 - 2026-06-06T19:31+01:00: Task 7 OCaml implementation committed as `5f543c17` (`feat: add experimental ocaml language support`) and the active Goal was marked complete. The next defensible Goal is post-tranche consolidation and next-slice recommendation; do not start deeper feature work until a new exact slice and write set are named.
+- 2026-06-06T19:35+01:00: Post-tranche consolidation recommends the next Goal as Task 6 executable generated-test output policy readiness. This is not implementation approval; it should define whether and how `e2e-test-plan.v1alpha1` proposals may become executable Playwright files.
 
 ### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
 
@@ -155,6 +156,10 @@ Approval phrase drafted in `plans.md`:
 
 - `MAIN | READY_FOR_IMPLEMENTATION: Task 7 OCaml experimental language support V1 is approved on branch local/gitnexus-local-features...`
 
+Supersession:
+
+- This approval packet is historical. MAIN approved the boundary, Task 7 implementation completed, and commit `5f543c17` contains the experimental OCaml V1 source slice.
+
 Verification:
 
 - `git diff --check` must pass after this documentation update.
@@ -204,7 +209,7 @@ Findings:
 
 Decision:
 
-- Keep OCaml source implementation blocked until MAIN approves:
+- Historical decision before implementation: keep OCaml source implementation blocked until MAIN approves:
   - dependency route: npm `tree-sitter-ocaml`, vendored grammar, or another named parser path,
   - write set covering shared language files, parser loader, parse worker, provider/query files, fixtures, and focused tests,
   - initial classification as `experimental`,

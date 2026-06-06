@@ -862,6 +862,7 @@ Risks and stop rules:
 
 Next Goal recommendation:
 
+- Historical note: this recommendation was superseded on 2026-06-06 after MAIN approved the dependency/write-set boundary and Task 7 OCaml experimental V1 was implemented and committed as `5f543c17`.
 - Create an implementation Goal only if MAIN explicitly approves:
   - dependency route: npm `tree-sitter-ocaml`, vendored grammar, or another named path,
   - write set covering shared language files, parser loader, parse worker, provider/query files, fixtures, and focused tests,
@@ -869,6 +870,52 @@ Next Goal recommendation:
   - `.ml` and `.mli` as required V1 surfaces.
 
 If MAIN does not approve that boundary, record `NO_NEXT_GOAL_CREATED` and leave OCaml deferred.
+
+### Post-Tranche Next Goal Recommendation
+
+Timestamp: 2026-06-06T19:35+01:00
+
+Status:
+
+- Tasks 1-7 have completed their first local slices on `local/gitnexus-local-features`.
+- Task 7 OCaml experimental V1 was committed as `5f543c17`.
+- Baton checkpoint docs were committed as `1b75b59e`.
+- No product source implementation should start until the next Goal names a fresh slice and write set.
+
+Recommended next Goal:
+
+- Task 6 executable generated-test output policy readiness.
+
+Why this is the best next Goal:
+
+- Task 6 deliberately stopped at deterministic `e2e-test-plan.v1alpha1` proposal/report output.
+- Executable Playwright file generation is the clearest remaining capability gap that still sits inside the existing feature sequence.
+- It is risky enough to need policy first because it can mutate test files, assume app launch behavior, create brittle selectors, and potentially interact with credentials or fixture data.
+- A readiness/policy Goal can define the safe output contract before any generated executable test files are written.
+
+Candidate Goal shape:
+
+| Goal element | Draft |
+| --- | --- |
+| Outcome | Decide whether and how GitNexus may generate executable E2E test files from `e2e-test-plan.v1alpha1` proposals. |
+| Verification surface | Existing E2E proposal/CLI tests, current `gitnexus-web/e2e` Playwright patterns, app launch docs/config, and a written output-policy decision table. |
+| Constraints | No executable test-file generation during readiness; no browser execution changes; no credentials; no CI mutation; no GitHub automation; no source writes outside docs/policy unless a later implementation Goal approves them. |
+| Boundaries | Inspect `gitnexus/src/core/e2e-test-generation`, `gitnexus/src/cli/e2e-test-plan.ts`, `gitnexus-web/e2e`, Playwright config, existing fixtures, and long-horizon docs. |
+| Iteration policy | Map current proposal schema to real Playwright patterns, identify safe/unsafe generation cases, define fixture/selector/output rules, then draft the smallest future implementation slice. |
+| Blocked stop condition | Stop if the repo lacks stable app-launch/test-fixture conventions, if generation would require secrets, or if no safe deterministic output policy can be stated. |
+
+Other plausible next Goals, lower priority:
+
+| Candidate | Reason to defer behind Task 6 policy |
+| --- | --- |
+| Task 2 wiki server/API wiring | Useful, but mutation/provider policy is still sensitive and the first core planner already exists. |
+| Task 4 PR Impact MCP/GitHub-readiness | GitHub automation is security-sensitive and should wait until local report usage hardens. |
+| Task 7 deeper OCaml semantics | Valuable, but it is a language-depth expansion rather than the next enterprise-feature workflow gap. |
+| Task 1 runtime/Podman operational validation | Useful if deployment becomes the priority, but not currently the clearest product capability gap. |
+
+Required approval before implementation:
+
+- A later `MAIN | READY_FOR_IMPLEMENTATION` must name the exact generated-test output policy, write set, fixture strategy, and verification commands before executable test generation begins.
 
 ### Task 7 Approval Packet - OCaml Implementation Goal
 
