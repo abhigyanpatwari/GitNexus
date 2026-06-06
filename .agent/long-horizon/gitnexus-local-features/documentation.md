@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 5 Auto Regression Forensics local V1 report/CLI slice implemented; next baton target is Task 6 End-to-End Test Generation readiness after commit/Goal completion
+- Mode: Task 6 End-to-End Test Generation readiness complete; next baton target is the local deterministic E2E test proposal/report core implementation Goal
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, and Auto Regression Forensics first local slices are implemented locally. Further implementation remains closed until the next feature readiness map is complete and the exact implementation Goal/write set is active.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, and Auto Regression Forensics first local slices are implemented locally. Task 6 readiness now recommends an E2E proposal/report core; executable test generation remains blocked until a later output-policy Goal.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -31,8 +31,8 @@ Current state:
 - Git hooks are not the implementation route.
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
-- Next baton target is Task 6 End-to-End Test Generation readiness.
-- End-to-End Test Generation and OCaml Support remain `defer`.
+- Next baton target is Task 6 local deterministic E2E test proposal/report core implementation.
+- End-to-End Test Generation is `next` for a local proposal/report core only; executable generated tests remain deferred. OCaml Support remains `defer`.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
 - 2026-06-05T10:55+01:00 GitHub PR/issue deepening confirmed that OSS PostToolUse staleness behavior is notification-only and intentionally distinct from Enterprise Auto-reindexing.
@@ -66,6 +66,67 @@ Current state:
 - 2026-06-06T13:02+01:00: Task 5 Auto Regression Forensics report-core slice implemented with TDD. CLI/MCP/GitHub/CI automation remain deferred.
 - 2026-06-06T13:05+01:00: Task 5 report-core committed as `dcc5fd24` (`feat: add regression forensics report core`). Active post-core boundary Goal recommends a thin local `gitnexus regression-forensics` CLI wrapper next, with local JSON inputs only.
 - 2026-06-06T13:08+01:00: Task 5 thin local `gitnexus regression-forensics` CLI wrapper implemented with TDD. It reads local `--failure-json` and `--pr-impact-json` files and emits Markdown or JSON. MCP, GitHub/CI automation, automatic bisect, live test execution, and remediation remain deferred.
+- 2026-06-06T13:28+01:00: Task 6 End-to-End Test Generation readiness completed. Recommendation: first source slice should be a deterministic proposal/report core over PR Impact, optional Regression Forensics, route/API evidence, existing E2E inventory, and the `gitnexus-web` Playwright contract. Do not generate executable test files in V1.
+
+### 2026-06-06T13:28+01:00 - Task 6 End-to-End Test Generation Readiness
+
+Goal:
+
+- Decide whether Task 6 can move from light scoping to a bounded local first slice.
+
+Evidence inspected:
+
+- `README.md` enterprise/upcoming list.
+- `gitnexus-web/package.json`.
+- `gitnexus-web/playwright.config.ts`.
+- `gitnexus-web/e2e/server-connect.spec.ts`.
+- `gitnexus-web/e2e/multi-repo-scoping.spec.ts`.
+- `gitnexus-web/e2e/tree-view.spec.ts`.
+- `gitnexus-web/e2e/manual-record.spec.ts`.
+- `.github/workflows/ci-e2e.yml`.
+- `gitnexus/src/core/pr-impact/report.ts`.
+- `gitnexus/src/core/regression-forensics/report.ts`.
+- `gitnexus/src/mcp/tools.ts` / `gitnexus/src/mcp/local/local-backend.ts` route/API/impact surfaces.
+- Context7 Playwright docs from `/microsoft/playwright.dev` for codegen, locators, config, web server, trace, and report behavior.
+
+Decision:
+
+- Do not start by writing generated executable Playwright specs.
+- Use existing `gitnexus-web` Playwright E2E infrastructure as the first target contract:
+  - backend `gitnexus serve` on `4747`,
+  - frontend Vite on `5173`,
+  - Chromium,
+  - existing mini fixture repo indexing pattern,
+  - retained traces/screenshots/videos on failure.
+- First source slice should be a pure report core that proposes E2E scenarios and explains evidence/caveats.
+
+Recommended next Goal:
+
+- Implement `e2e-test-plan.v1alpha1` report core only.
+
+Approved-style boundary drafted in `plans.md`:
+
+- `gitnexus/src/core/e2e-test-generation/report.ts`
+- `gitnexus/test/unit/e2e-test-generation-report.test.ts`
+- `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md`
+- long-horizon documentation updates for checkpointing
+
+Constraints:
+
+- No generated executable test files.
+- No browser execution.
+- No CLI/MCP exposure in the first source slice.
+- No GitHub PR comments/checks.
+- No token automation.
+- No CI workflow mutation.
+- No new dependency.
+- No changes to `gitnexus-web/e2e`.
+- TDD required.
+
+Verification:
+
+- Readiness is documentation-only.
+- Verify with `git diff --check`.
 
 ### 2026-06-06T13:08+01:00 - Task 5 Regression Forensics CLI Wrapper Implemented
 

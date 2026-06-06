@@ -24,7 +24,7 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, and Task 5 Auto Regression Forensics have completed their first local slices. The next baton target is Task 6 End-to-End Test Generation readiness after Task 5 CLI commit/Goal completion.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, and Task 5 Auto Regression Forensics have completed their first local slices. Task 6 readiness is complete; the next baton target is the `e2e-test-plan.v1alpha1` report-core implementation Goal.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
@@ -36,7 +36,7 @@ Created: 2026-06-05
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 5 | Auto Regression Forensics | `light scoping only` | `local V1 complete` | Report core and thin local CLI wrapper implemented locally; commit/Goal completion pending |
-| 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
+| 6 | End-to-End Test Generation | `light scoping only` | `next - readiness complete` | Local Playwright app/runtime contract exists; recommended first slice is deterministic E2E test proposal/report core, not executable test-file generation |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
 
 ## Feature Goal Contracts
@@ -497,6 +497,119 @@ Blocked stop condition:
 
 - Stop if there is no approved app launch surface, target framework, runtime, fixture policy, or secrets/sandbox policy.
 - Report the exact runtime/test contract needed before generation is defensible.
+
+### Task 6 Readiness Refresh - End-to-End Test Generation
+
+Timestamp: 2026-06-06T13:28+01:00
+
+Readiness outcome:
+
+- Task 6 should not start by writing executable generated Playwright tests.
+- The first defensible local slice is an E2E test proposal/report core that maps changed/risky surfaces to recommended Playwright scenarios and evidence, without writing test files or running browsers.
+- GitNexus already has a real Playwright web E2E lane, so the preferred local target contract is `gitnexus-web` + Playwright Chromium + local backend/frontend servers + the existing CI fixture repo.
+- Actual generated test-file creation should remain a later phase behind explicit output-policy approval.
+
+Evidence inspected:
+
+| Evidence | Finding |
+| --- | --- |
+| `README.md` enterprise/upcoming list | End-to-end test generation is named as an upcoming capability, not an existing OSS feature surface. |
+| `gitnexus-web/package.json` | Web package already depends on `@playwright/test` and has `test:e2e`, `test:e2e:ui`, and `test:e2e:report` scripts. |
+| `gitnexus-web/playwright.config.ts` | Existing E2E config uses `testDir: ./e2e`, Chromium, `baseURL: http://localhost:5173`, retained traces/screenshots/videos on failure, list + HTML reporters, and skips manual/debug specs by default. |
+| `.github/workflows/ci-e2e.yml` | CI builds backend, creates/indexes a mini fixture repo, starts backend on `4747`, starts Vite on `5173`, runs `npx playwright test`, and uploads test artifacts. |
+| `gitnexus-web/e2e/*.spec.ts` | Existing specs use availability checks, `E2E=1` CI forcing, role/test-id locators, indexed repo assumptions, and manual recording outside default runs. |
+| `gitnexus/src/core/pr-impact/report.ts` | PR Impact V1 provides changed files/symbols, unmatched/deleted/new surfaces, verdict, graph freshness, API impact, and conservative test signal. |
+| `gitnexus/src/core/regression-forensics/report.ts` | Regression Forensics V1 provides failure evidence, PR Impact linkage, candidate causes, confidence, caveats, and recommendation. |
+| `gitnexus/src/mcp/tools.ts` / `local-backend.ts` | `route_map`, `api_impact`, `shape_check`, `impact`, and `detect_changes` provide route/API/process evidence that can inform candidate E2E scenarios. |
+| Context7 `/microsoft/playwright.dev` docs | Playwright supports codegen/recording, role/text/test-id locator heuristics, config web servers/baseURL/projects, and trace/report artifacts; generated tests still need app launch, stable data, locators, and assertions. |
+
+Expected vs actual:
+
+| V1 expectation | Current local behavior | Readiness conclusion |
+| --- | --- | --- |
+| Know target app and framework | `gitnexus-web` has Playwright E2E tests and CI support | Use this as the first approved target; do not introduce Cypress or another framework |
+| Launch app reliably | CI starts backend and Vite separately after indexing a mini repo | V1 should reference this contract, not invent a new runner |
+| Identify changed/risky surfaces | PR Impact V1 and route/API tools expose graph-backed risk evidence | Use PR Impact/route evidence as input to proposal ranking |
+| Know existing E2E coverage | E2E spec files exist, but no machine-readable scenario inventory exists | V1 proposal core should accept fixture-shaped existing-spec inventory and report gaps |
+| Generate executable tests | No generator command/source exists; Playwright codegen is interactive/manual | Defer executable-file generation; first slice outputs proposals only |
+| Verify generated tests | Existing CI can run Playwright, but readiness cannot mutate CI or run live generation | Later implementation must require red-green tests for deterministic proposal logic before any browser run |
+| Handle secrets/sandbox | Current CI fixture avoids secrets and external SaaS | Keep first slice local and fixture-only |
+
+Target contract for the first local track:
+
+| Contract field | Decision |
+| --- | --- |
+| App/package | `gitnexus-web` |
+| Framework | Playwright via existing `@playwright/test` |
+| Browser | Chromium first, matching CI |
+| Backend | `gitnexus serve` on `http://localhost:4747` |
+| Frontend | Vite dev server on `http://localhost:5173` |
+| Data | Existing indexed mini fixture repo pattern from `ci-e2e.yml` |
+| Output | Deterministic Markdown/JSON proposal report |
+| Mutation | No generated test files in first slice |
+| Verification | Unit/golden tests over deterministic proposal inputs |
+
+Source ownership map:
+
+| Area | Candidate surface | V1 use |
+| --- | --- | --- |
+| Proposal schema/report | New `gitnexus/src/core/e2e-test-generation/report.ts` | Deterministic candidate scenarios, coverage gaps, caveats, and next actions |
+| Proposal tests | New `gitnexus/test/unit/e2e-test-generation-report.test.ts` and fixture Markdown | Golden JSON/Markdown and ranking rules |
+| PR/change evidence | `gitnexus/src/core/pr-impact/report.ts` | Input schema for risky changed surfaces |
+| Regression evidence | `gitnexus/src/core/regression-forensics/report.ts` | Optional failure-linked context for prioritization |
+| Route/API evidence | `route_map`, `api_impact`, `shape_check`, `impact` | Later adapters; first core may consume fixture-shaped route evidence |
+| Existing E2E inventory | `gitnexus-web/e2e/*.spec.ts`, `gitnexus-web/playwright.config.ts` | Evidence/source for future inventory extraction; first slice can accept deterministic inventory input |
+| CLI wrapper | Later optional `gitnexus e2e-test-plan` | Do not add until report core proves useful |
+
+Smallest safe first implementation slice:
+
+- Add a pure deterministic E2E test proposal/report core.
+- Inputs:
+  - PR Impact V1 report data,
+  - optional Regression Forensics V1 report data,
+  - fixture-shaped route/API evidence,
+  - fixture-shaped existing E2E scenario inventory,
+  - target contract metadata for `gitnexus-web`/Playwright.
+- Outputs:
+  - experimental schema such as `e2e-test-plan.v1alpha1`,
+  - proposed scenarios,
+  - target spec area,
+  - reason/evidence,
+  - whether an existing E2E spec appears to cover the surface,
+  - caveats and next action.
+- Keep executable Playwright file generation, codegen automation, browser execution, CI mutation, GitHub comments/checks, MCP exposure, and new dependencies out of this slice.
+
+Focused TDD plan for the proposed first slice:
+
+1. Red test for JSON schema including `schema_version`.
+2. Red test for deterministic Markdown golden output.
+3. Red test that high-risk PR Impact route/API evidence ranks above low-risk surfaces.
+4. Red test that existing E2E inventory marks a proposal as `covered_by_existing_spec` instead of creating duplicate work.
+5. Red test that missing route/test inventory lowers confidence and adds caveats.
+6. Red test that the report never emits executable test code in V1.
+
+Risks and stop rules:
+
+- Stop if implementation would write generated test files.
+- Stop if implementation would add Playwright/Cypress dependencies outside existing `gitnexus-web`.
+- Stop if implementation would mutate CI, GitHub workflows, tokens, secrets, external SaaS, or preview environments.
+- Stop if no deterministic target contract is present in input data.
+- Stop if the proposal cannot distinguish graph evidence from inference.
+
+Implementation approval boundary to use for the next Goal:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: End-to-End Test Generation
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: local deterministic E2E test proposal/report core only. The slice may consume fixture-shaped PR Impact V1 data, optional Regression Forensics V1 data, route/API evidence, existing E2E inventory, and target contract metadata for gitnexus-web/Playwright. It may produce experimental JSON/Markdown with schema `e2e-test-plan.v1alpha1`, proposed scenarios, evidence, caveats, and next actions.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/report.ts
+- gitnexus/test/unit/e2e-test-generation-report.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md
+- long-horizon documentation updates needed for checkpointing
+Constraints: no generated executable test files, no browser execution, no CLI/MCP exposure in the first source slice, no GitHub PR comments/checks, no token automation, no CI workflow mutation, no new dependency, no changes to `gitnexus-web/e2e`, and TDD required.
+```
 
 ### Goal 3 - Multi-Repo Support Improvements
 
@@ -1484,7 +1597,7 @@ Implementation status:
 ## Deferred Tasks
 
 - Auto Regression Forensics: wait for PR Impact report schema and CI/failure evidence model.
-- End-to-End Test Generation: wait for PR Impact risk model and explicit test-framework target.
+- End-to-End Test Generation: first local app/runtime/framework contract now points to `gitnexus-web` + Playwright; executable generated tests still require a later output policy.
 - Regression Forensics requires a failing-test/known-good/known-bad evidence contract; E2E generation requires an app launch/browser/test-framework contract. Do not plan implementation for either from the current `eval/` harness alone.
 - OCaml Support: separate language-support project with parser/provider/test burden; do not mix into the first feature sequence.
 

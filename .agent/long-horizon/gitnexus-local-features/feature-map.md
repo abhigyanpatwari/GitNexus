@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1 |
-| Pause point | Next pause/research gate is Task 6 End-to-End Test Generation readiness; no source implementation before its readiness map and Goal boundary |
+| Pause point | Task 6 readiness is complete; executable test generation remains blocked behind a later output-policy Goal |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -54,7 +54,7 @@ Supporting evidence:
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
 | 5 | Auto Regression Forensics | Light scoping only | `local V1 complete` | Report core and thin local CLI wrapper implemented locally | Commit/Goal completion, then Task 6 readiness |
-| 6 | End-to-End Test Generation | Light scoping only | `defer` | Not implemented | Needs target app/test framework/runtime contract |
+| 6 | End-to-End Test Generation | Light scoping completed for first slice | `next` | Readiness recommends deterministic E2E proposal/report core only | Implement report core after Goal creation; no executable generated tests in V1 |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
 ## Dependency Map
@@ -376,12 +376,14 @@ Next gate:
 
 Current status:
 
-- Deferred.
-- Research-only until PR Impact/test-gap model and explicit target runtime exist.
+- Readiness completed for a first local slice.
+- Target app/framework/runtime contract now exists for the first track: `gitnexus-web` with existing Playwright Chromium E2E infrastructure.
+- Source implementation not started yet.
 
 Intended local capability:
 
 - Generate or propose E2E tests from changed routes, execution flows, impact reports, and an approved app/test framework.
+- V1 should propose tests only; executable test-file generation is later.
 
 Dependencies:
 
@@ -393,9 +395,31 @@ Dependencies:
 | PR Impact/test-gap signal | Helps choose which tests are worth generating |
 | Secrets/sandbox policy | E2E generation can touch auth, URLs, and credentials |
 
+Readiness decisions:
+
+| Field | Decision |
+| --- | --- |
+| First target app | `gitnexus-web` |
+| First framework | Existing Playwright (`@playwright/test`) |
+| Browser | Chromium first, matching CI |
+| Backend/frontend | `gitnexus serve` on `4747`, Vite on `5173` |
+| Data | Existing CI mini fixture repo indexing pattern |
+| First output | Deterministic Markdown/JSON proposal report |
+| First schema | Proposed `e2e-test-plan.v1alpha1` |
+| First mutation boundary | No generated executable test files |
+
+Candidate first source surfaces:
+
+| Surface | Purpose |
+| --- | --- |
+| `gitnexus/src/core/e2e-test-generation/report.ts` | Deterministic proposal schema, ranking, caveats, Markdown/JSON rendering |
+| `gitnexus/test/unit/e2e-test-generation-report.test.ts` | Golden schema/Markdown/ranking/no-executable-code tests |
+| `gitnexus/test/fixtures/e2e-test-generation/golden-basic-report.md` | Checked-in expected Markdown |
+
 Next gate:
 
-- Keep deferred until MAIN names an app, framework, runtime, fixture policy, and sandbox policy.
+- Create the next implementation Goal for the report core only.
+- Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred.
 
 ### Task 7 - OCaml Support
 
@@ -426,17 +450,15 @@ Next gate:
 
 Current uncommitted source WIP includes:
 
-| Feature | Source/Test WIP |
-| --- | --- |
-| Auto Regression Forensics | `gitnexus/src/cli/regression-forensics.ts`, CLI registration/help/locales, `gitnexus/test/unit/regression-forensics-cli.test.ts` |
+- None at this checkpoint.
 
 Current uncommitted documentation WIP includes:
 
-- Long-horizon bundle updates for the Task 5 CLI checkpoint and next baton.
+- Long-horizon bundle updates for the Task 6 readiness checkpoint and next baton.
 
 Boundary rule:
 
-- Before broadening into Task 6 readiness or any new source implementation, commit or deliberately snapshot the Task 5 CLI wrapper boundary.
+- Before starting Task 6 source implementation, commit or deliberately snapshot the Task 6 readiness documentation boundary.
 
 ## Source Surface Map By Area
 
@@ -471,19 +493,19 @@ Boundary rule:
 | Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
-| Task 6 runtime contract | Pick approved app launch surface, E2E framework, fixtures, and sandbox rules |
+| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; future generated-file output policy remains unresolved |
 | Task 7 parser/provider plan | Decide OCaml parser/provider, dependency policy, fixtures, and graph expectations |
 
 ## Next Actions
 
 Immediate:
 
-1. Commit the Task 5 Regression Forensics CLI wrapper slice after final verification.
-2. Complete the active Task 5 CLI Goal with the Goal tool.
-3. Create the next sequential Goal for Task 6 End-to-End Test Generation readiness.
+1. Commit Task 6 readiness documentation.
+2. Complete the active Task 6 readiness Goal with the Goal tool.
+3. Create the next sequential implementation Goal for `e2e-test-plan.v1alpha1` report core only.
 
 Recommended next feature work:
 
-1. Scope Task 6 readiness only: target app/runtime/framework contract, dependency on PR Impact and Regression Forensics, smallest safe first slice, and stop rules.
-2. Keep any Task 6 source implementation blocked until the readiness map and exact Goal/write set are complete.
-3. Keep PR Impact and Regression Forensics future GitHub/CI/MCP automation deferred unless MAIN opens a new boundary.
+1. Implement the Task 6 report core with TDD and golden Markdown.
+2. Keep generated Playwright file writing, browser execution, CLI/MCP exposure, GitHub/CI automation, and `gitnexus-web/e2e` changes deferred.
+3. After the report core is complete, decide whether a thin local CLI wrapper is useful before any generated-test-file work.
