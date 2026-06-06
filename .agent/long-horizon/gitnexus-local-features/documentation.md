@@ -62,6 +62,77 @@ Current state:
 - 2026-06-06T12:23+01:00: Task 4 PR Impact report-core slice implemented with TDD. CLI wrapper is not added yet; that should be the next sequential Goal if desired.
 - 2026-06-06T12:29+01:00: Task 4 thin `gitnexus pr-impact` CLI wrapper implemented with TDD. MCP and GitHub automation remain deferred.
 - 2026-06-06T12:38+01:00: Task 4 CLI wrapper committed as `39d77845` (`feat: add pr impact cli command`). Goal baton rule strengthened: future completed/blocked Goals must be followed by an actual Goal tool call for the next Goal, or a documented `NO_NEXT_GOAL_CREATED` blocker.
+- 2026-06-06T12:49+01:00: Active Task 5 Auto Regression Forensics readiness Goal created with the Goal tool. First readiness pass recommends a pure deterministic report-core slice over failure evidence plus PR Impact V1 data.
+
+### 2026-06-06T12:49+01:00 - Task 5 Auto Regression Forensics Readiness Started
+
+Goal:
+
+- Define the first defensible Auto Regression Forensics slice now that PR Impact V1 exists.
+
+Evidence inspected:
+
+- Current control docs:
+  - `AGENTS.md`
+  - `.agent/long-horizon/gitnexus-local-features/plans.md`
+  - `.agent/long-horizon/gitnexus-local-features/implement.md`
+  - `.agent/long-horizon/gitnexus-local-features/documentation.md`
+  - `.agent/long-horizon/gitnexus-local-features/feature-map.md`
+- PR Impact V1:
+  - `gitnexus/src/core/pr-impact/report.ts`
+  - `gitnexus/src/cli/pr-impact.ts`
+- Eval infrastructure:
+  - `eval/README.md`
+  - `eval/run_eval.py`
+  - `eval/agents/gitnexus_agent.py`
+  - `eval/analysis/analyze_results.py`
+- CI/test artifact surfaces:
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/ci-tests.yml`
+  - `.github/workflows/ci-report.yml`
+  - `.github/workflows/pr-autofix.yml`
+  - `.github/workflows/pr-autofix-apply.yml`
+- Public/reference evidence:
+  - OpenAI Codex noninteractive/Goal guidance for agent workflow boundaries.
+  - NASA Software Test Plan handbook page for regression-test evidence/reporting concepts.
+  - Web searches for GitNexus-specific "auto regression forensics"; no authoritative GitNexus product implementation source was found.
+
+Local observations:
+
+- `gitnexus status` reports the host index is stale: indexed commit `b5ce5ab`, current commit `7fb4412`. Do not rely on host graph output for the just-added PR Impact files until re-analyzed.
+- PR Impact V1 now provides an experimental schema (`pr-impact.v1alpha1`), verdict, mapped symbols, impacts, API impacts, test signal, and caveats.
+- The eval harness is a SWE-bench evaluation system for comparing GitNexus-assisted agents against baselines; it is useful evidence infrastructure but not the Auto Regression Forensics product surface.
+- CI workflows already produce test reports, coverage artifacts, PR metadata, and trusted/untrusted autofix separation. Task 5 V1 must not disturb or reuse those as privileged automation.
+- The repository has many regression, golden, parity, and benchmark tests, but no dedicated regression-forensics report core, CLI, MCP tool, or GitHub workflow.
+
+Readiness conclusion:
+
+- V1 should be a local deterministic report core:
+  - input: fixture-shaped failure evidence plus PR Impact V1 report data,
+  - output: experimental JSON/Markdown with candidate causes, confidence, caveats, and recommendation.
+- V1 should not run tests, download CI artifacts, post PR comments/checks, run bisect, generate fixes, or mutate workflows.
+- The first implementation slice should be TDD and fixture-backed:
+  - `gitnexus/src/core/regression-forensics/report.ts`
+  - `gitnexus/test/unit/regression-forensics-report.test.ts`
+  - `gitnexus/test/fixtures/regression-forensics/golden-basic-report.md`
+
+Commands run:
+
+```powershell
+git status --short --branch
+get_goal
+rg -n "Goal baton|NO_NEXT_GOAL_CREATED|39d77845|Task 5 Auto Regression Forensics readiness|Goal tool|local V1 complete" AGENTS.md .agent\long-horizon\gitnexus-local-features\implement.md .agent\long-horizon\gitnexus-local-features\plans.md .agent\long-horizon\gitnexus-local-features\documentation.md
+gitnexus list
+gitnexus status
+rg -n "regression|forensic|forensics|bisect|failure|failing|CI|eval|benchmark|flake|test generation|known-good|known bad|golden" gitnexus eval .github README.md .agent\long-horizon\gitnexus-local-features
+rg --files gitnexus\src gitnexus\test eval .github | rg "(eval|regression|ci|workflow|test|fixture|benchmark|pr-impact|detect-changes|impact)"
+```
+
+Next boundary:
+
+- Verify the readiness documentation with `git diff --check`.
+- Commit the readiness documentation when complete.
+- Then apply the Goal Baton rule: complete this readiness Goal and create the next Goal with the Goal tool. If the readiness plan remains unchanged, the next Goal should be the Task 5 report-core implementation slice.
 
 ### 2026-06-06T12:29+01:00 - Task 4 PR Impact CLI Wrapper Implemented
 

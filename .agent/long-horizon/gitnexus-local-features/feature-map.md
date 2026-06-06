@@ -53,7 +53,7 @@ Supporting evidence:
 | 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `now` | Core status/dry-run-first planner/runner implemented locally, verified, uncommitted | Decide next Task 2 slice or snapshot |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `next tranche` | Docs-only README tool-surface reconciliation implemented and verified | Snapshot boundary before next feature source work |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `next implementation candidate` | Not implemented | Resolve WIP snapshot/no-snapshot boundary, then create implementation Goal |
-| 5 | Auto Regression Forensics | Light scoping only | `defer` | Not implemented | Needs PR impact/risk schema or MAIN reprioritization |
+| 5 | Auto Regression Forensics | Light scoping only | `now - readiness active` | Readiness in progress | PR Impact V1 exists; next step is deterministic failure-evidence report core planning |
 | 6 | End-to-End Test Generation | Light scoping only | `defer` | Not implemented | Needs target app/test framework/runtime contract |
 | 7 | OCaml Support | Light scoping only | `defer` | Not implemented | Needs language-provider/parser onboarding plan and dependency approval |
 
@@ -326,25 +326,28 @@ Next gate:
 
 Current status:
 
-- Deferred.
-- Research-only until PR Impact report/risk schema or MAIN reprioritizes.
+- Readiness active.
+- Research-only until the deterministic report-core write set is approved through the active Goal.
+- PR Impact V1 report/CLI now exists and can provide the first graph/risk dependency.
 
 Intended local capability:
 
 - Explain regressions by combining known-good/known-bad refs, failing tests/CI evidence, changed graph surfaces, and impact context.
+- V1 should report candidate causes and confidence/caveats; it must not claim true root cause from incomplete evidence.
 
 Dependencies:
 
 | Dependency | Why |
 | --- | --- |
-| PR Impact schema | Regression forensics needs stable impact/risk evidence to reason from |
+| PR Impact schema | Regression forensics needs stable impact/risk evidence to reason from; `pr-impact.v1alpha1` now exists locally |
 | CI/test failure contract | Needs concrete failure evidence, not just code change evidence |
 | Git history/bisect model | Needs known-good/known-bad or equivalent |
 | Graph freshness | Stale graph would invalidate causal claims |
 
 Next gate:
 
-- Keep deferred until there is a report schema and a failing-test evidence model.
+- Complete readiness by locking the failure-evidence contract and first source slice.
+- Recommended first implementation slice after readiness: pure `regression-forensics` report core with fixture-backed JSON/Markdown tests, no CLI/MCP/GitHub/CI automation.
 
 ### Task 6 - End-to-End Test Generation
 

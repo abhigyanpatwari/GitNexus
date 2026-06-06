@@ -35,7 +35,7 @@ Created: 2026-06-05
 | 2 | Auto-Updating Code Wiki | `medium now` | `now` | Core status/dry-run-first planner/runner implemented locally; no server/API wiring yet |
 | 3 | Multi-Repo Support Improvements | `light scoping only` | `next tranche` | Scope to current group/status/contracts/docs/tool-surface reconciliation; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 5 | Auto Regression Forensics | `light scoping only` | `readiness next` | Research/readiness Goal should define failure-evidence contract now that PR Impact V1 exists |
+| 5 | Auto Regression Forensics | `light scoping only` | `now - readiness active` | Readiness should define a deterministic failure-evidence-to-graph report core; no CI/GitHub automation in first slice |
 | 6 | End-to-End Test Generation | `light scoping only` | `defer` | Research-only; waits for PR impact/test-gap model and app/runtime contract |
 | 7 | OCaml Support | `light scoping only` | `defer` | Research-only |
 
@@ -279,31 +279,123 @@ Blocked stop condition:
 
 Outcome:
 
-- Scope a future regression-forensics workflow that can explain failures from known-good, known-bad, test/CI evidence, and GitNexus graph context.
+- Produce a local report-first regression-forensics readiness map that can explain a failing test/CI signal by combining known-good/known-bad refs, failure evidence, PR Impact V1 report data, and GitNexus graph context.
 
 Verification surface:
 
-- Evidence notes from local `eval/` infrastructure, Git history/bisect analogues, CI failure surfaces, and graph/report dependencies.
+- Evidence notes from local `eval/` infrastructure, PR Impact V1 source/tests, CI artifact/report surfaces, existing regression/golden/benchmark tests, and public regression/failure-localization references.
+- A documented expected-vs-actual table, failure-evidence contract, source ownership map, smallest safe first slice, focused TDD plan, risks, stop rules, and implementation approval boundary.
 
 Constraints:
 
 - Research-only for now.
-- Do not implement until PR Impact / Blast Radius has a stable report schema or MAIN expands scope.
+- Do not run or design GitHub token automation, PR comments/checks, generated fixes, automatic bisect execution, or CI workflow mutation in the first slice.
+- Do not claim true root cause; V1 should report graph-backed candidate causes and confidence/caveats.
 
 Boundaries:
 
-- Use local `eval/`, test/CI artifacts, Git history/bisect references, graph impact evidence, and public regression-forensics analogues.
-- Keep this goal to scoping and evidence contracts.
+- Use local `eval/`, PR Impact report/CLI files, test/CI artifacts, Git history/bisect references, graph impact evidence, and public regression-forensics/failure-localization analogues.
+- Keep this Goal to planning/documentation. Later implementation should start with a pure report core before CLI/MCP/GitHub integration.
 
 Iteration policy:
 
-- Identify required failure evidence first, then map dependencies on PR reports, CI data, and graph freshness.
-- Produce a defer/next verdict with missing prerequisites rather than designing implementation from thin evidence.
+- Identify required failure evidence first, then map dependencies on PR Impact reports, CI/test data, and graph freshness.
+- Prefer a deterministic fixture-backed report core over live CI/GitHub integration.
+- Produce a `now`/`next`/`defer` verdict with the smallest implementation slice and explicit approval gate.
 
 Blocked stop condition:
 
-- Stop if no failing-test/known-good/known-bad evidence contract can be defined or if implementation would start before dependent report/schema work exists.
+- Stop if no failing-test/known-good/known-bad evidence contract can be defined, if graph freshness cannot be established, or if the first slice would require privileged GitHub/CI automation.
 - Report the missing evidence model or dependency that would unlock progress.
+
+### Task 5 Readiness Refresh - Auto Regression Forensics
+
+Timestamp: 2026-06-06T12:49+01:00
+
+Readiness outcome:
+
+- V1 should be a local deterministic report, not an automated CI bot or fix generator.
+- Core pipeline should be: `failure evidence -> changed symbols / PR Impact report -> graph candidate causes -> forensic report`.
+- Existing GitNexus evidence supports report-building inputs: PR Impact V1 schema, eval harness result artifacts, CI test-report artifacts, and many regression/golden/benchmark tests.
+- No dedicated auto-regression-forensics feature surface exists locally yet.
+
+Expected vs actual:
+
+| V1 expectation | Current local behavior | Readiness conclusion |
+| --- | --- | --- |
+| Accept failing evidence | CI uploads `test-results.json`, web test results, and coverage artifacts; eval harness stores summaries, predictions, trajectories, and optional SWE-bench result JSON | V1 should accept fixture-shaped failure evidence and report missing fields explicitly |
+| Tie failure to changed code | PR Impact V1 emits mapped symbols, impacts, API impacts, verdict, test signal, and caveats | Reuse PR Impact report data as the first graph/risk input |
+| Compare known-good and known-bad | Git history exists, but no product-level known-good/known-bad contract is implemented | V1 should model refs as input metadata; do not run automatic bisect in first slice |
+| Explain likely causes | Local graph can provide impact, callers, routes, and test references | V1 should produce candidate causes with confidence/caveats, not true root-cause claims |
+| Use eval infrastructure | `eval/` measures agent performance and tool use over SWE-bench | Useful evidence source, but not the product workflow itself |
+| Publish CI/PR output | CI report and autofix workflows already handle privileged GitHub posting separately | Defer all GitHub comments/checks/token automation |
+
+Failure-evidence contract for V1:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `schema_version` | yes | Experimental schema, suggested `regression-forensics.v1alpha1` |
+| `failure_command` | yes | Command that failed, such as `npm test -- ...` |
+| `exit_code` | yes | Numeric exit code or `unknown` when imported from incomplete CI evidence |
+| `failing_tests` | yes | Stable names/paths of failing tests, empty only when failure is non-test infrastructure |
+| `failure_excerpt` | yes | Bounded stderr/stdout excerpt or artifact excerpt |
+| `environment` | yes | Local/CI label, OS if known, and relevant runtime versions if known |
+| `known_good_ref` / `known_bad_ref` | optional | Git refs when available; absence lowers confidence |
+| `pr_impact_report` | yes for first implementation | Existing PR Impact V1 JSON or fixture-equivalent input |
+
+Source ownership map:
+
+| Area | Current source/test surface | V1 use |
+| --- | --- | --- |
+| Report schema/format | `gitnexus/src/core/pr-impact/report.ts`, `gitnexus/test/unit/pr-impact-report.test.ts` | Mirror deterministic report-core pattern for regression forensics |
+| Failure artifacts | `.github/workflows/ci-tests.yml`, `.github/workflows/ci-report.yml`, `eval/analysis/analyze_results.py` | Treat as input-shape evidence, not live CI integration |
+| Eval traces | `eval/run_eval.py`, `eval/agents/gitnexus_agent.py`, `eval/README.md` | Inform optional future trace import; not required in first slice |
+| Graph context | existing `impact`, `detect_changes`, `api_impact`, and PR Impact V1 output | Use PR Impact report as the stable graph boundary |
+| Regression tests | golden/parity/benchmark/regression tests under `gitnexus/test` | Provide fixture style and likely validation examples |
+
+Smallest safe first implementation slice:
+
+- Add a pure core report builder for regression forensics that accepts deterministic fixture inputs and returns JSON plus Markdown.
+- Include `schema_version`, failure command/exit/test evidence, known-good/known-bad metadata, linked PR Impact summary, candidate causes, confidence, caveats, and recommendation.
+- Keep CLI, MCP, GitHub Actions, PR comments/checks, automatic bisect, live test execution, and generated remediation out of the first slice.
+
+Suggested first write set after this readiness Goal:
+
+| File | Purpose |
+| --- | --- |
+| `gitnexus/src/core/regression-forensics/report.ts` | Deterministic schema, confidence, Markdown/JSON formatting, caveats |
+| `gitnexus/test/unit/regression-forensics-report.test.ts` | Golden JSON/Markdown, failure evidence, missing known-good, confidence/caveats |
+| `gitnexus/test/fixtures/regression-forensics/golden-basic-report.md` | Checked-in expected Markdown |
+
+Focused test plan:
+
+1. Red test for JSON schema including `schema_version`.
+2. Red test for deterministic Markdown golden output.
+3. Red test for failing test names and failure excerpts being retained.
+4. Red test for PR Impact `BLOCK`/`NEEDS_DISCUSSION` evidence increasing confidence.
+5. Red test for missing known-good ref lowering confidence but not failing report creation.
+6. Red test that recommendations avoid claiming root cause when evidence is incomplete.
+
+Risks and stop rules:
+
+- Stop if the first slice requires live CI artifact download, GitHub tokens, PR comments/checks, or workflow mutation.
+- Stop if report inputs cannot distinguish observed failure evidence from inference.
+- Stop if graph freshness is stale and the report would make causal claims.
+- Stop if implementation would broaden into automatic bisect or remediation generation.
+
+Implementation approval boundary to use after readiness:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Auto Regression Forensics
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: local deterministic Regression Forensics V1 report core only. The slice may consume fixture-shaped failure evidence and PR Impact V1 report data, produce experimental JSON/Markdown with schema `regression-forensics.v1alpha1`, candidate causes, confidence, caveats, and recommendation.
+Approved write set:
+- gitnexus/src/core/regression-forensics/report.ts
+- gitnexus/test/unit/regression-forensics-report.test.ts
+- gitnexus/test/fixtures/regression-forensics/golden-basic-report.md
+Constraints: no CLI/MCP exposure in the first source slice, no GitHub PR comments/checks, no token automation, no CI workflow mutation, no automatic bisect, no live test execution, no generated fixes/remediation, no new dependency, and TDD required.
+```
 
 ### Goal 6 - End-to-End Test Generation
 
