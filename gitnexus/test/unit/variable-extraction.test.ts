@@ -473,6 +473,41 @@ describe('VariableExtractor — C++', () => {
     expect(info!.name).toBe('SIZE');
     expect(info!.isConst).toBe(true);
   });
+
+  // F9 — structured binding declarations emit one Variable per bound name.
+  it('emits a Variable per name for `auto [a, b] = make_pair();`', () => {
+    parser.setLanguage(Cpp);
+    const tree = parser.parse('auto [a, b] = make_pair();');
+    const node = tree.rootNode.child(0)!;
+    expect(extractor.isVariableDeclaration(node)).toBe(true);
+
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['a', 'b']);
+    // Top-level declaration → module scope (C++ is in the safe set re: the
+    // determineScope class-body block hazard).
+    for (const info of infos) expect(info.scope).toBe('module');
+  });
+
+  it('emits a Variable per name for the reference form `auto& [x, y, z] = tup;`', () => {
+    parser.setLanguage(Cpp);
+    const tree = parser.parse('auto& [x, y, z] = tup;');
+    const node = tree.rootNode.child(0)!;
+
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['x', 'y', 'z']);
+    for (const info of infos) expect(info.scope).toBe('module');
+  });
+
+  it('does not double-emit for an ordinary single-name declaration `int n = 0;`', () => {
+    parser.setLanguage(Cpp);
+    const tree = parser.parse('int n = 0;');
+    const node = tree.rootNode.child(0)!;
+
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos).toHaveLength(1);
+    expect(infos[0]!.name).toBe('n');
+    expect(infos[0]!.scope).toBe('module');
+  });
 });
 
 // ---------------------------------------------------------------------------

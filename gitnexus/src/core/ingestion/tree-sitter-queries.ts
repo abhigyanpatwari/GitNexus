@@ -1005,6 +1005,19 @@ export const CPP_QUERIES = `
   declarator: (init_declarator
     declarator: (identifier) @name)) @definition.variable
 
+; Structured bindings: auto [a, b] = makePair();  (one @name per bound identifier)
+(declaration
+  declarator: (init_declarator
+    declarator: (structured_binding_declarator
+      (identifier) @name))) @definition.variable
+
+; Structured bindings, reference form: auto& [x, y] = tup;
+(declaration
+  declarator: (init_declarator
+    declarator: (reference_declarator
+      (structured_binding_declarator
+        (identifier) @name)))) @definition.variable
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (field_expression
