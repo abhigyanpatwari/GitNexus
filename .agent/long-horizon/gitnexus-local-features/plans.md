@@ -45,13 +45,47 @@ This section controls the next Goal selection after the completed local V1 tranc
 
 | Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
+| 1 | Task 2 Wiki Mutation / Manual Refresh Policy | Readiness Goal | Decide whether to move beyond read-only wiki status/provider readiness into an explicit manual refresh or mutation-capable local workflow. | Output mutation policy, provider execution boundary, rollback/reporting shape, exact write set, and TDD plan. | Stop if MAIN must decide where wiki output may be written, whether providers may execute, or whether server/API endpoints may mutate state. |
+| 2 | Task 4 GitHub PR Automation Boundary | Readiness Goal | Decide whether PR Impact should move beyond local CLI/MCP into GitHub PR URL ingestion, comments, checks, or Actions. | Token/permission model, fork-safety threat model, dry-run/report-first contract, and exact no-write/write phases. | Stop if token-bearing GitHub automation or CI workflow mutation is required without an explicit security approval. |
+| 3 | Task 6 `/api/info` API-Smoke Route | Technical readiness Goal | `/api/info` is a read-only server-info route and was the next clean API-smoke candidate after `/api/health`. | Stable response contract review, fixture/golden plan, and no-state/no-auth check. | Stop if runtime-derived fields make the generated assertion brittle. |
+| 4 | Task 7 OCaml Module-System Depth | Research/readiness Goal | Query Depth V2 is complete; deeper OCaml work would mean Dune, interface/implementation matching, alias resolution, or functor semantics. | Parser/provider/resolver gap table and dependency/risk map. | Stop if the slice requires a dependency upgrade, full resolver semantics, or production classification. |
 
 Default recommendation:
 
-- Continue with `Task 7 Deeper OCaml Semantics` readiness.
+- Continue with `Task 2 Wiki Mutation / Manual Refresh Policy` readiness next.
+- Prefer policy readiness before more low-value route expansion, because wiki mutation is the largest remaining enterprise-feature gap after the read-only status/provider-readiness slices.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
+### Post-Tranche Consolidation - 2026-06-07T17:14+01:00
+
+Completed recent slices:
+
+| Slice | Commit | Status |
+| --- | --- | --- |
+| Task 4 local read-only MCP `pr_impact` | `8cccd348` | Complete; GitHub automation deferred |
+| Task 6 `/api/file` generated UI fixture | `e32a3438` | Complete; broader UI route generation deferred |
+| Task 6 `/api/health` generated API-smoke fixture | `ff66de1e` | Complete; more API-smoke routes require route-specific readiness |
+| Task 7 OCaml Query Depth V2 | `f1d2cc2b` | Complete; Dune/PPX/full module semantics deferred |
+
+What is genuinely blocked:
+
+| Area | Blocker type | Why it cannot be forced through as normal implementation |
+| --- | --- | --- |
+| Wiki mutation/manual refresh | Product/output policy | `WikiGenerator.run()` writes markdown/HTML/meta artifacts and may invoke providers. The next slice must name output location, mutation mode, provider execution rules, and rollback/reporting. |
+| GitHub PR comments/checks/Actions | Security/permission policy | Token-bearing GitHub writes and fork/CI behavior need a permission and threat model before source edits. |
+| Broader generated tests/browser execution | Test ownership/flakiness policy | Executable generated tests beyond deterministic mocked fixtures need ownership, review, fixture, and browser/CI rules. |
+| Full OCaml module resolution | Language semantics/dependency scope | Dune, PPX, aliases, interface matching, and functors require resolver design, not just query captures. |
+
+Recommendation:
+
+- Next selected task is `Task 2 Wiki Mutation / Manual Refresh Policy` readiness.
+- The readiness pass should decide whether the next implementation target is:
+  - a local CLI/manual refresh mode,
+  - a server-side dry-run-only planner,
+  - a mutation-capable server endpoint,
+  - or explicit deferral.
+- No wiki output mutation should be implemented until that readiness packet names the exact write set and stop rules.
 
 ### Task 7 Deeper OCaml Semantics - 2026-06-07T17:08+01:00
 

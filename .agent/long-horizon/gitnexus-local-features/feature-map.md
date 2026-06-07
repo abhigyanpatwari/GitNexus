@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E/API-smoke local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route paths; `/api/processes` and `/api/health` are implemented through a separate API-smoke lane; Task 7 OCaml Query Depth V2 is implemented; broader generated tests, additional API-smoke routes, wiki mutation, and deeper OCaml semantics require new readiness packets |
+| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route paths; `/api/processes` and `/api/health` are implemented through a separate API-smoke lane; Task 7 OCaml Query Depth V2 is implemented; next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -567,10 +567,13 @@ Immediate:
 
 | Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Post-Tranche Consolidation | Readiness / docs Goal | Recent Task 6 and Task 7 slices are now implemented; the queue needs a refreshed next-slice recommendation before more source edits. | Reconcile completed slices, remaining deferred scopes, and recommend the next exact task. | Stop if the next task needs MAIN product/policy choice rather than technical readiness. |
+| 1 | Task 2 Wiki Mutation / Manual Refresh Policy | Readiness Goal | The read-only wiki status/provider-readiness slices are complete; mutation/manual refresh is the largest remaining enterprise-feature gap. | Decide local CLI/manual refresh vs server dry-run planner vs mutation-capable endpoint vs explicit deferral. | Stop if output location, provider execution, mutation mode, or rollback/reporting policy cannot be named. |
+| 2 | Task 4 GitHub PR Automation Boundary | Readiness Goal | Local PR Impact CLI/MCP is complete; GitHub comments/checks remain security-sensitive. | Token/permission model, fork-safety threat model, dry-run/report-first contract, and no-write/write phase split. | Stop if token-bearing GitHub automation or CI workflow mutation lacks explicit security approval. |
+| 3 | Task 6 `/api/info` API-Smoke Route | Technical readiness Goal | `/api/info` is a read-only server-info route and the next clean API-smoke candidate after `/api/health`, but lower feature value than wiki mutation. | Stable response contract review and fixture/golden plan. | Stop if runtime-derived fields make generated assertions brittle. |
+| 4 | Task 7 OCaml Module-System Depth | Research/readiness Goal | Query Depth V2 is complete; deeper OCaml work would mean Dune, interface matching, aliases, or functors. | Parser/provider/resolver gap table and dependency/risk map. | Stop if the slice requires dependency upgrades or real module-system resolution. |
 
 Recommended default:
 
-- Start with post-tranche consolidation and next-slice map refresh.
+- Start with Task 2 Wiki Mutation / Manual Refresh Policy readiness.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, MCP expansion, and deeper OCaml semantics deferred until the selected task opens that scope.

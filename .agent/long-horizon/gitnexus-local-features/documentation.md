@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 7 OCaml Query Depth V2 implemented; next selected task is post-tranche consolidation and next-slice map refresh
+- Mode: Post-tranche consolidation complete; next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -101,6 +101,38 @@ Current state:
 - 2026-06-07T17:02+01:00: Task 6 `/api/health` generated API-smoke route implemented with TDD. The generated spec calls `/api/health` with Playwright APIRequestContext and asserts OK plus `{ status: 'ok' }`. Browser execution, server route changes, CI mutation, GitHub automation, and broader API-smoke route support remain deferred. Next selected task is Task 7 Deeper OCaml Semantics readiness.
 - 2026-06-07T17:08+01:00: Task 7 Deeper OCaml Semantics readiness selected a narrow OCaml Query Depth V2 slice: module type definitions plus module/include/functor references in experimental query captures only. Dependency upgrades, Dune, PPX, full module alias/functor resolution, parser-loader changes, production classification, web UI, MCP, and API changes remain deferred.
 - 2026-06-07T17:11+01:00: Task 7 OCaml Query Depth V2 implemented with TDD. Added advanced `.ml`/`.mli` fixtures, captured module type definitions as `definition.interface`, and captured module parameters, module paths, module type paths, includes, and interface includes as import-like references. Focused OCaml/query tests, parser ABI smoke, and build passed. Next selected task is post-tranche consolidation and next-slice map refresh.
+- 2026-06-07T17:14+01:00: Post-tranche consolidation refreshed the queue. Recent Task 4/6/7 slices are complete. The main remaining blockers are policy/permission/ownership decisions, not ordinary coding failures: wiki output mutation, token-bearing GitHub PR automation, broader generated-test execution, and full OCaml module-system semantics. Next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness.
+
+### 2026-06-07T17:14+01:00 - Post-Tranche Consolidation
+
+Goal:
+
+- Reconcile the completed Task 4, Task 6, and Task 7 follow-on slices and choose the next defensible selected task.
+
+Completed recent slices:
+
+| Slice | Commit | Status |
+| --- | --- | --- |
+| Task 4 local read-only MCP `pr_impact` | `8cccd348` | Complete; GitHub automation deferred |
+| Task 6 `/api/file` generated UI fixture | `e32a3438` | Complete; broader UI route generation deferred |
+| Task 6 `/api/health` generated API-smoke fixture | `ff66de1e` | Complete; more API-smoke routes require route-specific readiness |
+| Task 7 OCaml Query Depth V2 | `f1d2cc2b` | Complete; Dune/PPX/full module semantics deferred |
+
+What keeps getting blocked:
+
+| Area | Blocker type | Reason |
+| --- | --- | --- |
+| Wiki mutation/manual refresh | Product/output policy | Wiki generation writes markdown/HTML/meta artifacts and may invoke providers. The next slice must name output location, mutation mode, provider execution rules, and rollback/reporting. |
+| GitHub PR comments/checks/Actions | Security/permission policy | Token-bearing GitHub writes and fork/CI behavior need a permission and threat model before source edits. |
+| Broader generated tests/browser execution | Test ownership/flakiness policy | Executable generated tests beyond deterministic mocked fixtures need ownership, review, fixture, and browser/CI rules. |
+| Full OCaml module resolution | Language semantics/dependency scope | Dune, PPX, aliases, interface matching, and functors require resolver design, not just query captures. |
+
+Decision:
+
+- Next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness.
+- This is a readiness task first, not immediate mutation.
+- It should decide whether the next implementation target is local CLI/manual refresh, server-side dry-run-only planner, mutation-capable server endpoint, or explicit deferral.
+- No wiki output mutation should be implemented until the readiness packet names the exact write set and stop rules.
 
 ### 2026-06-07T17:08+01:00 - Task 7 OCaml Query Depth V2 Readiness
 
