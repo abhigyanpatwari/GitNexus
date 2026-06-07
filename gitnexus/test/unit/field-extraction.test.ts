@@ -7,6 +7,7 @@ import { goConfig } from '../../src/core/ingestion/field-extractors/configs/go.j
 import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-cpp.js';
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
 import { dartConfig } from '../../src/core/ingestion/field-extractors/configs/dart.js';
+import { kotlinConfig } from '../../src/core/ingestion/field-extractors/configs/jvm.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
@@ -18,6 +19,13 @@ import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
 import CSharp from 'tree-sitter-c-sharp';
 import Dart from 'tree-sitter-dart';
+
+let Kotlin: unknown;
+try {
+  Kotlin = require('tree-sitter-kotlin');
+} catch {
+  // Kotlin grammar may not be installed
+}
 import { csharpConfig as csharpFieldConfig } from '../../src/core/ingestion/field-extractors/configs/csharp.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
@@ -1156,5 +1164,76 @@ describe('GenericFieldExtractor — Dart', () => {
     expect(p!.visibility).toBe('private');
     expect(p!.isStatic).toBe(true);
     expect(p!.isReadonly).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kotlin config — F52: companion-object properties indexed as fields
+// ---------------------------------------------------------------------------
+
+const describeKotlin = Kotlin ? describe : describe.skip;
+
+describeKotlin('GenericFieldExtractor — Kotlin (F52 companion)', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(kotlinConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Kotlin;
+  mockContext.filePath = 'test.kt';
+
+  /** The first companion_object node in `src`. */
+  function companion(src: string): Parser.SyntaxNode {
+    parser.setLanguage(Kotlin as Parser.Language);
+    const tree = parser.parse(src);
+    let found: Parser.SyntaxNode | undefined;
+    const walk = (n: Parser.SyntaxNode) => {
+      if (n.type === 'companion_object') found ??= n;
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error('no companion_object found');
+    return found;
+  }
+
+  it('extracts a `const val` companion property as a static, readonly field', () => {
+    const node = companion(`class C {
+  companion object {
+    const val TAG = "c"
+  }
+}`);
+    expect(extractor.isTypeDeclaration(node)).toBe(true);
+    const result = extractor.extract(node, mockContext);
+    expect(result).not.toBeNull();
+    const tag = result!.fields.find((f) => f.name === 'TAG');
+    expect(tag).toBeDefined();
+    expect(tag!.isStatic).toBe(true);
+    expect(tag!.isReadonly).toBe(true);
+  });
+
+  it('extracts a property from a NAMED companion object', () => {
+    const node = companion(`class C {
+  companion object Factory {
+    val x = 1
+  }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const x = result!.fields.find((f) => f.name === 'x');
+    expect(x).toBeDefined();
+    expect(x!.isStatic).toBe(true);
+    expect(x!.isReadonly).toBe(true);
+  });
+
+  it('indexes only the property, not the function, and emits it exactly once', () => {
+    const node = companion(`class C {
+  companion object {
+    val onlyField = 1
+    fun create() {}
+  }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const fieldNames = result!.fields.map((f) => f.name);
+    expect(fieldNames).toEqual(['onlyField']); // function excluded, no duplication
   });
 });

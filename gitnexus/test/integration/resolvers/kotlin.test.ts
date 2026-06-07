@@ -2743,3 +2743,47 @@ describe('F51 — Kotlin destructuring declarations', () => {
     expect(props).toEqual(['a', 'b', 'k', 'second', 'v', 'x']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F52 (issue #1919): companion-object properties are indexed as fields
+// ---------------------------------------------------------------------------
+
+describe('F52 — Kotlin companion-object properties', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-companion-fields'), () => {});
+  }, 60000);
+
+  it('indexes anonymous-companion `const val TAG` as a static, readonly field', () => {
+    const tag = getNodesByLabelFull(result, 'Property').find((n) => n.name === 'TAG');
+    expect(tag).toBeDefined();
+    expect(tag!.properties.isStatic).toBe(true);
+    expect(tag!.properties.isReadonly).toBe(true);
+  });
+
+  it('indexes a NAMED-companion property `cfgX` as a field', () => {
+    const x = getNodesByLabelFull(result, 'Property').find((n) => n.name === 'cfgX');
+    expect(x).toBeDefined();
+    expect(x!.properties.isStatic).toBe(true);
+  });
+
+  it('emits each companion field exactly once (no double emission)', () => {
+    // Exact field set + a one-per-name count guards against the companion-scope
+    // machinery re-emitting the same property.
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toEqual(['TAG', 'cfgX', 'instances']);
+    expect(props.filter((p) => p === 'TAG')).toHaveLength(1);
+  });
+
+  it('owns anonymous-companion fields on the ENCLOSING class C (companion function is not a field)', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY');
+    const cFields = owned
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target)
+      .sort();
+    expect(cFields).toEqual(['TAG', 'instances']);
+    // The companion's `create` function is a Method, never a Property/field.
+    expect(getNodesByLabel(result, 'Property')).not.toContain('create');
+  });
+});
