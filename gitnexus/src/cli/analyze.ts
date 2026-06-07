@@ -64,13 +64,16 @@ const writeFatalToStderr = (label: string, err: unknown): void => {
   // failure as `new Error("Phase 'X' failed: …", { cause })`, so the original
   // error (e.g. a WorkerPoolDispatchError carrying the worker-side stack from
   // #2068) is only reachable via `.cause`. Without this the user sees the
-  // wrapper's main-thread stack and never the real frame. Depth-bounded so a
-  // cyclic `cause` can't loop; uses realStderrWrite so the redirected
-  // console.error's ANSI clear-line wrapping can't erase it (#1169).
+  // wrapper's main-thread stack and never the real frame. `cause.stack` already
+  // begins with the cause's message, so we print the stack alone (not message +
+  // stack) to avoid repeating it. Depth-bounded so a cyclic `cause` can't loop
+  // (the phase runner wraps one level; the bound leaves headroom for future
+  // nesting); uses realStderrWrite so the redirected console.error's ANSI
+  // clear-line wrapping can't erase it (#1169).
+  const MAX_CAUSE_DEPTH = 5;
   let cause: unknown = isErr ? (err as { cause?: unknown }).cause : undefined;
-  for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
-    realStderrWrite(`\n  Caused by: ${cause.message}\n`);
-    if (cause.stack) realStderrWrite(`${cause.stack}\n`);
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && cause instanceof Error; depth++) {
+    realStderrWrite(`\n  Caused by: ${cause.stack ?? cause.message}\n`);
     cause = (cause as { cause?: unknown }).cause;
   }
 };

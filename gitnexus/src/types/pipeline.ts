@@ -19,10 +19,11 @@ export interface PipelineResult {
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
   /**
-   * True if the parse phase spawned a worker pool for this run. The worker
-   * pool is the sole parse path (sequential parsing was removed), so this is
-   * true for any repo with at least one parseable file; False means the parse
-   * phase was skipped entirely (no parseable files). Primarily a test
+   * True if a worker pool was actually constructed for this run. The worker
+   * pool is the sole parse path (sequential parsing was removed). False means
+   * no pool was needed: either there were no parseable files, or every chunk
+   * was a parse-cache hit and the cached worker output was replayed without
+   * spawning workers (a warm all-cache-hit run, #2038). Primarily a test
    * affordance so regression suites can prove the pool engaged.
    */
   usedWorkerPool: boolean;

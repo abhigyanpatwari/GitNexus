@@ -25,7 +25,7 @@ import {
 type NodeWorker = import('node:worker_threads').Worker;
 
 type FakeAction =
-  | { kind: 'error-message'; error: string; errorStack?: string; errorName?: string }
+  | { kind: 'error-message'; error: string; errorStack?: string }
   | { kind: 'error-event'; message: string; stack: string };
 
 const nextActions: FakeAction[] = [];
@@ -57,7 +57,6 @@ class FakeWorker extends EventEmitter {
           type: 'error',
           error: action.error,
           errorStack: action.errorStack,
-          errorName: action.errorName,
         });
       } else {
         const e = new Error(action.message);
@@ -123,7 +122,6 @@ describe('worker-pool error stack propagation (#2068)', () => {
       kind: 'error-message',
       error: 'this.#q is not a function',
       errorStack: workerStack,
-      errorName: 'TypeError',
     });
 
     const caught = await dispatchAndCatch(pool);
@@ -136,15 +134,19 @@ describe('worker-pool error stack propagation (#2068)', () => {
     await pool.terminate();
   });
 
-  it('embeds the worker stack from a Node error event into the surfaced error', async () => {
+  // The Node 'error' event fires on an UNCAUGHT JS throw / async rejection (which
+  // carries a real JS stack). A true NATIVE abort (tree-sitter SIGSEGV / OOM kill)
+  // instead fires the 'exit' event and is intentionally stackless — no JS frame
+  // exists — so it is NOT exercised here.
+  it('embeds the worker stack from a Node error event (uncaught throw) into the surfaced error', async () => {
     const workerStack =
-      'Error: native parse abort\n' +
+      'Error: uncaught worker throw\n' +
       '    at processFileGroup (/dist/core/ingestion/workers/parse-worker.js:777:9)';
     const pool = createWorkerPool(workerUrl, 1, {
       workerFactory: () => new FakeWorker() as unknown as NodeWorker,
       ...TRIP_ON_FIRST_DEATH,
     });
-    nextActions.push({ kind: 'error-event', message: 'native parse abort', stack: workerStack });
+    nextActions.push({ kind: 'error-event', message: 'uncaught worker throw', stack: workerStack });
 
     const caught = await dispatchAndCatch(pool);
 

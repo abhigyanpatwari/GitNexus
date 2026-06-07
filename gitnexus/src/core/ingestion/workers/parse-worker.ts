@@ -2434,21 +2434,21 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
       return;
     }
   } catch (err) {
-    // Carry the worker-side stack + error name across the MessageChannel, not
-    // just the message. Without this, an unexpected worker throw (e.g. the
-    // minified `this.#<x> is not a function` family) reaches the operator as a
-    // bare one-liner with no file:line — exactly what made #2068 undebuggable.
-    // The pool embeds `errorStack` into its death/circuit-breaker reason so the
-    // surfaced "Phase 'parse' failed" message points at the real frame. We send
+    // Carry the worker-side stack across the MessageChannel, not just the
+    // message. Without this, an unexpected worker throw (e.g. the minified
+    // `this.#<x> is not a function` family) reaches the operator as a bare
+    // one-liner with no file:line — exactly what made #2068 undebuggable. The
+    // pool embeds `errorStack` into its death/circuit-breaker reason so the
+    // surfaced "Phase 'parse' failed" message points at the real frame (the
+    // stack's first line already carries the error's type + message). We send
     // primitive fields (not the raw Error) so a non-cloneable `cause` payload
-    // can never turn the report itself into a `messageerror`. `errorStack`/
-    // `errorName` are optional on the wire, so an older pool ignores them.
+    // can never turn the report itself into a `messageerror`. `errorStack` is
+    // optional on the wire, so an older pool ignores it.
     const e = err instanceof Error ? err : new Error(String(err));
     parentPort!.postMessage({
       type: 'error',
       error: e.message,
       errorStack: e.stack,
-      errorName: e.name,
     });
   }
 });

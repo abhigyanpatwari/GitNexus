@@ -9,9 +9,10 @@
  *
  *   - `processRoutesFromExtracted` — CALLS edges from framework routes
  *     (e.g. Laravel) to their controller methods.
- *   - `processNextjsFetchRoutes` / `extractFetchCallsFromFiles` /
- *     `extractConsumerAccessedKeys` — FETCHES edges from `fetch()` calls to
- *     Next.js Route nodes.
+ *   - `processNextjsFetchRoutes` / `extractConsumerAccessedKeys` — FETCHES edges
+ *     from `fetch()` calls to Next.js Route nodes. (`extractFetchCallsFromFiles`
+ *     is a non-worker helper retained for reuse; it is no longer on the parse
+ *     path — see its docstring.)
  *   - `buildExportedTypeMapFromGraph` — exported symbol → return/declared type
  *     map, consumed by the cross-file enrichment pass.
  */
