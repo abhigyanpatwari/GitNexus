@@ -54,10 +54,10 @@
     "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
   },
   "dart": {
-    "fingerprint": "4ad6553bf16c587658cb9eab760c03e612223ef09bb9322a7bd0b799f475ff2c",
+    "fingerprint": "16803236af14a98f90ee9b629a27a5d4e99d3c01c4aef5fd6f6aa692a0bbf0b5",
     "scaling_budget": 1.5,
     "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
-    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
+    "_rebaselined": "#1919 review remediation (Phase F): Dart=generic typedef scope/structure rules + fixtures (CF2); Kotlin=secondary-ctor @scope.function/@declaration.constructor scope captures (CF1). Fingerprint-only drift; scaling ~1.0."
   },
   "java": {
     "fingerprint": "9b29cafe32873b4902bda311bd089ffc04efe08f13557b966d29544be514080a",
@@ -78,9 +78,9 @@
     "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   },
   "kotlin": {
-    "fingerprint": "fafb31521407ddec26c3e689af45c5562abc4c539baf75fd9e06bf90034c0156",
+    "fingerprint": "08589740a09c6ab1f573e6cb4cada8960400eac1b60740aabd318ef5b767b70a",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
+    "_rebaselined": "#1919 review remediation (Phase F): Dart=generic typedef scope/structure rules + fixtures (CF2); Kotlin=secondary-ctor @scope.function/@declaration.constructor scope captures (CF1). Fingerprint-only drift; scaling ~1.0."
   }
 }
