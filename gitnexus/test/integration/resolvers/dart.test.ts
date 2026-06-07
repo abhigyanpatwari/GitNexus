@@ -764,6 +764,51 @@ describe.skipIf(!dartAvailable)('Dart static const/final fields (F26)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// F29 (issue #1919): top-level Dart variables. Top-level vars are loose
+// siblings under `program` (no `declaration` wrapper), so the structure query
+// never captured them and no Variable node existed end-to-end. They must now
+// surface as Variable nodes with the real type/const metadata read from the
+// captured container's leading siblings (not a phantom `type` field).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart top-level variables (F29)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-toplevel-vars'), () => {});
+  }, 60000);
+
+  it('captures top-level variables (typed final, inferred var, multi-name const)', () => {
+    const vars = getNodesByLabel(result, 'Variable');
+    expect(vars).toContain('count'); // final int count = 3; (covers F29)
+    expect(vars).toContain('name'); // var name = 'x';
+    expect(vars).toContain('a'); // const a = 1, b = 2;
+    expect(vars).toContain('b');
+  });
+
+  it('reads the real type for a typed final and leaves an inferred var untyped', () => {
+    const vars = getNodesByLabelFull(result, 'Variable');
+    const count = vars.find((n) => n.name === 'count');
+    expect(count).toBeDefined();
+    expect(count!.properties.declaredType).toBe('int');
+    expect(count!.properties.isConst).toBe(true);
+
+    const name = vars.find((n) => n.name === 'name');
+    expect(name).toBeDefined();
+    // inferred `var` → no declaredType from a phantom field; mutable.
+    expect(name!.properties.declaredType).toBeUndefined();
+    expect(name!.properties.isMutable).toBe(true);
+  });
+
+  it('keeps the class instance field as a Property, not a Variable (regression)', () => {
+    const vars = getNodesByLabel(result, 'Variable');
+    expect(vars).not.toContain('z');
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('z');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage cross-file simple-name collision (PR #1970 tri-review P2).
 // console_logger.dart and file_logger.dart each declare `class Logger`; each
 // file's service `implements Logger`. emitDartHeritageEdges resolves the base

@@ -1550,11 +1550,22 @@ export const DART_QUERIES = `
   (setter_signature
     name: (identifier) @name)) @definition.property
 
-; ── Top-level variable declarations (const maxSize = 100, final x = 5, var y = 0) ──
-(declaration
+; ── Top-level variable declarations ──────────────────────────────────────────
+; Top-level Dart variables are NOT wrapped in a declaration node (that wrapper
+; only occurs for class-body members). They sit as loose siblings under program:
+;   var name = 'x';   int x = 5;       → initialized_identifier_list
+;   final int count = 3;   const a = 1, b = 2;   → static_final_declaration_list
+; Anchor both rules under (program) so class-body fields (which reuse the same
+; inner node types) are never matched here. One @name per declared name so
+; multi-name forms (const a = 1, b = 2;) yield a Variable per name.
+(program
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.variable
+      (identifier) @name)) @definition.variable)
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name)) @definition.variable)
 
 ; ── Imports ──────────────────────────────────────────────────────────────────
 (import_or_export
