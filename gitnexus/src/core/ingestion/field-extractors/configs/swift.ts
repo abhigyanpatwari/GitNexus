@@ -79,8 +79,11 @@ export const swiftConfig: FieldExtractionConfig = {
   isStatic(node) {
     // `static`/`class` (type-level) modifiers live inside a `modifiers`
     // wrapper for both property_declaration and protocol_property_declaration
-    // (e.g. `static var shared: P { get }`), so check the wrapper too — a bare
-    // `hasKeyword` only sees direct children and would miss them.
+    // (e.g. `static var shared: P { get }`), so check the wrapper too.
+    // `hasKeyword` compares each direct child by `.text` equality: it matches a
+    // single-modifier wrapper (`modifiers.text === 'static'`) but fails for a
+    // multi-modifier wrapper (`private static` → `modifiers.text === 'private static'`),
+    // which `hasModifier` handles by descending into the wrapper's children.
     return (
       hasKeyword(node, 'static') ||
       hasKeyword(node, 'class') ||
