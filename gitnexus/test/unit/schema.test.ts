@@ -23,6 +23,15 @@ import {
   FILE_SCHEMA_MIGRATION,
   FOLDER_SCHEMA_MIGRATION,
   FUNCTION_SCHEMA_MIGRATION,
+  FUNCTION_SCHEMA_MIGRATION_2,
+  CLASS_SCHEMA_MIGRATION,
+  INTERFACE_SCHEMA_MIGRATION,
+  METHOD_SCHEMA_MIGRATION,
+  METHOD_SCHEMA_MIGRATION_2,
+  CODE_ELEMENT_SCHEMA_MIGRATION,
+  COMMUNITY_SCHEMA_MIGRATION,
+  PROCESS_SCHEMA_MIGRATION,
+  ROUTE_SCHEMA_MIGRATION,
 } from '../../src/core/lbug/schema.js';
 import { NodeProperties, RelationshipType } from '../../src/core/graph/types.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
@@ -300,17 +309,43 @@ describe('LadybugDB Schema', () => {
       expect(PROCESS_SCHEMA).toContain('repoId STRING');
     });
 
-    it('uses IF NOT EXISTS for backward compatibility', () => {
-      // WI-1: Schema migrations must use IF NOT EXISTS for repoId column
-      // This allows existing databases to be upgraded without errors
-      // Check that migration schemas use the ALTER TABLE pattern
+    it('uses ADD COLUMN-free ALTER for Kùzu (WI-160 runner is the idempotency guard)', () => {
+      // WI-1 originally asserted the migrations used `IF NOT EXISTS` for
+      // backward compatibility. Kùzu's ALTER TABLE does NOT support that
+      // clause (it throws "Invalid input <ADD COLUMN>: expected rule
+      // iC_AlterOptions" at parse time). WI-160 moves idempotency to the
+      // migration runner in lbug-adapter.doInitLbug, which suppresses the
+      // "already has property" error Kùzu throws on a re-ADD.
+      // This test pins the Kùzu-compatible syntax so a future refactor
+      // doesn't reintroduce `IF NOT EXISTS` (or `ADD COLUMN`) into the
+      // migration strings and brick the DB open.
       const migrationWithAlter = [
         FILE_SCHEMA_MIGRATION,
         FOLDER_SCHEMA_MIGRATION,
         FUNCTION_SCHEMA_MIGRATION,
-      ].find(migration => migration.includes('ALTER TABLE') && migration.includes('IF NOT EXISTS'));
+      ].find(migration => migration.includes('ALTER TABLE') && migration.includes('ADD '));
 
       expect(migrationWithAlter).toBeDefined();
+
+      // None of the migration constants should use the invalid `ADD COLUMN
+      // IF NOT EXISTS` pattern — both clauses are unsupported by Kùzu.
+      for (const migration of [
+        FILE_SCHEMA_MIGRATION,
+        FOLDER_SCHEMA_MIGRATION,
+        FUNCTION_SCHEMA_MIGRATION,
+        FUNCTION_SCHEMA_MIGRATION_2,
+        CLASS_SCHEMA_MIGRATION,
+        INTERFACE_SCHEMA_MIGRATION,
+        METHOD_SCHEMA_MIGRATION,
+        METHOD_SCHEMA_MIGRATION_2,
+        CODE_ELEMENT_SCHEMA_MIGRATION,
+        COMMUNITY_SCHEMA_MIGRATION,
+        PROCESS_SCHEMA_MIGRATION,
+        ROUTE_SCHEMA_MIGRATION,
+      ]) {
+        expect(migration).not.toContain('ADD COLUMN');
+        expect(migration).not.toContain('IF NOT EXISTS');
+      }
     });
   });
 

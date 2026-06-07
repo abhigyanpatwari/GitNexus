@@ -8,6 +8,7 @@ import {
   NODE_TABLES,
   REL_TABLE_NAME,
   SCHEMA_QUERIES,
+  SCHEMA_MIGRATIONS,
   EMBEDDING_TABLE_NAME,
   NodeTableName,
 } from './schema.js';
@@ -142,6 +143,32 @@ const doInitLbug = async (dbPath: string) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('already exists')) {
         throw err;
+      }
+    }
+  }
+
+  // Apply incremental migrations (additive ALTER TABLE ... ADD col TYPE).
+  // Idempotent on existing DBs — running on a fresh DB and an existing DB
+  // both end up with the migrated columns populated. Kùzu's ALTER does NOT
+  // support IF NOT EXISTS, so re-running on a DB that already has the
+  // column throws "already has property" — the catch-block below swallows
+  // that and re-running becomes a no-op. Multi-statement migrations
+  // (FUNCTION_SCHEMA_MIGRATION_2, ROUTE_SCHEMA_MIGRATION) are split on
+  // `;` because Connection.query() takes one statement at a time.
+  for (const migration of SCHEMA_MIGRATIONS) {
+    for (const stmt of migration.split(';')) {
+      const trimmed = stmt.trim();
+      if (!trimmed) continue;
+      try {
+        await conn.query(trimmed);
+      } catch (err) {
+        // Suppress "already has property" (Kùzu's wording for a re-ADD
+        // against an existing column) and "already exists" (legacy wording
+        // for DDL conflicts) so the runner is idempotent on existing DBs.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('already has property') && !msg.includes('already exists')) {
+          throw err;
+        }
       }
     }
   }

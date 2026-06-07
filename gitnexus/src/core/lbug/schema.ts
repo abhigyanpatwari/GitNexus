@@ -53,7 +53,7 @@ export function getEmbeddingDims(): number {
 // ============================================================================
 
 // Cross-repo support - repoId column for multi-repo resolution
-// Migration (for existing databases): ALTER TABLE File ADD COLUMN IF NOT EXISTS repoId STRING
+// Migration (for existing databases): ALTER TABLE File ADD repoId STRING
 export const FILE_SCHEMA = `
 CREATE NODE TABLE File (
   id STRING,
@@ -65,7 +65,7 @@ CREATE NODE TABLE File (
 )`;
 // Migration statement for backward compatibility with existing databases
 export const FILE_SCHEMA_MIGRATION = `
-ALTER TABLE File ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE File ADD repoId STRING`;
 
 export const FOLDER_SCHEMA = `
 CREATE NODE TABLE Folder (
@@ -77,7 +77,7 @@ CREATE NODE TABLE Folder (
 )`;
 // Migration for cross-repo support
 export const FOLDER_SCHEMA_MIGRATION = `
-ALTER TABLE Folder ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Folder ADD repoId STRING`;
 
 export const FUNCTION_SCHEMA = `
 CREATE NODE TABLE Function (
@@ -96,13 +96,14 @@ CREATE NODE TABLE Function (
 )`;
 // Migration for cross-repo support
 export const FUNCTION_SCHEMA_MIGRATION = `
-ALTER TABLE Function ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Function ADD repoId STRING`;
 // #86: Migration for parameterCount/returnType so existing DBs pick up the
-// new columns without a re-create. Matches METHOD_SCHEMA_MIGRATION_2's
-// additive pattern; IF NOT EXISTS keeps the migration idempotent.
+// new columns without a re-create. Mirrors METHOD_SCHEMA_MIGRATION_2's
+// additive pattern; the runner's error-suppression in lbug-adapter
+// catches the "already has property" thrown on re-runs against an existing DB.
 export const FUNCTION_SCHEMA_MIGRATION_2 = `
-ALTER TABLE Function ADD COLUMN IF NOT EXISTS parameterCount INT32;
-ALTER TABLE Function ADD COLUMN IF NOT EXISTS returnType STRING`;
+ALTER TABLE Function ADD parameterCount INT32;
+ALTER TABLE Function ADD returnType STRING`;
 
 export const CLASS_SCHEMA = `
 CREATE NODE TABLE Class (
@@ -121,7 +122,7 @@ CREATE NODE TABLE Class (
 )`;
 // Migration for cross-repo support
 export const CLASS_SCHEMA_MIGRATION = `
-ALTER TABLE Class ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Class ADD repoId STRING`;
 
 export const INTERFACE_SCHEMA = `
 CREATE NODE TABLE Interface (
@@ -138,7 +139,7 @@ CREATE NODE TABLE Interface (
 )`;
 // Migration for cross-repo support
 export const INTERFACE_SCHEMA_MIGRATION = `
-ALTER TABLE Interface ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Interface ADD repoId STRING`;
 
 export const METHOD_SCHEMA = `
 CREATE NODE TABLE Method (
@@ -160,10 +161,10 @@ CREATE NODE TABLE Method (
 )`;
 // Migration for cross-repo support
 export const METHOD_SCHEMA_MIGRATION = `
-ALTER TABLE Method ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Method ADD repoId STRING`;
 // Migration for parameter annotations
 export const METHOD_SCHEMA_MIGRATION_2 = `
-ALTER TABLE Method ADD COLUMN IF NOT EXISTS parameterAnnotations STRING`;
+ALTER TABLE Method ADD parameterAnnotations STRING`;
 
 export const CODE_ELEMENT_SCHEMA = `
 CREATE NODE TABLE CodeElement (
@@ -180,7 +181,7 @@ CREATE NODE TABLE CodeElement (
 )`;
 // Migration for cross-repo support
 export const CODE_ELEMENT_SCHEMA_MIGRATION = `
-ALTER TABLE CodeElement ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE CodeElement ADD repoId STRING`;
 
 // ============================================================================
 // COMMUNITY NODE TABLE (for Leiden algorithm clusters)
@@ -201,7 +202,7 @@ CREATE NODE TABLE Community (
 )`;
 // Migration for cross-repo support
 export const COMMUNITY_SCHEMA_MIGRATION = `
-ALTER TABLE Community ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Community ADD repoId STRING`;
 
 // ============================================================================
 // PROCESS NODE TABLE (for execution flow detection)
@@ -222,7 +223,7 @@ CREATE NODE TABLE Process (
 )`;
 // Migration for cross-repo support
 export const PROCESS_SCHEMA_MIGRATION = `
-ALTER TABLE Process ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE Process ADD repoId STRING`;
 
 // ============================================================================
 // ROUTE NODE TABLE SCHEMA (Spring, Laravel, etc. HTTP endpoints)
@@ -250,16 +251,19 @@ CREATE NODE TABLE Route (
   prefix STRING,
   PRIMARY KEY (id)
 )`;
-// Migration for cross-repo support + (#67) Route property aliases
+// Migration for cross-repo support + (#67) Route property aliases.
+// 8 statements, split on `;` at the runner. Kùzu rejects `IF NOT EXISTS`
+// in ALTER — the runner's "already has property" suppression keeps this
+// idempotent on re-runs against an existing DB.
 export const ROUTE_SCHEMA_MIGRATION = `
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS repoId STRING;
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS responseKeys STRING[];
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS errorKeys STRING[];
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS middleware STRING[];
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS controllerClass STRING;
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS handlerMethod STRING;
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS isControllerClass BOOLEAN;
-ALTER TABLE Route ADD COLUMN IF NOT EXISTS prefix STRING`;
+ALTER TABLE Route ADD repoId STRING;
+ALTER TABLE Route ADD responseKeys STRING[];
+ALTER TABLE Route ADD errorKeys STRING[];
+ALTER TABLE Route ADD middleware STRING[];
+ALTER TABLE Route ADD controllerClass STRING;
+ALTER TABLE Route ADD handlerMethod STRING;
+ALTER TABLE Route ADD isControllerClass BOOLEAN;
+ALTER TABLE Route ADD prefix STRING`;
 
 // ============================================================================
 // MULTI-LANGUAGE NODE TABLE SCHEMAS
@@ -279,9 +283,13 @@ CREATE NODE TABLE \`${name}\` (
   repoId STRING,
   PRIMARY KEY (id)
 )`;
-// Migration helper for cross-repo support
+// Migration helper for cross-repo support.
+// Kùzu's ALTER TABLE does NOT support `IF NOT EXISTS` — it must be a plain
+// `ALTER TABLE \`X\` ADD col TYPE` statement. The runner's error-suppression
+// loop in lbug-adapter.doInitLbug catches the "already has property" error
+// thrown on re-runs against an existing DB, keeping the migrations idempotent.
 const CODE_ELEMENT_MIGRATION = (name: string) => `
-ALTER TABLE \`${name}\` ADD COLUMN IF NOT EXISTS repoId STRING`;
+ALTER TABLE \`${name}\` ADD repoId STRING`;
 
 export const STRUCT_SCHEMA = CODE_ELEMENT_BASE('Struct');
 export const ENUM_SCHEMA = CODE_ELEMENT_BASE('Enum');
@@ -594,5 +602,56 @@ export const SCHEMA_QUERIES = [
   ...REL_SCHEMA_QUERIES,
   EMBEDDING_SCHEMA,
 ];
+
+/**
+ * Ordered list of all `*_MIGRATION[_N]` constants.
+ *
+ * The migration runner in `lbug-adapter.doInitLbug` iterates this array after
+ * `SCHEMA_QUERIES` and executes each entry. Every `*_MIGRATION[_N]` constant
+ * in this file MUST be listed here exactly once.
+ *
+ * How to add a new migration:
+ * 1. Define a new `*_MIGRATION_N` constant (use `ALTER TABLE ... ADD col TYPE`).
+ *    Kùzu's ALTER does not support `IF NOT EXISTS` — the runner suppresses
+ *    the "already has property" error on re-runs.
+ * 2. Append it to this array on a new line.
+ *
+ * Multi-statement migrations (currently `FUNCTION_SCHEMA_MIGRATION_2` and
+ * `ROUTE_SCHEMA_MIGRATION`) are split on `;` at the runner — the constants
+ * stay readable as a single block in the schema file.
+ */
+export const SCHEMA_MIGRATIONS = [
+  FILE_SCHEMA_MIGRATION,
+  FOLDER_SCHEMA_MIGRATION,
+  FUNCTION_SCHEMA_MIGRATION,
+  FUNCTION_SCHEMA_MIGRATION_2,         // multi-statement (2 stmts)
+  CLASS_SCHEMA_MIGRATION,
+  INTERFACE_SCHEMA_MIGRATION,
+  METHOD_SCHEMA_MIGRATION,
+  METHOD_SCHEMA_MIGRATION_2,
+  CODE_ELEMENT_SCHEMA_MIGRATION,
+  COMMUNITY_SCHEMA_MIGRATION,
+  PROCESS_SCHEMA_MIGRATION,
+  ROUTE_SCHEMA_MIGRATION,              // multi-statement (8 stmts)
+  STRUCT_SCHEMA_MIGRATION,
+  ENUM_SCHEMA_MIGRATION,
+  MACRO_SCHEMA_MIGRATION,
+  TYPEDEF_SCHEMA_MIGRATION,
+  UNION_SCHEMA_MIGRATION,
+  NAMESPACE_SCHEMA_MIGRATION,
+  TRAIT_SCHEMA_MIGRATION,
+  IMPL_SCHEMA_MIGRATION,
+  TYPE_ALIAS_SCHEMA_MIGRATION,
+  CONST_SCHEMA_MIGRATION,
+  STATIC_SCHEMA_MIGRATION,
+  PROPERTY_SCHEMA_MIGRATION,
+  RECORD_SCHEMA_MIGRATION,
+  DELEGATE_SCHEMA_MIGRATION,
+  ANNOTATION_SCHEMA_MIGRATION,
+  CONSTRUCTOR_SCHEMA_MIGRATION,
+  TEMPLATE_SCHEMA_MIGRATION,
+  MODULE_SCHEMA_MIGRATION,
+];
+
 /** Schema version derived from table count — increments when tables are added/removed. */
 export const SCHEMA_VERSION = NODE_SCHEMA_QUERIES.length + REL_SCHEMA_QUERIES.length;

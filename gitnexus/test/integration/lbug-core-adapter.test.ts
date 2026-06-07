@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs/promises';
+import os from 'os';
 import path from 'path';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
@@ -147,6 +148,57 @@ withTestLbugDB('core-adapter', (handle) => {
       expect(correctCount).toBeGreaterThanOrEqual(wrongCount);
     });
 
+    it('migrations: run on initLbug, add parameterCount/returnType to Function (#160)', async () => {
+      // Regression test for WI-160: the SCHEMA_MIGRATIONS array must run on
+      // every initLbug. Before the fix, the 30 *_MIGRATION constants were
+      // exported but never invoked, so a user upgrading from a prior version
+      // saw "Cannot find property parameterCount for f" errors.
+      //
+      // We open a fresh DB via withTestLbugDB (the wrapper calls initLbug
+      // which now runs SCHEMA_QUERIES then SCHEMA_MIGRATIONS), create a
+      // Function node, and query the migrated columns. The fresh DB path is
+      // the same one the runner covers — a separate DB file is created by
+      // the global setup before the wrapper opens it.
+      const { executeQuery: coreExecuteQuery } = await import('../../src/core/lbug/lbug-adapter.js');
+
+      // The minimal seed graph has 2 Function nodes (see createMinimalTestGraph).
+      // If the migrations did not run, the parameterCount/returnType columns
+      // wouldn't exist on Function, and this query would throw a Binder
+      // exception.
+      const rows = await coreExecuteQuery(
+        'MATCH (f:Function) RETURN f.parameterCount AS pc, f.returnType AS rt',
+      );
+      expect(rows).toHaveLength(2);
+
+      // Column types are queryable — parameterCount is INT32 (number-or-null),
+      // returnType is STRING (string-or-null). For the seeded nodes these
+      // properties were not extracted, so values are null; we only assert
+      // the columns exist and the rows returned are well-formed.
+      for (const row of rows) {
+        expect(row).toHaveProperty('pc');
+        expect(row).toHaveProperty('rt');
+        // parameterCount must be null or a number (Kùzu returns null for
+        // unset INT32 columns).
+        if (row.pc !== null && row.pc !== undefined) {
+          expect(typeof row.pc).toBe('number');
+        }
+        // returnType must be null or a string.
+        if (row.rt !== null && row.rt !== undefined) {
+          expect(typeof row.rt).toBe('string');
+        }
+      }
+
+      // Cross-check: the Route migration (8 columns) is the most aggressive
+      // multi-statement migration. Even though the seed has no Route nodes,
+      // we can still confirm the runner executed the migration by checking
+      // that querying a Route column doesn't throw "Cannot find property".
+      // Use a LIMIT 0 trick — if the column is missing, Kùzu rejects the
+      // query at bind time regardless of LIMIT.
+      await expect(
+        coreExecuteQuery('MATCH (r:Route) RETURN r.responseKeys LIMIT 0'),
+      ).resolves.toBeDefined();
+    });
+
     describe('unhappy path', () => {
       it('throws on malformed Cypher query', async () => {
         const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
@@ -213,6 +265,142 @@ withTestLbugDB('core-adapter', (handle) => {
         const result = await deleteNodesForFile('/absolutely/nonexistent/path/file.ts');
         expect(result).toEqual({ deletedNodes: 0 });
       });
+    });
+
+    it('migrations: idempotent on re-open (existing DB hits suppression branch without error)', async () => {
+      // Hardening test for WI-#160: the fresh-DB path is covered above, but
+      // the existing-DB path (re-open after columns exist) is logically the
+      // same code and never hits the `already has property` catch block.
+      // This test opens a fresh DB directly via a private lbug.Database
+      // (bypassing the module-level singleton used by other tests), runs
+      // initLbug's exact schema + migration path twice on the same file,
+      // and asserts the suppression branch swallows every "already has
+      // property" error on the second pass without throwing.
+      //
+      // We deliberately do NOT call the exported initLbug() / closeLbug()
+      // helpers here because they mutate module-level state (conn, db,
+      // ftsLoaded, currentDbPath) used by every other test in this file.
+      // Instead, we drive lbug.Database + lbug.Connection directly to
+      // execute the same SCHEMA_QUERIES + SCHEMA_MIGRATIONS sequences
+      // that doInitLbug uses — which is the only code path the migration
+      // runner exercises.
+      //
+      // This test is placed LAST in the describe block. Opening and closing
+      // multiple lbug.Database instances back-to-back triggers the known
+      // N-API destructor crash on macOS fork exit (see vitest.config.ts
+      // comment). Other tests must run first; if the worker dies at
+      // process exit, the earlier tests' results have already been
+      // recorded, so only the test currently running is affected.
+      const { SCHEMA_QUERIES, SCHEMA_MIGRATIONS } = await import('../../src/core/lbug/schema.js');
+      // Lazy-load the native module via the schema barrel.
+      const lbug = (await import('@ladybugdb/core')).default;
+
+      let tmpDir: string | undefined;
+      try {
+        // 1. Create a fresh temp dir and DB path. lbug.Database expects
+        //    a file path, not a directory — the file is created if absent.
+        tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mig-reopen-'));
+        const tempDbPath = path.join(tmpDir, 'migration-test.db');
+
+        // 2. Replicates doInitLbug's first half: run SCHEMA_QUERIES, then
+        //    run SCHEMA_MIGRATIONS, swallowing "already exists" /
+        //    "already has property" so the migration loop is idempotent.
+        const runMigrationsOn = async (dbPath: string) => {
+          const localDb = new lbug.Database(dbPath);
+          const localConn = new lbug.Connection(localDb);
+          try {
+            for (const q of SCHEMA_QUERIES) {
+              try { await localConn.query(q); } catch { /* already exists */ }
+            }
+            for (const m of SCHEMA_MIGRATIONS) {
+              for (const stmt of m.split(';')) {
+                const trimmed = stmt.trim();
+                if (!trimmed) continue;
+                try { await localConn.query(trimmed); }
+                catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  // Mirror the runner's suppression: Kùzu's "already has
+                  // property" + legacy "already exists".
+                  if (!msg.includes('already has property') && !msg.includes('already exists')) {
+                    throw err;
+                  }
+                }
+              }
+            }
+            return { localDb, localConn };
+          } catch (err) {
+            try { await localConn.close(); } catch { /* best-effort */ }
+            try { await localDb.close(); } catch { /* best-effort */ }
+            throw err;
+          }
+        };
+
+        const first = await runMigrationsOn(tempDbPath);
+
+        // 3. Insert a Function node so the migrated columns
+        //    (parameterCount, returnType) are populated. This is the
+        //    user-visible state the next initLbug must preserve.
+        await first.localConn.query(
+          "CREATE (f:Function {id: 'fn_reopen_test', name: 'reopenTarget', filePath: '/tmp/x.ts', startLine: 1, endLine: 5, isExported: true, content: '', parameterCount: 3, returnType: 'string'})",
+        );
+
+        // Sanity: the row is queryable from the first session.
+        const sanityRows = await first.localConn.query(
+          "MATCH (f:Function) WHERE f.id = 'fn_reopen_test' RETURN f.parameterCount AS pc, f.returnType AS rt",
+        );
+        const sanityResult = Array.isArray(sanityRows) ? sanityRows[0] : sanityRows;
+        const sanity = await sanityResult.getAll();
+        expect(sanity).toHaveLength(1);
+        expect(sanity[0].pc).toBe(3);
+        expect(sanity[0].rt).toBe('string');
+
+        // Close the first session so the second open can re-acquire the
+        // file (LadybugDB holds an exclusive lock per Database instance).
+        await first.localConn.close();
+        await first.localDb.close();
+
+        // 4. Re-open the SAME path. Every migration in SCHEMA_MIGRATIONS
+        //    will now hit Kùzu's "already has property" on re-ADD, and
+        //    the suppression branch in runMigrationsOn must swallow that
+        //    error. If the suppression is broken, runMigrationsOn throws
+        //    and the test fails with the original Kùzu error.
+        const second = await runMigrationsOn(tempDbPath);
+
+        // 5. Assert: after the second open, the Function row is still
+        //    queryable and the migrated columns are intact. This is
+        //    the user-visible contract: opening an existing GitNexus DB
+        //    must not corrupt or lose the data the migrations protect.
+        const secondRows = await second.localConn.query(
+          "MATCH (f:Function) WHERE f.id = 'fn_reopen_test' RETURN f.parameterCount AS pc, f.returnType AS rt",
+        );
+        const secondResult = Array.isArray(secondRows) ? secondRows[0] : secondRows;
+        const secondAll = await secondResult.getAll();
+        expect(secondAll).toHaveLength(1);
+        expect(secondAll[0].pc).toBe(3);
+        expect(secondAll[0].rt).toBe('string');
+
+        // 6. Also confirm a fresh MATCH (f:Function) RETURN f.parameterCount
+        //    (the canonical case from the design doc) returns rows, NOT
+        //    a "Cannot find property" binder error. This is the precise
+        //    query users hit when upgrading GitNexus.
+        const canonical = await second.localConn.query(
+          'MATCH (f:Function) RETURN f.parameterCount',
+        );
+        const canonicalResult = Array.isArray(canonical) ? canonical[0] : canonical;
+        const canonicalRows = await canonicalResult.getAll();
+        expect(canonicalRows.length).toBeGreaterThan(0);
+
+        // Close the second session.
+        await second.localConn.close();
+        await second.localDb.close();
+      } finally {
+        // 7. Cleanup: best-effort delete the temp dir. We never touched
+        //    the module-level conn/db state, so the rest of the suite
+        //    is unaffected.
+        if (tmpDir) {
+          try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        }
+      }
     });
   });
 }, {

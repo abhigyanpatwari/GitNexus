@@ -61,8 +61,12 @@ describe('python-function-properties (#86)', () => {
       const schemaModule = await import('../../src/core/lbug/schema.js');
       const migration = (schemaModule as any).FUNCTION_SCHEMA_MIGRATION_2;
       expect(migration).toBeDefined();
-      expect(migration).toContain('ALTER TABLE Function ADD COLUMN IF NOT EXISTS parameterCount INT32');
-      expect(migration).toContain('ALTER TABLE Function ADD COLUMN IF NOT EXISTS returnType STRING');
+      // Kùzu's ALTER TABLE does not support `IF NOT EXISTS` — the runner's
+      // error-suppression loop in lbug-adapter.doInitLbug catches the
+      // "already has property" error on re-runs, which keeps the migration
+      // idempotent.
+      expect(migration).toContain('ALTER TABLE Function ADD parameterCount INT32');
+      expect(migration).toContain('ALTER TABLE Function ADD returnType STRING');
     });
   });
 
