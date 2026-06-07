@@ -1547,6 +1547,19 @@ export const DART_QUERIES = `
   .
   (formal_parameter_list)) @definition.type
 
+; ── Type aliases — generic old-style (typedef int Cmp<T>(T a, T b);) ─────────
+; #1919 review CF2: a generic <T> inserts a type_parameters node between the
+; NAME and the parameter list, so the non-generic adjacency above misses it.
+; Standalone pattern (NOT an alternation arm) anchoring @name immediately before
+; type_parameters, which is immediately before the parameter list. The new-style
+; "=" rule above is unanchored and already covers generic new-style (Mapper<T>).
+(type_alias
+  (type_identifier) @name
+  .
+  (type_parameters)
+  .
+  (formal_parameter_list)) @definition.type
+
 ; ── Top-level functions (parent is program, not method_signature) ────────────
 (program
   (function_signature
