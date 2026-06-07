@@ -214,8 +214,18 @@ const DB_LOCK_RETRY_DELAY_MS = 500;
  * analyze` and either already happened or will happen on the next run.
  */
 export const isReadOnlyDbError = (err: unknown): boolean => {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /read-only database/i.test(msg);
+  // Walk the `cause` chain (bounded) so a wrapped read-only error — e.g. the
+  // pool adapter's `new Error('…read-only.', { cause: nativeReadOnlyErr })` —
+  // is still detected by callers that only see the wrapper (#2068 follow-up).
+  // The same strict regex is re-applied at each level, so a non-read-only
+  // chain stays false; the depth bound guards a cyclic `cause`.
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur != null; depth++) {
+    const msg = cur instanceof Error ? cur.message : String(cur);
+    if (/read-only database/i.test(msg)) return true;
+    cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
+  }
+  return false;
 };
 
 const isMissingFileError = (err: unknown): boolean => {
