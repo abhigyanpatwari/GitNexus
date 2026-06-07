@@ -1477,6 +1477,13 @@ export const SWIFT_QUERIES = `
 ; Properties (stored and computed)
 (property_declaration (pattern (simple_identifier) @name)) @definition.property
 
+; Protocol property requirements (F75): "var title: String { get }" parses to a
+; protocol_property_declaration (NOT property_declaration). Its name is a
+; "name:" pattern field wrapping a value_binding_pattern + the bound
+; simple_identifier; match the inner identifier so the requirement is emitted
+; as a property symbol of the protocol.
+(protocol_property_declaration (pattern (simple_identifier) @name)) @definition.property
+
 ; Enum cases
 (enum_entry (simple_identifier) @name) @definition.property
 

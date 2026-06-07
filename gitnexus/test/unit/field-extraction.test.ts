@@ -8,6 +8,7 @@ import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-c
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
 import { dartConfig } from '../../src/core/ingestion/field-extractors/configs/dart.js';
 import { kotlinConfig } from '../../src/core/ingestion/field-extractors/configs/jvm.js';
+import { swiftConfig } from '../../src/core/ingestion/field-extractors/configs/swift.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
@@ -25,6 +26,13 @@ try {
   Kotlin = require('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
+}
+
+let Swift: unknown;
+try {
+  Swift = require('tree-sitter-swift');
+} catch {
+  // Swift grammar is an optional dependency; may not be installed
 }
 import { csharpConfig as csharpFieldConfig } from '../../src/core/ingestion/field-extractors/configs/csharp.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
@@ -1235,5 +1243,85 @@ describeKotlin('GenericFieldExtractor — Kotlin (F52 companion)', () => {
     const result = extractor.extract(node, mockContext);
     const fieldNames = result!.fields.map((f) => f.name);
     expect(fieldNames).toEqual(['onlyField']); // function excluded, no duplication
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Swift config — F75: protocol property requirements extracted as fields
+// ---------------------------------------------------------------------------
+
+const describeSwift = Swift ? describe : describe.skip;
+
+describeSwift('GenericFieldExtractor — Swift (F75 protocol property requirements)', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(swiftConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Swift;
+  mockContext.filePath = 'test.swift';
+
+  /** Parse `src` and return the first class/protocol declaration node. */
+  function declNode(src: string): Parser.SyntaxNode {
+    parser.setLanguage(Swift as Parser.Language);
+    const tree = parser.parse(src);
+    const node = tree.rootNode.child(0);
+    if (!node) throw new Error('no declaration node');
+    return node;
+  }
+
+  it('extracts a `{ get }` protocol property requirement as a field (F75)', () => {
+    const node = declNode(`protocol P {
+  var title: String { get }
+}`);
+    expect(extractor.isTypeDeclaration(node)).toBe(true);
+    const result = extractor.extract(node, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('P');
+    const title = result!.fields.find((f) => f.name === 'title');
+    expect(title).toBeDefined();
+    expect(title!.type).toBe('String');
+    expect(title!.isStatic).toBe(false);
+  });
+
+  it('extracts a `{ get set }` protocol property requirement (F75)', () => {
+    const node = declNode(`protocol P {
+  var count: Int { get set }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const count = result!.fields.find((f) => f.name === 'count');
+    expect(count).toBeDefined();
+    expect(count!.type).toBe('Int');
+  });
+
+  it('extracts a static protocol property requirement as static (F75)', () => {
+    const node = declNode(`protocol P {
+  static var shared: P { get }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const shared = result!.fields.find((f) => f.name === 'shared');
+    expect(shared).toBeDefined();
+    expect(shared!.type).toBe('P');
+    expect(shared!.isStatic).toBe(true);
+  });
+
+  it('extracts all requirements from a multi-property protocol (F75)', () => {
+    const node = declNode(`protocol P {
+  var title: String { get }
+  var count: Int { get set }
+  static var shared: P { get }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const names = result!.fields.map((f) => f.name).sort();
+    expect(names).toEqual(['count', 'shared', 'title']);
+  });
+
+  it('still extracts a class stored property exactly once (regression)', () => {
+    const node = declNode(`class C {
+  var name: String = ""
+}`);
+    expect(extractor.isTypeDeclaration(node)).toBe(true);
+    const result = extractor.extract(node, mockContext);
+    const matches = result!.fields.filter((f) => f.name === 'name');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].type).toBe('String');
   });
 });
