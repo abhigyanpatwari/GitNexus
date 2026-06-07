@@ -1046,7 +1046,7 @@ Implementation checkpoint:
   - MCP/API exposure,
   - GitHub automation,
   - live-backend generated specs,
-  - generated specs beyond the deterministic mocked `/api/repos` fixture path.
+  - generated specs beyond explicitly approved deterministic mocked route fixtures.
 
 Verification:
 
@@ -1065,6 +1065,41 @@ Results:
 - CLI + renderer: 2 files, 7 tests passed.
 - CLI/help/report/renderer: 4 files, 22 tests passed.
 - Focused Task 6 suite: 3 files, 10 tests passed.
+- Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
+- Diff whitespace check passed.
+
+Expansion checkpoint:
+
+- 2026-06-07T13:51+01:00: Broadened the deterministic generated-spec renderer from mocked `/api/repos` proposals to mocked `/api/repo` proposals.
+- Added a red/green renderer test plus golden Playwright fixture for `/api/repo`.
+- Implemented `/api/repo` support as a stable mocked-backend route fixture only:
+  - mocked `/api/repos` establishes the selected repo,
+  - mocked `/api/repo` returns selected repo metadata and graph stats,
+  - mocked `/api/graph**` and `/api/heartbeat` keep the frontend deterministic,
+  - assertions use visible repo text and existing footer graph stats test id.
+- Preserved existing `/api/repos` behavior and existing policy blocks for unsafe/unsupported proposals.
+- Still deferred:
+  - browser execution,
+  - Playwright config changes,
+  - CI mutation,
+  - MCP/API exposure,
+  - GitHub automation,
+  - live-backend generated specs,
+  - generated specs beyond explicitly approved deterministic mocked route fixtures.
+
+Verification:
+
+```powershell
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused renderer: 1 file, 5 tests passed.
+- Focused Task 6 suite: 3 files, 11 tests passed.
 - Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
 - Diff whitespace check passed.
 

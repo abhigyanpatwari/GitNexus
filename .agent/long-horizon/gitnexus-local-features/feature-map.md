@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for a narrow mocked route path; broader generated tests and deeper OCaml semantics require new Goals |
+| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos` and `/api/repo` route paths; broader generated tests and deeper OCaml semantics require new Goals |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -54,7 +54,7 @@ Supporting evidence:
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | No unified graph expansion without new approval |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
-| 6 | End-to-End Test Generation | Light scoping completed plus executable-output policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic generated-spec renderer, and explicit write mode implemented locally | Broader generated tests/browser/CI remain deferred |
+| 6 | End-to-End Test Generation | Light scoping completed plus executable-output policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic `/api/repos` and `/api/repo` generated-spec renderer, and explicit write mode implemented locally | Broader generated tests/browser/CI remain deferred |
 | 7 | OCaml Support | Light scoping completed plus approval packet | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally | Deeper OCaml semantics require a new Goal |
 
 ## Dependency Map
@@ -549,7 +549,7 @@ Boundary rule:
 | Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
-| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, and narrow generated-spec renderer completed; broader generated tests remain deferred |
+| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, and narrow `/api/repos` plus `/api/repo` generated-spec renderer completed; broader generated tests remain deferred |
 | Task 7 parser/provider plan | Readiness complete; dependency/write-set approval required before implementation |
 
 ## Next Actions
@@ -562,6 +562,6 @@ Immediate:
 
 Recommended next feature work:
 
-1. Complete and commit the Task 6 generated-spec renderer Goal.
-2. Decide the next Goal from one of the remaining deferred expansions: broader generated E2E scenarios, Task 2 wiki wiring/mutation policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
+1. Complete and commit the Task 6 `/api/repo` generated-spec support Goal.
+2. Decide the next Goal from one of the remaining deferred expansions: additional deterministic E2E route fixtures, Task 2 wiki wiring/mutation policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
 3. Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the relevant Goal opens that scope.

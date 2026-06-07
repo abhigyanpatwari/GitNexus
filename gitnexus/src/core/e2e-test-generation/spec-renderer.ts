@@ -123,6 +123,65 @@ const renderReposRouteSpec = (proposal: E2ETestPlanProposal): string => {
   ].join('\n');
 };
 
+const renderRepoRouteSpec = (proposal: E2ETestPlanProposal): string => {
+  const title = singleQuoted(proposal.title);
+  return [
+    "import { test, expect } from '@playwright/test';",
+    '',
+    "const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';",
+    '',
+    `test.describe('Generated E2E plan: ${title}', () => {`,
+    "  test('route /api/repo exposes selected repo metadata through mocked backend data', async ({ page }) => {",
+    "    await page.route(`${BACKEND_URL}/api/repos`, (route) =>",
+    '      route.fulfill({',
+    "        contentType: 'application/json',",
+    "        body: JSON.stringify([{ name: 'generated-fixture-repo', path: '/tmp/generated-fixture-repo' }]),",
+    '      }),',
+    '    );',
+    '',
+    '    await page.route(',
+    "      (url) => url.origin === BACKEND_URL && url.pathname === '/api/repo',",
+    '      (route) =>',
+    '        route.fulfill({',
+    "          contentType: 'application/json',",
+    '          body: JSON.stringify({',
+    "            name: 'generated-fixture-repo',",
+    "            path: '/tmp/generated-fixture-repo',",
+    "            repoPath: '/tmp/generated-fixture-repo',",
+    '            stats: {',
+    '              files: 7,',
+    '              nodes: 42,',
+    '              edges: 64,',
+    '              processes: 3,',
+    '            },',
+    '          }),',
+    '        }),',
+    '    );',
+    '',
+    "    await page.route(`${BACKEND_URL}/api/graph**`, (route) =>",
+    '      route.fulfill({',
+    "        contentType: 'application/json',",
+    '        body: JSON.stringify({ nodes: [], relationships: [] }),',
+    '      }),',
+    '    );',
+    '',
+    "    await page.route(`${BACKEND_URL}/api/heartbeat`, (route) =>",
+    '      route.fulfill({',
+    '        status: 200,',
+    "        headers: { 'Content-Type': 'text/event-stream' },",
+    "        body: ':ok\\n\\n',",
+    '      }),',
+    '    );',
+    '',
+    "    await page.goto('/');",
+    '',
+    "    await expect(page.getByText('generated-fixture-repo')).toBeVisible({ timeout: 20_000 });",
+    "    await expect(page.getByRole('contentinfo').getByTestId('graph-stats')).toContainText('42 nodes');",
+    '  });',
+    '});',
+  ].join('\n');
+};
+
 const renderProposal = (
   proposal: E2ETestPlanProposal,
   options: E2EGeneratedSpecRenderOptions,
@@ -143,10 +202,10 @@ const renderProposal = (
     );
   }
 
-  if (route !== '/api/repos') {
+  if (route !== '/api/repos' && route !== '/api/repo') {
     return block(
       proposal.id,
-      'Only /api/repos route proposals have a deterministic generated fixture in V1.',
+      'Only /api/repos and /api/repo route proposals have deterministic generated fixtures in V1.',
     );
   }
 
@@ -163,7 +222,7 @@ const renderProposal = (
   return {
     proposalId: proposal.id,
     path: outputPath,
-    text: renderReposRouteSpec(proposal),
+    text: route === '/api/repo' ? renderRepoRouteSpec(proposal) : renderReposRouteSpec(proposal),
   };
 };
 
