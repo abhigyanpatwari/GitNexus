@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 generated E2E route support broadened to deterministic mocked `/api/graph` specs
+- Mode: Task 6 `/api/processes` generated route fixture rejected as no-slice for now
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -86,6 +86,49 @@ Current state:
 - 2026-06-07T13:33+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: Task 2 mutation/manual refresh/provider readiness requires a MAIN product/policy decision before source implementation, and the remaining non-Task-2 candidates are priority-dependent. Candidate next Goals are provider/output mutation policy readiness, Task 4 PR Impact MCP/GitHub-readiness, broader E2E scenario support, or deeper OCaml semantics.
 - 2026-06-07T13:51+01:00: Active Task 6 Goal broadened deterministic generated-spec support from mocked `/api/repos` route proposals to mocked `/api/repo` route proposals. TDD red/green completed; focused E2E renderer/CLI/report tests, build, and diff checks passed. Browser execution, live-backend generated specs, CI mutation, Playwright config changes, MCP/API exposure, GitHub automation, and broader route/scenario generation remain deferred.
 - 2026-06-07T14:00+01:00: Active Task 6 follow-on Goal selected `/api/graph` as the next deterministic route fixture after source evidence showed footer graph stats are stable web-first assertions. During readiness, a `/api/repo` generated-spec mismatch was found and fixed: graph stats now come from a non-empty mocked `/api/graph` payload rather than stale `/api/repo.stats` assumptions. TDD red/green completed; focused renderer/CLI/report tests, build, and diff checks passed.
+- 2026-06-07T14:04+01:00: `NO_IMPLEMENTATION_SLICE` for Task 6 `/api/processes` generated route fixture. Backend route and backend-client wrapper exist, but current frontend Process panel does not call `fetchProcesses()` or `/api/processes`; it derives process rows from `Process` nodes loaded through `/api/graph`. A generated `/api/processes` E2E fixture would not exercise the route through web-first UI behavior without changing product code or using direct API calls, so implementation is intentionally skipped.
+
+### 2026-06-07T14:04+01:00 - Task 6 `/api/processes` No-Slice Decision
+
+Goal:
+
+- Determine whether `/api/processes` can become the next deterministic generated route fixture.
+
+Evidence:
+
+- `gitnexus/src/server/api.ts` exposes `GET /api/processes` through `backend.queryProcesses(requestedRepo(req))`.
+- `gitnexus-web/src/services/backend-client.ts` defines `fetchProcesses()`.
+- `rg` found no frontend call site for `fetchProcesses()`.
+- `gitnexus-web/src/components/ProcessesPanel.tsx` derives its process list from `graph.nodes.filter((n) => n.label === 'Process')`.
+- Existing process E2E tests open the Processes tab and assert `process-list-loaded` / `process-row`, but those assertions are driven by `/api/graph` data, not `/api/processes`.
+
+Decision:
+
+- `NO_IMPLEMENTATION_SLICE`.
+- Do not add `/api/processes` to the deterministic generated-spec renderer yet.
+
+Rationale:
+
+- The generated E2E renderer is currently a web-first UI generator, not an API smoke-test generator.
+- A `/api/processes` fixture would either be unused by the frontend or require direct `page.evaluate(fetch(...))` API assertions.
+- Direct API assertions would be a different feature lane and would weaken the current route-to-visible-UI contract.
+
+Required unlock:
+
+- Either wire the frontend Process panel to consume `/api/processes`, or open a separate Goal for generated API smoke specs with a different policy and output directory.
+
+Verification:
+
+```powershell
+rg -n "fetchProcesses\(|/api/processes|process-list-loaded|ProcessesPanel" gitnexus-web\src gitnexus-web\e2e gitnexus\src\core\e2e-test-generation gitnexus\test\unit\e2e-test-generation-report.test.ts gitnexus\test\unit\e2e-test-plan-cli.test.ts
+rg -n "queryProcesses|queryProcessDetail" gitnexus\src gitnexus\test
+git status --short --branch
+```
+
+Results:
+
+- Source evidence supports no implementation.
+- No production or test files changed for `/api/processes`.
 
 ### 2026-06-07T14:00+01:00 - Task 6 `/api/graph` Generated Spec Support
 

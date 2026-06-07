@@ -1142,6 +1142,19 @@ Results:
 - Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
 - Diff whitespace check passed.
 
+No-slice checkpoint:
+
+- 2026-06-07T14:04+01:00: Evaluated `/api/processes` as the next deterministic generated route fixture and rejected it for now.
+- Evidence:
+  - backend exposes `GET /api/processes`,
+  - frontend backend client defines `fetchProcesses()`,
+  - current frontend code has no `fetchProcesses()` call site,
+  - `ProcessesPanel` derives rows from `Process` nodes already loaded through `/api/graph`,
+  - existing process E2E assertions (`process-list-loaded`, `process-row`) therefore exercise `/api/graph`, not `/api/processes`.
+- Decision: `NO_IMPLEMENTATION_SLICE`.
+- Rationale: generating a `/api/processes` UI spec would not exercise `/api/processes` through current UI behavior unless product code changed or the generated spec used direct API assertions. Direct API assertions are a separate generated API-smoke lane, not this web-first Playwright route-fixture lane.
+- Unlock: either wire the frontend Process panel to consume `/api/processes`, or open a separate Goal for generated API smoke specs with its own policy.
+
 ### Task 7 Approval Packet - OCaml Implementation Goal
 
 Timestamp: 2026-06-06T13:48+01:00
