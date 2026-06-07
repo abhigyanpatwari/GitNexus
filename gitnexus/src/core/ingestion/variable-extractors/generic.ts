@@ -19,6 +19,26 @@ import type {
 } from '../variable-types.js';
 
 /**
+ * Type-declaration node types whose body can be a bare `block`. tree-sitter-python
+ * models a class body as a `block` node — the same node type used for function and
+ * control-flow bodies — so a class attribute would otherwise look block-scoped. Most
+ * other grammars give class bodies dedicated node types (`class_body`,
+ * `declaration_list`, `body_statement`), which are not in the block-scope list below,
+ * so this guard is a no-op for them but keeps the rule language-agnostic.
+ */
+const CLASS_LIKE_CONTAINERS = new Set<string>([
+  'class_definition',
+  'class_declaration',
+  'class_specifier',
+  'struct_item',
+  'impl_item',
+  'trait_item',
+  'interface_declaration',
+  'enum_declaration',
+  'object_declaration',
+]);
+
+/**
  * Create a VariableExtractor from a declarative config.
  */
 export function createVariableExtractor(config: VariableExtractionConfig): VariableExtractor {
@@ -48,7 +68,7 @@ export function createVariableExtractor(config: VariableExtractionConfig): Varia
       ) {
         return 'module';
       }
-      // Function/method/block boundaries indicate block scope
+      // Function/method boundaries indicate block scope
       if (
         t === 'function_declaration' ||
         t === 'function_definition' ||
@@ -58,10 +78,16 @@ export function createVariableExtractor(config: VariableExtractionConfig): Varia
         t === 'arrow_function' ||
         t === 'function_expression' ||
         t === 'lambda' ||
-        t === 'block' ||
         t === 'function_body' ||
         t === 'compound_statement'
       ) {
+        return 'block';
+      }
+      // A bare `block` is block scope UNLESS it is a class body. A class member
+      // (e.g. Python `class C: MAX = 100`) is not an inert function-local — keep
+      // walking so it resolves to its true enclosing scope ('module' for a
+      // top-level class) instead of being misclassified and pruned.
+      if (t === 'block' && !(current.parent && CLASS_LIKE_CONTAINERS.has(current.parent.type))) {
         return 'block';
       }
       current = current.parent;
