@@ -1311,3 +1311,49 @@ describe.skipIf(!swiftAvailable)('Swift protocol property requirements (F75)', (
     expect(nameEdges).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F79: methods/members declared inside a Swift enum (enum_class_body) are
+// extracted via the proper body-node path. Before the fix they only resolved
+// through the generic findBodies fallback, which logs a dev-mode warning.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift enum members (F79)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-enum-members'), () => {}, {
+      skipGraphPhases: true,
+    });
+  }, 60000);
+
+  it('extracts enum methods owned by the enum', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const enumMethods = hasMethod
+      .filter((e) => e.source === 'Direction')
+      .map((e) => e.target)
+      .sort();
+    expect(enumMethods).toContain('describe');
+    expect(enumMethods).toContain('make');
+  });
+
+  it('extracts each enum method exactly once (no double-count)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const describeEdges = hasMethod.filter(
+      (e) => e.target === 'describe' && e.source === 'Direction',
+    );
+    expect(describeEdges).toHaveLength(1);
+  });
+
+  it('extracts an enum computed property as a Property of the enum', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    const labelEdge = propEdges.find((e) => e.target === 'label' && e.source === 'Direction');
+    expect(labelEdge).toBeDefined();
+  });
+
+  it('still extracts class methods (no regression / double-count)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const headingEdges = hasMethod.filter((e) => e.target === 'heading' && e.source === 'Compass');
+    expect(headingEdges).toHaveLength(1);
+  });
+});

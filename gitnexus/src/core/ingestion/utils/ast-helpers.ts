@@ -584,6 +584,19 @@ export const findEnclosingClassInfo = (
         ) {
           label = 'Interface';
         }
+        // class_declaration with a `declaration_kind` field collapses several
+        // type kinds onto one node (tree-sitter-swift: class / struct / enum /
+        // extension / actor). The structure query labels struct → Struct and
+        // enum → Enum; refine the owner label to match so a member edge
+        // (HAS_METHOD / HAS_PROPERTY) anchors on the real Enum/Struct node id
+        // rather than a non-existent `Class:` id (F79). Gated on the field
+        // being present, so it is a no-op for grammars whose class_declaration
+        // has no `declaration_kind` field (e.g. Kotlin).
+        if (current.type === 'class_declaration' && label === 'Class') {
+          const declKind = current.childForFieldName?.('declaration_kind')?.text;
+          if (declKind === 'struct') label = 'Struct';
+          else if (declKind === 'enum') label = 'Enum';
+        }
         const templateArguments = extractTemplateArguments(nameNode.text);
         const classIdName =
           templateArguments !== undefined

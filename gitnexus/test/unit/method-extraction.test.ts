@@ -4598,6 +4598,74 @@ class Child {
       expect(result!.methods[0].isOverride).toBe(true);
     });
   });
+
+  // F79: a Swift `enum { ... }` parses to a class_declaration whose body is an
+  // `enum_class_body` (NOT class_body). With enum_class_body added to
+  // bodyNodeTypes the factory reaches enum methods via the proper body-node
+  // path instead of the generic findBodies fallback.
+  describe('enum members (F79)', () => {
+    it('extracts a method declared inside an enum', () => {
+      const tree = parseSwift(`
+enum E {
+    case a
+    func describe() -> String {
+        return "x"
+    }
+}
+      `);
+      const enumNode = tree.rootNode.child(0)!;
+      expect(enumNode.type).toBe('class_declaration');
+      expect(extractor.isTypeDeclaration(enumNode)).toBe(true);
+
+      const result = extractor.extract(enumNode, swiftCtx);
+      expect(result!.ownerName).toBe('E');
+      const describe = result!.methods.find((m) => m.name === 'describe');
+      expect(describe).toBeDefined();
+      expect(describe!.returnType).toBe('String');
+    });
+
+    it('extracts a static method inside an enum as static', () => {
+      const tree = parseSwift(`
+enum E {
+    case a
+    static func make() -> E {
+        return .a
+    }
+}
+      `);
+      const enumNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(enumNode, swiftCtx);
+      const make = result!.methods.find((m) => m.name === 'make');
+      expect(make).toBeDefined();
+      expect(make!.isStatic).toBe(true);
+    });
+
+    it('extracts multiple enum methods, each exactly once', () => {
+      const tree = parseSwift(`
+enum E {
+    case a
+    func describe() -> String { return "x" }
+    static func make() -> E { return .a }
+}
+      `);
+      const enumNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(enumNode, swiftCtx);
+      const names = result!.methods.map((m) => m.name).sort();
+      expect(names).toEqual(['describe', 'make']);
+    });
+
+    it('still extracts class methods exactly once (regression)', () => {
+      const tree = parseSwift(`
+class Compass {
+    func heading() -> String { return "n" }
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+      const heading = result!.methods.filter((m) => m.name === 'heading');
+      expect(heading).toHaveLength(1);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
