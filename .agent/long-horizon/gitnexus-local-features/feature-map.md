@@ -557,12 +557,23 @@ Boundary rule:
 
 Immediate:
 
-1. Complete a post-tranche consolidation Goal that verifies the seven local V1 slices are committed, documented, and sequenced cleanly.
-2. Produce a next-slice recommendation instead of silently starting deeper feature work.
-3. Create the next implementation Goal only after the next exact slice and write set are named.
+1. Treat the seven local V1 slices as the completed base tranche.
+2. Choose exactly one next Goal from the map below.
+3. Create the next Goal only after the selected task's exact slice and write set are named.
 
-Recommended next feature work:
+## Next Task Map
 
-1. If Task 6 is reopened, prefer a separate generated API-smoke lane starting with `/api/processes` rather than forcing backend-only routes into the current UI renderer.
-2. Otherwise choose the next Goal from the remaining deferred expansions: another deterministic UI route fixture only after proving a frontend consumer, Task 2 wiki mutation/provider policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
-3. Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the relevant Goal opens that scope.
+| Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Task 6 Generated API-Smoke Specs | Implementation Goal | Readiness is complete, `/api/processes` is the clearest backend-only route, and external Playwright/testing guidance supports a separate API lane. | Deterministic API-smoke renderer and explicit CLI write mode for `/api/processes` only. | Ready to particularize as next Goal if MAIN selects it. |
+| 2 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal first | Wiki local V1 is status-only; mutation has provider, cost, freshness, and output ownership risks. | Policy decision and approval boundary for manual/automatic wiki refresh mutation. | Needs policy/readiness before source edits. |
+| 3 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal first | Local report/CLI V1 exists; MCP/GitHub integration is valuable but security-sensitive. | MCP/GitHub integration threat model, permission model, and smallest safe read-only or local-only expansion. | Needs security/readiness before source edits. |
+| 4 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
+| 5 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
+
+Recommended default:
+
+- Start with Task 6 Generated API-Smoke Specs unless MAIN chooses a different priority.
+- Keep the slice to `/api/processes` only.
+- Do not mix API-smoke output into `gitnexus-web/e2e/generated`.
+- Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the selected Goal opens that scope.

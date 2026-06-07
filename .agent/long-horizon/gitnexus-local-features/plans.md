@@ -39,6 +39,24 @@ Created: 2026-06-05
 | 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core and thin local CLI wrapper implemented, verified, and committed |
 | 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally; deeper OCaml semantics deferred |
 
+## Next Task Queue
+
+This section controls the next Goal selection after the completed local V1 tranche. It does not start implementation by itself.
+
+| Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Task 6 Generated API-Smoke Specs | Implementation Goal if MAIN selects the existing approval boundary | Add a separate deterministic generated API-smoke lane for `/api/processes` only. Keep it separate from the current web-first Playwright UI generated-spec lane. | Focused red/green tests for renderer output, direct HTTP assertions, explicit CLI mode, separate output path, and adjacent Task 6 tests. | Stop if this requires product UI changes, browser execution, live-backend generation, CI mutation, GitHub automation, new dependencies, or automatic route discovery. |
+| 2 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal | Decide whether and how wiki generation may mutate output after freshness events or manual refresh. Cover provider readiness, cost, dry-run, ownership, and rollback. | Expected-vs-actual table, policy matrix, proposed write set, TDD order, and MAIN approval text. | Stop before source edits if provider/cost/output ownership remains ambiguous. |
+| 3 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | Decide whether local PR Impact should expose MCP or GitHub PR ingestion/comments/checks, and under what permission model. | Threat model, token/permission boundary, local-vs-remote input model, fixture plan, and smallest safe expansion. | Stop before source edits if it needs privileged GitHub automation, token-bearing Actions, or unreviewed PR comment/check behavior. |
+| 4 | Task 6 Additional UI Route Fixture | Readiness Goal | Find a next deterministic UI route fixture only if local source proves a backend route has a real frontend consumer and visible assertion surface. | Route-to-UI evidence table and generated-spec policy check. | Stop if the route is backend-only or requires direct API assertions; send it to the API-smoke lane instead. |
+| 5 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
+
+Default recommendation:
+
+- Create the next Goal for `Task 6 Generated API-Smoke Specs`.
+- Use the approval boundary already recorded in the Task 6 no-slice/readiness checkpoint.
+- If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
 ## Feature Goal Contracts
 
 The Feature Queue above is the authoritative execution order. Goal contracts below may retain previously drafted readiness material, but their heading numbers and the queue control the order of work.

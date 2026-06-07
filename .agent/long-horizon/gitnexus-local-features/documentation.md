@@ -89,6 +89,35 @@ Current state:
 - 2026-06-07T14:04+01:00: `NO_IMPLEMENTATION_SLICE` for Task 6 `/api/processes` generated route fixture. Backend route and backend-client wrapper exist, but current frontend Process panel does not call `fetchProcesses()` or `/api/processes`; it derives process rows from `Process` nodes loaded through `/api/graph`. A generated `/api/processes` E2E fixture would not exercise the route through web-first UI behavior without changing product code or using direct API calls, so implementation is intentionally skipped.
 - 2026-06-07T14:07+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: after the `/api/repos`, `/api/repo`, and `/api/graph` generated UI fixtures plus the `/api/processes` no-slice decision, the next practical direction is policy-dependent. Candidate next Goals are generated API-smoke specs as a separate lane, another deterministic UI route fixture only after proving a frontend consumer, Task 2 wiki mutation/provider policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
 - 2026-06-07: Generated API-smoke specs readiness completed for backend routes without a current frontend/UI consumer. Recommendation: if Task 6 continues from the `/api/processes` no-slice decision, do it as a separate backend API-smoke lane rather than broadening the web-first Playwright UI renderer.
+- 2026-06-07: Next-task map recorded in `plans.md` and `feature-map.md`. Default recommendation is Task 6 Generated API-Smoke Specs as the next implementation Goal, starting with `/api/processes` only. Alternative next Goals are Task 2 wiki mutation/provider policy readiness, Task 4 PR Impact MCP/GitHub-readiness, another Task 6 UI route fixture only after proving a frontend consumer, or Task 7 deeper OCaml semantics readiness.
+
+### 2026-06-07 - Next Task Map
+
+Goal:
+
+- Map the next tasks after the completed local V1 tranche so the next Codex Goal can be selected without drifting into a mixed backlog.
+
+Current queue:
+
+| Priority | Candidate | Next Goal shape | Reason |
+| --- | --- | --- | --- |
+| 1 | Task 6 Generated API-Smoke Specs | Implementation Goal | Readiness is complete and `/api/processes` is the clearest backend-only route that should not be forced into the UI generated-spec lane. |
+| 2 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal | Wiki mutation needs provider, cost, freshness, output ownership, and rollback policy before source edits. |
+| 3 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | PR Impact local V1 exists, but MCP/GitHub automation requires a security and permission model. |
+| 4 | Task 6 Additional UI Route Fixture | Readiness Goal | Only valid if a backend route has a proven frontend consumer and visible UI assertion surface. |
+| 5 | Task 7 Deeper OCaml Semantics | Readiness Goal | Experimental OCaml V1 is complete; richer semantics need a new language-scope/dependency boundary. |
+
+Decision:
+
+- Do not pre-create multiple Goals.
+- The default next Goal should be Task 6 Generated API-Smoke Specs unless MAIN selects another priority.
+- If a non-default candidate is chosen, start with readiness unless the exact implementation boundary is already documented and still current.
+
+Verification:
+
+- `feature-map.md` now contains a ranked next task map.
+- `plans.md` now contains a next task queue with goal shape, scope, verification surface, and stop rule.
+- No GitNexus source or runtime files were changed.
 
 ### 2026-06-07T14:04+01:00 - Task 6 `/api/processes` No-Slice Decision
 
