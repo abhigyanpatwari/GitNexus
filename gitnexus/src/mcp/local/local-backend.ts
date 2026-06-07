@@ -8,6 +8,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash } from 'crypto';
 import {
   initLbug,
   executeQuery,
@@ -298,9 +299,16 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
 }
 
 /**
- * Length of the base64url path hash appended to a colliding repo id.
+ * Length of the path-derived suffix appended to a colliding repo id.
  * Exported so tests can pin the suffix shape without re-deriving the
- * literal; see `repoId()` and the hashed-id resolution tier (#1658).
+ * literal; see `assignRepoId()` and the hashed-id resolution tier (#1658).
+ *
+ * Note: base64url is an *encoding*, not a hash — it preserves byte order, so
+ * two paths that share a long common prefix (sibling clones under one parent)
+ * collapse to the same sliced suffix. `assignRepoId()` keeps the legacy
+ * base64url suffix only for the first colliding duplicate (id compatibility)
+ * and falls back to a content hash of the resolved path on a real collision
+ * (#2054).
  */
 export const REPO_ID_HASH_LENGTH = 6;
 
@@ -382,11 +390,24 @@ export class LocalBackend {
    */
   private async refreshRepos(): Promise<void> {
     const entries = await listRegisteredRepos({ validate: true });
-    const freshIds = new Set<string>();
+
+    // Build the next map from scratch and swap it in atomically. Mutating the
+    // live map in place let stale entries influence fresh id assignment: a
+    // bare-name id, once handed to the first registry entry, stuck to it across
+    // refreshes and reorders, and colliding path suffixes silently overwrote
+    // each other so sibling clones disappeared from `list_repos` (#2054).
+    const nextRepos = new Map<string, RepoHandle>();
+    const nextContext = new Map<string, CodebaseContext>();
+    const assigned = new Map<string, string>(); // id -> resolved repo path
 
     for (const entry of entries) {
-      const id = this.repoId(entry.name, entry.path);
-      freshIds.add(id);
+      // path.resolve (not canonicalizePath) matches the pre-#2054 collision
+      // check and keeps refreshRepos free of mockable deps on the hot init
+      // path; registry paths are already canonicalised at write time, so the
+      // two agree for real registries.
+      const resolved = path.resolve(entry.path);
+      const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
+      assigned.set(id, resolved);
 
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
@@ -412,11 +433,11 @@ export class LocalBackend {
         stats: entry.stats,
       };
 
-      this.repos.set(id, handle);
+      nextRepos.set(id, handle);
 
       // Build lightweight context (no LadybugDB needed)
       const s = entry.stats || {};
-      this.contextCache.set(id, {
+      nextContext.set(id, {
         projectName: entry.name,
         stats: {
           fileCount: s.files || 0,
@@ -427,37 +448,81 @@ export class LocalBackend {
       });
     }
 
-    // Prune repos that no longer exist in the registry
-    for (const id of this.repos.keys()) {
-      if (!freshIds.has(id)) {
-        this.repos.delete(id);
-        this.contextCache.delete(id);
-        this.initializedRepos.delete(id);
+    // Evict per-id runtime state for ids that disappeared OR now point at a
+    // different on-disk clone. The pool keys LadybugDB connections by id and
+    // reuses them regardless of dbPath (see pool-adapter.initLbug), so a moved
+    // id must drop its pooled connection or queries would hit the previous
+    // clone's database (#2054).
+    for (const [id, prev] of this.repos) {
+      const nextResolved = assigned.get(id);
+      const moved = nextResolved === undefined || nextResolved !== path.resolve(prev.repoPath);
+      if (!moved) continue;
+      this.initializedRepos.delete(id);
+      this.lastStalenessCheck.delete(id);
+      if (nextResolved !== undefined) {
+        // Same id, different clone — force the next ensureInitialized() to
+        // re-open against the new path instead of reusing the stale pool entry.
+        closeLbug(id).catch(() => {});
       }
     }
+
+    this.repos = nextRepos;
+    this.contextCache = nextContext;
   }
 
   /**
-   * Generate a stable repo ID from name + path.
-   * If names collide, append a hash of the path.
+   * Assign a collision-free in-memory id for a registered repo.
+   *
+   * - Unique name → the bare lowercased name.
+   * - Duplicate name → a path-derived suffix. The *first* colliding clone keeps
+   *   the legacy `base64url(path)` suffix so ids generated before #2054 still
+   *   resolve (the #1658 hashed-id tier). base64url is an encoding, not a hash:
+   *   it preserves byte order, so sibling clones under one parent (e.g.
+   *   `.../REPO_2` and `.../REPO_3`) yield identical leading characters and thus
+   *   the same sliced suffix. Any further collision therefore falls back to a
+   *   content hash of the *resolved* path (order-insensitive), extended
+   *   deterministically until unique.
+   *
+   * `assigned` maps every id handed out in this refresh to its resolved path,
+   * so a candidate is "free" when it is unused or already owned by this exact
+   * path. A returned id never overwrites a different path's handle (#2054).
    */
-  private repoId(name: string, repoPath: string): string {
+  private assignRepoId(
+    name: string,
+    repoPath: string,
+    resolved: string,
+    assigned: Map<string, string>,
+  ): string {
     const base = name.toLowerCase();
-    // Check for name collision with a different path
-    for (const [id, handle] of this.repos) {
-      if (id === base && handle.repoPath !== path.resolve(repoPath)) {
-        // Collision — use path hash
-        // Lowercase the hash so it survives the `paramLower` lookup in
-        // resolveRepoFromCache — base64url retains mixed case, but the id
-        // tier compares against `repoParam.toLowerCase()` (#1658 follow-up).
-        const hash = Buffer.from(repoPath)
-          .toString('base64url')
-          .slice(0, REPO_ID_HASH_LENGTH)
-          .toLowerCase();
-        return `${base}-${hash}`;
-      }
+    const free = (id: string): boolean => {
+      const owner = assigned.get(id);
+      return owner === undefined || owner === resolved;
+    };
+
+    if (free(base)) return base;
+
+    // Legacy suffix from the *raw* path — kept byte-for-byte so the first
+    // colliding duplicate keeps the id it had before #2054 (#1658 tier).
+    const legacy = `${base}-${Buffer.from(repoPath)
+      .toString('base64url')
+      .slice(0, REPO_ID_HASH_LENGTH)
+      .toLowerCase()}`;
+    if (free(legacy)) return legacy;
+
+    // Real collision — hash the resolved path. Lowercase hex survives the
+    // `paramLower` lookup in resolveRepoFromCache.
+    const digest = createHash('sha256').update(resolved).digest('hex');
+    for (let len = REPO_ID_HASH_LENGTH; len <= digest.length; len++) {
+      const candidate = `${base}-${digest.slice(0, len)}`;
+      if (free(candidate)) return candidate;
     }
-    return base;
+
+    // Two distinct resolved paths sharing a full SHA-256 digest is a hash
+    // break, not a runtime condition — fail loudly rather than silently
+    // overwrite a different repo's handle (#2054 invariant).
+    throw new Error(
+      `GitNexus internal: unable to assign a unique repo id for "${name}" at ${repoPath}`,
+    );
   }
 
   // ─── Repo Resolution ─────────────────────────────────────────────

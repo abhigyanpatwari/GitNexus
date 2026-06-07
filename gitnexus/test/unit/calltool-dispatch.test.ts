@@ -178,6 +178,39 @@ function makeSharedPrefixFixture(nameA: string, nameB: string) {
   };
 }
 
+// Mirrors the legacy `repoId()` suffix that #2054 replaced for genuine
+// collisions: base64url is an *encoding*, not a hash, so paths sharing a long
+// prefix produce the same sliced suffix. Used by the #2054 tests to assert the
+// collision precondition actually holds (so the regression isn't vacuous).
+function legacyPathSuffix(p: string): string {
+  return Buffer.from(p).toString('base64url').slice(0, REPO_ID_HASH_LENGTH).toLowerCase();
+}
+
+/**
+ * Build N sibling clones of one remote under a SINGLE parent directory, named
+ * REPO, REPO_2, …, REPO_N. All clones share the remote-inferred registry name
+ * ("REPO") and the same remoteUrl — this is the real-world #2054 setup. Because
+ * the clones live under one parent, their absolute paths share a long common
+ * prefix, which is exactly what made the 6-char base64url suffix collide.
+ * (mkdtemp'ing each clone separately would NOT reproduce the bug — the random
+ * suffixes diverge in the first few bytes.)
+ */
+function makeSiblingClonesFixture(count: number, remoteUrl = 'git@github.com:MYCOMPANY/REPO.git') {
+  const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-2054-'));
+  duplicateFixtureDirs.push(parent);
+  const folders = Array.from({ length: count }, (_, i) => (i === 0 ? 'REPO' : `REPO_${i + 1}`));
+  const dirs: string[] = [];
+  const entries = folders.map((folder) => {
+    const dir = path.join(parent, folder);
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(path.join(storagePath, 'meta.json'), '{}');
+    dirs.push(dir);
+    return { ...MOCK_REPO_ENTRY, name: 'REPO', path: dir, storagePath, remoteUrl };
+  });
+  return { parent, dirs, entries };
+}
+
 // ─── LocalBackend lifecycle ──────────────────────────────────────────
 
 describe('LocalBackend.init', () => {
@@ -1330,6 +1363,158 @@ describe('LocalBackend.resolveRepo', () => {
       cap.restore();
       (checkCwdMatch as any).mockResolvedValue({ match: 'none' });
     }
+  });
+});
+
+// ─── repo-id collisions (sibling clones) ────────────────────────────
+
+describe('LocalBackend repo-id collisions (#2054)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (getGitRoot as any).mockReturnValue(null);
+    backend = new LocalBackend();
+  });
+
+  afterEach(() => {
+    for (const dir of duplicateFixtureDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lists all four sibling clones that share a name and remote (#2054)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+
+    // Precondition: the historical 6-char base64url suffixes really do collide
+    // for these sibling paths — otherwise this test would not exercise the bug.
+    expect(legacyPathSuffix(dirs[1])).toBe(legacyPathSuffix(dirs[2]));
+    expect(legacyPathSuffix(dirs[2])).toBe(legacyPathSuffix(dirs[3]));
+
+    expect(await backend.init()).toBe(true);
+
+    const listed = await backend.callTool('list_repos', {});
+    expect(listed).toHaveLength(4);
+
+    // Every distinct on-disk clone survives exactly once — no silent overwrite.
+    const listedPaths = listed.map((r: any) => path.resolve(r.path)).sort();
+    expect(listedPaths).toEqual(dirs.map((d) => path.resolve(d)).sort());
+    expect(new Set(listedPaths).size).toBe(4);
+
+    // The shared remoteUrl must NOT collapse the entries; instead each entry
+    // reports the other three as siblings (existing list_repos contract).
+    for (const entry of listed) {
+      expect(entry.remoteUrl).toBe('git@github.com:MYCOMPANY/REPO.git');
+      expect(entry.siblings).toHaveLength(3);
+    }
+
+    // Every clone is addressable by its absolute path.
+    for (const dir of dirs) {
+      const resolved = await backend.resolveRepo(dir);
+      expect(resolved.repoPath).toBe(dir);
+    }
+
+    // Re-running list_repos (which re-reads the registry) is idempotent.
+    const again = await backend.callTool('list_repos', {});
+    expect(again).toHaveLength(4);
+  });
+
+  it('assigns distinct, resolvable generated ids past the first legacy collision (#2054)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    // Resolve each clone by path, collect its in-memory id.
+    const handles = await Promise.all(dirs.map((d) => backend.resolveRepo(d)));
+    const ids = handles.map((h) => h.id);
+
+    // Ids are unique across all four clones.
+    expect(new Set(ids).size).toBe(4);
+    // First clone keeps the bare name; the rest are name-prefixed generated ids.
+    expect(ids[0]).toBe('repo');
+    for (const id of ids.slice(1)) expect(id.startsWith('repo-')).toBe(true);
+
+    // Clones that collided on the legacy suffix fall back to a content hash —
+    // i.e. they are NOT addressable by the (colliding) legacy id, but ARE
+    // addressable by whatever stable id they actually hold.
+    const collidedLegacy = `repo-${legacyPathSuffix(dirs[2])}`;
+    expect(handles[2].id).not.toBe(collidedLegacy);
+    expect(handles[3].id).not.toBe(handles[2].id);
+
+    // Each *suffixed* generated id resolves back to its own clone. The bare
+    // "repo" id is intentionally shadowed by the shared repo *name* (the #1658
+    // name tier runs before the id tier), so the first clone is addressed by
+    // path instead — covered by the headline test.
+    for (const h of handles.slice(1)) {
+      const viaId = await backend.resolveRepo(h.id);
+      expect(viaId.repoPath).toBe(h.repoPath);
+    }
+  });
+
+  it('refresh stability: reorder, remove-one, and re-add never drop a different clone (#2054)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    const listedPaths = async () =>
+      (await backend.callTool('list_repos', {})).map((r: any) => path.resolve(r.path)).sort();
+    const allPaths = dirs.map((d) => path.resolve(d)).sort();
+
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+    expect(await listedPaths()).toEqual(allPaths);
+
+    // Reordering the registry must not silently lose a clone.
+    (listRegisteredRepos as any).mockResolvedValue([...entries].reverse());
+    expect(await listedPaths()).toEqual(allPaths);
+
+    // Removing one entry prunes only that entry.
+    (listRegisteredRepos as any).mockResolvedValue(entries.slice(0, 3));
+    expect(await listedPaths()).toEqual(
+      dirs
+        .slice(0, 3)
+        .map((d) => path.resolve(d))
+        .sort(),
+    );
+
+    // Re-adding it restores it without replacing another clone.
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    expect(await listedPaths()).toEqual(allPaths);
+  });
+
+  it('evicts the pooled connection when a bare id is reassigned to a different clone on refresh (#2054)', async () => {
+    // Two clones of one repo (name "dup"). Registry order decides which clone
+    // owns the bare "dup" id; reordering moves it to the other clone. Because
+    // the LadybugDB pool keys connections by id and ignores dbPath on reuse,
+    // a moved id MUST drop its stale pooled connection (#2054 / Workflow 5).
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-remap-'));
+    duplicateFixtureDirs.push(parent);
+    const a = path.join(parent, 'A');
+    const b = path.join(parent, 'B');
+    const mk = (dir: string) => {
+      mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+      return {
+        ...MOCK_REPO_ENTRY,
+        name: 'dup',
+        path: dir,
+        storagePath: path.join(dir, '.gitnexus'),
+      };
+    };
+    const entryA = mk(a);
+    const entryB = mk(b);
+
+    (listRegisteredRepos as any).mockResolvedValue([entryA, entryB]);
+    await backend.init();
+    expect((await backend.resolveRepo(a)).id).toBe('dup'); // A owns the bare id
+
+    // Refresh with reversed order → the bare "dup" id now points at B.
+    (closeLbug as any).mockClear();
+    (listRegisteredRepos as any).mockResolvedValue([entryB, entryA]);
+    await backend.callTool('list_repos', {});
+
+    expect((await backend.resolveRepo(b)).id).toBe('dup'); // B now owns it
+    expect((await backend.resolveRepo(a)).repoPath).toBe(a); // A still present, not dropped
+    // The stale pooled connection for the moved id was force-closed.
+    expect(closeLbug).toHaveBeenCalledWith('dup');
   });
 });
 
