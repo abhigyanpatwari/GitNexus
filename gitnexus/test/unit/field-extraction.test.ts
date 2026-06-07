@@ -6,6 +6,7 @@ import { pythonConfig } from '../../src/core/ingestion/field-extractors/configs/
 import { goConfig } from '../../src/core/ingestion/field-extractors/configs/go.js';
 import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-cpp.js';
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
+import { dartConfig } from '../../src/core/ingestion/field-extractors/configs/dart.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
@@ -16,6 +17,7 @@ import Go from 'tree-sitter-go';
 import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
 import CSharp from 'tree-sitter-c-sharp';
+import Dart from 'tree-sitter-dart';
 import { csharpConfig as csharpFieldConfig } from '../../src/core/ingestion/field-extractors/configs/csharp.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
@@ -1071,5 +1073,88 @@ describe('GenericFieldExtractor — C# primary constructor fields', () => {
 
     const countField = result!.fields.find((f) => f.name === 'Count');
     expect(countField).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dart config — F26: static const / static final class fields
+// ---------------------------------------------------------------------------
+
+describe('GenericFieldExtractor — Dart', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(dartConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Dart;
+  mockContext.filePath = 'test.dart';
+
+  it('extracts a static const field as static + readonly (F26)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  static const a = 1;
+}`);
+    const classNode = tree.rootNode.child(0);
+    expect(classNode).toBeDefined();
+    expect(extractor.isTypeDeclaration(classNode!)).toBe(true);
+
+    const result = extractor.extract(classNode!, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('C');
+    const a = result!.fields.find((f) => f.name === 'a');
+    expect(a).toBeDefined();
+    expect(a!.isStatic).toBe(true);
+    expect(a!.isReadonly).toBe(true);
+    expect(a!.visibility).toBe('public');
+  });
+
+  it('extracts multi-name static final fields, all static + readonly (F26)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  static final String b = 'x', c = 'y';
+}`);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    const b = result!.fields.find((f) => f.name === 'b');
+    const c = result!.fields.find((f) => f.name === 'c');
+    expect(b).toBeDefined();
+    expect(c).toBeDefined();
+    for (const f of [b!, c!]) {
+      expect(f.isStatic).toBe(true);
+      expect(f.isReadonly).toBe(true);
+      expect(f.type).toBe('String');
+    }
+  });
+
+  it('still extracts instance fields (regression)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  int z = 0;
+}`);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    const z = result!.fields.find((f) => f.name === 'z');
+    expect(z).toBeDefined();
+    expect(z!.isStatic).toBe(false);
+    expect(z!.isReadonly).toBe(false);
+    expect(z!.type).toBe('int');
+  });
+
+  it('marks an underscore-prefixed static const as private (F26)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  static const _p = 1;
+}`);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    const p = result!.fields.find((f) => f.name === '_p');
+    expect(p).toBeDefined();
+    expect(p!.visibility).toBe('private');
+    expect(p!.isStatic).toBe(true);
+    expect(p!.isReadonly).toBe(true);
   });
 });

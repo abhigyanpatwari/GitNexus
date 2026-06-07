@@ -1516,6 +1516,19 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name))) @definition.property
 
+; ── static const / static final / const class fields ────────────────────────
+; A "static const a = 1;" / "static final String b = ..., c = ...;" field parses
+; with a static_final_declaration_list (NOT an initialized_identifier_list), so
+; the field rules above miss them. One @name per static_final_declaration, so a
+; multi-name declaration yields a Property per name. Anchored on declaration (not
+; class_body) so top-level final/const variables — whose
+; static_final_declaration_list is a direct child of program, not wrapped in a
+; declaration — never match here.
+(declaration
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name))) @definition.property
+
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
   (getter_signature

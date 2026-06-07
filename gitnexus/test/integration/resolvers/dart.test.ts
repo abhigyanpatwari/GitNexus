@@ -708,6 +708,62 @@ describe.skipIf(!dartAvailable)('Dart named-constructor body (no file drop)', ()
 });
 
 // ---------------------------------------------------------------------------
+// F26 (issue #1919): static const / static final class fields.
+// `static const`/`static final` fields parse with a static_final_declaration_list
+// (not initialized_identifier_list), so the legacy field rules missed them and
+// no Property node was created end-to-end. They must surface as Property nodes
+// marked static + readonly, one per name in a multi-name declaration.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart static const/final fields (F26)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-static-fields'), () => {});
+  }, 60000);
+
+  it('captures static const and static final fields as Properties', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('maxRetries'); // static const
+    expect(properties).toContain('host'); // static final, name 1 of 2
+    expect(properties).toContain('scheme'); // static final, name 2 of 2
+    expect(properties).toContain('port'); // instance field (regression)
+    expect(properties).toContain('_secret'); // private static const
+  });
+
+  it('emits HAS_PROPERTY edges for static fields', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toEqual(
+      expect.arrayContaining([
+        'Config → maxRetries',
+        'Config → host',
+        'Config → scheme',
+        'Config → port',
+        'Config → _secret',
+      ]),
+    );
+  });
+
+  it('marks static const/final fields as static + readonly', () => {
+    const props = getNodesByLabelFull(result, 'Property');
+    for (const name of ['maxRetries', 'host', 'scheme', '_secret']) {
+      const p = props.find((n) => n.name === name);
+      expect(p, name).toBeDefined();
+      expect(p!.properties.isStatic, name).toBe(true);
+      expect(p!.properties.isReadonly, name).toBe(true);
+    }
+  });
+
+  it('keeps the instance field non-static, non-readonly (regression)', () => {
+    const props = getNodesByLabelFull(result, 'Property');
+    const port = props.find((n) => n.name === 'port');
+    expect(port).toBeDefined();
+    expect(port!.properties.isStatic).toBe(false);
+    expect(port!.properties.isReadonly).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage cross-file simple-name collision (PR #1970 tri-review P2).
 // console_logger.dart and file_logger.dart each declare `class Logger`; each
 // file's service `implements Logger`. emitDartHeritageEdges resolves the base
