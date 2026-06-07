@@ -5,6 +5,13 @@ import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/as
  * Decompose a `preproc_include` node into a CaptureMatch with structured
  * import captures. C++ #include maps to a wildcard import (all symbols
  * from the header are visible). Identical to C's splitCInclude.
+ *
+ * Only literal include paths are emitted as import sources:
+ *   #include <map>      → system_lib_string
+ *   #include "User.h"   → string_literal
+ * A computed include like `#include HEADER_MACRO` carries an `identifier`
+ * path node (the macro name, not a header path); we skip it so it never
+ * becomes a garbage literal import source (issue #1919 F5).
  */
 export function splitCppInclude(node: SyntaxNode): CaptureMatch | null {
   const pathNode = node.childForFieldName?.('path') ?? null;
@@ -21,7 +28,13 @@ export function splitCppInclude(node: SyntaxNode): CaptureMatch | null {
   return buildIncludeCapture(node, pathNode);
 }
 
-function buildIncludeCapture(node: SyntaxNode, pathNode: SyntaxNode): CaptureMatch {
+function buildIncludeCapture(node: SyntaxNode, pathNode: SyntaxNode): CaptureMatch | null {
+  // Skip computed includes (`#include MACRO`) — the path is an `identifier`,
+  // not a literal header path. Emitting it would create a garbage import.
+  if (pathNode.type !== 'string_literal' && pathNode.type !== 'system_lib_string') {
+    return null;
+  }
+
   let raw: string;
   if (pathNode.type === 'string_literal') {
     const content = pathNode.namedChildren.find((c) => c.type === 'string_content');
