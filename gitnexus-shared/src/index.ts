@@ -183,13 +183,3 @@ export {
   stripGitSuffix,
 } from './integrations/understand-quickly.js';
 export type { UqDispatchPayload } from './integrations/understand-quickly.js';
-
-// Shadow-mode diff + aggregation (RFC §6.3; Ring 2 SHARED #918)
-export { diffResolutions } from './scope-resolution/shadow/diff.js';
-export type {
-  ShadowAgreement,
-  ShadowCallsite,
-  ShadowDiff,
-} from './scope-resolution/shadow/diff.js';
-export { aggregateDiffs } from './scope-resolution/shadow/aggregate.js';
-export type { LanguageParityRow, ShadowParityReport } from './scope-resolution/shadow/aggregate.js';
