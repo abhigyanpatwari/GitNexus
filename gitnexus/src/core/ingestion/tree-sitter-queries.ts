@@ -1472,11 +1472,22 @@ export const DART_QUERIES = `
 (enum_declaration
   name: (identifier) @name) @definition.enum
 
-; ── Type aliases ─────────────────────────────────────────────────────────────
-; Anchor "=" after the name to avoid capturing the RHS type
+; ── Type aliases — new-style (typedef Pred = bool Function(int);) ────────────
+; Anchor "=" after the name to avoid capturing the RHS type. The name is the
+; first type_identifier (the alias), the RHS function_type follows the "=".
 (type_alias
   (type_identifier) @name
   "=") @definition.type
+
+; ── Type aliases — old-style (typedef int Cmp(int a, int b);) ────────────────
+; The old-style function typedef has NO "=" — it parses as a type_alias whose
+; children are: return type_identifier, NAME type_identifier, formal_parameter_list.
+; Anchor @name as the type_identifier immediately before the parameter list so we
+; capture the alias name (Cmp), not the leading return type (int).
+(type_alias
+  (type_identifier) @name
+  .
+  (formal_parameter_list)) @definition.type
 
 ; ── Top-level functions (parent is program, not method_signature) ────────────
 (program

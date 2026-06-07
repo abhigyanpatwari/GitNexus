@@ -39,6 +39,24 @@ const DART_SCOPE_QUERY = `
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum
 
+; ── Declarations — type aliases (old-style + new-style function typedefs) ────
+; Both forms parse as type_alias; the name position differs. New-style
+; (typedef Pred = bool Function(int);) has "=" with the alias as the first
+; type_identifier. Old-style (typedef int Cmp(int a, int b);) has no "=" — its
+; children are return-type, NAME, formal_parameter_list — so the alias name is
+; the type_identifier immediately before the parameter list. Two patterns (not
+; one alternation) keep the name capture unambiguous per form. Mirrors Kotlin's
+; (type_alias (type_identifier) @declaration.name) @declaration.type_alias rule;
+; the generic scope-extractor maps "type_alias" → TypeAlias.
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (formal_parameter_list)) @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  "=") @declaration.type_alias
+
 ; ── Declarations — top-level functions (parent is program, not method) ───────
 (program
   (function_signature
