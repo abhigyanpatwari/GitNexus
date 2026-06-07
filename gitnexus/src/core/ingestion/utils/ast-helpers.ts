@@ -833,6 +833,22 @@ export const inferFunctionLabel = (nodeType: string): NodeLabel =>
 /** Argument list node types shared between countCallArguments and call-resolution helpers. */
 export const CALL_ARGUMENT_LIST_TYPES = new Set(['arguments', 'argument_list', 'value_arguments']);
 
+/**
+ * Function/method parameter-list node types across grammars. Used to tell a
+ * PARAMETER-property (a constructor parameter that is also a class field, e.g.
+ * TypeScript `constructor(public name: string)`) apart from a function-BODY
+ * local: a property reached through one of these — rather than through the
+ * function's executable body — is a genuine class member, so the
+ * function-local-property guard must NOT strip its owner edge.
+ */
+export const PARAMETER_LIST_NODE_TYPES = new Set([
+  'formal_parameters', // TypeScript / JavaScript
+  'parameters', // Python / C#
+  'parameter_list', // Java / Go / C / Swift
+  'function_value_parameters', // Kotlin
+  'class_parameters', // Scala-like / future grammars
+]);
+
 // ============================================================================
 // Generic AST traversal helpers (shared by parse-worker + php-helpers)
 // ============================================================================

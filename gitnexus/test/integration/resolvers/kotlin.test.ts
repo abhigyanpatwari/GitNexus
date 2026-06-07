@@ -2794,6 +2794,52 @@ describe('F51 — Kotlin destructuring declarations', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CF3 (#1919 review): function-local property bindings are NOT class members
+// ---------------------------------------------------------------------------
+// Kotlin emits destructuring / loop bindings as `@definition.property` to dodge
+// the block-scope local-symbol pruner. When such a binding sits inside a METHOD
+// body of a class, it must NOT receive a HAS_PROPERTY owner edge from the class —
+// it is a function-local, not a class field. Genuine class fields (primary-ctor
+// `val` params and class-body `val`/`var`) must still be owned by the class.
+
+describe('CF3 — Kotlin function-local bindings are not class properties', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-local-property-owner'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT own loop-destructuring bindings (k, v) under the enclosing class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('k');
+    expect(owned).not.toContain('v');
+  });
+
+  it('does NOT own a `val (a, b) = pair` destructuring binding under class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('a');
+    expect(owned).not.toContain('b');
+    // The intermediate `val pair` local is likewise not a class property.
+    expect(owned).not.toContain('pair');
+  });
+
+  it('still owns genuine class fields (primary-ctor val + class-body val) under C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target)
+      .sort();
+    expect(owned).toEqual(['classProp', 'field']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // F52 (issue #1919): companion-object properties are indexed as fields
 // ---------------------------------------------------------------------------
 
