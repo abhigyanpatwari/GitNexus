@@ -33,6 +33,20 @@ function captures(matches: Parser.QueryMatch[], captureName: string): string[] {
   return values;
 }
 
+function definitionRows(matches: Parser.QueryMatch[]): { type: string; name: string }[] {
+  const rows: { type: string; name: string }[] = [];
+  for (const match of matches) {
+    const definition = match.captures.find((capture) =>
+      capture.name.startsWith('definition.'),
+    );
+    if (!definition) continue;
+    for (const capture of match.captures) {
+      if (capture.name === 'name') rows.push({ type: definition.name, name: capture.node.text });
+    }
+  }
+  return rows;
+}
+
 describe('OCaml language support', () => {
   it('detects implementation and interface file extensions', () => {
     expect(getLanguageFromFilename('src/user_service.ml')).toBe(SupportedLanguages.OCaml);
@@ -71,5 +85,44 @@ describe('OCaml language support', () => {
 
     const names = captures(matches, 'name');
     expect(names).toEqual(expect.arrayContaining(['UserService', 'user', 'create_user', 'greet']));
+  });
+
+  it('captures module types, aliases, includes, and functor references from implementation files', async () => {
+    const parser = await loadParser();
+    await loadLanguage(SupportedLanguages.OCaml, 'advanced.ml');
+
+    const provider = getProvider(SupportedLanguages.OCaml);
+    const matches = parseAndQuery(parser, readFixture('advanced.ml'), provider.treeSitterQueries);
+
+    expect(definitionRows(matches)).toEqual(
+      expect.arrayContaining([
+        { type: 'definition.interface', name: 'STORAGE' },
+        { type: 'definition.module', name: 'Make' },
+        { type: 'definition.module', name: 'Alias' },
+        { type: 'definition.function', name: 'run' },
+      ]),
+    );
+    expect(captures(matches, 'import.source')).toEqual(
+      expect.arrayContaining(['Store', 'STORAGE', 'Make', 'Alias']),
+    );
+  });
+
+  it('captures module types, includes, and functor references from interface files', async () => {
+    const parser = await loadParser();
+    await loadLanguage(SupportedLanguages.OCaml, 'advanced.mli');
+
+    const provider = getProvider(SupportedLanguages.OCaml);
+    const matches = parseAndQuery(parser, readFixture('advanced.mli'), provider.treeSitterQueries);
+
+    expect(definitionRows(matches)).toEqual(
+      expect.arrayContaining([
+        { type: 'definition.interface', name: 'STORAGE' },
+        { type: 'definition.module', name: 'Make' },
+        { type: 'definition.function', name: 'run' },
+      ]),
+    );
+    expect(captures(matches, 'import.source')).toEqual(
+      expect.arrayContaining(['Store', 'STORAGE']),
+    );
   });
 });

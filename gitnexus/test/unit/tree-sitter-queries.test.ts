@@ -377,6 +377,15 @@ describe('tree-sitter queries', () => {
     it('captures interface value specifications', () => {
       expect(OCAML_QUERIES).toContain('value_specification');
     });
+
+    it('captures module type and include/functor reference syntax', () => {
+      expect(OCAML_QUERIES).toContain('module_type_definition');
+      expect(OCAML_QUERIES).toContain('@definition.interface');
+      expect(OCAML_QUERIES).toContain('module_parameter');
+      expect(OCAML_QUERIES).toContain('module_type_path');
+      expect(OCAML_QUERIES).toContain('include_module');
+      expect(OCAML_QUERIES).toContain('include_module_type');
+    });
   });
 
   // ---------------------------------------------------------------------------

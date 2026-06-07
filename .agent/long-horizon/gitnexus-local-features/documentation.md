@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 `/api/health` generated API-smoke route implemented; next selected task is Task 7 Deeper OCaml Semantics readiness
+- Mode: Task 7 OCaml Query Depth V2 implemented; next selected task is post-tranche consolidation and next-slice map refresh
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, and local read-only MCP exposure, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file`, Task 6 generated API-smoke specs for `/api/processes` and `/api/health`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, GitHub PR ingestion/comments/checks, and token-bearing GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, and local read-only MCP exposure, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file`, Task 6 generated API-smoke specs for `/api/processes` and `/api/health`, Task 7 OCaml experimental language support V1, and Task 7 OCaml Query Depth V2 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, GitHub PR ingestion/comments/checks, token-bearing GitHub automation, Dune/PPX, and full OCaml module-system resolution remain deferred.
 - Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -99,6 +99,77 @@ Current state:
 - 2026-06-07T16:58+01:00: Task 6 `/api/file` generated UI route fixture implemented with TDD. The generated spec mocks `/api/repos`, `/api/repo`, `/api/graph`, `/api/file**`, and `/api/heartbeat`, clicks `index.ts` in the file tree, and asserts visible selected-file code content. Browser execution, live-backend generation, CI mutation, GitHub automation, and broader route support remain deferred.
 - 2026-06-07T17:00+01:00: Task 6 Additional API-Smoke Route readiness selected `/api/health` as the next narrow API-smoke route. Evidence: `gitnexus/src/server/api.ts` defines it as a lightweight Docker/orchestrator healthcheck that immediately returns `{ status: 'ok' }`. It is repo-independent, read-only, auth-free, non-mutating, and does not depend on index state.
 - 2026-06-07T17:02+01:00: Task 6 `/api/health` generated API-smoke route implemented with TDD. The generated spec calls `/api/health` with Playwright APIRequestContext and asserts OK plus `{ status: 'ok' }`. Browser execution, server route changes, CI mutation, GitHub automation, and broader API-smoke route support remain deferred. Next selected task is Task 7 Deeper OCaml Semantics readiness.
+- 2026-06-07T17:08+01:00: Task 7 Deeper OCaml Semantics readiness selected a narrow OCaml Query Depth V2 slice: module type definitions plus module/include/functor references in experimental query captures only. Dependency upgrades, Dune, PPX, full module alias/functor resolution, parser-loader changes, production classification, web UI, MCP, and API changes remain deferred.
+- 2026-06-07T17:11+01:00: Task 7 OCaml Query Depth V2 implemented with TDD. Added advanced `.ml`/`.mli` fixtures, captured module type definitions as `definition.interface`, and captured module parameters, module paths, module type paths, includes, and interface includes as import-like references. Focused OCaml/query tests, parser ABI smoke, and build passed. Next selected task is post-tranche consolidation and next-slice map refresh.
+
+### 2026-06-07T17:08+01:00 - Task 7 OCaml Query Depth V2 Readiness
+
+Goal:
+
+- Decide whether a safe second OCaml slice exists after experimental `.ml` / `.mli` V1.
+
+Evidence:
+
+- Installed local dependency is `tree-sitter-ocaml@0.22.0`; local package metadata peers on `tree-sitter: 0.21`.
+- Local runtime export check returned exactly `interface` and `ocaml`.
+- `parser-loader.ts` already selects `ocaml` for `.ml` and `interface` for `.mli`.
+- `ocaml.ts` provider remains intentionally foundational: shared OCaml identity, `.ml` / `.mli`, tree-sitter query support, generic call extractor, no import resolver, and stubbed type declaration extraction.
+- Current `OCAML_QUERIES` captures modules, type bindings, value bindings/specifications, `open_module`, and direct calls.
+- Local AST probes against `tree-sitter-ocaml@0.22.0` show stable grammar nodes for `module_type_definition`, `module_type_name`, `module_parameter`, `module_path`, `module_type_path`, `include_module`, `include_module_type`, `functor`, and `functor_type`.
+- Tree-sitter static node type docs explain that generated `node-types.json` provides structured metadata for syntax nodes: https://tree-sitter.github.io/tree-sitter/using-parsers/6-static-node-types
+- Upstream `tree-sitter-ocaml` documents separate implementation, interface, and type grammars and shows latest release `v0.25.0` on 2026-05-09: https://github.com/tree-sitter/tree-sitter-ocaml
+
+Decision:
+
+- Implement a query/test-only OCaml Query Depth V2 slice.
+- Capture module type definitions as existing GitNexus `definition.interface` nodes.
+- Capture module alias/include/functor parameter references as import-like references only.
+- Keep OCaml experimental; do not claim full module-system resolution.
+
+Approved local slice under standing conditional authorization:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 7 OCaml Query Depth V2
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: expand experimental OCaml query coverage for module type definitions and module/include/functor references only. Add `.ml` and `.mli` fixtures/tests proving captures for module type names, module alias/include references, interface include references, and functor/module-parameter references. Keep OCaml experimental and do not change dependency versions or resolver semantics.
+Approved write set:
+- gitnexus/src/core/ingestion/tree-sitter-queries.ts
+- gitnexus/test/unit/tree-sitter-queries.test.ts
+- gitnexus/test/unit/ocaml-language-support.test.ts
+- gitnexus/test/integration/tree-sitter-languages.test.ts
+- gitnexus/test/fixtures/sample-code/advanced.ml
+- gitnexus/test/fixtures/sample-code/advanced.mli
+- .agent/long-horizon/gitnexus-local-features/documentation.md
+- .agent/long-horizon/gitnexus-local-features/plans.md
+- .agent/long-horizon/gitnexus-local-features/feature-map.md
+Constraints: no `tree-sitter` or `tree-sitter-ocaml` upgrade, no Dune/project model inference, no PPX expansion, no full module alias/functor resolution, no production classification, no parser-loader/parse-worker changes unless tests prove the current loader regressed, no web UI/MCP/API changes, and TDD required.
+```
+
+Stop/defer rules:
+
+- Stop if query expansion requires parser package upgrades.
+- Stop if captures need semantic resolution rather than syntax-level query evidence.
+- Defer Dune, PPX, full module alias/functor resolution, interface/implementation matching, and production classification.
+
+Implementation checkpoint:
+
+- Added `gitnexus/test/fixtures/sample-code/advanced.ml`.
+- Added `gitnexus/test/fixtures/sample-code/advanced.mli`.
+- Updated `gitnexus/src/core/ingestion/tree-sitter-queries.ts`.
+- Updated `gitnexus/test/unit/tree-sitter-queries.test.ts`.
+- Updated `gitnexus/test/unit/ocaml-language-support.test.ts`.
+- Updated `gitnexus/test/integration/tree-sitter-languages.test.ts`.
+- TDD red failure was the expected missing `module_type_definition` / module-reference capture behavior.
+- Verification:
+  - `npm test -- --run test/unit/ocaml-language-support.test.ts test/unit/tree-sitter-queries.test.ts test/integration/tree-sitter-languages.test.ts`
+  - `npm test -- --run test/unit/parser-loader-abi.test.ts test/unit/ocaml-language-support.test.ts test/unit/tree-sitter-queries.test.ts test/integration/tree-sitter-languages.test.ts`
+  - `npm run build`
+  - Results: focused OCaml/query suite passed 3 files / 138 tests; parser ABI plus OCaml/query suite passed 4 files / 158 tests; build passed with existing web bundle warnings.
+
+Next selected task:
+
+- Post-tranche consolidation and next-slice map refresh.
 
 ### 2026-06-07T17:00+01:00 - Task 6 `/api/health` Generated API-Smoke Route Readiness
 

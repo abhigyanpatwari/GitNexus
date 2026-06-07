@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E/API-smoke local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route paths; `/api/processes` and `/api/health` are implemented through a separate API-smoke lane; broader generated tests, additional API-smoke routes, wiki mutation, and deeper OCaml semantics require new readiness packets |
+| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route paths; `/api/processes` and `/api/health` are implemented through a separate API-smoke lane; Task 7 OCaml Query Depth V2 is implemented; broader generated tests, additional API-smoke routes, wiki mutation, and deeper OCaml semantics require new readiness packets |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -55,7 +55,7 @@ Supporting evidence:
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
 | 6 | End-to-End Test Generation | Light scoping completed plus executable-output/API-smoke policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` generated-spec renderer, `/api/processes` and `/api/health` API-smoke renderers, and explicit write modes implemented locally | Broader generated tests/browser/CI remain deferred |
-| 7 | OCaml Support | Light scoping completed plus approval packet | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally | Deeper OCaml semantics require a new Goal |
+| 7 | OCaml Support | Light scoping completed plus approval packet | `local V1 complete` | Experimental `.ml` / `.mli` support and Query Depth V2 module type/include/functor-reference captures implemented locally | Deeper OCaml semantics beyond syntax-level module type/include/functor references require a new Goal |
 
 ## Dependency Map
 
@@ -553,7 +553,7 @@ Boundary rule:
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
 | Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, narrow `/api/repos`, `/api/repo`, `/api/graph`, `/api/file` generated-spec renderer, and `/api/processes` plus `/api/health` generated API-smoke renderer completed; broader generated tests remain deferred |
 | Task 6 `/api/processes` generated UI fixture | Rejected for the browser UI lane: frontend Process panel derives rows from `/api/graph` Process nodes and does not call `fetchProcesses()` / `/api/processes`; `/api/processes` is now covered by a separate generated API-smoke lane |
-| Task 7 parser/provider plan | Readiness complete; dependency/write-set approval required before implementation |
+| Task 7 parser/provider plan | Experimental V1 and Query Depth V2 implemented; Dune, PPX, interface/implementation matching, production classification, and full module-system resolution remain deferred |
 
 ## Next Actions
 
@@ -567,10 +567,10 @@ Immediate:
 
 | Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
+| 1 | Post-Tranche Consolidation | Readiness / docs Goal | Recent Task 6 and Task 7 slices are now implemented; the queue needs a refreshed next-slice recommendation before more source edits. | Reconcile completed slices, remaining deferred scopes, and recommend the next exact task. | Stop if the next task needs MAIN product/policy choice rather than technical readiness. |
 
 Recommended default:
 
-- Start with Task 7 Deeper OCaml Semantics readiness.
+- Start with post-tranche consolidation and next-slice map refresh.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, MCP expansion, and deeper OCaml semantics deferred until the selected task opens that scope.

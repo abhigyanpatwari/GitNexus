@@ -1833,6 +1833,9 @@ export const OCAML_QUERIES = `
   (module_binding
     name: (module_name) @name)) @definition.module
 
+(module_type_definition
+  (module_type_name) @name) @definition.interface
+
 (type_definition
   (type_binding
     name: (type_constructor) @name)) @definition.type
@@ -1852,6 +1855,23 @@ export const OCAML_QUERIES = `
 (open_module
   (module_path
     (module_name) @import.source)) @import
+
+(module_parameter
+  (module_name) @import.source) @import
+
+(module_type_path
+  (module_type_name) @import.source) @import
+
+(module_path
+  (module_name) @import.source) @import
+
+(include_module
+  (module_path
+    (module_name) @import.source)) @import
+
+(include_module_type
+  (module_type_path
+    (module_type_name) @import.source)) @import
 
 (application_expression
   function: (value_path

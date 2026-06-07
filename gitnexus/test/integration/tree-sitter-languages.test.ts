@@ -702,6 +702,55 @@ describe('Tree-sitter multi-language parsing', () => {
       const names = defs.map((d) => d.name);
       expect(names).toEqual(expect.arrayContaining(['UserService', 'user', 'create_user', 'greet']));
     });
+
+    it('captures module type definitions and module references in deeper OCaml fixtures', async () => {
+      await loadLanguage(SupportedLanguages.OCaml, 'advanced.ml');
+      const content = readFixture('advanced.ml');
+      const provider = getProvider(SupportedLanguages.OCaml);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      expect(defs).toEqual(
+        expect.arrayContaining([
+          { type: 'definition.interface', name: 'STORAGE' },
+          { type: 'definition.module', name: 'Make' },
+          { type: 'definition.module', name: 'Alias' },
+          { type: 'definition.function', name: 'run' },
+        ]),
+      );
+
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+        }
+      }
+      expect(imports).toEqual(expect.arrayContaining(['Store', 'STORAGE', 'Make', 'Alias']));
+    });
+
+    it('captures module type definitions and functor references in deeper OCaml interfaces', async () => {
+      await loadLanguage(SupportedLanguages.OCaml, 'advanced.mli');
+      const content = readFixture('advanced.mli');
+      const provider = getProvider(SupportedLanguages.OCaml);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      expect(defs).toEqual(
+        expect.arrayContaining([
+          { type: 'definition.interface', name: 'STORAGE' },
+          { type: 'definition.module', name: 'Make' },
+          { type: 'definition.function', name: 'run' },
+        ]),
+      );
+
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+        }
+      }
+      expect(imports).toEqual(expect.arrayContaining(['Store', 'STORAGE']));
+    });
   });
 
   describe('cross-language assertions', () => {

@@ -37,7 +37,7 @@ Created: 2026-06-05
 | 4 | PR Impact / Blast Radius | `medium completed for local MCP slice` | `local V1 complete` | Report core, thin local CLI wrapper, and read-only local MCP `pr_impact` tool implemented and verified; GitHub automation deferred |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core, thin local CLI wrapper, mocked UI generated specs for `/api/repos`, `/api/repo`, `/api/graph`, `/api/file`, and API-smoke generated specs for `/api/processes` and `/api/health` implemented and verified |
-| 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally; deeper OCaml semantics deferred |
+| 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support and Query Depth V2 module type/include/functor-reference captures implemented locally; deeper OCaml semantics deferred |
 
 ## Next Task Queue
 
@@ -52,6 +52,72 @@ Default recommendation:
 - Continue with `Task 7 Deeper OCaml Semantics` readiness.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
+### Task 7 Deeper OCaml Semantics - 2026-06-07T17:08+01:00
+
+Readiness outcome:
+
+- The smallest safe second OCaml slice is query/test depth, not dependency upgrades or full module-system resolution.
+- Keep OCaml classified as `experimental`.
+- Do not upgrade `tree-sitter`, `tree-sitter-ocaml`, or any native grammar dependency in this slice.
+
+Evidence:
+
+| Evidence | Finding | Consequence |
+| --- | --- | --- |
+| Local `gitnexus/package.json` and `node_modules/tree-sitter-ocaml/package.json` | Installed `tree-sitter-ocaml@0.22.0` peers on `tree-sitter: 0.21`; runtime exports are exactly `ocaml` and `interface` | Keep current dependency route; no package changes |
+| `gitnexus/src/core/tree-sitter/parser-loader.ts` | `.ml` uses `tree-sitter-ocaml.ocaml`; `.mli` uses `tree-sitter-ocaml.interface` | Parser-selection V1 is already implemented |
+| `gitnexus/src/core/ingestion/languages/ocaml.ts` | Provider has foundational definitions/import-ish open refs/calls, no import resolver, and stubbed type declaration extraction | Deeper slice should stay in query captures and tests |
+| `gitnexus/src/core/ingestion/tree-sitter-queries.ts` | Current `OCAML_QUERIES` misses `module_type_definition`, `include_module`, `include_module_type`, and module/functor parameter references | Safe implementation target |
+| Local AST probes against `tree-sitter-ocaml@0.22.0` | Grammar exposes `module_type_definition`, `module_type_name`, `module_parameter`, `module_path`, `module_type_path`, `include_module`, `include_module_type`, `functor`, and `functor_type` nodes | Query expansion can be fixture-tested without resolver changes |
+| Tree-sitter docs on static node types: https://tree-sitter.github.io/tree-sitter/using-parsers/6-static-node-types | `node-types.json` is generated structured grammar metadata for possible syntax nodes | Local `node-types.json` is valid evidence for query planning |
+| `tree-sitter-ocaml` README: https://github.com/tree-sitter/tree-sitter-ocaml | Upstream documents separate implementation, interface, and type grammars; latest release shown as `v0.25.0` on 2026-05-09 | Confirms multi-grammar shape and reinforces not upgrading inside this slice |
+
+Approved implementation slice:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 7 OCaml Query Depth V2
+Approved slice: expand experimental OCaml query coverage for module type definitions and module/include/functor references only. Add `.ml` and `.mli` fixtures/tests proving captures for module type names, module alias/include references, interface include references, and functor/module-parameter references. Keep OCaml experimental and do not change dependency versions or resolver semantics.
+Approved write set:
+- gitnexus/src/core/ingestion/tree-sitter-queries.ts
+- gitnexus/test/unit/tree-sitter-queries.test.ts
+- gitnexus/test/unit/ocaml-language-support.test.ts
+- gitnexus/test/integration/tree-sitter-languages.test.ts
+- gitnexus/test/fixtures/sample-code/advanced.ml
+- gitnexus/test/fixtures/sample-code/advanced.mli
+- .agent/long-horizon/gitnexus-local-features/documentation.md
+- .agent/long-horizon/gitnexus-local-features/plans.md
+- .agent/long-horizon/gitnexus-local-features/feature-map.md
+Constraints: no `tree-sitter` or `tree-sitter-ocaml` upgrade, no Dune/project model inference, no PPX expansion, no full module alias/functor resolution, no production classification, no parser-loader/parse-worker changes unless tests prove the current loader regressed, no web UI/MCP/API changes, and TDD required.
+```
+
+TDD order:
+
+1. Add failing `.ml` and `.mli` fixture tests for module types, aliases/includes, and functor/module parameters.
+2. Add static query-string assertions for the new OCaml capture patterns.
+3. Extend `OCAML_QUERIES` minimally.
+4. Run focused OCaml/query tests, parser ABI smoke if needed, build, and `git diff --check`.
+
+Implementation checkpoint:
+
+- Added `advanced.ml` and `advanced.mli` fixtures for module type definitions, module aliases, includes, and functor/module parameters.
+- Expanded `OCAML_QUERIES` to capture:
+  - `module_type_definition` as `definition.interface`,
+  - module parameters as import-like references,
+  - module type paths as import-like references,
+  - module paths, `include_module`, and `include_module_type` as import-like references.
+- Updated unit and integration OCaml tests plus static query-string guards.
+- TDD red failure was the expected missing `module_type_definition` / reference capture behavior.
+- Verification:
+  - `npm test -- --run test/unit/ocaml-language-support.test.ts test/unit/tree-sitter-queries.test.ts test/integration/tree-sitter-languages.test.ts`
+  - `npm test -- --run test/unit/parser-loader-abi.test.ts test/unit/ocaml-language-support.test.ts test/unit/tree-sitter-queries.test.ts test/integration/tree-sitter-languages.test.ts`
+  - `npm run build`
+  - Results: focused OCaml/query suite passed 3 files / 138 tests; parser ABI plus OCaml/query suite passed 4 files / 158 tests; build passed with existing web bundle warnings.
+
+Next selected task:
+
+- Post-tranche consolidation and next-slice map refresh.
 
 ### Task 6 Additional API-Smoke Route - 2026-06-07T17:00+01:00
 
