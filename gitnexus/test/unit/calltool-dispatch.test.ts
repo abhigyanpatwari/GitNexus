@@ -1613,6 +1613,36 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     expect(initLbug).toHaveBeenCalledWith('dup', path.join(b, '.gitnexus', 'lbug'));
     expect(initLbug).not.toHaveBeenCalledWith('dup', path.join(a, '.gitnexus', 'lbug'));
   });
+
+  it('handles more than four sibling clones — all listed once and resolvable (#2067)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(6);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    const listed = await backend.callTool('list_repos', {});
+    expect(listed).toHaveLength(6);
+
+    // All six ids are distinct (clones 3–6 exercise the sha256 fallback tier).
+    const ids = await Promise.all(dirs.map(async (d) => (await backend.resolveRepo(d)).id));
+    expect(new Set(ids).size).toBe(6);
+    for (const d of dirs) expect((await backend.resolveRepo(d)).repoPath).toBe(d);
+  });
+
+  it('lists same-name clones with no remoteUrl without grouping or collapse (#2067)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(2);
+    // Strip remoteUrl — same name, no remote fingerprint.
+    const noRemote = entries.map((e) => ({ ...e, remoteUrl: undefined }));
+    (listRegisteredRepos as any).mockResolvedValue(noRemote);
+    await backend.init();
+
+    const listed = await backend.callTool('list_repos', {});
+    expect(listed).toHaveLength(2); // both present, not collapsed
+    for (const e of listed) {
+      expect(e.remoteUrl).toBeUndefined();
+      expect(e.siblings).toBeUndefined(); // no remote → no sibling grouping
+    }
+    for (const d of dirs) expect((await backend.resolveRepo(d)).repoPath).toBe(d);
+  });
 });
 
 // ─── getContext ──────────────────────────────────────────────────────
