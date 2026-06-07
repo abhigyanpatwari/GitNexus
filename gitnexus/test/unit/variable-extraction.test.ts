@@ -13,6 +13,7 @@ import {
 } from '../../src/core/ingestion/variable-extractors/configs/c-cpp.js';
 import { rubyVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/ruby.js';
 import { dartVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/dart.js';
+import { kotlinVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/jvm.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import type { VariableExtractorContext } from '../../src/core/ingestion/variable-types.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
@@ -25,6 +26,13 @@ import Cpp from 'tree-sitter-cpp';
 import C from 'tree-sitter-c';
 import Ruby from 'tree-sitter-ruby';
 import Dart from 'tree-sitter-dart';
+
+let Kotlin: unknown;
+try {
+  Kotlin = require('tree-sitter-kotlin');
+} catch {
+  // Kotlin grammar may not be installed
+}
 
 const parser = new Parser();
 
@@ -865,5 +873,56 @@ describe('VariableExtractor — Dart (F29 top-level)', () => {
     expect(byName.get('count')!.type).toBe('int');
     expect(byName.get('a')!.isConst).toBe(true);
     expect(byName.get('b')!.isConst).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kotlin destructuring declarations (F51, issue #1919)
+// ---------------------------------------------------------------------------
+
+const describeKotlin = Kotlin ? describe : describe.skip;
+
+describeKotlin('VariableExtractor — Kotlin (F51 destructuring)', () => {
+  const extractor = createVariableExtractor(kotlinVariableConfig);
+  const ctx: VariableExtractorContext = {
+    filePath: 'test.kt',
+    language: SupportedLanguages.Kotlin,
+  };
+
+  /** The first property_declaration whose text starts with `prefix`. */
+  function propertyDecl(src: string, prefix: string): SyntaxNode {
+    parser.setLanguage(Kotlin as Parser.Language);
+    const tree = parser.parse(src);
+    let found: SyntaxNode | undefined;
+    const walk = (n: SyntaxNode) => {
+      if (n.type === 'property_declaration' && n.text.trimStart().startsWith(prefix)) {
+        found ??= n;
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error(`no property_declaration starting with ${prefix}`);
+    return found;
+  }
+
+  it('emits one Variable per destructured name (`val (a, b) = pair`)', () => {
+    const node = propertyDecl('fun f() { val (a, b) = pair }', 'val (a');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['a', 'b']);
+  });
+
+  it('skips the `_` discard placeholder (`val (_, second) = pair`)', () => {
+    const node = propertyDecl('fun f() { val (_, second) = pair }', 'val (_');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['second']);
+  });
+
+  it('still emits exactly one name for a plain `val x = 1` (no double-count)', () => {
+    const node = propertyDecl('fun f() { val x = 1 }', 'val x');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['x']);
   });
 });

@@ -2708,3 +2708,38 @@ describe('F48 — Kotlin secondary constructors', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('method');
   });
 });
+
+// ---------------------------------------------------------------------------
+// F51 (issue #1919): destructuring declarations emit one binding per name
+// ---------------------------------------------------------------------------
+
+describe('F51 — Kotlin destructuring declarations', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-destructuring'), () => {});
+  }, 60000);
+
+  it('emits one binding per destructured name in `val (a, b) = pair`', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('a');
+    expect(props).toContain('b');
+  });
+
+  it('emits bindings for loop destructuring `for ((k, v) in map)`', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('k');
+    expect(props).toContain('v');
+  });
+
+  it('skips the `_` discard placeholder but keeps `second`', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('second');
+    expect(props).not.toContain('_');
+  });
+
+  it('emits exactly the expected binding set (no double-count, plain `val x` once)', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toEqual(['a', 'b', 'k', 'second', 'v', 'x']);
+  });
+});

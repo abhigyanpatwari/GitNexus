@@ -1353,6 +1353,33 @@ export const KOTLIN_QUERIES = `
   (variable_declaration
     (simple_identifier) @name)) @definition.property
 
+; ── Destructuring declarations (F51, issue #1919) ────────────────────────
+; "val (a, b) = pair" binds several names through a multi_variable_declaration
+; (NOT a variable_declaration), which the property rule above misses. Emit one
+; @definition.property per bound name — the SAME label every other Kotlin val/var
+; gets (KOTLIN_QUERIES has no @definition.variable rule, so a single "val x"
+; is already a Property; matching that keeps destructured names consistent and
+; out of the block-scope local-symbol pruner that drops Variable/Const/Static).
+; The Kotlin "_" discard placeholder is filtered out here via (#not-eq? @name "_")
+; — these locals have no enclosing class, so the field-extractor enrichment path
+; never runs and cannot do the filtering itself. Each rule is a standalone
+; pattern (NOT a top-level [...] alternation), so the predicate is safe under
+; tree-sitter 0.21.1 (no sibling-branch drop). Loop destructuring
+; "for ((k, v) in m)" nests the SAME multi_variable_declaration directly under the
+; for_statement (no property_declaration wrapper); the scope-path loop binding only
+; handles the single variable_declaration form, so this rule does not double-emit.
+((property_declaration
+  (multi_variable_declaration
+    (variable_declaration
+      (simple_identifier) @name))) @definition.property
+  (#not-eq? @name "_"))
+
+((for_statement
+  (multi_variable_declaration
+    (variable_declaration
+      (simple_identifier) @name))) @definition.property
+  (#not-eq? @name "_"))
+
 ; Primary constructor val/var parameters (data class, value class, regular class)
 ; binding_pattern_kind contains "val" or "var" — without it, the param is not a property
 (class_parameter
