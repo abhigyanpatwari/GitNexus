@@ -102,6 +102,15 @@ export function emitFreeCallFallback(
   // defs.byId.values() at every constructor call. Same simple-name keying
   // and class-like kind filter the previous per-site scan applied.
   const globalClassesBySimpleName = buildGlobalClassIndex(scopes);
+  // Per-pass memo of pickUniqueGlobalCallable's post-filter candidate list,
+  // keyed (simpleName, callerFilePath). Only created when no per-caller
+  // visibility filter applies (the list is then a pure function of name+file —
+  // see pickUniqueGlobalCallable). Lets repeated free calls of the same name
+  // from one file reuse the same-name-bucket scan instead of re-walking it.
+  const scopeDefsCache =
+    options.isCallableVisibleFromCaller === undefined
+      ? new Map<string, readonly SymbolDefinition[]>()
+      : undefined;
 
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
@@ -370,6 +379,7 @@ export function emitFreeCallFallback(
           site.argumentTypes,
           site.argumentTypeClasses,
           options.conversionRankFn,
+          scopeDefsCache,
         );
       }
       if (fnDef === undefined) continue;
@@ -475,8 +485,11 @@ function recordSuppressedOutcome(
  * (falling back to the qualifiedName itself when undotted). Used by
  * `pickUniqueGlobalCallable` so every free-call fallback site is O(1)
  * instead of O(|defs|).
+ *
+ * Exported for unit testing — language-agnostic logic, exercised via synthetic
+ * stubs in `pick-unique-global-callable.test.ts`.
  */
-function buildGlobalCallableIndex(
+export function buildGlobalCallableIndex(
   scopes: ScopeResolutionIndexes,
 ): ReadonlyMap<string, readonly SymbolDefinition[]> {
   const out = new Map<string, SymbolDefinition[]>();
@@ -533,7 +546,13 @@ export function buildGlobalClassIndex(
   return out;
 }
 
-function pickUniqueGlobalCallable(
+/**
+ * Resolve a free (unqualified, receiver-less) call to a globally-unique
+ * callable def by simple name. See the in-body comments for the narrowing
+ * order. Exported for unit testing — the `scopeDefsCache` equivalence is
+ * exercised via synthetic stubs in `pick-unique-global-callable.test.ts`.
+ */
+export function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
   globalCallablesBySimpleName: ReadonlyMap<string, readonly SymbolDefinition[]>,
@@ -544,26 +563,49 @@ function pickUniqueGlobalCallable(
   callArgTypes?: readonly string[],
   callArgTypeClasses?: readonly ParameterTypeClass[],
   conversionRankFn?: ConversionRankFn,
+  scopeDefsCache?: Map<string, readonly SymbolDefinition[]>,
 ): SymbolDefinition | undefined {
-  const scopeDefs: SymbolDefinition[] = [];
-  const scopeSeen = new Set<string>();
-  for (const def of globalCallablesBySimpleName.get(name) ?? []) {
-    // Skip file-local defs (e.g. C `static` functions) that live in a
-    // different file from the caller — they are logically invisible.
-    if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
-      continue;
+  // The scope-index candidate list is a pure function of (name, callerFilePath):
+  // the same-name bucket is fixed for the pass, the file-local filter depends
+  // only on the candidate + callerFilePath, and the logical-key dedup is
+  // deterministic. When no per-caller visibility filter applies, memoize it so
+  // repeated free calls of the same name from one file — the kernel's hot
+  // pattern (e.g. `kmalloc` across hundreds of `drivers/` sites, where the
+  // same-name bucket has thousands of defs) — reuse the bucket scan instead of
+  // re-walking it per site. The cached array is only ever READ by the arity /
+  // overload narrowers below (both `.filter()`-based — they never mutate it),
+  // so one shared instance across call sites is safe. The cache is bypassed
+  // when a visibility filter is present (`isCallerVisible !== undefined`),
+  // because the list would then depend on the caller's scope, not just its file.
+  const cacheKey =
+    scopeDefsCache !== undefined && isCallerVisible === undefined
+      ? `${name} ${callerFilePath}`
+      : undefined;
+  let scopeDefs: readonly SymbolDefinition[] | undefined =
+    cacheKey !== undefined ? scopeDefsCache!.get(cacheKey) : undefined;
+  if (scopeDefs === undefined) {
+    const built: SymbolDefinition[] = [];
+    const scopeSeen = new Set<string>();
+    for (const def of globalCallablesBySimpleName.get(name) ?? []) {
+      // Skip file-local defs (e.g. C `static` functions) that live in a
+      // different file from the caller — they are logically invisible.
+      if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+        continue;
+      }
+      // Caller-side visibility filter (e.g., PHP namespace + use-function
+      // import gating). When defined, blocks candidates the caller cannot
+      // legally reach. Languages without namespace-scoped function resolution
+      // leave this undefined → no filtering.
+      if (isCallerVisible !== undefined && !isCallerVisible(def)) {
+        continue;
+      }
+      const key = logicalCallableKey(def);
+      if (scopeSeen.has(key)) continue;
+      scopeSeen.add(key);
+      built.push(def);
     }
-    // Caller-side visibility filter (e.g., PHP namespace + use-function
-    // import gating). When defined, blocks candidates the caller cannot
-    // legally reach. Languages without namespace-scoped function resolution
-    // leave this undefined → no filtering.
-    if (isCallerVisible !== undefined && !isCallerVisible(def)) {
-      continue;
-    }
-    const key = logicalCallableKey(def);
-    if (scopeSeen.has(key)) continue;
-    scopeSeen.add(key);
-    scopeDefs.push(def);
+    scopeDefs = built;
+    if (cacheKey !== undefined) scopeDefsCache!.set(cacheKey, built);
   }
   if (scopeDefs.length === 1) return scopeDefs[0];
 

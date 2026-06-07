@@ -87,7 +87,7 @@ program
   )
   .option(
     '--workers <n>',
-    'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
+    'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')

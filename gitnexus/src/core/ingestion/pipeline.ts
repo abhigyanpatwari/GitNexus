@@ -43,27 +43,22 @@ import {
 export interface PipelineOptions {
   /** Skip MRO, community detection, and process extraction for faster test runs. */
   skipGraphPhases?: boolean;
-  /** Force sequential parsing (no worker pool). Useful for testing the sequential path. */
-  skipWorkers?: boolean;
   /**
-   * @internal Test-only override for worker-pool gating thresholds.
-   * When unset, production defaults apply (15 files OR 512 KB total bytes).
-   * Setting either field lowers the corresponding threshold so small test
-   * fixtures can still exercise the worker-pool path. Do not use from
-   * production call sites.
+   * Request parsing with the worker pool disabled. The sequential parser was
+   * removed — the worker pool is the sole parse path — so setting this now
+   * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to
+   * `--workers 0`). Retained so callers get an actionable error rather than a
+   * silently-different result.
    */
-  workerThresholdsForTest?: {
-    minFiles?: number;
-    minBytes?: number;
-  };
+  skipWorkers?: boolean;
   /**
    * @internal Test-only override for the worker script URL the pool
    * spawns. When unset, parse-impl resolves `parse-worker.js` from the
    * adjacent `workers/` directory (or the compiled `dist/` fallback
    * under vitest). Integration tests use this to inject a custom
    * worker script that deterministically triggers worker-pool
-   * resilience paths (e.g., crash-on-poison-file) — same precedent as
-   * `workerThresholdsForTest`. Do not use from production call sites.
+   * resilience paths (e.g., crash-on-poison-file). Do not use from production
+   * call sites.
    */
   workerUrlForTest?: URL;
   /**
@@ -85,11 +80,11 @@ export interface PipelineOptions {
    * `createWorkerPool` so the pool sizing bypasses the env-var fallback
    * in `resolveAutoPoolSize`. The env-var channel
    * (`GITNEXUS_WORKER_POOL_SIZE`) remains as a back-compat fallback when
-   * this field is undefined. Setting `workerPoolSize: 0` disables the
-   * pool entirely (sequential fallback) — equivalent to `skipWorkers`
-   * but expressed in the same units as `--workers <N>` so long-running
-   * hosts (eval-server, MCP daemon) can size per-call without leaking
-   * `process.env` state across analyze invocations.
+   * this field is undefined. Must be a positive integer — `0` hard-errors
+   * (sequential parsing was removed; equivalent to `skipWorkers`), expressed
+   * in the same units as `--workers <N>` so long-running hosts (eval-server,
+   * MCP daemon) can size per-call without leaking `process.env` state across
+   * analyze invocations.
    */
   workerPoolSize?: number;
   /**

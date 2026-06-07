@@ -312,6 +312,27 @@ interface LanguageProviderConfig {
   ) => readonly CaptureMatch[];
 
   /**
+   * Snapshot the capture-time side-channel state that this provider's
+   * `emitScopeCaptures` just populated for `filePath` into module-level maps,
+   * returning a plain JSON-serializable value (or `undefined` when there is
+   * nothing to carry).
+   *
+   * Called in the parse worker IMMEDIATELY after `emitScopeCaptures` runs for
+   * a file (see `parse-worker.ts`), and the result is stored on the produced
+   * `ParsedFile.captureSideChannel`. Scope-resolution on the main thread reuses
+   * that serialized `ParsedFile` and skips re-extraction (#1983), so this hook
+   * is how the worker-computed marks survive the worker→main boundary and the
+   * disk store WITHOUT a main-thread re-parse. The main thread restores them
+   * via the matching `ScopeResolver.applyCaptureSideChannel` hook.
+   *
+   * MUST return plain data (objects / arrays / primitives) so it round-trips
+   * through `JSON.stringify` + the parsedfile-store interning reviver.
+   *
+   * Default: undefined (provider has no capture-time module-level side effects).
+   */
+  readonly collectCaptureSideChannel?: (filePath: string) => unknown;
+
+  /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.
    * The central finalize algorithm resolves `ParsedImport.targetRaw` to a
    * concrete file via `resolveImportTarget` and materializes the final

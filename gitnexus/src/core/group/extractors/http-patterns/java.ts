@@ -55,6 +55,7 @@ const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
 interface SpringRouteBinding {
   method: string;
   path: string;
+  ownerPrefix?: string;
 }
 
 interface SpringMethodInfo {
@@ -395,6 +396,25 @@ function joinPath(prefix: string, methodPath: string): string {
   return `/${cleanPrefix}/${cleanSub}`;
 }
 
+function joinInheritedSpringPath(
+  controllerPrefix: string,
+  inheritedPath: string,
+  inheritedOwnerPrefix = '',
+): string {
+  const joined = joinPath(controllerPrefix, inheritedPath);
+  const cleanPrefix = controllerPrefix.replace(/^\/+/, '').replace(/\/+$/, '');
+  const cleanOwnerPrefix = inheritedOwnerPrefix.replace(/^\/+/, '').replace(/\/+$/, '');
+  const cleanInherited = inheritedPath.replace(/^\/+/, '');
+  if (!cleanPrefix) return joined;
+  if (
+    cleanPrefix === cleanOwnerPrefix &&
+    (cleanInherited === cleanPrefix || cleanInherited.startsWith(`${cleanPrefix}/`))
+  ) {
+    return `/${cleanInherited}`;
+  }
+  return joined;
+}
+
 function getNodeName(node: Parser.SyntaxNode): string | null {
   return node.childForFieldName('name')?.text ?? null;
 }
@@ -634,6 +654,7 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
       const routes = method.routes.map((route) => ({
         method: route.method,
         path: type.classPrefix ? joinPath(type.classPrefix, route.path) : route.path,
+        ownerPrefix: type.classPrefix,
       }));
       if (routes.length > 0) methodMap.set(method.name, routes);
     }
@@ -651,7 +672,7 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
         const routes = routeMap.get(method.name) ?? [];
         return routes.map((route) => ({
           method: route.method,
-          path: joinPath(type.classPrefix, route.path),
+          path: joinInheritedSpringPath(type.classPrefix, route.path, route.ownerPrefix),
         }));
       });
 

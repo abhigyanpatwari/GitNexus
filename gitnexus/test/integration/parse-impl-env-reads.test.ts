@@ -75,7 +75,11 @@ async function countChunksFromProgress(
       const m = /Parsing chunk (\d+)\/(\d+)/.exec(p.message);
       if (m !== null) chunkIndices.add(`${m[1]}/${m[2]}`);
     },
-    { skipWorkers: true, ...options },
+    // Chunk count is byte-budget-driven and emitted before the pool runs, so it
+    // is independent of worker vs sequential. Sequential parsing was removed, so
+    // this runs through the (auto-sized, dist-backed) worker pool — hence the
+    // integration tier.
+    { ...options },
   );
   return chunkIndices.size;
 }

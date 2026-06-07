@@ -356,8 +356,9 @@ function extractFileStructure(content: string, cachedTree: unknown): CsharpFileS
 
 /** Content + (optional) pre-parsed tree-sitter trees keyed by filePath.
  *  The orchestrator builds `fileContents` from the pipeline's file list;
- *  `treeCache` is the same `scopeTreeCache` already populated by the
- *  parse phase, so cache hits avoid a second `parser.parse()`. */
+ *  `treeCache` is currently always empty (its only producer, the sequential
+ *  parser, was removed), so the providers re-parse. Kept as an extension
+ *  point that would let cache hits avoid a second `parser.parse()`. */
 export interface CsharpSiblingInputs {
   readonly fileContents: ReadonlyMap<string, string>;
   readonly treeCache?: { get(filePath: string): unknown };

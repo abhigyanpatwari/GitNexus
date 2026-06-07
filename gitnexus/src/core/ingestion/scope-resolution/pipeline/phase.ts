@@ -31,8 +31,15 @@ import type { ParseOutput } from '../../pipeline-phases/parse.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
+import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { SCOPE_RESOLVERS } from './registry.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
+import { logHeapProbe } from '../../utils/heap-probe.js';
+import {
+  clearParsedFileStore,
+  loadParsedFilesForPaths,
+  forceGc,
+} from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
 
 import { logger } from '../../../logger.js';
@@ -85,13 +92,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ScopeResolutionOutput> {
+    logHeapProbe('scopeResolution-enter');
     const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
-    // Reach into the parse phase's AST cache so per-file extract can
-    // skip a second tree-sitter parse. Cache miss is safe (re-parses).
-    // Worker-mode parses leave the cache empty for those files; they
-    // also fall back to a fresh parse — no correctness impact.
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { scopeTreeCache, model, parsedFiles: workerParsedFiles } = parseOutput;
+    const { model, parsedFiles: workerParsedFiles } = parseOutput;
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
     // rebuilding parallel indexes. See ARCHITECTURE.md § "Semantic-model
@@ -108,6 +112,16 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     for (const pf of workerParsedFiles) {
       preExtractedByPath.set(pf.filePath, pf);
     }
+
+    // Disk-backed ParsedFile store (#1983): on huge repos the parse phase
+    // flushes worker-produced ParsedFiles to disk (instead of `workerParsedFiles`
+    // heap) and we stream them back here per language. Reusing them means
+    // scope-resolution does ZERO tree-sitter parsing on the main thread, which
+    // is what eliminates the unbounded native re-parse leak that OOM'd large
+    // analyses. `undefined` when no storage path (tests / direct calls) — those
+    // runs use the in-heap `workerParsedFiles` above or fall back to a fresh
+    // extract per file inside runScopeResolution.
+    const parsedFileStorePath = ctx.options?.parseCache?.storagePath;
 
     // Drop pre-extracted entries for standalone providers — these
     // languages are skipped by the canonical guard below (line 164)
@@ -144,8 +158,27 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalScopeFiles = 0;
     let totalScopeLangs = 0;
     const allScannedPaths = new Set(scannedFiles.map((f) => f.path));
+    // Partition scanned files by language ONCE (O(F)). The previous code
+    // re-filtered all scannedFiles per language for the precount AND again in the
+    // per-language loop below — O(languages × files), ~2.3M getLanguageFromFilename
+    // calls on the Linux kernel. Bucketing once collapses that to O(F).
+    // Language-agnostic: keyed by the provider-supplied SupportedLanguages value.
+    const filesByLang = new Map<
+      NonNullable<ReturnType<typeof getLanguageFromFilename>>,
+      (typeof scannedFiles)[number][]
+    >();
+    for (const f of scannedFiles) {
+      const fileLang = getLanguageFromFilename(f.path);
+      if (fileLang === null) continue;
+      let bucket = filesByLang.get(fileLang);
+      if (bucket === undefined) {
+        bucket = [];
+        filesByLang.set(fileLang, bucket);
+      }
+      bucket.push(f);
+    }
     for (const [lang] of SCOPE_RESOLVERS) {
-      const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
+      const count = filesByLang.get(lang)?.length ?? 0;
       if (count > 0) {
         totalScopeLangs++;
         totalScopeFiles += count;
@@ -164,6 +197,21 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       });
     }
 
+    // Build the graph-node lookup ONCE and share it across every language pass.
+    // It scans the whole graph (~2 GB on the kernel) and is language-agnostic,
+    // so the previous per-language rebuild burned that CPU+heap N times and, on
+    // a huge repo, a tiny language's full-graph copy overlapped the next
+    // language's — a real contributor to the scope-resolution memory peak.
+    // Bracket the whole-graph node-lookup build with probes — scanning every
+    // graph node is the silent multi-minute step before the first per-language
+    // marker on huge repos, so make it observable.
+    logHeapProbe(
+      'scope-setup-nodeLookup-start',
+      `langs=${totalScopeLangs} files=${totalScopeFiles}`,
+    );
+    const sharedNodeLookup = totalScopeFiles > 0 ? buildGraphNodeLookup(ctx.graph) : undefined;
+    logHeapProbe('scope-setup-nodeLookup-end', `langs=${totalScopeLangs}`);
+
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       // Standalone providers (COBOL, JCL) don't emit graph edges yet
       // through the scope-resolution path. This is the canonical guard:
@@ -173,7 +221,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // SCOPE_RESOLVERS.
       if (provider.languageProvider.parseStrategy === 'standalone') continue;
 
-      const primaryLangFiles = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang);
+      const primaryLangFiles = filesByLang.get(lang) ?? [];
       if (primaryLangFiles.length === 0) continue;
       const primaryFilePaths = primaryLangFiles.map((f) => f.path);
 
@@ -194,9 +242,37 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       // To avoid reading primary files twice (once for the hook, once for
       // the resolution pass), we read them upfront and merge with the
       // extra context paths the hook may add.
+      // Stream this language's pre-built ParsedFiles in from the disk store
+      // FIRST (huge-repo path). Doing it before reading source lets us skip
+      // loading content for files the store already covers — for a provider
+      // with no content-consuming hook that source is pure dead weight once
+      // extraction is served from the store (~1.5 GB on the kernel's C pass).
+      // Merged into `preExtractedByPath`; the per-language release block below
+      // evicts these again before the next language, so only one language's
+      // ParsedFiles are resident at a time.
+      const loadStoreFor = async (paths: ReadonlySet<string>): Promise<void> => {
+        if (!parsedFileStorePath) return;
+        const fromDisk = await loadParsedFilesForPaths(parsedFileStorePath, paths);
+        for (const [fp, pf] of fromDisk) preExtractedByPath.set(fp, pf);
+      };
+
+      // A provider that feeds source text into a post-extract hook
+      // (populateWorkspaceOwners / populateNamespaceSiblings /
+      // populateRangeBindings / emitPostResolutionEdges) needs content for ALL
+      // its files; one without those hooks only needs content for files the
+      // store does NOT cover (fresh-extract fallback). Keep this in sync with
+      // the getFileContents() call-sites in run.ts.
+      const providerNeedsAllContent =
+        provider.populateWorkspaceOwners !== undefined ||
+        provider.populateNamespaceSiblings !== undefined ||
+        provider.populateRangeBindings !== undefined ||
+        provider.emitPostResolutionEdges !== undefined;
+
       let scopeFilePaths: Set<string>;
       let contents: Map<string, string>;
       if (provider.collectScopeContextPaths !== undefined) {
+        // Context-expanding providers (e.g. Vue) need every primary file's
+        // source up front for the closure hook, so load it all.
         const entryFileContents = await readFileContents(ctx.repoPath, primaryFilePaths);
         scopeFilePaths = provider.collectScopeContextPaths({
           primaryFilePaths,
@@ -209,18 +285,36 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
         const extraContents = await readFileContents(ctx.repoPath, extraPaths);
         contents = new Map([...entryFileContents, ...extraContents]);
+        await loadStoreFor(scopeFilePaths);
       } else {
         scopeFilePaths = new Set(primaryFilePaths);
-        contents = await readFileContents(ctx.repoPath, primaryFilePaths);
+        await loadStoreFor(scopeFilePaths);
+        const pathsToRead = providerNeedsAllContent
+          ? primaryFilePaths
+          : primaryFilePaths.filter((p) => !preExtractedByPath.has(p));
+        contents = await readFileContents(ctx.repoPath, pathsToRead);
       }
       const filePaths = [...scopeFilePaths];
       const files: { path: string; content: string }[] = [];
       for (const fp of filePaths) {
         const content = contents.get(fp);
-        if (content !== undefined) files.push({ path: fp, content });
+        if (content !== undefined) {
+          files.push({ path: fp, content });
+        } else if (preExtractedByPath.has(fp)) {
+          // Store covers extraction for this file and we deliberately skipped
+          // reading its source; the empty string is never consumed (the
+          // extract loop uses the pre-extracted ParsedFile and this provider
+          // has no content hook).
+          files.push({ path: fp, content: '' });
+        }
+        // else: uncovered AND unreadable → skip (unchanged from prior behavior).
       }
 
       const langFileCount = files.length;
+      logHeapProbe(
+        'scope-lang-start',
+        `lang=${lang} files=${langFileCount} contentsLoaded=${contents.size}`,
+      );
       const langLabel = lang.charAt(0).toUpperCase() + lang.slice(1);
       currentLangIdx++;
       const langTag =
@@ -242,9 +336,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           graph: ctx.graph,
           model,
           files,
-          treeCache: scopeTreeCache,
           resolutionConfig,
+          prebuiltNodeLookup: sharedNodeLookup,
           preExtractedParsedFiles: preExtractedByPath,
+          scopeIndexStorePath: parsedFileStorePath,
           recordResolutionOutcome: (outcome) => {
             resolutionOutcomes.push(outcome);
           },
@@ -308,6 +403,18 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       for (const fp of filePaths) {
         preExtractedByPath.delete(fp);
       }
+      // This language's ParsedFiles are now unreachable (runScopeResolution has
+      // returned and the Map entries are deleted). Force a GC HERE so a heavy
+      // language's ~17-20GB set (e.g. C/C++ on the Linux kernel) is reclaimed
+      // BEFORE the next language's store-load — instead of leaving V8 to collect
+      // it lazily under the next pass's allocation pressure (which, at a cap >=
+      // RAM, degrades into swap-thrash). Collects only dead objects: the live
+      // cross-file index of the next pass is untouched. The pre/post probe
+      // confirms whether old-space fragmentation defeats the reclaim.
+      logHeapProbe('lang-release-pre-gc', `lang=${lang}`);
+      forceGc();
+      logHeapProbe('lang-release-post-gc', `lang=${lang}`);
+      logHeapProbe('scope-lang-end', `lang=${lang} filesProcessed=${stats.filesProcessed}`);
 
       processedScopeFiles += langFileCount;
       anyRan = true;
@@ -336,13 +443,17 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       });
     }
 
-    // Dispose the cross-phase Tree cache — scope-resolution is the
-    // only consumer. Holding Trees past this point is pure memory
-    // pressure: downstream phases (mro, community, csv-generator)
-    // never read them, and tree-sitter Trees hold native-heap memory
-    // under WASM runtimes. ASTCache.clear() fires the LRU dispose
-    // handler which calls tree.delete?.() on each retained Tree.
-    scopeTreeCache.clear();
+    // Scope-resolution is the sole consumer of the disk-backed ParsedFile
+    // store; remove its shards now (can be many GB on a huge repo) so they
+    // don't linger in `.gitnexus`. Best-effort — never fail the phase on a
+    // cleanup error.
+    if (parsedFileStorePath) {
+      try {
+        await clearParsedFileStore(parsedFileStorePath);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
 
     if (!anyRan) return NOOP_OUTPUT;
 

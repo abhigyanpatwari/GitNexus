@@ -61,6 +61,30 @@ export function markCppInlineNamespaceRange(filePath: string, range: RangeKey): 
   set.add(rangeKey(range));
 }
 
+/** Snapshot this file's captured inline-namespace ranges for the worker→main
+ *  side-channel (#1983). `populateCppInlineNamespaceScopes` (in `populateOwners`)
+ *  later resolves these range keys to ScopeIds on the main thread, so only the
+ *  capture-time ranges need to cross the boundary. Returns the rangeKey strings
+ *  as a plain array (empty when this file recorded none). */
+export function collectCppInlineNamespaceSideChannel(filePath: string): readonly string[] {
+  const set = inlineNamespaceRangesByFile.get(filePath);
+  return set === undefined ? [] : [...set];
+}
+
+/** Restore this file's captured inline-namespace ranges from the side-channel. */
+export function applyCppInlineNamespaceSideChannel(
+  filePath: string,
+  ranges: readonly string[],
+): void {
+  if (ranges.length === 0) return;
+  let set = inlineNamespaceRangesByFile.get(filePath);
+  if (set === undefined) {
+    set = new Set();
+    inlineNamespaceRangesByFile.set(filePath, set);
+  }
+  for (const r of ranges) set.add(r);
+}
+
 /** Clear all inline-namespace state. Called from `clearFileLocalNames`. */
 export function clearCppInlineNamespaces(): void {
   inlineNamespaceRangesByFile.clear();

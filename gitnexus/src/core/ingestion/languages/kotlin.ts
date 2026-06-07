@@ -28,6 +28,7 @@ import { kotlinMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { kotlinVariableConfig } from '../variable-extractors/configs/jvm.js';
 import {
+  collectKotlinCaptureSideChannel,
   emitKotlinScopeCaptures,
   interpretKotlinImport,
   interpretKotlinTypeBinding,
@@ -175,6 +176,13 @@ export const kotlinProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitKotlinScopeCaptures,
+  // Worker-side: snapshot the module-level companion-scope marks
+  // `emitKotlinScopeCaptures` just populated for this file (`markCompanionScope`
+  // → `companionScopesByFile`) into plain data on `ParsedFile.captureSideChannel`,
+  // so the main thread can restore them via `applyCaptureSideChannel` WITHOUT a
+  // re-parse (#1983). Without this, companion/static dispatch emits no CALLS
+  // edges on the worker path. See `kotlin/capture-side-channel.ts`.
+  collectCaptureSideChannel: collectKotlinCaptureSideChannel,
   interpretImport: interpretKotlinImport,
   interpretTypeBinding: interpretKotlinTypeBinding,
   bindingScopeFor: kotlinBindingScopeFor,

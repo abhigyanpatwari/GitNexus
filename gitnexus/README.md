@@ -400,7 +400,7 @@ Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling;
 
 ### Analyze reports a worker timeout
 
-Worker parse timeouts are recoverable. GitNexus retries stalled worker jobs with backoff, splits large jobs to isolate slow files, and falls back to the sequential parser when needed. If a large repository needs more time per worker job, use either:
+Worker parse timeouts are recoverable. GitNexus retries stalled worker jobs with backoff, splits large jobs to isolate slow files, and quarantines a file that repeatedly crashes its worker (respawning the slot so the pool keeps going). If a large repository needs more time per worker job, use either:
 
 ```bash
 # CLI flag, in seconds

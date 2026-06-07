@@ -53,13 +53,11 @@ describe('parse-impl chunk concurrency (U1)', () => {
 
     const g1 = createKnowledgeGraph();
     await runChunkedParseAndResolve(g1, scan, files, files.length, repoPath, Date.now(), () => {}, {
-      skipWorkers: true,
       parseChunkConcurrency: 1,
     });
 
     const g2 = createKnowledgeGraph();
     await runChunkedParseAndResolve(g2, scan, files, files.length, repoPath, Date.now(), () => {}, {
-      skipWorkers: true,
       parseChunkConcurrency: 2,
     });
 
@@ -82,7 +80,7 @@ describe('parse-impl chunk concurrency (U1)', () => {
       repoPath,
       Date.now(),
       () => {},
-      { skipWorkers: true, parseChunkConcurrency: 1 },
+      { parseChunkConcurrency: 1 },
     );
     // Exact assertions per DoD §2.7: pin specific symbols from the fixture
     // so a regression in either the chunk loop or the resolver surfaces
@@ -109,7 +107,7 @@ describe('parse-impl chunk concurrency (U1)', () => {
         repoPath,
         Date.now(),
         () => {},
-        { skipWorkers: true },
+        {},
       );
       // Resolver reads the env when options.parseChunkConcurrency is
       // undefined. The env value (3) must produce the same fixture

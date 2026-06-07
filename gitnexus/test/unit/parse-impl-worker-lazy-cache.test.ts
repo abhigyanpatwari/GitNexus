@@ -151,7 +151,6 @@ describe('parse-impl worker pool lazy startup', () => {
       Date.now(),
       () => {},
       {
-        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
         workerUrlForTest: pathToFileURL(workerPath),
         workerPoolSize: 1,
         parseCache,
@@ -191,7 +190,6 @@ describe('parse-impl worker pool lazy startup', () => {
       Date.now(),
       () => {},
       {
-        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
         workerUrlForTest: pathToFileURL(workerPath),
         workerPoolSize: 1,
         parseCache,
@@ -230,7 +228,6 @@ describe('parse-impl worker pool lazy startup', () => {
         Date.now(),
         () => {},
         {
-          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
           workerUrlForTest: pathToFileURL(workerPath),
           workerPoolSize: 1,
           // No flag: a total worker-startup failure always fails fast now.
@@ -243,7 +240,7 @@ describe('parse-impl worker pool lazy startup', () => {
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'fatal')).toBe(false);
   });
 
-  it('parses sequentially when GITNEXUS_WORKER_POOL_SIZE=0 and no --workers flag (#1741)', async () => {
+  it('throws when GITNEXUS_WORKER_POOL_SIZE=0 and no --workers flag (sequential parsing removed)', async () => {
     const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
     process.env.GITNEXUS_WORKER_POOL_SIZE = '0';
     try {
@@ -254,31 +251,31 @@ describe('parse-impl worker pool lazy startup', () => {
       fs.writeFileSync(full, content);
 
       // A ready-worker double with a spawn marker — it must NOT be spawned,
-      // because env=0 routes to the sequential path before any pool is built.
+      // because the disabled-channel validation throws before any pool is built.
       const markerPath = path.join(tempDir, 'env0-worker.marker');
       const workerPath = path.join(tempDir, 'env0-ready-worker.js');
       writeReadyWorker(workerPath, markerPath);
 
       const graph = createKnowledgeGraph();
-      const result = await runChunkedParseAndResolve(
-        graph,
-        [{ path: rel, size: fs.statSync(full).size }],
-        [rel],
-        1,
-        repoDir,
-        Date.now(),
-        () => {},
-        {
-          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-          workerUrlForTest: pathToFileURL(workerPath),
-          // No workerPoolSize option — the env var is the only sizing signal.
-        },
-      );
+      await expect(
+        runChunkedParseAndResolve(
+          graph,
+          [{ path: rel, size: fs.statSync(full).size }],
+          [rel],
+          1,
+          repoDir,
+          Date.now(),
+          () => {},
+          {
+            workerUrlForTest: pathToFileURL(workerPath),
+            // No workerPoolSize option — the ambient env=0 is the only signal.
+          },
+        ),
+      ).rejects.toThrow(/GITNEXUS_WORKER_POOL_SIZE=0/);
 
-      expect(result.usedWorkerPool).toBe(false); // env=0 → sequential, not a size-0 pool fail-fast
-      expect(fs.existsSync(markerPath)).toBe(false); // no worker ever spawned
-      // Sequential parsing still produced a complete graph for the file.
-      expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'env0')).toBe(true);
+      // Sequential parsing was removed: env=0 is a hard error, not a silent
+      // sequential run. The validation throws before any pool is constructed.
+      expect(fs.existsSync(markerPath)).toBe(false);
     } finally {
       if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
       else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;
@@ -309,7 +306,6 @@ describe('parse-impl worker pool lazy startup', () => {
         Date.now(),
         () => {},
         {
-          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
           workerUrlForTest: pathToFileURL(workerPath),
           workerPoolSize: 1, // explicit --workers 1 must win over ambient env=0
         },

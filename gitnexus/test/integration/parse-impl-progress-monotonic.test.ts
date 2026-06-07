@@ -9,9 +9,12 @@
  *
  * After M2, parse phase covers 20-70 and deferred extraction covers 70-95
  * across four labelled sub-bands. This test runs `runChunkedParseAndResolve`
- * on a small temp repo via the deterministic sequential-fallback path
- * (`skipWorkers: true`) and asserts the recorded percent stream is strictly
- * non-decreasing AND reaches the deferred band (>=70) before returning.
+ * on a small temp repo through the worker pool (the sole parse path) and
+ * asserts the recorded percent stream is strictly non-decreasing AND reaches
+ * the deferred band (>=70) before returning. The progress percents come from
+ * the chunk loop / deferred bands, which are identical regardless of how files
+ * are parsed — so this exercises the same progress contract the sequential
+ * path used to. Integration tier because the pool needs the dist worker.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -70,7 +73,7 @@ describe('parse-impl progress monotonicity (U4 M2)', () => {
       (p) => {
         if (typeof p.percent === 'number') percents.push(p.percent);
       },
-      { skipWorkers: true },
+      {},
     );
 
     // The stream MUST be non-empty (a regression that stops emitting
@@ -96,8 +99,8 @@ describe('parse-impl progress monotonicity (U4 M2)', () => {
     const reachedDeferredBand = percents.some((p) => p >= 70 && p <= 95);
     expect(reachedDeferredBand).toBe(true);
 
-    // On this 3-file fixture in skipWorkers mode the deferred band
-    // advances exactly to 70 (the start of the band). The orchestrator
+    // On this 3-file fixture the deferred band advances exactly to 70 (the
+    // start of the band). The orchestrator
     // (run-analyze) drives 70-100 itself once cross-chunk extraction
     // finishes. Pinning the exact observed value catches both an
     // upper-bound regression (anything >70 would unexpectedly land in
@@ -121,7 +124,7 @@ describe('parse-impl progress monotonicity (U4 M2)', () => {
       (p) => {
         if (typeof p.percent === 'number') percents.push(p.percent);
       },
-      { skipWorkers: true },
+      {},
     );
 
     // The early-return path must emit 95 (the new post-deferred ceiling),
