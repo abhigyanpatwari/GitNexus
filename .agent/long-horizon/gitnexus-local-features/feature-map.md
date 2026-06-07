@@ -50,7 +50,7 @@ Supporting evidence:
 | Order | Feature | Research Depth | Disposition | Implementation Status | Gate |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Auto-Reindexing | Decision-grade completed for first slice | `local V1 complete` | Approved first slice implemented, verified, and snapshotted | Do not broaden without a new Goal |
-| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices | `local V1 complete` | Core status/dry-run-first planner/runner implemented and snapshotted; read-only server status endpoint implemented and verified | Do not add event wiring or mutation without a new Goal |
+| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices | `local V1 complete` | Core status/dry-run-first planner/runner implemented and snapshotted; read-only server status endpoint plus provider-readiness status implemented and verified | Do not add event wiring or mutation without a new Goal |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | No unified graph expansion without new approval |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
@@ -151,9 +151,11 @@ Implemented source surfaces:
 | Surface | Status |
 | --- | --- |
 | `gitnexus/src/core/wiki/auto-refresh.ts` | New planner/runner and meta reader |
+| `gitnexus/src/core/wiki/provider-readiness.ts` | Non-secret provider-readiness policy for server status |
 | `gitnexus/test/unit/wiki-auto-refresh.test.ts` | New focused tests |
 | `gitnexus/src/server/api.ts` | Read-only `GET /api/wiki/auto-refresh` status endpoint |
-| `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts` | Source-wiring test proving planner use and no generator invocation |
+| `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts` | Source-wiring test proving planner/provider-status use and no generator invocation |
+| `gitnexus/test/unit/wiki-provider-readiness.test.ts` | Provider-readiness and no-secret status tests |
 
 Existing generator surfaces inspected:
 
@@ -565,14 +567,13 @@ Immediate:
 
 | Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal first | Wiki local V1 is status-only; mutation has provider, cost, freshness, and output ownership risks. | Policy decision and approval boundary for manual/automatic wiki refresh mutation. | Needs policy/readiness before source edits. |
-| 2 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal first | Local report/CLI V1 exists; MCP/GitHub integration is valuable but security-sensitive. | MCP/GitHub integration threat model, permission model, and smallest safe read-only or local-only expansion. | Needs security/readiness before source edits. |
-| 3 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
-| 4 | Task 6 Additional API-Smoke Route | Readiness Goal first | `/api/processes` proved the separate API-smoke lane, but additional routes need their own stable read-only contract review. | Identify one safe backend-only route or record no additional API-smoke route. | Blocked if route is mutating, auth-sensitive, long-running, or state-unstable. |
-| 5 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
+| 1 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal first | Local report/CLI V1 exists; MCP/GitHub integration is valuable but security-sensitive. | MCP/GitHub integration threat model, permission model, and smallest safe read-only or local-only expansion. | Needs security/readiness before source edits. |
+| 2 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
+| 3 | Task 6 Additional API-Smoke Route | Readiness Goal first | `/api/processes` proved the separate API-smoke lane, but additional routes need their own stable read-only contract review. | Identify one safe backend-only route or record no additional API-smoke route. | Blocked if route is mutating, auth-sensitive, long-running, or state-unstable. |
+| 4 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
 
 Recommended default:
 
-- Start with Task 2 Wiki Mutation / Provider Policy readiness unless MAIN chooses a different priority.
-- Do not mutate wiki output until provider/cost/output ownership and rollback policy are decision-complete.
+- Start with Task 4 PR Impact MCP / GitHub Readiness unless MAIN chooses a different priority.
+- Do not add MCP/GitHub automation until the security and permission model is decision-complete.
 - Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, MCP expansion, and deeper OCaml semantics deferred until the selected task opens that scope.

@@ -32,7 +32,7 @@ Created: 2026-06-05
 | Order | Feature | Research depth | Disposition | Current implementation status |
 | --- | --- | --- | --- | --- |
 | 1 | Auto-Reindexing | `decision-grade completed for first slice` | `local V1 complete` | Approved slice implemented, verified, and snapshotted |
-| 2 | Auto-Updating Code Wiki | `medium completed for first slices` | `local V1 complete` | Core status/dry-run-first planner/runner plus read-only server status endpoint implemented and verified |
+| 2 | Auto-Updating Code Wiki | `medium completed for first slices` | `local V1 complete` | Core status/dry-run-first planner/runner, read-only server status endpoint, and non-secret provider-readiness status implemented and verified |
 | 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
@@ -45,17 +45,80 @@ This section controls the next Goal selection after the completed local V1 tranc
 
 | Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal | Decide whether and how wiki generation may mutate output after freshness events or manual refresh. Cover provider readiness, cost, dry-run, ownership, and rollback. | Expected-vs-actual table, policy matrix, proposed write set, TDD order, and MAIN approval text. | Stop before source edits if provider/cost/output ownership remains ambiguous. |
-| 2 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | Decide whether local PR Impact should expose MCP or GitHub PR ingestion/comments/checks, and under what permission model. | Threat model, token/permission boundary, local-vs-remote input model, fixture plan, and smallest safe expansion. | Stop before source edits if it needs privileged GitHub automation, token-bearing Actions, or unreviewed PR comment/check behavior. |
-| 3 | Task 6 Additional UI Route Fixture | Readiness Goal | Find a next deterministic UI route fixture only if local source proves a backend route has a real frontend consumer and visible assertion surface. | Route-to-UI evidence table and generated-spec policy check. | Stop if the route is backend-only or requires direct API assertions; send it to the API-smoke lane instead. |
-| 4 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route only after `/api/processes` generated API-smoke behavior is reviewed. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
-| 5 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
+| 1 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | Decide whether local PR Impact should expose MCP or GitHub PR ingestion/comments/checks, and under what permission model. | Threat model, token/permission boundary, local-vs-remote input model, fixture plan, and smallest safe expansion. | Stop before source edits if it needs privileged GitHub automation, token-bearing Actions, or unreviewed PR comment/check behavior. |
+| 2 | Task 6 Additional UI Route Fixture | Readiness Goal | Find a next deterministic UI route fixture only if local source proves a backend route has a real frontend consumer and visible assertion surface. | Route-to-UI evidence table and generated-spec policy check. | Stop if the route is backend-only or requires direct API assertions; send it to the API-smoke lane instead. |
+| 3 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route only after `/api/processes` generated API-smoke behavior is reviewed. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
+| 4 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
 
 Default recommendation:
 
-- Continue with `Task 2 Wiki Mutation / Provider Policy` readiness.
-- Do not mutate wiki output until provider/cost/output ownership and rollback policy are decision-complete.
+- Continue with `Task 4 PR Impact MCP / GitHub Readiness`.
+- Do not add MCP/GitHub automation until the security and permission model is decision-complete.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
+### Task 2 Wiki Mutation / Provider Policy Readiness - 2026-06-07T16:35+01:00
+
+Readiness outcome:
+
+- Full wiki mutation remains deferred.
+- The smallest safe next implementation slice is read-only provider-readiness status for `/api/wiki/auto-refresh`.
+- The existing server endpoint currently reports `provider-not-wired-through-server` unconditionally. That is safe, but too coarse for agents/users deciding whether a manual refresh could be prepared.
+- A provider-readiness helper can inspect non-secret configuration shape and environment presence without invoking the wiki generator, spawning local agent CLIs, writing config, exposing API keys, or mutating wiki output.
+
+Expected vs actual:
+
+| V1 expectation | Current local behavior | Readiness conclusion |
+| --- | --- | --- |
+| Keep wiki mutation explicit | `WikiGenerator.run()` creates `wiki/`, writes markdown, `meta.json`, `module_tree.json`, HTML viewer, may delete pages in force/incremental paths, and invokes LLM/local CLI providers | Do not wire automatic or server-side mutation in this slice |
+| Keep server endpoint read-only | `GET /api/wiki/auto-refresh` only plans status and never calls `runWikiAutoRefresh` or `WikiGenerator` | Preserve this invariant |
+| Report graph freshness | Endpoint uses `checkStalenessAsync(entry.path, entry.lastCommit)` | Preserve |
+| Report wiki metadata | Endpoint uses `readWikiAutoRefreshMeta(entry.storagePath)` | Preserve |
+| Report provider readiness | Endpoint hard-codes `ready: false`, `reason: provider-not-wired-through-server` | Replace with non-secret readiness planning |
+| Avoid credential exposure | CLI config can contain `apiKey`, env may contain keys | Provider status must expose only provider/source/reason, never key values or base URLs with credentials |
+| Avoid unattended local CLI execution | Local providers can invoke Cursor/Claude/Codex CLIs; Codex uses `codex exec --sandbox read-only` | Do not spawn CLI processes from the status endpoint in this slice |
+
+Proposed write set:
+
+| File | Purpose |
+| --- | --- |
+| `gitnexus/src/core/wiki/provider-readiness.ts` | Pure provider-readiness policy over CLI config and env shape |
+| `gitnexus/src/server/api.ts` | Use the provider-readiness helper in the read-only status endpoint |
+| `gitnexus/test/unit/wiki-provider-readiness.test.ts` | Focused readiness policy tests, including no-secret output |
+| `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts` | Update wiring assertion away from hard-coded provider-not-wired status |
+
+Out of scope:
+
+- Calling `WikiGenerator`.
+- Calling `runWikiAutoRefresh`.
+- Creating, deleting, or overwriting wiki output.
+- Saving or modifying `~/.gitnexus/config.json`.
+- Running Cursor, Claude, or Codex CLI subprocesses from the server endpoint.
+- Publishing Gists.
+- Adding event-triggered reindex-to-wiki mutation.
+- Adding new dependencies.
+
+TDD order:
+
+1. Red test for HTTP provider readiness from saved config or env without leaking key material.
+2. Red test for local CLI providers being reported as configured-but-not-server-ready without subprocess detection.
+3. Red wiring test that `/api/wiki/auto-refresh` uses the readiness helper and remains read-only.
+4. Implement the pure helper and endpoint wiring.
+5. Run focused wiki provider/status tests, adjacent wiki auto-refresh tests, build, and `git diff --check`.
+
+Implementation approval boundary:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 2 Wiki Provider-Readiness Status
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: keep `/api/wiki/auto-refresh` read-only, but replace its hard-coded provider-not-wired status with a non-secret provider-readiness helper that inspects saved CLI config and environment shape. Do not run providers or mutate output.
+Approved write set:
+- gitnexus/src/core/wiki/provider-readiness.ts
+- gitnexus/src/server/api.ts
+- gitnexus/test/unit/wiki-provider-readiness.test.ts
+- gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts
+Constraints: no generated wiki output mutation, no `WikiGenerator` call, no `runWikiAutoRefresh` call, no local agent CLI subprocess from the status endpoint, no config writes, no secrets in response/status, no new dependency, and TDD required.
+```
 
 ## Historical Feature Task Briefs
 

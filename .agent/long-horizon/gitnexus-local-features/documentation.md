@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 generated API-smoke lane implemented for `/api/processes`; next selected task is Task 2 Wiki Mutation / Provider Policy readiness
+- Mode: Task 2 wiki provider-readiness status implemented; next selected task is Task 4 PR Impact MCP / GitHub Readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, Task 6 generated API-smoke specs for `/api/processes`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, Task 6 generated API-smoke specs for `/api/processes`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
 - Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -92,6 +92,82 @@ Current state:
 - 2026-06-07: Generated API-smoke specs readiness completed for backend routes without a current frontend/UI consumer. Recommendation: if Task 6 continues from the `/api/processes` no-slice decision, do it as a separate backend API-smoke lane rather than broadening the web-first Playwright UI renderer.
 - 2026-06-07: Next-task map recorded in `plans.md` and `feature-map.md`. At that time, the default recommendation was Task 6 Generated API-Smoke Specs, starting with `/api/processes` only. This was superseded by the 2026-06-07T16:20+01:00 implementation checkpoint below.
 - 2026-06-07T16:20+01:00: Task 6 Generated API-Smoke Specs implemented with TDD. The new lane emits direct Playwright APIRequestContext smoke specs for `/api/processes` only, behind explicit `gitnexus e2e-test-plan --write-api-smoke-specs`, with a separate output path from browser UI generated specs. Next selected task is Task 2 Wiki Mutation / Provider Policy readiness.
+- 2026-06-07T16:35+01:00: Task 2 Wiki Mutation / Provider Policy readiness selected the smallest safe next slice: read-only provider-readiness status for `/api/wiki/auto-refresh`. Full wiki output mutation remains deferred.
+- 2026-06-07T16:45+01:00: Task 2 Wiki Provider-Readiness Status implemented with TDD. `/api/wiki/auto-refresh` remains read-only but now uses a non-secret readiness helper over saved CLI config and environment shape. Wiki output mutation, provider execution, local CLI subprocesses from the endpoint, and config writes remain deferred.
+
+### 2026-06-07T16:35+01:00 - Task 2 Wiki Mutation / Provider Policy Readiness
+
+Goal:
+
+- Decide whether the next Task 2 work should mutate wiki output or first improve read-only provider status.
+
+Evidence:
+
+- `gitnexus/src/core/wiki/auto-refresh.ts` already has a dry-run-first planner and only runs a generator when `mutateOutput: true` and prerequisites are satisfied.
+- `gitnexus/src/server/api.ts` exposes `GET /api/wiki/auto-refresh` as status-only and currently hard-codes `provider-not-wired-through-server`.
+- `gitnexus/src/core/wiki/generator.ts` mutates `wiki/` output, writes metadata and HTML viewer files, deletes markdown pages in force/incremental paths, and invokes LLM/local CLI providers.
+- `gitnexus/src/cli/wiki.ts` can save provider config and prompt interactively; automation should not call this path from the server.
+- `gitnexus/src/core/wiki/local-cli-client.ts` can spawn Claude/Codex CLI processes; Codex is launched read-only, but spawning providers from a status endpoint is still outside a read-only status slice.
+- `gitnexus/src/storage/repo-manager.ts` stores CLI provider config in `~/.gitnexus/config.json`, which may include API keys.
+
+Decision:
+
+- Do not implement wiki mutation yet.
+- Implement only provider-readiness status for `/api/wiki/auto-refresh`, if continuing source work.
+- Provider readiness must be non-secret and must not run providers, save config, call `WikiGenerator`, or mutate generated wiki output.
+
+Approved local slice under standing conditional authorization:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 2 Wiki Provider-Readiness Status
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: keep `/api/wiki/auto-refresh` read-only, but replace its hard-coded provider-not-wired status with a non-secret provider-readiness helper that inspects saved CLI config and environment shape. Do not run providers or mutate output.
+Approved write set:
+- gitnexus/src/core/wiki/provider-readiness.ts
+- gitnexus/src/server/api.ts
+- gitnexus/test/unit/wiki-provider-readiness.test.ts
+- gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts
+Constraints: no generated wiki output mutation, no `WikiGenerator` call, no `runWikiAutoRefresh` call, no local agent CLI subprocess from the status endpoint, no config writes, no secrets in response/status, no new dependency, and TDD required.
+```
+
+Implementation checkpoint:
+
+- Added `gitnexus/src/core/wiki/provider-readiness.ts`.
+- Updated `gitnexus/src/server/api.ts` so `/api/wiki/auto-refresh` uses `planWikiProviderReadiness({ config: await loadCLIConfig() })`.
+- Added `gitnexus/test/unit/wiki-provider-readiness.test.ts`.
+- Updated `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts`.
+
+Scope kept:
+
+- Status-only endpoint.
+- No `WikiGenerator`.
+- No `runWikiAutoRefresh`.
+- No local CLI provider subprocess from the endpoint.
+- No config writes.
+- No secret/base URL exposure in provider status.
+
+Verification:
+
+```powershell
+npm test -- --run test/unit/wiki-provider-readiness.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts test/unit/wiki-auto-refresh.test.ts
+npm test -- --run test/unit/wiki-provider-readiness.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-flags.test.ts test/unit/wiki-llm-client.test.ts test/unit/local-cli-subprocess.test.ts test/unit/cli-index-help.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused wiki provider/status tests passed: 3 files, 14 tests.
+- Adjacent wiki/provider/help tests passed: 7 files, 150 tests.
+- Build passed.
+- `git diff --check` passed.
+
+Next selected task:
+
+- Task 4 PR Impact MCP / GitHub Readiness.
+- Goal shape: readiness/research first, with security and permission model before source edits.
+- Stop before source edits if it requires token-bearing GitHub automation, PR comments/checks, remote PR ingestion, or MCP surface expansion without a reviewed permission boundary.
 
 ### 2026-06-07T16:20+01:00 - Task 6 Generated API-Smoke Specs Implementation
 
@@ -487,7 +563,7 @@ Implemented:
 - The endpoint resolves an optional repo parameter with the existing `requestedRepo(req)` / `resolveRepo(...)` path.
 - It checks graph freshness with `checkStalenessAsync(entry.path, entry.lastCommit)`.
 - It reads existing wiki metadata with `readWikiAutoRefreshMeta(entry.storagePath)`.
-- It calls `planWikiAutoRefresh(...)` with `dryRun: true`, `mutateOutput: false`, and provider readiness set to `false` with reason `provider-not-wired-through-server`.
+- It calls `planWikiAutoRefresh(...)` with `dryRun: true`, `mutateOutput: false`, and read-only provider status from `planWikiProviderReadiness(...)`.
 - The response includes repo identity plus the planner result shape.
 
 Not implemented:

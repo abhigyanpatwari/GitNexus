@@ -13,7 +13,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import { loadCLIConfig, loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -57,6 +57,7 @@ import { startPendingRerun } from './reindex-follow-up.js';
 import { readReindexWatcherConfigFromEnv } from './reindex-watcher.js';
 import { runAutoReindexSweep } from './reindex-auto-sweep.js';
 import { planWikiAutoRefresh, readWikiAutoRefreshMeta } from '../core/wiki/auto-refresh.js';
+import { planWikiProviderReadiness } from '../core/wiki/provider-readiness.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -1019,6 +1020,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       const staleness = await checkStalenessAsync(entry.path, entry.lastCommit);
       const wikiMeta = await readWikiAutoRefreshMeta(entry.storagePath);
+      const provider = planWikiProviderReadiness({
+        config: await loadCLIConfig(),
+      });
       const plan = planWikiAutoRefresh({
         graphFreshness: {
           isFresh: !staleness.isStale,
@@ -1027,11 +1031,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           reason: staleness.hint,
         },
         wikiMeta,
-        provider: {
-          ready: false,
-          source: 'server-api',
-          reason: 'provider-not-wired-through-server',
-        },
+        provider,
         dryRun: true,
         mutateOutput: false,
       });
