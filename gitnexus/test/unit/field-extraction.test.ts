@@ -1244,6 +1244,44 @@ describeKotlin('GenericFieldExtractor — Kotlin (F52 companion)', () => {
     const fieldNames = result!.fields.map((f) => f.name);
     expect(fieldNames).toEqual(['onlyField']); // function excluded, no duplication
   });
+
+  // CF4 (#1919 review): guard the new `isInsideKotlinCompanion` walk against
+  // false-positives — a plain (non-companion) class property must be isStatic=false.
+  it('reports a plain non-companion class property as isStatic=false (CF4)', () => {
+    const classNode = firstNodeOfType(
+      `class C {
+  val x: Int = 1
+}`,
+      'class_declaration',
+    );
+    expect(extractor.isTypeDeclaration(classNode)).toBe(true);
+    const result = extractor.extract(classNode, mockContext);
+    expect(result).not.toBeNull();
+    const x = result!.fields.find((f) => f.name === 'x');
+    expect(x).toBeDefined();
+    expect(x!.isStatic).toBe(false);
+  });
+
+  /** Parse `src` and return the first node of the given type (depth-first). */
+  function firstNodeOfType(src: string, type: string): Parser.SyntaxNode {
+    parser.setLanguage(Kotlin as Parser.Language);
+    const tree = parser.parse(src);
+    let found: Parser.SyntaxNode | undefined;
+    const walk = (n: Parser.SyntaxNode) => {
+      if (found) return;
+      if (n.type === type) {
+        found = n;
+        return;
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error(`no ${type} found`);
+    return found;
+  }
 });
 
 // ---------------------------------------------------------------------------
