@@ -423,6 +423,16 @@ Three env vars expose the pool's resilience layers (respawn budget, cumulative-t
 | `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                   |
 | `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool. |
 
+### Graph cleanup tuning
+
+After scope resolution, analyze prunes inert block-local value symbols (a function-local `const`/`let`/`var` that ends up with only its structural `File→DEFINES` edge) to keep the graph focused on cross-symbol relationships. Module/file-scope symbols, class members, and any local with a real edge are always kept.
+
+| Variable                             | Default | Effect                                                                                                  |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS`  | unset   | Set to `1`/`true` to keep inert block-local value symbols instead of pruning them.                      |
+
+Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
+
 ## Privacy
 
 - All processing happens locally on your machine

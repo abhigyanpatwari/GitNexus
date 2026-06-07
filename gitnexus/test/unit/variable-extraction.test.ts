@@ -686,6 +686,29 @@ describe('VariableExtractor — block-scoped declarations', () => {
     expect(info!.scope).toBe('block');
   });
 
+  it('Python: class-body attribute is not block-scoped (class body is a `block` node)', () => {
+    // Regression: tree-sitter-python models the class body as a `block` node, the
+    // same node type as a function body. A class attribute must NOT be classified
+    // as a function-local block, or the pruner would silently drop it.
+    const extractor = createVariableExtractor(pythonVariableConfig);
+    const ctx: VariableExtractorContext = {
+      filePath: 'test.py',
+      language: SupportedLanguages.Python,
+    };
+    parser.setLanguage(Python);
+    const tree = parser.parse('class Settings:\n    MAX_SIZE = 100');
+    // module > class_definition > block > expression_statement > assignment
+    const classDef = tree.rootNode.namedChildren.find((c) => c.type === 'class_definition')!;
+    const body = classDef.childForFieldName('body')!;
+    const exprStmt = body.namedChildren.find((c) => c.type === 'expression_statement');
+    expect(exprStmt).toBeDefined();
+    const info = extractor.extract(exprStmt!, ctx);
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe('MAX_SIZE');
+    expect(info!.scope).not.toBe('block');
+    expect(info!.scope).toBe('module');
+  });
+
   it('Python: rejects non-assignment expression statements (e.g. function calls)', () => {
     const extractor = createVariableExtractor(pythonVariableConfig);
     const ctx: VariableExtractorContext = {

@@ -77,11 +77,11 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 ## Pipeline Phase DAG
 
-12 phases defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output.
+14 phases defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output.
 
 ```
 scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
-  → crossFile → mro → communities → processes
+  → crossFile → scopeResolution → pruneLocalSymbols → mro → communities → processes
 ```
 
 | Phase | File | Deps | Output |
@@ -95,9 +95,11 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 | `tools` | `tools.ts` | `parse` | Tool nodes + HANDLES_TOOL edges |
 | `orm` | `orm.ts` | `parse` | QUERIES edges (Prisma, Supabase) |
 | `crossFile` | `cross-file.ts` + `cross-file-impl.ts` | `parse`, `routes`, `tools`, `orm` | Cross-file type propagation in topological import order |
-| `mro` | `mro.ts` | `crossFile`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
-| `communities` | `communities.ts` | `mro`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
-| `processes` | `processes.ts` | `communities`, `routes`, `tools`, `structure` | Process nodes + STEP_IN_PROCESS edges |
+| `scopeResolution` | `scope-resolution/pipeline/phase.ts` | `parse`, `crossFile`, `structure` | Binding/reference + inheritance edges; disposes BindingAccumulator |
+| `pruneLocalSymbols` | `prune-local-symbols.ts` | `scopeResolution` | Drops inert block-local `Const`/`Variable`/`Static` nodes (only a `File→DEFINES` edge) post-resolution |
+| `mro` | `mro.ts` | `crossFile`, `scopeResolution`, `pruneLocalSymbols`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
+| `communities` | `communities.ts` | `mro`, `pruneLocalSymbols`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
+| `processes` | `processes.ts` | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges |
 
 **Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `orm-extraction.ts` (sequential ORM fallback), `types.ts`, `runner.ts`, `index.ts`.
 
@@ -119,7 +121,8 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 - **Single graph accumulator** — all phases mutate the same `KnowledgeGraph` in `ctx`; the graph is the primary output.
 - **Typed phase access** — `getPhaseOutput<T>(deps, 'name')` for type-safe upstream results.
 - **Binding accumulator lifecycle** — created in `parse`, disposed by `crossFile` (in `finally`). No other phase should take ownership.
-- **Skippable phases** — `skipGraphPhases` omits MRO/communities/processes (faster tests). `skipWorkers` forces sequential parsing.
+- **Skippable phases** — `skipGraphPhases` omits MRO/communities/processes (faster tests); `pruneLocalSymbols` still runs (it is graph cleanup, not analysis). `skipWorkers` forces sequential parsing.
+- **Local-symbol pruning** — `pruneLocalSymbols` removes inert block-local value symbols after scope resolution has consumed them. Opt out per-call with `PipelineOptions.keepLocalValueSymbols` or globally with the `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` env var.
 
 ### How to add a new phase
 
