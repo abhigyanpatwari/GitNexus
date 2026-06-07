@@ -117,6 +117,26 @@ const KOTLIN_SCOPE_QUERY = `
   (function_value_parameters)
   [(user_type) (nullable_type) (function_type)] @type-binding.type) @type-binding.return
 
+;; References — callable references ("::method", "Type::new", "obj::m") — F47.
+;; A "callable_reference" references a function/constructor as a value (no
+;; call_suffix), so the registry-primary call path never saw it. Real-parse
+;; (issue #1919) shows the canonical shape inside a function body is:
+;;   "::topLevelFn"   -> (callable_reference :: (simple_identifier))   member only
+;;   "String::length" -> (callable_reference (type_identifier) :: (simple_identifier))
+;;   "obj::method"    -> (callable_reference (type_identifier) :: (simple_identifier))
+;;   "Type::new"      -> (callable_reference (type_identifier) :: (simple_identifier))
+;; The receiver (real type OR object) is always a "type_identifier"; the
+;; referenced member is the LAST "simple_identifier". One rule with an
+;; optional receiver and an end-anchored member covers all four forms with
+;; exactly one match per callable_reference (no sibling-branch double-match).
+;; (NOTE: a qualified "A.B::m" parses as a nested navigation_expression, not a
+;; callable_reference, and is already captured by the read.member rule below.)
+;; emitKotlinScopeCaptures rewrites this into a free/member call reference.
+(callable_reference
+  (type_identifier)? @reference.receiver
+  (simple_identifier) @reference.name
+  .) @reference.callable
+
 ;; References — direct calls / constructor syntax
 (call_expression
   (simple_identifier) @reference.name) @reference.call.free

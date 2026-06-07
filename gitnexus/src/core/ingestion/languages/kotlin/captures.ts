@@ -87,6 +87,40 @@ export function emitKotlinScopeCaptures(
       }
     }
 
+    // Callable references (`::method`, `Type::new`, `obj::m`) — F47 (#1919).
+    // The query captures the referenced member as `@reference.name`, an
+    // optional receiver type as `@reference.receiver`, and the whole node as
+    // `@reference.callable`. Rewrite into a call reference so it participates
+    // in call-graph resolution: a bare `::member` resolves as a free call;
+    // a `Receiver::member` resolves as a member call against the receiver
+    // type. The function/constructor is referenced (not invoked), so no
+    // arity/argument metadata is attached.
+    if (grouped['@reference.callable'] !== undefined) {
+      const nameCap = grouped['@reference.name'];
+      const callableNode = groupedNodes['@reference.callable'];
+      if (nameCap !== undefined && callableNode !== undefined) {
+        const receiverCap = grouped['@reference.receiver'];
+        // The anchor Capture must carry the call-form tag as its `name` —
+        // the scope-extractor reads `Capture.name` (not the map key) to
+        // classify the reference kind, so re-wrap via nodeToCapture rather
+        // than reusing the `@reference.callable`-named Capture (whose head
+        // `callable` resolves to no ReferenceKind and silently drops it).
+        if (receiverCap !== undefined) {
+          out.push({
+            '@reference.call.member': nodeToCapture('@reference.call.member', callableNode),
+            '@reference.name': nameCap,
+            '@reference.receiver': receiverCap,
+          });
+        } else {
+          out.push({
+            '@reference.call.free': nodeToCapture('@reference.call.free', callableNode),
+            '@reference.name': nameCap,
+          });
+        }
+      }
+      continue;
+    }
+
     if (
       grouped['@reference.call.free'] !== undefined &&
       grouped['@reference.receiver'] !== undefined
