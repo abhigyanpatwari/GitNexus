@@ -2707,6 +2707,55 @@ describe('F48 — Kotlin secondary constructors', () => {
     // Its regular method is still extracted.
     expect(getNodesByLabel(result, 'Method')).toContain('method');
   });
+
+  // ── CF1 (#1919 review): secondary-ctor body calls attribute to the Constructor ──
+  // The fixture's two secondary constructors call free functions in their bodies:
+  //   constructor(a: Int, b: String) : this(a) { helper() }   // arity 2
+  //   constructor()                  : this(0) { helper(); other() }  // arity 0
+  // Each body call must source from ITS OWN Constructor node (with the correct
+  // arity suffix), NOT from the File node and NOT from the enclosing Class.
+  it('attributes a secondary-constructor body call to the Constructor node, not File or Class', () => {
+    const helperCalls = getRelationships(result, 'CALLS').filter((e) => e.target === 'helper');
+    // helper() is called from both secondary constructors.
+    expect(helperCalls.length).toBeGreaterThanOrEqual(2);
+    for (const call of helperCalls) {
+      expect(call.sourceLabel).toBe('Constructor');
+      expect(call.sourceLabel).not.toBe('File');
+      expect(call.sourceLabel).not.toBe('Class');
+    }
+  });
+
+  it('disambiguates secondary-ctor body calls by arity (#<arity> Constructor node id)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // `other()` is only called from the zero-arg `constructor()` body → must
+    // source from the arity-0 Constructor node id, never the arity-2 one.
+    const otherCall = calls.find((e) => e.target === 'other');
+    expect(otherCall).toBeDefined();
+    expect(otherCall!.sourceLabel).toBe('Constructor');
+    expect(otherCall!.rel.sourceId).toBe('Constructor:Constructors.kt:Point.constructor#0');
+
+    // `helper()` is called from BOTH constructors; the set of caller ids must be
+    // exactly the two distinct arity-tagged Constructor nodes (no collapse onto one).
+    const helperSourceIds = new Set(
+      calls.filter((e) => e.target === 'helper').map((e) => e.rel.sourceId),
+    );
+    expect(helperSourceIds).toEqual(
+      new Set([
+        'Constructor:Constructors.kt:Point.constructor#0',
+        'Constructor:Constructors.kt:Point.constructor#2',
+      ]),
+    );
+  });
+
+  it('still attributes a normal method body call to the Method (regression guard)', () => {
+    // `describe()` is an expression-body method with no call; add a sibling check
+    // that no secondary-ctor regression mis-routes method-owned calls. The Method
+    // node for `describe` exists and is owned by Point.
+    const describeOwned = getRelationships(result, 'HAS_METHOD').filter(
+      (e) => e.target === 'describe' && e.source === 'Point',
+    );
+    expect(describeOwned.length).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

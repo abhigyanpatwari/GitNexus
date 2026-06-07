@@ -9,6 +9,16 @@ const KOTLIN_SCOPE_QUERY = `
 (companion_object) @scope.class
 (function_declaration) @scope.function
 
+;; Secondary-constructor body scope (issue #1919 review CF1). A
+;; secondary constructor's "constructor(...) { ... }" body executes statements
+;; just like a method body, so it must be its OWN Function scope — otherwise a
+;; call inside the body resolves its caller anchor up to the enclosing Class
+;; scope (the class's Class def), mis-attributing the CALLS edge to the class
+;; rather than the Constructor. The matching @declaration.constructor is
+;; synthesized in captures.ts (synthesizeKotlinSecondaryConstructorDeclarations)
+;; so this scope owns a Constructor def keyed to the structure-phase node id.
+(secondary_constructor) @scope.function
+
 ;; Companion-object marker (issue #1756 / U4). Side-channel capture that
 ;; lets populateCompanionMembersOnEnclosingClass distinguish a companion
 ;; Class scope from a regular Class scope without inspecting ownedDefs.

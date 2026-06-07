@@ -39,6 +39,7 @@ export function emitKotlinScopeCaptures(
   out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
   out.push(...synthesizeKotlinLambdaBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeKotlinSecondaryConstructorDeclarations(tree.rootNode));
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
@@ -283,6 +284,100 @@ function synthesizeKotlinInheritanceReferences(rootNode: SyntaxNode): CaptureMat
         '@reference.name': nodeToCapture('@reference.name', nameNode),
       });
     }
+  }
+  return out;
+}
+
+/**
+ * The enclosing type name for a node nested in a class/object/companion body.
+ * Walks up to the first `class_declaration` / `object_declaration` /
+ * `companion_object` ancestor and returns its `type_identifier` name node.
+ * Used to qualify a secondary-constructor declaration as `<ClassName>.constructor`.
+ */
+function kotlinEnclosingTypeNameNode(node: SyntaxNode): SyntaxNode | null {
+  for (let cur: SyntaxNode | null = node.parent; cur !== null; cur = cur.parent) {
+    if (
+      cur.type === 'class_declaration' ||
+      cur.type === 'object_declaration' ||
+      cur.type === 'companion_object'
+    ) {
+      const nameNode = cur.namedChildren.find((c) => c.type === 'type_identifier');
+      return nameNode ?? null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Synthesize a `@declaration.constructor` capture for each Kotlin
+ * `secondary_constructor` (issue #1919 review CF1). The structure phase already
+ * materializes a `Constructor` graph node (`Constructor:file:Class.constructor#<arity>`),
+ * but the registry-primary scope-resolution path had no Constructor *def* in the
+ * scope tree — so a call inside the constructor body resolved its caller anchor
+ * up to the enclosing Class def, mis-attributing the CALLS edge to the class.
+ *
+ * Paired with `(secondary_constructor) @scope.function` in query.ts: that rule
+ * makes the constructor body its own Function scope; this declaration places a
+ * Constructor def in that scope so `pickCallerCallableDef` anchors calls on the
+ * Constructor. The def is keyed to match the structure-phase node id:
+ *   - `@declaration.qualified_name` = `<ClassName>.constructor` so the bridge's
+ *     qualified key (`<q>:file::Constructor::Class.constructor`) hits the node.
+ *   - `@declaration.parameter-types` so two same-name secondary constructors are
+ *     disambiguated by the bridge's parameter-types key (`~Int,Int`), matching
+ *     the `#<arity>`-suffixed structure node for the overload with the same
+ *     parameter shape. (The zero-arg overload carries no parameter types and
+ *     resolves via the qualified/simple key to the `#0` node.)
+ *
+ * The anchor spans the whole `secondary_constructor` node — same range as the
+ * `@scope.function` it pairs with — so the def is owned by that Function scope
+ * and the constructor name auto-hoists to the enclosing class scope (exactly the
+ * binding shape a normal method declaration produces).
+ */
+function synthesizeKotlinSecondaryConstructorDeclarations(rootNode: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  for (const ctorNode of descendantsOfType(rootNode, 'secondary_constructor')) {
+    const keyword = ctorNode.namedChildren.find((c) => c.type === 'constructor');
+    // The `constructor` keyword is an anonymous token; fall back to the node
+    // itself for the name capture position when the named-child lookup misses.
+    const nameAnchor = keyword ?? ctorNode;
+    const classNameNode = kotlinEnclosingTypeNameNode(ctorNode);
+    const qualifiedName =
+      classNameNode !== null ? `${classNameNode.text}.constructor` : 'constructor';
+
+    const match: Record<string, Capture> = {
+      '@declaration.constructor': nodeToCapture('@declaration.constructor', ctorNode),
+      '@declaration.name': syntheticCapture('@declaration.name', nameAnchor, 'constructor'),
+      '@declaration.qualified_name': syntheticCapture(
+        '@declaration.qualified_name',
+        ctorNode,
+        qualifiedName,
+      ),
+    };
+
+    const arity = computeKotlinArityMetadata(ctorNode);
+    if (arity.parameterCount !== undefined) {
+      match['@declaration.parameter-count'] = syntheticCapture(
+        '@declaration.parameter-count',
+        ctorNode,
+        String(arity.parameterCount),
+      );
+    }
+    if (arity.requiredParameterCount !== undefined) {
+      match['@declaration.required-parameter-count'] = syntheticCapture(
+        '@declaration.required-parameter-count',
+        ctorNode,
+        String(arity.requiredParameterCount),
+      );
+    }
+    if (arity.parameterTypes !== undefined) {
+      match['@declaration.parameter-types'] = syntheticCapture(
+        '@declaration.parameter-types',
+        ctorNode,
+        JSON.stringify(arity.parameterTypes),
+      );
+    }
+
+    out.push(match);
   }
   return out;
 }

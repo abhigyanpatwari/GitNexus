@@ -109,6 +109,20 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
         // Each overload is unique — set unconditionally.
         if (!lookup.has(pKey)) lookup.set(pKey, node.id);
       }
+      // Arity-disambiguating key: include the parameter count so two same-name
+      // overloads of DIFFERENT arity route to distinct graph nodes even when the
+      // shorter overload carries no parameter types (e.g. a Kotlin zero-arg
+      // secondary constructor vs a 2-arg one — both share the qualified key, whose
+      // first-write-wins assignment is source-order-dependent). The structure-phase
+      // node id encodes `#<arity>`; this mirrors it in the lookup keyspace so
+      // resolveDefGraphId can match by the def's own parameterCount. Same-arity
+      // overloads collapse onto one arity key (first-write-wins) — identical to the
+      // pre-existing qualified-key behavior, so no regression there.
+      const pCount = (props as { parameterCount?: number }).parameterCount;
+      if (pCount !== undefined && isOverloadableCallable(node.label)) {
+        const aKey = qualifiedKey(props.filePath, node.label, `${keyQualified}#${pCount}`);
+        if (!lookup.has(aKey)) lookup.set(aKey, node.id);
+      }
       const pClasses = (props as { parameterTypeClasses?: readonly ParameterTypeClass[] })
         .parameterTypeClasses;
       const shapeTag = parameterShapeIdTag(pTypes, pClasses);
