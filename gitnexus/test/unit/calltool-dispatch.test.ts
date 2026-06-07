@@ -1502,19 +1502,18 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     expect(await listedPaths()).toEqual(allPaths);
   });
 
-  it('evicts the pooled connection when a bare id is reassigned to a different clone on refresh (#2054)', async () => {
-    // Two clones of one repo (name "dup"). With path-sorted assignment (#2067)
-    // the bare "dup" id goes to the lowest-sorting resolved path, so the id is
-    // reassigned by a PATH-SET change — adding a clone that sorts before the
-    // current owner — not by a registry reorder. Because the LadybugDB pool
-    // keys connections by id and ignores dbPath on reuse, a reassigned id MUST
-    // drop its stale pooled connection (#2054 / #2067).
+  it('gives two same-name clones independent pools and never evicts on id reassignment (#2067)', async () => {
+    // The pool (and the init/staleness/reinit maps) are keyed by the immutable
+    // lbugPath, so two clones that transiently share a name-derived id get
+    // SEPARATE pool entries — neither can be served the other's database — and a
+    // pure id reassignment (path still registered) needs no pool eviction.
     const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-remap-'));
     duplicateFixtureDirs.push(parent);
     const a = path.join(parent, 'A'); // 'A' sorts before 'B'
     const b = path.join(parent, 'B');
+    const lbug = (dir: string) => path.join(dir, '.gitnexus', 'lbug');
     const mk = (dir: string) => {
-      mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+      mkdirSync(lbug(dir), { recursive: true });
       writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
       return {
         ...MOCK_REPO_ENTRY,
@@ -1526,33 +1525,40 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     const entryA = mk(a);
     const entryB = mk(b);
 
-    // Start with only B → B owns the bare "dup" id.
+    // Start with only B → B owns the bare "dup" id; resolve it.
     (listRegisteredRepos as any).mockResolvedValue([entryB]);
     await backend.init();
-    expect((await backend.resolveRepo(b)).id).toBe('dup'); // B owns the bare id
+    const handleB = await backend.resolveRepo(b);
+    expect(handleB.id).toBe('dup');
 
     // Add A (sorts before B) → the bare "dup" id is reassigned to A.
     (closeLbug as any).mockClear();
     (listRegisteredRepos as any).mockResolvedValue([entryB, entryA]);
     await backend.callTool('list_repos', {});
+    const handleA = await backend.resolveRepo(a);
+    expect(handleA.id).toBe('dup'); // A now owns the bare id
+    expect((await backend.resolveRepo(b)).id).not.toBe('dup'); // B moved to a suffix
 
-    expect((await backend.resolveRepo(a)).id).toBe('dup'); // A now owns it
-    expect((await backend.resolveRepo(b)).repoPath).toBe(b); // B still present, not dropped
-    expect((await backend.resolveRepo(b)).id).not.toBe('dup'); // B moved off the bare id
-    // The stale pooled connection for the reassigned id was force-closed, exactly once.
-    expect(closeLbug).toHaveBeenCalledWith('dup');
-    expect(closeLbug).toHaveBeenCalledTimes(1);
+    // Reassigning the id evicts nothing — both paths are still registered.
+    expect(closeLbug).not.toHaveBeenCalled();
+
+    // Each clone initializes its OWN pool entry, keyed by its own lbugPath — no
+    // cross-serving even though they shared the "dup" id.
+    (initLbug as any).mockClear();
+    await (backend as any).ensureInitialized(handleA);
+    await (backend as any).ensureInitialized(handleB);
+    expect(initLbug).toHaveBeenCalledWith(lbug(a), lbug(a));
+    expect(initLbug).toHaveBeenCalledWith(lbug(b), lbug(b));
   });
 
-  it('evicts the pooled connection when a repo id vanishes from the registry (#2054)', async () => {
-    // When an id disappears entirely, its pooled LadybugDB connection must be
-    // closed too — otherwise a different clone that later re-acquires the same
-    // id would be served the vanished clone's database (the pool keys by id and
-    // ignores dbPath on reuse).
+  it('releases the pooled connection when a repo path leaves the registry (#2054)', async () => {
+    // When a clone's path is unregistered its pooled LadybugDB connection must
+    // be released. The pool is keyed by lbugPath, so eviction targets the path.
     const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-vanish-'));
     duplicateFixtureDirs.push(parent);
     const dir = path.join(parent, 'solo');
-    mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+    const lbugPath = path.join(dir, '.gitnexus', 'lbug');
+    mkdirSync(lbugPath, { recursive: true });
     writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
     const entry = {
       ...MOCK_REPO_ENTRY,
@@ -1565,12 +1571,12 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     await backend.init();
     expect((await backend.resolveRepo(dir)).id).toBe('solo');
 
-    // Registry now empty → the "solo" id vanishes on refresh.
+    // Registry now empty → the clone's path vanishes on refresh.
     (closeLbug as any).mockClear();
     (listRegisteredRepos as any).mockResolvedValue([]);
     await backend.callTool('list_repos', {});
 
-    expect(closeLbug).toHaveBeenCalledWith('solo');
+    expect(closeLbug).toHaveBeenCalledWith(lbugPath);
   });
 
   it('initializes the resolved clone, not a clone the id was remapped to mid-call (#2067)', async () => {
@@ -1607,11 +1613,13 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     await backend.callTool('list_repos', {});
     expect((await backend.resolveRepo(a)).id).toBe('dup'); // id remapped to A
 
-    // Initialize with the handle resolved BEFORE the remap → must open B's path.
+    // Initialize with the handle resolved BEFORE the remap → must open B's path
+    // (pool keyed by B's lbugPath), never A's.
     (initLbug as any).mockClear();
     await (backend as any).ensureInitialized(resolvedB);
-    expect(initLbug).toHaveBeenCalledWith('dup', path.join(b, '.gitnexus', 'lbug'));
-    expect(initLbug).not.toHaveBeenCalledWith('dup', path.join(a, '.gitnexus', 'lbug'));
+    const lbug = (dir: string) => path.join(dir, '.gitnexus', 'lbug');
+    expect(initLbug).toHaveBeenCalledWith(lbug(b), lbug(b));
+    expect(initLbug).not.toHaveBeenCalledWith(lbug(a), lbug(a));
   });
 
   it('handles more than four sibling clones — all listed once and resolvable (#2067)', async () => {

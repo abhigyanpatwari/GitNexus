@@ -459,26 +459,20 @@ export class LocalBackend {
       });
     }
 
-    // Evict per-id runtime state for ids that disappeared OR now point at a
-    // different on-disk clone. The pool keys LadybugDB connections by id and
-    // reuses them regardless of dbPath (see pool-adapter.initLbug), so a moved
-    // OR removed id must drop its pooled connection and any in-flight reinit —
-    // otherwise the next ensureInitialized() (for a moved id) or a later repo
-    // that re-acquires the id (for a removed one) would be served the previous
-    // clone's database (#2054).
-    for (const [id, prev] of this.repos) {
-      const nextResolved = assigned.get(id);
-      const moved = nextResolved === undefined || nextResolved !== path.resolve(prev.repoPath);
-      if (!moved) continue;
-      this.initializedRepos.delete(id);
-      this.lastStalenessCheck.delete(id);
-      // Drop a stale staleness-reinit so it can't re-open the old clone's pool
-      // under this id after the swap below.
-      this.reinitPromises.delete(id);
-      // closeOne() (inside closeLbug) deletes the pool entry synchronously, so
-      // the next initLbug(id, …) re-opens against the current path rather than
-      // reusing the orphaned entry.
-      closeLbug(id).catch(() => {});
+    // Prune per-clone pool state for databases that are no longer registered.
+    // The LadybugDB pool and the init/staleness/reinit maps are keyed by the
+    // immutable lbugPath (see ensureInitialized), so a repo id that merely
+    // moves to a different clone needs NO eviction — distinct clones have
+    // distinct lbugPaths and can never share a pool entry, which is what closes
+    // the resolve→query wrong-clone window for good (#2067). Only a path that
+    // dropped out of the registry must release its pooled connection + state.
+    const liveLbugPaths = new Set([...nextRepos.values()].map((h) => h.lbugPath));
+    for (const prev of this.repos.values()) {
+      if (liveLbugPaths.has(prev.lbugPath)) continue;
+      this.initializedRepos.delete(prev.lbugPath);
+      this.lastStalenessCheck.delete(prev.lbugPath);
+      this.reinitPromises.delete(prev.lbugPath);
+      closeLbug(prev.lbugPath).catch(() => {});
     }
 
     this.repos = nextRepos;
@@ -732,26 +726,28 @@ export class LocalBackend {
   /**
    * Ensure the LadybugDB pool is open for the *resolved* repo.
    *
-   * Takes the `RepoHandle` the caller resolved — NOT a bare id — so it
-   * initializes the exact clone that `resolveRepo` returned. Re-deriving the
-   * handle by id here let a concurrent `refreshRepos` remap the (floating) bare
-   * id between resolve and init, opening a different clone's database (#2067).
+   * Takes the `RepoHandle` the caller resolved — NOT a bare id — and keys the
+   * pool (and the init/staleness/reinit maps) by the immutable `lbugPath`. Two
+   * things matter for multi-clone correctness: (1) the handle is the one the
+   * caller resolved, so a concurrent `refreshRepos` can't substitute a different
+   * clone; (2) the pool key is the database path, so distinct clones never share
+   * a pool entry even when their name-derived id transiently collides (#2067).
    */
   private async ensureInitialized(repo: RepoHandle): Promise<void> {
-    const repoId = repo.id;
+    const poolKey = repo.lbugPath;
     // If a reinit is already in progress for this repo, wait for it
-    const pending = this.reinitPromises.get(repoId);
+    const pending = this.reinitPromises.get(poolKey);
     if (pending) return pending;
 
     // Check if the index was rebuilt since we opened the connection (#297).
     // Throttle staleness checks to at most once per 5 seconds per repo to
     // avoid an fs.readFile round-trip on every tool invocation.
-    if (this.initializedRepos.has(repoId) && isLbugReady(repoId)) {
+    if (this.initializedRepos.has(poolKey) && isLbugReady(poolKey)) {
       const now = Date.now();
-      const lastCheck = this.lastStalenessCheck.get(repoId) ?? 0;
+      const lastCheck = this.lastStalenessCheck.get(poolKey) ?? 0;
       if (now - lastCheck < 5000) return; // Checked recently — skip
 
-      this.lastStalenessCheck.set(repoId, now);
+      this.lastStalenessCheck.set(poolKey, now);
       try {
         const metaPath = path.join(repo.storagePath, 'meta.json');
         const metaRaw = await fs.readFile(metaPath, 'utf-8');
@@ -762,16 +758,16 @@ export class LocalBackend {
           // callers both detect staleness and double-close the pool.
           const reinit = (async () => {
             try {
-              await closeLbug(repoId);
-              this.initializedRepos.delete(repoId);
+              await closeLbug(poolKey);
+              this.initializedRepos.delete(poolKey);
               repo.indexedAt = meta.indexedAt;
-              await initLbug(repoId, repo.lbugPath);
-              this.initializedRepos.add(repoId);
+              await initLbug(poolKey, repo.lbugPath);
+              this.initializedRepos.add(poolKey);
             } finally {
-              this.reinitPromises.delete(repoId);
+              this.reinitPromises.delete(poolKey);
             }
           })();
-          this.reinitPromises.set(repoId, reinit);
+          this.reinitPromises.set(poolKey, reinit);
           return reinit;
         } else {
           return; // Pool is current
@@ -782,11 +778,11 @@ export class LocalBackend {
     }
 
     try {
-      await initLbug(repoId, repo.lbugPath);
-      this.initializedRepos.add(repoId);
+      await initLbug(poolKey, repo.lbugPath);
+      this.initializedRepos.add(poolKey);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
-      this.initializedRepos.delete(repoId);
+      this.initializedRepos.delete(poolKey);
       throw err;
     }
   }
@@ -1121,7 +1117,7 @@ export class LocalBackend {
       let processRows: any[] = [];
       try {
         processRows = await executeParameterized(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
@@ -1137,7 +1133,7 @@ export class LocalBackend {
       let module: string | undefined;
       try {
         const cohesionRows = await executeParameterized(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
           RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
@@ -1158,7 +1154,7 @@ export class LocalBackend {
       if (includeContent) {
         try {
           const contentRows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (n {id: $nodeId})
             RETURN n.content AS content
@@ -1302,7 +1298,7 @@ export class LocalBackend {
     }
     let ftsResponse;
     try {
-      ftsResponse = await searchFTSFromLbug(query, limit, repo.id);
+      ftsResponse = await searchFTSFromLbug(query, limit, repo.lbugPath);
     } catch (err: any) {
       logger.error(
         { err: err.message },
@@ -1327,7 +1323,7 @@ export class LocalBackend {
         const nodeIds = bm25Result.nodeIds?.length ? bm25Result.nodeIds : null;
         const symbols = nodeIds
           ? await executeParameterized(
-              repo.id,
+              repo.lbugPath,
               `
               MATCH (n)
               WHERE n.id IN $nodeIds
@@ -1336,7 +1332,7 @@ export class LocalBackend {
               { nodeIds },
             )
           : await executeParameterized(
-              repo.id,
+              repo.lbugPath,
               `
               MATCH (n)
               WHERE n.filePath = $filePath
@@ -1388,7 +1384,7 @@ export class LocalBackend {
     try {
       // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
       const tableCheck = await executeQuery(
-        repo.id,
+        repo.lbugPath,
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
@@ -1416,7 +1412,7 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-            const embResults = await executeQuery(repo.id, vectorQuery);
+            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
             return embResults.map((row) => ({
               nodeId: row.nodeId ?? row[0],
               chunkIndex: row.chunkIndex ?? row[1] ?? 0,
@@ -1445,7 +1441,7 @@ export class LocalBackend {
         if (embeddingCount > exactLimit) return [];
 
         const rows = await executeQuery(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (e:${EMBEDDING_TABLE_NAME})
           RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
@@ -1489,7 +1485,7 @@ export class LocalBackend {
               ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
               : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`;
 
-          const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
+          const nodeRows = await executeParameterized(repo.lbugPath, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
             const nodeRow = nodeRows[0];
             results.push({
@@ -1527,7 +1523,7 @@ export class LocalBackend {
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
-    if (!isLbugReady(repo.id)) {
+    if (!isLbugReady(repo.lbugPath)) {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
     if (request.params !== undefined && !isValidQueryParams(request.params)) {
@@ -1537,7 +1533,7 @@ export class LocalBackend {
     }
 
     try {
-      const result = await executeParameterized(repo.id, request.query, request.params ?? {});
+      const result = await executeParameterized(repo.lbugPath, request.query, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
@@ -1659,7 +1655,7 @@ export class LocalBackend {
         // Fetch more raw communities than the display limit so aggregation has enough data
         const rawLimit = Math.max(limit * 5, 200);
         const clusters = await executeQuery(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (c:Community)
           RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
@@ -1683,7 +1679,7 @@ export class LocalBackend {
     if (params.showProcesses !== false) {
       try {
         const processes = await executeQuery(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (p:Process)
           RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
@@ -1727,7 +1723,7 @@ export class LocalBackend {
     if (ids.length === 0) return;
     try {
       const rows = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (n:\`Class\`) WHERE n.id IN $ids RETURN n.id AS id, 'Class' AS label
         UNION ALL
@@ -1850,7 +1846,7 @@ export class LocalBackend {
     // Direct UID — zero-ambiguity path.
     if (uid) {
       const rows = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`,
         { uid },
       );
@@ -1889,7 +1885,7 @@ export class LocalBackend {
     // LIMIT 20 (was 10) — scoring is the point now, so give the ranker
     // headroom instead of arbitrary truncation.
     const rows = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`,
       queryParams,
     );
@@ -1929,7 +1925,7 @@ export class LocalBackend {
         const candidateIds = normalized.map((s) => s.id).filter(Boolean);
         for (const label of ['Class', 'Interface']) {
           const labelRows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`,
             { candidateIds },
           ).catch(() => []);
@@ -2072,7 +2068,7 @@ export class LocalBackend {
 
     // Categorized incoming refs
     const incomingRows = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
@@ -2097,7 +2093,7 @@ export class LocalBackend {
       try {
         // Single UNION query instead of two serial round-trips.
         const typeCheck = await executeParameterized(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (n:Class) WHERE n.id = $symId RETURN 'Class' AS label LIMIT 1
           UNION ALL
@@ -2119,7 +2115,7 @@ export class LocalBackend {
         const [ctorIncoming, fileIncoming, typedPropertyIncoming, typedProperties] =
           await Promise.all([
             executeParameterized(
-              repo.id,
+              repo.lbugPath,
               `
             MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -2131,7 +2127,7 @@ export class LocalBackend {
               { symId },
             ),
             executeParameterized(
-              repo.id,
+              repo.lbugPath,
               `
             MATCH (f:File)-[rel:CodeRelation]->(n)
             WHERE n.id = $symId AND rel.type = 'DEFINES'
@@ -2143,7 +2139,7 @@ export class LocalBackend {
               { symId },
             ),
             executeParameterized(
-              repo.id,
+              repo.lbugPath,
               `
             MATCH (p:\`Property\`)
             WHERE p.declaredType = $name
@@ -2161,7 +2157,7 @@ export class LocalBackend {
               },
             ),
             executeParameterized(
-              repo.id,
+              repo.lbugPath,
               `
             MATCH (p:\`Property\`)
             WHERE p.declaredType = $name
@@ -2200,7 +2196,7 @@ export class LocalBackend {
 
     // Categorized outgoing refs
     const outgoingRows = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
@@ -2214,7 +2210,7 @@ export class LocalBackend {
     let processRows: any[] = [];
     try {
       processRows = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
@@ -2250,7 +2246,7 @@ export class LocalBackend {
     if (isMethodLike) {
       try {
         const metaRows = await executeParameterized(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (n {id: $symId})
           RETURN n.visibility AS visibility, n.isStatic AS isStatic, n.isAbstract AS isAbstract,
@@ -2329,7 +2325,7 @@ export class LocalBackend {
 
     if (type === 'cluster') {
       const clusters = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
@@ -2356,7 +2352,7 @@ export class LocalBackend {
       }
 
       const members = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
@@ -2385,7 +2381,7 @@ export class LocalBackend {
 
     if (type === 'process') {
       const processes = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (p:Process)
         WHERE p.label = $processName OR p.heuristicLabel = $processName
@@ -2399,7 +2395,7 @@ export class LocalBackend {
       const proc = processes[0];
       const procId = proc.id || proc[0];
       const steps = await executeParameterized(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
         RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
@@ -2559,7 +2555,7 @@ export class LocalBackend {
       `;
 
       try {
-        const rows = await executeParameterized(repo.id, symbolQuery, queryParams);
+        const rows = await executeParameterized(repo.lbugPath, symbolQuery, queryParams);
         for (const sym of rows) {
           changedSymbols.push({
             id: sym.id || sym[0],
@@ -2581,7 +2577,7 @@ export class LocalBackend {
       const symNameById = new Map(changedSymbols.map((s) => [s.id, s.name]));
       try {
         const procs = await executeParameterized(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE n.id IN $ids
@@ -3042,7 +3038,7 @@ export class LocalBackend {
         // Run both seed queries in parallel — they are independent.
         const [ctorRows, fileRows] = await Promise.all([
           executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (n)-[hm:CodeRelation]->(c:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -3053,7 +3049,7 @@ export class LocalBackend {
           // Restrict to DEFINES edges only — other File->Class edge types (if
           // any) should not be treated as the owning file relationship.
           executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (f:File)-[rel:CodeRelation]->(n)
             WHERE n.id = $symId AND rel.type = 'DEFINES'
@@ -3079,7 +3075,7 @@ export class LocalBackend {
         }
 
         const typedPropertyRows = await executeParameterized(
-          repo.id,
+          repo.lbugPath,
           `
           MATCH (p:\`Property\`)
           WHERE p.declaredType = $name
@@ -3117,7 +3113,7 @@ export class LocalBackend {
           : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
 
       try {
-        const related = await executeParameterized(repo.id, query, {
+        const related = await executeParameterized(repo.lbugPath, query, {
           frontierIds: frontier,
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
@@ -3224,7 +3220,7 @@ export class LocalBackend {
         try {
           // Use parameterized list to avoid building long query strings
           const rows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE s.id IN $ids
@@ -3298,7 +3294,7 @@ export class LocalBackend {
           const pIds = Array.from(processesMissingMinStep);
           const allImpactedIds = impacted.map((it) => String(it.id ?? ''));
           const missingRows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE p.id IN $pIds AND s.id IN $ids
@@ -3358,7 +3354,7 @@ export class LocalBackend {
         if (!idsChunk || idsChunk.length === 0) return;
         try {
           const rows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
@@ -3391,7 +3387,7 @@ export class LocalBackend {
         if (!idsChunk || idsChunk.length === 0) return;
         try {
           const rows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
@@ -3529,7 +3525,7 @@ export class LocalBackend {
         const chunkIds = pageIdArr.slice(i, i + CHUNK_SIZE);
         try {
           const rows = await executeParameterized(
-            repo.id,
+            repo.lbugPath,
             `
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE s.id IN $ids
@@ -3619,7 +3615,7 @@ export class LocalBackend {
     let rows: any[];
     try {
       rows = await executeParameterized(
-        repoId,
+        repo.lbugPath, // pool keyed by the resolved clone's path, not the id
         `MATCH (n) WHERE n.id = $uid
          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, labels(n)[0] AS type
          LIMIT 1`,
@@ -3993,7 +3989,7 @@ export class LocalBackend {
 
     const routeFilter = params.route ? `AND n.name CONTAINS $route` : '';
     const queryParams = params.route ? { route: params.route } : {};
-    const routes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
+    const routes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
 
     if (routes.length === 0) {
       return {
@@ -4006,7 +4002,7 @@ export class LocalBackend {
     }
 
     const flowMap = await this.fetchLinkedFlowsBatch(
-      repo.id,
+      repo.lbugPath,
       routes.map((r) => r.id),
     );
 
@@ -4027,7 +4023,7 @@ export class LocalBackend {
 
     const routeFilter = params.route ? `AND n.name CONTAINS $route` : '';
     const queryParams = params.route ? { route: params.route } : {};
-    const allRoutes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
+    const allRoutes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
 
     const results = allRoutes
       .filter(
@@ -4111,7 +4107,7 @@ export class LocalBackend {
     const queryParams = params.tool ? { tool: params.tool } : {};
 
     const rows = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (n:Tool)
       WHERE n.id STARTS WITH 'Tool:' ${toolFilter}
@@ -4129,7 +4125,7 @@ export class LocalBackend {
     }
 
     const toolIds = rows.map((r: any) => r.id ?? r[0]);
-    const flowMap = await this.fetchLinkedFlowsBatch(repo.id, toolIds);
+    const flowMap = await this.fetchLinkedFlowsBatch(repo.lbugPath, toolIds);
 
     return {
       tools: rows.map((r: any) => {
@@ -4167,7 +4163,7 @@ export class LocalBackend {
       queryParams.file = params.file;
     }
 
-    const routes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
+    const routes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
 
     if (routes.length === 0) {
       const target = params.route || params.file;
@@ -4175,7 +4171,7 @@ export class LocalBackend {
     }
 
     const flowMap = await this.fetchLinkedFlowsBatch(
-      repo.id,
+      repo.lbugPath,
       routes.map((r) => r.id),
     );
 
@@ -4306,7 +4302,7 @@ export class LocalBackend {
     try {
       const rawLimit = Math.max(limit * 5, 200);
       const clusters = await executeQuery(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (c:Community)
         RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
@@ -4337,7 +4333,7 @@ export class LocalBackend {
 
     try {
       const processes = await executeQuery(
-        repo.id,
+        repo.lbugPath,
         `
         MATCH (p:Process)
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
@@ -4368,7 +4364,7 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     const clusters = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
@@ -4395,7 +4391,7 @@ export class LocalBackend {
     }
 
     const members = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
@@ -4431,7 +4427,7 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     const processes = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (p:Process)
       WHERE p.label = $processName OR p.heuristicLabel = $processName
@@ -4445,7 +4441,7 @@ export class LocalBackend {
     const proc = processes[0];
     const procId = proc.id || proc[0];
     const steps = await executeParameterized(
-      repo.id,
+      repo.lbugPath,
       `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
       RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
