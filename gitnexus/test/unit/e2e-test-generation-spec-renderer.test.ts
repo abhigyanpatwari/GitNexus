@@ -158,6 +158,37 @@ describe('E2E generated spec renderer', () => {
     expect(result.specs[0].text).toBe(golden);
   });
 
+  it('renders deterministic Playwright text for /api/file route proposals', () => {
+    const result = renderE2EGeneratedSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-file',
+          title: 'Exercise route /api/file after impacted API change',
+          target_spec: 'gitnexus-web/e2e/api-file.spec.ts',
+          evidence: [
+            'Route /api/file has risk HIGH',
+            'Consumers: 1',
+            'Mismatches: 0',
+          ],
+        },
+      ],
+    });
+
+    expect(result.blocked).toEqual([]);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0].path).toBe(
+      'gitnexus-web/e2e/generated/route-api-file.generated.spec.ts',
+    );
+
+    const golden = readFileSync(
+      path.join(__dirname, '../fixtures/e2e-test-generation/generated-api-file-route.spec.ts'),
+      'utf-8',
+    ).trim();
+    expect(result.specs[0].text).toBe(golden);
+  });
+
   it('blocks unsafe or unsupported proposals instead of emitting brittle specs', () => {
     const result = renderE2EGeneratedSpecs({
       ...baseReport,
@@ -215,7 +246,7 @@ describe('E2E generated spec renderer', () => {
       {
         proposalId: 'route-api-processes',
         reason:
-          'Only /api/repos, /api/repo, and /api/graph route proposals have deterministic generated fixtures in V1.',
+          'Only /api/repos, /api/repo, /api/graph, and /api/file route proposals have deterministic generated fixtures in V1.',
       },
     ]);
   });

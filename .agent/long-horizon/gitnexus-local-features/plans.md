@@ -45,15 +45,67 @@ This section controls the next Goal selection after the completed local V1 tranc
 
 | Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 6 Additional UI Route Fixture | Readiness Goal | Find a next deterministic UI route fixture only if local source proves a backend route has a real frontend consumer and visible assertion surface. | Route-to-UI evidence table and generated-spec policy check. | Stop if the route is backend-only or requires direct API assertions; send it to the API-smoke lane instead. |
-| 2 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route only after `/api/processes` generated API-smoke behavior is reviewed. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
-| 3 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
+| 1 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route after `/api/processes` generated API-smoke behavior and `/api/file` UI fixture are complete. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
+| 2 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
 
 Default recommendation:
 
-- Continue with `Task 6 Additional UI Route Fixture` readiness.
-- Do not add more generated UI fixtures until the route-to-UI consumer evidence is decision-complete.
+- Continue with `Task 6 Additional API-Smoke Route` readiness.
+- Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
+### Task 6 `/api/file` Generated UI Route Fixture - 2026-06-07T16:55+01:00
+
+Readiness outcome:
+
+- `/api/file` is the next narrow generated UI route fixture candidate.
+- It has a real frontend consumer and stable visible UI assertion surface.
+- It can be implemented without broadening into live backend execution, CI mutation, or GitHub automation.
+
+Evidence map:
+
+| Route | Frontend consumer | Visible UI surface | Decision |
+| --- | --- | --- | --- |
+| `/api/file` | `backend-client.readFile()` called by `CodeReferencesPanel` for selected graph/tree nodes | File tree click opens selected-file code panel with file content | `now` |
+| `/api/processes` | `fetchProcesses()` exists, but current Processes panel derives rows from `/api/graph` | No current route-to-UI path | Keep in API-smoke lane |
+| `/api/process` | Process modal uses Cypher `runQuery()` through `/api/query`, not `fetchProcessDetail()` | No direct route-to-UI path | Defer |
+| `/api/clusters` / `/api/cluster` | Client methods exist, but no proven UI call site in current pass | No current route-to-UI path | Defer |
+| `/api/query`, `/api/search`, `/api/grep` | Used by AI/search workflows and can require user/model interactions | More complex state/tooling surface | Defer to separate readiness |
+
+Approved implementation slice:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 6 /api/file Generated UI Route Fixture
+Approved slice: add deterministic generated UI spec support for route `/api/file` only. The generated spec must mock repo/repo-info/graph/file/heartbeat responses, click a file-tree node, and assert visible selected-file code content.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/spec-renderer.ts
+- gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-api-file-route.spec.ts
+- .agent/long-horizon/gitnexus-local-features/documentation.md
+- .agent/long-horizon/gitnexus-local-features/plans.md
+- .agent/long-horizon/gitnexus-local-features/feature-map.md
+Constraints: no browser execution, no Playwright config changes, no CI mutation, no MCP/API exposure changes, no GitHub automation, no live-backend generated specs, no credentials, no absolute personal paths, no new dependency, no broad renderer rewrite, and TDD required.
+```
+
+TDD order:
+
+1. Add a failing renderer test and golden fixture for `/api/file`.
+2. Extend the route allowlist and renderer dispatch for `/api/file`.
+3. Keep unsupported-route blocking behavior intact for all other routes.
+4. Run focused generated-spec renderer/CLI/report tests, build, and `git diff --check`.
+
+Implementation checkpoint:
+
+- Added `/api/file` generated UI spec support to `spec-renderer.ts`.
+- Added `generated-api-file-route.spec.ts` golden fixture.
+- Updated renderer tests for `/api/file` and the unsupported-route allowlist message.
+- Verification so far:
+  - `npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts`
+  - `npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts`
+  - `npm run build`
+  - `git diff --check`
+  - Results: 1 file / 9 tests and 4 files / 21 tests passed; build and diff-check passed.
 
 ### Task 4 PR Impact MCP / GitHub Readiness - 2026-06-07T16:39+01:00
 

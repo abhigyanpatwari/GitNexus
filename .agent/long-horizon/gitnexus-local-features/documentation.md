@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 4 PR Impact MCP local read-only exposure implemented; next selected task is Task 6 Additional UI Route Fixture readiness
+- Mode: Task 6 `/api/file` generated UI route fixture implemented; next selected task is Task 6 Additional API-Smoke Route readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -95,6 +95,79 @@ Current state:
 - 2026-06-07T16:35+01:00: Task 2 Wiki Mutation / Provider Policy readiness selected the smallest safe next slice: read-only provider-readiness status for `/api/wiki/auto-refresh`. Full wiki output mutation remains deferred.
 - 2026-06-07T16:45+01:00: Task 2 Wiki Provider-Readiness Status implemented with TDD. `/api/wiki/auto-refresh` remains read-only but now uses a non-secret readiness helper over saved CLI config and environment shape. Wiki output mutation, provider execution, local CLI subprocesses from the endpoint, and config writes remain deferred.
 - 2026-06-07T16:39+01:00: Task 4 PR Impact MCP / GitHub Readiness implemented the smallest safe local slice with TDD: a read-only, closed-world `pr_impact` MCP tool that reuses the existing local `detect_changes -> impact -> api_impact -> PR Impact report` pipeline. GitHub PR URL ingestion, PR comments/reviews, check runs, Actions workflows, and token-bearing automation remain deferred.
+- 2026-06-07T16:55+01:00: Task 6 Additional UI Route Fixture readiness selected `/api/file` as the next narrow UI generated-spec slice. Evidence: `backend-client.readFile()` calls `/api/file`, `CodeReferencesPanel` calls `readFile()` when a selected graph/tree node has `filePath`, and file-tree selection gives a stable visible code-panel assertion surface. Routes without UI consumers remain API-smoke or deferred.
+- 2026-06-07T16:58+01:00: Task 6 `/api/file` generated UI route fixture implemented with TDD. The generated spec mocks `/api/repos`, `/api/repo`, `/api/graph`, `/api/file**`, and `/api/heartbeat`, clicks `index.ts` in the file tree, and asserts visible selected-file code content. Browser execution, live-backend generation, CI mutation, GitHub automation, and broader route support remain deferred.
+
+### 2026-06-07T16:55+01:00 - Task 6 `/api/file` Generated UI Route Fixture Readiness
+
+Goal:
+
+- Decide whether another deterministic generated UI route fixture is justified after `/api/repos`, `/api/repo`, and `/api/graph`.
+
+Evidence:
+
+- Current generated UI renderer supports only `/api/repos`, `/api/repo`, and `/api/graph`.
+- `/api/processes` was correctly moved to the API-smoke lane because the UI derives process rows from `/api/graph`, not from `fetchProcesses()`.
+- `gitnexus-web/src/services/backend-client.ts` defines `readFile()` over `/api/file`.
+- `gitnexus-web/src/components/CodeReferencesPanel.tsx` calls `readFile(selectedFilePath, ...)` whenever the selected graph/tree node has a `filePath`.
+- `gitnexus-web/src/components/FileTreePanel.tsx` sets `selectedNode` and opens the code panel when a file-tree node is clicked.
+- Existing E2E tests already use file-tree clicks as a stable interaction path rather than raw canvas coordinates.
+
+Decision:
+
+- Implement `/api/file` as the next generated UI route fixture.
+- Keep it deterministic by mocking `/api/repos`, `/api/repo`, `/api/graph`, `/api/file**`, and `/api/heartbeat`.
+- Assert visible UI behavior through the selected code panel after clicking `index.ts` in the file tree.
+
+Approved local slice under standing conditional authorization:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 6 /api/file Generated UI Route Fixture
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: add deterministic generated UI spec support for route `/api/file` only. The generated spec must mock repo/repo-info/graph/file/heartbeat responses, click a file-tree node, and assert visible selected-file code content.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/spec-renderer.ts
+- gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-api-file-route.spec.ts
+- .agent/long-horizon/gitnexus-local-features/documentation.md
+- .agent/long-horizon/gitnexus-local-features/plans.md
+- .agent/long-horizon/gitnexus-local-features/feature-map.md
+Constraints: no browser execution, no Playwright config changes, no CI mutation, no MCP/API exposure changes, no GitHub automation, no live-backend generated specs, no credentials, no absolute personal paths, no new dependency, no broad renderer rewrite, and TDD required.
+```
+
+Stop/defer rules:
+
+- Stop if `/api/file` requires product UI changes to exercise.
+- Stop if stable assertions require canvas-coordinate clicks instead of file-tree selection.
+- Keep `/api/query`, `/api/search`, `/api/grep`, `/api/analyze`, `/api/embed`, clusters, and process-detail routes deferred until each has a separate visible UI evidence map.
+
+Implementation checkpoint:
+
+- Updated `gitnexus/src/core/e2e-test-generation/spec-renderer.ts`.
+- Added golden fixture `gitnexus/test/fixtures/e2e-test-generation/generated-api-file-route.spec.ts`.
+- Updated `gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts`.
+
+Verification so far:
+
+```powershell
+npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts
+npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused renderer test passed: 1 file, 9 tests.
+- Adjacent E2E-generation suite passed: 4 files, 21 tests.
+- Build passed.
+- `git diff --check` passed.
+
+Next selected task:
+
+- Task 6 Additional API-Smoke Route readiness.
+- Stop before source edits unless a backend-only route has a stable read-only JSON contract and does not require auth, mutation, long-running jobs, live route discovery, or unstable state.
 
 ### 2026-06-07T16:39+01:00 - Task 4 PR Impact MCP / GitHub Readiness
 
