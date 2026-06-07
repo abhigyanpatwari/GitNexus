@@ -107,14 +107,14 @@ export const kotlinConfig: FieldExtractionConfig = {
   // walked; the resulting FieldInfo map is keyed by field NAME only, so the
   // owner name does not affect which Property node gets enriched.
   extractOwnerName(node) {
+    const typeIdentifierText = node.namedChildren.find((c) => c.type === 'type_identifier')?.text;
     if (node.type === 'companion_object') {
-      const ident = node.namedChildren.find((c) => c.type === 'type_identifier');
-      return ident?.text ?? 'Companion';
+      // Anonymous companions have no type_identifier — fall back to "Companion".
+      return typeIdentifierText ?? 'Companion';
     }
     const name = node.childForFieldName('name');
     if (name) return name.text;
-    const ident = node.namedChildren.find((c) => c.type === 'type_identifier');
-    return ident?.text;
+    return typeIdentifierText;
   },
 
   extractName(node) {
