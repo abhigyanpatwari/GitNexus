@@ -168,9 +168,9 @@ withTestLbugDB(
         // Pool entry fully gone — a subsequent query fails fast with the
         // not-initialized error, not a hang or a stale connection.
         expect(isLbugReady('test-repo')).toBe(false);
-        await expect(
-          executeQuery('test-repo', 'MATCH (n) RETURN n LIMIT 1'),
-        ).rejects.toThrow(/not initialized/i);
+        await expect(executeQuery('test-repo', 'MATCH (n) RETURN n LIMIT 1')).rejects.toThrow(
+          /not initialized/i,
+        );
       });
     });
 

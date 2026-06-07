@@ -16,14 +16,14 @@ describe('closeQueryResults', () => {
   it('closes a single QueryResult exactly once', async () => {
     const r = fakeResult();
     await closeQueryResults(r);
-    expect((r.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect(r.close as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
   });
 
   it('closes EVERY element of an array (not just the first)', async () => {
     const rs = [fakeResult(), fakeResult(), fakeResult()];
     await closeQueryResults(rs);
     for (const r of rs) {
-      expect((r.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+      expect(r.close as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
     }
   });
 
@@ -35,8 +35,8 @@ describe('closeQueryResults', () => {
     const ok2 = fakeResult(() => Promise.reject(new Error('async close failed')));
     const ok3 = fakeResult();
     await expect(closeQueryResults([ok1, bad, ok2, ok3])).resolves.toBeUndefined();
-    expect((ok1.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
-    expect((ok3.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect(ok1.close as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(ok3.close as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op on an empty array', async () => {
