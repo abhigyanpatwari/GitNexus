@@ -22,9 +22,11 @@ describe('Laravel route → controller qualified resolution', () => {
     // Force the worker path — Laravel route extraction runs in the worker
     // (the sequential fallback does not extract routes), so a small fixture
     // must lower the worker thresholds to exercise route resolution.
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'laravel-route-resolution'), () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-    });
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'laravel-route-resolution'),
+      () => {},
+      {},
+    );
   }, 60000);
 
   const routeCalls = () =>

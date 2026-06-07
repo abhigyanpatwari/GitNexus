@@ -1,19 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
-import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
-import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
 
 const parseNodes = async (path: string, content: string) => {
-  const graph = createKnowledgeGraph();
-  const model = createSemanticModel();
-  await processParsing(
-    graph,
-    [{ path, content }],
-    model.symbols,
-    createASTCache(),
-    createASTCache(),
-  );
+  const { graph } = await parseFilesWithWorkers([{ path, content }]);
   return graph.nodes;
 };
 

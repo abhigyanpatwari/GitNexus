@@ -3869,7 +3869,6 @@ describe('C++ inline nested same-tail collision — worker path parity (issue #1
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-nested-tail-collision'), () => {}, {
       // Force the worker-pool gate low so the 1-file fixture engages the pool.
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
       workerPoolSize: 2,
     });
   }, 120000);
@@ -3962,7 +3961,7 @@ describe('C++ named-union nested same-tail collision — worker path parity (iss
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'cpp-union-nested-tail-collision'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
@@ -4033,7 +4032,7 @@ describe('C++ anonymous-namespace nested same-tail collision — worker path par
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'cpp-anon-ns-tail-collision'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
@@ -4146,7 +4145,6 @@ describe('C++ namespaced same-tail nested heritage — worker path parity (issue
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-namespaced-collision'), () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
       workerPoolSize: 2,
     });
   }, 120000);
@@ -4229,7 +4227,7 @@ describe('C++ cross-namespace same-tail nested heritage — worker path parity (
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'cpp-cross-namespace-same-tail'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 

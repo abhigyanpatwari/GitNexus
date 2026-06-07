@@ -9,10 +9,13 @@
  *
  * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/cpp-adl-benchmark.test.ts
  *
- * WHY EMIT MS, NOT WALL TIME: the fixture is parsed single-threaded
- * (workerPoolSize: 0, so no dist build is needed), and parse dominates total
- * wall time — masking the ADL cost. We isolate the scope-resolution `emit` ms
- * from the profiler log (captured in-process via the logger test destination).
+ * WHY EMIT MS, NOT WALL TIME: parse dominates total wall time — masking the ADL
+ * cost — so we isolate the scope-resolution `emit` ms from the profiler log
+ * (captured in-process via the logger test destination). Because the metric is
+ * the emit-ms RATIO (downstream of and independent from parsing), it is robust
+ * to the parse path: the fixture is parsed with a single-worker pool
+ * (`workerPoolSize: 1`) since the sequential parser was removed. Requires the
+ * built `dist/parse-worker.js` (run `npm run build` first).
  *
  * WHY CO-SCALE FILES AND SITES: the regression is O(sites × files). At fixed
  * files, both the old and new code are linear in sites and indistinguishable.
@@ -94,7 +97,7 @@ async function runBenchmark(fileCount: number, siteCount: number): Promise<Bench
   const cap = _captureLogger();
   try {
     const start = Date.now();
-    const result = await runPipelineFromRepo(dir, () => {}, { workerPoolSize: 0 });
+    const result = await runPipelineFromRepo(dir, () => {}, { workerPoolSize: 1 });
     const elapsedMs = Date.now() - start;
     const emitMs = extractEmitMs(cap.records());
 

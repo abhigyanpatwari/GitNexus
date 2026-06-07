@@ -515,6 +515,45 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Restore capture-time per-file side-channel state that `emitScopeCaptures`
+   * produces as a side effect into module-level maps, NOT onto the returned
+   * `ParsedFile`. Such state never crosses the worker boundary: in worker-mode
+   * parses `emitScopeCaptures` runs inside the worker, so its module-level
+   * marks are populated in the WORKER process. The main thread then reuses the
+   * serialized `ParsedFile` (see `RunScopeResolutionInput.preExtractedParsedFiles`)
+   * and skips `extractParsedFile`, so those marks would otherwise be missing in
+   * the main process where resolution consumes them.
+   *
+   * This hook reads the worker-serialized snapshot from
+   * `parsed.captureSideChannel` (produced by the matching
+   * `LanguageProvider.collectCaptureSideChannel` hook in the worker) and writes
+   * it back into the module maps. It does NO tree-sitter parse and needs no
+   * source `content` — that is the whole point of #1983 (the prior re-parse
+   * replay re-introduced the main-thread tree-sitter OOM on huge `.h`/`.cpp`
+   * repos and was replaced by this data-only restore).
+   *
+   * C++ is the only language with this pattern today: `emitCppScopeCaptures`
+   * records ADL call-site arg shapes, inline-/anonymous-namespace ranges,
+   * dependent-base names, and file-local linkage into module maps that
+   * `populateOwners` and the ADL / two-phase-lookup passes read on the main
+   * thread. Without this restore, all of that is empty on the worker path and
+   * advanced C++ resolution (ADL / SFINAE-adjacent / inline-namespace) silently
+   * produces zero edges.
+   *
+   * Called by `runScopeResolution` ONLY for pre-extracted files (the worker
+   * already populated the marks in-process for freshly extracted files, so the
+   * fresh-extract leg never calls this). Runs BEFORE `populateOwners(parsed)`
+   * so the resolved-range Sets it repopulates are visible to that hook.
+   *
+   * Languages whose `emitScopeCaptures` is pure (the contract default — see
+   * `scope-extractor.ts`) leave this undefined; the restore is a no-op for them.
+   *
+   * @param parsed   The pre-extracted ParsedFile being reused. Its
+   *                 `captureSideChannel` carries the worker-computed data.
+   */
+  readonly applyCaptureSideChannel?: (parsed: ParsedFile) => void;
+
+  /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
    * owner. Python's rule: methods (Function defs whose parent scope
    * is Class) AND class-body fields (defs in Class scopes) are owned

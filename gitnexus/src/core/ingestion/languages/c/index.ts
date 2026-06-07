@@ -13,4 +13,9 @@ export {
   isStaticName,
   clearStaticNames,
   expandCWildcardNames,
+  getStaticNamesForFile,
 } from './static-linkage.js';
+export {
+  collectCStaticLinkageSideChannel,
+  applyCStaticLinkageSideChannel,
+} from './capture-side-channel.js';

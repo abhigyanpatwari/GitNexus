@@ -952,6 +952,153 @@ public class UserController implements UserApi {
       );
     });
 
+    it('does not duplicate inherited Spring prefixes already present on the controller', async () => {
+      const dir = path.join(tmpDir, 'spring-inherited-prefix-dedup');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/DataReleaseFacade.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/open/ai")
+public interface DataReleaseFacade {
+    @GetMapping("/query")
+    Object query();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/BaseFacadeService.java'),
+        `
+package com.example.controller;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/open/ai")
+public abstract class BaseFacadeService {
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/DataReleaseFacadeImpl.java'),
+        `
+package com.example.controller;
+import com.example.rest.DataReleaseFacade;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/open/ai")
+public class DataReleaseFacadeImpl extends BaseFacadeService implements DataReleaseFacade {
+    @Override
+    public Object query() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const queryRoute = providers.find((c) => c.contractId === 'http::GET::/open/ai/query');
+      expect(queryRoute).toBeDefined();
+      expect(toPosixPath(queryRoute!.symbolRef.filePath)).toBe(
+        'src/controller/DataReleaseFacadeImpl.java',
+      );
+      expect(providers.find((c) => c.contractId === 'http::GET::/open/ai/open/ai/query')).toBe(
+        undefined,
+      );
+    });
+
+    it('still combines distinct inherited Spring prefixes that share a leading segment', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-shared-leading-prefix');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/DataReleaseApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/open/ai")
+public interface DataReleaseApi {
+    @GetMapping("/query")
+    Object query();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/DataReleaseFacadeImpl.java'),
+        `
+package com.example.controller;
+import com.example.rest.DataReleaseApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/open")
+public class DataReleaseFacadeImpl implements DataReleaseApi {
+    @Override
+    public Object query() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/open/open/ai/query'),
+      ).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/open/ai/query')).toBeUndefined();
+    });
+
+    it('keeps a controller prefix when a prefix-less interface method starts with the same path', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-method-prefix-overlap');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/UserApi.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+public interface UserApi {
+    @GetMapping("/users/{id}")
+    Object getUser();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+package com.example.controller;
+import com.example.rest.UserApi;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/users")
+public class UserController implements UserApi {
+    @Override
+    public Object getUser() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/users/users/{param}'),
+      ).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/users/{param}')).toBeUndefined();
+    });
+
     it('skips ambiguous inherited routes when interfaces share a simple name', async () => {
       const dir = path.join(tmpDir, 'spring-interface-simple-name-collision');
       fs.mkdirSync(path.join(dir, 'src/a'), { recursive: true });

@@ -29,11 +29,11 @@ function createGoRepo(): string {
   return dir;
 }
 
-async function runMode(mode: 'worker' | 'sequential'): Promise<PipelineResult> {
+async function runWorker(): Promise<PipelineResult> {
   return runPipelineFromRepo(createGoRepo(), () => {}, {
     skipGraphPhases: true,
     workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-    ...(mode === 'worker' ? { workerPoolSize: 2 } : { skipWorkers: true }),
+    workerPoolSize: 2,
   });
 }
 
@@ -49,16 +49,28 @@ function collectMetadata(result: PipelineResult): Map<string, Record<string, unk
 
 describe('Go multi-name declaration metadata in worker parsing', () => {
   it('emits every const and var name with metadata on the worker path', async () => {
-    const worker = await runMode('worker');
-    const sequential = await runMode('sequential');
+    const worker = await runWorker();
 
     expect(worker.usedWorkerPool).toBe(true);
-    expect(sequential.usedWorkerPool).toBe(false);
 
     const workerMetadata = collectMetadata(worker);
-    const sequentialMetadata = collectMetadata(sequential);
 
-    expect([...workerMetadata.keys()].sort()).toEqual([...sequentialMetadata.keys()].sort());
+    // #2032: every name in a multi-name declaration must be emitted (not just the
+    // first). The original test cross-checked this against a sequential run; on
+    // the worker-pool-only pipeline (#1983, sequential parser removed) we assert
+    // the full key set directly.
+    expect([...workerMetadata.keys()].sort()).toEqual(
+      [
+        'Const:X',
+        'Const:Y',
+        'Property:Px',
+        'Property:py',
+        'Variable:a',
+        'Variable:b',
+        'Variable:c',
+        'Variable:d',
+      ].sort(),
+    );
     expect(workerMetadata.get('Const:X')).toMatchObject({
       declaredType: 'int',
       isConst: true,
