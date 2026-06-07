@@ -403,8 +403,9 @@ export class LocalBackend {
     for (const entry of entries) {
       // path.resolve (not canonicalizePath) matches the pre-#2054 collision
       // check and keeps refreshRepos free of mockable deps on the hot init
-      // path; registry paths are already canonicalised at write time, so the
-      // two agree for real registries.
+      // path. registerRepo writes path.resolve'd paths (not realpath), and
+      // resolveRepoFromCache canonicalizes both sides when matching by path, so
+      // keying id assignment on path.resolve here is consistent and correct.
       const resolved = path.resolve(entry.path);
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
       assigned.set(id, resolved);
@@ -451,7 +452,9 @@ export class LocalBackend {
     // Evict per-id runtime state for ids that disappeared OR now point at a
     // different on-disk clone. The pool keys LadybugDB connections by id and
     // reuses them regardless of dbPath (see pool-adapter.initLbug), so a moved
-    // id must drop its pooled connection or queries would hit the previous
+    // OR removed id must drop its pooled connection and any in-flight reinit —
+    // otherwise the next ensureInitialized() (for a moved id) or a later repo
+    // that re-acquires the id (for a removed one) would be served the previous
     // clone's database (#2054).
     for (const [id, prev] of this.repos) {
       const nextResolved = assigned.get(id);
@@ -459,11 +462,13 @@ export class LocalBackend {
       if (!moved) continue;
       this.initializedRepos.delete(id);
       this.lastStalenessCheck.delete(id);
-      if (nextResolved !== undefined) {
-        // Same id, different clone — force the next ensureInitialized() to
-        // re-open against the new path instead of reusing the stale pool entry.
-        closeLbug(id).catch(() => {});
-      }
+      // Drop a stale staleness-reinit so it can't re-open the old clone's pool
+      // under this id after the swap below.
+      this.reinitPromises.delete(id);
+      // closeOne() (inside closeLbug) deletes the pool entry synchronously, so
+      // the next initLbug(id, …) re-opens against the current path rather than
+      // reusing the orphaned entry.
+      closeLbug(id).catch(() => {});
     }
 
     this.repos = nextRepos;

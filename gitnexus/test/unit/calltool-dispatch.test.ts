@@ -1516,6 +1516,35 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     // The stale pooled connection for the moved id was force-closed.
     expect(closeLbug).toHaveBeenCalledWith('dup');
   });
+
+  it('evicts the pooled connection when a repo id vanishes from the registry (#2054)', async () => {
+    // When an id disappears entirely, its pooled LadybugDB connection must be
+    // closed too — otherwise a different clone that later re-acquires the same
+    // id would be served the vanished clone's database (the pool keys by id and
+    // ignores dbPath on reuse).
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-vanish-'));
+    duplicateFixtureDirs.push(parent);
+    const dir = path.join(parent, 'solo');
+    mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+    writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+    const entry = {
+      ...MOCK_REPO_ENTRY,
+      name: 'solo',
+      path: dir,
+      storagePath: path.join(dir, '.gitnexus'),
+    };
+
+    (listRegisteredRepos as any).mockResolvedValue([entry]);
+    await backend.init();
+    expect((await backend.resolveRepo(dir)).id).toBe('solo');
+
+    // Registry now empty → the "solo" id vanishes on refresh.
+    (closeLbug as any).mockClear();
+    (listRegisteredRepos as any).mockResolvedValue([]);
+    await backend.callTool('list_repos', {});
+
+    expect(closeLbug).toHaveBeenCalledWith('solo');
+  });
 });
 
 // ─── getContext ──────────────────────────────────────────────────────
