@@ -649,9 +649,9 @@ const renderSkillMarkdown = (
         : community.label;
   lines.push('## How to Explore');
   lines.push('');
-  lines.push(`1. \`gitnexus_context({name: "${firstEntry}"})\` \u2014 see callers and callees`);
+  lines.push(`1. \`context({name: "${firstEntry}"})\` \u2014 see callers and callees`);
   lines.push(
-    `2. \`gitnexus_query({query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
+    `2. \`query({query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
   );
   lines.push('3. Read key files listed above for implementation details');
   lines.push('');
