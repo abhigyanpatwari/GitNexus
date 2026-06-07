@@ -1,7 +1,7 @@
 # GitNexus Local Features - Documentation
 
 Created: 2026-06-05
-Last updated: 2026-06-06
+Last updated: 2026-06-07
 
 ## Current Status
 
@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 deterministic generated Playwright spec renderer implemented locally
+- Mode: Task 2 wiki auto-refresh server status endpoint implemented and verified locally
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, MCP/API exposure, and GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -81,6 +81,78 @@ Current state:
 - 2026-06-06T19:45+01:00: Task 6 deterministic generated Playwright spec renderer and explicit `gitnexus e2e-test-plan --write-specs` mode implemented with TDD. The implementation is limited to deterministic mocked `/api/repos` route specs and policy-block diagnostics; browser execution, CI mutation, MCP/API, GitHub automation, and live-backend generation remain deferred.
 - 2026-06-06T19:47+01:00: Task 6 generated-spec renderer committed as `ac1b43a5` (`feat: add e2e generated spec renderer`).
 - 2026-06-06T19:48+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: after Task 6 renderer V1, the remaining candidate Goals are priority-dependent rather than sequentially forced. Candidate next Goals are broader generated E2E scenario support, Task 2 wiki wiring/mutation policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
+- 2026-06-07T13:25+01:00: Active Goal created for Task 2 Wiki Auto-Refresh Status Endpoint V1. A focused GitHub/source pass supports a conservative read-only server status route over automatic wiki generation. TDD red/green completed; focused tests, adjacent reindex wiring tests, build, and diff checks passed.
+- 2026-06-07T13:31+01:00: Task 2 post-endpoint readiness recommends treating Task 2 local V1 as complete at read-only status. Mutation/manual refresh/provider readiness requires a separate MAIN policy approval before source implementation.
+- 2026-06-07T13:33+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: Task 2 mutation/manual refresh/provider readiness requires a MAIN product/policy decision before source implementation, and the remaining non-Task-2 candidates are priority-dependent. Candidate next Goals are provider/output mutation policy readiness, Task 4 PR Impact MCP/GitHub-readiness, broader E2E scenario support, or deeper OCaml semantics.
+
+### 2026-06-07T13:25+01:00 - Task 2 Wiki Status Endpoint V1
+
+Goal:
+
+- Complete a focused GitHub issue/PR/source evidence pass for the wiki/Code Wiki area, then add a read-only server status endpoint for wiki auto-refresh planning if the evidence still supports that scope.
+
+Evidence summary:
+
+- Upstream README positions `gitnexus wiki` as LLM-powered documentation from the indexed knowledge graph, not a passive metadata endpoint.
+- Architecture maps wiki ownership to `src/core/wiki/`.
+- Issue #302 shows external generated docs-site adoption is a product/docs ownership concern rather than an implementation ticket with an attached PR.
+- Triage issue #422 records wiki-related risk history: large-repo context overflow, Ollama hangs, language support, and grouping fixes.
+- Windows registry/freshness issue #1400 reinforces that downstream automation should surface explicit index/freshness status before mutating docs.
+
+Implemented:
+
+- Added `GET /api/wiki/auto-refresh` in `gitnexus/src/server/api.ts`.
+- The endpoint resolves an optional repo parameter with the existing `requestedRepo(req)` / `resolveRepo(...)` path.
+- It checks graph freshness with `checkStalenessAsync(entry.path, entry.lastCommit)`.
+- It reads existing wiki metadata with `readWikiAutoRefreshMeta(entry.storagePath)`.
+- It calls `planWikiAutoRefresh(...)` with `dryRun: true`, `mutateOutput: false`, and provider readiness set to `false` with reason `provider-not-wired-through-server`.
+- The response includes repo identity plus the planner result shape.
+
+Not implemented:
+
+- No `runWikiAutoRefresh` call.
+- No `WikiGenerator` call.
+- No LLM execution.
+- No generated wiki output mutation.
+- No reindex-completion event wiring.
+- No hooks, dependencies, credentials, or provider config changes.
+
+TDD checkpoint:
+
+```powershell
+npm test -- test/unit/wiki-auto-refresh-api-wiring.test.ts
+```
+
+Results:
+
+- Red: failed because `api.ts` lacked `planWikiAutoRefresh`, confirming the endpoint was absent.
+- Green: passed after adding the route and import, 1 file, 1 test.
+
+Verification:
+
+- `npm test -- test/unit/wiki-auto-refresh.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts` passed: 2 files, 9 tests.
+- `npm test -- test/unit/reindex-freshness-wiring.test.ts test/unit/reindex-api-wiring.test.ts` passed: 2 files, 23 tests.
+- `npm run build` passed.
+- `git diff --check` passed.
+- `git status --short --branch` showed only intended docs/source/test files changed.
+
+### 2026-06-07T13:31+01:00 - Task 2 Post-Endpoint Boundary
+
+Goal:
+
+- Determine whether the next Task 2 step should be event wiring, manual refresh/mutation, provider readiness, or deferral.
+
+Finding:
+
+- Reindex-completion status wiring is technically possible but not yet justified by a named consumer.
+- Manual refresh/mutation is not ready because it would run `WikiGenerator`, mutate stored wiki files, and potentially call LLM providers.
+- Provider readiness is a separate policy problem because server-side unattended generation must not prompt, write credentials, spend tokens unexpectedly, or assume local CLI behavior.
+
+Recommendation:
+
+- Treat Task 2 local V1 as complete at read-only status.
+- Do not implement wiki mutation, automatic generation, or reindex-completion wiki actions without a new MAIN approval naming provider policy, output mutation policy, rollback/reporting behavior, tests, and exact write set.
+- If continuing Task 2 later, start with provider/output mutation policy readiness before any source implementation.
 
 ### 2026-06-06T19:26+01:00 - Task 7 OCaml Experimental V1 Implemented
 

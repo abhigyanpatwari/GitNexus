@@ -24,7 +24,7 @@ Created: 2026-06-05
 - `plan.md`, `gitnexus-router-indexing-note.md`, and the scratchpad are subordinate evidence only. They are not live control files and must not override this queue or `documentation.md`.
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
-- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper, and Task 7 OCaml experimental support have completed their first local slices.
+- Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki planner/runner plus read-only status endpoint, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper, and Task 7 OCaml experimental support have completed their first local slices.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
@@ -32,7 +32,7 @@ Created: 2026-06-05
 | Order | Feature | Research depth | Disposition | Current implementation status |
 | --- | --- | --- | --- | --- |
 | 1 | Auto-Reindexing | `decision-grade completed for first slice` | `local V1 complete` | Approved slice implemented, verified, and snapshotted |
-| 2 | Auto-Updating Code Wiki | `medium completed for first slice` | `local V1 complete` | Core status/dry-run-first planner/runner implemented and verified; no server/API wiring yet |
+| 2 | Auto-Updating Code Wiki | `medium completed for first slices` | `local V1 complete` | Core status/dry-run-first planner/runner plus read-only server status endpoint implemented and verified |
 | 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
@@ -1890,7 +1890,127 @@ Residual risks and next boundaries:
 
 - Local provider detection logs warn that Codex/Claude CLI version checks failed inside test paths, even though local `codex --version` and `claude --version` worked in shell checks. Treat unattended provider readiness as explicit policy, not assumed.
 - Existing manual generator incremental heuristics remain unchanged.
-- Server/API wiring remains a later boundary; do not add event wiring until MAIN approves whether auto-refresh should remain status-only, expose a manual endpoint, or attach to successful reindex events.
+- Server/API event or mutation wiring remains a later boundary; the read-only status endpoint added below does not run the generator or attach wiki refresh to reindex completion.
+
+### Task 2 API Status Wiring Checkpoint - 2026-06-07T13:25+01:00
+
+Goal:
+
+- Add the smallest useful server/API surface for the existing wiki auto-refresh planner without invoking generation.
+
+Proposal chosen:
+
+- `GET /api/wiki/auto-refresh`
+- Optional `?repo=<name>` through the existing `requestedRepo(req)` and `resolveRepo(...)` path.
+- Read-only status response only.
+- Default provider status is intentionally not ready because unattended server-side provider execution is not wired or approved.
+
+Focused public/source evidence:
+
+- GitNexus README states `gitnexus wiki` generates LLM-powered documentation from the knowledge graph and that the generator reads indexed graph structure, groups files into modules via LLM, generates module pages, and creates an overview page: https://github.com/abhigyanpatwari/GitNexus/blob/main/README.md#wiki-generation
+- GitNexus architecture maps wiki ownership to `src/core/wiki/`: https://github.com/abhigyanpatwari/GitNexus/blob/main/ARCHITECTURE.md
+- GitNexus issue #302 is an external generated-docs-site proposal, closed as not planned, with no development branch or PR attached: https://github.com/abhigyanpatwari/GitNexus/issues/302
+- GitNexus triage issue #422 lists wiki-related history, including PR #252 for large-repo grouping overflow, issue #166 for wiki context overflow, issue #156 for Ollama hangs, and issue #265 for wiki language support: https://github.com/abhigyanpatwari/GitNexus/issues/422
+- GitNexus issue #1400 shows Windows/local registry and freshness visibility has had real failure modes, reinforcing explicit status/freshness reporting before downstream automation: https://github.com/abhigyanpatwari/GitNexus/issues/1400
+
+Implemented behavior:
+
+- The route resolves a registered repo and returns `404`/`503` consistently with `/api/repo` when the repo is missing or still being analyzed.
+- The route checks graph freshness with `checkStalenessAsync(entry.path, entry.lastCommit)`.
+- The route reads existing wiki metadata with `readWikiAutoRefreshMeta(entry.storagePath)`.
+- The route calls `planWikiAutoRefresh(...)` with `dryRun: true`, `mutateOutput: false`, and a conservative provider-not-ready status.
+- The response includes repo identity (`repoName`, `repoPath`, `storagePath`) plus the planner shape.
+
+Explicit non-behavior:
+
+- Does not call `runWikiAutoRefresh`.
+- Does not instantiate or call `WikiGenerator`.
+- Does not run LLM providers.
+- Does not create, refresh, delete, publish, or mutate wiki output.
+- Does not attach wiki refresh to reindex completion.
+- Does not add dependencies, hooks, or provider configuration.
+
+TDD evidence:
+
+```powershell
+npm test -- test/unit/wiki-auto-refresh-api-wiring.test.ts
+```
+
+Red result:
+
+- Failed because `api.ts` did not contain `planWikiAutoRefresh`, proving the new source-wiring test was testing absent behavior.
+
+Green result:
+
+- Passed after adding the route and imports: 1 file, 1 test.
+
+Files changed in this slice:
+
+- `gitnexus/src/server/api.ts`
+- `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts`
+
+Verification before completion:
+
+```powershell
+npm test -- test/unit/wiki-auto-refresh.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts
+npm test -- test/unit/reindex-freshness-wiring.test.ts test/unit/reindex-api-wiring.test.ts
+npm run build
+git diff --check
+git status --short --branch
+```
+
+Results:
+
+- Focused wiki planner/API tests passed: 2 files, 9 tests.
+- Nearby reindex API/freshness wiring tests passed: 2 files, 23 tests.
+- `npm run build` passed.
+- `git diff --check` passed.
+- `git status --short --branch` showed only the intended docs/source/test files changed.
+
+### Task 2 Post-Endpoint Readiness Boundary - 2026-06-07T13:31+01:00
+
+Goal:
+
+- Determine the next safe Task 2 boundary after the read-only wiki auto-refresh status endpoint.
+
+Current expected vs actual:
+
+| Candidate next slice | Expected value | Actual source/risk evidence | Readiness verdict |
+| --- | --- | --- | --- |
+| Reindex-completion status wiring | After a reindex completes, the server could compute and expose the wiki auto-refresh plan. | Reindex completion already coordinates DB close/reopen, backend refresh, operation records, queue release, and pending reruns. Adding wiki status there is read-only but touches a sensitive lifecycle path. | Possible later, but not necessary until a UI/consumer needs persisted operation-level wiki status. |
+| Manual refresh/mutation endpoint | A user could request actual wiki refresh from the server. | `WikiGenerator.run()` creates/updates wiki files and may call LLM providers; `wikiCommand` can save config and prompt interactively. | Not ready without explicit provider, cost, output, auth, and rollback policy. |
+| Provider readiness policy | Server could detect OpenAI-compatible env/config or local CLI providers and mark provider ready. | Existing provider detection lives in CLI/wiki flows and local CLI helpers; tests have already shown local CLI version checks can behave differently under test. | Needs its own policy/implementation goal before any unattended generation. |
+| Defer Task 2 after status endpoint | Keep a safe, observable status surface and move to another feature or product decision. | Current endpoint gives users/agents a status view without mutating docs or spending tokens. | Recommended default. |
+
+Source ownership map:
+
+| Area | Current owner |
+| --- | --- |
+| Read-only auto-refresh planning | `gitnexus/src/core/wiki/auto-refresh.ts` |
+| Read-only server status endpoint | `gitnexus/src/server/api.ts` |
+| Manual wiki command/provider setup | `gitnexus/src/cli/wiki.ts` |
+| Actual generated output mutation | `gitnexus/src/core/wiki/generator.ts`, `html-viewer.ts` |
+| LLM HTTP/local provider execution | `gitnexus/src/core/wiki/llm-client.ts`, `local-cli-client.ts`, `cursor-client.ts` |
+| Reindex lifecycle | `gitnexus/src/server/api.ts`, `reindex-operations.ts`, `reindex-follow-up.ts` |
+
+Recommendation:
+
+- Treat Task 2 local V1 as complete after the read-only status endpoint.
+- Do not add a mutation endpoint or background generation without a new explicit MAIN approval.
+- Do not wire wiki status into reindex completion unless a consumer need is named; the manual `GET /api/wiki/auto-refresh` endpoint is enough for status discovery today.
+- If MAIN later wants to continue Task 2, the next defensible readiness goal should be provider/output mutation policy, not source implementation.
+
+Potential MAIN approval text if mutation is later desired:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Auto-Updating Code Wiki
+Approved slice: provider/output mutation policy V1 only. Define and implement explicit server-side provider readiness detection and mutation authorization for wiki refresh. The slice must not call WikiGenerator until tests prove disabled-by-default behavior, no interactive prompts, no credential writes, explicit opt-in, clear output path, rollback/reporting behavior, and safe failure handling.
+```
+
+If MAIN does not provide that policy approval:
+
+- Record `NO_NEXT_GOAL_CREATED` for Task 2 mutation work and choose the next feature/readiness goal from the remaining priority-dependent candidates.
 
 ## Task 3 - Multi-Repo Support Improvements
 

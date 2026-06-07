@@ -50,7 +50,7 @@ Supporting evidence:
 | Order | Feature | Research Depth | Disposition | Implementation Status | Gate |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Auto-Reindexing | Decision-grade completed for first slice | `local V1 complete` | Approved first slice implemented, verified, and snapshotted | Do not broaden without a new Goal |
-| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slice | `local V1 complete` | Core status/dry-run-first planner/runner implemented, verified, and snapshotted | Decide next Task 2 slice only through a new Goal |
+| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices | `local V1 complete` | Core status/dry-run-first planner/runner implemented and snapshotted; read-only server status endpoint implemented and verified | Do not add event wiring or mutation without a new Goal |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | No unified graph expansion without new approval |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
@@ -134,8 +134,10 @@ Current status:
 
 - User approved implementation on 2026-06-06 for the status/dry-run-first slice.
 - Core planner/runner implemented locally.
-- Focused wiki tests, focused reindex/freshness tests, build, and whitespace check passed.
-- No server/API wiring, no generated wiki output mutation, no unattended LLM generation.
+- Read-only server status endpoint implemented locally on 2026-06-07.
+- Core focused wiki tests, focused reindex/freshness tests, build, and whitespace check passed for the original core slice.
+- Endpoint verification passed under the active Goal.
+- No generated wiki output mutation, no unattended LLM generation.
 
 Intended local capability:
 
@@ -150,6 +152,8 @@ Implemented source surfaces:
 | --- | --- |
 | `gitnexus/src/core/wiki/auto-refresh.ts` | New planner/runner and meta reader |
 | `gitnexus/test/unit/wiki-auto-refresh.test.ts` | New focused tests |
+| `gitnexus/src/server/api.ts` | Read-only `GET /api/wiki/auto-refresh` status endpoint |
+| `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts` | Source-wiring test proving planner use and no generator invocation |
 
 Existing generator surfaces inspected:
 
@@ -165,6 +169,9 @@ Verification recorded:
 | Check | Result |
 | --- | --- |
 | `npm test -- test/unit/wiki-auto-refresh.test.ts` | Passed, 1 file, 8 tests |
+| `npm test -- test/unit/wiki-auto-refresh-api-wiring.test.ts` | Passed, 1 file, 1 test after red/green |
+| `npm test -- test/unit/wiki-auto-refresh.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts` | Passed, 2 files, 9 tests |
+| `npm test -- test/unit/reindex-freshness-wiring.test.ts test/unit/reindex-api-wiring.test.ts` | Passed, 2 files, 23 tests |
 | Focused wiki suite | Passed, 5 files, 127 tests |
 | Focused reindex/freshness suite | Passed, 7 files, 62 tests |
 | `npm run build` | Passed |
@@ -172,13 +179,13 @@ Verification recorded:
 
 Open decisions:
 
-- Whether the next Task 2 slice should remain core-only, expose a manual status command/endpoint, or wire status-only planning into successful reindex/freshness events.
+- Whether the next Task 2 slice should wire status-only planning into successful reindex/freshness events.
 - Whether any future mutation should require an explicit config key, CLI flag, operation request, or all three.
 - Provider/cost/publication policy remains required before unattended generation.
 
 Next gate:
 
-- Decide the next Task 2 boundary through a new Goal if MAIN wants API/server wiring or mutation behavior.
+- Complete current endpoint verification, then decide the next Task 2 boundary through a new Goal if MAIN wants event wiring or mutation behavior.
 
 ### Task 3 - Multi-Repo Support Improvements
 

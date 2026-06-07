@@ -56,6 +56,7 @@ import {
 import { startPendingRerun } from './reindex-follow-up.js';
 import { readReindexWatcherConfigFromEnv } from './reindex-watcher.js';
 import { runAutoReindexSweep } from './reindex-auto-sweep.js';
+import { planWikiAutoRefresh, readWikiAutoRefreshMeta } from '../core/wiki/auto-refresh.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -996,6 +997,53 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to get repo info' });
+    }
+  });
+
+  // Report whether wiki auto-refresh would run for a registered repo.
+  // This is intentionally status-only: it does not call the generator, run an
+  // LLM provider, or mutate stored wiki output.
+  app.get('/api/wiki/auto-refresh', async (req, res) => {
+    try {
+      const entry = await resolveRepo(requestedRepo(req), false, req);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found. Run: gitnexus analyze' });
+        return;
+      }
+      if (entry.__timedOut) {
+        res.status(503).json({
+          error: `Repository analysis for "${entry.repoName}" is taking longer than expected. Please try again in a moment.`,
+        });
+        return;
+      }
+
+      const staleness = await checkStalenessAsync(entry.path, entry.lastCommit);
+      const wikiMeta = await readWikiAutoRefreshMeta(entry.storagePath);
+      const plan = planWikiAutoRefresh({
+        graphFreshness: {
+          isFresh: !staleness.isStale,
+          indexedCommit: entry.lastCommit,
+          source: 'server-api',
+          reason: staleness.hint,
+        },
+        wikiMeta,
+        provider: {
+          ready: false,
+          source: 'server-api',
+          reason: 'provider-not-wired-through-server',
+        },
+        dryRun: true,
+        mutateOutput: false,
+      });
+
+      res.json({
+        repoName: entry.name,
+        repoPath: entry.path,
+        storagePath: entry.storagePath,
+        ...plan,
+      });
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to get wiki auto-refresh status' });
     }
   });
 
