@@ -16,7 +16,7 @@ Current state:
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
 - Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
-- Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
+- Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
 
@@ -39,6 +39,7 @@ Current state:
 - 2026-06-05T14:01+01:00 TDD discipline was recorded: once implementation is approved, behavior changes should proceed red-green-refactor with one focused failing test before production code.
 - 2026-06-05: User chose a Codex Goal-backed non-interactive workflow: each feature has a Goal Contract, work proceeds through `codex exec` worker runs, and the supervisor thread keeps one active feature Goal at a time.
 - 2026-06-05: Goal Contracts were reviewed against OpenAI Codex Goal guidance and tightened to include outcome, verification surface, constraints, boundaries, iteration policy, and blocked stop condition.
+- 2026-06-07: User superseded the mandatory Goal Contract workflow. Current rule: run autonomously from selected-task packets documented in `AGENTS.md`, `plans.md`, `feature-map.md`, and `documentation.md`; formal Goal Contracts / Goal tool use are optional tracking only.
 - 2026-06-05: Upstream Docker README/compose guidance and embedding PR evidence were reconciled with Steve's local Podman profile. Decision: default to Podman/container-side indexing for Podman-managed repos; do not configure Windows/User PowerShell `GITNEXUS_EMBEDDING_*` variables unless host CLI parity is explicitly requested.
 - 2026-06-05: Redundant `gitnexus-host` compatibility helper was quarantined. New workflow uses only bare `gitnexus` for the host/npm CLI and `gitnexus-podman` for the Podman/container runtime.
 - 2026-06-05T16:31+01:00: Auto-Reindexing now has a decision-complete implementation plan in `plans.md`, including expected vs actual behavior, proposed write set, helper boundary, TDD order, acceptance criteria, and required MAIN approval text. Source implementation remains blocked.
@@ -2027,13 +2028,13 @@ Boundary:
 
 - This was a workstation/runtime guidance correction. It did not approve GitNexus source implementation and did not set host PowerShell/User embedding environment variables.
 
-### 2026-06-05 - Goal-Backed Non-Interactive Workflow Recorded
+### 2026-06-05 - Historical Goal-Backed Non-Interactive Workflow
 
 Objective:
 
 - Record how future agents should run this work with Codex Goals and non-interactive worker runs.
 
-Decision:
+Historical decision:
 
 - Each candidate feature now has a Goal Contract in `plans.md`.
 - The supervisor thread owns the active feature Goal and keeps the work to one feature at a time.
@@ -2043,6 +2044,7 @@ Decision:
 Boundary:
 
 - This workflow note does not open implementation. The gate remains `MAIN | READY_FOR_IMPLEMENTATION`.
+- Superseded on 2026-06-07 by the autonomous selected-task packet workflow recorded in `AGENTS.md`, `plans.md`, `implement.md`, `feature-map.md`, and the current status section above. Formal Goal Contracts and the Codex Goal tool are now optional tracking only.
 
 ### 2026-06-05 - Goal Contract Review Against Codex Guidance
 

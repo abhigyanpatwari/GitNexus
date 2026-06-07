@@ -15,7 +15,7 @@ Authoritative long-horizon files:
 | File | Role |
 | --- | --- |
 | `prompt.md` | Durable objective, constraints, branch, and candidate feature list |
-| `plans.md` | Live queue, goal contracts, implementation/readiness plans |
+| `plans.md` | Live queue, selected-task packets, implementation/readiness plans |
 | `implement.md` | Execution discipline, TDD, approval, routing, and documentation rules |
 | `documentation.md` | Checkpoint authority and current truth ledger |
 

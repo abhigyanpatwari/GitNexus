@@ -8,11 +8,11 @@ Created: 2026-06-05
 - The source repo bundle is canonical. Old planning files in `C:\Users\steve\podman\gitnexus` are legacy source material only.
 - Use branch `local/gitnexus-local-features` for all approved feature work.
 - Implement one feature at a time on the shared branch.
-- Run the work through one active feature Goal at a time; each feature's Goal Contract is below.
-- Goal lifecycle is sequential: finish the current readiness or implementation Goal, mark it complete, then create the next Goal only after the next feature/slice boundary is known. Do not pre-create a backlog of active Goals.
-- Goal baton rule: after every completed or blocked Goal, create the next implementation Goal if the next approved slice is known; otherwise create the next readiness/research Goal if one is defensible. If neither is possible, record `NO_NEXT_GOAL_CREATED` in `documentation.md` with the blocker.
-- Each Goal Contract below uses the strong six-part form: outcome, verification surface, constraints, boundaries, iteration policy, and blocked stop condition.
-- Non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this four-file bundle before acting.
+- Run the work through one selected task at a time; the selected-task packet is defined by this queue plus `feature-map.md` and `documentation.md`.
+- Formal Goal Contracts are no longer required for this workstream. Older Goal Contract sections remain useful historical/task-brief material, but the active control rule is the selected-task packet.
+- Task baton rule: after every completed or blocked selected task, continue with the next implementation task if the next approved slice is known; otherwise continue with the next readiness/research task if one is defensible. If neither is possible, record `NO_NEXT_TASK_SELECTED` in `documentation.md` with the blocker.
+- Each selected-task packet should include task name, goal shape, scope, verification surface, stop rule, and write gate if implementation is possible.
+- Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this four-file bundle before acting.
 - Comprehensive feature map: `feature-map.md` is the single-place map for feature status, dependencies, source surfaces, tests, gates, evidence files, and next actions.
 - Treat the shared branch as a small-batch lane, not a dumping ground: keep WIP to one implementation feature, verify each slice, and checkpoint before moving to the next feature.
 - Implementation is blocked until `MAIN | READY_FOR_IMPLEMENTATION` names the accepted write scope.
@@ -57,9 +57,9 @@ Default recommendation:
 - Use the approval boundary already recorded in the Task 6 no-slice/readiness checkpoint.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
 
-## Feature Goal Contracts
+## Historical Feature Task Briefs
 
-The Feature Queue above is the authoritative execution order. Goal contracts below may retain previously drafted readiness material, but their heading numbers and the queue control the order of work.
+The Feature Queue and Next Task Queue above are the authoritative execution controls. The sections below retain previously drafted Goal Contract material as historical task briefs and evidence, not as a mandatory formal Goal Contract system.
 
 ### Goal 1 - Auto-Reindexing
 

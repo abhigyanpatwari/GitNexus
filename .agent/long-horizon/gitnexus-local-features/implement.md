@@ -32,33 +32,34 @@ Planning and documentation edits to this bundle are allowed when they directly i
 - Implement features sequentially.
 - Keep commits scoped: planning-only commits first, then one feature slice at a time.
 
-## Goal-Backed Non-Interactive Workflow
+## Autonomous Selected-Task Workflow
 
-Use Codex Goals as the feature-level completion contract for this workstream.
+Use selected-task work packets as the feature-level completion control for this workstream.
 
-- Keep one active feature Goal at a time.
-- Create the next Goal only after the current Goal is achieved or legitimately blocked and the next feature/slice boundary is known.
-- Do not pre-create multiple Goals for the feature backlog.
-- Goal baton rule: after a Goal is marked `complete` or `blocked`, the supervisor turn must not end until one of these is true:
-  - `NEXT_GOAL_CREATED`: `get_goal` confirms no active Goal, the next approved implementation slice is known, and the next Goal has been created.
-  - `READINESS_GOAL_CREATED`: implementation is not ready, but the next research/readiness boundary is known and a readiness Goal has been created.
-  - `NO_NEXT_GOAL_CREATED`: no defensible next Goal exists, and `documentation.md` records the exact blocker and what would unlock progress.
-- Baton audit checklist: call `get_goal`, read `plans.md`, `documentation.md`, and `feature-map.md`, choose implementation/readiness/no-next, then document the result before final response.
-- The active Goal Contract is recorded in `plans.md`.
-- `documentation.md` records the current checkpoint truth for that Goal.
-- Non-interactive `codex exec` worker runs must repeat the active Goal Contract in the prompt.
+- Keep one selected task active at a time.
+- Select the next task only after the current selected task is achieved or legitimately blocked and the next feature/slice boundary is known.
+- Do not pre-create multiple task tracks for the feature backlog.
+- Task baton rule: after a selected task is finished or blocked, the supervisor turn must not end until one of these is true:
+  - `NEXT_TASK_SELECTED`: the next approved implementation slice is known and recorded.
+  - `READINESS_TASK_SELECTED`: implementation is not ready, but the next research/readiness boundary is known and recorded.
+  - `NO_NEXT_TASK_SELECTED`: no defensible next task exists, and `documentation.md` records the exact blocker and what would unlock progress.
+- Baton audit checklist: read `plans.md`, `documentation.md`, and `feature-map.md`, choose implementation/readiness/no-next, then document the result before final response.
+- The selected-task packet is recorded in `plans.md` and/or `feature-map.md`.
+- `documentation.md` records the current checkpoint truth for that selected task.
+- Non-interactive `codex exec` worker runs must repeat the selected-task packet in the prompt.
 - Worker runs must read `AGENTS.md`, `prompt.md`, `plans.md`, this file, and `documentation.md` before acting.
 - Worker runs must not switch features, widen scope, or start implementation without `MAIN | READY_FOR_IMPLEMENTATION`.
-- A Goal is complete only when its verification surface passes or its blocker is recorded clearly.
+- A selected task is complete only when its verification surface passes or its blocker is recorded clearly.
+- The Codex Goal tool is optional tracking only; do not block autonomous work merely because a formal Goal Contract has not been created.
 
-Minimum Goal standard:
+Minimum selected-task packet standard:
 
 - A durable objective.
 - A verifiable stopping condition.
 
-Strong Goal standard for this workstream:
+Strong selected-task packet standard for this workstream:
 
-- Outcome: what must be true when the Goal is done.
+- Outcome: what must be true when the selected task is done.
 - Verification surface: the tests, commands, reports, artifacts, or source evidence that prove the outcome.
 - Constraints: what must not regress or be changed.
 - Boundaries: allowed files, repos, tools, data, branches, and routes.
@@ -74,8 +75,8 @@ Operational additions required for non-interactive worker runs:
 Default worker prompt skeleton:
 
 ```text
-Active Goal:
-<copy the feature Goal Contract from plans.md>
+Selected task:
+<copy the selected-task packet from plans.md / feature-map.md>
 
 Required context:
 - Read AGENTS.md first.
@@ -102,7 +103,7 @@ Default local `codex exec` shape:
 
 ```powershell
 @'
-<worker prompt skeleton filled with the active Goal Contract>
+<worker prompt skeleton filled with the selected-task packet>
 '@ | codex exec `
   --cd "C:\Users\steve\projects\gitnexus\source-rc109-integration" `
   --sandbox workspace-write `
@@ -118,13 +119,13 @@ Non-interactive Goal caveat:
 
 - Official OpenAI docs support `codex exec` for scripts/CI-style automation and `/goal` for durable objectives, but current public GitHub issue/PR evidence shows non-interactive Goal control is still evolving.
 - There is no stable dedicated `codex goal ...` CLI contract documented for headless wrappers.
-- If using Goals through `codex exec`, make the prompt explicit: create or continue the Goal with the Goal tool, report whether it was created/active/completed/blocked, and do not rely on implicit continuation.
-- Smoke-test Goal tool availability in the current session when it matters; do not infer tool availability solely from `features.goals = true`.
-- Prefer a fresh non-interactive worker prompt per feature slice unless local CLI help and a smoke test prove promptless resume is available.
+- Prefer selected-task packets in prompts over relying on implicit Goal lifecycle behavior.
+- If using Goals through `codex exec`, make the prompt explicit and smoke-test Goal tool availability in the current session; do not infer tool availability solely from `features.goals = true`.
+- Prefer a fresh non-interactive worker prompt per selected task unless local CLI help and a smoke test prove promptless resume is available.
 
 ## Skills And Tool Routing
 
-For goal-backed worker runs, point agents to these local context files first:
+For autonomous selected-task worker runs, point agents to these local context files first:
 
 - `AGENTS.md`
 - `.agent/long-horizon/gitnexus-local-features/prompt.md`
