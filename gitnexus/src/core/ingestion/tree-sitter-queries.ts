@@ -1378,8 +1378,23 @@ export const KOTLIN_QUERIES = `
     (type_identifier) @call.name)) @call
 
 ; ── Infix function calls (e.g., a to b, x until y) ──────────────────────
+; tree-sitter-kotlin models infix_expression as three UNNAMED-FIELD children:
+; (operand) (operator) (operand) — all three are simple_identifier for
+; "a to b". The old rule "(infix_expression (simple_identifier) @call.name)"
+; matched EVERY simple_identifier child, so it captured the operands a/b as
+; spurious @call.name calls (F49, issue #1919). There is no operator: field to
+; anchor on, so anchor positionally: the operator is the middle child, flanked
+; by an operand on each side. End-anchored on both sides so only the lone
+; middle simple_identifier (the infix function) is captured; chained
+; "a to b to c" still matches each nested infix_expression's own operator.
 (infix_expression
-  (simple_identifier) @call.name) @call
+  .
+  (_)
+  .
+  (simple_identifier) @call.name
+  .
+  (_)
+  .) @call
 
 ; Write access: obj.field = value
 (assignment
