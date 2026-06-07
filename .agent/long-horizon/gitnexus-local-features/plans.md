@@ -1103,6 +1103,45 @@ Results:
 - Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
 - Diff whitespace check passed.
 
+Second expansion checkpoint:
+
+- 2026-06-07T14:00+01:00: Selected `/api/graph` as the next safe deterministic generated route fixture.
+- Evidence:
+  - frontend backend client fetches `/api/graph` during server/repo connection,
+  - footer status renders graph stats from the loaded graph,
+  - existing E2E tests already use `contentinfo`, `status-ready`, and `graph-stats` as stable assertion surfaces.
+- During readiness, fixed the previous `/api/repo` fixture contract:
+  - red regression showed it mocked an empty graph while asserting graph stats,
+  - generated `/api/repo` specs now mock a two-node, one-edge graph and assert `2 nodes` / `1 edge`.
+- Added `/api/graph` generated-spec support:
+  - red test showed `/api/graph` proposals were still blocked by the route guard,
+  - green implementation emits a deterministic mocked-backend Playwright spec,
+  - route support policy now names `/api/repos`, `/api/repo`, and `/api/graph`.
+- Still deferred:
+  - browser execution,
+  - Playwright config changes,
+  - CI mutation,
+  - MCP/API exposure,
+  - GitHub automation,
+  - live-backend generated specs,
+  - generated specs beyond explicitly approved deterministic mocked route fixtures.
+
+Verification:
+
+```powershell
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused renderer: 1 file, 7 tests passed.
+- Focused Task 6 suite: 3 files, 13 tests passed.
+- Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
+- Diff whitespace check passed.
+
 ### Task 7 Approval Packet - OCaml Implementation Goal
 
 Timestamp: 2026-06-06T13:48+01:00

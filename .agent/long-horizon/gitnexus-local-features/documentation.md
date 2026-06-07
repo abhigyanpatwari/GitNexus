@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 generated E2E route support broadened to deterministic mocked `/api/repo` specs
+- Mode: Task 6 generated E2E route support broadened to deterministic mocked `/api/graph` specs
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos` and `/api/repo`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
 - Goal workflow: one active feature Goal at a time; complete or block the current Goal before creating the next; after every completed or blocked Goal, the supervisor must create the next Goal with the Goal tool or record `NO_NEXT_GOAL_CREATED` with the blocker; non-interactive `codex exec` worker runs must repeat the active Goal Contract and point to this bundle.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -32,7 +32,7 @@ Current state:
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
 - Task 7 OCaml Support readiness is complete.
-- End-to-End Test Generation has completed proposal/report, thin CLI local V1, and deterministic generated Playwright output for mocked `/api/repos` and `/api/repo` route proposals. Broader generated tests remain implementation-blocked until an exact route/scenario Goal is opened. OCaml Support has completed experimental `.ml` / `.mli` local V1; deeper semantics remain deferred.
+- End-to-End Test Generation has completed proposal/report, thin CLI local V1, and deterministic generated Playwright output for mocked `/api/repos`, `/api/repo`, and `/api/graph` route proposals. Broader generated tests remain implementation-blocked until an exact route/scenario Goal is opened. OCaml Support has completed experimental `.ml` / `.mli` local V1; deeper semantics remain deferred.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
 - 2026-06-05T10:55+01:00 GitHub PR/issue deepening confirmed that OSS PostToolUse staleness behavior is notification-only and intentionally distinct from Enterprise Auto-reindexing.
@@ -85,6 +85,60 @@ Current state:
 - 2026-06-07T13:31+01:00: Task 2 post-endpoint readiness recommends treating Task 2 local V1 as complete at read-only status. Mutation/manual refresh/provider readiness requires a separate MAIN policy approval before source implementation.
 - 2026-06-07T13:33+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: Task 2 mutation/manual refresh/provider readiness requires a MAIN product/policy decision before source implementation, and the remaining non-Task-2 candidates are priority-dependent. Candidate next Goals are provider/output mutation policy readiness, Task 4 PR Impact MCP/GitHub-readiness, broader E2E scenario support, or deeper OCaml semantics.
 - 2026-06-07T13:51+01:00: Active Task 6 Goal broadened deterministic generated-spec support from mocked `/api/repos` route proposals to mocked `/api/repo` route proposals. TDD red/green completed; focused E2E renderer/CLI/report tests, build, and diff checks passed. Browser execution, live-backend generated specs, CI mutation, Playwright config changes, MCP/API exposure, GitHub automation, and broader route/scenario generation remain deferred.
+- 2026-06-07T14:00+01:00: Active Task 6 follow-on Goal selected `/api/graph` as the next deterministic route fixture after source evidence showed footer graph stats are stable web-first assertions. During readiness, a `/api/repo` generated-spec mismatch was found and fixed: graph stats now come from a non-empty mocked `/api/graph` payload rather than stale `/api/repo.stats` assumptions. TDD red/green completed; focused renderer/CLI/report tests, build, and diff checks passed.
+
+### 2026-06-07T14:00+01:00 - Task 6 `/api/graph` Generated Spec Support
+
+Goal:
+
+- Determine and, if evidence supports it, implement exactly one additional deterministic generated route fixture after `/api/repos` and `/api/repo`.
+
+Evidence:
+
+- `gitnexus-web/src/services/backend-client.ts` fetches `/api/graph` during server/repo connection.
+- `gitnexus-web/src/components/StatusBar.tsx` renders stable footer graph stats from `graph.nodes.length` and `graph.relationships.length`.
+- Existing Playwright tests use `contentinfo`, `status-ready`, and `graph-stats` as stable web-first assertion surfaces.
+
+Implemented:
+
+- Repaired the previous `/api/repo` generated fixture so its graph-stat assertions align with mocked `/api/graph` data.
+- Added a regression test proving `/api/repo` generated specs do not assert graph stats from an empty graph payload.
+- Added deterministic `/api/graph` generated-spec support.
+- Added a golden `/api/graph` generated Playwright fixture.
+- Expanded the route policy diagnostic to name `/api/repos`, `/api/repo`, and `/api/graph` as the current deterministic V1 generated fixtures.
+
+TDD checkpoint:
+
+- Red test 1: `/api/repo` generated spec still mocked an empty graph while asserting footer graph stats.
+- Green fix 1: `/api/repo` generated spec now mocks a two-node, one-edge graph and asserts `2 nodes` / `1 edge`.
+- Red test 2: `/api/graph` proposal was blocked by the supported-route guard.
+- Green fix 2: `/api/graph` proposals now render deterministic mocked-backend Playwright text.
+
+Verification:
+
+```powershell
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts
+npm test -- test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused renderer: 1 file, 7 tests passed.
+- Focused Task 6 suite passed: 3 files, 13 tests.
+- Build passed with existing Vite chunk-size and ineffective dynamic-import warnings.
+- Diff whitespace check passed.
+
+Still out of scope:
+
+- Browser execution.
+- Playwright config changes.
+- CI mutation.
+- MCP/API exposure.
+- GitHub automation.
+- Live-backend generated specs.
+- Generated specs beyond explicitly approved deterministic mocked route fixtures.
 
 ### 2026-06-07T13:51+01:00 - Task 6 `/api/repo` Generated Spec Support
 

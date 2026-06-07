@@ -106,6 +106,58 @@ describe('E2E generated spec renderer', () => {
     expect(result.specs[0].text).toBe(golden);
   });
 
+  it('keeps /api/repo graph-stat assertions aligned with mocked /api/graph data', () => {
+    const result = renderE2EGeneratedSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-repo',
+          title: 'Exercise route /api/repo after impacted API change',
+          target_spec: 'gitnexus-web/e2e/api-repo.spec.ts',
+          evidence: ['Route /api/repo has risk HIGH'],
+        },
+      ],
+    });
+
+    const text = result.specs[0].text;
+
+    expect(text).not.toContain('JSON.stringify({ nodes: [], relationships: [] })');
+    expect(text).toContain("await expect(page.getByRole('contentinfo').getByTestId('graph-stats')).toContainText('2 nodes');");
+    expect(text).toContain("await expect(page.getByRole('contentinfo').getByTestId('graph-stats')).toContainText('1 edge');");
+  });
+
+  it('renders deterministic Playwright text for /api/graph route proposals', () => {
+    const result = renderE2EGeneratedSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-graph',
+          title: 'Exercise route /api/graph after impacted API change',
+          target_spec: 'gitnexus-web/e2e/api-graph.spec.ts',
+          evidence: [
+            'Route /api/graph has risk HIGH',
+            'Consumers: 1',
+            'Mismatches: 0',
+          ],
+        },
+      ],
+    });
+
+    expect(result.blocked).toEqual([]);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0].path).toBe(
+      'gitnexus-web/e2e/generated/route-api-graph.generated.spec.ts',
+    );
+
+    const golden = readFileSync(
+      path.join(__dirname, '../fixtures/e2e-test-generation/generated-api-graph-route.spec.ts'),
+      'utf-8',
+    ).trim();
+    expect(result.specs[0].text).toBe(golden);
+  });
+
   it('blocks unsafe or unsupported proposals instead of emitting brittle specs', () => {
     const result = renderE2EGeneratedSpecs({
       ...baseReport,

@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';
 
-test.describe('Generated E2E plan: Exercise route /api/repo after impacted API change', () => {
-  test('route /api/repo exposes selected repo metadata through mocked backend data', async ({ page }) => {
+test.describe('Generated E2E plan: Exercise route /api/graph after impacted API change', () => {
+  test('route /api/graph populates footer graph stats through mocked backend data', async ({ page }) => {
     await page.route(`${BACKEND_URL}/api/repos`, (route) =>
       route.fulfill({
         contentType: 'application/json',
@@ -11,23 +11,21 @@ test.describe('Generated E2E plan: Exercise route /api/repo after impacted API c
       }),
     );
 
-    await page.route(
-      (url) => url.origin === BACKEND_URL && url.pathname === '/api/repo',
-      (route) =>
-        route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify({
-            name: 'generated-fixture-repo',
-            path: '/tmp/generated-fixture-repo',
-            repoPath: '/tmp/generated-fixture-repo',
-            stats: {
-              files: 7,
-              nodes: 2,
-              edges: 1,
-              processes: 3,
-            },
-          }),
+    await page.route(`${BACKEND_URL}/api/repo`, (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          name: 'generated-fixture-repo',
+          path: '/tmp/generated-fixture-repo',
+          repoPath: '/tmp/generated-fixture-repo',
+          stats: {
+            files: 7,
+            nodes: 2,
+            edges: 1,
+            processes: 3,
+          },
         }),
+      }),
     );
 
     await page.route(`${BACKEND_URL}/api/graph**`, (route) =>
