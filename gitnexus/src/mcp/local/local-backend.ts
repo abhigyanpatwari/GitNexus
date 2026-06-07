@@ -400,7 +400,18 @@ export class LocalBackend {
     const nextContext = new Map<string, CodebaseContext>();
     const assigned = new Map<string, string>(); // id -> resolved repo path
 
-    for (const entry of entries) {
+    // Assign ids over a path-sorted view so a registered clone always gets the
+    // same id regardless of the registry's on-disk order: the bare name and
+    // each path-derived suffix become a pure function of the resolved-path set,
+    // not of iteration order, so a memorized id can't drift to a different
+    // clone after a registry reorder (#2067 follow-up).
+    const ordered = [...entries].sort((a, b) => {
+      const ra = path.resolve(a.path);
+      const rb = path.resolve(b.path);
+      return ra < rb ? -1 : ra > rb ? 1 : 0;
+    });
+
+    for (const entry of ordered) {
       // path.resolve (not canonicalizePath) matches the pre-#2054 collision
       // check and keeps refreshRepos free of mockable deps on the hot init
       // path. registerRepo writes path.resolve'd paths (not realpath), and
@@ -408,7 +419,6 @@ export class LocalBackend {
       // keying id assignment on path.resolve here is consistent and correct.
       const resolved = path.resolve(entry.path);
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
-      assigned.set(id, resolved);
 
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
@@ -490,7 +500,9 @@ export class LocalBackend {
    *
    * `assigned` maps every id handed out in this refresh to its resolved path,
    * so a candidate is "free" when it is unused or already owned by this exact
-   * path. A returned id never overwrites a different path's handle (#2054).
+   * path. This method records its own assignment into `assigned` before
+   * returning, so the map-update is the function's invariant, not a caller
+   * obligation. A returned id never overwrites a different path's handle (#2054).
    */
   private assignRepoId(
     name: string,
@@ -503,8 +515,14 @@ export class LocalBackend {
       const owner = assigned.get(id);
       return owner === undefined || owner === resolved;
     };
+    // Record the assignment so subsequent entries in the same refresh see this
+    // id as taken (the function owns its own invariant).
+    const claim = (id: string): string => {
+      assigned.set(id, resolved);
+      return id;
+    };
 
-    if (free(base)) return base;
+    if (free(base)) return claim(base);
 
     // Legacy suffix from the *raw* path — kept byte-for-byte so the first
     // colliding duplicate keeps the id it had before #2054 (#1658 tier).
@@ -512,14 +530,14 @@ export class LocalBackend {
       .toString('base64url')
       .slice(0, REPO_ID_HASH_LENGTH)
       .toLowerCase()}`;
-    if (free(legacy)) return legacy;
+    if (free(legacy)) return claim(legacy);
 
     // Real collision — hash the resolved path. Lowercase hex survives the
     // `paramLower` lookup in resolveRepoFromCache.
     const digest = createHash('sha256').update(resolved).digest('hex');
     for (let len = REPO_ID_HASH_LENGTH; len <= digest.length; len++) {
       const candidate = `${base}-${digest.slice(0, len)}`;
-      if (free(candidate)) return candidate;
+      if (free(candidate)) return claim(candidate);
     }
 
     // Two distinct resolved paths sharing a full SHA-256 digest is a hash

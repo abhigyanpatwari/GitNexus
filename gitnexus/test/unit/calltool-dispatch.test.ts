@@ -1452,6 +1452,25 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     }
   });
 
+  it('keeps each clone’s generated id stable across a registry reorder (#2067)', async () => {
+    // Ids are assigned over a path-sorted view, so the same resolved path always
+    // gets the same id regardless of registry order — a memorized hashed id
+    // can't drift to a different clone after a reorder.
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+    const before: Record<string, string> = {};
+    for (const d of dirs) before[d] = (await backend.resolveRepo(d)).id;
+
+    // Reverse the registry order and refresh.
+    (listRegisteredRepos as any).mockResolvedValue([...entries].reverse());
+    await backend.callTool('list_repos', {});
+
+    for (const d of dirs) {
+      expect((await backend.resolveRepo(d)).id).toBe(before[d]); // same path → same id
+    }
+  });
+
   it('refresh stability: reorder, remove-one, and re-add never drop a different clone (#2054)', async () => {
     const { dirs, entries } = makeSiblingClonesFixture(4);
     const listedPaths = async () =>
@@ -1462,7 +1481,10 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     await backend.init();
     expect(await listedPaths()).toEqual(allPaths);
 
-    // Reordering the registry must not silently lose a clone.
+    // Reordering the registry must not silently lose a clone. (Under path-sorted
+    // assignment a reorder is a no-op for id assignment; id stability across
+    // reorder is asserted separately above. This step remains a set-survival
+    // guard.)
     (listRegisteredRepos as any).mockResolvedValue([...entries].reverse());
     expect(await listedPaths()).toEqual(allPaths);
 
@@ -1481,13 +1503,15 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
   });
 
   it('evicts the pooled connection when a bare id is reassigned to a different clone on refresh (#2054)', async () => {
-    // Two clones of one repo (name "dup"). Registry order decides which clone
-    // owns the bare "dup" id; reordering moves it to the other clone. Because
-    // the LadybugDB pool keys connections by id and ignores dbPath on reuse,
-    // a moved id MUST drop its stale pooled connection (#2054 / Workflow 5).
+    // Two clones of one repo (name "dup"). With path-sorted assignment (#2067)
+    // the bare "dup" id goes to the lowest-sorting resolved path, so the id is
+    // reassigned by a PATH-SET change — adding a clone that sorts before the
+    // current owner — not by a registry reorder. Because the LadybugDB pool
+    // keys connections by id and ignores dbPath on reuse, a reassigned id MUST
+    // drop its stale pooled connection (#2054 / #2067).
     const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-remap-'));
     duplicateFixtureDirs.push(parent);
-    const a = path.join(parent, 'A');
+    const a = path.join(parent, 'A'); // 'A' sorts before 'B'
     const b = path.join(parent, 'B');
     const mk = (dir: string) => {
       mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
@@ -1502,19 +1526,22 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     const entryA = mk(a);
     const entryB = mk(b);
 
-    (listRegisteredRepos as any).mockResolvedValue([entryA, entryB]);
+    // Start with only B → B owns the bare "dup" id.
+    (listRegisteredRepos as any).mockResolvedValue([entryB]);
     await backend.init();
-    expect((await backend.resolveRepo(a)).id).toBe('dup'); // A owns the bare id
+    expect((await backend.resolveRepo(b)).id).toBe('dup'); // B owns the bare id
 
-    // Refresh with reversed order → the bare "dup" id now points at B.
+    // Add A (sorts before B) → the bare "dup" id is reassigned to A.
     (closeLbug as any).mockClear();
     (listRegisteredRepos as any).mockResolvedValue([entryB, entryA]);
     await backend.callTool('list_repos', {});
 
-    expect((await backend.resolveRepo(b)).id).toBe('dup'); // B now owns it
-    expect((await backend.resolveRepo(a)).repoPath).toBe(a); // A still present, not dropped
-    // The stale pooled connection for the moved id was force-closed.
+    expect((await backend.resolveRepo(a)).id).toBe('dup'); // A now owns it
+    expect((await backend.resolveRepo(b)).repoPath).toBe(b); // B still present, not dropped
+    expect((await backend.resolveRepo(b)).id).not.toBe('dup'); // B moved off the bare id
+    // The stale pooled connection for the reassigned id was force-closed, exactly once.
     expect(closeLbug).toHaveBeenCalledWith('dup');
+    expect(closeLbug).toHaveBeenCalledTimes(1);
   });
 
   it('evicts the pooled connection when a repo id vanishes from the registry (#2054)', async () => {
