@@ -1572,6 +1572,47 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
 
     expect(closeLbug).toHaveBeenCalledWith('solo');
   });
+
+  it('initializes the resolved clone, not a clone the id was remapped to mid-call (#2067)', async () => {
+    // ensureInitialized takes the resolved RepoHandle, so even if a concurrent
+    // refresh remaps the (floating) bare id to a different clone between resolve
+    // and init, it opens the clone the caller actually resolved — not whatever
+    // the id now points at. Pre-fix (by-id re-derivation) it opened the remapped
+    // clone's database.
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-race-'));
+    duplicateFixtureDirs.push(parent);
+    const a = path.join(parent, 'A'); // 'A' sorts before 'B'
+    const b = path.join(parent, 'B');
+    const mk = (dir: string) => {
+      mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+      return {
+        ...MOCK_REPO_ENTRY,
+        name: 'dup',
+        path: dir,
+        storagePath: path.join(dir, '.gitnexus'),
+      };
+    };
+    const entryA = mk(a);
+    const entryB = mk(b);
+
+    // Only B registered → B owns the bare "dup" id; resolve it.
+    (listRegisteredRepos as any).mockResolvedValue([entryB]);
+    await backend.init();
+    const resolvedB = await backend.resolveRepo(b);
+    expect(resolvedB.id).toBe('dup');
+
+    // Concurrent refresh adds A (sorts first) → the bare "dup" id now maps to A.
+    (listRegisteredRepos as any).mockResolvedValue([entryB, entryA]);
+    await backend.callTool('list_repos', {});
+    expect((await backend.resolveRepo(a)).id).toBe('dup'); // id remapped to A
+
+    // Initialize with the handle resolved BEFORE the remap → must open B's path.
+    (initLbug as any).mockClear();
+    await (backend as any).ensureInitialized(resolvedB);
+    expect(initLbug).toHaveBeenCalledWith('dup', path.join(b, '.gitnexus', 'lbug'));
+    expect(initLbug).not.toHaveBeenCalledWith('dup', path.join(a, '.gitnexus', 'lbug'));
+  });
 });
 
 // ─── getContext ──────────────────────────────────────────────────────

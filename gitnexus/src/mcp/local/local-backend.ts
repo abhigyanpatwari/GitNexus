@@ -729,13 +729,19 @@ export class LocalBackend {
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────
 
-  private async ensureInitialized(repoId: string): Promise<void> {
+  /**
+   * Ensure the LadybugDB pool is open for the *resolved* repo.
+   *
+   * Takes the `RepoHandle` the caller resolved — NOT a bare id — so it
+   * initializes the exact clone that `resolveRepo` returned. Re-deriving the
+   * handle by id here let a concurrent `refreshRepos` remap the (floating) bare
+   * id between resolve and init, opening a different clone's database (#2067).
+   */
+  private async ensureInitialized(repo: RepoHandle): Promise<void> {
+    const repoId = repo.id;
     // If a reinit is already in progress for this repo, wait for it
     const pending = this.reinitPromises.get(repoId);
     if (pending) return pending;
-
-    const handle = this.repos.get(repoId);
-    if (!handle) throw new Error(`Unknown repo: ${repoId}`);
 
     // Check if the index was rebuilt since we opened the connection (#297).
     // Throttle staleness checks to at most once per 5 seconds per repo to
@@ -747,10 +753,10 @@ export class LocalBackend {
 
       this.lastStalenessCheck.set(repoId, now);
       try {
-        const metaPath = path.join(handle.storagePath, 'meta.json');
+        const metaPath = path.join(repo.storagePath, 'meta.json');
         const metaRaw = await fs.readFile(metaPath, 'utf-8');
         const meta = JSON.parse(metaRaw);
-        if (meta.indexedAt && meta.indexedAt !== handle.indexedAt) {
+        if (meta.indexedAt && meta.indexedAt !== repo.indexedAt) {
           // Index was rebuilt — close stale connection and re-init.
           // Wrap in reinitPromises to prevent TOCTOU race where concurrent
           // callers both detect staleness and double-close the pool.
@@ -758,8 +764,8 @@ export class LocalBackend {
             try {
               await closeLbug(repoId);
               this.initializedRepos.delete(repoId);
-              handle.indexedAt = meta.indexedAt;
-              await initLbug(repoId, handle.lbugPath);
+              repo.indexedAt = meta.indexedAt;
+              await initLbug(repoId, repo.lbugPath);
               this.initializedRepos.add(repoId);
             } finally {
               this.reinitPromises.delete(repoId);
@@ -776,7 +782,7 @@ export class LocalBackend {
     }
 
     try {
-      await initLbug(repoId, handle.lbugPath);
+      await initLbug(repoId, repo.lbugPath);
       this.initializedRepos.add(repoId);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
@@ -1018,7 +1024,7 @@ export class LocalBackend {
       return { error: 'query parameter is required and cannot be empty.' };
     }
 
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
@@ -1519,7 +1525,7 @@ export class LocalBackend {
     repo: RepoHandle,
     request: { query: string; params?: Record<string, unknown> },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     if (!isLbugReady(repo.id)) {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
@@ -1637,7 +1643,7 @@ export class LocalBackend {
     repo: RepoHandle,
     params: { showClusters?: boolean; showProcesses?: boolean; limit?: number },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const limit = params.limit || 20;
     const result: any = {
@@ -2026,7 +2032,7 @@ export class LocalBackend {
       include_content?: boolean;
     },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const { name, uid, file_path, kind, include_content } = params;
 
@@ -2314,7 +2320,7 @@ export class LocalBackend {
     repo: RepoHandle,
     params: { name: string; type: 'symbol' | 'cluster' | 'process' },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
     const { name, type } = params;
 
     if (type === 'symbol') {
@@ -2434,7 +2440,7 @@ export class LocalBackend {
       worktree?: string;
     },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const scope = params.scope || 'unstaged';
     const { execFileSync } = await import('child_process');
@@ -2643,7 +2649,7 @@ export class LocalBackend {
       dry_run?: boolean;
     },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const { new_name, file_path } = params;
     const dry_run = params.dry_run ?? true;
@@ -2871,7 +2877,7 @@ export class LocalBackend {
   }
 
   private async _impactImpl(repo: RepoHandle, params: ImpactParams): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
@@ -3596,15 +3602,17 @@ export class LocalBackend {
     // scope — the caller's Promise.race against the same signal
     // resolves the await regardless of how long this body runs.
     if (opts.signal?.aborted) return null;
+    let repo: RepoHandle | undefined;
     try {
       await this.refreshRepos();
-      await this.ensureInitialized(repoId);
+      // Fetch the resolved handle BEFORE init and pass it through, so a
+      // concurrent refresh can't remap the id to a different clone (#2067).
+      repo = this.repos.get(repoId);
+      if (repo) await this.ensureInitialized(repo);
     } catch {
       return null;
     }
-
-    const repo = this.repos.get(repoId);
-    if (!repo) return null;
+    if (!repo) return null; // unknown repo → null (preserves contract)
 
     const dir: 'upstream' | 'downstream' = direction === 'downstream' ? 'downstream' : 'upstream';
 
@@ -3981,7 +3989,7 @@ export class LocalBackend {
   }
 
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const routeFilter = params.route ? `AND n.name CONTAINS $route` : '';
     const queryParams = params.route ? { route: params.route } : {};
@@ -4015,7 +4023,7 @@ export class LocalBackend {
   }
 
   private async shapeCheck(repo: RepoHandle, params: { route?: string }): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const routeFilter = params.route ? `AND n.name CONTAINS $route` : '';
     const queryParams = params.route ? { route: params.route } : {};
@@ -4097,7 +4105,7 @@ export class LocalBackend {
   }
 
   private async toolMap(repo: RepoHandle, params: { tool?: string }): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const toolFilter = params.tool ? `AND n.name CONTAINS $tool` : '';
     const queryParams = params.tool ? { tool: params.tool } : {};
@@ -4141,7 +4149,7 @@ export class LocalBackend {
     repo: RepoHandle,
     params: { route?: string; file?: string },
   ): Promise<any> {
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     if (!params.route && !params.file) {
       return { error: 'Either "route" or "file" parameter is required.' };
@@ -4293,7 +4301,7 @@ export class LocalBackend {
    */
   async queryClusters(repoName?: string, limit = 100): Promise<{ clusters: any[] }> {
     const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     try {
       const rawLimit = Math.max(limit * 5, 200);
@@ -4325,7 +4333,7 @@ export class LocalBackend {
    */
   async queryProcesses(repoName?: string, limit = 50): Promise<{ processes: any[] }> {
     const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     try {
       const processes = await executeQuery(
@@ -4357,7 +4365,7 @@ export class LocalBackend {
    */
   async queryClusterDetail(name: string, repoName?: string): Promise<any> {
     const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const clusters = await executeParameterized(
       repo.id,
@@ -4420,7 +4428,7 @@ export class LocalBackend {
    */
   async queryProcessDetail(name: string, repoName?: string): Promise<any> {
     const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
+    await this.ensureInitialized(repo);
 
     const processes = await executeParameterized(
       repo.id,
