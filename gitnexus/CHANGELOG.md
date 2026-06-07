@@ -4,10 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- **`gitnexus uninstall`** — reverses `gitnexus setup`, removing the GitNexus MCP entries, skills, and hooks it wrote into every detected editor. Defaults to a dry-run preview; pass `--force` to apply (#2060).
-
 ## [1.6.5] - 2026-05-16
 
 ### Added
