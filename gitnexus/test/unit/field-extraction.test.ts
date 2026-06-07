@@ -1131,6 +1131,10 @@ describe('GenericFieldExtractor — Dart', () => {
     const result = extractor.extract(classNode!, mockContext);
 
     expect(result).not.toBeNull();
+    // Exact-count guard (#1919 review CF4): `find()` below passes even on a
+    // double-emit, so assert b/c surface exactly twice total — one field each,
+    // no duplicate from the static_final_declaration_list multi-name path.
+    expect(result!.fields.filter((f) => f.name === 'b' || f.name === 'c')).toHaveLength(2);
     const b = result!.fields.find((f) => f.name === 'b');
     const c = result!.fields.find((f) => f.name === 'c');
     expect(b).toBeDefined();

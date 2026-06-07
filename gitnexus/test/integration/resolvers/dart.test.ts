@@ -806,6 +806,17 @@ describe.skipIf(!dartAvailable)('Dart top-level variables (F29)', () => {
     const props = getNodesByLabel(result, 'Property');
     expect(props).toContain('z');
   });
+
+  it('does NOT emit top-level vars as Property nodes (#1919 review CF4)', () => {
+    // Guards the `(program …)` vs `(declaration …)` anchor split: top-level
+    // siblings under `program` must surface as Variable, never Property. If the
+    // top-level anchor regressed to the class-field `(declaration …)` rule, these
+    // names would mis-classify as class Properties.
+    const props = getNodesByLabel(result, 'Property');
+    for (const name of ['count', 'a', 'b', 'name']) {
+      expect(props).not.toContain(name);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
