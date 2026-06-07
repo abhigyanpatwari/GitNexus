@@ -94,6 +94,50 @@ withTestLbugDB(
       });
     });
 
+    // ─── closeLbug rejects pending waiters (#2068 follow-up) ─────────────
+    //
+    // Before the fix, closeOne() never rejected queued waiters: a caller
+    // waiting for a free connection when the pool was closed (e.g. a staleness
+    // reinit under concurrent query load) hung for WAITER_TIMEOUT_MS (15s) and
+    // then surfaced a misleading "pool exhausted" error. Now they reject
+    // immediately with an actionable "pool closed" message. The pool caps at
+    // MAX_CONNS_PER_REPO (8); firing a synchronous burst larger than that queues
+    // the surplus as waiters, and closing synchronously (before any query
+    // settles) must reject every queued waiter at once. The default 5s test
+    // timeout also guards promptness — a regression would block ~15s and time
+    // out rather than reject.
+    describe('closeLbug waiter handling (#2068)', () => {
+      it('rejects queued waiters promptly with a pool-closed error on close', async () => {
+        await initLbug('test-repo', handle.dbPath);
+
+        // Fire a burst larger than the 8-connection cap WITHOUT awaiting: the
+        // first 8 check out connections synchronously, the surplus queue as
+        // waiters — all before the synchronous closeLbug below runs.
+        const BURST = 24;
+        const MAX_CONNS = 8;
+        const inflight = Array.from({ length: BURST }, () =>
+          executeQuery('test-repo', 'MATCH (n:Function) RETURN n.name AS name'),
+        );
+        // Close in the same synchronous tick — no microtask has served a waiter.
+        const closing = closeLbug('test-repo');
+
+        const settled = await Promise.allSettled(inflight);
+        await closing;
+
+        const reasons = settled
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .map((r) => String(r.reason?.message ?? r.reason));
+
+        // The surplus (BURST - MAX_CONNS) waiters must reject with "pool closed".
+        const poolClosed = reasons.filter((m) => /pool closed/i.test(m));
+        expect(poolClosed.length).toBeGreaterThanOrEqual(BURST - MAX_CONNS);
+        // And none should have hit the 15s "exhausted" waiter-timeout path.
+        expect(reasons.some((m) => /waiting for a free connection/i.test(m))).toBe(false);
+
+        expect(isLbugReady('test-repo')).toBe(false);
+      });
+    });
+
     // ─── Parameterized queries ───────────────────────────────────────────
 
     describe('executeParameterized', () => {
