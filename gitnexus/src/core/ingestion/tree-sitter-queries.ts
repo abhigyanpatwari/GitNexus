@@ -1339,6 +1339,15 @@ export const KOTLIN_QUERIES = `
 (function_declaration
   (simple_identifier) @name) @definition.function
 
+; ── Secondary constructors (F49 sibling F48, issue #1919) ────────────────
+; "constructor(...) { }" inside a class body is a secondary_constructor with
+; no name child — its only identity token is the anonymous "constructor"
+; keyword, captured here as @name so the node is named "constructor"
+; (matching kotlinMethodConfig.extractName). Multiple secondary constructors
+; share that name but get distinct ids via the worker's #<arity> suffix.
+(secondary_constructor
+  "constructor" @name) @definition.constructor
+
 ; ── Properties ───────────────────────────────────────────────────────────
 (property_declaration
   (variable_declaration

@@ -727,6 +727,69 @@ describeKotlin('Kotlin MethodExtractor', () => {
       expect(result!.methods[0].isStatic).toBe(true);
     });
   });
+
+  // F48 (issue #1919): secondary constructors were dropped — methodNodeTypes
+  // listed only 'function_declaration'. They are now extracted as members
+  // named "constructor" with their function_value_parameters.
+  describe('secondary constructors (F48)', () => {
+    it('extracts a secondary constructor as a member named "constructor" with its params', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          constructor(a: Int, b: String) : this(a) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      const ctor = result!.methods.find((m) => m.name === 'constructor');
+      expect(ctor).toBeDefined();
+      expect(ctor!.parameters.map((p) => p.name)).toEqual(['a', 'b']);
+      expect(ctor!.parameters[0].type).toBe('Int');
+    });
+
+    it('extracts multiple secondary constructors distinctly (by arity)', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          constructor(a: Int, b: String) : this(a) { }
+          constructor() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      const ctors = result!.methods.filter((m) => m.name === 'constructor');
+      expect(ctors).toHaveLength(2);
+      const arities = ctors.map((c) => c.parameters.length).sort();
+      expect(arities).toEqual([0, 2]);
+    });
+
+    it('still extracts the secondary constructor when it delegates via : this(...)', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          constructor(a: Int) : this(a) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      const ctor = result!.methods.find((m) => m.name === 'constructor');
+      expect(ctor).toBeDefined();
+      expect(ctor!.parameters.map((p) => p.name)).toEqual(['a']);
+    });
+
+    it('does not synthesize a constructor member for a class with only a primary constructor + methods', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          fun normal(): Int = x
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods.some((m) => m.name === 'constructor')).toBe(false);
+      expect(result!.methods.map((m) => m.name)).toEqual(['normal']);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

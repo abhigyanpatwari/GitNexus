@@ -180,6 +180,7 @@ export const FUNCTION_NODE_TYPES = new Set([
   'anonymous_function',
   // Kotlin
   'lambda_literal',
+  'secondary_constructor', // F48: methodNodeTypes superset invariant
   // Swift
   'init_declaration',
   'deinit_declaration',

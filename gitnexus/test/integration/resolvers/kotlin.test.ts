@@ -2672,3 +2672,39 @@ describe('Kotlin isStaticOnly across other receiver cases (#1756 / U3)', () => {
     expect(createCalls.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F48 (issue #1919): secondary constructors are extracted as members
+// ---------------------------------------------------------------------------
+
+describe('F48 — Kotlin secondary constructors', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-secondary-ctor'), () => {});
+  }, 60000);
+
+  it('creates a Constructor node for each secondary constructor', () => {
+    // Point declares two secondary constructors; both surface as Constructors.
+    const ctors = getNodesByLabel(result, 'Constructor');
+    expect(ctors).toEqual(['constructor', 'constructor']);
+  });
+
+  it('owns both secondary constructors under the enclosing class Point', () => {
+    const owned = getRelationships(result, 'HAS_METHOD').filter(
+      (e) => e.targetLabel === 'Constructor',
+    );
+    expect(owned.length).toBe(2);
+    expect(owned.every((e) => e.source === 'Point')).toBe(true);
+  });
+
+  it('does not synthesize a constructor for a class with only a primary constructor (no double-count)', () => {
+    // OnlyPrimary has a primary ctor + one method, and must yield no Constructor node.
+    const ctorOwners = getRelationships(result, 'HAS_METHOD')
+      .filter((e) => e.targetLabel === 'Constructor')
+      .map((e) => e.source);
+    expect(ctorOwners).not.toContain('OnlyPrimary');
+    // Its regular method is still extracted.
+    expect(getNodesByLabel(result, 'Method')).toContain('method');
+  });
+});
