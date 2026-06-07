@@ -136,6 +136,42 @@ withTestLbugDB(
 
         expect(isLbugReady('test-repo')).toBe(false);
       });
+
+      it('settles in-flight queries and fully tears down when closed mid-flight', async () => {
+        // closeOne-vs-checkin interleave (F4b): with 8 connections in-flight and
+        // surplus callers queued, a synchronous close must (a) let every promise
+        // settle — no hang — and (b) fully delete the pool entry so checked-in
+        // connections are closed as orphans rather than handed to a rejected
+        // waiter. We assert the observable contract; the "orphan not handed to a
+        // rejected waiter" invariant is single-threaded-by-construction (closeOne
+        // drains waiters with no await before any checkin can run).
+        await initLbug('test-repo', handle.dbPath);
+
+        const inflight = Array.from({ length: 16 }, () =>
+          executeQuery('test-repo', 'MATCH (n:Function) RETURN n.name AS name'),
+        );
+        const closing = closeLbug('test-repo');
+
+        // allSettled only resolves once EVERY query settled — proving none hangs
+        // (a 15s waiter-timeout regression would blow the default test timeout).
+        const settled = await Promise.allSettled(inflight);
+        await closing;
+        expect(settled).toHaveLength(16);
+        expect(
+          settled.some(
+            (r) =>
+              r.status === 'rejected' &&
+              /waiting for a free connection/i.test(String(r.reason?.message ?? r.reason)),
+          ),
+        ).toBe(false);
+
+        // Pool entry fully gone — a subsequent query fails fast with the
+        // not-initialized error, not a hang or a stale connection.
+        expect(isLbugReady('test-repo')).toBe(false);
+        await expect(
+          executeQuery('test-repo', 'MATCH (n) RETURN n LIMIT 1'),
+        ).rejects.toThrow(/not initialized/i);
+      });
     });
 
     // ─── Parameterized queries ───────────────────────────────────────────
