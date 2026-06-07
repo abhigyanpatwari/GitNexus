@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.1.0",
-    "@ladybugdb/core": "^0.16.1",
+    "@ladybugdb/core": "^0.17.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
