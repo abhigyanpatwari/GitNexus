@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
+import { closeQueryResults } from './query-result-utils.js';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -392,12 +393,10 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 const normalizeCopyPath = (filePath: string): string =>
   toNativeSafePath(filePath).replace(/\\/g, '/');
 
+// Single-result convenience wrapper over the shared best-effort closer
+// (drainQueryResult / readQueryRows close one cursor at a time).
 const closeQueryResult = async (result: lbug.QueryResult): Promise<void> => {
-  try {
-    await result.close();
-  } catch {
-    // Best-effort cleanup only.
-  }
+  await closeQueryResults(result);
 };
 
 const drainQueryResult = async (
@@ -1758,8 +1757,9 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
     RETURN DISTINCT a.filePath AS importer
   `;
+  let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
-    const queryResult = await conn.query(cypher);
+    queryResult = await conn.query(cypher);
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     const out: string[] = [];
@@ -1770,6 +1770,8 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     return out;
   } catch {
     return [];
+  } finally {
+    if (queryResult) await closeQueryResults(queryResult);
   }
 };
 
@@ -1788,8 +1790,9 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
   }
   let nodesDeleted = 0;
   for (const label of ['Community', 'Process']) {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
     try {
-      const countResult = await conn.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
+      countResult = await conn.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
       const result = Array.isArray(countResult) ? countResult[0] : countResult;
       const rows = await result.getAll();
       const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
@@ -1799,6 +1802,8 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
       }
     } catch {
       // Table may not exist yet on a freshly-initialized DB — fine.
+    } finally {
+      if (countResult) await closeQueryResults(countResult);
     }
   }
   return { nodesDeleted };

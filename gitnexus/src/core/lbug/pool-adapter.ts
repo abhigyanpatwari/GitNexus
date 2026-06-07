@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
+import { closeQueryResults } from './query-result-utils.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
@@ -805,19 +806,10 @@ export const executeParameterized = async (
   } finally {
     // Close the native QueryResult cursor(s) before returning the connection —
     // getAll() drains rows but does not release the native cursor, so without
-    // this the cursor leaks for the connection's lifetime (#2068 follow-up;
-    // mirrors lbug-adapter's closeQueryResult). Best-effort: a close failure
-    // must not mask the query result or a real error.
-    if (queryResult) {
-      const results = Array.isArray(queryResult) ? queryResult : [queryResult];
-      for (const r of results) {
-        try {
-          await r.close();
-        } catch {
-          // Best-effort cleanup only.
-        }
-      }
-    }
+    // this the cursor leaks for the connection's lifetime (#2068 follow-up).
+    // Best-effort via the shared helper; never masks the query result or a real
+    // error.
+    if (queryResult) await closeQueryResults(queryResult);
     activeQueryCount--;
     restoreStdout();
     checkin(entry, conn);
