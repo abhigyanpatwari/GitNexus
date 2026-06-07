@@ -295,7 +295,7 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 
 ### What Your AI Agent Gets
 
-**13 MCP tools** exposed to agents (11 per-repo + 2 group-specific):
+**14 MCP tools** exposed to agents (12 per-repo + 2 group-specific):
 
 | Tool              | What It Does                                                     | `repo` Param |
 | ----------------- | ---------------------------------------------------------------- | ------------ |
@@ -304,6 +304,7 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 | `context`         | 360-degree symbol view — categorized refs, process participation | Optional     |
 | `impact`          | Blast radius analysis with depth grouping and confidence         | Optional     |
 | `detect_changes`  | Git-diff impact — maps changed lines to affected processes       | Optional     |
+| `pr_impact`       | Deterministic local PR impact report over diff + graph evidence  | Optional     |
 | `rename`          | Multi-file coordinated rename with graph + text search           | Optional     |
 | `cypher`          | Raw Cypher graph queries                                         | Optional     |
 | `api_impact`     | Pre-change impact report for an API route handler                | Optional     |

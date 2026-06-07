@@ -36,6 +36,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | `context` | Callers, callees, processes for one symbol |
 | `impact` | Blast radius (upstream/downstream) with risk summary |
 | `detect_changes` | Map git diffs to affected symbols and processes |
+| `pr_impact` | Deterministic local PR impact report over diff + graph evidence |
 | `rename` | Graph-assisted multi-file rename with `dry_run` preview |
 | `api_impact` | Pre-change impact report for an API route handler |
 | `route_map` | API route → handler → consumer mappings |

@@ -926,6 +926,44 @@ describe('LocalBackend.callTool', () => {
     expect(result.error || result.summary).toBeDefined();
   });
 
+  it('dispatches pr_impact tool through local graph primitives', async () => {
+    vi.spyOn(backend as any, 'detectChanges').mockResolvedValue({
+      summary: { changed_files: 1 },
+      changed_symbols: [
+        {
+          id: 'Function:app/api/grants/route.ts:updateGrant',
+          name: 'updateGrant',
+          type: 'Function',
+          filePath: 'app/api/grants/route.ts',
+          change_type: 'modified',
+        },
+      ],
+    });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({
+      risk: 'MEDIUM',
+      summary: { direct: 1, processes_affected: 1 },
+      byDepth: { 1: [{ filePath: 'app/api/grants/route.test.ts' }] },
+    });
+    vi.spyOn(backend as any, 'apiImpact').mockResolvedValue({
+      route: '/api/grants',
+      impactSummary: { riskLevel: 'LOW', directConsumers: 1 },
+      mismatches: [],
+    });
+
+    const result = await backend.callTool('pr_impact', {
+      scope: 'compare',
+      base_ref: 'main',
+      format: 'json',
+    });
+
+    expect(result.schema_version).toBe('pr-impact.v1alpha1');
+    expect(result.diff.scope).toBe('compare');
+    expect(result.mapped_symbols[0].name).toBe('updateGrant');
+    expect(result.api_impacts).toEqual([
+      { route: '/api/grants', risk: 'LOW', consumers: 1, mismatches: 0 },
+    ]);
+  });
+
   it('dispatches rename tool', async () => {
     (executeParameterized as any)
       .mockResolvedValueOnce([

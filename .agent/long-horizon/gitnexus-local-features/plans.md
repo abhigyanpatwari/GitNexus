@@ -25,7 +25,7 @@ Created: 2026-06-05
 - Current multi-repo planning must separate CLI, MCP tools, and MCP resources: CLI still has `gitnexus group query/contracts/status`; MCP uses group-mode `query`, `context`, and `impact` plus `group_list`/`group_sync`; group contracts/status are MCP resources. Do not plan from stale tables that present `group_query`, `group_contracts`, or `group_status` as current MCP tools.
 - PR Review / Blast Radius should be report-first. Existing PR review and PR swarm materials are read-only methods, not an automated GitHub PR-review product; GitHub posting/check automation is security-sensitive and later.
 - Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki planner/runner plus read-only status endpoint, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper, and Task 7 OCaml experimental support have completed their first local slices.
-- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`) and CLI wrapper commit `39d77845` (`feat: add pr impact cli command`) are complete. MCP exposure, GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
+- WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`), CLI wrapper commit `39d77845` (`feat: add pr impact cli command`), and local read-only MCP exposure are complete. GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
 
@@ -34,7 +34,7 @@ Created: 2026-06-05
 | 1 | Auto-Reindexing | `decision-grade completed for first slice` | `local V1 complete` | Approved slice implemented, verified, and snapshotted |
 | 2 | Auto-Updating Code Wiki | `medium completed for first slices` | `local V1 complete` | Core status/dry-run-first planner/runner, read-only server status endpoint, and non-secret provider-readiness status implemented and verified |
 | 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
-| 4 | PR Impact / Blast Radius | `medium now` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
+| 4 | PR Impact / Blast Radius | `medium completed for local MCP slice` | `local V1 complete` | Report core, thin local CLI wrapper, and read-only local MCP `pr_impact` tool implemented and verified; GitHub automation deferred |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
 | 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core, thin local CLI wrapper, mocked UI generated specs for `/api/repos`, `/api/repo`, `/api/graph`, and API-smoke generated specs for `/api/processes` implemented and verified |
 | 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally; deeper OCaml semantics deferred |
@@ -45,16 +45,69 @@ This section controls the next Goal selection after the completed local V1 tranc
 
 | Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | Decide whether local PR Impact should expose MCP or GitHub PR ingestion/comments/checks, and under what permission model. | Threat model, token/permission boundary, local-vs-remote input model, fixture plan, and smallest safe expansion. | Stop before source edits if it needs privileged GitHub automation, token-bearing Actions, or unreviewed PR comment/check behavior. |
-| 2 | Task 6 Additional UI Route Fixture | Readiness Goal | Find a next deterministic UI route fixture only if local source proves a backend route has a real frontend consumer and visible assertion surface. | Route-to-UI evidence table and generated-spec policy check. | Stop if the route is backend-only or requires direct API assertions; send it to the API-smoke lane instead. |
-| 3 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route only after `/api/processes` generated API-smoke behavior is reviewed. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
-| 4 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
+| 1 | Task 6 Additional UI Route Fixture | Readiness Goal | Find a next deterministic UI route fixture only if local source proves a backend route has a real frontend consumer and visible assertion surface. | Route-to-UI evidence table and generated-spec policy check. | Stop if the route is backend-only or requires direct API assertions; send it to the API-smoke lane instead. |
+| 2 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route only after `/api/processes` generated API-smoke behavior is reviewed. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
+| 3 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
 
 Default recommendation:
 
-- Continue with `Task 4 PR Impact MCP / GitHub Readiness`.
-- Do not add MCP/GitHub automation until the security and permission model is decision-complete.
+- Continue with `Task 6 Additional UI Route Fixture` readiness.
+- Do not add more generated UI fixtures until the route-to-UI consumer evidence is decision-complete.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
+### Task 4 PR Impact MCP / GitHub Readiness - 2026-06-07T16:39+01:00
+
+Readiness outcome:
+
+- The smallest safe expansion is local MCP exposure of the existing deterministic PR Impact report.
+- GitHub PR URL ingestion, PR review/comment posting, check-run creation, GitHub Actions workflow changes, and token-bearing automation remain deferred.
+
+Implemented slice:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 4 PR Impact MCP Local Tool
+Approved slice: expose the existing local PR Impact pipeline as a read-only, closed-world MCP tool named `pr_impact`, reusing `detect_changes`, `impact`, and `api_impact`. Return versioned PR Impact JSON by default with optional Markdown rendering.
+Approved write set:
+- gitnexus/src/core/pr-impact/pipeline.ts
+- gitnexus/src/cli/pr-impact.ts
+- gitnexus/src/mcp/tools.ts
+- gitnexus/src/mcp/local/local-backend.ts
+- gitnexus/test/unit/pr-impact-pipeline.test.ts
+- gitnexus/test/unit/pr-impact-cli.test.ts
+- gitnexus/test/unit/tools.test.ts
+- gitnexus/test/unit/calltool-dispatch.test.ts
+- README.md
+- ARCHITECTURE.md
+Constraints: no GitHub token, no GitHub PR URL ingestion, no PR comments/reviews, no check runs, no Actions workflow mutation, no repository/file mutation, no new dependency, and TDD required.
+```
+
+Source evidence:
+
+| Evidence | Conclusion |
+| --- | --- |
+| Existing `gitnexus pr-impact` CLI orchestrated `detect_changes`, `impact`, and `api_impact` directly | Extract a shared pipeline instead of duplicating orchestration |
+| MCP already exposed `detect_changes`, `impact`, and `api_impact` as read-only local tools | A one-call local `pr_impact` MCP wrapper is a small, coherent expansion |
+| MCP ToolAnnotations include read-only and open-world hints | Mark `pr_impact` as read-only, non-destructive, idempotent, and closed-world |
+| GitHub review/check APIs require write permissions and/or GitHub App/check permissions | Defer GitHub automation until a dedicated token/permission design exists |
+| GitHub Actions secure-use guidance warns about privileged PR-triggered workflows over untrusted content | Defer Actions workflow automation and untrusted PR checkout behavior |
+
+TDD/verification:
+
+```powershell
+npm test -- --run test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts
+npm test -- --run test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts
+npm test -- --run test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts test/unit/server.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused PR Impact/MCP suite passed: 3 files, 27 tests.
+- Backend dispatch/server suite passed: 5 files, 119 tests.
+- Build passed.
+- `git diff --check` passed.
 
 ### Task 2 Wiki Mutation / Provider Policy Readiness - 2026-06-07T16:35+01:00
 

@@ -54,6 +54,8 @@ import {
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
 } from '../../core/lbug/sidecar-recovery.js';
+import { renderPrImpactMarkdown } from '../../core/pr-impact/report.js';
+import { buildPrImpactPipelineReport } from '../../core/pr-impact/pipeline.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -964,12 +966,47 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'pr_impact':
+        return this.prImpact(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
   }
 
   // ─── Tool Implementations ────────────────────────────────────────
+
+  private async prImpact(
+    repo: RepoHandle,
+    params: {
+      scope?: string;
+      base_ref?: string;
+      format?: string;
+    },
+  ): Promise<any> {
+    const report = await buildPrImpactPipelineReport(
+      {
+        callTool: async (method, primitiveParams) => {
+          switch (method) {
+            case 'detect_changes':
+              return this.detectChanges(repo, primitiveParams);
+            case 'impact':
+              return this.impact(repo, primitiveParams as any);
+            case 'api_impact':
+              return this.apiImpact(repo, primitiveParams);
+            default:
+              throw new Error(`Unsupported PR Impact primitive: ${method}`);
+          }
+        },
+      },
+      {
+        scope: params?.scope,
+        baseRef: params?.base_ref,
+        repo: repo.name,
+      },
+    );
+
+    return params?.format === 'markdown' ? renderPrImpactMarkdown(report) : report;
+  }
 
   /**
    * Query tool — process-grouped search.

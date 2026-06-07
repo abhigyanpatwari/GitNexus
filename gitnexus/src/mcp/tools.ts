@@ -548,6 +548,43 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     },
   },
   {
+    name: 'pr_impact',
+    description: `Build a deterministic PR Impact report from the local git diff and GitNexus graph.
+
+WHEN TO USE: Local PR preparation or pre-merge impact review when you need the same diff-to-graph report as \`gitnexus pr-impact\` through MCP.
+
+This tool is local-only: it reads local git diff/index data through GitNexus primitives and does not ingest GitHub PR URLs, use a GitHub token, post comments, create checks, or mutate repositories.
+
+Pipeline: detect_changes -> impact for mapped symbols -> api_impact for API route candidates -> versioned PR Impact JSON or Markdown report.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          description: 'What to analyze: "unstaged" (default), "staged", "all", or "compare"',
+          enum: ['unstaged', 'staged', 'all', 'compare'],
+          default: 'unstaged',
+        },
+        base_ref: {
+          type: 'string',
+          description: 'Branch/commit for "compare" scope (e.g., "main")',
+        },
+        format: {
+          type: 'string',
+          description: 'Return shape: "json" (default) for structured report or "markdown" for rendered text',
+          enum: ['json', 'markdown'],
+          default: 'json',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'group_list',
     description: `List all configured repository groups, or return details for one group (repos, manifest links).
 

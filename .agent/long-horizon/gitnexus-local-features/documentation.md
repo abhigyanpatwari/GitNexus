@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 2 wiki provider-readiness status implemented; next selected task is Task 4 PR Impact MCP / GitHub Readiness
+- Mode: Task 4 PR Impact MCP local read-only exposure implemented; next selected task is Task 6 Additional UI Route Fixture readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, Task 6 generated API-smoke specs for `/api/processes`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, and local read-only MCP exposure, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, Task 6 generated API-smoke specs for `/api/processes`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, GitHub PR ingestion/comments/checks, and token-bearing GitHub automation remain deferred.
 - Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -94,6 +94,77 @@ Current state:
 - 2026-06-07T16:20+01:00: Task 6 Generated API-Smoke Specs implemented with TDD. The new lane emits direct Playwright APIRequestContext smoke specs for `/api/processes` only, behind explicit `gitnexus e2e-test-plan --write-api-smoke-specs`, with a separate output path from browser UI generated specs. Next selected task is Task 2 Wiki Mutation / Provider Policy readiness.
 - 2026-06-07T16:35+01:00: Task 2 Wiki Mutation / Provider Policy readiness selected the smallest safe next slice: read-only provider-readiness status for `/api/wiki/auto-refresh`. Full wiki output mutation remains deferred.
 - 2026-06-07T16:45+01:00: Task 2 Wiki Provider-Readiness Status implemented with TDD. `/api/wiki/auto-refresh` remains read-only but now uses a non-secret readiness helper over saved CLI config and environment shape. Wiki output mutation, provider execution, local CLI subprocesses from the endpoint, and config writes remain deferred.
+- 2026-06-07T16:39+01:00: Task 4 PR Impact MCP / GitHub Readiness implemented the smallest safe local slice with TDD: a read-only, closed-world `pr_impact` MCP tool that reuses the existing local `detect_changes -> impact -> api_impact -> PR Impact report` pipeline. GitHub PR URL ingestion, PR comments/reviews, check runs, Actions workflows, and token-bearing automation remain deferred.
+
+### 2026-06-07T16:39+01:00 - Task 4 PR Impact MCP / GitHub Readiness
+
+Goal:
+
+- Decide and implement the smallest safe post-CLI PR Impact expansion without crossing into privileged GitHub automation.
+
+Decision:
+
+- Implement local MCP exposure only.
+- Defer GitHub PR URL ingestion, comments/reviews, check runs, GitHub Actions workflows, and token-bearing automation.
+
+Evidence:
+
+- Local source already had the report/CLI pipeline in `gitnexus/src/cli/pr-impact.ts` over `detect_changes`, `impact`, and `api_impact`.
+- MCP already exposed the three primitives but did not expose a one-call PR Impact report tool.
+- MCP ToolAnnotations define `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; `readOnlyHint` means the tool does not modify its environment, and `openWorldHint: false` means the tool does not interact with external entities: https://modelcontextprotocol.io/specification/2025-11-25/schema#toolannotations
+- GitHub PR review creation requires pull-request write permission and triggers notifications/secondary rate-limit concerns: https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request
+- GitHub check-run creation is a write surface requiring Checks write permission and, in GitHub's checks guide, is positioned around GitHub App check-run management: https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks
+- GitHub Actions secure-use guidance warns against privileged `pull_request_target`/`workflow_run` patterns with untrusted PR content: https://docs.github.com/en/enterprise-cloud@latest/actions/reference/secure-use-reference#mitigating-the-risks-of-untrusted-code-checkout
+
+Implemented:
+
+- Added shared PR Impact orchestration:
+  - `gitnexus/src/core/pr-impact/pipeline.ts`
+- Refactored CLI wrapper to use the shared pipeline:
+  - `gitnexus/src/cli/pr-impact.ts`
+- Added MCP tool definition:
+  - `pr_impact`
+  - `scope`: `unstaged`, `staged`, `all`, `compare`
+  - `base_ref`: compare base
+  - `format`: `json` or `markdown`
+  - `repo`: optional repo selector
+- Wired LocalBackend dispatch:
+  - `gitnexus/src/mcp/local/local-backend.ts`
+- Updated current tool-surface docs:
+  - `README.md`
+  - `ARCHITECTURE.md`
+
+Scope kept:
+
+- Local git diff/index input only.
+- No GitHub token.
+- No GitHub PR URL ingestion.
+- No PR comment/review/check creation.
+- No GitHub Actions workflow mutation.
+- No repo/file mutation.
+- No new dependency.
+
+Verification:
+
+```powershell
+npm test -- --run test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts
+npm test -- --run test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts
+npm test -- --run test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts test/unit/server.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused PR Impact/MCP suite passed: 3 files, 27 tests.
+- Backend dispatch/server suite passed: 5 files, 119 tests.
+- Build passed.
+- `git diff --check` passed.
+
+Next selected task:
+
+- Task 6 Additional UI Route Fixture readiness.
+- Stop before source edits unless a backend route has a proven frontend consumer and a stable visible assertion surface.
 
 ### 2026-06-07T16:35+01:00 - Task 2 Wiki Mutation / Provider Policy Readiness
 
@@ -242,23 +313,21 @@ Current queue:
 
 | Priority | Candidate | Next Goal shape | Reason |
 | --- | --- | --- | --- |
-| 1 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal | Wiki mutation needs provider, cost, freshness, output ownership, and rollback policy before source edits. |
-| 2 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | PR Impact local V1 exists, but MCP/GitHub automation requires a security and permission model. |
-| 3 | Task 6 Additional UI Route Fixture | Readiness Goal | Only valid if a backend route has a proven frontend consumer and visible UI assertion surface. |
-| 4 | Task 6 Additional API-Smoke Route | Readiness Goal | Only valid after reviewing `/api/processes` API-smoke behavior and choosing another backend-only route with a stable read-only contract. |
-| 5 | Task 7 Deeper OCaml Semantics | Readiness Goal | Experimental OCaml V1 is complete; richer semantics need a new language-scope/dependency boundary. |
+| 1 | Task 6 Additional UI Route Fixture | Readiness Goal | Only valid if a backend route has a proven frontend consumer and visible UI assertion surface. |
+| 2 | Task 6 Additional API-Smoke Route | Readiness Goal | Only valid after reviewing `/api/processes` API-smoke behavior and choosing another backend-only route with a stable read-only contract. |
+| 3 | Task 7 Deeper OCaml Semantics | Readiness Goal | Experimental OCaml V1 is complete; richer semantics need a new language-scope/dependency boundary. |
 
 Decision:
 
 - Do not pre-create multiple Goals.
-- The default next selected task should be Task 2 Wiki Mutation / Provider Policy readiness unless MAIN selects another priority.
+- The default next selected task should be Task 6 Additional UI Route Fixture readiness unless MAIN selects another priority.
 - If a non-default candidate is chosen, start with readiness unless the exact implementation boundary is already documented and still current.
 
 Verification:
 
 - `feature-map.md` now contains a ranked next task map.
 - `plans.md` now contains a next task queue with goal shape, scope, verification surface, and stop rule.
-- Task 6 API-smoke implementation later completed; this queue has been updated to make Task 2 Wiki Mutation / Provider Policy readiness the next selected task.
+- Task 6 API-smoke implementation, Task 2 provider-readiness status, and Task 4 local MCP exposure later completed; this queue has been updated to make Task 6 Additional UI Route Fixture readiness the next selected task.
 
 ### 2026-06-07T14:04+01:00 - Task 6 `/api/processes` No-Slice Decision
 

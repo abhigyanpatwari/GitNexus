@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 13 tools are defined (per-repo + group_list/group_sync)
+ * - All 14 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -17,8 +17,8 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(13);
+  it('exports all tools (8 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(14);
   });
 
   it('contains all expected tool names', () => {
@@ -32,6 +32,7 @@ describe('GITNEXUS_TOOLS', () => {
         'detect_changes',
         'rename',
         'impact',
+        'pr_impact',
         'api_impact',
       ]),
     );
@@ -183,6 +184,23 @@ describe('GITNEXUS_TOOLS', () => {
     expect(apiImpactTool.inputSchema.properties.route).toBeDefined();
     expect(apiImpactTool.inputSchema.properties.file).toBeDefined();
     expect(apiImpactTool.inputSchema.properties.repo).toBeDefined();
+  });
+
+  it('pr_impact tool exposes local-only diff scope and report format controls', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'pr_impact')!;
+    expect(tool).toBeDefined();
+    expect(tool.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    expect(tool.inputSchema.required).toEqual([]);
+    expect(tool.inputSchema.properties.scope.enum).toEqual(['unstaged', 'staged', 'all', 'compare']);
+    expect(tool.inputSchema.properties.format.enum).toEqual(['json', 'markdown']);
+    expect(tool.description).toContain('local git diff');
+    expect(tool.description).toContain('does not ingest GitHub PR URLs');
+    expect(tool.description).toContain('use a GitHub token');
   });
 
   it('impact relationTypes is array of strings', () => {

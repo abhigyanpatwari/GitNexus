@@ -567,13 +567,12 @@ Immediate:
 
 | Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal first | Local report/CLI V1 exists; MCP/GitHub integration is valuable but security-sensitive. | MCP/GitHub integration threat model, permission model, and smallest safe read-only or local-only expansion. | Needs security/readiness before source edits. |
-| 2 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
-| 3 | Task 6 Additional API-Smoke Route | Readiness Goal first | `/api/processes` proved the separate API-smoke lane, but additional routes need their own stable read-only contract review. | Identify one safe backend-only route or record no additional API-smoke route. | Blocked if route is mutating, auth-sensitive, long-running, or state-unstable. |
-| 4 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
+| 1 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
+| 2 | Task 6 Additional API-Smoke Route | Readiness Goal first | `/api/processes` proved the separate API-smoke lane, but additional routes need their own stable read-only contract review. | Identify one safe backend-only route or record no additional API-smoke route. | Blocked if route is mutating, auth-sensitive, long-running, or state-unstable. |
+| 3 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
 
 Recommended default:
 
-- Start with Task 4 PR Impact MCP / GitHub Readiness unless MAIN chooses a different priority.
-- Do not add MCP/GitHub automation until the security and permission model is decision-complete.
+- Start with Task 6 Additional UI Route Fixture readiness unless MAIN chooses a different priority.
+- Do not add more generated UI fixtures until route-to-UI consumer evidence is decision-complete.
 - Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, MCP expansion, and deeper OCaml semantics deferred until the selected task opens that scope.
