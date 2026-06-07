@@ -192,6 +192,34 @@ describe('E2E generated spec renderer', () => {
     ]);
   });
 
+  it('keeps /api/processes out of the browser UI generated-spec lane', () => {
+    const result = renderE2EGeneratedSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-processes',
+          title: 'Exercise route /api/processes after impacted API change',
+          target_spec: 'gitnexus-web/e2e/api-processes.spec.ts',
+          evidence: [
+            'Route /api/processes has risk HIGH',
+            'Consumers: 0',
+            'Mismatches: 0',
+          ],
+        },
+      ],
+    });
+
+    expect(result.specs).toEqual([]);
+    expect(result.blocked).toEqual([
+      {
+        proposalId: 'route-api-processes',
+        reason:
+          'Only /api/repos, /api/repo, and /api/graph route proposals have deterministic generated fixtures in V1.',
+      },
+    ]);
+  });
+
   it('refuses to overwrite hand-written specs and only overwrites generated specs with force', () => {
     const defaultResult = renderE2EGeneratedSpecs(baseReport, {
       existingSpecs: [handWrittenSpec],

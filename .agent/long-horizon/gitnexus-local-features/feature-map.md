@@ -34,8 +34,8 @@ Supporting evidence:
 | --- | --- |
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
-| Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, and `/api/graph` route paths; `/api/processes` is rejected for the current UI lane and now points to a separate API-smoke-lane recommendation; broader generated tests and deeper OCaml semantics require new Goals |
+| Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E/API-smoke local V1, and Task 7 OCaml readiness |
+| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, and `/api/graph` route paths; `/api/processes` is implemented through a separate API-smoke lane; broader generated tests, additional API-smoke routes, wiki mutation, and deeper OCaml semantics require new readiness packets |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -54,7 +54,7 @@ Supporting evidence:
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | No unified graph expansion without new approval |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
-| 6 | End-to-End Test Generation | Light scoping completed plus executable-output policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic `/api/repos`, `/api/repo`, and `/api/graph` generated-spec renderer, and explicit write mode implemented locally | Broader generated tests/browser/CI remain deferred |
+| 6 | End-to-End Test Generation | Light scoping completed plus executable-output/API-smoke policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic `/api/repos`, `/api/repo`, and `/api/graph` generated-spec renderer, `/api/processes` API-smoke renderer, and explicit write modes implemented locally | Broader generated tests/browser/CI remain deferred |
 | 7 | OCaml Support | Light scoping completed plus approval packet | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally | Deeper OCaml semantics require a new Goal |
 
 ## Dependency Map
@@ -549,31 +549,30 @@ Boundary rule:
 | Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
-| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, and narrow `/api/repos`, `/api/repo`, plus `/api/graph` generated-spec renderer completed; broader generated tests remain deferred |
-| Task 6 `/api/processes` generated UI fixture | Rejected for now: frontend Process panel derives rows from `/api/graph` Process nodes and does not call `fetchProcesses()` / `/api/processes`; generated API-smoke specs should proceed only as a separate backend lane |
+| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, narrow `/api/repos`, `/api/repo`, `/api/graph` generated-spec renderer, and `/api/processes` generated API-smoke renderer completed; broader generated tests remain deferred |
+| Task 6 `/api/processes` generated UI fixture | Rejected for the browser UI lane: frontend Process panel derives rows from `/api/graph` Process nodes and does not call `fetchProcesses()` / `/api/processes`; `/api/processes` is now covered by a separate generated API-smoke lane |
 | Task 7 parser/provider plan | Readiness complete; dependency/write-set approval required before implementation |
 
 ## Next Actions
 
 Immediate:
 
-1. Treat the seven local V1 slices as the completed base tranche.
-2. Choose exactly one next Goal from the map below.
-3. Create the next Goal only after the selected task's exact slice and write set are named.
+1. Treat the seven local V1 slices plus Task 6 `/api/processes` API-smoke lane as the completed base tranche.
+2. Continue with exactly one next selected task from the map below.
+3. Start source edits only after the selected task's exact slice and write set are named.
 
 ## Next Task Map
 
 | Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 6 Generated API-Smoke Specs | Implementation Goal | Readiness is complete, `/api/processes` is the clearest backend-only route, and external Playwright/testing guidance supports a separate API lane. | Deterministic API-smoke renderer and explicit CLI write mode for `/api/processes` only. | Ready to particularize as next Goal if MAIN selects it. |
-| 2 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal first | Wiki local V1 is status-only; mutation has provider, cost, freshness, and output ownership risks. | Policy decision and approval boundary for manual/automatic wiki refresh mutation. | Needs policy/readiness before source edits. |
-| 3 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal first | Local report/CLI V1 exists; MCP/GitHub integration is valuable but security-sensitive. | MCP/GitHub integration threat model, permission model, and smallest safe read-only or local-only expansion. | Needs security/readiness before source edits. |
-| 4 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
+| 1 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal first | Wiki local V1 is status-only; mutation has provider, cost, freshness, and output ownership risks. | Policy decision and approval boundary for manual/automatic wiki refresh mutation. | Needs policy/readiness before source edits. |
+| 2 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal first | Local report/CLI V1 exists; MCP/GitHub integration is valuable but security-sensitive. | MCP/GitHub integration threat model, permission model, and smallest safe read-only or local-only expansion. | Needs security/readiness before source edits. |
+| 3 | Task 6 Additional UI Route Fixture | Readiness Goal first | Existing UI route fixture lane can continue only where a route has a real frontend consumer. | Identify one route with visible UI behavior and a deterministic mocked fixture. | Blocked until a frontend consumer is proven. |
+| 4 | Task 6 Additional API-Smoke Route | Readiness Goal first | `/api/processes` proved the separate API-smoke lane, but additional routes need their own stable read-only contract review. | Identify one safe backend-only route or record no additional API-smoke route. | Blocked if route is mutating, auth-sensitive, long-running, or state-unstable. |
 | 5 | Task 7 Deeper OCaml Semantics | Readiness Goal first | Experimental `.ml` / `.mli` support exists; deeper semantics are language-onboarding depth work. | Scope a second OCaml slice such as modules, functors, Dune, or richer call/type queries. | Needs dependency/semantic scope approval. |
 
 Recommended default:
 
-- Start with Task 6 Generated API-Smoke Specs unless MAIN chooses a different priority.
-- Keep the slice to `/api/processes` only.
-- Do not mix API-smoke output into `gitnexus-web/e2e/generated`.
-- Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the selected Goal opens that scope.
+- Start with Task 2 Wiki Mutation / Provider Policy readiness unless MAIN chooses a different priority.
+- Do not mutate wiki output until provider/cost/output ownership and rollback policy are decision-complete.
+- Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, MCP expansion, and deeper OCaml semantics deferred until the selected task opens that scope.

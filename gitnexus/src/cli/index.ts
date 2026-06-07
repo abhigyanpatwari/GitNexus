@@ -280,7 +280,9 @@ program
   .option('--regression-forensics-json <path>', 'Path to local regression forensics JSON')
   .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
   .option('--write-specs', 'Write generated Playwright specs (explicit opt-in)')
+  .option('--write-api-smoke-specs', 'Write generated Playwright API-smoke specs (explicit opt-in)')
   .option('--spec-output-dir <path>', 'Directory for generated Playwright specs')
+  .option('--api-smoke-output-dir <path>', 'Directory for generated Playwright API-smoke specs')
   .option('--force', 'Overwrite existing generated specs')
   .action(createLbugLazyAction(() => import('./e2e-test-plan.js'), 'e2eTestPlanCommand'));
 

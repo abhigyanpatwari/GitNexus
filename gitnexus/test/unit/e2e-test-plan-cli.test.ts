@@ -88,6 +88,27 @@ const routeEvidenceJson = [
   },
 ];
 
+const processesPrImpactJson = {
+  ...prImpactJson,
+  api_impacts: [
+    {
+      route: '/api/processes',
+      risk: 'HIGH',
+      consumers: 0,
+      mismatches: 0,
+    },
+  ],
+};
+
+const processesRouteEvidenceJson = [
+  {
+    route: '/api/processes',
+    consumers: 0,
+    mismatches: 0,
+    evidence: 'backend route exists without current frontend consumer',
+  },
+];
+
 describe('e2e-test-plan CLI command', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -187,5 +208,78 @@ describe('e2e-test-plan CLI command', () => {
     const output: string = writeSyncMock.mock.calls[0][1];
     expect(output).toContain('Generated specs written: 1');
     expect(output).toContain('Blocked proposals: 1');
+  });
+
+  it('writes generated API-smoke specs only when explicitly requested', async () => {
+    existsSyncMock.mockReturnValue(false);
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath === 'target.json') return JSON.stringify(targetJson);
+      if (filePath === 'pr-impact.json') return JSON.stringify(processesPrImpactJson);
+      if (filePath === 'existing.json') return JSON.stringify([]);
+      if (filePath === 'routes.json') return JSON.stringify(processesRouteEvidenceJson);
+      throw new Error(`unexpected path ${filePath}`);
+    });
+
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await e2eTestPlanCommand({
+      targetJson: 'target.json',
+      prImpactJson: 'pr-impact.json',
+      existingScenariosJson: 'existing.json',
+      routeEvidenceJson: 'routes.json',
+      writeApiSmokeSpecs: true,
+      apiSmokeOutputDir: 'gitnexus/test/api-smoke/generated',
+      format: 'markdown',
+    });
+
+    expect(mkdirSyncMock).toHaveBeenCalledWith('gitnexus/test/api-smoke/generated', {
+      recursive: true,
+    });
+    expect(writeFileSyncMock).toHaveBeenCalledWith(
+      'gitnexus/test/api-smoke/generated/route-api-processes.generated.api.spec.ts',
+      expect.stringContaining('Generated GitNexus API smoke plan: Exercise route /api/processes'),
+      'utf-8',
+    );
+    expect(writeFileSyncMock.mock.calls[0][1]).toContain('request.get(apiUrl');
+    expect(writeFileSyncMock.mock.calls[0][1]).not.toContain('page.goto');
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    expect(output).toContain('Generated API-smoke specs written: 1');
+    expect(output).toContain('Blocked API-smoke proposals: 1');
+  });
+
+  it('keeps browser UI and API-smoke generated outputs on separate paths when both modes are requested', async () => {
+    existsSyncMock.mockReturnValue(false);
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath === 'target.json') return JSON.stringify(targetJson);
+      if (filePath === 'pr-impact.json') return JSON.stringify(processesPrImpactJson);
+      if (filePath === 'existing.json') return JSON.stringify([]);
+      if (filePath === 'routes.json') return JSON.stringify(processesRouteEvidenceJson);
+      throw new Error(`unexpected path ${filePath}`);
+    });
+
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await e2eTestPlanCommand({
+      targetJson: 'target.json',
+      prImpactJson: 'pr-impact.json',
+      existingScenariosJson: 'existing.json',
+      routeEvidenceJson: 'routes.json',
+      writeSpecs: true,
+      writeApiSmokeSpecs: true,
+      specOutputDir: 'gitnexus-web/e2e/generated',
+      apiSmokeOutputDir: 'gitnexus/test/api-smoke/generated',
+      format: 'markdown',
+    });
+
+    const writtenPaths = writeFileSyncMock.mock.calls.map((call) => call[0]);
+    expect(writtenPaths).not.toContain('gitnexus-web/e2e/generated/route-api-processes.generated.spec.ts');
+    expect(writtenPaths).toContain(
+      'gitnexus/test/api-smoke/generated/route-api-processes.generated.api.spec.ts',
+    );
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    expect(output).toContain('Generated specs written: 0');
+    expect(output).toContain('Generated API-smoke specs written: 1');
   });
 });

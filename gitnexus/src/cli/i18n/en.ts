@@ -245,7 +245,11 @@ export const en = {
   'help.option.e2eTestPlan.format': 'Output format: markdown or json',
   'help.option.e2eTestPlan.writeSpecs':
     'Write generated Playwright specs (explicit opt-in)',
+  'help.option.e2eTestPlan.writeApiSmokeSpecs':
+    'Write generated Playwright API-smoke specs (explicit opt-in)',
   'help.option.e2eTestPlan.specOutputDir': 'Directory for generated Playwright specs',
+  'help.option.e2eTestPlan.apiSmokeOutputDir':
+    'Directory for generated Playwright API-smoke specs',
   'help.option.e2eTestPlan.force': 'Overwrite existing generated specs',
   'help.option.evalServer.host':
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',

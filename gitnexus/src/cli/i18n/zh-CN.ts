@@ -225,7 +225,10 @@ export const zhCN = {
   'help.option.e2eTestPlan.regressionForensicsJson': '本地回归取证 JSON 路径',
   'help.option.e2eTestPlan.format': '输出格式：markdown 或 json',
   'help.option.e2eTestPlan.writeSpecs': '写入生成的 Playwright 规格文件（需显式启用）',
+  'help.option.e2eTestPlan.writeApiSmokeSpecs':
+    '写入生成的 Playwright API-smoke 规格文件（需显式启用）',
   'help.option.e2eTestPlan.specOutputDir': '生成的 Playwright 规格文件目录',
+  'help.option.e2eTestPlan.apiSmokeOutputDir': '生成的 Playwright API-smoke 规格文件目录',
   'help.option.e2eTestPlan.force': '覆盖已有的生成规格文件',
   'help.option.evalServer.host': '绑定地址（默认：127.0.0.1；用 0.0.0.0 暴露到所有网卡）',
   'help.option.evalServer.idleTimeout': '空闲 N 秒后自动关闭（0 = 禁用）',

@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 `/api/processes` generated route fixture rejected for the current UI lane; separate generated API-smoke lane now recommended as a readiness-only next slice
+- Mode: Task 6 generated API-smoke lane implemented for `/api/processes`; next selected task is Task 2 Wiki Mutation / Provider Policy readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, Task 6 generated API-smoke specs for `/api/processes`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, MCP exposure, and GitHub automation remain deferred.
 - Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -90,7 +90,71 @@ Current state:
 - 2026-06-07T14:04+01:00: `NO_IMPLEMENTATION_SLICE` for Task 6 `/api/processes` generated route fixture. Backend route and backend-client wrapper exist, but current frontend Process panel does not call `fetchProcesses()` or `/api/processes`; it derives process rows from `Process` nodes loaded through `/api/graph`. A generated `/api/processes` E2E fixture would not exercise the route through web-first UI behavior without changing product code or using direct API calls, so implementation is intentionally skipped.
 - 2026-06-07T14:07+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: after the `/api/repos`, `/api/repo`, and `/api/graph` generated UI fixtures plus the `/api/processes` no-slice decision, the next practical direction is policy-dependent. Candidate next Goals are generated API-smoke specs as a separate lane, another deterministic UI route fixture only after proving a frontend consumer, Task 2 wiki mutation/provider policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
 - 2026-06-07: Generated API-smoke specs readiness completed for backend routes without a current frontend/UI consumer. Recommendation: if Task 6 continues from the `/api/processes` no-slice decision, do it as a separate backend API-smoke lane rather than broadening the web-first Playwright UI renderer.
-- 2026-06-07: Next-task map recorded in `plans.md` and `feature-map.md`. Default recommendation is Task 6 Generated API-Smoke Specs as the next implementation Goal, starting with `/api/processes` only. Alternative next Goals are Task 2 wiki mutation/provider policy readiness, Task 4 PR Impact MCP/GitHub-readiness, another Task 6 UI route fixture only after proving a frontend consumer, or Task 7 deeper OCaml semantics readiness.
+- 2026-06-07: Next-task map recorded in `plans.md` and `feature-map.md`. At that time, the default recommendation was Task 6 Generated API-Smoke Specs, starting with `/api/processes` only. This was superseded by the 2026-06-07T16:20+01:00 implementation checkpoint below.
+- 2026-06-07T16:20+01:00: Task 6 Generated API-Smoke Specs implemented with TDD. The new lane emits direct Playwright APIRequestContext smoke specs for `/api/processes` only, behind explicit `gitnexus e2e-test-plan --write-api-smoke-specs`, with a separate output path from browser UI generated specs. Next selected task is Task 2 Wiki Mutation / Provider Policy readiness.
+
+### 2026-06-07T16:20+01:00 - Task 6 Generated API-Smoke Specs Implementation
+
+Goal:
+
+- Add a separate deterministic generated API-smoke lane for backend routes that do not currently have a frontend/UI consumer, starting with `/api/processes` only.
+
+Implemented:
+
+- New API-smoke renderer:
+  - `gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts`
+- New explicit CLI mode:
+  - `gitnexus e2e-test-plan --write-api-smoke-specs`
+  - `--api-smoke-output-dir <path>`
+- New golden fixture:
+  - `gitnexus/test/fixtures/e2e-test-generation/generated-api-processes-smoke.spec.ts`
+- New and updated tests:
+  - `gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts`
+  - `gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts`
+  - `gitnexus/test/unit/e2e-test-plan-cli.test.ts`
+- CLI help/i18n wiring:
+  - `gitnexus/src/cli/index.ts`
+  - `gitnexus/src/cli/help-i18n.ts`
+  - `gitnexus/src/cli/i18n/en.ts`
+  - `gitnexus/src/cli/i18n/zh-CN.ts`
+
+Scope kept:
+
+- `/api/processes` only.
+- Direct API assertions through Playwright `request.get(...)`.
+- Separate default output path: `gitnexus/test/api-smoke/generated`.
+- Browser UI generated-spec lane still rejects `/api/processes`.
+
+Deferred:
+
+- Browser execution.
+- Live-backend generation.
+- CI mutation.
+- GitHub automation.
+- Automatic route discovery.
+- Broadening API-smoke generation beyond `/api/processes`.
+
+Verification:
+
+```powershell
+npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm test -- --run test/unit/cli-i18n.test.ts test/unit/cli-commands.test.ts test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused Task 6 suite passed: 4 files, 20 tests.
+- Adjacent CLI/help suite passed: 6 files, 36 tests.
+- Build passed.
+- `git diff --check` passed.
+
+Next selected task:
+
+- Task 2 Wiki Mutation / Provider Policy readiness.
+- Goal shape: readiness/research first, not source mutation.
+- Stop before source edits if provider/cost/output ownership remains ambiguous or if the write set expands beyond a status/dry-run/manual-policy slice.
 
 ### 2026-06-07 - Next Task Map
 
@@ -102,23 +166,23 @@ Current queue:
 
 | Priority | Candidate | Next Goal shape | Reason |
 | --- | --- | --- | --- |
-| 1 | Task 6 Generated API-Smoke Specs | Implementation Goal | Readiness is complete and `/api/processes` is the clearest backend-only route that should not be forced into the UI generated-spec lane. |
-| 2 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal | Wiki mutation needs provider, cost, freshness, output ownership, and rollback policy before source edits. |
-| 3 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | PR Impact local V1 exists, but MCP/GitHub automation requires a security and permission model. |
-| 4 | Task 6 Additional UI Route Fixture | Readiness Goal | Only valid if a backend route has a proven frontend consumer and visible UI assertion surface. |
+| 1 | Task 2 Wiki Mutation / Provider Policy | Readiness Goal | Wiki mutation needs provider, cost, freshness, output ownership, and rollback policy before source edits. |
+| 2 | Task 4 PR Impact MCP / GitHub Readiness | Readiness Goal | PR Impact local V1 exists, but MCP/GitHub automation requires a security and permission model. |
+| 3 | Task 6 Additional UI Route Fixture | Readiness Goal | Only valid if a backend route has a proven frontend consumer and visible UI assertion surface. |
+| 4 | Task 6 Additional API-Smoke Route | Readiness Goal | Only valid after reviewing `/api/processes` API-smoke behavior and choosing another backend-only route with a stable read-only contract. |
 | 5 | Task 7 Deeper OCaml Semantics | Readiness Goal | Experimental OCaml V1 is complete; richer semantics need a new language-scope/dependency boundary. |
 
 Decision:
 
 - Do not pre-create multiple Goals.
-- The default next Goal should be Task 6 Generated API-Smoke Specs unless MAIN selects another priority.
+- The default next selected task should be Task 2 Wiki Mutation / Provider Policy readiness unless MAIN selects another priority.
 - If a non-default candidate is chosen, start with readiness unless the exact implementation boundary is already documented and still current.
 
 Verification:
 
 - `feature-map.md` now contains a ranked next task map.
 - `plans.md` now contains a next task queue with goal shape, scope, verification surface, and stop rule.
-- No GitNexus source or runtime files were changed.
+- Task 6 API-smoke implementation later completed; this queue has been updated to make Task 2 Wiki Mutation / Provider Policy readiness the next selected task.
 
 ### 2026-06-07T14:04+01:00 - Task 6 `/api/processes` No-Slice Decision
 

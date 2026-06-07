@@ -135,7 +135,11 @@ const OPTION_DESCRIPTION_KEYS = {
     'help.option.e2eTestPlan.regressionForensicsJson',
   'e2e-test-plan|-f, --format <format>': 'help.option.e2eTestPlan.format',
   'e2e-test-plan|--write-specs': 'help.option.e2eTestPlan.writeSpecs',
+  'e2e-test-plan|--write-api-smoke-specs':
+    'help.option.e2eTestPlan.writeApiSmokeSpecs',
   'e2e-test-plan|--spec-output-dir <path>': 'help.option.e2eTestPlan.specOutputDir',
+  'e2e-test-plan|--api-smoke-output-dir <path>':
+    'help.option.e2eTestPlan.apiSmokeOutputDir',
   'e2e-test-plan|--force': 'help.option.e2eTestPlan.force',
   'eval-server|-p, --port <port>': 'help.option.port',
   'eval-server|--host <host>': 'help.option.evalServer.host',

@@ -8,6 +8,7 @@ import {
   type E2ETestPlanInput,
   type E2ETestTargetContract,
 } from '../core/e2e-test-generation/report.js';
+import { renderE2EGeneratedApiSmokeSpecs } from '../core/e2e-test-generation/api-smoke-renderer.js';
 import { renderE2EGeneratedSpecs } from '../core/e2e-test-generation/spec-renderer.js';
 import type { PrImpactReport } from '../core/pr-impact/report.js';
 import type { RegressionForensicsReport } from '../core/regression-forensics/report.js';
@@ -20,7 +21,9 @@ export interface E2ETestPlanCommandOptions {
   regressionForensicsJson?: string;
   format?: string;
   writeSpecs?: boolean;
+  writeApiSmokeSpecs?: boolean;
   specOutputDir?: string;
+  apiSmokeOutputDir?: string;
   force?: boolean;
 }
 
@@ -60,36 +63,66 @@ const renderSpecsWithExistingFilePolicy = (
 const writeGeneratedSpecs = (
   report: ReturnType<typeof buildE2ETestPlanReport>,
   options: E2ETestPlanCommandOptions,
-): void => {
+): { paths: string[]; blocked: { proposalId: string; reason: string }[]; lines: string[] } => {
   const rendered = renderSpecsWithExistingFilePolicy(report, options);
   for (const spec of rendered.specs) {
     mkdirSync(dirname(spec.path), { recursive: true });
     writeFileSync(spec.path, spec.text, 'utf-8');
   }
 
-  if ((options.format || 'markdown').toLowerCase() === 'json') {
-    output(
-      JSON.stringify(
-        {
-          report,
-          generated_specs: rendered.specs.map((spec) => spec.path),
-          blocked: rendered.blocked,
-        },
-        null,
-        2,
-      ),
-    );
-    return;
-  }
-
-  output(
-    [
+  return {
+    paths: rendered.specs.map((spec) => spec.path),
+    blocked: rendered.blocked,
+    lines: [
       `Generated specs written: ${rendered.specs.length}`,
       `Blocked proposals: ${rendered.blocked.length}`,
       ...rendered.specs.map((spec) => `- ${spec.path}`),
       ...rendered.blocked.map((blocked) => `- ${blocked.proposalId}: ${blocked.reason}`),
-    ].join('\n'),
-  );
+    ],
+  };
+};
+
+const renderApiSmokeSpecsWithExistingFilePolicy = (
+  report: ReturnType<typeof buildE2ETestPlanReport>,
+  options: E2ETestPlanCommandOptions,
+) => {
+  const firstPass = renderE2EGeneratedApiSmokeSpecs(report, {
+    outputDir: options.apiSmokeOutputDir,
+  });
+  const existingSpecs = firstPass.specs
+    .filter((spec) => existsSync(spec.path))
+    .map((spec) => ({
+      path: spec.path,
+      generated: readFileSync(spec.path, 'utf-8').includes('Generated GitNexus API smoke plan:'),
+    }));
+
+  return renderE2EGeneratedApiSmokeSpecs(report, {
+    outputDir: options.apiSmokeOutputDir,
+    existingSpecs,
+    force: options.force,
+  });
+};
+
+const writeGeneratedApiSmokeSpecs = (
+  report: ReturnType<typeof buildE2ETestPlanReport>,
+  options: E2ETestPlanCommandOptions,
+): { paths: string[]; blocked: { proposalId: string; reason: string }[]; lines: string[] } => {
+  const rendered = renderApiSmokeSpecsWithExistingFilePolicy(report, options);
+  for (const spec of rendered.specs) {
+    mkdirSync(dirname(spec.path), { recursive: true });
+    writeFileSync(spec.path, spec.text, 'utf-8');
+  }
+
+  return {
+    paths: rendered.specs.map((spec) => spec.path),
+    blocked: rendered.blocked,
+    lines: [
+      `Generated API-smoke specs written: ${rendered.specs.length}`,
+      `Blocked API-smoke proposals: ${rendered.blocked.length}`,
+      ...rendered.specs.map((spec) => `- ${spec.path}`),
+      ...rendered.blocked.map((blocked) => `- ${blocked.proposalId}: ${blocked.reason}`),
+    ],
+  };
 };
 
 export async function e2eTestPlanCommand(
@@ -125,8 +158,46 @@ export async function e2eTestPlanCommand(
   };
 
   const report = buildE2ETestPlanReport(input);
-  if (options.writeSpecs) {
-    writeGeneratedSpecs(report, options);
+  if (options.writeSpecs || options.writeApiSmokeSpecs) {
+    const generatedSpecs = options.writeSpecs
+      ? writeGeneratedSpecs(report, options)
+      : undefined;
+    const generatedApiSmokeSpecs = options.writeApiSmokeSpecs
+      ? writeGeneratedApiSmokeSpecs(report, options)
+      : undefined;
+
+    if ((options.format || 'markdown').toLowerCase() === 'json') {
+      output(
+        JSON.stringify(
+          {
+            report,
+            ...(generatedSpecs
+              ? {
+                  generated_specs: generatedSpecs.paths,
+                  blocked: generatedSpecs.blocked,
+                }
+              : {}),
+            ...(generatedApiSmokeSpecs
+              ? {
+                  generated_api_smoke_specs: generatedApiSmokeSpecs.paths,
+                  blocked_api_smoke: generatedApiSmokeSpecs.blocked,
+                }
+              : {}),
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    output(
+      [
+        ...(generatedSpecs?.lines ?? []),
+        ...(generatedSpecs && generatedApiSmokeSpecs ? [''] : []),
+        ...(generatedApiSmokeSpecs?.lines ?? []),
+      ].join('\n'),
+    );
     return;
   }
 
