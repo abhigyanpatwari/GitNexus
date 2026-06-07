@@ -108,6 +108,32 @@ const renderProcessesRouteSpec = (proposal: E2ETestPlanProposal): string => {
   ].join('\n');
 };
 
+const renderHealthRouteSpec = (proposal: E2ETestPlanProposal): string => {
+  const title = singleQuoted(proposal.title);
+  return [
+    "import { test, expect } from '@playwright/test';",
+    '',
+    "const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';",
+    '',
+    'const apiUrl = (path: string): string => new URL(path, BACKEND_URL).toString();',
+    '',
+    `test.describe('Generated GitNexus API smoke plan: ${title}', () => {`,
+    "  test('route /api/health returns the stable healthcheck JSON contract', async ({ request }) => {",
+    "    const response = await request.get(apiUrl('/api/health'));",
+    '',
+    '    expect(response.ok()).toBeTruthy();',
+    '',
+    '    const body: unknown = await response.json();',
+    '    expect(body).toEqual(',
+    '      expect.objectContaining({',
+    "        status: 'ok',",
+    '      }),',
+    '    );',
+    '  });',
+    '});',
+  ].join('\n');
+};
+
 const renderProposal = (
   proposal: E2ETestPlanProposal,
   options: ApiSmokeSpecRenderOptions,
@@ -128,10 +154,10 @@ const renderProposal = (
     );
   }
 
-  if (route !== '/api/processes') {
+  if (route !== '/api/processes' && route !== '/api/health') {
     return block(
       proposal.id,
-      'Only /api/processes route proposals have deterministic API-smoke fixtures in V1.',
+      'Only /api/processes and /api/health route proposals have deterministic API-smoke fixtures in V1.',
     );
   }
 
@@ -148,7 +174,7 @@ const renderProposal = (
   return {
     proposalId: proposal.id,
     path: outputPath,
-    text: renderProcessesRouteSpec(proposal),
+    text: route === '/api/health' ? renderHealthRouteSpec(proposal) : renderProcessesRouteSpec(proposal),
   };
 };
 

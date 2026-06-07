@@ -11,11 +11,11 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 `/api/file` generated UI route fixture implemented; next selected task is Task 6 Additional API-Smoke Route readiness
+- Mode: Task 6 `/api/health` generated API-smoke route implemented; next selected task is Task 7 Deeper OCaml Semantics readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, and local read-only MCP exposure, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, and `/api/graph`, Task 6 generated API-smoke specs for `/api/processes`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, GitHub PR ingestion/comments/checks, and token-bearing GitHub automation remain deferred.
+- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, and local read-only MCP exposure, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file`, Task 6 generated API-smoke specs for `/api/processes` and `/api/health`, and Task 7 OCaml experimental language support V1 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, GitHub PR ingestion/comments/checks, and token-bearing GitHub automation remain deferred.
 - Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
@@ -97,6 +97,69 @@ Current state:
 - 2026-06-07T16:39+01:00: Task 4 PR Impact MCP / GitHub Readiness implemented the smallest safe local slice with TDD: a read-only, closed-world `pr_impact` MCP tool that reuses the existing local `detect_changes -> impact -> api_impact -> PR Impact report` pipeline. GitHub PR URL ingestion, PR comments/reviews, check runs, Actions workflows, and token-bearing automation remain deferred.
 - 2026-06-07T16:55+01:00: Task 6 Additional UI Route Fixture readiness selected `/api/file` as the next narrow UI generated-spec slice. Evidence: `backend-client.readFile()` calls `/api/file`, `CodeReferencesPanel` calls `readFile()` when a selected graph/tree node has `filePath`, and file-tree selection gives a stable visible code-panel assertion surface. Routes without UI consumers remain API-smoke or deferred.
 - 2026-06-07T16:58+01:00: Task 6 `/api/file` generated UI route fixture implemented with TDD. The generated spec mocks `/api/repos`, `/api/repo`, `/api/graph`, `/api/file**`, and `/api/heartbeat`, clicks `index.ts` in the file tree, and asserts visible selected-file code content. Browser execution, live-backend generation, CI mutation, GitHub automation, and broader route support remain deferred.
+- 2026-06-07T17:00+01:00: Task 6 Additional API-Smoke Route readiness selected `/api/health` as the next narrow API-smoke route. Evidence: `gitnexus/src/server/api.ts` defines it as a lightweight Docker/orchestrator healthcheck that immediately returns `{ status: 'ok' }`. It is repo-independent, read-only, auth-free, non-mutating, and does not depend on index state.
+- 2026-06-07T17:02+01:00: Task 6 `/api/health` generated API-smoke route implemented with TDD. The generated spec calls `/api/health` with Playwright APIRequestContext and asserts OK plus `{ status: 'ok' }`. Browser execution, server route changes, CI mutation, GitHub automation, and broader API-smoke route support remain deferred. Next selected task is Task 7 Deeper OCaml Semantics readiness.
+
+### 2026-06-07T17:00+01:00 - Task 6 `/api/health` Generated API-Smoke Route Readiness
+
+Goal:
+
+- Decide whether another backend-only generated API-smoke route is justified after `/api/processes`.
+
+Evidence:
+
+- Current API-smoke renderer supports only `/api/processes`.
+- `/api/health` is defined in `gitnexus/src/server/api.ts` as a lightweight Docker/orchestrator healthcheck.
+- `/api/health` returns `{ status: 'ok' }` immediately.
+- The route does not need a repo, graph/index state, auth, background jobs, SSE, mutation, or route discovery.
+- `/api/info` is read-only but includes runtime-derived `launchContext` and `nodeVersion`; it is a reasonable later candidate, not the minimal first expansion.
+- `/api/clusters`, `/api/cluster`, `/api/process`, `/api/grep`, `/api/query`, and `/api/search` are state-sensitive, parameterized, or heavier and should each require separate readiness before generated smoke coverage.
+- `/api/analyze`, `/api/reindex`, `/api/embed`, and DELETE routes are mutating/job surfaces and remain out of scope.
+
+Decision:
+
+- Implement `/api/health` as the next generated API-smoke route.
+- Keep the API-smoke lane direct and backend-only using Playwright APIRequestContext.
+- Assert only the stable contract: HTTP OK and JSON body containing `status: 'ok'`.
+
+Approved local slice under standing conditional authorization:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 6 /api/health Generated API-Smoke Route
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: add deterministic generated API-smoke spec support for route `/api/health` only. The generated spec must use Playwright APIRequestContext, call `/api/health`, assert an OK response, parse JSON, and assert `{ status: "ok" }`.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts
+- gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-api-health-smoke.spec.ts
+- .agent/long-horizon/gitnexus-local-features/documentation.md
+- .agent/long-horizon/gitnexus-local-features/plans.md
+- .agent/long-horizon/gitnexus-local-features/feature-map.md
+Constraints: no backend route changes, no browser UI generated-spec changes, no live route discovery, no index-state assumptions, no CI mutation, no GitHub automation, no credentials, no new dependency, no broad renderer rewrite, and TDD required.
+```
+
+Stop/defer rules:
+
+- Stop if `/api/health` output is not constant or requires environment-specific branching.
+- Stop if implementation requires changing the server route or test runner config.
+- Keep `/api/info` and all graph/query/job routes deferred until separate readiness names their exact stable contract.
+
+Implementation checkpoint:
+
+- Updated `gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts`.
+- Added golden fixture `gitnexus/test/fixtures/e2e-test-generation/generated-api-health-smoke.spec.ts`.
+- Updated `gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts`.
+- TDD red failure was the expected allowlist block: `Only /api/processes route proposals have deterministic API-smoke fixtures in V1.`
+- Verification:
+  - `npm test -- --run test/unit/e2e-test-generation-api-smoke-renderer.test.ts`
+  - `npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts`
+  - `npm run build`
+  - Results: focused renderer test passed, adjacent Task 6 suite passed 4 files / 22 tests, and build passed with existing web bundle warnings.
+
+Next selected task:
+
+- Task 7 Deeper OCaml Semantics readiness.
 
 ### 2026-06-07T16:55+01:00 - Task 6 `/api/file` Generated UI Route Fixture Readiness
 

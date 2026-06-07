@@ -36,7 +36,7 @@ Created: 2026-06-05
 | 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium completed for local MCP slice` | `local V1 complete` | Report core, thin local CLI wrapper, and read-only local MCP `pr_impact` tool implemented and verified; GitHub automation deferred |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core, thin local CLI wrapper, mocked UI generated specs for `/api/repos`, `/api/repo`, `/api/graph`, and API-smoke generated specs for `/api/processes` implemented and verified |
+| 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core, thin local CLI wrapper, mocked UI generated specs for `/api/repos`, `/api/repo`, `/api/graph`, `/api/file`, and API-smoke generated specs for `/api/processes` and `/api/health` implemented and verified |
 | 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support implemented locally; deeper OCaml semantics deferred |
 
 ## Next Task Queue
@@ -45,14 +45,71 @@ This section controls the next Goal selection after the completed local V1 tranc
 
 | Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 6 Additional API-Smoke Route | Readiness Goal | Consider another backend-only route after `/api/processes` generated API-smoke behavior and `/api/file` UI fixture are complete. | API contract evidence, generated-spec policy check, and fixture/golden plan. | Stop if the route requires mutation, auth, long-running indexing, unstable state, or live route discovery. |
-| 2 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
+| 1 | Task 7 Deeper OCaml Semantics | Readiness Goal | Scope a second OCaml slice after experimental `.ml` / `.mli` V1, such as modules, functors, Dune, PPX, or richer query semantics. | Parser/provider gap table, dependency risk, fixture plan, and language-query acceptance tests. | Stop if it requires broad tree-sitter runtime upgrades or cross-language parser refactors. |
 
 Default recommendation:
 
-- Continue with `Task 6 Additional API-Smoke Route` readiness.
+- Continue with `Task 7 Deeper OCaml Semantics` readiness.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If MAIN chooses another priority, create a readiness Goal for that selected task before source edits.
+
+### Task 6 Additional API-Smoke Route - 2026-06-07T17:00+01:00
+
+Readiness outcome:
+
+- `/api/health` is the next narrow generated API-smoke route candidate.
+- It is read-only, repo-independent, auth-free, non-mutating, fast, and has a constant JSON response.
+- It can be implemented without live route discovery, index-state assumptions, browser UI execution, CI mutation, GitHub automation, or new dependencies.
+
+Evidence map:
+
+| Route | Contract evidence | Decision |
+| --- | --- | --- |
+| `/api/health` | `gitnexus/src/server/api.ts` defines it as a lightweight Docker/orchestrator healthcheck returning `{ status: 'ok' }` immediately | `now` |
+| `/api/info` | Read-only server info, but response includes runtime-derived `launchContext` and `nodeVersion`; useful later, less minimal than health | `next/defer` |
+| `/api/clusters` / `/api/cluster` | Read-only, but graph/index-state dependent and detail route needs a selected name | `defer` |
+| `/api/process` | Read-only detail route, but requires a valid process name from graph state | `defer` |
+| `/api/grep`, `/api/query`, `/api/search` | Read-only intent varies by query/search mode and can be heavier or state-sensitive | `defer` |
+| `/api/analyze`, `/api/reindex`, `/api/embed`, DELETE routes | Mutating, job-triggering, or cancellation surfaces | `out of scope` |
+
+Approved implementation slice:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 6 /api/health Generated API-Smoke Route
+Approved slice: add deterministic generated API-smoke spec support for route `/api/health` only. The generated spec must use Playwright APIRequestContext, call `/api/health`, assert an OK response, parse JSON, and assert `{ status: "ok" }`.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts
+- gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-api-health-smoke.spec.ts
+- .agent/long-horizon/gitnexus-local-features/documentation.md
+- .agent/long-horizon/gitnexus-local-features/plans.md
+- .agent/long-horizon/gitnexus-local-features/feature-map.md
+Constraints: no backend route changes, no browser UI generated-spec changes, no live route discovery, no index-state assumptions, no CI mutation, no GitHub automation, no credentials, no new dependency, no broad renderer rewrite, and TDD required.
+```
+
+TDD order:
+
+1. Add a failing renderer test and golden fixture for `/api/health`.
+2. Extend the API-smoke route allowlist and renderer dispatch for `/api/health`.
+3. Keep unsupported-route blocking behavior intact for all other routes.
+4. Run focused API-smoke renderer/CLI/report tests, build, and `git diff --check`.
+
+Implementation checkpoint:
+
+- Added `/api/health` generated API-smoke spec support to `api-smoke-renderer.ts`.
+- Added `generated-api-health-smoke.spec.ts` golden fixture.
+- Updated API-smoke renderer tests for `/api/health` and the unsupported-route allowlist message.
+- TDD red failure was the expected allowlist block: `Only /api/processes route proposals have deterministic API-smoke fixtures in V1.`
+- Verification:
+  - `npm test -- --run test/unit/e2e-test-generation-api-smoke-renderer.test.ts`
+  - `npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts`
+  - `npm run build`
+  - Results: focused renderer test passed, adjacent Task 6 suite passed 4 files / 22 tests, and build passed with existing web bundle warnings.
+
+Next selected task:
+
+- Task 7 Deeper OCaml Semantics readiness.
 
 ### Task 6 `/api/file` Generated UI Route Fixture - 2026-06-07T16:55+01:00
 

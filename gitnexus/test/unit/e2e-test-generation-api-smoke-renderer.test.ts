@@ -77,6 +77,39 @@ describe('E2E generated API smoke renderer', () => {
     expect(result.specs[0].text).toBe(golden);
   });
 
+  it('renders deterministic Playwright APIRequestContext text for /api/health', () => {
+    const result = renderE2EGeneratedApiSmokeSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-health',
+          title: 'Exercise route /api/health after impacted API change',
+          target_spec: 'gitnexus/test/api-smoke/api-health.spec.ts',
+          evidence: [
+            'Route /api/health has risk LOW',
+            'Consumers: 0',
+            'Mismatches: 0',
+          ],
+        },
+      ],
+    });
+
+    expect(result.blocked).toEqual([]);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0].path).toBe(
+      'gitnexus/test/api-smoke/generated/route-api-health.generated.api.spec.ts',
+    );
+    expect(result.specs[0].text).toContain("request.get(apiUrl('/api/health'))");
+    expect(result.specs[0].text).not.toContain('page.goto');
+
+    const golden = readFileSync(
+      path.join(__dirname, '../fixtures/e2e-test-generation/generated-api-health-smoke.spec.ts'),
+      'utf-8',
+    ).trim();
+    expect(result.specs[0].text).toBe(golden);
+  });
+
   it('blocks unsupported routes instead of widening the API-smoke lane silently', () => {
     const result = renderE2EGeneratedApiSmokeSpecs({
       ...baseReport,
@@ -95,7 +128,8 @@ describe('E2E generated API smoke renderer', () => {
     expect(result.blocked).toEqual([
       {
         proposalId: 'route-api-graph',
-        reason: 'Only /api/processes route proposals have deterministic API-smoke fixtures in V1.',
+        reason:
+          'Only /api/processes and /api/health route proposals have deterministic API-smoke fixtures in V1.',
       },
     ]);
   });
