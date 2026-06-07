@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Task 6 `/api/processes` generated route fixture rejected as no-slice for now
+- Mode: Task 6 `/api/processes` generated route fixture rejected for the current UI lane; separate generated API-smoke lane now recommended as a readiness-only next slice
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
@@ -88,6 +88,7 @@ Current state:
 - 2026-06-07T14:00+01:00: Active Task 6 follow-on Goal selected `/api/graph` as the next deterministic route fixture after source evidence showed footer graph stats are stable web-first assertions. During readiness, a `/api/repo` generated-spec mismatch was found and fixed: graph stats now come from a non-empty mocked `/api/graph` payload rather than stale `/api/repo.stats` assumptions. TDD red/green completed; focused renderer/CLI/report tests, build, and diff checks passed.
 - 2026-06-07T14:04+01:00: `NO_IMPLEMENTATION_SLICE` for Task 6 `/api/processes` generated route fixture. Backend route and backend-client wrapper exist, but current frontend Process panel does not call `fetchProcesses()` or `/api/processes`; it derives process rows from `Process` nodes loaded through `/api/graph`. A generated `/api/processes` E2E fixture would not exercise the route through web-first UI behavior without changing product code or using direct API calls, so implementation is intentionally skipped.
 - 2026-06-07T14:07+01:00: `NO_NEXT_GOAL_CREATED`. Blocker: after the `/api/repos`, `/api/repo`, and `/api/graph` generated UI fixtures plus the `/api/processes` no-slice decision, the next practical direction is policy-dependent. Candidate next Goals are generated API-smoke specs as a separate lane, another deterministic UI route fixture only after proving a frontend consumer, Task 2 wiki mutation/provider policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
+- 2026-06-07: Generated API-smoke specs readiness completed for backend routes without a current frontend/UI consumer. Recommendation: if Task 6 continues from the `/api/processes` no-slice decision, do it as a separate backend API-smoke lane rather than broadening the web-first Playwright UI renderer.
 
 ### 2026-06-07T14:04+01:00 - Task 6 `/api/processes` No-Slice Decision
 
@@ -130,6 +131,150 @@ Results:
 
 - Source evidence supports no implementation.
 - No production or test files changed for `/api/processes`.
+
+### 2026-06-07 - Task 6 Generated API-Smoke Specs Readiness
+
+Goal:
+
+- Decide whether GitNexus should open a separate generated API-smoke spec lane for backend routes that do not have a current frontend/UI consumer, using `/api/processes` as the motivating example.
+
+Objective time window:
+
+- Research start recorded in supervisor chat: 2026-06-07T15:33:02+01:00.
+- Research checkpoint recorded locally: 2026-06-07T15:38:22+01:00 after source discovery, official-doc review, GitHub issue/PR review, and local `codex exec --help` verification.
+- Local resume-help checkpoint recorded: 2026-06-07T15:42:38+01:00; `codex exec resume --help` still shows `[SESSION_ID] [PROMPT]` and no promptless `--follow` / `--resume-only` flag in this installed CLI.
+- Research end recorded locally: 2026-06-07T15:43:03+01:00.
+- This pass is intentionally decision-support for the next lane, not implementation.
+
+Evidence that changed the decision:
+
+- `gitnexus/src/server/api.ts` exposes `GET /api/processes` and `GET /api/process`, so the backend route surface is real and stable enough to target directly.
+- `gitnexus-web/src/services/backend-client.ts` defines `fetchProcesses()` and `fetchProcessDetail()`, but current frontend code has no `fetchProcesses()` call site.
+- `gitnexus-web/src/components/ProcessesPanel.tsx` renders the process list from `graph.nodes.filter((n) => n.label === 'Process')` and then uses `runQuery(...)` for process-step drilldown, so the visible UI contract is graph-driven rather than `/api/processes`-driven.
+- `gitnexus-web/e2e/server-connect.spec.ts` verifies `process-list-loaded`, `process-row`, and the process modal through current UI behavior only; those checks do not prove the `/api/processes` route.
+- `gitnexus/src/core/e2e-test-generation/spec-renderer.ts` hard-blocks anything except deterministic mocked `/api/repos`, `/api/repo`, and `/api/graph` route proposals and writes under `gitnexus-web/e2e/generated`.
+- `gitnexus/src/core/e2e-test-generation/report.ts` and `gitnexus/src/cli/e2e-test-plan.ts` are still shaped around a `gitnexus-web` + Playwright browser contract. The current lane is not a backend contract lane with direct HTTP assertions.
+
+External methodology evidence:
+
+| Source | Evidence used | Local conclusion |
+| --- | --- | --- |
+| [OpenAI Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) | `codex exec` is the documented script/CI route; it supports explicit sandbox settings and JSONL output for automation. | Continue using `codex exec` for bounded worker runs, but verify flags against local CLI help before relying on docs examples. |
+| [OpenAI Codex follow a goal](https://developers.openai.com/codex/use-cases/follow-goals) and [Using Goals in Codex](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex) | Goals are appropriate for long-running work with a clear success condition, validation loop, boundaries, and blocked stop condition. | Keep one feature Goal at a time and require each Goal to name outcome, evidence, constraints, boundaries, iteration policy, and stop condition. |
+| [openai/codex discussion #21764](https://github.com/openai/codex/discussions/21764) | Maintainer response says non-interactive Goal creation requires an explicit prompt and there is not currently a first-class dedicated non-interactive Goal command. | Treat `codex exec` + Goals as usable but prompt-mediated; do not assume a stable `codex goal ...` CLI. |
+| [openai/codex issue #24016](https://github.com/openai/codex/issues/24016) and [PR #24321](https://github.com/openai/codex/pull/24321) | The community/maintainer thread shows promptless `codex exec resume` for active Goals is still an evolving area. | Prefer explicit continuation prompts in worker runs until local CLI help and behavior prove a promptless resume path exists. |
+| [openai/codex issue #24094](https://github.com/openai/codex/issues/24094) | A current field report shows `codex exec --enable goals` can expose Goals as enabled while goal-management tools are missing in that reporter's setup. | Treat Goal tool availability as something to smoke-test in the current session rather than assuming from the feature flag alone. |
+| [openai/codex issue #24135](https://github.com/openai/codex/issues/24135) | Non-interactive MCP tool approval can require `--dangerously-bypass-approvals-and-sandbox` in some setups, which is not a routine safe default. | For routine GitNexus workers prefer explicit sandbox flags; use bypass only in an externally controlled local run when the operator accepts the risk. |
+| [Playwright API testing](https://playwright.dev/docs/api-testing) and [APIRequestContext](https://playwright.dev/docs/api/class-apirequestcontext) | Playwright has first-class direct HTTP/API testing via the `request` fixture and isolated request contexts, without loading a page. | A backend API-smoke lane is technically idiomatic and should be separate from browser UI spec generation. |
+| [Google Testing Blog: Just Say No to More End-to-End Tests](https://testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html), [Google Testing Blog: How Much Testing is Enough](https://testing.googleblog.com/2021/06/how-much-testing-is-enough.html), and [Martin Fowler: Test Pyramid](https://martinfowler.com/bliki/TestPyramid.html) | These sources argue for smaller integration/API tests where possible and only a small set of broad UI/E2E tests for critical user journeys. | Do not force backend-only route checks into the UI lane; use API-smoke checks for backend route contracts and reserve UI specs for visible user behavior. |
+
+Readiness decision:
+
+- Recommend implementation, but only as a separate generated API-smoke lane.
+- Do not broaden the current web-first generated-spec renderer to cover backend-only routes such as `/api/processes`.
+- Treat `/api/processes` as proof that GitNexus now has at least one backend route that is real, potentially valuable to smoke-test, and not exercisable through the current frontend/UI contract.
+
+Why a separate lane is justified:
+
+- The current renderer is intentionally web-first: it mocks backend routes and proves visible browser behavior through `gitnexus-web`.
+- A backend-only route like `/api/processes` would otherwise force one of two bad outcomes:
+  - a fake UI assertion that never proves the route, or
+  - direct API assertions hidden inside the UI lane, which would collapse two different policies into one output path.
+- Keeping API smoke separate preserves a clean contract:
+  - UI generated specs prove user-visible behavior through the current frontend.
+  - API-smoke generated specs prove backend route status/shape with direct HTTP assertions.
+
+Recommended future slice:
+
+- Open a new Task 6 Goal for generated API-smoke specs readiness-to-implementation, scoped to backend routes with no current frontend/UI consumer.
+- Start with `/api/processes` only.
+- Keep the first slice deterministic and local:
+  - reuse `e2e-test-plan.v1alpha1` route proposals as inputs,
+  - add a separate renderer/output path for backend smoke specs,
+  - require explicit opt-in from the CLI,
+  - do not add browser execution, CI mutation, GitHub automation, or live route discovery.
+
+Proposed future write set:
+
+- `gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts`
+- `gitnexus/src/core/e2e-test-generation/spec-renderer.ts` only if shared helpers are extracted cleanly
+- `gitnexus/src/cli/e2e-test-plan.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts` and locale files only if new CLI flags are added
+- `gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts`
+- `gitnexus/test/unit/e2e-test-plan-cli.test.ts`
+- `gitnexus/test/fixtures/e2e-test-generation/generated-api-processes-smoke.spec.ts`
+
+Proposed output/policy boundary:
+
+- Keep the current UI lane output under `gitnexus-web/e2e/generated`.
+- Put backend smoke outputs in a separate generated directory so reviewers can see the policy boundary immediately.
+- Require an explicit CLI mode such as `--write-api-smoke-specs` or `--spec-lane api-smoke`; do not make backend smoke generation implicit under `--write-specs`.
+
+TDD order if MAIN later approves implementation:
+
+1. Red test: `/api/processes` route proposal produces no UI spec in the existing renderer.
+2. Red test: the new API-smoke renderer emits one deterministic spec for `/api/processes`.
+3. Red test: generated API-smoke output uses direct HTTP assertions only and does not call `page.goto(...)`.
+4. Red test: CLI writes API-smoke specs only when the explicit API-smoke mode is requested.
+5. Red test: UI generated-spec mode and API-smoke mode cannot overwrite each other's output paths.
+6. Green the minimal renderer and CLI changes.
+7. Re-run the adjacent Task 6 report/CLI/renderer tests before any refactor.
+
+Risks:
+
+- The current `e2e-test-plan` report schema does not explicitly encode "no UI consumer", so the first lane may need a manual route selection/input rather than fully automatic classification.
+- If the API-smoke lane reuses `gitnexus-web/e2e` without a clear boundary, reviewers may confuse backend contract tests with UI behavior tests.
+- If the generated smoke spec asserts too much response shape, the lane can become brittle and duplicate `shape_check`/integration-test responsibility.
+- If the implementation tries to solve general route discovery, browser execution, or CI wiring in the first slice, scope will sprawl.
+
+Stop rules:
+
+- Stop if the first slice requires changing `ProcessesPanel` or any other product UI just to justify `/api/processes`.
+- Stop if the first slice would mix backend smoke output into the existing `gitnexus-web/e2e/generated` UI lane without a separate policy boundary.
+- Stop if automatic "backend route without UI consumer" detection requires broad new analysis beyond the existing explicit route proposal inputs.
+- Stop if implementation pressure expands into browser execution, CI mutation, GitHub automation, or live-backend generation.
+
+Required MAIN approval text if implementation is chosen:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 6 Generated API-Smoke Specs
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: add a separate deterministic generated API-smoke lane for backend routes that do not currently have a frontend/UI consumer, starting with `/api/processes` only. Reuse existing route proposals as inputs, but keep the renderer, CLI mode, and output directory separate from the current web-first generated Playwright UI lane.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts
+- gitnexus/src/core/e2e-test-generation/spec-renderer.ts only if shared helpers are extracted cleanly
+- gitnexus/src/cli/e2e-test-plan.ts
+- gitnexus/src/cli/index.ts
+- gitnexus/src/cli/help-i18n.ts and locale files only if needed for new CLI flags
+- gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts
+- gitnexus/test/unit/e2e-test-plan-cli.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-api-processes-smoke.spec.ts
+Constraints: no product/UI changes, no browser execution, no CI mutation, no GitHub automation, no new dependency without approval, no live-backend generation, and TDD required.
+```
+
+Commands run for this readiness pass:
+
+```powershell
+gitnexus query --repo gitnexus-local-features "e2e test generation processes panel api processes fetchProcesses backend client" --limit 8
+rg -n "fetchProcesses\(|/api/processes|Process(es)?Panel|process-list-loaded|process-row|spec-renderer|write-specs|api-smoke|mockedRoutes|routeKey|fetchGraph|fetchRepo" gitnexus/src gitnexus-web/src gitnexus-web/e2e gitnexus/test .agent/long-horizon/gitnexus-local-features
+Get-Content -Raw gitnexus/src/core/e2e-test-generation/spec-renderer.ts
+Get-Content -Raw gitnexus/src/core/e2e-test-generation/report.ts
+Get-Content -Raw gitnexus/src/cli/e2e-test-plan.ts
+Get-Content -Raw gitnexus/test/unit/e2e-test-generation-spec-renderer.test.ts
+Get-Content -Raw gitnexus/test/unit/e2e-test-generation-report.test.ts
+Get-Content -Raw gitnexus/test/unit/e2e-test-plan-cli.test.ts
+Select-String -Path gitnexus/src/server/api.ts -Pattern "app.get\\('/api/processes'|app.get\\('/api/process'" -Context 0,20
+Select-String -Path gitnexus-web/src/services/backend-client.ts -Pattern "fetchProcesses|fetchProcessDetail|fetchGraph|fetchRepoInfo" -Context 0,8
+Select-String -Path gitnexus-web/src/components/ProcessesPanel.tsx -Pattern "graph.nodes.filter\\(|runQuery\\(|process-list-loaded|process-row" -Context 0,6
+Select-String -Path gitnexus-web/e2e/server-connect.spec.ts -Pattern "process-list-loaded|process-row|process-view-button|Processes Panel" -Context 0,6
+```
+
+Verification result:
+
+- Local source evidence supports the recommendation.
+- No runtime/source/test behavior was changed.
 
 ### 2026-06-07T14:00+01:00 - Task 6 `/api/graph` Generated Spec Support
 

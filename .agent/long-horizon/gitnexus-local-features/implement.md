@@ -112,7 +112,15 @@ Default local `codex exec` shape:
 
 Research-only runs should state that source mutation is out of scope. Implementation runs may use `workspace-write` only after MAIN opens the write scope. Do not use `danger-full-access` for routine worker runs.
 
-Local CLI verification on 2026-06-05 showed this workstation's `codex exec` supports `--cd`, `--sandbox`, `--json`, and stdin prompts. It does not expose `--ask-for-approval`; do not include that option in worker-run commands unless a later local `codex exec --help` confirms it exists.
+Local CLI verification on 2026-06-07 showed this workstation is running `codex-cli 0.135.0` and `codex exec` supports `-C`/`--cd`, `--sandbox`, `--json`, `--enable goals`, stdin prompts, and `--dangerously-bypass-approvals-and-sandbox`. It does not expose `--ask-for-approval`; do not include that option in worker-run commands unless a later local `codex exec --help` confirms it exists.
+
+Non-interactive Goal caveat:
+
+- Official OpenAI docs support `codex exec` for scripts/CI-style automation and `/goal` for durable objectives, but current public GitHub issue/PR evidence shows non-interactive Goal control is still evolving.
+- There is no stable dedicated `codex goal ...` CLI contract documented for headless wrappers.
+- If using Goals through `codex exec`, make the prompt explicit: create or continue the Goal with the Goal tool, report whether it was created/active/completed/blocked, and do not rely on implicit continuation.
+- Smoke-test Goal tool availability in the current session when it matters; do not infer tool availability solely from `features.goals = true`.
+- Prefer a fresh non-interactive worker prompt per feature slice unless local CLI help and a smoke test prove promptless resume is available.
 
 ## Skills And Tool Routing
 

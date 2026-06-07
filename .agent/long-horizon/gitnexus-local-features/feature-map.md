@@ -35,7 +35,7 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, and `/api/graph` route paths; broader generated tests and deeper OCaml semantics require new Goals |
+| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, and `/api/graph` route paths; `/api/processes` is rejected for the current UI lane and now points to a separate API-smoke-lane recommendation; broader generated tests and deeper OCaml semantics require new Goals |
 | Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
 | Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
@@ -550,7 +550,7 @@ Boundary rule:
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
 | Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, and narrow `/api/repos`, `/api/repo`, plus `/api/graph` generated-spec renderer completed; broader generated tests remain deferred |
-| Task 6 `/api/processes` generated UI fixture | Rejected for now: frontend Process panel derives rows from `/api/graph` Process nodes and does not call `fetchProcesses()` / `/api/processes`; generated API-smoke specs would need a separate Goal |
+| Task 6 `/api/processes` generated UI fixture | Rejected for now: frontend Process panel derives rows from `/api/graph` Process nodes and does not call `fetchProcesses()` / `/api/processes`; generated API-smoke specs should proceed only as a separate backend lane |
 | Task 7 parser/provider plan | Readiness complete; dependency/write-set approval required before implementation |
 
 ## Next Actions
@@ -563,6 +563,6 @@ Immediate:
 
 Recommended next feature work:
 
-1. Complete and commit the Task 6 `/api/graph` generated-spec support Goal.
-2. Decide the next Goal from one of the remaining deferred expansions: additional deterministic E2E route fixtures with proven frontend consumers, generated API-smoke specs as a separate lane, Task 2 wiki wiring/mutation policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
+1. If Task 6 is reopened, prefer a separate generated API-smoke lane starting with `/api/processes` rather than forcing backend-only routes into the current UI renderer.
+2. Otherwise choose the next Goal from the remaining deferred expansions: another deterministic UI route fixture only after proving a frontend consumer, Task 2 wiki mutation/provider policy, Task 4 PR Impact MCP/GitHub-readiness, or deeper Task 7 OCaml semantics.
 3. Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, wiki mutation, MCP expansion, and deeper OCaml semantics deferred until the relevant Goal opens that scope.

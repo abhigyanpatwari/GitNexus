@@ -1154,6 +1154,70 @@ No-slice checkpoint:
 - Decision: `NO_IMPLEMENTATION_SLICE`.
 - Rationale: generating a `/api/processes` UI spec would not exercise `/api/processes` through current UI behavior unless product code changed or the generated spec used direct API assertions. Direct API assertions are a separate generated API-smoke lane, not this web-first Playwright route-fixture lane.
 - Unlock: either wire the frontend Process panel to consume `/api/processes`, or open a separate Goal for generated API smoke specs with its own policy.
+- 2026-06-07: Generated API-smoke specs readiness completed.
+- Recommendation:
+  - If Task 6 continues from the `/api/processes` no-slice decision, do it as a separate backend API-smoke lane rather than broadening the current web-first renderer.
+  - Start with `/api/processes` only.
+  - Keep the first slice deterministic, local, and explicitly opt-in from the CLI.
+- External-methodology check:
+  - OpenAI docs support `codex exec` for script/CI-style worker runs and Goals for long-running work with a clear verification loop, but current GitHub issue/PR evidence shows non-interactive Goal resume/creation is still prompt-mediated rather than a stable dedicated Goal CLI.
+  - Playwright supports direct API tests through its `request` fixture / `APIRequestContext`, so backend route smoke specs are a legitimate separate lane.
+  - Testing-pyramid guidance from Google and Martin Fowler supports keeping broad UI/E2E tests small and using focused integration/API checks for service contracts.
+- Readiness evidence:
+  - `api.ts` exposes `/api/processes` and `/api/process`.
+  - `backend-client.ts` exposes `fetchProcesses()` and `fetchProcessDetail()`, but the frontend does not call `fetchProcesses()`.
+  - `ProcessesPanel.tsx` is graph-driven and step-drilldown is done with `runQuery(...)`.
+  - `server-connect.spec.ts` proves current process UI behavior only, not the `/api/processes` route.
+  - `spec-renderer.ts` and its unit tests intentionally constrain executable generation to `/api/repos`, `/api/repo`, and `/api/graph` under `gitnexus-web/e2e/generated`.
+- Smallest safe future slice:
+  - add a separate deterministic API-smoke renderer for backend-only routes,
+  - keep a separate output directory and explicit CLI mode,
+  - reuse existing route proposals as inputs,
+  - defer browser execution, CI mutation, GitHub automation, live-backend generation, and automatic backend-only route discovery.
+- Proposed future write set:
+  - `gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts`
+  - `gitnexus/src/core/e2e-test-generation/spec-renderer.ts` only if shared helpers are extracted cleanly
+  - `gitnexus/src/cli/e2e-test-plan.ts`
+  - `gitnexus/src/cli/index.ts`
+  - `gitnexus/src/cli/help-i18n.ts` and locale files only if new CLI flags are added
+  - `gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts`
+  - `gitnexus/test/unit/e2e-test-plan-cli.test.ts`
+  - `gitnexus/test/fixtures/e2e-test-generation/generated-api-processes-smoke.spec.ts`
+- TDD order:
+  1. prove `/api/processes` still blocks in the current UI renderer,
+  2. add a red renderer test for deterministic `/api/processes` API-smoke output,
+  3. add a red test proving API-smoke output uses direct HTTP assertions and no `page.goto(...)`,
+  4. add a red CLI test that explicit API-smoke mode is required,
+  5. add a red test that UI-lane and API-smoke outputs cannot overwrite each other,
+  6. implement the minimal renderer/CLI changes, then rerun adjacent Task 6 tests.
+- Risks:
+  - current report inputs do not explicitly classify routes as "no UI consumer",
+  - weak output boundaries could blur UI and backend policies,
+  - over-asserting response shape could duplicate `shape_check`,
+  - scope could sprawl into route discovery, browser execution, or CI/GitHub automation.
+- Stop rules:
+  - stop if the slice needs product/UI changes,
+  - stop if output is mixed into the existing `gitnexus-web/e2e/generated` lane,
+  - stop if automatic backend-only route detection requires broad new analysis,
+  - stop if scope expands into browser execution, CI mutation, GitHub automation, or live-backend generation.
+- Required approval boundary if implementation is chosen:
+
+```text
+MAIN | READY_FOR_IMPLEMENTATION
+Feature: Task 6 Generated API-Smoke Specs
+Branch/worktree: C:\Users\steve\projects\gitnexus\source-rc109-integration on local/gitnexus-local-features
+Approved slice: add a separate deterministic generated API-smoke lane for backend routes that do not currently have a frontend/UI consumer, starting with `/api/processes` only. Reuse existing route proposals as inputs, but keep the renderer, CLI mode, and output directory separate from the current web-first generated Playwright UI lane.
+Approved write set:
+- gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts
+- gitnexus/src/core/e2e-test-generation/spec-renderer.ts only if shared helpers are extracted cleanly
+- gitnexus/src/cli/e2e-test-plan.ts
+- gitnexus/src/cli/index.ts
+- gitnexus/src/cli/help-i18n.ts and locale files only if needed for new CLI flags
+- gitnexus/test/unit/e2e-test-generation-api-smoke-renderer.test.ts
+- gitnexus/test/unit/e2e-test-plan-cli.test.ts
+- gitnexus/test/fixtures/e2e-test-generation/generated-api-processes-smoke.spec.ts
+Constraints: no product/UI changes, no browser execution, no CI mutation, no GitHub automation, no new dependency without approval, no live-backend generation, and TDD required.
+```
 
 ### Task 7 Approval Packet - OCaml Implementation Goal
 
