@@ -456,9 +456,10 @@ export const processNextjsFetchRoutes = (
 };
 
 /**
- * Extract fetch() calls from source files (sequential path).
- * Workers handle this via tree-sitter captures in parse-worker; this function
- * provides the same extraction for the sequential fallback path.
+ * Extract fetch() calls from source files (non-worker helper).
+ * Workers extract fetch() calls via tree-sitter captures in parse-worker —
+ * the sole parse path. Sequential parsing was removed, so this helper is no
+ * longer reached on the parse path; retained for non-worker reuse.
  */
 export const extractFetchCallsFromFiles = async (
   files: { path: string; content: string }[],

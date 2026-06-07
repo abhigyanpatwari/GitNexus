@@ -60,6 +60,19 @@ const writeFatalToStderr = (label: string, err: unknown): void => {
   const message = isErr ? err.message : String(err);
   realStderrWrite(`\n  ${label}: ${message}\n`);
   if (isErr && err.stack) realStderrWrite(`${err.stack}\n`);
+  // Walk and print the `cause` chain. The phase runner wraps the underlying
+  // failure as `new Error("Phase 'X' failed: …", { cause })`, so the original
+  // error (e.g. a WorkerPoolDispatchError carrying the worker-side stack from
+  // #2068) is only reachable via `.cause`. Without this the user sees the
+  // wrapper's main-thread stack and never the real frame. Depth-bounded so a
+  // cyclic `cause` can't loop; uses realStderrWrite so the redirected
+  // console.error's ANSI clear-line wrapping can't erase it (#1169).
+  let cause: unknown = isErr ? (err as { cause?: unknown }).cause : undefined;
+  for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
+    realStderrWrite(`\n  Caused by: ${cause.message}\n`);
+    if (cause.stack) realStderrWrite(`${cause.stack}\n`);
+    cause = (cause as { cause?: unknown }).cause;
+  }
 };
 
 let fatalHandlersInstalled = false;

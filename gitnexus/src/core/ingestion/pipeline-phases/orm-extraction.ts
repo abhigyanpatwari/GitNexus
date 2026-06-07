@@ -1,10 +1,10 @@
 /**
- * Inline ORM query extraction (sequential fallback path).
+ * Inline ORM query extraction (non-worker helper).
  *
  * Extracts Prisma and Supabase query calls from source content using
- * regex patterns. Used by the sequential parse path when workers are
- * not available — the worker path extracts ORM queries via tree-sitter
- * queries instead.
+ * regex patterns. The worker path extracts ORM queries via tree-sitter
+ * queries instead; sequential parsing was removed, so this helper is no
+ * longer reached on the parse path.
  *
  * @module
  */

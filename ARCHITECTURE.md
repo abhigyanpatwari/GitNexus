@@ -311,7 +311,7 @@ Unified 3-tier algorithm (`model/resolution-context.ts`), per-language `importSe
 ### Chunked parse-and-resolve
 
 `parse` processes files in ~20 MB byte-budget chunks to bound memory. Per chunk:
-1. Worker pool dispatches files (or sequential fallback via `skipWorkers`)
+1. Worker pool dispatches files (the sole parse path — there is no sequential fallback; `skipWorkers`, `--workers 0`, and `GITNEXUS_WORKER_POOL_SIZE=0` are rejected with an actionable error)
 2. Each worker: detect language → load grammar → run queries → return unified `ParseWorkerResult`
 3. Synthesize wildcard bindings (`wildcard-synthesis.ts`)
 4. Resolve imports

@@ -19,9 +19,11 @@ export interface PipelineResult {
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
   /**
-   * True if the parse phase spawned a worker pool for this run. False means
-   * the sequential fallback handled every chunk. Primarily a test affordance
-   * so regression suites can prove which path executed.
+   * True if the parse phase spawned a worker pool for this run. The worker
+   * pool is the sole parse path (sequential parsing was removed), so this is
+   * true for any repo with at least one parseable file; False means the parse
+   * phase was skipped entirely (no parseable files). Primarily a test
+   * affordance so regression suites can prove the pool engaged.
    */
   usedWorkerPool: boolean;
 }

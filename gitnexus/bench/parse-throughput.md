@@ -70,7 +70,8 @@ this doc, run it under instrumentation:
 ```bash
 # From the gitnexus/ subdir:
 cd gitnexus
-# Single-threaded baseline (sequential fallback):
+# Single-worker-pool baseline (closest analog to the old single-threaded run —
+# sequential parsing was removed; use a 1-worker pool via GITNEXUS_WORKER_POOL_SIZE=1):
 npx vitest run test/integration/parse-impl-large-fixture.test.ts --reporter=verbose
 
 # Worker-pool path (requires built dist/ — pre-built by `npm run build`):

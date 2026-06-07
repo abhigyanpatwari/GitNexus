@@ -156,7 +156,8 @@ export const readFileContents = async (
 
 /**
  * Legacy API — scans and reads everything into memory.
- * Used by sequential fallback path only.
+ * Previously used by the sequential parse path, which was removed; no parse-path
+ * caller remains (the live walker is walkRepositoryPaths).
  */
 export const walkRepository = async (
   repoPath: string,
