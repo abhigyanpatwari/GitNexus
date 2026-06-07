@@ -123,6 +123,10 @@ describe('F47 — Kotlin callable references (end-to-end)', () => {
     const ref = calls.find((c) => c.source === 'useCallableRefs' && c.target === 'method');
     expect(ref).toBeDefined();
   });
+
+  it('runs through the worker pool (parity: capture edits survive the worker boundary)', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
