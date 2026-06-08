@@ -54,6 +54,19 @@ export const javaVariableConfig: VariableExtractionConfig = {
   },
 };
 
+/** Single-binding name of a Kotlin property_declaration:
+ *  property_declaration → variable_declaration → simple_identifier. */
+function kotlinSingleVarName(node: SyntaxNode): string | undefined {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'variable_declaration') {
+      const ident = child.namedChildren.find((c: SyntaxNode) => c.type === 'simple_identifier');
+      return ident?.text;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Kotlin variable extraction config.
  *
@@ -66,16 +79,32 @@ export const kotlinVariableConfig: VariableExtractionConfig = {
   staticNodeTypes: [],
   variableNodeTypes: ['property_declaration'],
 
-  extractName(node) {
-    // property_declaration → variable_declaration → simple_identifier
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (child?.type === 'variable_declaration') {
-        const ident = child.namedChildren.find((c: SyntaxNode) => c.type === 'simple_identifier');
-        return ident?.text;
+  extractName: kotlinSingleVarName,
+
+  // F51 (issue #1919): destructuring declarations bind several names at one
+  // node. `val (a, b) = pair` parses as
+  //   property_declaration → multi_variable_declaration
+  //     → variable_declaration → simple_identifier (one per name)
+  // (real-parse-verified). The single-name `extractName` above misses these
+  // entirely. When a multi_variable_declaration is present we return EACH
+  // bound name; the Kotlin `_` placeholder is a discard and is skipped. A
+  // plain single declaration falls through to the existing variable_declaration
+  // shape so `val x = 1` still yields exactly one name (no double-count).
+  extractNames(node) {
+    const multi = node.namedChildren.find(
+      (c: SyntaxNode) => c.type === 'multi_variable_declaration',
+    );
+    if (multi !== undefined) {
+      const names: string[] = [];
+      for (const decl of multi.namedChildren) {
+        if (decl.type !== 'variable_declaration') continue;
+        const ident = decl.namedChildren.find((c: SyntaxNode) => c.type === 'simple_identifier');
+        if (ident !== undefined && ident.text !== '_') names.push(ident.text);
       }
+      return names;
     }
-    return undefined;
+    const single = kotlinSingleVarName(node);
+    return single !== undefined ? [single] : [];
   },
 
   extractType(node) {

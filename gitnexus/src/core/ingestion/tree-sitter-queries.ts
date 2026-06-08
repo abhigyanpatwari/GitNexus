@@ -1005,6 +1005,19 @@ export const CPP_QUERIES = `
   declarator: (init_declarator
     declarator: (identifier) @name)) @definition.variable
 
+; Structured bindings: auto [a, b] = makePair();  (one @name per bound identifier)
+(declaration
+  declarator: (init_declarator
+    declarator: (structured_binding_declarator
+      (identifier) @name))) @definition.variable
+
+; Structured bindings, reference form: auto& [x, y] = tup;
+(declaration
+  declarator: (init_declarator
+    declarator: (reference_declarator
+      (structured_binding_declarator
+        (identifier) @name)))) @definition.variable
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (field_expression
@@ -1326,10 +1339,46 @@ export const KOTLIN_QUERIES = `
 (function_declaration
   (simple_identifier) @name) @definition.function
 
+; ── Secondary constructors (F49 sibling F48, issue #1919) ────────────────
+; "constructor(...) { }" inside a class body is a secondary_constructor with
+; no name child — its only identity token is the anonymous "constructor"
+; keyword, captured here as @name so the node is named "constructor"
+; (matching kotlinMethodConfig.extractName). Multiple secondary constructors
+; share that name but get distinct ids via the worker's #<arity> suffix.
+(secondary_constructor
+  "constructor" @name) @definition.constructor
+
 ; ── Properties ───────────────────────────────────────────────────────────
 (property_declaration
   (variable_declaration
     (simple_identifier) @name)) @definition.property
+
+; ── Destructuring declarations (F51, issue #1919) ────────────────────────
+; "val (a, b) = pair" binds several names through a multi_variable_declaration
+; (NOT a variable_declaration), which the property rule above misses. Emit one
+; @definition.property per bound name — the SAME label every other Kotlin val/var
+; gets (KOTLIN_QUERIES has no @definition.variable rule, so a single "val x"
+; is already a Property; matching that keeps destructured names consistent and
+; out of the block-scope local-symbol pruner that drops Variable/Const/Static).
+; The Kotlin "_" discard placeholder is filtered out here via (#not-eq? @name "_")
+; — these locals have no enclosing class, so the field-extractor enrichment path
+; never runs and cannot do the filtering itself. Each rule is a standalone
+; pattern (NOT a top-level [...] alternation), so the predicate is safe under
+; tree-sitter 0.21.1 (no sibling-branch drop). Loop destructuring
+; "for ((k, v) in m)" nests the SAME multi_variable_declaration directly under the
+; for_statement (no property_declaration wrapper); the scope-path loop binding only
+; handles the single variable_declaration form, so this rule does not double-emit.
+((property_declaration
+  (multi_variable_declaration
+    (variable_declaration
+      (simple_identifier) @name))) @definition.property
+  (#not-eq? @name "_"))
+
+((for_statement
+  (multi_variable_declaration
+    (variable_declaration
+      (simple_identifier) @name))) @definition.property
+  (#not-eq? @name "_"))
 
 ; Primary constructor val/var parameters (data class, value class, regular class)
 ; binding_pattern_kind contains "val" or "var" — without it, the param is not a property
@@ -1365,8 +1414,23 @@ export const KOTLIN_QUERIES = `
     (type_identifier) @call.name)) @call
 
 ; ── Infix function calls (e.g., a to b, x until y) ──────────────────────
+; tree-sitter-kotlin models infix_expression as three UNNAMED-FIELD children:
+; (operand) (operator) (operand) — all three are simple_identifier for
+; "a to b". The old rule "(infix_expression (simple_identifier) @call.name)"
+; matched EVERY simple_identifier child, so it captured the operands a/b as
+; spurious @call.name calls (F49, issue #1919). There is no operator: field to
+; anchor on, so anchor positionally: the operator is the middle child, flanked
+; by an operand on each side. End-anchored on both sides so only the lone
+; middle simple_identifier (the infix function) is captured; chained
+; "a to b to c" still matches each nested infix_expression's own operator.
 (infix_expression
-  (simple_identifier) @call.name) @call
+  .
+  (_)
+  .
+  (simple_identifier) @call.name
+  .
+  (_)
+  .) @call
 
 ; Write access: obj.field = value
 (assignment
@@ -1412,6 +1476,13 @@ export const SWIFT_QUERIES = `
 
 ; Properties (stored and computed)
 (property_declaration (pattern (simple_identifier) @name)) @definition.property
+
+; Protocol property requirements (F75): "var title: String { get }" parses to a
+; protocol_property_declaration (NOT property_declaration). Its name is a
+; "name:" pattern field wrapping a value_binding_pattern + the bound
+; simple_identifier; match the inner identifier so the requirement is emitted
+; as a property symbol of the protocol.
+(protocol_property_declaration (pattern (simple_identifier) @name)) @definition.property
 
 ; Enum cases
 (enum_entry (simple_identifier) @name) @definition.property
@@ -1459,11 +1530,35 @@ export const DART_QUERIES = `
 (enum_declaration
   name: (identifier) @name) @definition.enum
 
-; ── Type aliases ─────────────────────────────────────────────────────────────
-; Anchor "=" after the name to avoid capturing the RHS type
+; ── Type aliases — new-style (typedef Pred = bool Function(int);) ────────────
+; Anchor "=" after the name to avoid capturing the RHS type. The name is the
+; first type_identifier (the alias), the RHS function_type follows the "=".
 (type_alias
   (type_identifier) @name
   "=") @definition.type
+
+; ── Type aliases — old-style (typedef int Cmp(int a, int b);) ────────────────
+; The old-style function typedef has NO "=" — it parses as a type_alias whose
+; children are: return type_identifier, NAME type_identifier, formal_parameter_list.
+; Anchor @name as the type_identifier immediately before the parameter list so we
+; capture the alias name (Cmp), not the leading return type (int).
+(type_alias
+  (type_identifier) @name
+  .
+  (formal_parameter_list)) @definition.type
+
+; ── Type aliases — generic old-style (typedef int Cmp<T>(T a, T b);) ─────────
+; #1919 review CF2: a generic <T> inserts a type_parameters node between the
+; NAME and the parameter list, so the non-generic adjacency above misses it.
+; Standalone pattern (NOT an alternation arm) anchoring @name immediately before
+; type_parameters, which is immediately before the parameter list. The new-style
+; "=" rule above is unanchored and already covers generic new-style (Mapper<T>).
+(type_alias
+  (type_identifier) @name
+  .
+  (type_parameters)
+  .
+  (formal_parameter_list)) @definition.type
 
 ; ── Top-level functions (parent is program, not method_signature) ────────────
 (program
@@ -1503,6 +1598,19 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name))) @definition.property
 
+; ── static const / static final / const class fields ────────────────────────
+; A "static const a = 1;" / "static final String b = ..., c = ...;" field parses
+; with a static_final_declaration_list (NOT an initialized_identifier_list), so
+; the field rules above miss them. One @name per static_final_declaration, so a
+; multi-name declaration yields a Property per name. Anchored on declaration (not
+; class_body) so top-level final/const variables — whose
+; static_final_declaration_list is a direct child of program, not wrapped in a
+; declaration — never match here.
+(declaration
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name))) @definition.property
+
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
   (getter_signature
@@ -1513,11 +1621,22 @@ export const DART_QUERIES = `
   (setter_signature
     name: (identifier) @name)) @definition.property
 
-; ── Top-level variable declarations (const maxSize = 100, final x = 5, var y = 0) ──
-(declaration
+; ── Top-level variable declarations ──────────────────────────────────────────
+; Top-level Dart variables are NOT wrapped in a declaration node (that wrapper
+; only occurs for class-body members). They sit as loose siblings under program:
+;   var name = 'x';   int x = 5;       → initialized_identifier_list
+;   final int count = 3;   const a = 1, b = 2;   → static_final_declaration_list
+; Anchor both rules under (program) so class-body fields (which reuse the same
+; inner node types) are never matched here. One @name per declared name so
+; multi-name forms (const a = 1, b = 2;) yield a Variable per name.
+(program
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.variable
+      (identifier) @name)) @definition.variable)
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name)) @definition.variable)
 
 ; ── Imports ──────────────────────────────────────────────────────────────────
 (import_or_export

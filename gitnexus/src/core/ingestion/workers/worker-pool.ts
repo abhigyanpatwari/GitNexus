@@ -310,7 +310,15 @@ type WorkerOutgoingMessage =
   | { type: 'progress'; filesProcessed: number }
   | { type: 'warning'; message: string }
   | { type: 'sub-batch-done' }
-  | { type: 'error'; error: string }
+  /**
+   * Worker-side caught error. `error` is the message; `errorStack` carries the
+   * worker thread's stack so the pool can embed a real file:line into its
+   * death / circuit-breaker reason instead of surfacing a bare one-liner (the
+   * #2068 diagnosability gap). `errorStack` is optional so an older worker
+   * build that only sends `error` still validates and degrades to message-only
+   * — and a newer pool reading it just gets no stack.
+   */
+  | { type: 'error'; error: string; errorStack?: string }
   | { type: 'result'; data: unknown }
   /**
    * Authoritative in-flight signal: worker is about to process this file.
@@ -654,6 +662,25 @@ function workerStderrTail(worker: Worker): string {
 function withStderr(worker: Worker, message: string): string {
   const tail = workerStderrTail(worker);
   return tail ? `${message}. Worker stderr:\n${tail}` : message;
+}
+
+/**
+ * Build a worker-death reason string that carries the worker-side stack when one
+ * is available (#2068). The stack is appended AFTER the `Worker N error: <msg>`
+ * prefix so every prefix/substring consumer downstream — recoverAndResume →
+ * handleWorkerDeath → the circuit-breaker `WorkerPoolDispatchError` message, and
+ * the tests that regex-match those — keeps working unchanged, while the operator
+ * now gets the real frame instead of a bare one-liner. The stack's first line is
+ * normally the message itself; keeping both is harmless and the indented block
+ * scans cleanly in a log. The stack is capped at WORKER_STDERR_TAIL_LIMIT,
+ * mirroring the sibling stderr-tail bound, so a pathological error type (or a
+ * raised `Error.stackTraceLimit`) can't bloat the death reason. `stack` is
+ * `undefined` for an older worker build (or a thrown non-Error), in which case
+ * the reason is exactly the prior message-only form.
+ */
+function workerErrorReason(workerIndex: number, message: string, stack?: string): string {
+  const base = `Worker ${workerIndex} error: ${message}`;
+  return stack ? `${base}\n  worker stack:\n${stack.slice(0, WORKER_STDERR_TAIL_LIMIT)}` : base;
 }
 
 /**
@@ -1832,7 +1859,7 @@ export const createWorkerPool = (
             settled = true;
             cleanup();
             void recoverAndResume(
-              `Worker ${workerIndex} error: ${msg.error}`,
+              workerErrorReason(workerIndex, msg.error, msg.errorStack),
               resolveExcludePaths(),
             );
           } else if (msg.type === 'result') {
@@ -1877,8 +1904,13 @@ export const createWorkerPool = (
           if (!settled) {
             settled = true;
             cleanup();
+            // The Node 'error' event fires on an UNCAUGHT worker throw (one that
+            // escaped the worker's own try/catch, or an async rejection). Unlike
+            // the `{type:'error'}` message, the event delivers a real Error whose
+            // `.stack` is the worker-side frame — carry it so the surfaced reason
+            // points at the actual failure site, not just `err.message` (#2068).
             void recoverAndResume(
-              `Worker ${workerIndex} error: ${err.message}`,
+              workerErrorReason(workerIndex, err.message, err.stack),
               resolveExcludePaths(),
             );
           }
