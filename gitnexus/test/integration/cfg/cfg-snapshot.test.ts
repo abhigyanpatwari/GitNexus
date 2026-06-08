@@ -98,17 +98,10 @@ describe('U7 — AC2: every BasicBlock reachable from its function ENTRY', () =>
 });
 
 describe('U7 — AC3: hazard topologies', () => {
-  const byStart = (cfgs: readonly FunctionCfg[], minBlocks = 0): FunctionCfg =>
-    cfgs.reduce(
-      (best, c) =>
-        c.blocks.length >= minBlocks && c.blocks.length > best.blocks.length ? c : best,
-      cfgs[0],
-    );
-
-  function blockAdj(cfg: FunctionCfg): { adj: Map<number, number[]>; text: (i: number) => string } {
+  function blockAdj(cfg: FunctionCfg): { adj: Map<number, number[]> } {
     const adj = new Map<number, number[]>();
     for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
-    return { adj, text: (i) => cfg.blocks[i]?.text ?? '' };
+    return { adj };
   }
   const blockWith = (cfg: FunctionCfg, sub: string): number => {
     const b = cfg.blocks.find((bl) => bl.text.includes(sub));
