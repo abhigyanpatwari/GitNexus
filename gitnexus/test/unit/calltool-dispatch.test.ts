@@ -1391,6 +1391,118 @@ describe('LocalBackend.callTool', () => {
     ]);
   });
 
+  it('maps caller-supplied symbols to direct process evidence and reports unknown/unmapped symbols', async () => {
+    (executeParameterized as any).mockImplementation(
+      (_repoId: string, cypher: string, params: Record<string, unknown>) => {
+        if (cypher.includes('RETURN s.id AS id, s.name AS name')) {
+          return [
+            {
+              id: 'Function:src/app.ts:mapped',
+              name: 'mapped',
+              type: 'Function',
+              filePath: 'src/app.ts',
+              startLine: 1,
+              endLine: 3,
+            },
+            {
+              id: 'Function:src/app.ts:lonely',
+              name: 'lonely',
+              type: 'Function',
+              filePath: 'src/app.ts',
+              startLine: 8,
+              endLine: 9,
+            },
+          ];
+        }
+        if (cypher.includes('RETURN s.id AS sid, p.id AS pid')) {
+          return [
+            {
+              sid: 'Function:src/app.ts:mapped',
+              pid: 'Process:login-flow',
+              pName: 'LoginFlow',
+              pType: 'entry_point',
+              step: 2,
+              stepCount: 5,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('impact_for_symbols', {
+      symbols: [
+        {
+          id: 'Function:src/app.ts:mapped',
+          name: 'mapped',
+          type: 'Function',
+          filePath: 'src/app.ts',
+        },
+        {
+          id: 'Function:src/app.ts:lonely',
+          name: 'lonely',
+          type: 'Function',
+          filePath: 'src/app.ts',
+        },
+        {
+          id: 'Function:src/missing.ts:ghost',
+          name: 'ghost',
+          type: 'Function',
+          filePath: 'src/missing.ts',
+        },
+      ],
+    });
+
+    expect(result.schema_version).toBe('impact-for-symbols.v1alpha1');
+    expect(result.summary).toEqual({
+      input_symbols: 3,
+      resolved_symbols: 2,
+      symbols_with_processes: 1,
+      unmapped_symbols: 1,
+      unknown_symbols: 1,
+      affected_processes: 1,
+    });
+    expect(result.symbols).toEqual([
+      {
+        id: 'Function:src/app.ts:mapped',
+        name: 'mapped',
+        type: 'Function',
+        filePath: 'src/app.ts',
+        startLine: 1,
+        endLine: 3,
+        processes: [
+          {
+            id: 'Process:login-flow',
+            name: 'LoginFlow',
+            process_type: 'entry_point',
+            step_index: 2,
+            step_count: 5,
+          },
+        ],
+      },
+    ]);
+    expect(result.unmapped_symbols).toEqual([
+      {
+        id: 'Function:src/app.ts:lonely',
+        name: 'lonely',
+        type: 'Function',
+        filePath: 'src/app.ts',
+        startLine: 8,
+        endLine: 9,
+        reason: 'No direct process membership found for this symbol',
+      },
+    ]);
+    expect(result.unknown_symbols).toEqual([
+      {
+        id: 'Function:src/missing.ts:ghost',
+        name: 'ghost',
+        type: 'Function',
+        filePath: 'src/missing.ts',
+        reason: 'Symbol id was not found in the indexed graph',
+      },
+    ]);
+  });
+
   it('dispatches rename tool', async () => {
     (executeParameterized as any)
       .mockResolvedValueOnce([

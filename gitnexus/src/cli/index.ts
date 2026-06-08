@@ -270,6 +270,13 @@ program
   .action(createLbugLazyAction(() => import('./symbols-for-ranges.js'), 'symbolsForRangesCommand'));
 
 program
+  .command('impact-for-symbols')
+  .description('Map caller-supplied symbols onto direct process evidence')
+  .requiredOption('--input <path>', 'Path to input JSON containing explicit symbols')
+  .option('-r, --repo <name>', 'Target repository')
+  .action(createLbugLazyAction(() => import('./impact-for-symbols.js'), 'impactForSymbolsCommand'));
+
+program
   .command('pr-impact')
   .description('Generate a local deterministic PR impact report')
   .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare')

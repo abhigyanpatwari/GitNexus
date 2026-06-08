@@ -354,6 +354,16 @@ interface MappedSymbolRange {
   }>;
 }
 
+interface ExplicitSymbolInput {
+  id: string;
+  name?: string;
+  type?: string;
+  kind?: string;
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -978,6 +988,8 @@ export class LocalBackend {
         return this.detectChanges(repo, params);
       case 'symbols_for_ranges':
         return this.symbolsForRanges(repo, params);
+      case 'impact_for_symbols':
+        return this.impactForSymbols(repo, params);
       case 'rename':
         return this.rename(repo, params);
       // Legacy aliases for backwards compatibility
@@ -2904,6 +2916,254 @@ export class LocalBackend {
       },
       symbols: mapped.symbols,
       unmatched_ranges: mapped.unmatched_ranges,
+    };
+  }
+
+  private normalizeExplicitSymbol(input: unknown): ExplicitSymbolInput | null {
+    if (!input || typeof input !== 'object') return null;
+    const symbol = input as Record<string, unknown>;
+    if (typeof symbol.id !== 'string' || !symbol.id.trim()) return null;
+
+    const startLine = Number(symbol.startLine);
+    const endLine = Number(symbol.endLine);
+
+    return {
+      id: symbol.id.trim(),
+      ...(typeof symbol.name === 'string' && symbol.name.trim() ? { name: symbol.name } : {}),
+      ...(typeof symbol.type === 'string' && symbol.type.trim() ? { type: symbol.type } : {}),
+      ...(typeof symbol.kind === 'string' && symbol.kind.trim() ? { kind: symbol.kind } : {}),
+      ...(typeof symbol.filePath === 'string' && symbol.filePath.trim()
+        ? { filePath: symbol.filePath }
+        : {}),
+      ...(Number.isInteger(startLine) && startLine > 0 ? { startLine } : {}),
+      ...(Number.isInteger(endLine) && endLine > 0 ? { endLine } : {}),
+    };
+  }
+
+  private async impactForSymbols(
+    repo: RepoHandle,
+    params: {
+      symbols?: unknown[];
+    },
+  ): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    if (!Array.isArray(params?.symbols) || params.symbols.length === 0) {
+      return { error: 'symbols array is required.' };
+    }
+
+    const inputSymbols = params.symbols
+      .map((symbol) => this.normalizeExplicitSymbol(symbol))
+      .filter((symbol): symbol is ExplicitSymbolInput => Boolean(symbol));
+    if (inputSymbols.length === 0) {
+      return { error: 'symbols array must contain at least one valid symbol object with an id.' };
+    }
+
+    const ids = Array.from(new Set(inputSymbols.map((symbol) => symbol.id)));
+    const order = new Map(ids.map((id, index) => [id, index]));
+
+    let symbolRows: any[] = [];
+    try {
+      symbolRows = await executeParameterized(
+        repo.id,
+        `
+        MATCH (s)
+        WHERE s.id IN $ids
+        RETURN s.id AS id, s.name AS name, labels(s)[0] AS type,
+               s.filePath AS filePath, s.startLine AS startLine, s.endLine AS endLine
+      `,
+        { ids },
+      );
+    } catch (e) {
+      logQueryError('impact-for-symbols:resolve-symbols', e);
+    }
+
+    const resolvedSymbols = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        type: string;
+        filePath?: string;
+        startLine?: number;
+        endLine?: number;
+      }
+    >();
+    for (const row of symbolRows) {
+      const id = String(row.id ?? row[0] ?? '');
+      if (!id) continue;
+      resolvedSymbols.set(id, {
+        id,
+        name: String(row.name ?? row[1] ?? 'unknown'),
+        type: String(row.type ?? row[2] ?? 'Symbol'),
+        ...(row.filePath ?? row[3] ? { filePath: String(row.filePath ?? row[3]) } : {}),
+        ...(Number.isFinite(Number(row.startLine ?? row[4]))
+          ? { startLine: Number(row.startLine ?? row[4]) }
+          : {}),
+        ...(Number.isFinite(Number(row.endLine ?? row[5]))
+          ? { endLine: Number(row.endLine ?? row[5]) }
+          : {}),
+      });
+    }
+
+    let processRows: any[] = [];
+    try {
+      processRows = await executeParameterized(
+        repo.id,
+        `
+        MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        WHERE s.id IN $ids
+        RETURN s.id AS sid, p.id AS pid, p.heuristicLabel AS pName,
+               p.processType AS pType, MIN(r.step) AS step, p.stepCount AS stepCount
+      `,
+        { ids },
+      );
+    } catch (e) {
+      logQueryError('impact-for-symbols:process-membership', e);
+    }
+
+    const processesBySymbol = new Map<
+      string,
+      Array<{
+        id: string;
+        name: string;
+        process_type: string;
+        step_index?: number;
+        step_count?: number;
+      }>
+    >();
+    const affectedProcesses = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        process_type: string;
+        step_count?: number;
+        matched_symbols: number;
+      }
+    >();
+    for (const row of processRows) {
+      const sid = String(row.sid ?? row[0] ?? '');
+      const pid = String(row.pid ?? row[1] ?? '');
+      if (!sid || !pid) continue;
+
+      const processEntry = {
+        id: pid,
+        name: String(row.pName ?? row[2] ?? 'unknown'),
+        process_type: String(row.pType ?? row[3] ?? 'unknown'),
+        ...(Number.isFinite(Number(row.step ?? row[4])) ? { step_index: Number(row.step ?? row[4]) } : {}),
+        ...(Number.isFinite(Number(row.stepCount ?? row[5]))
+          ? { step_count: Number(row.stepCount ?? row[5]) }
+          : {}),
+      };
+      const existing = processesBySymbol.get(sid) ?? [];
+      existing.push(processEntry);
+      processesBySymbol.set(sid, existing);
+
+      if (!affectedProcesses.has(pid)) {
+        affectedProcesses.set(pid, {
+          id: pid,
+          name: processEntry.name,
+          process_type: processEntry.process_type,
+          ...(processEntry.step_count !== undefined ? { step_count: processEntry.step_count } : {}),
+          matched_symbols: 0,
+        });
+      }
+    }
+
+    const symbols: Array<{
+      id: string;
+      name: string;
+      type: string;
+      filePath?: string;
+      startLine?: number;
+      endLine?: number;
+      processes: Array<{
+        id: string;
+        name: string;
+        process_type: string;
+        step_index?: number;
+        step_count?: number;
+      }>;
+    }> = [];
+    const unmappedSymbols: Array<{
+      id: string;
+      name: string;
+      type: string;
+      filePath?: string;
+      startLine?: number;
+      endLine?: number;
+      reason: string;
+    }> = [];
+    const unknownSymbols: Array<{
+      id: string;
+      name?: string;
+      type?: string;
+      filePath?: string;
+      reason: string;
+    }> = [];
+
+    for (const input of inputSymbols) {
+      const resolved = resolvedSymbols.get(input.id);
+      if (!resolved) {
+        unknownSymbols.push({
+          id: input.id,
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.type ?? input.kind ? { type: input.type ?? input.kind } : {}),
+          ...(input.filePath ? { filePath: input.filePath } : {}),
+          reason: 'Symbol id was not found in the indexed graph',
+        });
+        continue;
+      }
+
+      const processes = [...(processesBySymbol.get(input.id) ?? [])].sort((a, b) => {
+        const stepA = a.step_index ?? Number.MAX_SAFE_INTEGER;
+        const stepB = b.step_index ?? Number.MAX_SAFE_INTEGER;
+        if (stepA !== stepB) return stepA - stepB;
+        return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+      });
+
+      if (processes.length === 0) {
+        unmappedSymbols.push({
+          ...resolved,
+          reason: 'No direct process membership found for this symbol',
+        });
+        continue;
+      }
+
+      symbols.push({
+        ...resolved,
+        processes,
+      });
+
+      for (const processEntry of processes) {
+        affectedProcesses.get(processEntry.id)!.matched_symbols += 1;
+      }
+    }
+
+    const sortByInputOrder = <T extends { id: string }>(items: T[]): T[] =>
+      items.sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+
+    return {
+      schema_version: 'impact-for-symbols.v1alpha1',
+      repo: {
+        name: repo.name,
+        indexed_commit: repo.lastCommit,
+      },
+      summary: {
+        input_symbols: inputSymbols.length,
+        resolved_symbols: resolvedSymbols.size,
+        symbols_with_processes: symbols.length,
+        unmapped_symbols: unmappedSymbols.length,
+        unknown_symbols: unknownSymbols.length,
+        affected_processes: affectedProcesses.size,
+      },
+      symbols: sortByInputOrder(symbols),
+      unmapped_symbols: sortByInputOrder(unmappedSymbols),
+      unknown_symbols: sortByInputOrder(unknownSymbols),
+      affected_processes: Array.from(affectedProcesses.values()).sort(
+        (a, b) => b.matched_symbols - a.matched_symbols || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+      ),
     };
   }
 
