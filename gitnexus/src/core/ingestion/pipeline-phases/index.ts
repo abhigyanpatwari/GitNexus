@@ -30,3 +30,4 @@ export { processesPhase, type ProcessesOutput } from './processes.js';
 export { runPipeline } from './runner.js';
 export type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 export { getPhaseOutput } from './types.js';
+export { PhaseRegistry, type RegisterPhaseOptions } from './registry.js';

@@ -44,7 +44,10 @@ export type NodeLabel =
   | 'Template'
   | 'Section'
   | 'Route'
-  | 'Tool';
+  | 'Tool'
+  // Taint/PDG substrate (issue #2080). Intra-procedural control-flow node.
+  // Emitted by no phase yet — M1 (#2081) populates these behind an opt-in.
+  | 'BasicBlock';
 
 export type NodeProperties = {
   name: string;
@@ -89,6 +92,8 @@ export type NodeProperties = {
   responseKeys?: string[];
   errorKeys?: string[];
   middleware?: string[];
+  // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
+  text?: string;
   // Extensible
   [key: string]: unknown;
 };
@@ -131,7 +136,28 @@ export type RelationshipType =
    *  `reason` encodes the event name: `vue-emit: <eventName>`.
    *  Complements `BINDS_EVENT_HANDLER`; a Cypher query joining on the
    *  component File node reveals all (emitter, handler) pairs. */
-  | 'EMITS_EVENT';
+  | 'EMITS_EVENT'
+  // ── Taint/PDG substrate (issue #2080) ────────────────────────────────────
+  // Reserved edge types for the taint-first PDG substrate. No phase emits any
+  // of these yet; they are populated behind an opt-in by later milestones
+  // (CFG → M1 #2081, REACHING_DEF → M2 #2082, TAINTED/SANITIZES/TAINT_PATH →
+  // M3/M4 #2083/#2084). Adding them here keeps the shared schema stable so
+  // downstream work does not re-ripple the exhaustiveness sites.
+  /** Control-flow edge between two BasicBlock nodes (intra-procedural CFG). */
+  | 'CFG'
+  /** Data-dependence edge: a definition of `variable` reaches a use of it.
+   *  The `variable` name is stored in the relation's existing `reason` column
+   *  (M0/S1 verdict: LadybugDB has no secondary index on relationship
+   *  properties, so a dedicated indexed column would not speed the
+   *  variable-filtered path query). */
+  | 'REACHING_DEF'
+  /** A tainted value flows from source toward sink. */
+  | 'TAINTED'
+  /** A sanitizer clears taint along a flow. */
+  | 'SANITIZES'
+  /** Materialized source→sink taint path. Working name — final name/representation
+   *  is confirmed when M3/M4 emits it; no persisted edge exists before then. */
+  | 'TAINT_PATH';
 
 export interface GraphNode {
   id: string;

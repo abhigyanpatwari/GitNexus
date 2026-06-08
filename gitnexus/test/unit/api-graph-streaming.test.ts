@@ -232,4 +232,53 @@ describe('streamGraphNdjson', () => {
       },
     });
   });
+
+  // Taint/PDG substrate (#2080): BasicBlock has no name/content columns, so its
+  // getNodeQuery projects none — mapGraphNodeRow must still yield a `string`
+  // name (NodeProperties.name contract) or the web layer derefs undefined.
+  it('emits a string name for BasicBlock nodes (no name column)', async () => {
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (query.includes('MATCH (n:`BasicBlock`)')) {
+          expect(query).not.toContain('n.name'); // BasicBlock projects no name column
+          await onRow({
+            id: 'BasicBlock:src/a.ts:0',
+            filePath: 'src/a.ts',
+            startLine: 1,
+            endLine: 3,
+            text: 'const x = req.body;',
+          });
+          // a block with no text must still map to a string name, not undefined
+          await onRow({
+            id: 'BasicBlock:src/a.ts:1',
+            filePath: 'src/a.ts',
+            startLine: 4,
+            endLine: 4,
+          });
+          return 2;
+        }
+        return 0;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    const blocks = writes
+      .map((chunk) => JSON.parse(chunk))
+      .filter((r) => r.type === 'node' && r.data.label === 'BasicBlock');
+    expect(blocks).toHaveLength(2);
+    for (const b of blocks) {
+      expect(typeof b.data.properties.name).toBe('string'); // never undefined
+    }
+    // falls back to the block text when present, else the empty-string floor
+    expect(blocks[0].data.properties.name).toBe('const x = req.body;');
+    expect(blocks[0].data.properties.text).toBe('const x = req.body;');
+    expect(blocks[1].data.properties.name).toBe('');
+  });
 });

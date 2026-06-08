@@ -221,6 +221,23 @@ CREATE NODE TABLE Section (
   PRIMARY KEY (id)
 )`;
 
+// Taint/PDG substrate (issue #2080) — intra-procedural control-flow node.
+// Emitted by no phase yet; M1 (#2081) populates these behind an opt-in.
+// REACHING_DEF carries its variable name in the relation's existing `reason`
+// column (see RELATION_SCHEMA) — LadybugDB has no secondary index on rel
+// properties, so a dedicated indexed column would buy nothing for the
+// variable-filtered path query (M0/S1 verdict). No `name` column: blocks are
+// identified by id + source span, not a symbol name.
+export const BASICBLOCK_SCHEMA = `
+CREATE NODE TABLE BasicBlock (
+  id STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  text STRING,
+  PRIMARY KEY (id)
+)`;
+
 // ============================================================================
 // RELATION TABLE SCHEMA
 // Single table with 'type' property - connects all node tables
@@ -431,6 +448,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM CodeElement TO Process,
   FROM Route TO Process,
   FROM Tool TO Process,
+  FROM BasicBlock TO BasicBlock,
   type STRING,
   confidence DOUBLE,
   reason STRING,
@@ -521,6 +539,11 @@ export const NODE_SCHEMA_QUERIES = [
   ROUTE_SCHEMA,
   // MCP tools
   TOOL_SCHEMA,
+  // Taint/PDG substrate (issue #2080) — must be appended here, not just
+  // declared above: SCHEMA_QUERIES (the list initLbug actually runs) is built
+  // from NODE_SCHEMA_QUERIES. Omitting this leaves the BasicBlock table
+  // uncreated and the bulk-COPY round-trip fails with "table does not exist".
+  BASICBLOCK_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];

@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Taint/PDG substrate (M0)** — foundational schema + seams for reliable taint analysis on a PDG-expandable substrate (#2080, Epic #2087). Adds the `BasicBlock` node label and `CFG` / `REACHING_DEF` / `TAINTED` / `SANITIZES` / `TAINT_PATH` relationship types to the graph schema (round-trip through the bulk-COPY path), a phase-registry seam (`registerPhase` / `enabledWhen`) generalising the graph-phase opt-in guard, and a per-language source/sink/sanitizer config registry seam. All additive and inert — no phase emits the new nodes/edges yet, and a default `analyze` run is byte-identical to before. De-risking spikes (LadybugDB rel-property indexing, post-dominator feasibility) recorded on the issue.
+
 ## [1.6.6] - 2026-06-08
 
 ### Added
