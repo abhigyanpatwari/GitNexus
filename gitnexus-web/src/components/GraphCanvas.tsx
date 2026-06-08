@@ -12,6 +12,7 @@ import {
   Network,
   GitBranch,
   Target,
+  Shield,
 } from '@/lib/lucide-icons';
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
@@ -55,6 +56,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     animatedNodes,
     graphViewMode,
     setGraphViewMode,
+    coverageMode,
+    setCoverageMode,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -157,6 +160,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     animatedNodes: effectiveAnimatedNodes,
     visibleEdgeTypes,
     layoutMode: graphViewMode,
+    coverageMode,
   });
 
   const handleViewModeChange = useCallback(
@@ -315,6 +319,20 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         >
           <Target className="h-3.5 w-3.5" />
           {t('canvas.viewModes.circles')}
+        </button>
+
+        {/* Coverage heatmap toggle */}
+        <button
+          onClick={() => setCoverageMode(!coverageMode)}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            coverageMode
+              ? 'bg-emerald-500/20 border border-emerald-400/40 text-emerald-200'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+          title={coverageMode ? 'Disable coverage heatmap' : 'Enable coverage heatmap'}
+        >
+          <Shield className="h-3.5 w-3.5" />
+          Coverage
         </button>
       </div>
 

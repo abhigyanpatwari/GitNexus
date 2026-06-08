@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   GitBranch,
   ArrowDown,
+  Shield,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { useAutoScroll } from '../hooks/useAutoScroll';
@@ -16,6 +17,7 @@ import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
+import { CoveragePanel } from './CoveragePanel';
 import { useTranslation } from 'react-i18next';
 export const RightPanel = () => {
   const { t } = useTranslation(['chat', 'common']);
@@ -37,7 +39,7 @@ export const RightPanel = () => {
   } = useAppState();
 
   const [chatInput, setChatInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'processes' | 'coverage'>('chat');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Keep streamed replies pinned unless the user intentionally scrolls away from the bottom.
   const { scrollContainerRef, messagesContainerRef, isAtBottom, scrollToBottom } = useAutoScroll(
@@ -241,8 +243,21 @@ export const RightPanel = () => {
           >
             <GitBranch className="h-3.5 w-3.5" />
             <span>{t('chat:tabs.processes')}</span>
-            <span className="rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-              {t('chat:newBadge')}
+          </button>
+
+          {/* Coverage Tab */}
+          <button
+            onClick={() => setActiveTab('coverage')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              activeTab === 'coverage'
+                ? 'bg-emerald-500/15 text-emerald-300'
+                : 'text-text-muted hover:bg-hover hover:text-text-primary'
+            }`}
+          >
+            <Shield className="h-3.5 w-3.5" />
+            <span>Coverage</span>
+            <span className="rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+              NEW
             </span>
           </button>
         </div>
@@ -261,6 +276,13 @@ export const RightPanel = () => {
       {activeTab === 'processes' && (
         <div className="flex flex-1 flex-col overflow-hidden">
           <ProcessesPanel />
+        </div>
+      )}
+
+      {/* Coverage Tab */}
+      {activeTab === 'coverage' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <CoveragePanel />
         </div>
       )}
 

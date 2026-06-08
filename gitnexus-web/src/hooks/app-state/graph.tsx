@@ -18,6 +18,8 @@ interface GraphStateContextValue {
   setHighlightedNodeIds: (ids: Set<string>) => void;
   graphViewMode: 'force' | 'tree' | 'circles';
   setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
+  coverageMode: boolean;
+  setCoverageMode: (on: boolean) => void;
 }
 
 const GraphStateContext = createContext<GraphStateContextValue | null>(null);
@@ -30,6 +32,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [graphViewMode, setGraphViewMode] = useState<'force' | 'tree' | 'circles'>('force');
+  const [coverageMode, setCoverageMode] = useState<boolean>(false);
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels((prev) =>
@@ -59,6 +62,8 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       setHighlightedNodeIds,
       graphViewMode,
       setGraphViewMode,
+      coverageMode,
+      setCoverageMode,
     }),
     [
       graph,
@@ -68,6 +73,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       depthFilter,
       highlightedNodeIds,
       graphViewMode,
+      coverageMode,
     ],
   );
 

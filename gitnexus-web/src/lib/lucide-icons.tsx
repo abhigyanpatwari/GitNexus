@@ -92,6 +92,7 @@ export {
   Send,
   Server,
   Settings,
+  Shield,
   SkipForward,
   Snail,
   Sparkles,

@@ -4,12 +4,13 @@
  * Displays a Mermaid flowchart for a process in a centered modal popup.
  */
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Copy, Focus, ZoomIn, ZoomOut } from 'lucide-react';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
+import { coverageColor } from '../lib/coverage-colors';
 
 interface ProcessFlowModalProps {
   process: ProcessData | null;
@@ -224,6 +225,25 @@ export const ProcessFlowModal = ({
     onClose();
   }, [process, onFocusInGraph, onClose]);
 
+  // Coverage summary for process steps
+  const coverageSummary = useMemo(() => {
+    if (!process) return null;
+    const stepsWithCoverage = process.steps.filter((s) => s.coverageRatio !== undefined);
+    if (stepsWithCoverage.length === 0) return null;
+    const avgCoverage =
+      stepsWithCoverage.reduce((sum, s) => sum + (s.coverageRatio ?? 0), 0) /
+      stepsWithCoverage.length;
+    return {
+      avgCoverage,
+      coveredCount: stepsWithCoverage.filter((s) => (s.coverageRatio ?? 0) >= 0.8).length,
+      partialCount: stepsWithCoverage.filter(
+        (s) => (s.coverageRatio ?? 0) >= 0.4 && (s.coverageRatio ?? 0) < 0.8,
+      ).length,
+      uncoveredCount: stepsWithCoverage.filter((s) => (s.coverageRatio ?? 0) < 0.4).length,
+      total: stepsWithCoverage.length,
+    };
+  }, [process]);
+
   if (!process) return null;
 
   return (
@@ -247,6 +267,42 @@ export const ProcessFlowModal = ({
           <h2 className="text-lg font-semibold text-white">
             {t('graph:processFlow.title', { label: process.label })}
           </h2>
+          {/* Coverage Summary Bar */}
+          {coverageSummary && (
+            <div className="mt-2 flex items-center gap-2">
+              <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                <div className="flex h-full">
+                  <div
+                    className="h-full bg-emerald-500 transition-all"
+                    style={{
+                      width: `${(coverageSummary.coveredCount / coverageSummary.total) * 100}%`,
+                    }}
+                  />
+                  <div
+                    className="h-full bg-amber-500 transition-all"
+                    style={{
+                      width: `${(coverageSummary.partialCount / coverageSummary.total) * 100}%`,
+                    }}
+                  />
+                  <div
+                    className="h-full bg-red-500 transition-all"
+                    style={{
+                      width: `${(coverageSummary.uncoveredCount / coverageSummary.total) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+              <span
+                className="text-xs font-mono font-bold"
+                style={{ color: coverageColor(coverageSummary.avgCoverage) }}
+              >
+                {(coverageSummary.avgCoverage * 100).toFixed(0)}%
+              </span>
+              <span className="text-xs text-slate-500">
+                {coverageSummary.coveredCount}g / {coverageSummary.partialCount}y / {coverageSummary.uncoveredCount}r
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Diagram */}

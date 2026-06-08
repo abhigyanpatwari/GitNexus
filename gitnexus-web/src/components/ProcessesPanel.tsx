@@ -132,6 +132,16 @@ export const ProcessesPanel = () => {
       const allSteps = Array.from(allStepsMap.values());
       const stepIds = allSteps.map((s) => s.id).filter(isSafeId);
 
+      // Enrich steps with coverageRatio from graph node properties
+      if (graph) {
+        for (const step of allSteps) {
+          const node = graph.nodes.find((n) => n.id === step.id);
+          if (node?.properties.coverageRatio !== undefined) {
+            step.coverageRatio = node.properties.coverageRatio;
+          }
+        }
+      }
+
       // Query for all CALLS edges between the combined steps
       if (stepIds.length > 0) {
         // Batch query if too many steps
@@ -197,6 +207,16 @@ export const ProcessesPanel = () => {
           filePath: row.filePath || row[2],
           stepNumber: row.stepNumber || row.step || row[3] || 0,
         }));
+
+        // Enrich steps with coverageRatio from graph node properties
+        if (graph) {
+          for (const step of steps) {
+            const node = graph.nodes.find((n) => n.id === step.id);
+            if (node?.properties.coverageRatio !== undefined) {
+              step.coverageRatio = node.properties.coverageRatio;
+            }
+          }
+        }
 
         // Get step IDs for edge query
         const stepIds = steps.map((s) => s.id).filter(isSafeId);

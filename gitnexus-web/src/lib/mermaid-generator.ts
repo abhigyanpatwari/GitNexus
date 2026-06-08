@@ -11,6 +11,7 @@ export interface ProcessStep {
   filePath?: string;
   stepNumber: number;
   cluster?: string;
+  coverageRatio?: number; // 0.0–1.0 from graph node properties
 }
 
 export interface ProcessEdge {

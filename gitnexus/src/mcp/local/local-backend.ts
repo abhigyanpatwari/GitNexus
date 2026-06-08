@@ -4364,6 +4364,48 @@ export class LocalBackend {
   }
 
   /**
+   * Coverage status — public resolver for HTTP API.
+   * Resolves repo from name then delegates to private coverageStatus.
+   */
+  async queryCoverageStatus(repoName?: string): Promise<any> {
+    const repo = await this.resolveRepo(repoName);
+    return this.coverageStatus(repo, {});
+  }
+
+  /**
+   * Coverage runs list — public resolver for HTTP API.
+   */
+  async queryCoverageRuns(repoName?: string): Promise<any> {
+    const repo = await this.resolveRepo(repoName);
+    await this.ensureInitialized(repo.id);
+    const { openCoverageStore } = await import('../../core/coverage/store.js');
+    const store = openCoverageStore(repo.repoPath);
+    try {
+      const runs = store.listRuns();
+      return {
+        runs: runs.map((r) => ({
+          id: r.id,
+          timestamp: r.timestamp,
+          label: r.label,
+          coverageRatio: r.coverageRatio,
+          coveredLines: r.coveredLines,
+          totalLines: r.totalLines,
+        })),
+      };
+    } finally {
+      store.close();
+    }
+  }
+
+  /**
+   * Coverage diff — public resolver for HTTP API.
+   */
+  async queryCoverageDiff(repoName: string | undefined, runId1: string, runId2: string): Promise<any> {
+    const repo = await this.resolveRepo(repoName);
+    return this.coverageDiff(repo, { runId1, runId2 });
+  }
+
+  /**
    * Query cluster detail (members) directly from graph.
    * Used by getClusterDetailResource.
    */

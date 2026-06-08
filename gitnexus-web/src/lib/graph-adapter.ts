@@ -28,6 +28,7 @@ export interface SigmaNodeAttributes {
   circlesAnchorAngle?: number;
   community?: number; // Community index from Leiden algorithm
   communityColor?: string; // Color assigned by community
+  coverageRatio?: number;   // 0.0-1.0, latest run coverage data
 }
 
 export interface SigmaEdgeAttributes {
@@ -194,6 +195,7 @@ export const knowledgeGraphToGraphology = (
       endLine: node.properties.endLine,
       hidden: false,
       mass: getNodeMass(node.label, nodeCount),
+      coverageRatio: node.properties.coverageRatio,
     });
   });
 
@@ -259,6 +261,7 @@ export const knowledgeGraphToGraphology = (
       mass: getNodeMass(node.label, nodeCount),
       community: communityIndex,
       communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
+      coverageRatio: node.properties.coverageRatio,
     });
   };
 

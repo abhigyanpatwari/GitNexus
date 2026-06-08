@@ -126,6 +126,8 @@ interface AppState {
   // Graph view mode
   graphViewMode: 'force' | 'tree' | 'circles';
   setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
+  coverageMode: boolean;
+  setCoverageMode: (on: boolean) => void;
 
   // Query state
   highlightedNodeIds: Set<string>;
@@ -238,6 +240,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setHighlightedNodeIds,
     graphViewMode,
     setGraphViewMode,
+    coverageMode,
+    setCoverageMode,
   } = useGraphState();
 
   // Right Panel
@@ -1334,6 +1338,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     graphViewMode,
     setGraphViewMode,
+    coverageMode,
+    setCoverageMode,
     highlightedNodeIds,
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,

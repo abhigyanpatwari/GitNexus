@@ -755,6 +755,70 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
   return response.json();
 };
 
+// ── Coverage API ───────────────────────────────────────────────────────────
+
+export interface CoverageRun {
+  id: string;
+  timestamp: string;
+  label?: string;
+  coverageRatio: number;
+  coveredLines: number;
+  totalLines: number;
+}
+
+export interface CoverageStatus {
+  status: 'ok' | 'no_data';
+  message?: string;
+  overallCoverage: number;
+  coveredSymbols: number;
+  totalSymbols: number;
+  latestRun?: { id: string; timestamp: string; label?: string };
+  topUncovered: { symbolName?: string; nodeId: string; filePath?: string; coverageRatio: number }[];
+  availableRuns: CoverageRun[];
+}
+
+export interface CoverageDiff {
+  baseline: { id: string; coverageRatio: number };
+  comparison: { id: string; coverageRatio: number };
+  delta: number;
+  added: { nodeId: string; symbolName?: string; filePath?: string }[];
+  removed: { nodeId: string; symbolName?: string; filePath?: string }[];
+  summary: { newlyCovered: number; regressions: number };
+}
+
+/** Fetch current coverage status overview. */
+export const fetchCoverageStatus = async (repo?: string): Promise<CoverageStatus> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/coverage/status${repo ? `?${repoParam(repo)}` : ''}`,
+  );
+  await assertOk(response);
+  return response.json();
+};
+
+/** Fetch all available coverage runs. */
+export const fetchCoverageRuns = async (repo?: string): Promise<{ runs: CoverageRun[] }> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/coverage/runs${repo ? `?${repoParam(repo)}` : ''}`,
+  );
+  await assertOk(response);
+  return response.json();
+};
+
+/** Compare two coverage runs. */
+export const fetchCoverageDiff = async (
+  runId1: string,
+  runId2: string,
+  repo?: string,
+): Promise<CoverageDiff> => {
+  const params = new URLSearchParams();
+  params.set('runId1', runId1);
+  params.set('runId2', runId2);
+  if (repo) params.set('repo', repo);
+  const response = await fetchWithTimeout(`${_backendUrl}/api/coverage/diff?${params.toString()}`);
+  await assertOk(response);
+  return response.json();
+};
+
 // ── Analyze API ────────────────────────────────────────────────────────────
 
 /** Start a server-side analysis job. */

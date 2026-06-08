@@ -8,6 +8,7 @@ import EdgeCurveProgram from '@sigma/edge-curve';
 import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { NodeAnimation } from './useAppState';
 import type { EdgeType } from '../lib/constants';
+import { coverageColor } from '../lib/coverage-colors';
 // Helper: Parse hex color to RGB
 const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -63,6 +64,7 @@ interface UseSigmaOptions {
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
   layoutMode?: 'force' | 'tree' | 'circles';
+  coverageMode?: boolean;
 }
 
 interface UseSigmaReturn {
@@ -238,6 +240,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const coverageModeRef = useRef<boolean>(false);
 
   // Keep callback refs fresh so the one-time sigma event handlers always
   // call the latest version (avoids stale-closure bugs when graph loads).
@@ -273,12 +276,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
+    coverageModeRef.current = options.coverageMode || false;
     sigmaRef.current?.refresh();
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    options.coverageMode,
   ]);
 
   // Animation loop for node effects
@@ -578,6 +583,11 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
               res.zIndex = 0;
             }
           }
+        }
+
+        // Coverage mode: override node color based on coverageRatio
+        if (coverageModeRef.current && data.coverageRatio !== undefined) {
+          res.color = coverageColor(data.coverageRatio);
         }
 
         return res;

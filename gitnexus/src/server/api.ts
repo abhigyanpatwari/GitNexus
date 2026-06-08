@@ -1410,6 +1410,44 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // ── Coverage API ──────────────────────────────────────────────────────
+
+  // GET /api/coverage/status — current coverage overview
+  app.get('/api/coverage/status', async (req, res) => {
+    try {
+      const result = await backend.queryCoverageStatus(requestedRepo(req));
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query coverage status' });
+    }
+  });
+
+  // GET /api/coverage/runs — list all coverage runs
+  app.get('/api/coverage/runs', async (req, res) => {
+    try {
+      const result = await backend.queryCoverageRuns(requestedRepo(req));
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query coverage runs' });
+    }
+  });
+
+  // GET /api/coverage/diff — compare two coverage runs
+  app.get('/api/coverage/diff', async (req, res) => {
+    try {
+      const runId1 = String(req.query.runId1 ?? '').trim();
+      const runId2 = String(req.query.runId2 ?? '').trim();
+      if (!runId1 || !runId2) {
+        res.status(400).json({ error: 'Missing "runId1" or "runId2" query parameter' });
+        return;
+      }
+      const result = await backend.queryCoverageDiff(requestedRepo(req), runId1, runId2);
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query coverage diff' });
+    }
+  });
+
   // ── Analyze API ──────────────────────────────────────────────────────
 
   // POST /api/analyze — start a new analysis job
