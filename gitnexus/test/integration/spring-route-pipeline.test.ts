@@ -70,6 +70,23 @@ describe('Spring @RequestMapping route ingestion pipeline', () => {
     expect(names).not.toContain('/api/orders');
   });
 
+  it('handles multiple classes in one file with independent prefixes', () => {
+    const names = routeNames();
+    // MultiController.java: AdminController @RequestMapping("/api/admin") + @GetMapping("/dashboard")
+    expect(names).toContain('/api/admin/dashboard');
+    // MultiController.java: PublicController @RequestMapping("/api/public") + @GetMapping("/info")
+    expect(names).toContain('/api/public/info');
+    // Prefixes should not bleed between classes
+    expect(names).not.toContain('/api/public/dashboard');
+    expect(names).not.toContain('/api/admin/info');
+  });
+
+  it('supports @PatchMapping', () => {
+    const names = routeNames();
+    // MultiController.java: AdminController @PatchMapping("/settings")
+    expect(names).toContain('/api/admin/settings');
+  });
+
   it('emits HANDLES_ROUTE edges linking Route nodes to their handler files', () => {
     const handlesRouteEdges: Array<{ routeName: string; filePath: string }> = [];
     result.graph.forEachRelationship((r) => {
