@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
+import { closeQueryResults } from './query-result-utils.js';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -213,8 +214,18 @@ const DB_LOCK_RETRY_DELAY_MS = 500;
  * analyze` and either already happened or will happen on the next run.
  */
 export const isReadOnlyDbError = (err: unknown): boolean => {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /read-only database/i.test(msg);
+  // Walk the `cause` chain (bounded) so a wrapped read-only error — e.g. the
+  // pool adapter's `new Error('…read-only.', { cause: nativeReadOnlyErr })` —
+  // is still detected by callers that only see the wrapper (#2068 follow-up).
+  // The same strict regex is re-applied at each level, so a non-read-only
+  // chain stays false; the depth bound guards a cyclic `cause`.
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur != null; depth++) {
+    const msg = cur instanceof Error ? cur.message : String(cur);
+    if (/read-only database/i.test(msg)) return true;
+    cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
+  }
+  return false;
 };
 
 const isMissingFileError = (err: unknown): boolean => {
@@ -392,12 +403,10 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 const normalizeCopyPath = (filePath: string): string =>
   toNativeSafePath(filePath).replace(/\\/g, '/');
 
+// Single-result convenience wrapper over the shared best-effort closer
+// (drainQueryResult / readQueryRows close one cursor at a time).
 const closeQueryResult = async (result: lbug.QueryResult): Promise<void> => {
-  try {
-    await result.close();
-  } catch {
-    // Best-effort cleanup only.
-  }
+  await closeQueryResults(result);
 };
 
 const drainQueryResult = async (
@@ -1758,8 +1767,9 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
     RETURN DISTINCT a.filePath AS importer
   `;
+  let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
-    const queryResult = await conn.query(cypher);
+    queryResult = await conn.query(cypher);
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     const out: string[] = [];
@@ -1770,6 +1780,8 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     return out;
   } catch {
     return [];
+  } finally {
+    if (queryResult) await closeQueryResults(queryResult);
   }
 };
 
@@ -1788,8 +1800,9 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
   }
   let nodesDeleted = 0;
   for (const label of ['Community', 'Process']) {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
     try {
-      const countResult = await conn.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
+      countResult = await conn.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
       const result = Array.isArray(countResult) ? countResult[0] : countResult;
       const rows = await result.getAll();
       const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
@@ -1799,6 +1812,8 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
       }
     } catch {
       // Table may not exist yet on a freshly-initialized DB — fine.
+    } finally {
+      if (countResult) await closeQueryResults(countResult);
     }
   }
   return { nodesDeleted };

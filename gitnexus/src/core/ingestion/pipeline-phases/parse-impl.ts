@@ -43,7 +43,6 @@ import {
   type ExportedTypeMap,
 } from '../call-processor.js';
 import { createSemanticModel, type MutableSemanticModel } from '../model/index.js';
-import { createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
@@ -466,14 +465,6 @@ export async function runChunkedParseAndResolve(
 
   let filesParsedSoFar = 0;
 
-  // Chunk-local tree-sitter cache, cleared between chunks — call / heritage /
-  // import processors read it during parse to avoid re-parsing within the same
-  // chunk. (The former cross-phase `scopeTreeCache` was only ever populated by
-  // the sequential parser, which has been removed; workers can't return native
-  // Trees across the MessageChannel, so scope-resolution re-parses as needed.)
-  const maxChunkFiles = chunks.reduce((max, c) => Math.max(max, c.length), 0);
-  const astCache = createASTCache(maxChunkFiles);
-
   const exportedTypeMap: ExportedTypeMap = new Map();
   const bindingAccumulator = new BindingAccumulator();
   const allFetchCalls: ExtractedFetchCall[] = [];
@@ -649,7 +640,6 @@ export async function runChunkedParseAndResolve(
       }
 
       filesParsedSoFar += chunkFiles.length;
-      astCache.clear();
 
       if (verboseThroughputLog && chunkStartMs !== null) {
         const elapsedMs = Date.now() - chunkStartMs;
@@ -943,7 +933,6 @@ export async function runChunkedParseAndResolve(
   // Finalize the accumulator and propagate any fixpoint-inferred exports before
   // `crossFile` disposes it downstream. Wrapped in try/catch so a cleanup
   // failure never masks a real parse error; disposal stays with `crossFile`.
-  astCache.clear();
   try {
     bindingAccumulator.finalize();
     const enriched = enrichExportedTypeMap(bindingAccumulator, graph, exportedTypeMap);
