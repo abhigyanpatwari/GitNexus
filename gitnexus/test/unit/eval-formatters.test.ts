@@ -364,6 +364,53 @@ describe('formatDetectChangesResult', () => {
     expect(result).toBe('No changes detected.');
   });
 
+  it('does not hide deletion-only evidence when changed_count is 0', () => {
+    const result = formatDetectChangesResult({
+      summary: {
+        changed_files: 1,
+        changed_count: 0,
+        evidence_count: 1,
+        affected_count: 0,
+        risk_level: 'low',
+      },
+      deleted_symbols: [
+        {
+          type: 'Function',
+          name: 'removed',
+          filePath: 'src/a.ts',
+          inboundCallers: 2,
+        },
+      ],
+    });
+
+    expect(result).not.toBe('No changes detected.');
+    expect(result).toContain('0 symbols');
+    expect(result).toContain('Diff evidence: 1 signals');
+    expect(result).toContain('Deleted symbols:');
+    expect(result).toContain('removed');
+    expect(result).toContain('inbound callers: 2');
+  });
+
+  it('does not hide changed-range-only evidence when changed_count is 0', () => {
+    const result = formatDetectChangesResult({
+      summary: {
+        changed_files: 1,
+        changed_count: 0,
+        evidence_count: 1,
+        affected_count: 0,
+        risk_level: 'low',
+      },
+      changed_ranges: [
+        { filePath: 'src/a.ts', startLine: 3, endLine: 3, change_type: 'modified' },
+      ],
+    });
+
+    expect(result).not.toBe('No changes detected.');
+    expect(result).toContain('1 files');
+    expect(result).toContain('0 symbols');
+    expect(result).toContain('Diff evidence: 1 signals');
+  });
+
   it('formats changes with affected processes', () => {
     const result = formatDetectChangesResult({
       summary: { changed_files: 2, changed_count: 3, affected_count: 1, risk_level: 'MEDIUM' },

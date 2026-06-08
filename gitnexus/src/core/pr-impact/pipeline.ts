@@ -6,7 +6,7 @@ import {
   type PrImpactRisk,
   type PrImpactSymbolImpactInput,
 } from './report.js';
-import type { PrImpactMappedSymbol } from './diff-mapping.js';
+import type { PrImpactMappedSymbol, PrImpactUnmatchedRange } from './diff-mapping.js';
 
 export interface PrImpactPipelineBackend {
   callTool(method: 'detect_changes' | 'impact' | 'api_impact', params: Record<string, unknown>): Promise<any>;
@@ -24,6 +24,24 @@ type DetectChangedSymbol = {
   type?: string;
   filePath?: string;
   change_type?: string;
+};
+
+type DetectUnmatchedRange = {
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+  reason?: string;
+  riskHint?: unknown;
+};
+
+type DetectDeletedSymbol = {
+  id?: string;
+  name?: string;
+  type?: string;
+  kind?: string;
+  filePath?: string;
+  inboundCallers?: number;
+  inbound_callers?: number;
 };
 
 const normalizeRisk = (risk: unknown): PrImpactRisk => {
@@ -58,6 +76,40 @@ const toMappedSymbol = (symbol: DetectChangedSymbol): PrImpactMappedSymbol => ({
   kind: symbol.type ?? 'Symbol',
   filePath: symbol.filePath ?? 'unknown',
   changeType: normalizeChangeType(symbol.change_type),
+});
+
+const normalizeLine = (line: unknown): number | undefined => {
+  const value = Number(line);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+};
+
+const normalizeRiskHint = (riskHint: unknown): PrImpactUnmatchedRange['riskHint'] | undefined => {
+  if (riskHint === 'low' || riskHint === 'medium' || riskHint === 'high') return riskHint;
+  return undefined;
+};
+
+const toUnmatchedRange = (
+  range: DetectUnmatchedRange,
+): PrImpactUnmatchedRange | undefined => {
+  const startLine = normalizeLine(range.startLine);
+  const endLine = normalizeLine(range.endLine);
+  if (!range.filePath || startLine === undefined || endLine === undefined) return undefined;
+  const riskHint = normalizeRiskHint(range.riskHint);
+  return {
+    filePath: range.filePath,
+    startLine,
+    endLine,
+    reason: range.reason ?? 'No indexed symbol overlapped this changed range',
+    ...(riskHint ? { riskHint } : {}),
+  };
+};
+
+const toDeletedSymbol = (symbol: DetectDeletedSymbol) => ({
+  id: symbol.id ?? `${symbol.type ?? symbol.kind ?? 'Symbol'}:${symbol.filePath ?? 'unknown'}:${symbol.name ?? 'unknown'}`,
+  name: symbol.name ?? 'unknown',
+  kind: symbol.kind ?? symbol.type ?? 'Symbol',
+  filePath: symbol.filePath ?? 'unknown',
+  inboundCallers: Number(symbol.inboundCallers ?? symbol.inbound_callers ?? 0),
 });
 
 const buildImpactInput = async (
@@ -116,6 +168,14 @@ export const buildPrImpactPipelineReport = async (
     ? (detectResult.changed_symbols as DetectChangedSymbol[])
     : [];
   const mappedSymbols = changedSymbols.map(toMappedSymbol);
+  const unmatchedRanges = Array.isArray(detectResult?.unmatched_ranges)
+    ? (detectResult.unmatched_ranges as DetectUnmatchedRange[])
+        .map(toUnmatchedRange)
+        .filter((range): range is PrImpactUnmatchedRange => Boolean(range))
+    : [];
+  const deletedSymbols = Array.isArray(detectResult?.deleted_symbols)
+    ? (detectResult.deleted_symbols as DetectDeletedSymbol[]).map(toDeletedSymbol)
+    : [];
 
   const impacts: PrImpactSymbolImpactInput[] = [];
   for (const symbol of mappedSymbols) {
@@ -145,9 +205,9 @@ export const buildPrImpactPipelineReport = async (
     },
     graph: { freshness: detectResult?.error ? 'ambiguous' : 'fresh', reason: detectResult?.error },
     mappedSymbols,
-    unmatchedRanges: [],
+    unmatchedRanges,
     newSymbols: [],
-    deletedSymbols: [],
+    deletedSymbols,
     impacts,
     apiImpacts,
   };

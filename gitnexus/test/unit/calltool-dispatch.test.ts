@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend.
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
@@ -924,6 +925,343 @@ describe('LocalBackend.callTool', () => {
     // Should either return changes or a git error
     expect(result).toBeDefined();
     expect(result.error || result.summary).toBeDefined();
+  });
+
+  it('detect_changes returns changed ranges and unmatched hunk ranges', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-detect-ranges-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repoDir, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      execFileSync('git', ['config', 'user.name', 'Test'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      execFileSync('git', ['config', 'core.autocrlf', 'false'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+
+      const sourcePath = path.join(repoDir, 'src');
+      mkdirSync(sourcePath, { recursive: true });
+      const filePath = path.join(sourcePath, 'app.ts');
+      writeFileSync(
+        filePath,
+        [
+          'export function mapped() {',
+          '  return 1;',
+          '}',
+          '',
+          'export function loose() {',
+          '  return 2;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      execFileSync('git', ['add', 'src/app.ts'], { cwd: repoDir, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['commit', '-q', '-m', 'initial'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+
+      writeFileSync(
+        filePath,
+        [
+          'export function mapped() {',
+          '  return 42;',
+          '}',
+          '',
+          'export function loose() {',
+          '  return 99;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'range-project',
+          path: repoDir,
+          storagePath: path.join(repoDir, '.gitnexus'),
+        },
+      ]);
+      backend = new LocalBackend();
+      await backend.init();
+
+      (executeParameterized as any).mockImplementation(
+        (_repoId: string, cypher: string, _params: Record<string, unknown>) => {
+          if (cypher.includes('STEP_IN_PROCESS')) return [];
+          if (cypher.includes('RETURN n.id AS id')) {
+            return [
+              {
+                id: 'Function:src/app.ts:mapped',
+                name: 'mapped',
+                type: 'Function',
+                filePath: 'src/app.ts',
+                startLine: 1,
+                endLine: 3,
+              },
+            ];
+          }
+          return [];
+        },
+      );
+
+      const result = await backend.callTool('detect_changes', { scope: 'unstaged' });
+
+      expect(result.changed_ranges).toEqual([
+        { filePath: 'src/app.ts', startLine: 2, endLine: 2, change_type: 'modified' },
+        { filePath: 'src/app.ts', startLine: 6, endLine: 6, change_type: 'modified' },
+      ]);
+      expect(result.unmatched_ranges).toEqual([
+        {
+          filePath: 'src/app.ts',
+          startLine: 6,
+          endLine: 6,
+          reason: 'No indexed symbol overlapped this changed range',
+        },
+      ]);
+      expect(result.summary.changed_count).toBe(1);
+      expect(result.summary.evidence_count).toBe(2);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detect_changes returns deleted symbols for old-side deletion hunks', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-detect-deletions-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repoDir, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      execFileSync('git', ['config', 'user.name', 'Test'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      execFileSync('git', ['config', 'core.autocrlf', 'false'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+
+      const sourcePath = path.join(repoDir, 'src');
+      mkdirSync(sourcePath, { recursive: true });
+      const filePath = path.join(sourcePath, 'app.ts');
+      writeFileSync(
+        filePath,
+        [
+          'export function keep() {',
+          '  return 1;',
+          '}',
+          '',
+          'export function removed() {',
+          '  return 2;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      execFileSync('git', ['add', 'src/app.ts'], { cwd: repoDir, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['commit', '-q', '-m', 'initial'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+
+      writeFileSync(
+        filePath,
+        ['export function keep() {', '  return 1;', '}', ''].join('\n'),
+      );
+
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'deletion-project',
+          path: repoDir,
+          storagePath: path.join(repoDir, '.gitnexus'),
+        },
+      ]);
+      backend = new LocalBackend();
+      await backend.init();
+
+      (executeParameterized as any).mockImplementation(
+        (_repoId: string, cypher: string, _params: Record<string, unknown>) => {
+          if (cypher.includes('count(caller) AS inboundCallers')) {
+            return [{ id: 'Function:src/app.ts:removed', inboundCallers: 2 }];
+          }
+          if (cypher.includes('STEP_IN_PROCESS')) {
+            return [
+              {
+                nodeId: 'Function:src/app.ts:removed',
+                pid: 'Process:remove-flow',
+                label: 'Remove Flow',
+                processType: 'business',
+                stepCount: 3,
+                step: 2,
+              },
+            ];
+          }
+          if (cypher.includes('RETURN n.id AS id')) {
+            return [
+              {
+                id: 'Function:src/app.ts:removed',
+                name: 'removed',
+                type: 'Function',
+                filePath: 'src/app.ts',
+                startLine: 5,
+                endLine: 7,
+              },
+            ];
+          }
+          return [];
+        },
+      );
+
+      const result = await backend.callTool('detect_changes', { scope: 'unstaged' });
+
+      expect(result.changed_ranges).toEqual([
+        {
+          filePath: 'src/app.ts',
+          startLine: 4,
+          endLine: 7,
+          change_type: 'deleted',
+          side: 'old',
+        },
+      ]);
+      expect(result.deleted_symbols).toEqual([
+        {
+          id: 'Function:src/app.ts:removed',
+          name: 'removed',
+          type: 'Function',
+          filePath: 'src/app.ts',
+          inboundCallers: 2,
+        },
+      ]);
+      expect(result.affected_processes).toEqual([
+        {
+          id: 'Process:remove-flow',
+          name: 'Remove Flow',
+          process_type: 'business',
+          step_count: 3,
+          changed_steps: [{ symbol: 'removed', step: 2 }],
+        },
+      ]);
+      expect(result.summary.changed_count).toBe(0);
+      expect(result.summary.evidence_count).toBe(1);
+      expect(result.summary.affected_count).toBe(1);
+      expect(result.summary.risk_level).toBe('medium');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resolve compare-scope deleted ranges against the current graph', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-detect-compare-deletions-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repoDir, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      execFileSync('git', ['config', 'user.name', 'Test'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      execFileSync('git', ['config', 'core.autocrlf', 'false'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+
+      const sourcePath = path.join(repoDir, 'src');
+      mkdirSync(sourcePath, { recursive: true });
+      const filePath = path.join(sourcePath, 'app.ts');
+      writeFileSync(
+        filePath,
+        [
+          'export function keep() {',
+          '  return 1;',
+          '}',
+          '',
+          'export function removed() {',
+          '  return 2;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      execFileSync('git', ['add', 'src/app.ts'], { cwd: repoDir, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['commit', '-q', '-m', 'initial'], {
+        cwd: repoDir,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+
+      writeFileSync(filePath, ['export function keep() {', '  return 1;', '}', ''].join('\n'));
+
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'compare-deletion-project',
+          path: repoDir,
+          storagePath: path.join(repoDir, '.gitnexus'),
+        },
+      ]);
+      backend = new LocalBackend();
+      await backend.init();
+
+      (executeParameterized as any).mockImplementation(
+        (_repoId: string, cypher: string, _params: Record<string, unknown>) => {
+          if (cypher.includes('count(caller) AS inboundCallers')) {
+            return [{ id: 'Function:src/app.ts:removed', inboundCallers: 2 }];
+          }
+          if (cypher.includes('STEP_IN_PROCESS')) return [];
+          if (cypher.includes('RETURN n.id AS id')) {
+            return [
+              {
+                id: 'Function:src/app.ts:removed',
+                name: 'removed',
+                type: 'Function',
+                filePath: 'src/app.ts',
+                startLine: 5,
+                endLine: 7,
+              },
+            ];
+          }
+          return [];
+        },
+      );
+
+      const result = await backend.callTool('detect_changes', {
+        scope: 'compare',
+        base_ref: 'HEAD',
+      });
+
+      expect(result.deleted_symbols).toEqual([]);
+      expect(result.unmatched_ranges).toEqual([
+        {
+          filePath: 'src/app.ts',
+          startLine: 4,
+          endLine: 7,
+          reason: 'Deleted range requires base graph mapping for compare scope',
+        },
+      ]);
+      expect(result.summary.changed_count).toBe(0);
+      expect(result.summary.evidence_count).toBe(1);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 
   it('dispatches pr_impact tool through local graph primitives', async () => {

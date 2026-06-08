@@ -54,10 +54,13 @@ export const zhCN = {
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
+  'tool.detectChanges.evidenceSummary': '差异证据：{{count}} 个信号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
   'tool.detectChanges.unknownRisk': '未知',
   'tool.detectChanges.changedSymbols': '已变更符号：',
+  'tool.detectChanges.deletedSymbols': '已删除符号：',
+  'tool.detectChanges.unmatchedRanges': '未匹配差异范围：',
   'tool.detectChanges.overflowMore': '... 以及另外 {{count}} 个',
   'tool.detectChanges.affectedExecutionFlows': '受影响执行流程：',
   'tool.detectChanges.steps': '{{count}} 步',
@@ -119,6 +122,7 @@ export const zhCN = {
   'help.command.remove.description':
     '删除已注册仓库的 GitNexus 索引（按别名、名称或绝对路径）。与 `clean` 不同，不要求位于仓库内；未知目标会幂等处理。',
   'help.command.wiki.description': '从知识图谱生成仓库 Wiki',
+  'help.command.wikiRefresh.description': '规划手动 Wiki 刷新，不修改输出',
   'help.command.augment.description': '使用知识图谱上下文增强搜索模式（供 hooks 使用）',
   'help.command.publish.description':
     '通知 understand-quickly 注册表该仓库已有新的 GitNexus 索引。需显式启用：要求 UNDERSTAND_QUICKLY_TOKEN（对 looptech-ai/understand-quickly 具备 `Repository dispatches: write` 的细粒度 PAT）。无 token 时不执行。参见 https://github.com/looptech-ai/understand-quickly。',
@@ -196,6 +200,9 @@ export const zhCN = {
   'help.option.wiki.gist': '生成后发布 Wiki 为公开 GitHub Gist',
   'help.option.wiki.review': '分组后停止，以便在生成页面前审查模块结构',
   'help.option.wiki.lang': '生成文档的输出语言（如 english、chinese、spanish、japanese）',
+  'help.option.wikiRefresh.format': '输出格式：markdown 或 json',
+  'help.option.wikiRefresh.createIfMissing':
+    '当 Wiki metadata 不存在时，允许计划建议创建 Wiki',
   'help.option.publish.id': '覆盖注册表 id（默认使用 origin remote）',
   'help.option.repo.targetOmitOne': '目标仓库（仅有一个已索引仓库时可省略）',
   'help.option.query.context': '用于提升排序质量的任务上下文',

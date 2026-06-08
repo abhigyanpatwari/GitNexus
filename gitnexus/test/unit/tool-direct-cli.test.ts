@@ -62,6 +62,36 @@ describe('direct CLI tool commands', () => {
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('No changes detected.'));
   });
 
+  it('does not hide unmatched range evidence when changed_count is 0', async () => {
+    callToolMock.mockResolvedValue({
+      summary: {
+        changed_files: 1,
+        changed_count: 0,
+        evidence_count: 1,
+        affected_count: 0,
+        risk_level: 'low',
+      },
+      unmatched_ranges: [
+        {
+          filePath: 'src/app.ts',
+          startLine: 9,
+          endLine: 9,
+          reason: 'No indexed symbol overlapped this changed range',
+        },
+      ],
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({});
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    expect(output).not.toContain('No changes detected.');
+    expect(output).toContain('Changes: 1 files, 0 symbols');
+    expect(output).toContain('Diff evidence: 1 signals');
+    expect(output).toContain('Unmatched diff ranges:');
+    expect(output).toContain('src/app.ts:9-9');
+  });
+
   it('prints error message when result contains an error', async () => {
     callToolMock.mockResolvedValue({ error: 'index is stale' });
     const { detectChangesCommand } = await import('../../src/cli/tool.js');

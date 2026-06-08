@@ -41,6 +41,7 @@ const allHelpCommands = [
   ['clean'],
   ['remove'],
   ['wiki'],
+  ['wiki-refresh'],
   ['augment'],
   ['publish'],
   ['query'],

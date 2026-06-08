@@ -22,10 +22,9 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
-  parseDiffHunks,
+  parseDiffRanges,
   getCanonicalRepoRoot,
   getGitRoot,
-  type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import {
@@ -2526,7 +2525,7 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+    const fileDiffs = parseDiffRanges(diffOutput);
 
     if (fileDiffs.length === 0) {
       return {
@@ -2536,25 +2535,60 @@ export class LocalBackend {
           risk_level: 'none',
           message: 'No changes detected.',
         },
+        changed_ranges: [],
+        unmatched_ranges: [],
+        deleted_symbols: [],
         changed_symbols: [],
         affected_processes: [],
       };
     }
 
     // Map diff hunks to indexed symbols via range overlap
-    const changedSymbols: any[] = [];
+    const changedSymbolsById = new Map<string, any>();
+    const deletedSymbolsById = new Map<string, any>();
+    const changedRanges: any[] = [];
+    const unmatchedRanges: any[] = [];
+    const canResolveDeletedSymbols = scope !== 'compare';
     for (const fileDiff of fileDiffs) {
-      if (fileDiff.hunks.length === 0) continue;
+      if (fileDiff.ranges.length === 0) continue;
 
-      // Build range overlap conditions for all hunks in this file
-      const overlapConditions = fileDiff.hunks
+      for (const range of fileDiff.ranges) {
+        const changedRange: any = {
+          filePath: fileDiff.filePath,
+          startLine: range.startLine,
+          endLine: range.endLine,
+          change_type: range.change_type,
+        };
+        if (range.side) changedRange.side = range.side;
+        changedRanges.push(changedRange);
+      }
+
+      const rangesToResolve = fileDiff.ranges.filter(
+        (range) => range.change_type !== 'deleted' || canResolveDeletedSymbols,
+      );
+
+      for (const range of fileDiff.ranges) {
+        if (range.change_type === 'deleted' && !canResolveDeletedSymbols) {
+          unmatchedRanges.push({
+            filePath: fileDiff.filePath,
+            startLine: range.startLine,
+            endLine: range.endLine,
+            reason: 'Deleted range requires base graph mapping for compare scope',
+          });
+        }
+      }
+
+      if (rangesToResolve.length === 0) continue;
+
+      // Build range overlap conditions for all ranges in this file
+      const overlapConditions = rangesToResolve
         .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
         .join(' OR ');
 
       const queryParams: Record<string, any> = { filePath: fileDiff.filePath };
-      fileDiff.hunks.forEach((hunk, i) => {
-        queryParams[`hunkStart${i}`] = hunk.startLine;
-        queryParams[`hunkEnd${i}`] = hunk.endLine;
+      rangesToResolve.forEach((range, i) => {
+        queryParams[`hunkStart${i}`] = range.startLine;
+        queryParams[`hunkEnd${i}`] = range.endLine;
       });
 
       const symbolQuery = `
@@ -2565,27 +2599,97 @@ export class LocalBackend {
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       `;
 
+      let rows: any[] = [];
       try {
-        const rows = await executeParameterized(repo.id, symbolQuery, queryParams);
-        for (const sym of rows) {
-          changedSymbols.push({
-            id: sym.id || sym[0],
-            name: sym.name || sym[1],
-            type: sym.type || sym[2],
-            filePath: sym.filePath || sym[3],
-            change_type: 'touched',
-          });
-        }
+        rows = await executeParameterized(repo.id, symbolQuery, queryParams);
       } catch (e) {
         logQueryError('detect-changes:file-symbols', e);
       }
+
+      const symbolRanges = rows.map((sym) => ({
+        id: sym.id || sym[0],
+        name: sym.name || sym[1],
+        type: sym.type || sym[2],
+        filePath: sym.filePath || sym[3],
+        startLine: Number(sym.startLine ?? sym[4]),
+        endLine: Number(sym.endLine ?? sym[5]),
+      }));
+      for (const range of rangesToResolve) {
+        const matches = symbolRanges.filter(
+          (sym) =>
+            Number.isFinite(sym.startLine) &&
+            Number.isFinite(sym.endLine) &&
+            sym.startLine <= range.endLine &&
+            sym.endLine >= range.startLine,
+        );
+        if (matches.length === 0) {
+          unmatchedRanges.push({
+            filePath: fileDiff.filePath,
+            startLine: range.startLine,
+            endLine: range.endLine,
+            reason:
+              range.change_type === 'deleted'
+                ? 'Deleted range did not resolve to an indexed symbol'
+                : 'No indexed symbol overlapped this changed range',
+          });
+          continue;
+        }
+
+        for (const sym of matches) {
+          if (range.change_type === 'deleted') {
+            deletedSymbolsById.set(sym.id, {
+              id: sym.id,
+              name: sym.name,
+              type: sym.type,
+              filePath: sym.filePath,
+              inboundCallers: 0,
+            });
+          } else {
+            changedSymbolsById.set(sym.id, {
+              id: sym.id,
+              name: sym.name,
+              type: sym.type,
+              filePath: sym.filePath,
+              change_type: range.change_type,
+            });
+          }
+        }
+      }
     }
+
+    const deletedSymbols = Array.from(deletedSymbolsById.values());
+    if (deletedSymbols.length > 0) {
+      try {
+        const inboundRows = await executeParameterized(
+          repo.id,
+          `
+          MATCH (caller)-[r:CodeRelation]->(n)
+          WHERE n.id IN $ids AND r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+          RETURN n.id AS id, count(caller) AS inboundCallers
+        `,
+          { ids: deletedSymbols.map((symbol) => symbol.id) },
+        );
+        const inboundById = new Map(
+          inboundRows.map((row: any) => [row.id || row[0], Number(row.inboundCallers ?? row[1] ?? 0)]),
+        );
+        for (const symbol of deletedSymbols) {
+          symbol.inboundCallers = inboundById.get(symbol.id) ?? 0;
+        }
+      } catch (e) {
+        logQueryError('detect-changes:deleted-inbound-callers', e);
+      }
+    }
+
+    const changedSymbols = Array.from(changedSymbolsById.values());
+    const changeEvidenceCount =
+      changedSymbols.length + deletedSymbols.length + unmatchedRanges.length;
+    const impactSymbols = [...changedSymbols, ...deletedSymbols];
 
     // Find affected processes -- single batched query instead of N+1
     const affectedProcesses = new Map<string, any>();
-    if (changedSymbols.length > 0) {
-      const symIds = changedSymbols.map((s) => s.id);
-      const symNameById = new Map(changedSymbols.map((s) => [s.id, s.name]));
+    if (impactSymbols.length > 0) {
+      const symIds = impactSymbols.map((s) => s.id);
+      const symNameById = new Map(impactSymbols.map((s) => [s.id, s.name]));
       try {
         const procs = await executeParameterized(
           repo.id,
@@ -2632,10 +2736,14 @@ export class LocalBackend {
     return {
       summary: {
         changed_count: changedSymbols.length,
+        evidence_count: changeEvidenceCount,
         affected_count: processCount,
         changed_files: fileDiffs.length,
         risk_level: risk,
       },
+      changed_ranges: changedRanges,
+      unmatched_ranges: unmatchedRanges,
+      deleted_symbols: deletedSymbols,
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
     };

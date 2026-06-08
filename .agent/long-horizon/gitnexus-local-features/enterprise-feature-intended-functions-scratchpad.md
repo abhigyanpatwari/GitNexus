@@ -1186,3 +1186,1440 @@ Research conclusion for planning:
 - Before implementation, MAIN should decide whether the first write scope is:
   - high-level local `gitnexus pr-review` report command; or
   - lower-level stable primitives aligned with issue #1901 (`symbols-for-ranges`, `impact-for-symbols`) with a report wrapper later.
+
+### 2026-06-07T20:43+01:00 - GitHub PR/Issue/Fork Evidence Refresh
+
+Objective:
+
+- Refresh the feature plan against live GitHub issues, PRs, forks, and adjacent GitNexus repos.
+- Answer whether the current plan is cogent when grounded in upstream issue/PR evidence.
+- Check whether any public GitNexus fork appears to have already implemented the target enterprise/local-feature set.
+- Keep this as scratchpad evidence only. The current queue and checkpoint truth remain in `plans.md`, `feature-map.md`, and `documentation.md`.
+
+Objective time markers:
+
+```powershell
+Get-Date -Format "yyyy-MM-ddTHH:mm:ssK"
+# 2026-06-07T20:43:03+01:00
+# 2026-06-07T20:47:07+01:00
+```
+
+Research method:
+
+- Used the `autoresearch` skill pattern lightly: query matrix, source-class separation, synthesis, uncertainty check.
+- Used GitHub CLI and web search for direct issue/PR/repo inspection.
+- Treated upstream GitNexus issues/PRs as primary evidence.
+- Treated forks and adjacent repos as reference-code evidence only after inspecting source/tree/compare data.
+- Treated repo descriptions, README marketing, and topic search as secondary evidence.
+
+Commands / searches run:
+
+```powershell
+gh repo view abhigyanpatwari/GitNexus --json nameWithOwner,isFork,forkCount,stargazerCount,updatedAt,defaultBranchRef,url
+gh search issues "reindex" --repo abhigyanpatwari/GitNexus --limit 30 --json number,title,state,url,updatedAt,labels
+gh search issues "wiki" --repo abhigyanpatwari/GitNexus --limit 30 --json number,title,state,url,updatedAt,labels
+gh search issues "detect_changes impact PR" --repo abhigyanpatwari/GitNexus --limit 30 --json number,title,state,url,updatedAt,labels
+gh search issues "OCaml" --repo abhigyanpatwari/GitNexus --limit 20 --json number,title,state,url,updatedAt,labels
+gh search prs "reindex" --repo abhigyanpatwari/GitNexus --limit 30 --json number,title,state,url,updatedAt
+gh search prs "wiki" --repo abhigyanpatwari/GitNexus --limit 30 --json number,title,state,url,updatedAt
+gh search prs "group cross repo contract" --repo abhigyanpatwari/GitNexus --limit 30 --json number,title,state,url,updatedAt
+gh api "repos/abhigyanpatwari/GitNexus/forks?per_page=30&sort=stargazers"
+gh api "repos/abhigyanpatwari/GitNexus/compare/main...nantas:nantas-dev"
+gh api "repos/abhigyanpatwari/GitNexus/compare/main...Trenza1ore:main"
+gh search code "repo:nantas/GitNexus auto-reindex"
+gh search code "repo:nantas/GitNexus pr-impact"
+gh search code "repo:nantas/GitNexus wiki refresh"
+gh search code "repo:nantas/GitNexus OCaml"
+gh search code "repo:abhigyanpatwari/GitNexus symbols-for-ranges"
+gh search code "repo:abhigyanpatwari/GitNexus tree-sitter-ocaml"
+```
+
+#### Upstream Issue/PR Evidence Matrix
+
+| Feature area | Source | Evidence | Planning consequence |
+| --- | --- | --- | --- |
+| Auto-Reindexing | GitNexus issue #90: https://github.com/abhigyanpatwari/GitNexus/issues/90 | Requested an MCP tool to refresh the knowledge graph after code changes. Maintainer reply said stale notification already exists and "Best solution is to add a filewatcher." | Confirms automatic freshness is a real intended capability. It also shows a naive MCP command is not enough if agents ignore it. |
+| Auto-Reindexing | GitNexus issue #76: https://github.com/abhigyanpatwari/GitNexus/issues/76 | Full re-index after branch switch or small changes is impractical for large repos; comments point toward incremental indexing and branch/changed-file awareness. | Supports freshness work, but also warns that auto-refresh should be efficient and not just force rebuilds. |
+| Auto-Reindexing | GitNexus PR #1479: https://github.com/abhigyanpatwari/GitNexus/pull/1479 | Incremental analyze became default using parse cache, DB writeback, crash recovery, and equivalence checks. | Any auto-reindex plan should reuse the incremental analyze path and preserve full vs incremental equivalence assumptions. |
+| Auto-Reindexing | GitNexus issue #1496: https://github.com/abhigyanpatwari/GitNexus/issues/1496 | Requests daemon-side `POST /reindex` because eval-server consumers cannot refresh a warm daemon without restart. | Strong evidence for a later server/daemon refresh endpoint, but not necessary for the already completed local V1 freshness sweep. |
+| Auto-Reindexing | GitNexus PR #205 and PR #1070: https://github.com/abhigyanpatwari/GitNexus/pull/205 and https://github.com/abhigyanpatwari/GitNexus/pull/1070 | #205 originally framed hook auto-reindex, but review/docs later clarified the hook should be notification-only to avoid blocking, timeouts, and DB corruption risk. | Confirms our local "no hooks as implementation route" rule is aligned with upstream hardening. |
+| Auto-Reindexing / Ops | GitNexus issue #344: https://github.com/abhigyanpatwari/GitNexus/issues/344 | Production users report 25+ repo deployment needs: cron-friendly reindex, embedding preservation, dirty worktree checks, smoke tests, version drift doctor, graph verification. | Good operational reference for future Podman/runtime validation. It is not a direct upstream feature implementation. |
+| Auto-Updating Code Wiki | GitNexus issue #1558: https://github.com/abhigyanpatwari/GitNexus/issues/1558 | User asks whether `gitnexus wiki` can be called in a coding agent and reuse agent LLM config. Comment warns GitNexus should not peek into coding-agent secrets. | Strong policy evidence: wiki mutation/provider execution must not assume access to agent secrets. |
+| Auto-Updating Code Wiki | GitNexus issue #1957: https://github.com/abhigyanpatwari/GitNexus/issues/1957 | Requests Copilot support for wiki generation, but no acceptance criteria. | Confirms provider support pressure, not enough to authorize mutation or provider execution. |
+| Auto-Updating Code Wiki | GitNexus PR #1769 and PR #2039: https://github.com/abhigyanpatwari/GitNexus/pull/1769 and https://github.com/abhigyanpatwari/GitNexus/pull/2039 | Adds local Claude/Codex providers, then OpenCode provider, for `gitnexus wiki`. PR text keeps `gitnexus wiki` as CLI entrypoint; no server/MCP wiki mutation surface is added. | Supports current Task 2 direction: status/provider-readiness first, explicit mutation/provider policy before output writes. |
+| PR Impact / Blast Radius | GitNexus issue #1901: https://github.com/abhigyanpatwari/GitNexus/issues/1901 | Proposes stable graph-mapping primitives: `symbols-for-ranges` and `impact-for-symbols`; says external PR/MR platforms should own diff/provider semantics and reporting. | This is the most important boundary evidence for PR Impact. Local pipeline should remain deterministic and graph-first; GitHub automation is a later layer. |
+| PR Impact / Blast Radius | GitNexus issue #758: https://github.com/abhigyanpatwari/GitNexus/issues/758 | Critiques file-level `detect_changes` and calls for actual diff-hunk to symbol-range mapping. | Validates the current `diff ranges -> symbols -> impact -> report` framing. |
+| PR Impact / Blast Radius | GitNexus issue #415: https://github.com/abhigyanpatwari/GitNexus/issues/415 | Risk is inflated when added symbols are treated like modified symbols; deleted symbols should be higher risk. | Supports explicit added/modified/deleted handling and cautious verdict rules. |
+| PR Impact / Blast Radius | GitNexus PR #1867: https://github.com/abhigyanpatwari/GitNexus/pull/1867 | Adds per-symbol process participation to `impact` by-depth output. | Supports richer PR impact report sections without inventing a new graph model. |
+| GitHub PR automation boundary | GitNexus PR #1446: https://github.com/abhigyanpatwari/GitNexus/pull/1446 | Implements a fork-safe two-workflow PR autofix pipeline with untrusted `pull_request` data production and trusted `workflow_run` publication. | Strong architecture reference for later token-bearing PR automation, but out of the current local V1. |
+| Multi-Repo | GitNexus issue #306: https://github.com/abhigyanpatwari/GitNexus/issues/306 | Requests cross-repo HTTP API bridge (`HTTP_CALLS`) so frontend/backend graphs connect across repos. | Confirms enterprise expectation is cross-repo relationship resolution, not merely multiple registered repos. |
+| Multi-Repo | GitNexus PR #984: https://github.com/abhigyanpatwari/GitNexus/pull/984 | Merged group-aware `query`, `context`, and `impact` with `repo: "@group"` routing and group resources. | Supports the completed Task 3 documentation/surface reconciliation. Unified graph expansion remains separate. |
+| Multi-Repo | GitNexus PR #1583: https://github.com/abhigyanpatwari/GitNexus/pull/1583 | Open cross-repo call trace PR with pluggable resolver; review concerns include missing resolver file and depth limits. | Useful future reference, but not production-ready reference code to copy. |
+| OCaml | GitNexus issue #1368: https://github.com/abhigyanpatwari/GitNexus/issues/1368 | Requests `.ml` / `.mli` support with tree-sitter-ocaml, top-level lets, modules, type definitions, opens, and calls. Claims a working fork implementation exists. | Supports OCaml as a real intended language feature. Public reference fork was not found in this pass, so local implementation should remain evidence-tested and experimental. |
+| Regression/E2E | GitNexus issue #554: https://github.com/abhigyanpatwari/GitNexus/issues/554 | Proposes temporal robustness testing: mutate graph, re-run eval, compare degradation/recovery/noise. | Supports future regression-forensics/eval direction, but not a direct product feature implementation. |
+
+#### Fork / Adjacent Repository Scan
+
+| Repo | Type | Evidence found | Feature relevance | Disposition |
+| --- | --- | --- | --- | --- |
+| `abhigyanpatwari/GitNexus` | Upstream | `forkCount: 4747`, default branch `main`, updated 2026-06-07. | Primary source of issues/PRs and current intent. | Source of truth. |
+| `nxpatterns/gitnexus` | Fork | Compare: `ahead_by: 0`, `behind_by: 98`. | Mirror/behind fork; no target feature implementation. | Not useful as implementation reference. |
+| `digitalapplied/gitnexus` | Fork | Compare: `ahead_by: 0`, `behind_by: 889`. | Mirror/behind fork; no target feature implementation. | Not useful as implementation reference. |
+| `nantas/GitNexus` | Fork | Compare: `ahead_by: 514`, `behind_by: 872`; large Unity/runtime/benchmark divergence. Tree contains `benchmarks/u2-e2e`, Unity runtime/process docs, rule-lab, query-context benchmarks, many Unity reports. | Useful for E2E/benchmark methodology and agent-context validation patterns. No exact `auto-reindex`, `pr-impact`, wiki refresh, or OCaml implementation found by targeted code search. | Adjacent reference only; not a drop-in enterprise-feature fork. |
+| `Trenza1ore/GitNexus-Cangjie` | Fork | Compare: `ahead_by: 3`, `behind_by: 659`; changed files add Cangjie language provider, parser/queries/import resolver/type extractor, tests, porting notes. | Useful as a language-onboarding pattern for non-core language support. It is Cangjie, not OCaml. | Useful analogue for future language-support methodology. |
+| `leeex1/GitNexus` | Fork | Compare: `ahead_by: 0`, `behind_by: 64`. | Mirror/behind fork. | Not useful as implementation reference. |
+| `heliopaivajr/GitNexus` | Fork | Compare: `ahead_by: 0`, `behind_by: 7`. | Near-current mirror/behind fork. | Not useful as implementation reference. |
+| `Akon-Labs/gitnexus-check` | Adjacent repo, not fork | GitHub Action computes PR diff stats, decides lazy vs full reindex, uploads bundles to Hub, fetches a Context Pack, writes `context-pack.json`, `system-prompt.md`, and MCP config for PR review. | Closest public reference for GitNexus PR-check/PR-review automation. It depends on a Hub and token model, not local OSS-only CLI. | Strong future reference for GitHub automation boundary; not current local V1. |
+| `maddieunlawful958/gitnexus-stable-ops` | Adjacent repo, not fork | Contains shell scripts for `gitnexus-auto-reindex.sh`, `gitnexus-reindex-all.sh`, smoke tests, embedding-flag preservation, dirty-worktree checks, and an agent-graph reindexer. README is generic/low-specificity, but script source is concrete. | Useful ops reference for reindex safety and smoke tests. | Medium-trust reference after source inspection; do not copy wholesale. |
+| `tintinweb/pi-gitnexus` | Adjacent repo, not fork | Repo description: GitNexus knowledge graph integration for Pi coding agent. | Tooling/integration reference only. | Not evidence of target enterprise features. |
+| `antomy-gc/gitnexus-opencode` | Adjacent repo, not fork | Repo description: OpenCode integration with GitNexus. | Provider/tool integration reference. | Not evidence of target enterprise features. |
+
+#### Direct Reference-Code Notes
+
+`Akon-Labs/gitnexus-check`:
+
+- `src/main.ts` flow:
+  - validate PR event and action inputs,
+  - resolve repo on Hub,
+  - compute local diff stats,
+  - decide lazy vs full reindex,
+  - bundle/upload PR head if reindexing,
+  - fetch Context Pack,
+  - render artifacts for Claude PR review.
+- `src/diff.ts`:
+  - uses `git diff --numstat` and `git diff --name-status`,
+  - tracks added/deleted/renamed/modified file status,
+  - treats diff failures conservatively by forcing full reindex,
+  - forces reindex for big diffs, renames, deep-review label, or lazy disabled.
+- `src/templates/system-prompt.md`:
+  - tells the reviewer to read the Context Pack first,
+  - treats MCP as follow-up only,
+  - emphasizes graph-level findings, cross-repo consumers, boundary crossings, and concise PR comments.
+
+Planning consequence:
+
+- This is strong evidence that a richer GitNexus PR automation product likely uses:
+  - a precomputed context pack,
+  - diff stats,
+  - lazy/full reindex decision,
+  - MCP follow-up,
+  - a strict output/comment protocol.
+- It also confirms why our local PR Impact V1 should stay local/read-only: the real GitHub automation shape needs Hub/token/workflow decisions.
+
+`maddieunlawful958/gitnexus-stable-ops`:
+
+- `bin/gitnexus-auto-reindex.sh` checks `.gitnexus/meta.json.lastCommit` against `git rev-parse HEAD`, skips if current, and preserves `--embeddings` based on `stats.embeddings`.
+- `bin/gitnexus-reindex-all.sh` reads the registry, skips missing repos, skips dirty worktrees unless explicitly allowed, and preserves embeddings.
+- `bin/gitnexus-smoke-test.sh` runs analyze/status/list/context/cypher/impact and verifies JSON outputs with `jq`.
+- `lib/common.sh` centralizes `embedding_flag`, dirty repo checks, and empty repo skip logic.
+
+Planning consequence:
+
+- Useful concrete support for reindex safety rules:
+  - preserve embeddings,
+  - skip dirty worktrees by default,
+  - verify registry/list/status/context/impact after reindex,
+  - make batch reindex summarize skipped/missing repos.
+- It is an ops toolkit, not an upstream architecture mandate.
+
+`nantas/GitNexus`:
+
+- Large divergent fork, but the sampled plan and tree point to Unity runtime/process/E2E benchmark work rather than the current target enterprise features.
+- The U2 E2E plan uses staged gates, preflight, analyze timing capture, scenario-driven tool calls, timing/token metrics, JSON/JSONL/Markdown reports, and fail-fast checkpoint artifacts.
+
+Planning consequence:
+
+- Useful methodology reference for future E2E/regression/benchmark slices.
+- No evidence that this fork implemented Auto-Reindexing, Auto-Updating Wiki, PR Impact, or OCaml under names we searched.
+
+`Trenza1ore/GitNexus-Cangjie`:
+
+- Adds a new language provider and porting notes for Cangjie, including enum/config/provider/parser/query/import/type extraction and tests.
+
+Planning consequence:
+
+- Useful language-onboarding analogue for future OCaml depth work.
+- It should not be mistaken for OCaml reference code.
+
+#### Negative Evidence
+
+Targeted GitHub code searches returned no matches for likely local-feature names:
+
+| Query | Result |
+| --- | --- |
+| `repo:nantas/GitNexus auto-reindex` | No code results |
+| `repo:nantas/GitNexus pr-impact` | No code results |
+| `repo:nantas/GitNexus wiki refresh` | No code results |
+| `repo:nantas/GitNexus OCaml` | No code results |
+| `repo:nantas/GitNexus e2e` | No code result from GitHub code search, but tree inspection found `benchmarks/u2-e2e` and many E2E report files |
+| `repo:abhigyanpatwari/GitNexus symbols-for-ranges` | No code results; issue #1901 remains proposal evidence |
+| `repo:abhigyanpatwari/GitNexus tree-sitter-ocaml` | No code results; issue #1368 remains proposal evidence |
+
+Negative evidence caveat:
+
+- Absence from GitHub search does not prove no private/public fork implementation exists under different names.
+- It does mean no obvious public implementation was found in the inspected top forks and adjacent repos.
+
+#### Updated Synthesis
+
+- Yes, the plan is cogent when grounded in GitHub issues/PRs:
+  - Auto-Reindexing is justified by #90, #76, #1479, #1496, #344, #205, and #1070.
+  - Wiki mutation/provider policy is justified by #1558, #1957, #1769, and #2039.
+  - PR Impact/GitHub automation boundary is justified by #1901, #758, #415, #1867, #1446, and `Akon-Labs/gitnexus-check`.
+  - Multi-Repo future work is justified by #306, #984, and #1583.
+  - OCaml is justified by #1368, but public reference code remains unconfirmed.
+  - Regression/E2E direction is supported by #554 and `nantas/GitNexus` benchmark methodology, but not by a ready product implementation.
+
+- No inspected public fork appears to have implemented the exact target enterprise/local-feature set for us.
+- The best reference-code sources are adjacent, not drop-in:
+  - `Akon-Labs/gitnexus-check` for future PR automation/context-pack architecture.
+  - `maddieunlawful958/gitnexus-stable-ops` for reindex ops/smoke-test safety.
+  - `nantas/GitNexus` for E2E/benchmark/reporting methodology.
+  - `Trenza1ore/GitNexus-Cangjie` for language-onboarding methodology.
+
+#### Planning Consequences For Next Work
+
+- Do not reopen broad feature implementation just because a public fork exists; no inspected fork provides a clean implementation to merge.
+- Keep the current post-tranche next task as `Task 2 Wiki Mutation / Manual Refresh Policy readiness`.
+- For Task 2, use #1558 and the local provider PRs as the policy anchor:
+  - no secret peeking,
+  - no provider execution from server endpoints without explicit policy,
+  - no wiki output mutation until output path, rollback, status, and reporting are named.
+- For later Task 4 GitHub automation, use `Akon-Labs/gitnexus-check` and PR #1446 as architecture references:
+  - separate untrusted PR data from trusted publishing,
+  - precompute a context pack,
+  - keep MCP follow-up bounded,
+  - define token permissions and dry-run behavior before source work.
+- For future Auto-Reindexing ops hardening, use stable-ops as a checklist, not code to copy:
+  - embedding preservation,
+  - dirty worktree policy,
+  - registry/list/status validation,
+  - smoke tests and drift checks.
+
+#### Uncertainties / Adversarial Check
+
+What could make this conclusion wrong:
+
+- A private or differently named fork may contain OCaml, wiki mutation, or PR automation code that was not discoverable by public GitHub search.
+- GitHub code search may miss generated/bundled code, non-default branches, or terms that differ from our local feature names.
+- Adjacent repos may be stale, generated, or not maintained; source inspection helps but does not make them upstream truth.
+- Upstream may have new PRs after this timestamp; future agents should re-run targeted searches before making security-sensitive or API-shaping decisions.
+
+Smallest next experiment if continuing research:
+
+- Inspect current upstream `gitnexus/src/cli/wiki.ts`, `core/wiki/*`, and server API surfaces locally against #1558/#1769/#2039, then draft the Task 2 wiki mutation/manual refresh policy packet with explicit no-secret, no-server-provider-execution, output-path, and rollback rules.
+
+### 2026-06-07T20:58+01:00 - Wiki Mutation / Manual Refresh Deepening
+
+Objective:
+
+- Deepen the active `Task 2 Wiki Mutation / Manual Refresh Policy` readiness lane.
+- Compare local wiki implementation against upstream GitHub issues/PRs and current README behavior.
+- Decide whether the next defensible step is implementation, policy readiness, or deferral.
+
+Objective time tracking:
+
+- Start observed: `2026-06-07T20:58:33+01:00`.
+- End observed: `2026-06-07T21:03:55+01:00` for this focused deepening pass.
+- This was a targeted follow-on to the broader GitHub/fork evidence refresh above, not a fresh 30-40 minute full feature sweep.
+
+#### Local Source Evidence
+
+| Surface | Evidence | Consequence |
+| --- | --- | --- |
+| `gitnexus/src/core/wiki/auto-refresh.ts` | `planWikiAutoRefresh()` defaults to `dryRun = true` and only sets `shouldRunGenerator`, `willMutateOutput`, and `willRunLLM` when `dryRun: false` and `mutateOutput: true` are both explicit. | Existing core already models a safe mutation gate. The next question is policy/surface selection, not whether mutation can be represented. |
+| `gitnexus/src/core/wiki/auto-refresh.ts` | Planner skips stale graph, missing wiki metadata by default, corrupt metadata, and provider-not-ready states. | Manual refresh should preserve these gates rather than bypass them. |
+| `gitnexus/src/core/wiki/auto-refresh.ts` | `readWikiAutoRefreshMeta(storagePath)` reads `storagePath/wiki/meta.json`. | Wiki output currently lives in GitNexus storage, not repo docs, unless another publishing step is added later. |
+| `gitnexus/src/server/api.ts` | `GET /api/wiki/auto-refresh` calls the planner with `dryRun: true` and `mutateOutput: false`; it does not call `runWikiAutoRefresh()` or `WikiGenerator`. | Current server API is intentionally status-only/read-only. A mutation-capable HTTP endpoint would be a new risk boundary. |
+| `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts` | Test asserts the route is read-only and does not reference `runWikiAutoRefresh`, `WikiGenerator`, or `detectLocalCLI`. | Read-only server behavior is locked by tests; changing it should be treated as a deliberate product/security change. |
+| `gitnexus/src/core/wiki/provider-readiness.ts` | Local CLI providers are classified as not server-ready via `local-cli-provider-not-server-ready`. | Server-side status must not spawn local coding-agent CLIs. Manual/foreground CLI remains the safer provider execution route. |
+| `gitnexus/src/cli/wiki.ts` | `gitnexus wiki` is the current mutating/manual generation command, supporting `--force`, `--review`, `--lang`, `--timeout`, `--retries`, provider config, and optional gist publishing. | A V1 manual refresh policy can reuse this foreground CLI route rather than inventing background mutation first. |
+| `gitnexus/src/core/wiki/generator.ts` | `WikiGenerator.run()` writes `wiki/` artifacts under storage path: module tree JSON, module markdown, `overview.md`, `meta.json`, and HTML viewer. | Any mutation approval must name this output write set and rollback/reporting behavior. |
+| `gitnexus/src/core/wiki/generator.ts` | Local branch includes `GROUPING_TOKEN_BUDGET` and batched grouping. | The major grouping-overflow fix from upstream is present locally. |
+| `gitnexus/src/core/wiki/generator.ts` | Local branch does not show `DEFAULT_GRAPH_FIELD_BUDGET` or `truncateText()` caps for graph-reference fields. | The open graph-field prompt overflow PR is not present locally; background auto-refresh would inherit this unresolved large-repo risk. |
+| `gitnexus/src/core/wiki/local-cli-client.ts`, `llm-client.ts`, `wiki.ts` | Local branch supports Cursor/Claude/Codex wiki providers, but not OpenCode in the wiki provider path. | Upstream OpenCode PR #2039 is useful reference, but not local behavior in this checkout. |
+
+#### GitHub / Public Evidence
+
+| Source | Finding | Planning consequence |
+| --- | --- | --- |
+| GitNexus README, Wiki Generation: https://github.com/abhigyanpatwari/GitNexus/blob/main/README.md | Public wiki command is still `gitnexus wiki`; docs describe `--force`, `--timeout`, `--retries`, and `--lang`. | Upstream public interface favors CLI/manual generation, not an exposed mutation API. |
+| GitNexus README, Docker section: https://github.com/abhigyanpatwari/GitNexus/blob/main/README.md | Docker route runs the CLI/server backend inside the container and indexes mounted repos from `/workspace`. | Container/server runtime is a normal GitNexus route, but wiki mutation still needs explicit execution/output policy. |
+| Issue #1558: https://github.com/abhigyanpatwari/GitNexus/issues/1558 | User asks whether `gitnexus wiki` can be called from a coding agent and reuse agent LLM config; maintainer comment warns against peeking into other tools' secrets and notes agent/MCP sandbox boundaries. | Do not design wiki refresh around stealing or discovering coding-agent credentials. Local providers must be explicit and foreground, or HTTP credentials must be configured directly for GitNexus. |
+| PR #1769: https://github.com/abhigyanpatwari/GitNexus/pull/1769 | Adds Claude/Codex local CLI wiki providers; collaborator says no Express route change is needed; final review/CI addressed timeout, subprocess, empty-output, and test-contract risks. | Local providers belong to CLI wiki first. Provider execution from server/API remains intentionally avoided. |
+| PR #2039: https://github.com/abhigyanpatwari/GitNexus/pull/2039 | Adds OpenCode as a local CLI wiki provider upstream; scope states no server or MCP wiki surface was added. | Confirms the upstream pattern: add local provider support to CLI path, not background server mutation. Local branch is behind this provider addition. |
+| Issue #891: https://github.com/abhigyanpatwari/GitNexus/issues/891 | Requests partial regeneration and better logs so failed wiki parts can be regenerated without discarding useful output. | A manual refresh policy should include failed-module reporting and avoid blind destructive regeneration. |
+| Issue #1290: https://github.com/abhigyanpatwari/GitNexus/issues/1290 | Large project hit input context overflow: 370,035 tokens vs 131,072 limit. | Large-repo safety is central; auto-refresh must not silently loop expensive failed generation. |
+| Issue #1537 / PR #1651: https://github.com/abhigyanpatwari/GitNexus/issues/1537 and https://github.com/abhigyanpatwari/GitNexus/pull/1651 | Hidden 60s default timeout was removed; `--timeout` and `--retries` validation and timeout surfacing were tightened. | Manual refresh should preserve explicit timeout/retry controls and expose failures clearly. |
+| Issue #627 / PR #1832: https://github.com/abhigyanpatwari/GitNexus/issues/627 and https://github.com/abhigyanpatwari/GitNexus/pull/1832 | Budget-aware grouping was added to prevent grouping prompt overflow; PR notes no real TVM-scale E2E with API key was run. | Batch grouping mitigates one large-repo failure mode but does not make unattended refresh risk-free. |
+| PR #1494: https://github.com/abhigyanpatwari/GitNexus/pull/1494 | Open PR proposes capping graph reference fields because `SOURCE_CODE` truncation alone is insufficient for dense cross-reference clusters. | There is still known prompt-size risk in module generation; this argues against silent/background mutation as the next step. |
+| Factory AutoWiki docs: https://docs.factory.ai/cli/features/wiki/web-viewer | Comparable AutoWiki UX separates one-time refresh, recurring-on-push refresh, local command execution, cloud execution, version history, export, and GitHub Wiki sync. | External comparator supports making refresh mode explicit. It also shows recurring refresh and GitHub sync are separate later policy surfaces, not hidden side effects. |
+
+#### Deficiencies / Open Design Questions
+
+1. Mutation surface is unresolved:
+   - Existing `GET /api/wiki/auto-refresh` is read-only.
+   - `runWikiAutoRefresh()` exists but has no exposed mutation route in local server API.
+   - Changing this would cross from status/reporting into provider execution and file mutation.
+
+2. Provider execution boundary is unresolved:
+   - Local CLI providers are explicitly not server-ready.
+   - `gitnexus wiki` can use local providers in foreground CLI.
+   - A server endpoint that spawns local providers would contradict current readiness policy and tests.
+
+3. Output ownership is unresolved:
+   - Current generator writes GitNexus storage artifacts under `storagePath/wiki`.
+   - GitHub Wiki sync, repo-doc writes, gist publishing, and web UI publishing are separate surfaces and should not be implied.
+
+4. Large-repo behavior is not fully settled:
+   - Batched grouping exists locally.
+   - Graph-reference field caps from PR #1494 are not present locally.
+   - Known issue #891 asks for partial regeneration/logging, meaning failed-module recovery remains product work.
+
+5. Local/upstream version skew exists:
+   - Upstream merged OpenCode provider support in #2039.
+   - Local branch wiki provider path is Cursor/Claude/Codex only.
+   - Do not document OpenCode as locally available for wiki until the branch contains that code.
+
+#### Recommended Policy Outcome
+
+Recommended next step:
+
+- Treat Task 2 as a policy/readiness packet, then implement only a narrow manual refresh slice if the packet is accepted.
+
+Recommended V1 shape:
+
+- Foreground/manual route first:
+  - use `gitnexus wiki` or a small CLI-facing planner/report command;
+  - no unattended server mutation;
+  - no MCP mutation;
+  - no GitHub Wiki sync;
+  - no gist publishing unless explicitly requested by CLI flag/user interaction.
+
+- Preserve planner gates:
+  - require fresh graph;
+  - require existing wiki metadata unless `createIfMissing` is explicitly chosen;
+  - require provider readiness;
+  - default to dry-run/report-only;
+  - require explicit mutation opt-in.
+
+- Preserve provider boundary:
+  - local CLI providers may run only in foreground CLI;
+  - server/API status may report local provider as not server-ready;
+  - HTTP providers may be server-ready only via direct GitNexus env/saved config, without leaking secrets.
+
+- Preserve output boundary:
+  - default writes are only `storagePath/wiki`;
+  - report exact files/directories that may change;
+  - surface `WikiRunResult` including mode, generated pages, and failed modules;
+  - do not commit, publish, sync, or push generated docs in V1.
+
+#### Candidate Implementation Slices
+
+| Candidate | Description | Recommendation |
+| --- | --- | --- |
+| Policy-only runbook | Document exact manual refresh commands, safe defaults, provider boundary, output path, and stop rules. | `now`, if we want no source change yet. |
+| CLI dry-run/status command | Expose planner output in CLI form for current repo without mutating output. | `now/next`, low risk if tests lock dry-run behavior. |
+| CLI explicit refresh wrapper | Use `runWikiAutoRefresh()` with `dryRun: false` and `mutateOutput: true` only behind an explicit CLI flag, preserving `gitnexus wiki` provider mechanics. | `next`, after policy packet names write set. |
+| Server mutation endpoint | Add POST endpoint that can invoke provider and mutate wiki output. | `defer`; needs auth/rate-limit/provider policy, operation ledger, and secret boundary. |
+| GitHub Wiki sync / PR comments / CI refresh | Publish generated wiki to GitHub surfaces or run on push. | `defer`; belongs with token-bearing GitHub automation policy. |
+| Large-repo prompt hardening | Bring in/replicate graph-reference field caps similar to PR #1494. | `next/dependency`; likely should happen before recurring unattended refresh. |
+
+#### Proposed Stop Rules
+
+- Stop before source edits if the chosen slice writes outside `storagePath/wiki`.
+- Stop before source edits if the chosen slice spawns local providers from server/API/MCP.
+- Stop before source edits if the chosen slice needs GitHub tokens, GitHub Wiki sync, gist publishing, or CI workflow changes.
+- Stop before source edits if recurring/on-push refresh is requested before manual one-time refresh is proven.
+- Stop if local branch version skew with upstream provider support needs a merge/rebase decision.
+
+#### Test Plan If Implementation Proceeds
+
+- Planner tests:
+  - stale graph skip;
+  - missing meta skip unless explicit create;
+  - corrupt meta skip;
+  - provider-not-ready skip;
+  - dry-run by default;
+  - mutation only with `dryRun: false` and `mutateOutput: true`.
+
+- Provider-readiness tests:
+  - local CLI providers remain not server-ready;
+  - HTTP env/saved config readiness does not leak API key/base URL;
+  - invalid base URL does not leak raw value.
+
+- CLI tests:
+  - dry-run/status output is deterministic;
+  - explicit refresh surfaces `WikiRunResult`;
+  - failed generator returns failed status and error message;
+  - no gist/publish/sync side effects in V1.
+
+- API tests:
+  - existing `GET /api/wiki/auto-refresh` remains read-only unless a separate approved route is introduced;
+  - no route spawns `detectLocalCLI` or `WikiGenerator` accidentally.
+
+#### Bottom Line
+
+Yes, deeper investigation is warranted and now documented. The evidence supports moving toward a manual/foreground wiki refresh workflow, but not a hidden or server-side mutation path yet. The next defensible action is to draft the Task 2 readiness packet with a narrow write set and explicit provider/output boundaries, then implement only the accepted slice with TDD.
+
+### 2026-06-07T21:05+01:00 - GitHub Import / Port Assessment For Wiki Lane
+
+Prompting question:
+
+- Have we looked on GitHub properly enough?
+- Should we import code from upstream PRs or forks?
+
+Short answer:
+
+- We have now checked upstream PRs, upstream `main`, GitHub code search, and repo/fork-style searches well enough to make an import decision for the wiki lane.
+- Do not wholesale import upstream `main` or any fork.
+- Consider one small port candidate before unattended wiki refresh: PR #1494 graph-field prompt caps.
+- Treat OpenCode provider support from PR #2039 as a planned provider-port candidate only if MAIN wants OpenCode locally; do not merge it blindly.
+
+#### Commands / Evidence
+
+| Check | Result |
+| --- | --- |
+| `git fetch origin main` | Updated `origin/main` to `4fc2ffa5`. |
+| `git fetch origin pull/1494/head:refs/remotes/origin/pr/1494` | Fetched open PR #1494 for read-only diff inspection. |
+| `git fetch origin pull/1832/head:refs/remotes/origin/pr/1832` | Fetched merged grouping-overflow PR #1832 for read-only comparison. |
+| `git fetch origin pull/1769/head:refs/remotes/origin/pr/1769` | Fetched merged Claude/Codex provider PR #1769 for read-only comparison. |
+| `git merge-base HEAD origin/main` | Merge-base is `0fc0211d`, confirming our local feature branch diverges from current upstream. |
+| `git diff --stat HEAD..origin/main -- gitnexus/src/core/wiki ...` | Shows upstream `main` would delete local `auto-refresh.ts` and `provider-readiness.ts` because those are local-feature work, not upstream main. |
+| `gh search code "runWikiAutoRefresh"` | No public GitHub code results. |
+| `gh search code "planWikiAutoRefresh"` | No public GitHub code results. |
+| `gh search code "api/wiki/auto-refresh"` | No public GitHub code results. |
+| `gh search repos "GitNexus auto-refresh wiki"` | No matching repos. |
+| `gh search repos "GitNexus wiki refresh"` | No matching repos. |
+| `gh search code "gitnexus wiki --force"` | Mostly upstream README mirrors, docs, and skill references; no alternate implementation found. |
+| `git log --left-right --cherry-pick HEAD...origin/main -- wiki files` | Key wiki delta is local `feat: add wiki provider readiness status` versus upstream `feat(wiki): add opencode local provider (#2039)`. |
+
+#### Import Candidates
+
+| Candidate | Source | Status | Import disposition |
+| --- | --- | --- | --- |
+| Wiki auto-refresh planner/runner | Local branch only | No public implementation found via GitHub code search. | Already local; nothing to import. |
+| Read-only `/api/wiki/auto-refresh` status endpoint | Local branch only | No public endpoint implementation found via GitHub code search. | Already local; preserve. |
+| Graph-field prompt caps | PR #1494: https://github.com/abhigyanpatwari/GitNexus/pull/1494 | Open PR, small diff: adds `DEFAULT_GRAPH_FIELD_BUDGET`, `truncateText()`, and caps `INTRA_CALLS`, `OUTGOING_CALLS`, `INCOMING_CALLS`, `PROCESSES`. | Good port candidate, but only with TDD because PR has no dedicated golden/focused tests in the inspected diff. |
+| Budget-aware grouping | PR #1832: https://github.com/abhigyanpatwari/GitNexus/pull/1832 | Merged upstream and already present locally via `GROUPING_TOKEN_BUDGET` / `batchedGrouping`. | No import needed. |
+| Claude/Codex local CLI providers | PR #1769: https://github.com/abhigyanpatwari/GitNexus/pull/1769 | Merged upstream and already present locally. | No import needed. |
+| OpenCode local CLI provider | PR #2039: https://github.com/abhigyanpatwari/GitNexus/pull/2039 | Merged upstream, not present in local wiki provider path. | Possible planned port, not automatic import; must update local auto-refresh provider-readiness policy too. |
+| Fork implementation for wiki refresh | GitHub repo/code searches | No obvious public implementation found. | Nothing to import. |
+
+#### Why Not Import Upstream Main Wholesale
+
+- Current `origin/main` has upstream OpenCode wiki provider support, but it does not have our local auto-refresh planner/readiness/status endpoint files.
+- A broad merge/rebase would combine unrelated upstream churn with local feature work and could erase or conflict with the local wiki status slice.
+- The branch is intentionally a local-feature lane; import should happen as small TDD slices with explicit write sets.
+
+#### PR #1494 Port Assessment
+
+PR #1494 is the strongest import candidate because it directly addresses a risk that matters for auto-updating wiki:
+
+- Current local branch has grouping prompt batching.
+- Current local branch does not cap graph reference prompt fields.
+- PR #1494 adds a small cap around:
+  - `INTRA_CALLS`
+  - `OUTGOING_CALLS`
+  - `INCOMING_CALLS`
+  - `PROCESSES`
+- That reduces deterministic large-cluster failure risk before any recurring/unattended refresh.
+
+Port caveat:
+
+- Do not cherry-pick it raw.
+- Add focused tests first:
+  - assert oversized graph fields are truncated independently;
+  - assert source truncation message remains compatible;
+  - assert all four graph fields carry field-specific truncation labels;
+  - assert normal small fields are unchanged.
+
+Recommended disposition:
+
+- If Task 2 moves toward any mutation-capable wiki refresh, do PR #1494-style graph-field caps as a preparatory TDD hardening slice.
+- Keep it separate from provider policy and server/API mutation decisions.
+
+#### PR #2039 OpenCode Port Assessment
+
+PR #2039 is useful, but less urgent for the wiki mutation lane:
+
+- It adds `opencode` to `LocalAgentProvider` and `LLMProvider`.
+- It routes through `opencode run --format json --dir <repo> [--model ...]`.
+- It parses OpenCode JSON event output.
+- It preserves most environment variables but strips `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD`.
+- It includes review discussion around parser robustness, no read-only sandbox flag, and environment trust posture.
+
+Local integration caveat:
+
+- Our local `provider-readiness.ts` has a `LOCAL_PROVIDERS` set. If OpenCode is ported, this must also be updated so server status still reports OpenCode as `local-cli-provider-not-server-ready`.
+- Importing OpenCode without updating readiness would create a misleading server-readiness policy.
+
+Recommended disposition:
+
+- Defer unless the human specifically wants OpenCode as a local wiki provider.
+- If accepted, port as its own TDD slice:
+  - provider union/config/model persistence;
+  - local CLI invocation/parser tests;
+  - provider-readiness local-provider test;
+  - no server/MCP provider execution.
+
+#### Fork Search Conclusion
+
+No inspected public fork or adjacent repo provides a drop-in implementation for:
+
+- wiki auto-refresh planner;
+- mutation-capable wiki refresh endpoint;
+- server-side wiki mutation policy;
+- GitHub Wiki sync for GitNexus;
+- local manual refresh wrapper around `runWikiAutoRefresh()`.
+
+So the best route is not "import a feature"; it is:
+
+1. use upstream PRs as reference evidence;
+2. port small safety fixes where they directly reduce risk;
+3. keep Task 2 implementation local and TDD-driven.
+
+#### Recommended Next Action
+
+Before a mutation-capable wiki refresh slice:
+
+1. Draft the Task 2 readiness packet:
+   - foreground CLI only;
+   - output limited to `storagePath/wiki`;
+   - no server/MCP mutation;
+   - local providers only in foreground CLI;
+   - no gist/GitHub Wiki/CI sync.
+2. Add PR #1494-style graph-field prompt caps as a small hardening slice if MAIN approves that write set.
+3. Only then implement a manual refresh wrapper or policy runbook.
+
+Do not import code yet in the current research turn. The correct importable item is now identified, but it needs a named implementation slice and tests.
+
+### 2026-06-07T21:10+01:00 - Fork Audit For Useful Modifications
+
+Objective:
+
+- Look specifically for GitNexus forks where people made modifications that may be useful to our enterprise/local-feature work.
+- Filter out plain mirrors, stale forks, and README-only copies.
+- Classify useful fork deltas against our feature map rather than only searching for exact wiki terms.
+
+Objective time tracking:
+
+- Start observed: `2026-06-07T21:10:29+01:00`.
+- Status: in progress.
+
+#### Method
+
+- Listed recent forks from `repos/abhigyanpatwari/GitNexus/forks`.
+- Compared fork default branches against upstream `abhigyanpatwari/GitNexus:main` using the GitHub compare API.
+- Treated forks with `ahead_by = 0` as non-useful mirrors for this purpose.
+- Inspected commit subjects and changed files for forks with `ahead_by > 0`.
+- Used code search as a supplementary check, but did not rely on it alone because GitHub code-search qualifier parsing was inconsistent through `gh search code`.
+
+#### Initial Recent-Fork Window
+
+First 30 recent forks:
+
+| Fork | Ahead? | Finding | Feature relevance |
+| --- | ---: | --- | --- |
+| `hieutt1010/GitNexus` | 2 | Commit `test`; changed only `gitnexus-web/package-lock.json`. | Not useful. |
+| `ian-hailey/GitNexus` | 1 | Adds vLLM support in web LLM provider settings: `SettingsPanel`, web LLM agent/types/settings/locales. | Potential future Web UI/provider configurability reference, not current wiki/manual-refresh lane. |
+| `LeoSemAcento/GitNexus` | 1 | Adds progress callbacks for heavy sequential scope-resolution phases. | Potential ingestion/progress-observability reference; not current wiki/manual-refresh lane. |
+| All other first-30 forks | 0 | Behind or identical to upstream. | Not useful as modification sources. |
+
+Second window, forks 31-60:
+
+| Fork | Ahead? | Finding | Feature relevance |
+| --- | ---: | --- | --- |
+| `huangyan200/GitNexus` | 1 | Guards optional grammar query loaders for Dart/Kotlin/Swift. | Potential parser robustness reference; not a direct enterprise feature. |
+| All other forks 31-60 | 0 | Behind upstream. | Not useful as modification sources. |
+
+Third window, forks 61-100:
+
+| Fork | Ahead? | Finding | Feature relevance |
+| --- | ---: | --- | --- |
+| `mieshi-laoren/GitNexus` | 1 | Adds opt-in SOFA framework extractor for RPC and SOFAMQ topic-pattern detection across group sync/extractors/config/types. | Potentially useful for future multi-repo/group contract extraction depth; not current wiki lane. |
+| `adambak033/GitNexus` | 6 | Adds tRPC pattern detection, curried call detection, route extraction, Function/Const dedup, process-route linking, plus local-backend cwd auto-detection for repo-less MCP calls. | High-signal reference for PR Impact/Multi-Repo route/process precision and MCP ergonomics. Worth deeper inspection before future Task 3/4 work. |
+| Most other forks 61-100 | 0 | Behind upstream. | Not useful as modification sources. |
+| `alexunbrebertry/GitNexus` | compare failed | GitHub compare API returned 404. | Needs retry only if later evidence suggests relevance. |
+
+#### Interim Useful-Fork Candidates
+
+| Candidate | Why it may help | Import posture |
+| --- | --- | --- |
+| `adambak033/GitNexus` | Touches tRPC route extraction, process-route linking, TypeScript captures, parse worker, and MCP local-backend cwd auto-detection. These map to PR Impact route evidence and multi-repo/repo-selection ergonomics. | Inspect deeply before any import. Likely reference/port candidates, not blind merge. |
+| `mieshi-laoren/GitNexus` | Adds SOFA RPC/MQ extraction to group sync. This maps to multi-repo contract extraction depth. | Reference candidate for future multi-repo improvements, not current wiki task. |
+| `ian-hailey/GitNexus` | Adds vLLM provider support in web settings. | Possible future provider configurability reference, but not local CLI/server wiki policy. |
+| `LeoSemAcento/GitNexus` | Adds progress callbacks to heavy ingestion phases. | Possible observability/performance reference, not current feature queue. |
+| `huangyan200/GitNexus` | Optional grammar query loader guard. | Possible parser-hardening reference, not feature-priority. |
+
+#### Interim Synthesis
+
+- No recent ahead fork found so far implements wiki auto-refresh, server-side wiki mutation, or a manual refresh wrapper.
+- The strongest useful fork so far is `adambak033/GitNexus`, but it is useful for route/process extraction and MCP ergonomics, not wiki refresh.
+- The strongest wiki-specific import candidate remains upstream PR #1494, not a fork.
+
+Next audit step:
+
+- Inspect `adambak033/GitNexus` diff more deeply because it touches features that support PR Impact / Blast Radius and Multi-Repo Support Improvements.
+- Then inspect `mieshi-laoren/GitNexus` for group-contract extraction relevance.
+
+#### Deeper Inspection Of Useful Fork Candidates
+
+Fetched fork refs for read-only local diff inspection:
+
+- `forks/adambak033/main`
+- `forks/mieshi-laoren/main`
+- `forks/ian-hailey/main`
+- `forks/LeoSemAcento/main`
+
+These fetches did not change the working branch.
+
+##### `adambak033/GitNexus`
+
+Diff shape:
+
+- 12 files changed.
+- 393 insertions, 12 deletions.
+- No test files in the inspected diff.
+
+Main changes:
+
+- Adds `gitnexus/src/core/ingestion/route-extractors/trpc.ts`.
+- Adds tRPC procedure extraction for `.query()`, `.mutation()`, and `.subscription()`.
+- Maps procedures to synthetic `/trpc/<path>` routes with:
+  - `GET` for query,
+  - `POST` for mutation,
+  - `WS` for subscription.
+- Adds TypeScript HOC-in-pair captures so patterns like `create: procedure.mutation(async () => ...)` become named function declarations instead of anonymous file-level calls.
+- Adds curried/chained call capture for patterns like `workflow(db)(input)`.
+- Adds Function/Const dedup for arrow/function-valued variable declarators.
+- Improves process-route linking by matching route `(filePath, methodName)` before falling back to file-only.
+- Adds MCP local-backend cwd auto-detection when multiple repos are registered and no explicit repo parameter is supplied.
+
+Why it matters:
+
+- This is directly relevant to PR Impact / Blast Radius because route evidence and process attribution are central to a useful PR impact report.
+- It is also relevant to Multi-Repo Support Improvements because cwd-based repo selection reduces agent friction when multiple repos are indexed.
+- It is not directly relevant to wiki manual refresh.
+
+Risks / caveats:
+
+- No tests were present in the inspected diff.
+- The tRPC extractor uses regex heuristics and file-path heuristics (`/routers/`, `/trpc/`, `/server/`), so a port would need fixture coverage before trusting it.
+- Process-route linking changes graph semantics; this could improve precision but needs regression tests for existing route/process behavior.
+- Cwd auto-detection may be valuable, but our local multi-repo guidance already says explicit repo selection matters when ambiguous.
+
+Import posture:
+
+- Do not import now.
+- Mark as high-signal reference for a future Task 4/Task 3 readiness slice:
+  - `Task 4`: route-aware PR Impact improvements.
+  - `Task 3`: MCP repo selection ergonomics.
+- If ported later, use TDD and split into at least two slices:
+  1. tRPC route/process precision;
+  2. cwd repo auto-detection.
+
+##### `mieshi-laoren/GitNexus`
+
+Diff shape:
+
+- 9 files changed.
+- 246 insertions, 7 deletions.
+- No test files in the inspected diff.
+
+Main changes:
+
+- Adds `gitnexus/src/core/group/extractors/sofa-extractor.ts`.
+- Adds opt-in `detect.sofa` config defaulting to false.
+- Extracts SOFA RPC contracts from XML:
+  - `<sofa:service interface="...">` plus `sofa:binding.tr` as provider.
+  - `<sofa:reference interface="...">` as consumer.
+- Extends Java topic patterns for SOFAMQ/OpenMessaging:
+  - `consumer.subscribe(topic, tag, listener)` as topic consumer.
+  - `new Message(topic, tag, body)` as topic provider.
+- Registers the extractor in group sync.
+
+Why it matters:
+
+- This is relevant to Multi-Repo Support Improvements where group sync and service-contract extraction become deeper.
+- It is domain-specific but useful as an example of opt-in enterprise framework extraction.
+
+Risks / caveats:
+
+- No tests were present in the inspected diff.
+- It adds package changes and a regex XML extractor.
+- SOFA is a domain-specific enterprise framework; it should not enter our current generic local-feature tranche unless we explicitly prioritize enterprise Java/SOFA ecosystems.
+
+Import posture:
+
+- Do not import now.
+- Keep as reference for future group-contract extraction architecture:
+  - opt-in detector flag,
+  - extractor registration point,
+  - confidence/meta shape,
+  - XML-plus-code pattern split.
+
+##### `ian-hailey/GitNexus`
+
+Diff shape:
+
+- 7 web files changed.
+- 200 insertions, 4 deletions.
+
+Main changes:
+
+- Adds vLLM as a Web UI LLM provider.
+- Adds base URL, model fetching via `/models`, optional API key, provider settings, and localization strings.
+
+Why it matters:
+
+- Useful for future Web UI provider configurability.
+- Possibly relevant if we later expose local/self-hosted model choices in the UI.
+
+Import posture:
+
+- Do not import now.
+- Not relevant to current CLI/server wiki policy.
+
+##### `LeoSemAcento/GitNexus`
+
+Diff shape:
+
+- 2 ingestion pipeline files changed.
+- 24 insertions.
+
+Main changes:
+
+- Adds progress callbacks to heavy sequential scope-resolution phases.
+
+Why it matters:
+
+- Potential observability/performance UX reference for long-running analyze work.
+- Not directly tied to the current wiki/manual refresh decision.
+
+Import posture:
+
+- Do not import now.
+- Potential reference for future Auto-Reindexing observability.
+
+#### Top-Star Fork Pass
+
+The top-star fork check surfaced older but useful forks:
+
+| Fork | Ahead? | Finding | Feature relevance |
+| --- | ---: | --- | --- |
+| `nxpatterns/gitnexus` | 0 | Top-star fork, but behind upstream with no ahead commits. | No importable modifications. |
+| `nantas/GitNexus` | 514 | Major divergent Unity/rule-lab/eval fork with large rule-driven runtime verification, skills, reports, and E2E material. | Useful methodology/eval reference for regression forensics, E2E, and language/framework-specific verification. Not drop-in. |
+| `Trenza1ore/GitNexus-Cangjie` | 3 | Experimental Cangjie language support with parser/config/provider/query/import/type extraction and fixtures. | Useful language-onboarding reference for future OCaml/language work. Not current wiki. |
+| `renatobardi/GitNexus` | 14 | Deep wiki documentation plus Oracle Cloud ARM deployment/systemd/nginx/CI deployment scripts. | Useful deployment/runbook reference. Not current local-feature implementation. |
+| `brukcodes/GitNexus` | 1 | Fixes filename language detection and syntax-highlighting path parsing with a unit test. | Possible small parser/UI correctness reference. |
+| `cyberblicc-sketch/GitNexus` | 5 | Adds MoneyPrinterX Advanced eval/case material, sample queries, wiki prompt pack, and demo walkthrough. | Useful eval/wiki-prompt methodology reference, not implementation. |
+
+#### Fork Audit Synthesis
+
+- Yes, there are forks with useful modifications.
+- No inspected fork provides a drop-in implementation for:
+  - auto-updating wiki mutation,
+  - manual refresh wrapper,
+  - server-side wiki mutation endpoint,
+  - GitHub Wiki sync,
+  - or a PR Impact product equivalent.
+- The useful forks map mostly to adjacent lanes:
+  - `adambak033/GitNexus`: PR Impact route/process precision and MCP repo ergonomics.
+  - `mieshi-laoren/GitNexus`: Multi-Repo/group contract extraction depth.
+  - `nantas/GitNexus`: regression/eval methodology and long-running verification artifacts.
+  - `Trenza1ore/GitNexus-Cangjie`: language support methodology.
+  - `renatobardi/GitNexus`: deployment/runbook patterns.
+
+Updated recommendation:
+
+- For the current Task 2 wiki/manual-refresh lane:
+  - do not import fork code;
+  - use upstream PR #1494 as the only near-term port candidate, because it directly reduces wiki large-repo prompt risk.
+- For later Task 4 PR Impact:
+  - inspect `adambak033/GitNexus` in a dedicated readiness pass before route/API impact improvements.
+- For later Task 3 Multi-Repo:
+  - inspect `mieshi-laoren/GitNexus` before group contract extraction improvements.
+- For later regression/eval planning:
+  - use `nantas/GitNexus` as methodology/reference material, not code to merge.
+
+Open caveat:
+
+- The fork universe is very large, so this is not mathematically exhaustive.
+- It is a decision-grade sample across recent forks, actually-ahead forks in the recent window, and top-star forks.
+- Future agents should re-run targeted compare searches before importing anything from forks.
+
+### 2026-06-07T21:20+01:00 - Fork Evaluation / Test Methodology
+
+Problem:
+
+- Some forks contain useful modifications.
+- Importing fork code directly risks mixing unrelated work, stale assumptions, missing tests, and divergent architecture into the local feature branch.
+- We need a repeatable method for testing whether a fork idea is worth porting.
+
+Core rule:
+
+- Test the behavior, not the fork.
+- Treat a fork as a hypothesis source and reference implementation, not as an authority.
+- Port only the smallest useful behavior into our branch after local tests define the expected outcome.
+
+#### Methodology
+
+1. Identify the candidate behavior.
+
+   Record:
+
+   - source fork / PR / commit;
+   - changed files;
+   - claimed behavior;
+   - which GitNexus feature lane it supports;
+   - whether it is generic product behavior or domain-specific behavior.
+
+2. Classify the import posture.
+
+   Use one of:
+
+   | Posture | Meaning | Example |
+   | --- | --- | --- |
+   | `reference-only` | Useful idea, not ready or not in scope to port. | `mieshi-laoren` SOFA extractor while Task 2 wiki is active. |
+   | `TDD-port candidate` | Useful behavior, but port must start with local failing tests. | PR #1494 graph-field wiki prompt caps. |
+   | `research-before-port` | Useful but architecture/security implications are unclear. | `adambak033` MCP cwd repo auto-detection. |
+   | `reject` | Not relevant, stale, untested, or harmful. | Package-lock-only fork changes. |
+   | `upstream-sync candidate` | Already merged upstream and worth bringing in through a planned rebase/merge. | OpenCode provider only if MAIN wants that provider locally. |
+
+3. Define the local acceptance test before importing.
+
+   The test must fail on our current branch for the right reason.
+
+   Examples:
+
+   - For PR #1494 graph-field caps:
+     - create an oversized graph-reference field fixture;
+     - assert `INTRA_CALLS`, `OUTGOING_CALLS`, `INCOMING_CALLS`, and `PROCESSES` are independently truncated;
+     - assert small fields remain unchanged;
+     - assert truncation labels identify the field.
+
+   - For `adambak033` tRPC extraction:
+     - create a tRPC router fixture with query/mutation/subscription procedures;
+     - assert routes map to `/trpc/<path>`;
+     - assert method names link to the correct process entry;
+     - assert unrelated object call pairs are not falsely treated as tRPC routes.
+
+   - For `mieshi-laoren` SOFA extraction:
+     - create XML provider/reference fixtures;
+     - assert contracts are opt-in only via `detect.sofa`;
+     - assert provider/consumer roles and confidence metadata;
+     - assert non-SOFA XML is ignored.
+
+4. Port the minimum behavior.
+
+   Allowed:
+
+   - copy/adapt the smallest relevant functions;
+   - preserve local architecture and naming;
+   - add local tests near existing test patterns;
+   - split unrelated fork ideas into separate slices.
+
+   Not allowed:
+
+   - wholesale merge a fork;
+   - import unrelated package-lock churn;
+   - import generated docs or local machine paths as product code;
+   - take behavior without tests;
+   - silently broaden scope from one feature lane to another.
+
+5. Verify locally.
+
+   Minimum verification:
+
+   - targeted tests for the imported behavior;
+   - adjacent tests for the touched subsystem;
+   - `npm run build` or typecheck when TypeScript surfaces change;
+   - `git diff --check`;
+   - source diff review for unrelated fork artifacts.
+
+6. Decide disposition.
+
+   After testing:
+
+   - `adopt`: behavior passes, scope is clean, tests are durable;
+   - `revise`: behavior useful but needs redesign;
+   - `defer`: useful but not current lane;
+   - `reject`: fails tests, too broad, too risky, or stale.
+
+7. Record the outcome.
+
+   Update the scratchpad or feature map with:
+
+   - candidate source;
+   - tests added;
+   - command results;
+   - imported files/functions;
+   - reasons for adoption/defer/reject;
+   - any remaining risks.
+
+#### Scoring Rubric
+
+Before porting, score each candidate:
+
+| Criterion | Question | Weight |
+| --- | --- | --- |
+| Feature alignment | Does it support an active or near-term feature lane? | High |
+| Behavioral clarity | Can we state exact expected behavior? | High |
+| Testability | Can we make a small failing test locally? | High |
+| Scope size | Can it be ported without broad merge churn? | High |
+| Safety | Does it avoid secrets, network writes, GitHub tokens, or server mutation? | High |
+| Upstream status | Is it merged upstream, open PR, or independent fork-only? | Medium |
+| Maintenance | Does it fit existing local patterns? | Medium |
+| Domain specificity | Is it generally useful or tied to one enterprise framework? | Medium |
+
+Recommended threshold:
+
+- Only port when feature alignment, behavioral clarity, testability, and scope size are all strong.
+- If any high-weight criterion is weak, keep the fork as reference-only until a later readiness pass.
+
+#### Current Candidate Dispositions
+
+| Candidate | Current disposition | Reason |
+| --- | --- | --- |
+| PR #1494 graph-field wiki caps | `TDD-port candidate` | Directly reduces wiki large-repo prompt risk; small code delta; should be tested locally before port. |
+| `adambak033` tRPC route/process changes | `research-before-port` | Strong for PR Impact route evidence, but touches graph semantics and lacks tests. |
+| `adambak033` MCP cwd repo auto-detection | `research-before-port` | Ergonomic for multi-repo agents, but ambiguity rules must be tested against current repo-selection policy. |
+| `mieshi-laoren` SOFA extractor | `reference-only` | Useful opt-in enterprise extraction pattern, but domain-specific and not current lane. |
+| `ian-hailey` vLLM Web UI provider | `reference-only` | Useful for future web provider settings, not current CLI/server wiki policy. |
+| `LeoSemAcento` progress callbacks | `reference-only` | Potential observability idea for analyze/reindex, not current feature slice. |
+| `nantas` Unity/rule-lab/eval fork | `reference-only` | Strong methodology/eval material, too divergent for code import. |
+| `Trenza1ore` Cangjie support | `reference-only` | Good language-porting reference, not OCaml code and not current lane. |
+
+#### Practical Next Step
+
+If MAIN wants to test/import something now, the safest first fork/PR-derived experiment is:
+
+```text
+Task 2 hardening slice:
+Port PR #1494-style graph-field prompt caps into WikiGenerator using TDD.
+```
+
+Suggested local TDD order:
+
+1. Add a failing unit test that forces oversized formatted graph fields into `generateLeafPage` prompt assembly.
+2. Assert field-specific truncation labels and unchanged small fields.
+3. Add the smallest `truncateText()` / graph-field cap implementation.
+4. Run focused wiki tests plus build/typecheck.
+5. Record whether this becomes a prerequisite for any manual/auto wiki refresh mutation.
+
+### 2026-06-07T21:20+01:00 - Source-Backed Software Engineering Methodology Block
+
+Objective:
+
+- Research software development / software engineering methodology for how we should evaluate GitNexus forks, PRs, and feature implementations.
+- Convert the research into an operational method for this long-horizon workstream.
+- Avoid vague labels like "Agile" unless they become concrete rules we can verify.
+
+Objective time tracking:
+
+- Start observed before context compaction: `2026-06-07T21:20:28+01:00`.
+- Continuation observed after context compaction: `2026-06-07T21:24:14+01:00`.
+- Source-review checkpoint: `2026-06-07T21:26:59+01:00`.
+- Documentation/checkpoint timestamp: `2026-06-07T21:28:48+01:00`.
+- Mode: focused source synthesis block, not exhaustive methodology survey.
+
+Skills / local workflow references used:
+
+- `autoresearch`: used lightly for a research loop shape: source discovery, synthesis, and durable notes.
+- Superpowers `test-driven-development`: used as the local implementation discipline reference for behavior changes.
+- Superpowers `verification-before-completion`: used as the local completion gate reference.
+
+#### Source Matrix
+
+| Source | Type | What it contributes to our method |
+| --- | --- | --- |
+| https://agilemanifesto.org/ and https://agilemanifesto.org/principles.html | Primary methodology source | Agile's useful core for this project is not ceremony; it is frequent working software, responding to change, simplicity, technical excellence, and regular reflection. |
+| https://martinfowler.com/bliki/TestDrivenDevelopment.html | Primary practitioner source | TDD means write the next test, make it pass, then refactor; Fowler also stresses writing a list of test cases first and using sequencing to drive design. |
+| https://www.informit.com/articles/article.aspx?p=359417 | Michael Feathers / legacy-code excerpt | Existing code is hard to test after the fact; designing for testability and getting legacy behavior under tests is the safety path before risky changes. |
+| https://en.wikipedia.org/wiki/Characterization_test | Secondary but concise definition | Characterization/golden-master tests document observed behavior so changes can detect unintended behavior drift. Useful for current GitNexus behavior before ports. |
+| https://dora.dev/capabilities/working-in-small-batches/ | DORA / Google Cloud research capability | Small batches reduce feedback time, are especially important with AI coding, and should be independent, valuable, small, and testable. |
+| https://dora.dev/capabilities/continuous-integration/ | DORA capability | CI depends on small batches, automated tests, quick feedback, and immediate repair of broken builds. |
+| https://dora.dev/capabilities/continuous-delivery/ | DORA capability | Continuous delivery is supported by test automation, CI, trunk-based development, and continuous testing. |
+| https://google.github.io/eng-practices/review/developer/small-cls.html | Google engineering practice | Small changes are easier to review, less likely to introduce bugs, simpler to roll back, and should include related tests. |
+| https://docs.github.com/en/get-started/using-github/github-flow | GitHub workflow docs | Branches are safe workspaces; commits should be isolated complete changes; unrelated changes normally deserve separate branches. For this project, the human-selected single branch means unrelated feature work must not overlap. |
+| https://martinfowler.com/bliki/BranchByAbstraction.html | Migration pattern | Large replacements should be made gradually through an abstraction, with multiple implementations coexisting and tests proving equivalence where practical. |
+| https://martinfowler.com/articles/feature-toggles.html | Delivery / safety pattern | Feature toggles can hide incomplete code paths, but they add complexity and must be constrained. Use only when a feature genuinely needs opt-in/dark-launch behavior. |
+| https://martinfowler.com/bliki/StranglerFigApplication.html | Modernization pattern | Prefer gradual replacement/addition over wholesale rewrite when existing behavior is hard to fully specify. |
+| https://adr.github.io/ | ADR reference hub | ADRs capture a single significant decision, its rationale, tradeoffs, and consequences. |
+| https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/welcome.html and https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/adr-process.html | ADR process guidance | ADRs avoid repeated decision churn; accepted ADRs form a decision log and should be superseded by new ADRs rather than silently rewritten. |
+| https://framework.scaledagile.com/spikes | Agile/XP spike guidance | Spikes are time-boxed research/prototype activities used to reduce uncertainty before implementation. |
+| https://developers.openai.com/codex/use-cases/follow-goals | OpenAI Codex docs | Codex goals are for long-running work with a verifiable stopping condition. This supports one feature goal at a time once readiness is established. |
+| https://developers.openai.com/codex/noninteractive | OpenAI Codex docs | Non-interactive Codex can run with explicit sandbox permissions and machine-readable output; use least privilege for automation. |
+| https://developers.openai.com/codex/workflows | OpenAI Codex docs | Codex works best with explicit context and a clear definition of done. |
+| https://developers.openai.com/blog/run-long-horizon-tasks-with-codex | OpenAI Codex blog | Long-horizon Codex work needs persistent focus, verification, and repair loops; our four-file bundle plus scratchpad supports that. |
+
+#### Synthesis
+
+Adopt this method for GitNexus local enterprise features:
+
+```text
+Evidence-Gated Small-Batch Porting
+
+source evidence -> local behavior characterization -> failing test -> minimal implementation -> focused verification -> checkpoint/decision record
+```
+
+This is the better route than either of the extremes:
+
+- not blind fork merging;
+- not endless research without writing tests;
+- not "one big enterprise-feature implementation";
+- not treating an upstream/fork diff as authoritative merely because it exists.
+
+#### Operational Rules For This Workstream
+
+1. Research before implementation when the behavior is not locally obvious.
+
+   Use a spike when there is uncertainty about intended behavior, local source ownership, or safe implementation shape. The spike must produce a decision, a test plan, or a defer/reject verdict.
+
+2. Characterize current behavior before changing shared subsystems.
+
+   For wiki generation, graph extraction, impact analysis, group sync, route extraction, and language parsing, first add a characterization or golden-file fixture when existing behavior could be accidentally disturbed.
+
+3. Use TDD for each behavior-changing slice.
+
+   The local rule stays:
+
+   ```text
+   failing test -> verify red -> minimal green -> verify green -> refactor -> verify again
+   ```
+
+   Tests-after are allowed only for pure documentation, mechanical formatting, or explicitly throwaway spikes that are not kept.
+
+4. Keep batches small even on the one shared branch.
+
+   The project decision is one shared branch: `local/gitnexus-local-features`.
+
+   That is compatible with DORA/GitHub/Google small-batch guidance only if:
+
+   - one feature is active at a time;
+   - each commit is an isolated complete change;
+   - unrelated feature work does not overlap;
+   - every slice has a test/checkpoint before moving on.
+
+5. Prefer gradual migration patterns for broad changes.
+
+   If a feature wants to replace an existing path, prefer a wrapper, adapter, branch-by-abstraction, or opt-in path over a broad rewrite. Use feature toggles only when opt-in behavior is genuinely needed and retire them when no longer useful.
+
+6. Record significant decisions.
+
+   Use the long-horizon bundle for normal decisions. If a decision has architectural consequences across later tasks, promote it to a short ADR-style note or a clear decision section in `documentation.md`.
+
+7. Verify before completion.
+
+   No feature or slice is complete until fresh verification evidence exists:
+
+   - targeted test or golden-file check;
+   - adjacent subsystem tests when graph/parser/wiki behavior is touched;
+   - `git diff --check`;
+   - build/typecheck when TypeScript public surfaces or shared types change;
+   - scratchpad/documentation update with commands and outcomes.
+
+#### Fork / PR Evaluation Method Update
+
+For every candidate fork, PR, or external implementation:
+
+1. Treat it as a hypothesis source.
+2. Extract the smallest behavior claim.
+3. Decide import posture:
+   - `reference-only`
+   - `spike`
+   - `TDD-port candidate`
+   - `reject`
+   - `upstream-sync candidate`
+4. Write the local failing test before porting retained code.
+5. Port only the minimum implementation needed to satisfy the test.
+6. Run focused and adjacent checks.
+7. Record adopt/revise/defer/reject with evidence.
+
+This means:
+
+- PR #1494 remains a strong `TDD-port candidate` for wiki graph-field caps.
+- `adambak033/GitNexus` remains a `spike` / `research-before-port` candidate for route/process precision and MCP repo ergonomics.
+- `mieshi-laoren/GitNexus` remains `reference-only` unless Multi-Repo group-contract depth becomes active.
+- `nantas/GitNexus` remains methodology/eval reference, not importable implementation.
+
+#### Stop Rules
+
+Stop and re-research or ask MAIN to decide when:
+
+- we cannot state the behavior in a testable sentence;
+- the proposed slice cannot be made small;
+- current behavior cannot be characterized and the blast radius is shared;
+- the port requires broad merge churn;
+- a fork/PR changes package locks, generated files, or unrelated subsystems without clear need;
+- a feature needs tokens, SaaS posting, GitHub Actions mutation, hooks, or hidden background behavior;
+- the test cannot be made to fail for the right reason.
+
+#### Immediate Impact On Feature Order
+
+This methodology supports the current task order:
+
+1. Wiki hardening / manual refresh planning first, because source ownership is mapped and the likely first import candidate can be tested with a small wiki fixture.
+2. Multi-Repo improvements after a separate spike if they rely on group-contract extraction or repo-selection policy.
+3. PR Impact after route/process/diff-to-symbol behavior is specified with golden reports.
+4. Larger automation, generated tests, regression forensics, and OCaml only after their own readiness spikes.
+
+The practical next implementation candidate remains:
+
+```text
+Task 2 hardening slice:
+Port PR #1494-style graph-field prompt caps into WikiGenerator using TDD.
+```
+
+No source implementation is implied by this methodology note alone; it defines how the next authorized implementation slice should proceed.
+
+### 2026-06-07T21:42+01:00 - Pre-Research Planning Note: Agent Endurance Is Not Drift Immunity
+
+User prompt:
+
+- MAIN observed that autonomous agents are mediated by computation and are not biologically susceptible to fatigue.
+- MAIN also noted that considerable work has already happened and asked whether the best route is to plan end-to-end and conduct premortems as needed.
+- Requested research focus: best way to plan end-to-end using Codex, how to plan in sufficient depth, and how to keep the plan from drifting while still leaving it agile enough to adapt.
+
+Working distinction recorded before the forum/methodology research block:
+
+- The premise is directionally right: autonomous agents do not get physically tired in the human sense.
+- The operational risk is different: agents can still drift, lose context, overfit to stale assumptions, loop on weak evidence, or keep pushing after verification says stop.
+- Therefore the control problem is not fatigue management; it is state, scope, evidence, and stop-rule management.
+
+Initial planning synthesis to verify through research:
+
+```text
+Plan the whole journey at the map/risk/gate level.
+Plan only the next selected slice at executable step-by-step detail.
+After each slice, checkpoint evidence and update the map before continuing.
+```
+
+Implications for this GitNexus workstream:
+
+1. Keep the end-to-end feature map visible for all enterprise/local features.
+2. Keep WIP to one selected implementation feature at a time on the shared branch.
+3. Require readiness/research before implementation when behavior, security, mutation, or source ownership is uncertain.
+4. Use premortems for policy-heavy or mutation-heavy slices before editing source.
+5. Use TDD for behavior changes once the slice is approved and sufficiently mapped.
+6. Verify before claiming completion, and document commands/outcomes in the long-horizon bundle.
+7. Treat scratchpads as evidence and synthesis, not as authority over `plans.md`, `feature-map.md`, or `documentation.md`.
+
+Research block opened at `2026-06-07T21:42:43+01:00`.
+
+### 2026-06-07T21:52+01:00 - Forum And Methodology Research Block: Practical Software Development Methodology For Agentic GitNexus Work
+
+Objective timing:
+
+- Start: `2026-06-07T21:42:43+01:00`
+- Checkpoint/end: `2026-06-07T21:54:00+01:00`
+- Duration: approximately 11 minutes 17 seconds of focused source discovery plus synthesis.
+
+Research question:
+
+- What software development methodology should guide autonomous Codex work on the remaining GitNexus local enterprise-feature slices?
+- How do we plan end-to-end without freezing the plan too early?
+- How do we keep the plan agile enough to adapt without drifting or becoming discombobulated?
+
+#### Source Classes Checked
+
+Official / primary methodology sources:
+
+| Source | Link | Useful signal |
+| --- | --- | --- |
+| OpenAI Codex long-horizon task guidance | https://developers.openai.com/blog/run-long-horizon-tasks-with-codex | Long-running Codex work needs durable task context and checkpoints, not just repeated prompts. |
+| OpenAI Codex goals | https://developers.openai.com/codex/use-cases/follow-goals | Goals are useful when completion can be tied to concrete evidence and a stopping condition. |
+| OpenAI Codex workflows | https://developers.openai.com/codex/workflows | Codex work benefits from explicit context, verification surfaces, and repeatable workflows. |
+| OpenAI AGENTS.md guide | https://developers.openai.com/codex/guides/agents-md | Stable repo-wide rules belong in project instructions loaded before task execution. |
+| Agile Manifesto principles | https://agilemanifesto.org/principles.html | Prefer early/continuous delivery, responsiveness to change, simplicity, and regular reflection. |
+| Scrum Guide 2020 | https://scrumguides.org/scrum-guide.html | Scrum's useful core is empiricism: transparency, inspection, adaptation, one objective at a time, Definition of Done, and small plans for selected work. |
+| Kanban Guide 2025 | https://kanbanguides.org/the-kanban-guide/2025.5/ | Useful for visualizing flow and limiting WIP; less ceremony-heavy than sprint-centered planning. |
+| DORA small batches | https://dora.dev/capabilities/working-in-small-batches/ | Small batches reduce integration/review risk; especially relevant when AI can produce large diffs quickly. |
+| Google small CLs | https://google.github.io/eng-practices/review/developer/small-cls.html | Reviewability improves when changes are small, coherent, and separately understandable. |
+| Martin Fowler TDD | https://martinfowler.com/bliki/TestDrivenDevelopment.html | TDD is a disciplined feedback loop: test first, make it pass, refactor. |
+| Martin Fowler Branch by Abstraction | https://martinfowler.com/bliki/BranchByAbstraction.html | Broad changes should be migrated gradually when direct replacement is risky. |
+| Basecamp Shape Up | https://basecamp.com/shapeup | Useful concepts: shape work before building, set appetite/bounds, and avoid endless open-ended implementation. |
+| Premortem guidance | https://www.atlassian.com/team-playbook/plays/pre-mortem and https://hbr.org/2007/09/performing-a-project-premortem | Assume failure in advance to expose risks and convert them into mitigations. |
+| Trunk-based development / continuous integration commentary | https://www.atlassian.com/continuous-delivery/continuous-integration/trunk-based-development | Reinforces small, frequent, tested integration; relevant because this workstream uses one shared branch. |
+
+Forum / practitioner field reports:
+
+| Source | Link | Field-report signal |
+| --- | --- | --- |
+| Reddit ExperiencedDevs on large / AI-heavy PR review | https://www.reddit.com/r/ExperiencedDevs/comments/1tbqunh/first_time_in_a_position_reviewing_pull_requests/ | Experienced reviewers strongly prefer small, well-defined PRs; large AI-heavy diffs become hard to review safely. |
+| Reddit ExperiencedDevs on good code review | https://www.reddit.com/r/ExperiencedDevs/comments/vsyeje | Repeated field signal: tests and automation should catch correctness/style; code review should focus on design, maintainability, and test quality. |
+| HN on long vibe-coded PRs | https://news.ycombinator.com/item?id=45744209 | Field reports caution that agent-generated code can shift cost from writing to review; reviewability must be designed before generation. |
+| HN on productive Claude Code use | https://news.ycombinator.com/item?id=47494890 | Useful field signal: decomposition makes AI-generated work more reviewable because the expected shape is known before code appears. |
+| Reddit Agile on Scrum/Kanban | https://www.reddit.com/r/agile/comments/1fe9g44 | Practitioners often recommend starting from visible flow and continuous improvement rather than blindly adopting ceremony. |
+| Reddit Agile methodology discussion | https://www.reddit.com/r/agile/comments/1r4vnq1/what_are_the_methodologies_you_mostly_use_in/ | Agile is treated by practitioners as a mindset; XP/TDD/Lean/Kanban practices are often more actionable than framework labels. |
+| Software Engineering SE on Agile and planning | https://softwareengineering.stackexchange.com/questions/249972/is-it-true-use-agile-methodology-results-less-planning | Good agile practice is not "less planning"; it is planning at the right horizon and revising from evidence. |
+| Software Engineering SE on adapting Scrum toward Kanban | https://softwareengineering.stackexchange.com/questions/229879/how-can-scrum-be-adapted-to-a-volunteer-setting | Useful for our single-agent/shared-branch situation: ordered backlog, WIP limits, clear done state, and fewer ceremonies can still preserve agility. |
+| Reddit ExperiencedDevs on trunk-based development and large features | https://www.reddit.com/r/ExperiencedDevs/comments/1sxt1zu/is_trunk_based_development_a_wrong_choice_in_the_iot_context/ and https://www.reddit.com/r/ExperiencedDevs/comments/1arr585/how_do_you_actually_implement_small_prs_for_a_large_feature_any_tips_for_making_this_more_efficient/ | Field reports support small PR/slice discipline while acknowledging that large features sometimes need a feature-lane or staged release boundary. |
+
+#### Forum Synthesis
+
+The forums do not converge on a single named methodology. They converge on constraints:
+
+- Avoid large, hard-to-review changes, especially when AI/agents can generate code quickly.
+- Avoid ceremony for ceremony's sake.
+- Keep work visible and ordered.
+- Limit WIP.
+- Require tests and automated checks before review/completion claims.
+- Use design/planning before big work, but do not turn future unknowns into fake certainty.
+- Split work into coherent slices before writing code, not after the diff has already sprawled.
+
+Negative forum evidence:
+
+- Scrum is frequently criticized when it becomes estimation theater, sprint pressure, or waterfall with more meetings.
+- Kanban is frequently favored for reactive/maintenance work, but only if WIP limits and definition-of-done discipline are real.
+- AI-generated code increases the need for small slices and reviewable structure; it does not remove the need for engineering judgment.
+- Trunk-style or shared-branch development is not the same as uncontrolled merging. The forum and CI/CD sources both assume strong tests, small changes, and explicit release/feature boundaries.
+
+#### Recommended Methodology For GitNexus
+
+Use a hybrid that is explicit but lightweight:
+
+```text
+Evidence-Gated Small-Batch Kanban + TDD + Premortem
+```
+
+Meaning:
+
+1. Kanban for flow:
+   - keep one selected task active;
+   - keep the queue visible in `plans.md`;
+   - use `documentation.md` as the checkpoint authority;
+   - avoid unrelated WIP on the shared branch.
+
+2. Shape Up style shaping for uncertain work:
+   - define appetite and boundaries before building;
+   - decide what is out of scope;
+   - do not build from vague enterprise-feature labels.
+
+3. Agile empiricism:
+   - inspect actual local code and behavior;
+   - adapt the plan after each verified slice;
+   - do not pretend future implementation details are known before source ownership and tests are mapped.
+
+4. TDD for behavior changes:
+   - failing test first;
+   - verify red;
+   - minimal green;
+   - verify;
+   - refactor only while tests stay green.
+
+5. Premortems for risky slices:
+   - mandatory for mutation, provider execution, GitHub tokens, CI/workflow changes, generated tests, background automation, and broad parser/resolver work.
+
+6. ADR / decision capture when consequences persist:
+   - normal task decisions go in `documentation.md`;
+   - cross-feature architecture or policy decisions should get an ADR-style note or a clearly marked decision block.
+
+7. Shared-branch discipline:
+   - the current one-branch decision is workable only if we keep slices small, verified, and checkpointed;
+   - if a slice needs dormant or broad feature work, use an explicit feature boundary in the plan rather than quietly blending it with unrelated tasks.
+
+#### Planning Depth Rule
+
+Plan now in three layers:
+
+| Layer | Depth now | Purpose |
+| --- | --- | --- |
+| End-to-end feature map | Deep enough now | Maintain sequence, dependencies, gates, risk model, and deferred boundaries. |
+| Next selected task | Decision-complete now | Exact goal shape, write set, source ownership, tests, stop rules, and premortem. |
+| Later implementation details | Light now | Keep as hypotheses until readiness evidence exists. |
+
+This resolves the tension between deep planning and agility:
+
+- Deep plan the route and controls.
+- Shallow plan the unknown internals.
+- Deep plan the next slice only when it becomes active.
+
+#### Premortem Template For Each Selected Task
+
+Before source edits on a risky slice, answer:
+
+| Prompt | Required answer |
+| --- | --- |
+| It is later and this failed. What happened? | Concrete failure story. |
+| What early warning would have shown this? | Log, test, diff pattern, stale doc, or ambiguity signal. |
+| How do we prevent it? | Boundary, test, dry-run, fixture, policy, or smaller slice. |
+| How do we detect it before completion? | Command/check/review artifact. |
+| What is the recovery action? | Revert, defer, redesign, or MAIN decision. |
+| What is the stop rule? | Exact condition that blocks autonomous continuation. |
+
+Current GitNexus premortem seed list:
+
+- Wiki mutation writes generated docs to the wrong place.
+- Wiki provider execution burns tokens, requires secrets, or mutates state unexpectedly.
+- GitHub PR automation comments on the wrong PR or handles forked PRs unsafely.
+- Generated E2E tests become brittle snapshots of mocked behavior rather than useful tests.
+- OCaml scope grows from experimental captures into full Dune/PPX/module-resolution work without approval.
+- Multi-repo docs/tooling drift from actual CLI/MCP behavior.
+- The shared branch accumulates unrelated feature WIP and becomes hard to reason about.
+- An agent keeps going after stale graph/index evidence, failed verification, or unclear source ownership.
+
+#### Concrete Rule To Promote Into Planning Docs Later
+
+Recommended durable rule:
+
+```text
+For GitNexus local enterprise-feature work, use Evidence-Gated Small-Batch Kanban:
+one selected task at a time, shaped before implementation, premortemed when risky,
+implemented with TDD when behavior changes, verified before completion, and
+checkpointed before the next task starts.
+```
+
+This should eventually be reflected compactly in:
+
+- `AGENTS.md` for stable workflow rule;
+- `plans.md` for queue operation;
+- `documentation.md` for checkpoint policy;
+- `feature-map.md` for feature dependency/status mapping.
+
+Do not copy this whole scratchpad block into the control files. Promote only the compact rule and any specific decisions MAIN accepts.
+
+### 2026-06-07T22:03+01:00 - Reconciliation Of ChatGPT / Claude Methodology Notes
+
+Input:
+
+- MAIN provided three pasted methodology notes:
+  - first pasted text: ChatGPT synthesis on agentic coding methodology;
+  - second pasted text: Claude synthesis on agentic coding / agentic engineering;
+  - third pasted text: additional agentic-engineering architecture and production-practice summary.
+
+Status of these inputs:
+
+- Treat as secondary synthesis, not primary evidence.
+- Do not copy their claims into control docs unless independently source-checked or already corroborated by prior research.
+- Use them to identify convergence, gaps, and useful wording for the GitNexus workflow.
+
+#### Convergence With Current GitNexus Methodology
+
+The pasted notes strongly align with the current scratchpad conclusion:
+
+```text
+Evidence-Gated Small-Batch Kanban + TDD + Premortem
+```
+
+Shared points:
+
+| Theme | Pasted-note signal | GitNexus consequence |
+| --- | --- | --- |
+| Spec-first / issue-first | Agents work better from clear goal, scope, constraints, acceptance criteria, and done definition. | Keep selected-task packets explicit before source work. |
+| Explore before editing | Agents should inspect repo structure, patterns, tests, and conventions before coding. | Preserve readiness/research before implementation, especially for policy-heavy slices. |
+| Plan before code | Plan files/checklists reduce drift and survive context loss. | Keep `plans.md`, `feature-map.md`, and `documentation.md` authoritative. |
+| Small diffs | Large AI-generated changes shift cost into review. | Keep one selected task and small verified slices on `local/gitnexus-local-features`. |
+| Verification gates | Tests/lint/typecheck/build/review are the real completion surface. | No completion claim without fresh verification evidence. |
+| Fresh review | A separate reviewer or fresh context catches implementer assumptions. | Use review passes before broad or risky feature promotion. |
+| TDD with caution | TDD helps when tests are controlled; agent-generated tests can be weakened or misleading. | Use TDD for behavior changes, but review tests as first-class artifacts. |
+| Context files | `AGENTS.md` / repo instructions help when short, current, and operational. | Keep `AGENTS.md` compact; do not dump scratchpad material into it. |
+| Human architecture gate | Humans should retain architecture/security/product decisions. | MAIN approvals remain required for mutation, tokens, CI, provider execution, and broad semantics. |
+
+#### Useful Additions From The Pasted Notes
+
+1. Verification bottleneck framing.
+
+   The pasted notes repeatedly argue that AI/agentic coding makes code generation cheaper while review and verification can become the bottleneck. This is a useful way to explain why the GitNexus workflow must optimize for:
+
+   - small slices;
+   - deterministic tests;
+   - golden outputs where possible;
+   - exact write sets;
+   - fresh diff review;
+   - no hidden broad rewrites.
+
+2. Agent action-bias warning.
+
+   The notes flag that agents may patch when no patch is needed. This reinforces an existing GitNexus rule:
+
+   ```text
+   reproduce or characterize before patching; if no change is needed, report evidence instead.
+   ```
+
+3. Context-file skepticism.
+
+   The notes mention possible evidence that instruction files can hurt when bloated, stale, or irrelevant. This supports the current local policy:
+
+   - `AGENTS.md` should hold durable workflow/routing rules only;
+   - scratchpads hold working evidence;
+   - `documentation.md` holds current truth;
+   - do not promote every research note into project instructions.
+
+4. Structured delegation wording.
+
+   The first pasted note's phrase "structured delegation" is a good shorthand:
+
+   ```text
+   Agentic GitNexus work is structured delegation, not uncontrolled autonomy.
+   ```
+
+5. Determinism over autonomy.
+
+   The third pasted note emphasizes controlled workflows over open-ended auto-loops. For GitNexus, this means:
+
+   - no hidden hooks as the implementation route;
+   - no unbounded background mutation;
+   - no token-bearing automation without explicit security boundary;
+   - no infinite retries in non-interactive Codex runs.
+
+6. Observability / traceability.
+
+   The third pasted note emphasizes tracing. For this repo, the practical equivalent is:
+
+   - scratchpad evidence;
+   - command outputs;
+   - golden files;
+   - status docs;
+   - exact selected-task packets;
+   - commits/checkpoints after coherent slices.
+
+#### Points To Treat Carefully
+
+Some pasted-note claims are useful but should not be accepted blindly:
+
+| Claim type | Why careful | GitNexus handling |
+| --- | --- | --- |
+| Quantitative claims about papers, studies, or "10x fewer" cycles | Need primary-source verification before becoming planning authority. | Keep as prompts for future research, not durable rule text. |
+| Claims that many tools universally read `AGENTS.md` | Tool support changes and may vary. | Codex `AGENTS.md` support is enough for our local rule; no need to overclaim. |
+| Broad "multi-agent swarm" architecture claims | Interesting for agent systems, but GitNexus feature work currently uses selected-task control, not a swarm runtime. | Treat as future orchestration context only. |
+| RAG/vector memory as long-term memory | Useful generally, but this workstream already has a four-file long-horizon bundle and GitNexus graph/indexes. | Do not introduce new memory architecture unless needed. |
+| "Autonomous agents can work without rest" | True only regarding biological fatigue. | Still enforce drift, verification, and stop-rule controls. |
+
+#### Reconciled Methodology Statement
+
+Recommended working statement:
+
+```text
+GitNexus local enterprise-feature work uses structured delegation:
+clear selected-task packets, repo exploration before edits, shaped small slices,
+TDD for behavior changes, fresh verification, documented checkpoints, and MAIN
+approval for product/security/mutation boundaries.
+```
+
+Shorter label:
+
+```text
+Structured Delegation via Evidence-Gated Small-Batch Kanban.
+```
+
+This does not replace the existing methodology. It clarifies the human/agent relationship:
+
+- MAIN owns priorities, approvals, and policy boundaries.
+- Codex owns disciplined execution inside the selected-task packet.
+- The long-horizon bundle owns continuity.
+- Tests/builds/diffs/source evidence own completion claims.
+
+#### Actionable Update Candidate
+
+Consider promoting only this compact rule later:
+
+```text
+For this workstream, autonomy means structured delegation, not unbounded action:
+work one selected task at a time, explore before editing, keep slices small,
+use TDD for behavior changes, verify before completion, checkpoint evidence,
+and stop for MAIN approval on mutation, token, provider, CI, or broad architecture boundaries.
+```
+
+Do not promote the pasted notes wholesale. The control docs should stay compact.

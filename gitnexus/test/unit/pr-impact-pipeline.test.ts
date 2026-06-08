@@ -64,4 +64,61 @@ describe('PR Impact pipeline', () => {
     ]);
     expect(report.test_signal.status).toBe('has_test_reference');
   });
+
+  it('carries detect_changes unmatched range evidence into the report', async () => {
+    const callTool = vi.fn().mockResolvedValueOnce({
+      summary: { changed_files: 1 },
+      changed_symbols: [],
+      unmatched_ranges: [
+        {
+          filePath: 'src/app.ts',
+          startLine: 42,
+          endLine: 44,
+          reason: 'No indexed symbol overlapped this changed range',
+        },
+      ],
+    });
+
+    const report = await buildPrImpactPipelineReport({ callTool }, { scope: 'unstaged' });
+
+    expect(report.summary.unmatched_ranges).toBe(1);
+    expect(report.unmatched_ranges).toEqual([
+      {
+        filePath: 'src/app.ts',
+        startLine: 42,
+        endLine: 44,
+        reason: 'No indexed symbol overlapped this changed range',
+      },
+    ]);
+  });
+
+  it('carries detect_changes deleted symbol evidence into the report', async () => {
+    const callTool = vi.fn().mockResolvedValueOnce({
+      summary: { changed_files: 1 },
+      changed_symbols: [],
+      deleted_symbols: [
+        {
+          id: 'Function:src/app.ts:removed',
+          name: 'removed',
+          type: 'Function',
+          filePath: 'src/app.ts',
+          inboundCallers: 2,
+        },
+      ],
+    });
+
+    const report = await buildPrImpactPipelineReport({ callTool }, { scope: 'unstaged' });
+
+    expect(report.summary.deleted_symbols).toBe(1);
+    expect(report.deleted_symbols).toEqual([
+      {
+        id: 'Function:src/app.ts:removed',
+        name: 'removed',
+        kind: 'Function',
+        filePath: 'src/app.ts',
+        inboundCallers: 2,
+      },
+    ]);
+    expect(report.verdict).toBe('BLOCK');
+  });
 });

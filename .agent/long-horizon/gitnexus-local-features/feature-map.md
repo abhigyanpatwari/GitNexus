@@ -4,9 +4,9 @@ Created: 2026-06-06
 
 ## Purpose
 
-This file maps the whole GitNexus local-features workstream in one place: feature status, dependencies, source surfaces, tests, approval gates, evidence files, and next actions.
+This file maps the whole GitNexus local-features workstream in one place: feature status, dependencies, source surfaces, tests, risk lanes, evidence files, and next actions.
 
-It is a navigation and coordination artifact. It does not approve source edits. Source edits remain gated by `MAIN | READY_FOR_IMPLEMENTATION` for one feature and one write set at a time.
+It is a navigation and coordination artifact. Current implementation control is the selected-task packet plus branch-trusted green/amber/red risk lanes. Historical `MAIN | READY_FOR_IMPLEMENTATION` records remain audit trail only.
 
 ## Control Surface
 
@@ -26,6 +26,7 @@ Supporting evidence:
 | `enterprise-feature-intended-functions-scratchpad.md` | Research evidence and intended-function notes |
 | `brainstorming-pr-review-blast-radius.md` | PR Impact / Blast Radius V1 brainstorm and critique incorporation |
 | `gitnexus-router-indexing-note.md` | Historical workstation routing/indexing incident note |
+| `codex-5-4-handover-20260608.md` | Supporting handover note for the next Codex/GPT-5.4 session; does not override the control surface |
 | `plan.md` | Legacy/subordinate plan material; not a live control file |
 
 ## Operating Map
@@ -35,9 +36,10 @@ Supporting evidence:
 | Branch model | One shared branch: `local/gitnexus-local-features` |
 | Work sequencing | One implementation feature at a time |
 | Current tranche | Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics local V1, Task 6 E2E/API-smoke local V1, and Task 7 OCaml readiness |
-| Pause point | Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route paths; `/api/processes` and `/api/health` are implemented through a separate API-smoke lane; Task 7 OCaml Query Depth V2 is implemented; next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness |
-| Implementation gate | `MAIN | READY_FOR_IMPLEMENTATION` must name feature, branch/worktree, write set, and constraints |
-| Standing authorization | MAIN authorizes implementation after each feature's readiness/research map is complete, but only for the exact documented slice and write set |
+| Pause point | Task 2 manual wiki-refresh planner CLI and explicit planning-only execution boundary are implemented; Task 4 GitHub PR Automation Boundary readiness is complete for the current run; Task 4 No-Write Graph Primitives added new-side changed/unmatched range evidence and old-side deleted-symbol evidence; Task 6 deterministic generated Playwright spec renderer is implemented for narrow mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route paths; `/api/processes`, `/api/health`, and `/api/info` are implemented through a separate API-smoke lane; Task 7 OCaml Query Depth V2 and Module-System Depth readiness are complete; worktree verification passed; `NO_NEXT_TASK_SELECTED` for feature expansion until a new packet is chosen |
+| Fast-flow method | Continuous Agentic Kanban: one active implementation slice, up to three ready packets when possible, green micro/small red-green-review loops, bounded amber packets with premortem and rollback notes, testing ladder verification, reviewer-agent checkpoints when warranted, and baton documentation after each slice |
+| Branch-trusted autonomy | The human operator is MAIN; green/amber lane repo-local work may proceed from the selected-task packet on `local/gitnexus-local-features`; red-lane work stops for explicit human-operator direction |
+| Risk lanes | Green = repo-local reversible work; amber = repo-local generated-output/config/API/dependency/shared-module work with premortem, TDD/checkpoints, and rollback notes; red = secrets/tokens, paid/provider execution, GitHub/CI writes, destructive git, production/external writes, unbounded background automation, or major architecture/language-semantics expansion |
 | Development method | TDD for behavior changes: red, green, refactor, verify |
 | Hooks | Not used as the implementation route |
 | GitNexus host route | `gitnexus` = host/npm CLI |
@@ -49,13 +51,13 @@ Supporting evidence:
 
 | Order | Feature | Research Depth | Disposition | Implementation Status | Gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Auto-Reindexing | Decision-grade completed for first slice | `local V1 complete` | Approved first slice implemented, verified, and snapshotted | Do not broaden without a new Goal |
-| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices | `local V1 complete` | Core status/dry-run-first planner/runner implemented and snapshotted; read-only server status endpoint plus provider-readiness status implemented and verified | Do not add event wiring or mutation without a new Goal |
-| 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | No unified graph expansion without new approval |
-| 4 | PR Impact / Blast Radius | Medium readiness refreshed | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | MCP/GitHub automation deferred |
+| 1 | Auto-Reindexing | Decision-grade completed for first slice | `local V1 complete` | Approved first slice implemented, verified, and snapshotted | Broaden only through selected-task packet and lane classification |
+| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices and mutation/provider readiness | `local V1 complete plus readiness boundary` | Core status/dry-run-first planner/runner, read-only server status endpoint plus provider-readiness status, local manual-refresh planner CLI, and explicit planning-only execution boundary implemented and verified | Full mutation/provider execution remains red-lane/deferred |
+| 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | Unified graph expansion is red/major-architecture unless explicitly selected by the human operator |
+| 4 | PR Impact / Blast Radius | Medium readiness refreshed plus no-write range/deletion primitives | `local V1 complete plus follow-on primitives` | Report core, thin local CLI wrapper, read-only MCP exposure, new-side changed/unmatched range evidence, and old-side deleted-symbol evidence implemented and verified | GitHub automation, provider compare semantics, and historical/base graph indexes deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed | CI/artifact/bisect automation deferred |
-| 6 | End-to-End Test Generation | Light scoping completed plus executable-output/API-smoke policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` generated-spec renderer, `/api/processes` and `/api/health` API-smoke renderers, and explicit write modes implemented locally | Broader generated tests/browser/CI remain deferred |
-| 7 | OCaml Support | Light scoping completed plus approval packet | `local V1 complete` | Experimental `.ml` / `.mli` support and Query Depth V2 module type/include/functor-reference captures implemented locally | Deeper OCaml semantics beyond syntax-level module type/include/functor references require a new Goal |
+| 6 | End-to-End Test Generation | Light scoping completed plus executable-output/API-smoke policy readiness | `local V1 complete` | Proposal/report core, thin local CLI wrapper, deterministic `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` generated-spec renderer, `/api/processes`, `/api/health`, and `/api/info` API-smoke renderers, and explicit write modes implemented locally | Broader generated tests/browser/CI remain deferred |
+| 7 | OCaml Support | Light scoping completed plus module-depth readiness | `local V1 complete` | Experimental `.ml` / `.mli` support and Query Depth V2 module type/include/functor-reference captures implemented locally; 2026-06-08 module-depth readiness found no safe next behavior slice without resolver/dependency expansion | Deeper OCaml semantics require a new selected-task packet; Dune, PPX, dependency upgrades, production classification, and full module-system expansion are red/major-architecture |
 
 ## Dependency Map
 
@@ -64,7 +66,7 @@ Supporting evidence:
 | Auto-Reindexing -> Code Wiki | Wiki auto-refresh must trust graph freshness before deciding whether a wiki is stale or safe to refresh. |
 | Auto-Reindexing -> PR Impact | PR impact reports should warn or block when graph/index evidence is stale or ambiguous. |
 | Code Wiki -> Multi-Repo | Wiki refresh status and graph freshness decisions should not be confused with group/multi-repo behavior; Task 3 should reconcile those surfaces after Task 2 is bounded. |
-| Multi-Repo -> PR Impact | PR impact may later need explicit repo identity and group/context awareness, but V1 should remain local report-first unless MAIN expands scope. |
+| Multi-Repo -> PR Impact | PR impact may later need explicit repo identity and group/context awareness, but V1 should remain local report-first unless selected by the human operator. |
 | PR Impact -> Auto Regression Forensics | Regression forensics needs a stable impact/risk/evidence report shape before it can explain failures defensibly. |
 | PR Impact -> End-to-End Test Generation | Test generation needs changed-surface/risk/test-gap signals before proposing or creating tests. |
 | OCaml Support -> Indexing/Impact/Wiki | OCaml would affect ingestion, symbol extraction, graph queries, impact, and wiki docs, so it is a separate language-onboarding project. |
@@ -121,12 +123,12 @@ Verification recorded:
 
 Open risks:
 
-- Next agents must not mix more feature source edits into this slice without a new Goal.
-- Runtime/Podman behavior still requires later operational validation if MAIN asks for promoted runtime use.
+- Next agents must not mix more feature source edits into this completed slice without a selected-task packet, lane classification, and explicit write set.
+- Runtime/Podman behavior still requires later operational validation if the human operator selects promoted runtime use.
 
 Next gate:
 
-- Do not broaden Task 1 without a new Goal and explicit write set.
+- Do not broaden Task 1 without a selected-task packet, lane classification, and explicit write set.
 
 ### Task 2 - Auto-Updating Code Wiki
 
@@ -135,16 +137,20 @@ Current status:
 - User approved implementation on 2026-06-06 for the status/dry-run-first slice.
 - Core planner/runner implemented locally.
 - Read-only server status endpoint implemented locally on 2026-06-07.
+- Local manual-refresh planner CLI implemented locally on 2026-06-08.
+- Planning-only execution boundary added to `gitnexus wiki-refresh` on 2026-06-08.
 - Core focused wiki tests, focused reindex/freshness tests, build, and whitespace check passed for the original core slice.
 - Endpoint verification passed under the active Goal.
 - No generated wiki output mutation, no unattended LLM generation.
+- Full output mutation/provider execution remains deferred; `gitnexus wiki-refresh` only recommends the existing manual `gitnexus wiki` command when prerequisites pass.
+- The `wiki-refresh-plan.v1alpha1` report now includes `execution_boundary` fields that explicitly disable provider execution, output mutation, and config writes, plus required human decisions before any mutation/provider work.
 
 Intended local capability:
 
 - Reuse the existing manual Code Wiki generator.
 - Add conservative auto-refresh orchestration that decides whether a refresh would be safe and useful after confirmed graph freshness.
 - Default to status/dry-run behavior.
-- Avoid creating or overwriting wiki output unless explicit mutation and provider policy are approved.
+- Avoid creating or overwriting wiki output unless the selected task defines explicit mutation policy, provider policy, rollback/reporting behavior, and a green/amber lane write set.
 
 Implemented source surfaces:
 
@@ -154,8 +160,11 @@ Implemented source surfaces:
 | `gitnexus/src/core/wiki/provider-readiness.ts` | Non-secret provider-readiness policy for server status |
 | `gitnexus/test/unit/wiki-auto-refresh.test.ts` | New focused tests |
 | `gitnexus/src/server/api.ts` | Read-only `GET /api/wiki/auto-refresh` status endpoint |
+| `gitnexus/src/cli/wiki-refresh.ts` | Local manual-refresh readiness CLI with explicit planning-only execution boundary; no generator invocation |
+| `gitnexus/src/cli/index.ts` and CLI i18n files | Register and document `gitnexus wiki-refresh` |
 | `gitnexus/test/unit/wiki-auto-refresh-api-wiring.test.ts` | Source-wiring test proving planner/provider-status use and no generator invocation |
 | `gitnexus/test/unit/wiki-provider-readiness.test.ts` | Provider-readiness and no-secret status tests |
+| `gitnexus/test/unit/wiki-refresh-cli.test.ts` | CLI report, JSON, execution-boundary, repo-targeting, and no-secret tests |
 
 Existing generator surfaces inspected:
 
@@ -175,19 +184,22 @@ Verification recorded:
 | `npm test -- test/unit/wiki-auto-refresh.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts` | Passed, 2 files, 9 tests |
 | `npm test -- test/unit/reindex-freshness-wiring.test.ts test/unit/reindex-api-wiring.test.ts` | Passed, 2 files, 23 tests |
 | Focused wiki suite | Passed, 5 files, 127 tests |
+| `npm test -- test/unit/wiki-refresh-cli.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-provider-readiness.test.ts test/unit/cli-index-help.test.ts` | Passed, 4 files, 28 tests |
+| `node --import tsx src/cli/index.ts wiki-refresh . --format json` | Passed; reported stale graph and no recommended command |
+| `npm test -- --run test/unit/wiki-refresh-cli.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-provider-readiness.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts test/unit/cli-index-help.test.ts` | Passed, 5 files, 29 tests after execution-boundary slice |
 | Focused reindex/freshness suite | Passed, 7 files, 62 tests |
 | `npm run build` | Passed |
 | `git diff --check` | Passed |
 
 Open decisions:
 
-- Whether the next Task 2 slice should wire status-only planning into successful reindex/freshness events.
 - Whether any future mutation should require an explicit config key, CLI flag, operation request, or all three.
 - Provider/cost/publication policy remains required before unattended generation.
+- Server mutation endpoints and background/event wiring remain deferred.
 
 Next gate:
 
-- Complete current endpoint verification, then decide the next Task 2 boundary through a new Goal if MAIN wants event wiring or mutation behavior.
+- Task 2 local manual-refresh planner is complete. Do not add output mutation, provider execution, server mutation endpoints, or background/event wiring without a new selected-task packet and lane classification.
 
 ### Task 3 - Multi-Repo Support Improvements
 
@@ -211,7 +223,7 @@ Known current-source framing:
 | Group-aware MCP `query`, `context`, `impact` | These route through `repo: "@<groupName>"` or `repo: "@<groupName>/<memberPath>"` |
 | Group status/contracts MCP resources | `gitnexus://group/{name}/contracts` and `gitnexus://group/{name}/status` are present |
 | Removed MCP `group_query`, `group_contracts`, `group_status` | Legacy tool names only; LocalBackend throws migration guidance |
-| Unified cross-repo graph | Out of scope unless MAIN expands scope |
+| Unified cross-repo graph | Out of scope unless explicitly selected by the human operator as a red/major-architecture slice |
 
 Likely evidence to inspect next:
 
@@ -225,7 +237,7 @@ Likely evidence to inspect next:
 Open risks:
 
 - Stale docs can make agents plan features that already changed or no longer exist.
-- Multi-repo may tempt a broad unified-graph rewrite; current plan forbids that without MAIN.
+- Multi-repo may tempt a broad unified-graph rewrite; current lane model treats that as red/major-architecture unless explicitly selected by the human operator.
 
 Next gate:
 
@@ -237,6 +249,10 @@ Current status:
 
 - Local V1 complete.
 - Report core and thin local `gitnexus pr-impact` CLI wrapper implemented, verified, and committed.
+- Read-only local MCP `pr_impact` exposure implemented and verified.
+- New-side no-write graph primitive implemented on 2026-06-08: `detect_changes` now emits `changed_ranges` and `unmatched_ranges`, and the `pr_impact` pipeline carries unmatched range evidence into `pr-impact.v1alpha1`.
+- Deleted/base-graph mapping slice implemented on 2026-06-08: `parseDiffRanges()` parses old-side pure-deletion ranges, `detect_changes` resolves overlapping local graph symbols as `deleted_symbols` with inbound caller counts, and `pr_impact` carries them into the report.
+- Current selected follow-on is Task 2 Full Wiki Mutation / Provider Execution readiness, not GitHub automation.
 - Brainstorm note now frames V1 as deterministic `diff ranges -> symbols -> impact -> report`.
 - Recommended command name is `pr-impact`, not `pr-review`, to avoid confusion with review/swarms.
 
@@ -285,9 +301,9 @@ Current expected-vs-actual findings:
 | V1 expectation | Current local behavior | Gap |
 | --- | --- | --- |
 | Local diff input | `detect_changes` supports unstaged/staged/all/compare | Good base |
-| Changed range parsing | `parseDiffHunks()` returns new-side line ranges | Needs richer range model |
-| Deleted symbols | Pure-deletion hunks are skipped today | Needs old-side/base-graph deletion handling |
-| Unmatched ranges | Unmatched changed ranges are not surfaced | Needs explicit unmatched evidence |
+| Changed range parsing | `detect_changes` returns new-side `changed_ranges`; `parseDiffRanges()` also exposes old-side pure-deletion ranges | Implemented for local hunks |
+| Deleted symbols | Local old-side deletion ranges resolve to `deleted_symbols` when they overlap indexed symbols; inbound callers are counted from current graph relations | Implemented as local graph evidence; historical/base graph indexes deferred |
+| Unmatched ranges | `detect_changes` returns per-hunk `unmatched_ranges`; `pr_impact` carries them into the report | Implemented for new-side hunks |
 | New symbols | New unmapped symbols are not separately classified | Needs explicit new/unmapped status |
 | Impact traversal | `impact` provides bounded BFS, cycle guard, per-depth output, risk | Reuse; V1 default depth should be 5 |
 | API impact | `api_impact`/`route_map`/`shape_check` exist | Optional report sections only |
@@ -308,11 +324,17 @@ Implemented V1 source surfaces:
 | --- | --- |
 | `gitnexus/src/core/pr-impact/report.ts` | JSON/Markdown report, schema, verdicts, optional sections |
 | `gitnexus/src/core/pr-impact/diff-mapping.ts` | Range model and range-to-symbol helper if needed |
+| `gitnexus/src/core/pr-impact/pipeline.ts` | Local `detect_changes -> impact -> api_impact -> report` orchestration, including unmatched range propagation |
+| `gitnexus/src/storage/git.ts::parseDiffRanges` | Addition/modification/deletion range parser used by live local PR Impact evidence |
+| `gitnexus/src/mcp/local/local-backend.ts::detectChanges` | New-side `changed_ranges`, `unmatched_ranges`, and old-side `deleted_symbols` detection for local diff hunks |
 | `gitnexus/src/cli/pr-impact.ts` | Thin CLI orchestration |
 | `gitnexus/src/cli/index.ts` | Register command |
 | `gitnexus/src/cli/help-i18n.ts` and locale files | Help text only if CLI command is registered |
 | `gitnexus/test/unit/pr-impact-report.test.ts` | Golden report and verdict tests |
 | `gitnexus/test/unit/pr-impact-diff-mapping.test.ts` | Range/deletion/new/unmatched tests |
+| `gitnexus/test/unit/pr-impact-pipeline.test.ts` | Pipeline orchestration plus unmatched/deleted evidence propagation tests |
+| `gitnexus/test/unit/parse-diff-hunks.test.ts` | New-side and old-side range parser tests |
+| `gitnexus/test/unit/calltool-dispatch.test.ts` | Local `detect_changes` no-write range and deleted-symbol evidence tests |
 | `gitnexus/test/fixtures/pr-impact/*` | Fixture diffs and golden outputs |
 
 Open risks:
@@ -320,11 +342,13 @@ Open risks:
 - GitHub automation is security-sensitive and out of V1.
 - Stale/ambiguous graph identity must produce `UNKNOWN`, not overconfident output.
 - Large hubs require summary-first/pagination behavior.
-- Deleted-symbol support may require old-side/base-graph lookup; stop if it expands into a broad base-index architecture.
+- Historical deleted-symbol support may require true old/base graph indexes; stop if future work expands into broad base-index architecture.
 
 Next gate:
 
-- Do not add MCP exposure, GitHub PR comments/checks, PR URL ingestion, Codex remediation, generated tests, or UI without a new Goal and approval boundary.
+- Do not add GitHub PR comments/checks/reviews, PR URL ingestion, Codex remediation, generated tests, workflow mutation, or UI without a selected-task packet and lane classification; GitHub/CI/token writes remain red lane.
+- If Task 4 continues technically, prefer stable no-write primitives such as `symbols-for-ranges`, `impact-for-symbols`, or local explicit range-input support before any GitHub posting surface.
+- Task 4's remaining expansion is GitHub/provider automation or historical/base graph architecture; both are deferred.
 
 ### Task 5 - Auto Regression Forensics
 
@@ -444,12 +468,15 @@ Next gate:
 Current status:
 
 - Experimental V1 implemented locally.
+- Query Depth V2 implemented locally.
+- 2026-06-08 Module-System Depth readiness completed; no further behavior source slice is selected from that pass.
 - Separate language-provider/parser onboarding project.
-- Deeper source work requires a new Goal and write set.
+- Deeper source work requires a new selected-task packet, resolver/dependency risk classification, and test matrix.
 
 Intended local capability:
 
-- Add OCaml indexing support only if parser/provider/dependency/test burden is accepted.
+- Keep OCaml indexing useful enough for experimental graph/search while avoiding a false production claim.
+- Broaden only when the next slice has a concrete syntax/resolver target and a focused fixture expectation.
 
 Readiness result:
 
@@ -457,16 +484,16 @@ Readiness result:
 - Not a minor parser toggle; it touches shared language identity, extension detection, parser loading, parse-worker dispatch, provider registration, queries/captures, import/module semantics, type/call extraction, fixtures, and tests.
 - `.ml` and `.mli` must both be in V1 scope because the official grammar exposes separate implementation and interface grammars.
 
-Known local gaps:
+Current local state and remaining gaps:
 
 | Gap | Meaning |
 | --- | --- |
-| Language enum/registry | `gitnexus-shared/src/languages.ts` and provider registry do not include OCaml |
-| Extension mapping | `.ml` and `.mli` are not mapped in `gitnexus-shared/src/language-detection.ts` |
-| Parser/provider | `tree-sitter-ocaml` route must be selected and approved before dependency/source edits |
-| Grammar selection | `.ml` and `.mli` need file-path-aware grammar selection similar in spirit to TS/TSX |
-| Queries/resolvers | Symbol/call/import extraction requires language-specific query and provider work |
-| Fixtures/parity tests | Need representative OCaml fixtures and graph expectations before broadening |
+| Language enum/registry | Implemented for OCaml; keep `experimental` classification |
+| Extension mapping | `.ml` and `.mli` implemented |
+| Parser/provider | Implemented through `tree-sitter-ocaml@0.22.0`; `.ml` uses `ocaml`, `.mli` uses `interface` |
+| Query depth | Query Depth V2 captures module type definitions plus module/include/functor references |
+| Resolver semantics | No OCaml import/module resolver exists; module alias, functor, and interface/implementation resolution remain future design work |
+| Project model | No Dune/project model, PPX expansion, generated-code policy, or production-classification evidence |
 
 External evidence:
 
@@ -490,6 +517,8 @@ Implemented V1 notes:
 - The actual `tree-sitter-ocaml@0.22.0` package exports `ocaml` and `interface`; implementation uses `interface` for `.mli`.
 - OCaml is classified as `experimental`.
 - Focused OCaml tests and existing language safety tests pass.
+- Query Depth V2 added module type definitions plus module/include/functor reference captures.
+- 2026-06-08 readiness corrected a stale query comment; no behavior change was selected.
 
 Deferred:
 
@@ -501,22 +530,26 @@ Deferred:
 
 Next gate:
 
-- Do not broaden OCaml beyond the experimental V1 without a new Goal.
+- Do not broaden OCaml beyond the experimental V1/Query Depth V2 surface without a selected-task packet and lane classification; full module-system semantics are red/major-architecture.
 
 ## Current WIP Boundary
 
 Current uncommitted source WIP includes:
 
-- None at this checkpoint.
+- Task 2 wiki-refresh planner CLI files.
+- Task 2 wiki-refresh planning-only execution-boundary changes.
+- Task 4 new-side changed/unmatched range evidence and local old-side deleted-symbol evidence.
+- Task 6 `/api/info` API-smoke renderer/test/fixture changes.
+- Task 7 OCaml query comment cleanup.
 
 Current uncommitted documentation WIP includes:
 
-- None at this checkpoint.
+- Long-horizon control-doc updates for Task 2, Task 4, Task 6, and Task 7.
 
 Boundary rule:
 
-- Before broadening Task 6 into inventory extraction, browser execution, or generated test files, create a new output-policy Goal.
-- Before broadening Task 7 beyond experimental `.ml` / `.mli` support, create a new Goal for the exact OCaml semantics, dependency, and test boundary.
+- Before broadening Task 6 into inventory extraction, browser execution, or generated test files, create a selected-task packet for the exact output policy, risk lane, write set, and verification surface.
+- Before broadening Task 7 beyond experimental `.ml` / `.mli` support, create a selected-task packet for the exact OCaml semantics, dependency, lane, and test boundary.
 
 ## Source Surface Map By Area
 
@@ -546,34 +579,39 @@ Boundary rule:
 
 | Gap | Required Work |
 | --- | --- |
-| Task 3 source ownership | Completed for first docs slice; no further source mapping needed unless MAIN expands scope |
+| Task 3 source ownership | Completed for first docs slice; no further source mapping needed unless the human operator selects a broader Task 3 slice |
 | Task 3 smallest useful slice | Decide whether improvement is docs reconciliation, CLI ergonomics, status output, tests, or MCP/resource alignment |
-| Task 4 source implementation | First local report/CLI slice completed; future MCP/GitHub automation requires a new plan |
+| Task 4 source implementation | Local report/CLI/MCP, new-side changed/unmatched range evidence, and local old-side deleted-symbol evidence completed; GitHub automation and historical/base graph architecture require new plans |
 | Task 4 fixture design | Completed for first local report slice; future live diff/GitHub fixtures remain later |
 | Task 5 evidence contract | First local fixture-shaped failure/PR Impact input contract exists; richer CI artifact parsing remains later |
-| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, narrow `/api/repos`, `/api/repo`, `/api/graph`, `/api/file` generated-spec renderer, and `/api/processes` plus `/api/health` generated API-smoke renderer completed; broader generated tests remain deferred |
+| Task 6 runtime contract | First local contract selected for `gitnexus-web` + Playwright; proposal/report core, CLI wrapper, executable-output policy readiness, narrow `/api/repos`, `/api/repo`, `/api/graph`, `/api/file` generated-spec renderer, and `/api/processes`, `/api/health`, plus `/api/info` generated API-smoke renderer completed; broader generated tests remain deferred |
 | Task 6 `/api/processes` generated UI fixture | Rejected for the browser UI lane: frontend Process panel derives rows from `/api/graph` Process nodes and does not call `fetchProcesses()` / `/api/processes`; `/api/processes` is now covered by a separate generated API-smoke lane |
-| Task 7 parser/provider plan | Experimental V1 and Query Depth V2 implemented; Dune, PPX, interface/implementation matching, production classification, and full module-system resolution remain deferred |
+| Task 7 parser/provider plan | Experimental V1, Query Depth V2, and Module-System Depth readiness completed; Dune, PPX, interface/implementation matching, dependency upgrades, production classification, and full module-system resolution remain deferred |
 
 ## Next Actions
 
 Immediate:
 
-1. Treat the seven local V1 slices plus Task 6 `/api/processes` and `/api/health` API-smoke lane and `/api/file` UI fixture as the completed base tranche.
+1. Treat the seven local V1 slices plus Task 4 range/deletion evidence, Task 6 `/api/processes`, `/api/health`, and `/api/info` API-smoke lane, and `/api/file` UI fixture as the completed base tranche.
 2. Continue with exactly one next selected task from the map below.
-3. Start source edits only after the selected task's exact slice and write set are named.
+3. Start source edits only after the selected task's exact slice, risk lane, write set, verification surface, and stop rule are named.
 
 ## Next Task Map
 
 | Rank | Candidate next task | Goal type | Why now | First concrete outcome | Current gate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Task 2 Wiki Mutation / Manual Refresh Policy | Readiness Goal | The read-only wiki status/provider-readiness slices are complete; mutation/manual refresh is the largest remaining enterprise-feature gap. | Decide local CLI/manual refresh vs server dry-run planner vs mutation-capable endpoint vs explicit deferral. | Stop if output location, provider execution, mutation mode, or rollback/reporting policy cannot be named. |
-| 2 | Task 4 GitHub PR Automation Boundary | Readiness Goal | Local PR Impact CLI/MCP is complete; GitHub comments/checks remain security-sensitive. | Token/permission model, fork-safety threat model, dry-run/report-first contract, and no-write/write phase split. | Stop if token-bearing GitHub automation or CI workflow mutation lacks explicit security approval. |
-| 3 | Task 6 `/api/info` API-Smoke Route | Technical readiness Goal | `/api/info` is a read-only server-info route and the next clean API-smoke candidate after `/api/health`, but lower feature value than wiki mutation. | Stable response contract review and fixture/golden plan. | Stop if runtime-derived fields make generated assertions brittle. |
-| 4 | Task 7 OCaml Module-System Depth | Research/readiness Goal | Query Depth V2 is complete; deeper OCaml work would mean Dune, interface matching, aliases, or functors. | Parser/provider/resolver gap table and dependency/risk map. | Stop if the slice requires dependency upgrades or real module-system resolution. |
+| Completed | Task 4 No-Write Graph Primitives | Technical readiness plus implementation | Completed on 2026-06-08T10:20+01:00; live local `detect_changes` now emits new-side changed/unmatched range evidence and `pr_impact` carries unmatched ranges into `pr-impact.v1alpha1`. | Focused red/green tests and adjacent PR Impact/MCP/tool verification. | Deleted/base-graph mapping remains a separate readiness task. |
+| Completed | Task 4 Deleted/Base-Graph Mapping | Technical readiness plus implementation | Completed on 2026-06-08T10:32+01:00; old-side pure-deletion ranges now resolve to local graph deleted-symbol evidence when available. | Focused red/green parser, dispatch, pipeline tests plus adjacent PR Impact/MCP/tool verification. | Historical graph indexes and GitHub provider semantics remain deferred. |
+| Completed | Task 2 Full Wiki Mutation / Provider Execution | Red-lane readiness plus no-write policy implementation | Completed on 2026-06-08T10:39+01:00; `wiki-refresh-plan.v1alpha1` now carries explicit planning-only execution boundary fields and required human decisions. | Focused wiki-refresh tests plus adjacent wiki planner/provider/API/help tests. | Provider execution, secrets/tokens, config writes, output mutation/publication, and unattended generation remain deferred. |
+| Completed | Post-Tranche Consolidation / Next-Slice Selection | Readiness Goal | Completed on 2026-06-08T10:47+01:00; recent PR Impact/wiki follow-ons are reconciled and remaining feature expansions are lane-gated. | Updated next-task map and `NEXT_TASK_SELECTED`. | Next selected task is worktree verification/checkpoint preparation. |
+| Completed | Worktree Verification / Checkpoint Packet | Green-lane consolidation | Completed on 2026-06-08T10:53+01:00; multiple feature slices were verified together and the dirty tree was mapped by slice. | Focused touched-slice tests, build, whitespace check, and documentation checkpoint. | Checkpoint/review is recommended before another feature expansion. |
+| No current feature task | `NO_NEXT_TASK_SELECTED` | Baton state | Remaining tasks require new product/security/provider/runtime/architecture decisions or a new narrow packet. | Human/operator task selection or a new evidence-backed packet. | Do not continue from stale recommendations. |
+| Completed | Task 6 `/api/info` API-Smoke Route | Technical readiness plus implementation | Completed on 2026-06-08T09:57+01:00 as a deterministic APIRequestContext generated-spec renderer. | Stable response-shape fixture and golden spec. | Do not broaden into more API-smoke routes without a new selected route contract. |
+| Completed | Task 7 OCaml Module-System Depth | Research/readiness plus comment cleanup | Completed on 2026-06-08T10:12+01:00; next meaningful OCaml behavior requires resolver/dependency/product-lane expansion. | Local source map, public issue/package evidence, OCaml focused tests, and comment-drift cleanup. | Do not implement Dune, PPX, interface/implementation matching, module alias/functor resolution, dependency upgrades, or production classification without a new packet. |
 
 Recommended default:
 
-- Start with Task 2 Wiki Mutation / Manual Refresh Policy readiness.
+- `NO_NEXT_TASK_SELECTED` for feature expansion after Worktree Verification / Checkpoint Packet.
+- Recommended immediate action is checkpoint review/commit preparation for the current dirty tree.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - Keep browser execution, Playwright config changes, CI mutation, live-backend generated specs, GitHub automation, MCP expansion, and deeper OCaml semantics deferred until the selected task opens that scope.

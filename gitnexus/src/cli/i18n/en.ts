@@ -50,10 +50,13 @@ export const en = {
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
   'tool.detectChanges.changesSummary': 'Changes: {{files}} files, {{symbols}} symbols',
+  'tool.detectChanges.evidenceSummary': 'Diff evidence: {{count}} signals',
   'tool.detectChanges.affectedProcesses': 'Affected processes: {{count}}',
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',
   'tool.detectChanges.unknownRisk': 'unknown',
   'tool.detectChanges.changedSymbols': 'Changed symbols:',
+  'tool.detectChanges.deletedSymbols': 'Deleted symbols:',
+  'tool.detectChanges.unmatchedRanges': 'Unmatched diff ranges:',
   'tool.detectChanges.overflowMore': '... and {{count}} more',
   'tool.detectChanges.affectedExecutionFlows': 'Affected execution flows:',
   'tool.detectChanges.steps': '{{count}} steps',
@@ -119,6 +122,7 @@ export const en = {
   'help.command.remove.description':
     'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',
   'help.command.wiki.description': 'Generate repository wiki from knowledge graph',
+  'help.command.wikiRefresh.description': 'Plan a manual wiki refresh without mutating output',
   'help.command.augment.description':
     'Augment a search pattern with knowledge graph context (used by hooks)',
   'help.command.publish.description':
@@ -212,6 +216,9 @@ export const en = {
     'Stop after grouping to review module structure before generating pages',
   'help.option.wiki.lang':
     'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
+  'help.option.wikiRefresh.format': 'Output format: markdown or json',
+  'help.option.wikiRefresh.createIfMissing':
+    'Allow the plan to recommend creating a wiki when no wiki metadata exists',
   'help.option.publish.id': 'Override the registry id (defaults to the origin remote)',
   'help.option.repo.targetOmitOne': 'Target repository (omit if only one indexed)',
   'help.option.query.context': 'Task context to improve ranking',

@@ -341,6 +341,22 @@ export interface FileDiff {
   hunks: DiffHunk[];
 }
 
+export type DiffRangeChangeType = 'added' | 'modified' | 'deleted';
+export type DiffRangeSide = 'new' | 'old';
+
+export interface DiffRange {
+  startLine: number;
+  endLine: number;
+  change_type: DiffRangeChangeType;
+  side?: DiffRangeSide;
+}
+
+export interface FileDiffRanges {
+  filePath: string;
+  oldFilePath?: string;
+  ranges: DiffRange[];
+}
+
 /**
  * Parse unified diff output (with -U0) into per-file hunk ranges.
  * Extracts the new-file line ranges from @@ hunk headers.
@@ -363,5 +379,79 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
       }
     }
   }
+  return files;
+}
+
+/**
+ * Parse unified diff output (with -U0) into per-file changed ranges.
+ * Keeps new-side ranges for additions/modifications and old-side ranges for
+ * pure deletions so callers can avoid treating deleted code as "no change".
+ */
+export function parseDiffRanges(diffOutput: string): FileDiffRanges[] {
+  const files: FileDiffRanges[] = [];
+  let current: FileDiffRanges | null = null;
+  let oldFilePath: string | undefined;
+
+  for (const line of diffOutput.split('\n')) {
+    if (line.startsWith('--- a/')) {
+      oldFilePath = line.slice(6);
+      continue;
+    }
+
+    if (line === '--- /dev/null') {
+      oldFilePath = undefined;
+      continue;
+    }
+
+    if (line.startsWith('+++ b/')) {
+      const filePath = line.slice(6);
+      current = {
+        filePath,
+        ...(oldFilePath && oldFilePath !== filePath ? { oldFilePath } : {}),
+        ranges: [],
+      };
+      files.push(current);
+      continue;
+    }
+
+    if (line === '+++ /dev/null') {
+      if (!oldFilePath) {
+        current = null;
+        continue;
+      }
+      current = { filePath: oldFilePath, ranges: [] };
+      files.push(current);
+      continue;
+    }
+
+    if (!line.startsWith('@@') || !current) continue;
+
+    const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+
+    const oldStart = parseInt(match[1], 10);
+    const oldCount = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+    const newStart = parseInt(match[3], 10);
+    const newCount = match[4] !== undefined ? parseInt(match[4], 10) : 1;
+
+    if (oldCount > 0 && newCount === 0) {
+      current.ranges.push({
+        startLine: oldStart,
+        endLine: oldStart + oldCount - 1,
+        change_type: 'deleted',
+        side: 'old',
+      });
+      continue;
+    }
+
+    if (newCount > 0) {
+      current.ranges.push({
+        startLine: newStart,
+        endLine: newStart + newCount - 1,
+        change_type: oldCount === 0 ? 'added' : 'modified',
+      });
+    }
+  }
+
   return files;
 }

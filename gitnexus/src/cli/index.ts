@@ -180,6 +180,17 @@ program
   .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
+  .command('wiki-refresh [path]')
+  .description('Plan a manual wiki refresh without mutating output')
+  .option('-r, --repo <name>', 'Target registered repository')
+  .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .option(
+    '--create-if-missing',
+    'Allow the plan to recommend creating a wiki when no wiki metadata exists',
+  )
+  .action(createLazyAction(() => import('./wiki-refresh.js'), 'wikiRefreshCommand'));
+
+program
   .command('augment <pattern>')
   .description('Augment a search pattern with knowledge graph context (used by hooks)')
   .action(createLbugLazyAction(() => import('./augment.js'), 'augmentCommand'));

@@ -1825,9 +1825,11 @@ export const DART_QUERIES = `
 `;
 
 // OCaml queries - works with tree-sitter-ocaml implementation and interface grammars.
-// V1 intentionally captures foundational graph evidence only: modules,
-// value/function bindings, type declarations, open-module references, direct calls,
-// and `.mli` value specifications.
+// Experimental OCaml support intentionally stays at query-level graph evidence:
+// modules, module types, value/function bindings, type declarations,
+// open/include/module references, direct calls, and `.mli` value specifications.
+// Full Dune/project modeling, PPX expansion, and module/functor resolution are
+// outside this query surface.
 export const OCAML_QUERIES = `
 (module_definition
   (module_binding

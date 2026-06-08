@@ -134,6 +134,34 @@ const renderHealthRouteSpec = (proposal: E2ETestPlanProposal): string => {
   ].join('\n');
 };
 
+const renderInfoRouteSpec = (proposal: E2ETestPlanProposal): string => {
+  const title = singleQuoted(proposal.title);
+  return [
+    "import { test, expect } from '@playwright/test';",
+    '',
+    "const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';",
+    '',
+    'const apiUrl = (path: string): string => new URL(path, BACKEND_URL).toString();',
+    '',
+    `test.describe('Generated GitNexus API smoke plan: ${title}', () => {`,
+    "  test('route /api/info returns the stable server-info JSON shape', async ({ request }) => {",
+    "    const response = await request.get(apiUrl('/api/info'));",
+    '',
+    '    expect(response.ok()).toBeTruthy();',
+    '',
+    '    const body: unknown = await response.json();',
+    "    expect(typeof body).toBe('object');",
+    '    expect(body).not.toBeNull();',
+    '',
+    '    const info = body as Record<string, unknown>;',
+    '    expect(info.version).toEqual(expect.any(String));',
+    "    expect(['npx', 'global', 'local']).toContain(info.launchContext);",
+    '    expect(String(info.nodeVersion)).toMatch(/^v\\d+\\.\\d+\\.\\d+/);',
+    '  });',
+    '});',
+  ].join('\n');
+};
+
 const renderProposal = (
   proposal: E2ETestPlanProposal,
   options: ApiSmokeSpecRenderOptions,
@@ -154,10 +182,10 @@ const renderProposal = (
     );
   }
 
-  if (route !== '/api/processes' && route !== '/api/health') {
+  if (route !== '/api/processes' && route !== '/api/health' && route !== '/api/info') {
     return block(
       proposal.id,
-      'Only /api/processes and /api/health route proposals have deterministic API-smoke fixtures in V1.',
+      'Only /api/processes, /api/health, and /api/info route proposals have deterministic API-smoke fixtures in V1.',
     );
   }
 
@@ -174,7 +202,12 @@ const renderProposal = (
   return {
     proposalId: proposal.id,
     path: outputPath,
-    text: route === '/api/health' ? renderHealthRouteSpec(proposal) : renderProcessesRouteSpec(proposal),
+    text:
+      route === '/api/health'
+        ? renderHealthRouteSpec(proposal)
+        : route === '/api/info'
+          ? renderInfoRouteSpec(proposal)
+          : renderProcessesRouteSpec(proposal),
   };
 };
 

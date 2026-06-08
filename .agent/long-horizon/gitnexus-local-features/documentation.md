@@ -1,7 +1,7 @@
 # GitNexus Local Features - Documentation
 
 Created: 2026-06-05
-Last updated: 2026-06-07
+Last updated: 2026-06-08
 
 ## Current Status
 
@@ -11,12 +11,15 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Post-tranche consolidation complete; next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness
+- Mode: Worktree Verification / Checkpoint Packet completed; `NO_NEXT_TASK_SELECTED` for feature expansion
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
+- Supporting Codex 5.4 handover note: `codex-5-4-handover-20260608.md`
 - Legacy docs: `C:\Users\steve\podman\gitnexus`
-- Implementation gate: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, and local read-only MCP exposure, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file`, Task 6 generated API-smoke specs for `/api/processes` and `/api/health`, Task 7 OCaml experimental language support V1, and Task 7 OCaml Query Depth V2 are implemented locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, GitHub PR ingestion/comments/checks, token-bearing GitHub automation, Dune/PPX, and full OCaml module-system resolution remain deferred.
-- Autonomous workflow: one selected task at a time; complete or block the current selected task before choosing the next; after every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
+- Implemented local base: Auto-Reindexing, Auto-Updating Code Wiki planner/runner, Auto-Updating Code Wiki read-only server status endpoint plus provider-readiness status, Auto-Updating Code Wiki manual-refresh planner CLI plus explicit planning-only execution boundary, Multi-Repo Support Improvements, PR Impact / Blast Radius report core, CLI, local read-only MCP exposure, new-side changed/unmatched range evidence, and local old-side deleted-symbol evidence, Auto Regression Forensics, the Task 6 E2E proposal/report core, Task 6 deterministic generated Playwright spec renderer for `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file`, Task 6 generated API-smoke specs for `/api/processes`, `/api/health`, and `/api/info`, Task 7 OCaml experimental language support V1, Task 7 OCaml Query Depth V2, and Task 7 Module-System Depth readiness are complete locally. Broader generated tests, browser execution, CI mutation, mutating wiki generation, provider execution, GitHub PR ingestion/comments/checks, token-bearing GitHub automation, PR Impact historical/base graph indexes, Dune/PPX, dependency upgrades, production classification, and full OCaml module-system resolution remain deferred.
+- Autonomous workflow: Structured Delegation via Evidence-Gated Small-Batch Kanban. The human operator is `MAIN` and has superseding authority; `MAIN` is not a separate approval body. Work one selected task at a time on `local/gitnexus-local-features`; green/amber lane repo-local work may proceed once the selected-task packet is clear, while red-lane external/security/destructive boundaries require explicit human-operator direction. After every completed or blocked task, the supervisor must record the next selected task or `NO_NEXT_TASK_SELECTED` with the blocker. Non-interactive `codex exec` worker runs must repeat the selected-task packet and point to this bundle. Formal Goal Contracts and the Codex Goal tool are optional tracking, not required control surfaces.
+- Fast-flow workflow: Continuous Agentic Kanban is the faster-paced variant. Keep one active implementation slice, maintain up to three ready packets where possible, size green-lane work as micro/small red-green-review loops, keep amber-lane work bounded with premortem and rollback notes, and treat elapsed time as an observation metric rather than a permission gate for Codex 5.4.
+- Testing workflow: use the GitNexus testing ladder recorded in `implement.md` and `testing-strategy-research-scratchpad.md`: focused TDD first, fixture/CLI/MCP/golden tests at boundary crossings, build and diff hygiene for source tranches, runtime checks only when touched, and non-interactive Codex review as a second-opinion checkpoint after executable tests.
 - CLI routing: hidden bare-`gitnexus` router quarantined on 2026-06-05; use `gitnexus-podman` explicitly for the Podman rc.109 route. Bare `gitnexus` is the host/npm route, aligned to `1.6.6-rc.109`.
 - Embedding route: Podman-managed repos use container-side indexing and the internal llama.cpp sidecar at `gitnexus-embed:8080`; host/npm `gitnexus` embedding parity is opt-in only and must not be assumed.
 
@@ -32,7 +35,7 @@ Current state:
 - One shared branch is the chosen route, but the operating rule is small-batch work with WIP limited to one implementation feature at a time.
 - Current completed tranche is Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, then Task 5 Auto Regression Forensics local V1.
 - Task 7 OCaml Support readiness is complete.
-- End-to-End Test Generation has completed proposal/report, thin CLI local V1, and deterministic generated Playwright output for mocked `/api/repos`, `/api/repo`, and `/api/graph` route proposals. Broader generated tests remain implementation-blocked until an exact route/scenario Goal is opened. OCaml Support has completed experimental `.ml` / `.mli` local V1; deeper semantics remain deferred.
+- End-to-End Test Generation has completed proposal/report, thin CLI local V1, deterministic generated Playwright output for mocked `/api/repos`, `/api/repo`, `/api/graph`, and `/api/file` route proposals, plus generated API-smoke output for `/api/processes`, `/api/health`, and `/api/info`. Broader generated tests remain selected-task gated. OCaml Support has completed experimental `.ml` / `.mli` local V1 plus Query Depth V2; 2026-06-08 module-depth readiness found no safe next behavior slice without resolver/dependency expansion.
 - 2026-06-05T10:39+01:00 coordinated research tranche initially preferred freshness first, PR report second, wiki refresh third, multi-repo surface reconciliation later, and regression/E2E/OCaml deferred; the later user decision below supersedes this sequence.
 - 2026-06-05T10:49+01:00 coordinated continuation added methodology evidence, Context7 Node watcher corroboration, and a tighter rule: implementation planning must reconcile public intent, GitHub PR/issue evidence, official docs, and local source/graph evidence before MAIN approval.
 - 2026-06-05T10:55+01:00 GitHub PR/issue deepening confirmed that OSS PostToolUse staleness behavior is notification-only and intentionally distinct from Enterprise Auto-reindexing.
@@ -40,6 +43,12 @@ Current state:
 - 2026-06-05: User chose a Codex Goal-backed non-interactive workflow: each feature has a Goal Contract, work proceeds through `codex exec` worker runs, and the supervisor thread keeps one active feature Goal at a time.
 - 2026-06-05: Goal Contracts were reviewed against OpenAI Codex Goal guidance and tightened to include outcome, verification surface, constraints, boundaries, iteration policy, and blocked stop condition.
 - 2026-06-07: User superseded the mandatory Goal Contract workflow. Current rule: run autonomously from selected-task packets documented in `AGENTS.md`, `plans.md`, `feature-map.md`, and `documentation.md`; formal Goal Contracts / Goal tool use are optional tracking only.
+- 2026-06-08: Overnight workflow readiness stabilization promoted the compact methodology rule into durable control docs: Structured Delegation via Evidence-Gated Small-Batch Kanban. The next selected task at that checkpoint was Task 2 Wiki Mutation / Manual Refresh Policy readiness; this was completed on 2026-06-08T09:34+01:00 by the local `gitnexus wiki-refresh` planner slice.
+- 2026-06-08: Human operator clarified that they are `MAIN` and have superseding authority because they defined the workstream rules. Current rule is branch-trusted autonomy on `local/gitnexus-local-features`: green/amber lane repo-local work does not require a separate `MAIN | READY_FOR_IMPLEMENTATION` phrase; red-lane work still stops for explicit human-operator direction.
+- 2026-06-08: Testing-strategy research was promoted into the durable workflow docs as the GitNexus testing ladder. The scratchpad remains evidence; `AGENTS.md`, `implement.md`, `plans.md`, and this status ledger carry the active rule.
+- 2026-06-08: Faster-pace methodology research adopted Continuous Agentic Kanban as the local workflow variant: Kanban for flow, XP/TDD for engineering discipline, CI/CD-style verification for enforcement, and Codex selected-task packets for continuity.
+- 2026-06-08: Codex 5.4 handover guidance was added in `codex-5-4-handover-20260608.md`. The workflow now treats faster packet cycling as the goal and removes rigid human-style timeboxes from the active rule; test/review/red-lane gates remain unchanged.
+- 2026-06-08T09:34+01:00: Task 2 Wiki Mutation / Manual Refresh Policy produced a local manual-refresh planner CLI slice: `gitnexus wiki-refresh [path]`. The command emits deterministic Markdown/JSON readiness over graph freshness, wiki metadata, and provider readiness, recommends `gitnexus wiki "<path>"` only when prerequisites pass, and does not run the generator, invoke providers, mutate wiki output, or write config. Full output mutation/provider execution remains deferred.
 - 2026-06-05: Upstream Docker README/compose guidance and embedding PR evidence were reconciled with Steve's local Podman profile. Decision: default to Podman/container-side indexing for Podman-managed repos; do not configure Windows/User PowerShell `GITNEXUS_EMBEDDING_*` variables unless host CLI parity is explicitly requested.
 - 2026-06-05: Redundant `gitnexus-host` compatibility helper was quarantined. New workflow uses only bare `gitnexus` for the host/npm CLI and `gitnexus-podman` for the Podman/container runtime.
 - 2026-06-05T16:31+01:00: Auto-Reindexing now has a decision-complete implementation plan in `plans.md`, including expected vs actual behavior, proposed write set, helper boundary, TDD order, acceptance criteria, and required MAIN approval text. Source implementation remains blocked.
@@ -102,6 +111,696 @@ Current state:
 - 2026-06-07T17:08+01:00: Task 7 Deeper OCaml Semantics readiness selected a narrow OCaml Query Depth V2 slice: module type definitions plus module/include/functor references in experimental query captures only. Dependency upgrades, Dune, PPX, full module alias/functor resolution, parser-loader changes, production classification, web UI, MCP, and API changes remain deferred.
 - 2026-06-07T17:11+01:00: Task 7 OCaml Query Depth V2 implemented with TDD. Added advanced `.ml`/`.mli` fixtures, captured module type definitions as `definition.interface`, and captured module parameters, module paths, module type paths, includes, and interface includes as import-like references. Focused OCaml/query tests, parser ABI smoke, and build passed. Next selected task is post-tranche consolidation and next-slice map refresh.
 - 2026-06-07T17:14+01:00: Post-tranche consolidation refreshed the queue. Recent Task 4/6/7 slices are complete. The main remaining blockers are policy/permission/ownership decisions, not ordinary coding failures: wiki output mutation, token-bearing GitHub PR automation, broader generated-test execution, and full OCaml module-system semantics. Next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness.
+- 2026-06-08T09:57+01:00: Task 6 `/api/info` API-Smoke Route implemented with TDD. The generated API-smoke lane now supports `/api/processes`, `/api/health`, and `/api/info`. `/api/info` assertions check stable response shape only: OK response, string `version`, `launchContext` in `npx | global | local`, and Node-style `nodeVersion`. No server route changes, live browser/server execution, CI mutation, GitHub automation, token handling, or new dependency was introduced. Next selected task is Task 7 OCaml Module-System Depth readiness.
+- 2026-06-08T10:12+01:00: Task 7 OCaml Module-System Depth readiness completed. Query Depth V2 already covers the safe syntax-capture layer; the next meaningful OCaml behavior work crosses into dependency upgrades, Dune/project modeling, `.ml`/`.mli` matching, module alias/functor resolution, PPX/generated-code policy, production classification, or full resolver design. Only a green source-comment cleanup was made. Next selected task is Task 4 No-Write Graph Primitives readiness.
+- 2026-06-08T10:20+01:00: Task 4 No-Write Graph Primitives completed with TDD. `detect_changes` now emits new-side `changed_ranges` and `unmatched_ranges`; `pr_impact` carries unmatched range evidence into `pr-impact.v1alpha1`. Deleted-symbol/base-graph semantics remain deferred. Next selected task is Task 4 Deleted/Base-Graph Mapping readiness.
+- 2026-06-08T10:32+01:00: Task 4 Deleted/Base-Graph Mapping completed with TDD. `parseDiffRanges()` now parses old-side pure-deletion ranges; `detect_changes` resolves overlapping local graph symbols as `deleted_symbols` with inbound caller counts; `pr_impact` carries deleted-symbol evidence into `pr-impact.v1alpha1`. Historical/base graph indexes and GitHub provider compare semantics remain deferred. Next selected task is Task 2 Full Wiki Mutation / Provider Execution readiness.
+- 2026-06-08T10:39+01:00: Task 2 Full Wiki Mutation / Provider Execution readiness completed with TDD. `gitnexus wiki-refresh` now emits a planning-only `execution_boundary` in Markdown and JSON, explicitly disabling provider execution, output mutation, and config writes while listing required human decisions. Provider execution, secrets/tokens, saved config writes, output mutation/publication, and unattended generation remain deferred. Next selected task is Post-Tranche Consolidation / Next-Slice Selection.
+- 2026-06-08T10:47+01:00: Post-Tranche Consolidation / Next-Slice Selection completed. The recent Task 4 no-write range/deletion primitives and Task 2 wiki execution-boundary slice are reconciled across the control docs. `NEXT_TASK_SELECTED`: Worktree Verification / Checkpoint Packet. Purpose: verify the accumulated dirty-tree feature slices together, map WIP by slice, and prepare a checkpoint recommendation before any further feature expansion.
+- 2026-06-08T10:53+01:00: Worktree Verification / Checkpoint Packet completed. Focused touched-slice tests, `npm run build`, and `git diff --check` passed. `NO_NEXT_TASK_SELECTED` for feature expansion; recommended next human/operator action is checkpoint review/commit preparation before selecting another feature packet.
+- 2026-06-08T12:17+01:00: Review-first checkpoint pass found one source-review issue before checkpointing: direct CLI `gitnexus detect-changes` can still print "No changes detected" for deletion-only or unmatched-range-only diffs because the formatter keys off `summary.changed_count` while the backend reports new evidence in `changed_ranges`, `unmatched_ranges`, and `deleted_symbols`. Checkpoint recommendation changed from "ready" to "fix or explicitly accept this issue before commit".
+- 2026-06-08T12:55+01:00: Cookbook-style non-interactive Codex structured review completed and recorded in `codex-structured-review-20260608-124731.md`. It independently confirmed the P1 `detect_changes` summary/CLI visibility issue and added a P2 compare-scope deleted-symbol mapping concern. Checkpoint remains not ready until P1 is fixed and P2 is investigated or explicitly accepted.
+- 2026-06-08T13:05+01:00: Structured-review findings addressed with TDD. `detect_changes` summary/CLI no-change handling now treats `changed_ranges`, `unmatched_ranges`, and `deleted_symbols` as change evidence; compare-scope deleted ranges are no longer resolved against the current graph and are downgraded to unmatched evidence until a base-graph primitive exists. Focused tests, adjacent PR Impact/parser tests, `npm run build`, and `git diff --check` passed. `NO_NEXT_TASK_SELECTED` for feature expansion.
+- 2026-06-08T13:27+01:00: Post-fix non-interactive Codex review completed and recorded in `codex-structured-review-postfix-20260608-132546.md`. Result: `patch is correct`, no actionable findings. The reviewer confirmed the prior P1/P2/P3 findings are addressed and noted only documentation drift around `changed_count`; that drift was corrected immediately afterward. `NO_NEXT_TASK_SELECTED` for feature expansion.
+- 2026-06-08T15:05+01:00: Final checkpoint-readiness review completed. Manual slice-by-slice source review found no new actionable issues after the 13:27 post-fix reviewer pass. Because no source files changed after that verified tranche, existing focused test/build evidence remains valid; fresh `git status`, `git diff --name-status`, `git diff --stat`, `git diff --check`, untracked-file inventory, and wiring/drift checks all aligned with the expected Task 2/4/6/7 slices plus workflow docs. Current recommendation: checkpoint-ready for commit preparation. Keep `NO_NEXT_TASK_SELECTED` for feature expansion until this tranche is checkpointed or explicitly carried forward as intentional WIP.
+
+### 2026-06-08T12:17+01:00 - Review-First Checkpoint Pass
+
+Goal:
+
+- Review the verified dirty tree before any commit or new feature work, grouped by feature slice, and produce a checkpoint recommendation.
+
+Review scope:
+
+| Slice | Reviewed surfaces |
+| --- | --- |
+| Workflow/control docs | `AGENTS.md`, `prompt.md`, `implement.md`, `plans.md`, `feature-map.md`, `documentation.md` |
+| Task 2 wiki-refresh | `wiki-refresh.ts`, CLI help/i18n/index wiring, `wiki-refresh-cli.test.ts`, `cli-index-help.test.ts` |
+| Task 4 PR Impact range/deletion primitives | `git.ts`, `local-backend.ts`, `pipeline.ts`, `tools.ts`, parser/dispatch/pipeline tests |
+| Task 6 `/api/info` API-smoke generation | `api-smoke-renderer.ts`, API-smoke renderer test, generated `/api/info` fixture |
+| Task 7 OCaml query cleanup | `tree-sitter-queries.ts` |
+
+Finding:
+
+| Priority | Finding | Evidence | Recommendation |
+| --- | --- | --- | --- |
+| P1 | Direct CLI `gitnexus detect-changes` can hide deletion-only or unmatched-range-only diffs. | `LocalBackend.detectChanges()` now returns `changed_ranges`, `unmatched_ranges`, and `deleted_symbols`, but `summary.changed_count` remains `changedSymbols.length`. `formatDetectChangesResult()` returns `No changes detected.` whenever `changed_count` is `0`, before inspecting the new evidence arrays. | Fix before checkpoint by teaching the formatter and/or summary to treat changed ranges, unmatched ranges, and deleted symbols as real changes, with focused CLI formatter coverage. |
+
+Non-findings / drift checks:
+
+- Current baton is consistently `NO_NEXT_TASK_SELECTED` at the top of the control docs.
+- Older "next selected" phrases remain in dated historical checkpoints and are superseded nearby; they are not current control instructions.
+- Untracked files are expected for the new `wiki-refresh` command/test and `/api/info` generated fixture.
+- No tracked generated build output under `gitnexus/web`, `dist`, `node_modules`, `coverage`, or `gitnexus/test/api-smoke/generated` appeared in `git diff --name-only`.
+
+Commands run:
+
+```powershell
+git status --short --branch
+git diff --name-status
+git diff --stat
+rg -n "NO_NEXT_TASK_SELECTED|NEXT_TASK_SELECTED|Mode:|current baton|next selected|next allowed work|active next selected" .agent\long-horizon\gitnexus-local-features\documentation.md .agent\long-horizon\gitnexus-local-features\plans.md .agent\long-horizon\gitnexus-local-features\feature-map.md
+git diff -- AGENTS.md .agent\long-horizon\gitnexus-local-features\prompt.md .agent\long-horizon\gitnexus-local-features\implement.md .agent\long-horizon\gitnexus-local-features\plans.md .agent\long-horizon\gitnexus-local-features\feature-map.md .agent\long-horizon\gitnexus-local-features\documentation.md
+Get-Content gitnexus\src\cli\wiki-refresh.ts
+git diff -- gitnexus\src\cli\index.ts gitnexus\src\cli\help-i18n.ts gitnexus\src\cli\i18n\en.ts gitnexus\src\cli\i18n\zh-CN.ts gitnexus\test\unit\cli-index-help.test.ts
+Get-Content gitnexus\test\unit\wiki-refresh-cli.test.ts
+git diff -- gitnexus\src\storage\git.ts gitnexus\src\mcp\local\local-backend.ts gitnexus\src\core\pr-impact\pipeline.ts gitnexus\src\mcp\tools.ts
+git diff -- gitnexus\test\unit\parse-diff-hunks.test.ts gitnexus\test\unit\calltool-dispatch.test.ts gitnexus\test\unit\pr-impact-pipeline.test.ts
+Get-Content gitnexus\src\core\pr-impact\report.ts -TotalCount 330
+git diff -- gitnexus\src\core\e2e-test-generation\api-smoke-renderer.ts gitnexus\test\unit\e2e-test-generation-api-smoke-renderer.test.ts
+Get-Content gitnexus\test\fixtures\e2e-test-generation\generated-api-info-smoke.spec.ts
+git diff -- gitnexus\src\core\ingestion\tree-sitter-queries.ts
+Get-Content gitnexus\src\cli\detect-changes-format.ts
+Get-Content gitnexus\src\cli\tool.ts -TotalCount 270
+Get-Content gitnexus\test\unit\tool-direct-cli.test.ts -TotalCount 140
+git diff --check
+git diff --name-only | rg "^gitnexus/(web|dist|node_modules|coverage|test/api-smoke/generated)"
+```
+
+Checkpoint recommendation:
+
+- Do not checkpoint the tranche as-is unless the P1 CLI visibility issue is explicitly accepted as known debt.
+- Preferred next selected packet: fix the direct CLI `detect-changes` formatter/summary visibility gap with focused tests, then rerun the focused detect-changes/tool tests plus `git diff --check`.
+- Do not select a new feature expansion until this review finding is fixed or deliberately accepted.
+
+### 2026-06-08T12:55+01:00 - Cookbook-Style Codex Structured Review
+
+Goal:
+
+- Use `codex exec` as a structured second-pass reviewer and preserve its findings as Markdown.
+
+Artifact:
+
+- `codex-structured-review-20260608-124731.md`
+
+Method:
+
+- Generated a schema-backed review prompt from the dirty-tree diff, untracked file contents, and selected line-numbered source snippets.
+- Initial shell-enabled review path hit a Windows PowerShell property-setting/language-mode error, so the successful run used prompt-only review with no tool or filesystem access inside the reviewing worker.
+- The run completed with exit code `0` and wrote structured JSON to `C:\Users\steve\AppData\Local\Temp\gitnexus-codex-review-20260608-124731\codex-output-prompt-only.json`.
+
+Findings:
+
+| Priority | Finding | Status |
+| --- | --- | --- |
+| P1 | `detect_changes` summary still reports deletion-only or unmatched-range-only diffs as no change. | Confirms the manual P1 review issue. |
+| P2 | Deleted-symbol mapping now runs for `compare` diffs even though there is still no base-graph primitive. | New issue to investigate before checkpointing. |
+
+Checkpoint recommendation:
+
+- Not checkpoint-ready yet.
+- Next selected packet should fix P1 and investigate or fix P2 before committing the tranche.
+
+### 2026-06-08T13:05+01:00 - Structured Review Findings Addressed
+
+Goal:
+
+- Fix the review-blocking `detect_changes` visibility issue and investigate/address the compare-scope deleted-symbol concern before checkpointing.
+
+Changes:
+
+- `formatDetectChangesResult()` no longer treats `summary.changed_count === 0` as authoritative when `changed_ranges`, `unmatched_ranges`, `deleted_symbols`, or `changed_symbols` contain evidence.
+- Direct CLI output now renders deleted-symbol and unmatched-range evidence instead of printing `No changes detected.`
+- `LocalBackend.detectChanges()` keeps `summary.changed_count` as the mapped changed-symbol count and returns `summary.evidence_count` for mapped changed symbols plus deleted symbols plus unmatched ranges.
+- Compare-scope deleted ranges are not resolved against the current graph. They are reported as unmatched evidence with reason `Deleted range requires base graph mapping for compare scope`.
+
+Tests added:
+
+- Direct CLI coverage for unmatched-range-only evidence.
+- Formatter coverage for deletion-only and changed-range-only evidence.
+- Backend coverage for evidence-count summaries and compare-scope deleted-range downgrade behavior.
+
+Verification:
+
+```powershell
+npm test -- --run test/unit/tool-direct-cli.test.ts test/unit/eval-formatters.test.ts test/unit/calltool-dispatch.test.ts
+npm test -- --run test/unit/parse-diff-hunks.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-report.test.ts
+npm test -- --run test/unit/tool-direct-cli.test.ts test/unit/eval-formatters.test.ts test/unit/calltool-dispatch.test.ts test/unit/parse-diff-hunks.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-report.test.ts
+npm run build
+git diff --check
+git diff --name-only | rg "^gitnexus/(web|dist|node_modules|coverage|test/api-smoke/generated)"
+```
+
+Outcomes:
+
+- Focused detect-changes/formatter/backend tests: `133 passed`.
+- Adjacent parser/PR-impact tests: `20 passed`.
+- Combined focused verification: `154 passed`.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- Generated build artifact drift check: no matches.
+
+Checkpoint recommendation:
+
+- The two structured-review findings are addressed.
+- `NO_NEXT_TASK_SELECTED` for feature expansion remains in effect; the next sensible action is checkpoint/commit preparation or a final review pass, not a new feature packet.
+
+### 2026-06-08T13:27+01:00 - Post-Fix Non-Interactive Codex Review
+
+Goal:
+
+- Rerun `codex exec` as a schema-backed non-interactive reviewer after fixing the first structured-review findings.
+
+Artifact:
+
+- `codex-structured-review-postfix-20260608-132546.md`
+
+Method:
+
+- Generated a fresh post-fix dirty-tree packet with tracked diff, untracked file contents, and extra context for `/api/info`, wiki auto-refresh/provider-readiness, and PR Impact report behavior.
+- Ran the reviewer in prompt-only read-only mode after authenticating and starting Codanna HTTP MCP.
+- The reviewing worker did not run shell commands or inspect files outside the packet.
+
+Result:
+
+- Overall correctness: `patch is correct`.
+- Findings: none.
+- Confidence: `0.92`.
+
+Reviewer notes:
+
+- Prior P1 is fixed: deleted/unmatched/range evidence prevents false `No changes detected`, and deleted symbols join affected-process lookup.
+- Prior P2 is fixed: `summary.changed_count` remains mapped changed-symbol count and `summary.evidence_count` carries the broader evidence tally.
+- Prior P3 is fixed: the baton is `NO_NEXT_TASK_SELECTED` rather than completed Task 2 readiness.
+- The only residual note was documentation drift in the 13:05 checkpoint; that drift was corrected in this update.
+
+Checkpoint recommendation:
+
+- The post-fix non-interactive review found no actionable findings.
+- `NO_NEXT_TASK_SELECTED` for feature expansion remains in effect; next sensible action is checkpoint/commit preparation.
+
+### 2026-06-08T15:05+01:00 - Final Checkpoint-Readiness Review
+
+Goal:
+
+- Re-check the dirty tree after the 13:27 post-fix reviewer pass and decide whether the current tranche is genuinely checkpoint-ready.
+
+Method:
+
+- Re-read the dirty-tree shape with `git status --short --branch`, `git diff --name-status`, `git diff --stat`, and `git diff --check`.
+- Re-review the touched source slices directly:
+  - Task 2 wiki-refresh planner/boundary (`wiki-refresh.ts`, CLI wiring, `wiki-refresh-cli.test.ts`)
+  - Task 4 PR Impact range/deletion follow-ons (`git.ts`, `local-backend.ts`, `pipeline.ts`, formatter/tool coverage)
+  - Task 6 `/api/info` API-smoke renderer and golden fixture
+  - Task 7 OCaml query-surface comment cleanup
+- Re-check current control-doc baton and handover wording.
+- Confirm untracked files are expected source/test/doc artifacts rather than generated junk.
+
+Findings:
+
+- No new actionable findings.
+- `wiki-refresh` is correctly wired as a planning-only CLI slice and does not need the Ladybug native gate.
+- Untracked files are all expected and in-scope:
+  - `gitnexus/src/cli/wiki-refresh.ts`
+  - `gitnexus/test/unit/wiki-refresh-cli.test.ts`
+  - `gitnexus/test/fixtures/e2e-test-generation/generated-api-info-smoke.spec.ts`
+  - supporting long-horizon handover/review/research notes
+- No tracked generated build output drift appeared.
+
+Checkpoint recommendation:
+
+- The tranche is checkpoint-ready.
+- Keep `NO_NEXT_TASK_SELECTED` for feature expansion until the checkpoint/commit boundary is handled.
+- Suggested commit grouping if the branch is checkpointed now:
+  - `feat(gitnexus): add wiki-refresh planning boundary and API/info smoke support`
+  - `feat(gitnexus): extend pr-impact diff evidence for unmatched and deleted ranges`
+  - `docs(workflow): refresh long-horizon control docs, testing ladder, and codex handover`
+
+### 2026-06-08T10:53+01:00 - Worktree Verification / Checkpoint Packet
+
+Goal:
+
+- Review the accumulated uncommitted source/docs/test WIP by feature slice, rerun the focused verification surface, and prepare a checkpoint recommendation.
+
+WIP inventory:
+
+| Slice | Changed surfaces |
+| --- | --- |
+| Control docs and workflow | `AGENTS.md`, `.agent/long-horizon/gitnexus-local-features/*.md` |
+| Task 2 wiki-refresh planner/boundary | `gitnexus/src/cli/wiki-refresh.ts`, CLI help/i18n/index wiring, `wiki-refresh-cli.test.ts`, `cli-index-help.test.ts` |
+| Task 4 PR Impact range/deletion primitives | `gitnexus/src/storage/git.ts`, `gitnexus/src/mcp/local/local-backend.ts`, `gitnexus/src/core/pr-impact/pipeline.ts`, `gitnexus/src/mcp/tools.ts`, parser/dispatch/pipeline tests |
+| Task 6 `/api/info` API-smoke generation | `gitnexus/src/core/e2e-test-generation/api-smoke-renderer.ts`, API-smoke renderer test, generated `/api/info` fixture |
+| Task 7 OCaml query cleanup | `gitnexus/src/core/ingestion/tree-sitter-queries.ts` |
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `git status --short --branch` | Confirmed branch `local/gitnexus-local-features` with the expected dirty-tree source/docs/test WIP and untracked wiki/API-smoke files. |
+| `git diff --name-status` / `git diff --stat` | Confirmed the tracked diff is concentrated in control docs plus the completed Task 2, Task 4, Task 6, and Task 7 slices. |
+| `npm test -- --run test/unit/parse-diff-hunks.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts` | Passed: 7 files, 132 tests. Existing mocked failure-path log output appeared but assertions passed. |
+| `npm test -- --run test/unit/wiki-refresh-cli.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-provider-readiness.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts test/unit/cli-index-help.test.ts` | Passed: 5 files, 29 tests. |
+| `npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts` | Passed: 4 files, 23 tests. |
+| `npm test -- --run test/unit/ocaml-language-support.test.ts test/integration/tree-sitter-languages.test.ts test/unit/tree-sitter-queries.test.ts` | Passed: 3 files, 138 tests. |
+| `npm run build` | Passed. Existing Vite large-chunk and ineffective-dynamic-import warnings only. |
+| `git diff --check` | Passed. |
+
+Checkpoint recommendation:
+
+- The current dirty tree is verification-clean for the completed slices and should be reviewed/checkpointed before selecting another feature expansion.
+- No new feature behavior should start from stale queue notes.
+- `NO_NEXT_TASK_SELECTED` for feature expansion until the human operator or a new selected-task packet names the next scope.
+
+### 2026-06-08T10:47+01:00 - Post-Tranche Consolidation / Next-Slice Selection
+
+Goal:
+
+- Reconcile the completed Task 4 range/deletion primitives and Task 2 wiki execution-boundary slice, then choose the next defensible task without drifting into red-lane feature expansion.
+
+Verdict:
+
+- Completed slices are coherent as a tranche: Task 4 now has new-side changed/unmatched range evidence and local old-side deleted-symbol evidence; Task 2 wiki-refresh now exposes a planning-only execution boundary.
+- The remaining feature expansions are not ordinary next coding steps. They need new selected-task packets because they cross product/security/provider/architecture boundaries.
+- `NEXT_TASK_SELECTED`: Worktree Verification / Checkpoint Packet.
+
+Remaining blocker classes:
+
+| Area | Current blocker | Lane |
+| --- | --- | --- |
+| Wiki mutation/provider execution | Needs output location, overwrite/rollback, provider execution, cost, retry/timeout, and config-write decisions before mutation. | Red until explicitly selected by the human operator |
+| GitHub PR automation | Needs token, permission, fork/PR security, comment/check/review semantics, and failure policy. | Red |
+| Broader generated tests | Needs route/app contract, browser/live-server/CI policy, and generated-output ownership. | Amber/red depending on slice |
+| PR Impact historical/base graph indexes | Needs architecture for base-vs-head graph storage and provider compare semantics. | Amber/red architecture |
+| OCaml deeper semantics | Needs resolver/dependency strategy for Dune, PPX, `.ml`/`.mli` matching, module aliases, and functors. | Red major architecture/language semantics |
+
+Next selected task packet:
+
+| Field | Value |
+| --- | --- |
+| Task | Worktree Verification / Checkpoint Packet |
+| Outcome | Accumulated dirty-tree slices are reviewed by feature, verified together, and ready for a clean checkpoint recommendation. |
+| Scope | WIP inventory, diff review, focused touched-slice tests or documented skips, build, whitespace check, and checkpoint note. |
+| Lane | Green |
+| Write set | Control docs only unless verification reveals a narrow correction inside an already-completed slice. |
+| Verification | `git status --short --branch`, focused touched-slice tests or documented skips, `npm run build`, `git diff --check`. |
+| Stop rule | Do not implement new feature behavior; stop if verification exposes a nontrivial source bug outside the completed slices. |
+
+### 2026-06-08T10:39+01:00 - Task 2 Full Wiki Mutation / Provider Execution Readiness
+
+Goal:
+
+- Decide whether wiki work can safely move beyond read-only status/provider-readiness/manual-refresh planning into any local mutation-capable or provider-execution workflow.
+
+Verdict:
+
+- Do not implement provider execution, output mutation, config writes, output publication, or unattended generation.
+- Safe no-write slice implemented: `gitnexus wiki-refresh` now exposes a structured execution boundary in both JSON and Markdown.
+
+Files changed:
+
+| File | Purpose |
+| --- | --- |
+| `gitnexus/src/cli/wiki-refresh.ts` | Adds `execution_boundary` to `wiki-refresh-plan.v1alpha1` and renders an `## Execution Boundary` Markdown section. |
+| `gitnexus/test/unit/wiki-refresh-cli.test.ts` | Adds red/green coverage for Markdown and JSON execution-boundary output. |
+
+Execution boundary:
+
+| Field | Value |
+| --- | --- |
+| `mode` | `planning-only` |
+| `provider_execution_enabled` | `false` |
+| `output_mutation_enabled` | `false` |
+| `config_writes_enabled` | `false` |
+
+Required human decisions before mutation/provider work:
+
+- Output location and overwrite/rollback policy.
+- Provider execution policy, cost boundary, timeout, and retry limits.
+- Whether saved config writes are allowed or execution must use per-run environment only.
+
+TDD evidence:
+
+- Red first: focused wiki-refresh tests failed because Markdown and JSON lacked execution-boundary output.
+- Green: added the structured report field and Markdown section.
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- --run test/unit/wiki-refresh-cli.test.ts` | Passed: 1 file, 3 tests |
+| `npm test -- --run test/unit/wiki-refresh-cli.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-provider-readiness.test.ts test/unit/wiki-auto-refresh-api-wiring.test.ts test/unit/cli-index-help.test.ts` | Passed: 5 files, 29 tests |
+| `npm run build` | Passed; existing Vite chunk/dynamic-import warnings only |
+| `git diff --check` | Passed |
+
+Deferred:
+
+- Provider execution.
+- Secrets/tokens.
+- Saved config writes.
+- Generated wiki output mutation/publication.
+- Unattended generation or background automation.
+
+Next selected task:
+
+- Post-Tranche Consolidation / Next-Slice Selection.
+
+### 2026-06-08T10:32+01:00 - Task 4 Deleted/Base-Graph Mapping Implemented
+
+Goal:
+
+- Decide whether deleted-symbol handling can be implemented as a local no-write primitive without pretending the current graph is a historical base graph.
+
+Readiness verdict:
+
+- Safe green/amber local slice: parse old-side pure-deletion ranges from `git diff -U0`, resolve overlapping local graph symbols when available, count inbound callers from current graph relations, and carry the evidence into `pr-impact.v1alpha1`.
+- The slice is intentionally conservative. If a deleted range does not resolve against the local graph, it remains unmatched; the implementation does not claim a historical base graph, provider PR semantics, or GitHub compare ownership.
+
+Files changed:
+
+| File | Purpose |
+| --- | --- |
+| `gitnexus/src/storage/git.ts` | Adds `parseDiffRanges()` for added/modified/deleted range evidence while preserving `parseDiffHunks()` behavior. |
+| `gitnexus/src/mcp/local/local-backend.ts` | Uses `parseDiffRanges()`, emits local `deleted_symbols`, and counts inbound callers for resolved deleted symbols. |
+| `gitnexus/src/core/pr-impact/pipeline.ts` | Normalizes and propagates `detect_changes.deleted_symbols` into `pr-impact.v1alpha1`. |
+| `gitnexus/src/mcp/tools.ts` | Updates `detect_changes` description to mention deleted symbols. |
+| `gitnexus/test/unit/parse-diff-hunks.test.ts` | Adds parser tests for new-side ranges and old-side deletion ranges. |
+| `gitnexus/test/unit/calltool-dispatch.test.ts` | Adds a real temporary-git-repo deletion test for local `detect_changes`. |
+| `gitnexus/test/unit/pr-impact-pipeline.test.ts` | Adds deleted-symbol propagation test. |
+
+TDD evidence:
+
+- Red first: `parseDiffRanges()` did not exist.
+- Red first: pipeline ignored `detect_changes.deleted_symbols`.
+- Red first: local `detect_changes` emitted no deleted-symbol evidence for a pure deletion hunk.
+- Green: focused parser, pipeline, and dispatch tests passed after the narrow implementation.
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- --run test/unit/parse-diff-hunks.test.ts --testNamePattern "parseDiffRanges"` | Passed: 2 selected tests |
+| `npm test -- --run test/unit/pr-impact-pipeline.test.ts --testNamePattern "deleted symbol"` | Passed: 1 selected test |
+| `npm test -- --run test/unit/calltool-dispatch.test.ts --testNamePattern "deleted symbols"` | Passed: 1 selected test |
+| `npm test -- --run test/unit/parse-diff-hunks.test.ts test/unit/pr-impact-diff-mapping.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts` | Passed: 7 files, 132 tests |
+| `npm run build` | Passed; existing Vite chunk/dynamic-import warnings only |
+| `git diff --check` | Passed |
+
+Deferred:
+
+- Historical/base graph indexes.
+- GitHub provider compare semantics.
+- GitHub PR URL ingestion, comments, reviews, checks, Actions workflows, tokens, CI mutation, and remediation.
+
+Next selected task:
+
+- Task 2 Full Wiki Mutation / Provider Execution readiness.
+
+### 2026-06-08T10:20+01:00 - Task 4 No-Write Graph Primitives Implemented
+
+Goal:
+
+- Advance PR Impact V1 without GitHub automation by implementing the smallest local no-write graph primitive after readiness.
+
+Readiness verdict:
+
+- Safe green/amber slice: expose new-side changed hunk ranges from `detect_changes`, classify changed hunks with no overlapping indexed symbol as unmatched ranges, and carry unmatched evidence into the existing `pr_impact` report pipeline.
+- Not safe in this same slice: deleted-symbol/base-graph semantics. Current `parseDiffHunks()` extracts new-file ranges and skips pure-deletion hunks, and live graph lookup does not by itself prove a historical base graph for compare-mode deletions.
+
+Files changed:
+
+| File | Purpose |
+| --- | --- |
+| `gitnexus/src/mcp/local/local-backend.ts` | Adds `changed_ranges` and per-hunk `unmatched_ranges` to local `detect_changes` output. |
+| `gitnexus/src/core/pr-impact/pipeline.ts` | Normalizes and propagates `detect_changes.unmatched_ranges` into `pr-impact.v1alpha1`. |
+| `gitnexus/src/mcp/tools.ts` | Updates `detect_changes` description to mention changed/unmatched ranges. |
+| `gitnexus/test/unit/calltool-dispatch.test.ts` | Adds a real temporary-git-repo test for changed and unmatched range output. |
+| `gitnexus/test/unit/pr-impact-pipeline.test.ts` | Adds propagation test for unmatched range report evidence. |
+
+TDD evidence:
+
+- Red first: pipeline test failed with `summary.unmatched_ranges` equal to `0` when `detect_changes` supplied unmatched evidence.
+- Red first: `detect_changes` range test failed because `changed_ranges` was `undefined`.
+- Green: focused tests passed after the narrow implementation.
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- --run test/unit/pr-impact-pipeline.test.ts` | Passed: 1 file, 2 tests |
+| `npm test -- --run test/unit/calltool-dispatch.test.ts --testNamePattern "detect_changes returns changed ranges"` | Passed: 1 selected test |
+| `npm test -- --run test/unit/pr-impact-diff-mapping.test.ts test/unit/pr-impact-report.test.ts test/unit/pr-impact-pipeline.test.ts test/unit/pr-impact-cli.test.ts test/unit/tools.test.ts test/unit/calltool-dispatch.test.ts` | Passed: 6 files, 120 tests |
+| `npm run build` | Passed; existing Vite chunk/dynamic-import warnings only |
+| `git diff --check` | Passed |
+
+Deferred:
+
+- Deleted-symbol/base-graph mapping.
+- GitHub PR URL ingestion, comments, reviews, checks, Actions workflows, tokens, CI mutation, and remediation.
+
+Next selected task:
+
+- Task 4 Deleted/Base-Graph Mapping readiness.
+
+### 2026-06-08T10:12+01:00 - Task 7 OCaml Module-System Depth Readiness
+
+Goal:
+
+- Decide whether any next OCaml module-system source slice is safe after experimental OCaml V1 and Query Depth V2.
+
+Verdict:
+
+- No further behavior implementation is selected from this readiness pass.
+- Existing Query Depth V2 already covers the safe query-only syntax layer: module type definitions plus module/include/functor references.
+- The next useful OCaml behavior work requires resolver/dependency/product-lane expansion.
+- Completed one green cleanup: updated the `OCAML_QUERIES` source comment to match the current experimental query surface.
+
+Evidence:
+
+| Source | Finding | Consequence |
+| --- | --- | --- |
+| [GitNexus issue #1368](https://github.com/abhigyanpatwari/GitNexus/issues/1368) | Requests OCaml `.ml`/`.mli` support with symbols, imports, and calls. | Confirms intended feature direction, but not production readiness. |
+| [GitNexus PR #305](https://github.com/abhigyanpatwari/GitNexus/pull/305) | Language-onboarding analogue for Zig included broad CLI/web/query/parser/product parity. | Full language support is broader than OCaml query captures. |
+| [tree-sitter-ocaml](https://github.com/tree-sitter/tree-sitter-ocaml) | Official grammar source exists with implementation/interface grammar shape. | Current `.ml`/`.mli` split remains the right route. |
+| `npm view tree-sitter-ocaml version peerDependencies dependencies --json` | Current npm latest is `0.24.2` and peers on `tree-sitter ^0.22.4`. | Do not upgrade from local `0.22.0` inside this slice. |
+| `node -e "const g=require('tree-sitter-ocaml'); ..."` | Local package exports `interface,ocaml` and reports `0.22.0`. | Current parser-loader export names remain locally correct. |
+| `gitnexus/src/core/ingestion/languages/ocaml.ts` | `importResolver` returns `null`; import semantics are `wildcard-leaf`. | True module-system depth is resolver design, not more query text. |
+
+Readiness table:
+
+| Candidate | Lane | Decision |
+| --- | --- | --- |
+| Query comment drift cleanup | Green | Completed |
+| More query-only captures | Green/amber | Defer until a concrete missing syntax fixture is named |
+| `.ml`/`.mli` interface matching | Amber/red | Defer; requires module/project naming rules |
+| Dune/project model | Red/major architecture | Defer |
+| Module alias/functor resolution | Red/major semantics | Defer |
+| Upgrade `tree-sitter-ocaml` | Red/dependency | Defer; latest peer range implies core runtime scope |
+| Production classification | Red/product quality | Defer |
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- --run test/unit/ocaml-language-support.test.ts test/integration/tree-sitter-languages.test.ts test/unit/tree-sitter-queries.test.ts` | Passed: 3 files, 138 tests |
+| `git diff --check` | Passed after Task 7 doc/comment cleanup |
+
+Next selected task:
+
+- Task 4 No-Write Graph Primitives readiness.
+
+### 2026-06-08T09:57+01:00 - Task 6 `/api/info` API-Smoke Route Implemented
+
+Goal:
+
+- Add deterministic generated API-smoke support for the read-only `/api/info` server-info route.
+
+Selected-task packet:
+
+| Field | Decision |
+| --- | --- |
+| Lane | Green/amber local source slice |
+| Route contract | `/api/info` returns `{ version, launchContext, nodeVersion }` from `gitnexus/src/server/api.ts` |
+| Stable assertions | OK response, string `version`, `launchContext` enum, Node-style `nodeVersion` regex |
+| Write set | `api-smoke-renderer.ts`, focused API-smoke renderer test, `/api/info` golden fixture, long-horizon docs |
+| Red-lane exclusions | No live server/browser execution, no CI/workflow mutation, no GitHub writes, no tokens/secrets, no dependencies |
+
+TDD evidence:
+
+- Red first: focused API-smoke renderer test failed because `/api/info` was blocked by the existing route allowlist.
+- Green: added the `/api/info` renderer branch, updated the allowlist diagnostic, and added the golden fixture.
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- --run test/unit/e2e-test-generation-api-smoke-renderer.test.ts` | Passed: 1 file, 6 tests |
+| `npm test -- --run test/unit/e2e-test-generation-spec-renderer.test.ts test/unit/e2e-test-generation-api-smoke-renderer.test.ts test/unit/e2e-test-plan-cli.test.ts test/unit/e2e-test-generation-report.test.ts` | Passed: 4 files, 23 tests |
+| `npm run build` | Passed; existing Vite chunk/dynamic-import warnings only |
+| `git diff --check` | Passed |
+
+Next selected task:
+
+- Task 7 OCaml Module-System Depth readiness.
+
+### 2026-06-08 - Overnight Workflow Readiness
+
+Goal:
+
+- Stabilize the workflow before a possible 6-8 hour autonomous run without copying the full methodology scratchpad into durable control docs.
+
+Checkpoint:
+
+- `AGENTS.md`, `plans.md`, and `implement.md` now carry the compact rule: Structured Delegation via Evidence-Gated Small-Batch Kanban.
+- Overnight/long-run work remains bounded by one selected task at a time, premortem for risky tasks, fresh verification, and checkpointing after each completed/blocked selected task.
+- Red-lane boundaries remain: secrets/tokens, paid/provider execution, GitHub PR comments/checks/reviews, CI/workflow mutation, destructive git, production/external writes, unbounded background automation, and major architecture/language-semantics expansion. Repo-local generated-output, config-shape, API, dependency, and shared-module work is amber lane, not automatically blocked.
+- The scratchpad remains supporting evidence only and does not override the four-file bundle.
+
+Next selected task:
+
+- Completed historical packet: `Task 2 Wiki Mutation / Manual Refresh Policy` readiness.
+
+Task 2 overnight packet:
+
+| Field | Value |
+| --- | --- |
+| Outcome | Decide whether wiki work may move beyond read-only status/provider-readiness into explicit manual refresh or mutation-capable local workflow. |
+| Scope | Output mutation policy, manual refresh shape, provider execution boundary, rollback/reporting behavior, likely write set, risk lane, and TDD plan if implementation becomes safe. |
+| Verification | Readiness table, premortem, source ownership map, exact no-write/write phases, and explicit next selected task or blocker. |
+| Stop rule | Proceed if the slice is green/amber and verification is clear; stop only for red-lane provider execution, secrets/tokens, GitHub/CI writes, destructive operations, external/production writes, unbounded background automation, or major product/architecture expansion. |
+
+Fallback sequence if Task 2 blocks:
+
+1. Task 4 GitHub PR Automation Boundary readiness - completed.
+2. Task 6 `/api/info` API-Smoke Route readiness - completed.
+3. Task 7 OCaml Module-System Depth readiness - completed.
+4. Task 4 No-Write Graph Primitives readiness - completed.
+5. Task 4 Deleted/Base-Graph Mapping readiness - completed.
+6. Task 2 Full Wiki Mutation / Provider Execution readiness - completed.
+7. Post-Tranche Consolidation / Next-Slice Selection - selected next.
+
+Current baton:
+
+- Task 2 did not block; it completed a safe local planner slice. The next selected task at that checkpoint was Task 4 GitHub PR Automation Boundary readiness; that readiness checkpoint completed on 2026-06-08T09:45+01:00. Later batons completed Task 6 `/api/info`, Task 7 OCaml Module-System Depth readiness, Task 4 No-Write Graph Primitives, Task 4 Deleted/Base-Graph Mapping, Task 2 Full Wiki Mutation / Provider Execution readiness, Post-Tranche Consolidation / Next-Slice Selection, and Worktree Verification / Checkpoint Packet; current baton is `NO_NEXT_TASK_SELECTED` for feature expansion.
+
+### 2026-06-08 - Human-Operator Authority / Branch-Trusted Autonomy
+
+Decision:
+
+- The human operator is `MAIN` and has superseding authority over this workstream's rules.
+- `MAIN` permission is not a separate approval gate from the human operator.
+- Historical `MAIN | READY_FOR_IMPLEMENTATION` records remain audit history and are not rewritten.
+- Current work proceeds through selected-task packets plus green/amber/red risk lanes.
+
+Current lane model:
+
+| Lane | Autonomous behavior |
+| --- | --- |
+| Green | Repo-local docs, tests, fixtures, source code, deterministic reports, dry-run/status behavior, local CLI/MCP surfaces, and focused refactors inside the selected task may proceed with verification. |
+| Amber | Local generated-output mutation, local config-shape changes, dependency changes, public CLI/API shape changes, or broad shared-module edits may proceed with premortem, TDD where behavior changes, checkpointing, and rollback notes. |
+| Red | Stop for explicit human-operator direction before secrets/tokens, paid/provider execution, GitHub comments/checks/reviews, CI/workflow mutation, destructive git, production/external writes, unbounded background automation, or major architecture/language-semantics expansion. |
+
+Task 2 implication:
+
+- `Task 2 Wiki Mutation / Manual Refresh Policy` has completed a green/amber local manual-refresh planner slice.
+- The implemented command is `gitnexus wiki-refresh [path]`; it is dry-run/report-only and delegates actual generation to the existing manual `gitnexus wiki` workflow.
+- Stop before any further Task 2 work that crosses red-lane boundaries such as provider execution, token/secret handling, GitHub/CI writes, destructive operations, or major product/architecture expansion.
+
+### 2026-06-08T09:34+01:00 - Task 2 Wiki Manual-Refresh Planner
+
+Selected task:
+
+- `Task 2 Wiki Mutation / Manual Refresh Policy`.
+
+Outcome:
+
+- Implement a local manual-refresh readiness workflow that moves beyond server read-only status without creating a server mutation endpoint or invoking providers.
+
+Implemented slice:
+
+- Added `gitnexus wiki-refresh [path]`.
+- Added `--repo <name>` for registered-repo targeting.
+- Added `--format markdown|json`.
+- Added `--create-if-missing` so the plan can recommend manual creation when wiki metadata is absent.
+- The command checks graph freshness, wiki metadata, and non-secret provider readiness.
+- The command recommends the existing manual `gitnexus wiki "<path>"` command only when the plan reaches dry-run-ready status.
+
+Lane classification:
+
+- Amber lane: new public CLI surface and local manual generated-output workflow planning.
+- Red-lane actions avoided: no provider execution, no secret/token handling, no output mutation, no config writes, no GitHub/CI writes, no destructive operations, no server mutation endpoint.
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `npm test -- test/unit/wiki-refresh-cli.test.ts` | Passed, 1 file, 3 tests |
+| `npm test -- test/unit/cli-index-help.test.ts` | Passed, 1 file, 12 tests |
+| `npm test -- test/unit/wiki-auto-refresh.test.ts test/unit/wiki-provider-readiness.test.ts` | Passed, 2 files, 13 tests |
+| `npm test -- test/unit/wiki-refresh-cli.test.ts test/unit/wiki-auto-refresh.test.ts test/unit/wiki-provider-readiness.test.ts test/unit/cli-index-help.test.ts` | Passed, 4 files, 28 tests |
+| `npm run build` | Passed |
+| `node --import tsx src/cli/index.ts wiki-refresh --help` | Passed |
+| `node --import tsx src/cli/index.ts wiki-refresh . --format json` | Passed; reported stale graph, missing wiki metadata, missing provider key, and no recommended command |
+| `git diff --check` | Passed |
+
+Notes:
+
+- The real smoke reported the local repo index is 39 commits behind HEAD and provider readiness is `missing-api-key`, so no manual refresh command was recommended.
+- Focused tests prove the command does not expose provider secrets and reports all execution flags as false for the planner path.
+- The red-before-code TDD step was not captured for this slice; the implementation was corrected through focused verification and build checks.
+
+NEXT_TASK_SELECTED:
+
+- Task 4 GitHub PR Automation Boundary readiness.
+
+### 2026-06-08T09:45+01:00 - Task 4 GitHub PR Automation Boundary Readiness
+
+Selected task:
+
+- `Task 4 GitHub PR Automation Boundary`.
+
+Goal:
+
+- Decide whether PR Impact should move beyond local CLI/MCP into GitHub PR URL ingestion, comments, reviews, checks, or Actions workflows.
+
+Outcome:
+
+- Boundary is decision-complete for the current autonomous run.
+- Local GitNexus-owned PR Impact V1 is already complete through deterministic `pr-impact.v1alpha1`, `gitnexus pr-impact`, and read-only MCP `pr_impact`.
+- GitHub PR comments, reviews, check runs, statuses, token-bearing automation, CI/workflow mutation, and Codex remediation remain red-lane deferred work.
+- The next Task 4 technical slice, if selected later, should prefer no-write explicit graph primitives such as `symbols-for-ranges`, `impact-for-symbols`, or local explicit range-input support before GitHub posting.
+
+Evidence:
+
+| Source | Finding |
+| --- | --- |
+| GitNexus issue #1901: https://github.com/abhigyanpatwari/GitNexus/issues/1901 | External platforms should own PR/MR provider semantics, base/head selection, rename/delete interpretation, job lifecycle, and reporting; GitNexus should own file ranges to symbols and symbols to impact/process evidence. |
+| GitNexus issue #1858: https://github.com/abhigyanpatwari/GitNexus/issues/1858 | Impact evidence must distinguish unresolved/unknown paths from true no-impact, so automation must not overclaim safety. |
+| GitNexus issue #1532: https://github.com/abhigyanpatwari/GitNexus/issues/1532 | External consumers need stable versioned graph contracts rather than raw graph schema. |
+| GitNexus issue #323: https://github.com/abhigyanpatwari/GitNexus/issues/323 | Framework/template relationships such as JSX usage can still be missed, requiring caveats in any PR verdict. |
+| GitNexus PR #1851: https://github.com/abhigyanpatwari/GitNexus/pull/1851 | Upstream PR review swarm is read-only, manually invoked, evidence-grounded, and does not post by itself. |
+| GitNexus PRs #1818, #1867, #1914 | Impact pagination, per-symbol process evidence, and disambiguation support strengthen local `pr-impact` as the report foundation. |
+| GitNexus PRs #1522 and #1258 | Existing Claude review posting/trigger behavior has already needed careful CI fixes, confirming GitHub posting is operationally sensitive. |
+| Local `.github/workflows/pr-autofix*.yml` | Existing trusted/untrusted workflow split validates metadata before posting comments/checks from trusted jobs. |
+| Local `pr-swarm-review/orchestration.md` | Canonical PR review workflow is read-only and says it never edits, commits, or posts. |
+| Local `gitnexus/src/mcp/tools.ts` | The `pr_impact` MCP tool explicitly does not ingest GitHub PR URLs, use tokens, post comments, create checks, or mutate repos. |
+| GitHub `GITHUB_TOKEN` docs: https://docs.github.com/en/actions/tutorials/authenticate-with-github_token | GitHub recommends least-privilege token permissions. |
+| GitHub workflow syntax docs: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax | Explicit `permissions` can deny unspecified scopes; `permissions: {}` disables token permissions. |
+| GitHub events and secure-use docs: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows and https://docs.github.com/en/enterprise-cloud@latest/actions/reference/security/secure-use | Fork PR and privileged trigger workflows require careful untrusted-code separation and artifact caution. |
+| GitHub issue comments/reviews/check docs: https://docs.github.com/en/rest/issues/comments, https://docs.github.com/en/rest/pulls/reviews, and https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks | Comments/reviews/checks are write-scoped notification or GitHub App surfaces and are not local green-lane behavior. |
+
+No-write/write-phase boundary:
+
+| Phase | Status | Lane |
+| --- | --- | --- |
+| Local CLI/MCP report | Complete: `gitnexus pr-impact` and `pr_impact` over local graph primitives. | Green/amber |
+| Explicit local range-input primitives | Plausible next technical Task 4 slice. | Green/amber if local-only |
+| GitHub PR metadata/diff fetch | Deferred until provider semantics and read-token policy are explicit. | Amber/red |
+| GitHub comments/reviews/statuses/checks | Deferred; requires trusted publishing design. | Red |
+| Actions workflow/App automation | Deferred; requires fork-safety threat model, artifact validation, least-privilege permissions, and workflow/App ownership. | Red |
+| Generated fixes/remediation | Deferred. | Red |
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `gh issue view 1901/1858/1532/323 -R abhigyanpatwari/GitNexus` | Evidence gathered |
+| `gh pr view 1851/1818/1867/1914/1522/1258 -R abhigyanpatwari/GitNexus` | Evidence gathered |
+| `rg -n "pr_impact|pr-impact|GitHub PR URL|comments|checks|token|workflow" gitnexus/test/unit gitnexus/src/mcp gitnexus/src/cli gitnexus/src/core/pr-impact` | Confirmed local `pr_impact` no-write boundary and relevant local surfaces |
+| Official GitHub docs opened for Actions tokens, workflow syntax, events, secure-use, issue comments, pull request reviews, and checks | Evidence gathered |
+
+NEXT_TASK_SELECTED:
+
+- Task 6 `/api/info` API-Smoke Route readiness, unless the human operator selects a Task 4 no-write primitive slice first.
 
 ### 2026-06-07T17:14+01:00 - Post-Tranche Consolidation
 
@@ -129,7 +828,7 @@ What keeps getting blocked:
 
 Decision:
 
-- Next selected task is Task 2 Wiki Mutation / Manual Refresh Policy readiness.
+- Next selected task at that checkpoint was Task 2 Wiki Mutation / Manual Refresh Policy readiness; superseded by the 2026-06-08T09:34+01:00 Task 2 completion checkpoint above.
 - This is a readiness task first, not immediate mutation.
 - It should decide whether the next implementation target is local CLI/manual refresh, server-side dry-run-only planner, mutation-capable server endpoint, or explicit deferral.
 - No wiki output mutation should be implemented until the readiness packet names the exact write set and stop rules.
@@ -2271,7 +2970,7 @@ Current application:
 - Auto-Reindexing is implemented locally and verified, but it is unsnapshotted WIP.
 - Auto-Updating Code Wiki core status/dry-run-first slice is implemented locally and verified, but it is unsnapshotted WIP.
 - Multi-Repo Support Improvements later completed a docs-only README reconciliation slice.
-- PR Impact / Blast Radius is Task 4. Its readiness refresh is complete; source work remains blocked until the WIP snapshot/no-snapshot boundary is resolved and the implementation Goal is created.
+- PR Impact / Blast Radius is Task 4. The old WIP snapshot/source gate was resolved by later checkpoints; local report core, CLI, and read-only MCP slices are complete. The current Task 4 blocker is only GitHub automation/red-lane security policy.
 
 ### 2026-06-05T17:13+01:00 - Auto-Reindexing Slice Implemented
 
@@ -2828,7 +3527,7 @@ Recommended implementation-readiness checks:
 - Before source edits, inspect whether `startReindexJob` should remain in `api.ts` or move to a focused helper module.
 - Confirm the minimal type change for `ReindexTrigger`, likely adding an auto/freshness trigger such as `auto-reindex`.
 - Add tests before implementation for stale selection, fresh skip, dry-run skip, coalescing, invalid registry entries, watcher failure fallback, and operation trigger visibility.
-- Keep source edits inside server reindex/freshness surfaces unless MAIN expands scope.
+- Keep source edits inside server reindex/freshness surfaces unless the human operator selects a broader write set.
 
 Expanded feature-map implications:
 

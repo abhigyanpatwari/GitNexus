@@ -19,7 +19,7 @@ For this task, the canonical multi-document environment is:
 
 Build independently implemented local GitNexus features inspired by public enterprise-style positioning, while keeping the work versioned, sequential, reviewable, and tied to the real source repo.
 
-The current execution tranche is Auto-Reindexing, then Auto-Updating Code Wiki, then Multi-Repo Support Improvements. Pause for MAIN review before starting PR Impact / Blast Radius source work. Deferred candidates remain research-only until reprioritized.
+The current local V1 tranche has implemented the initial slices for Auto-Reindexing, Auto-Updating Code Wiki, Multi-Repo Support Improvements, PR Impact / Blast Radius, Auto Regression Forensics, End-to-End Test Generation, and OCaml Support. Continue one selected task at a time on the shared branch using the green/amber/red lane model. Deferred or broader candidate slices remain research/readiness-only until selected and lane-classified.
 
 ## Branch And Source Of Truth
 
@@ -39,22 +39,25 @@ The `podman\gitnexus` planning files are useful history, but they are no longer 
 - Do not use Git hooks as the implementation route.
 - Do not call this implementation "Enterprise" in code, user-facing text, branch names, or product copy except when quoting or describing public product-positioning evidence.
 - Do not mutate the promoted normal runtime unless the user explicitly requests it.
-- Do not implement source changes until `MAIN | READY_FOR_IMPLEMENTATION` records the accepted scope, branch/worktree, and write set.
+- The human operator is `MAIN` and has superseding authority over this workstream's rules.
+- Current implementation control is the selected-task packet plus green/amber/red risk lanes, not a separate `MAIN | READY_FOR_IMPLEMENTATION` phrase.
+- Green/amber lane repo-local work may proceed autonomously once the selected task, likely write set, verification surface, and stop rules are clear.
+- Red-lane work stops for explicit human-operator direction: secrets/tokens, paid/provider execution, GitHub comments/checks/reviews, CI/workflow mutation, destructive git, production/external writes, unbounded background automation, or major architecture/language-semantics expansion.
 
 ## Candidate Features
 
-1. Auto-Reindexing - `now`, implemented locally and awaiting snapshot/commit boundary.
-2. Auto-Updating Code Wiki - `now`, core status/dry-run-first planner/runner implemented locally; next slice or snapshot decision required.
-3. Multi-Repo Support Improvements - `next tranche`, reconcile current group/status/contracts/docs/tool-surface reality without unified graph expansion.
-4. PR Impact / Blast Radius - `pause before starting`, report-first over deterministic diff-to-graph primitives after Tasks 1-3 and MAIN review.
-5. Auto Regression Forensics - `defer`.
-6. End-to-End Test Generation - `defer`.
-7. OCaml Support - `defer`.
+1. Auto-Reindexing - local V1 complete; broaden only through a selected-task packet and lane classification.
+2. Auto-Updating Code Wiki - local read-only/status/provider-readiness/manual-refresh planning slices and execution-boundary readiness complete; output mutation and provider execution remain red-lane/deferred.
+3. Multi-Repo Support Improvements - local docs/tool-surface reconciliation complete; unified graph expansion remains a broader future slice.
+4. PR Impact / Blast Radius - local report core, CLI, and read-only MCP surface complete; GitHub automation remains red-lane/deferred.
+5. Auto Regression Forensics - local report core and CLI complete; CI/artifact/bisect automation remains deferred.
+6. End-to-End Test Generation - local proposal/report, CLI, deterministic UI generated specs, and API-smoke generated specs complete; browser/CI/GitHub execution remains deferred.
+7. OCaml Support - experimental local V1 and Query Depth V2 complete; full module-system semantics remain a broader future slice.
 
 ## Done When
 
 - The four-file bundle is committed in the source repo.
-- Each approved feature is implemented only after its readiness gate is cleared.
+- Each selected feature slice is implemented only after readiness is clear enough to name the risk lane, likely write set, TDD path, and verification surface.
 - Each feature has focused tests and documented verification.
 - `documentation.md` records every material decision, command, result, blocker, and next step.
 - No active competing roadmap remains outside the source repo.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDiffHunks } from '../../src/storage/git.js';
+import { parseDiffHunks, parseDiffRanges } from '../../src/storage/git.js';
 
 describe('parseDiffHunks', () => {
   it('parses a single file with one hunk', () => {
@@ -111,5 +111,50 @@ describe('parseDiffHunks', () => {
     expect(result[1].hunks).toHaveLength(2);
     expect(result[1].hunks[0]).toEqual({ startLine: 51, endLine: 51 });
     expect(result[1].hunks[1]).toEqual({ startLine: 82, endLine: 84 });
+  });
+});
+
+describe('parseDiffRanges', () => {
+  it('parses new-side changed ranges with change type evidence', () => {
+    const diff = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -2 +2 @@',
+      '-  return 1;',
+      '+  return 2;',
+      '@@ -8,0 +9,2 @@',
+      '+console.log("new");',
+      '+console.log("line");',
+    ].join('\n');
+
+    expect(parseDiffRanges(diff)).toEqual([
+      {
+        filePath: 'src/app.ts',
+        ranges: [
+          { startLine: 2, endLine: 2, change_type: 'modified' },
+          { startLine: 9, endLine: 10, change_type: 'added' },
+        ],
+      },
+    ]);
+  });
+
+  it('parses pure-deletion hunks as old-side deleted ranges', () => {
+    const diff = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -5,3 +4,0 @@',
+      '-export function removed() {',
+      '-  return 1;',
+      '-}',
+    ].join('\n');
+
+    expect(parseDiffRanges(diff)).toEqual([
+      {
+        filePath: 'src/app.ts',
+        ranges: [{ startLine: 5, endLine: 7, change_type: 'deleted', side: 'old' }],
+      },
+    ]);
   });
 });

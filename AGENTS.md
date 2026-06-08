@@ -1,7 +1,7 @@
-<!-- version: 1.9.4 -->
-<!-- Last updated: 2026-06-07 -->
+<!-- version: 1.9.9 -->
+<!-- Last updated: 2026-06-08 -->
 
-Last reviewed: 2026-06-07
+Last reviewed: 2026-06-08
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -16,7 +16,7 @@ Last reviewed: 2026-06-07
 
 ## Model Configuration
 
-- **Primary:** Use a named model (e.g. Claude Sonnet 4.x). Avoid `Auto` or unversioned `latest` when reproducibility matters.
+- **Primary:** Use a named model (e.g. GPT-5.4 / Codex or another explicitly named production model). Avoid `Auto` or unversioned `latest` when reproducibility matters.
 - **Notes:** The GitNexus CLI indexer does not call an LLM.
 
 ## Execution Sequence (complex tasks)
@@ -32,17 +32,27 @@ On long threads, *"Remember: apply all AGENTS.md rules"* re-weights these instru
 
 For the local enterprise-feature workstream:
 
+- Use Structured Delegation via Evidence-Gated Small-Batch Kanban: autonomous work means bounded selected-task packets, repo exploration before edits, small verified slices, fresh checkpoints, and explicit stop rules.
+- Use Continuous Agentic Kanban as the faster-paced operating variant: Kanban controls task flow, XP/TDD controls engineering discipline, CI/CD-style checks enforce quality, and selected-task packets preserve Codex continuity.
+- The human operator is `MAIN` and has superseding authority over this workstream's rules.
 - The long-horizon control bundle is `.agent/long-horizon/gitnexus-local-features/`.
 - Use branch `local/gitnexus-local-features`.
 - Work one implementation feature at a time on the shared branch.
 - Formal Goal Contracts are not required for this workstream. Use a selected-task work packet instead.
-- Before autonomous work starts, the selected-task packet must be identifiable from `plans.md`, `feature-map.md`, and `documentation.md`: task name, goal shape, approved or proposed scope, allowed write set if implementation is open, verification surface, and stop rules.
+- Before autonomous work starts, the selected-task packet must be identifiable from `plans.md`, `feature-map.md`, and `documentation.md`: task name, goal shape, proposed scope, risk lane, likely write set, verification surface, and stop rules.
 - Work packet baton rule: after finishing or blocking a selected task, do not end the turn until the next selected task is recorded, or `NO_NEXT_TASK_SELECTED` is documented with the exact blocker.
-- Baton audit steps: read `plans.md`, `documentation.md`, and `feature-map.md`, then either continue the selected implementation task if approved, switch to the next readiness task if defensible, or document `NO_NEXT_TASK_SELECTED`.
+- Baton audit steps: read `plans.md`, `documentation.md`, and `feature-map.md`, then either continue the selected implementation task when its lane permits, switch to the next readiness task if defensible, or document `NO_NEXT_TASK_SELECTED`.
+- Fast-flow rule: keep one active implementation slice, but maintain up to three ready packets when possible so Codex can keep moving without re-planning from scratch after each verified slice.
+- Appetite rule: green-lane slices should be micro/small packets sized to one focused red-green-review loop; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
 - Use non-interactive `codex exec` worker runs only for the selected task and only with the current long-horizon bundle as required context.
 - The Codex Goal tool may be used as optional tracking, but the workflow must not block merely because no formal Goal Contract exists.
-- Implementation is blocked until `MAIN | READY_FOR_IMPLEMENTATION` names the approved write scope.
-- After approval, use TDD for behavior changes: failing test first, verify red, minimal green implementation, verify green, then refactor while tests stay green.
+- Branch-trusted autonomy applies on `local/gitnexus-local-features`: once a selected-task packet exists, Codex may proceed through green/amber lane repo-local work without a separate `MAIN | READY_FOR_IMPLEMENTATION` phrase.
+- Green lane: repo-local docs, tests, fixtures, source code, deterministic reports, dry-run/status behavior, local CLI/MCP surfaces, and focused refactors inside the selected task may proceed autonomously with verification.
+- Amber lane: local generated-output mutation, local config-shape changes, dependency changes, public CLI/API shape changes, or broad shared-module edits may proceed with premortem, TDD where behavior changes, checkpointing, and rollback notes.
+- Red lane: stop for explicit human-operator direction before secrets/tokens, paid/provider execution, GitHub comments/checks/reviews, CI/workflow mutation, destructive git, production/external writes, unbounded background automation, or major architecture/language-semantics expansion.
+- For behavior changes, use TDD: failing test first, verify red, minimal green implementation, verify green, then refactor while tests stay green.
+- Use the GitNexus testing ladder: small focused TDD tests first; add fixture/CLI/MCP/golden tests when behavior crosses parser, graph, filesystem, local DB, generated-output, CLI, or MCP boundaries; run build plus `git diff --check` for source tranches; reserve Podman/browser/GitHub/runtime checks for tasks that touch those boundaries; use non-interactive Codex review as an added review gate, not a replacement for executable tests.
+- For overnight or long unattended runs, premortem risky selected tasks, checkpoint after each completed/blocked task, and stop rather than inventing red-lane policy.
 - Git hooks are not the implementation route for Auto-Reindexing or this workstream.
 
 GitNexus routing on this workstation:
@@ -87,6 +97,11 @@ commits, or posts.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-08 | 1.9.9 | Added Codex 5.4 handover guidance and replaced rigid fast-flow timeboxes with packet/verification-loop appetite language. |
+| 2026-06-08 | 1.9.8 | Added Continuous Agentic Kanban as the faster-paced local-features workflow: one active slice, up to three ready packets, appetite boxes, and test/review/checkpoint gates. |
+| 2026-06-08 | 1.9.7 | Added the GitNexus testing ladder for small/medium/large verification, golden tests, runtime checks, and non-interactive Codex review. |
+| 2026-06-08 | 1.9.6 | Replaced separate MAIN permission gate with human-operator authority and branch-trusted green/amber/red autonomy lanes. |
+| 2026-06-08 | 1.9.5 | Added structured delegation / evidence-gated small-batch workflow rule and overnight stop-rule reminder for local-features work. |
 | 2026-06-07 | 1.9.4 | Replaced mandatory Goal Contract workflow with autonomous selected-task work packets documented through AGENTS.md and the long-horizon bundle. |
 | 2026-06-06 | 1.9.3 | Added Goal Baton rule requiring the next Goal or an explicit `NO_NEXT_GOAL_CREATED` blocker after every completed/blocked Goal. |
 | 2026-06-05 | 1.9.2 | Removed `gitnexus-host` from active workflow; bare `gitnexus` is the host/npm route and `gitnexus-podman` is the Podman route. |
