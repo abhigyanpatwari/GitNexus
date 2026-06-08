@@ -17,7 +17,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { NODE_TABLES } from 'gitnexus-shared';
 import { buildTestGraph } from '../helpers/test-graph.js';
+import { getNodeQuery } from '../../src/server/api.js';
 
 let tmpBase: string;
 let storagePath: string;
@@ -93,14 +95,40 @@ describe('BasicBlock + taint/PDG edge round-trip (#2080)', () => {
   it('BasicBlock nodes round-trip with their source span and text', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const rows = await adapter.executeQuery(
-      'MATCH (n:BasicBlock) RETURN n.id AS id, n.text AS text, n.startLine AS startLine ORDER BY n.id',
+      'MATCH (n:BasicBlock) RETURN n.id AS id, n.text AS text, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine ORDER BY n.id',
     );
     expect(rows).toHaveLength(2);
     expect(rows[0].id).toBe(BB1);
     expect(rows[0].text).toBe('const x = req.body;');
+    expect(rows[0].filePath).toBe('src/a.ts');
     expect(Number(rows[0].startLine)).toBe(1);
+    expect(Number(rows[0].endLine)).toBe(3);
     expect(rows[1].id).toBe(BB2);
     expect(rows[1].text).toBe('sink(x);');
+    expect(rows[1].filePath).toBe('src/a.ts');
+    expect(Number(rows[1].endLine)).toBe(6);
+  });
+
+  // Regression guard: adding a node table whose columns differ from the
+  // default (BasicBlock has no name/content) must not break the server's
+  // graph read path. getNodeQuery is what /api/graph's buildGraph +
+  // streamGraphNdjson run per NODE_TABLE; a default `n.name` projection on
+  // BasicBlock raises a non-ignorable Ladybug binder error → HTTP 500 on
+  // every analyzed repo. Assert every NODE_TABLE's query binds + runs, and
+  // that BasicBlock returns its loaded rows.
+  it('getNodeQuery binds + runs for every NODE_TABLE against the real schema', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    for (const table of NODE_TABLES) {
+      for (const includeContent of [false, true]) {
+        const q = getNodeQuery(table, includeContent);
+        await expect(
+          adapter.executeQuery(q),
+          `getNodeQuery(${table}, includeContent=${includeContent}) should bind`,
+        ).resolves.toBeDefined();
+      }
+    }
+    const bbRows = await adapter.executeQuery(getNodeQuery('BasicBlock', false));
+    expect(bbRows).toHaveLength(2);
   });
 
   it('each new edge type round-trips between the two BasicBlocks', async () => {

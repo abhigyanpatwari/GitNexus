@@ -140,6 +140,9 @@ describe('LadybugDB Schema', () => {
       // table and the bulk-COPY round-trip fails with "table does not exist".
       expect(SCHEMA_QUERIES).toContain(BASICBLOCK_SCHEMA);
       expect(BASICBLOCK_SCHEMA).toContain('CREATE NODE TABLE BasicBlock');
+      expect(BASICBLOCK_SCHEMA).toContain('filePath STRING');
+      expect(BASICBLOCK_SCHEMA).toContain('startLine INT64');
+      expect(BASICBLOCK_SCHEMA).toContain('endLine INT64');
       expect(BASICBLOCK_SCHEMA).toContain('text STRING');
       expect(BASICBLOCK_SCHEMA).toContain('PRIMARY KEY (id)');
     });

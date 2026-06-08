@@ -146,7 +146,10 @@ export type RelationshipType =
   /** Control-flow edge between two BasicBlock nodes (intra-procedural CFG). */
   | 'CFG'
   /** Data-dependence edge: a definition of `variable` reaches a use of it.
-   *  `variable` storage shape is decided by the M0/S1 spike. */
+   *  The `variable` name is stored in the relation's existing `reason` column
+   *  (M0/S1 verdict: LadybugDB has no secondary index on relationship
+   *  properties, so a dedicated indexed column would not speed the
+   *  variable-filtered path query). */
   | 'REACHING_DEF'
   /** A tainted value flows from source toward sink. */
   | 'TAINTED'
