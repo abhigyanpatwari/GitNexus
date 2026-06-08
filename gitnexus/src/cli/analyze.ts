@@ -947,7 +947,7 @@ const analyzeCommandImpl = async (
   // learn why those files end up unparsed instead of silently getting a
   // degraded index.
   try {
-    const matches = await glob(['**/*.dart', '**/*.proto'], {
+    const matches = await glob(['**/*.dart', '**/*.proto', '**/*.swift', '**/*.kt', '**/*.kts'], {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
       dot: false,

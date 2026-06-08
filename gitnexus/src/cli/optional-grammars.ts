@@ -4,14 +4,16 @@
  * tree-sitter-dart, tree-sitter-proto, and tree-sitter-swift are vendored
  * under vendor/ and materialized into node_modules/ at postinstall. Dart
  * and Proto are built from source with node-gyp; Swift ships platform
- * prebuilds activated via node-gyp-build. All three can be skipped via
+ * prebuilds activated via node-gyp-build. tree-sitter-kotlin is a declared
+ * optionalDependency (not vendored). All can be skipped via
  * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
- * soft-fail when the toolchain is missing (Dart/Proto) or no prebuild
- * matches the host platform (Swift).
+ * soft-fail when the toolchain is missing (Dart/Proto), when no prebuild
+ * matches the host platform (Swift), or when the optional install was
+ * skipped or its native build failed (Kotlin).
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
- * stderr line per missing grammar so users learn why .dart/.proto/.swift
+ * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt
  * support is unavailable instead of silently getting a degraded index.
  */
 
@@ -33,6 +35,7 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
   { name: 'tree-sitter-dart', pkg: 'tree-sitter-dart', extensions: ['.dart'] },
   { name: 'tree-sitter-proto', pkg: 'tree-sitter-proto', extensions: ['.proto'] },
   { name: 'tree-sitter-swift', pkg: 'tree-sitter-swift', extensions: ['.swift'] },
+  { name: 'tree-sitter-kotlin', pkg: 'tree-sitter-kotlin', extensions: ['.kt', '.kts'] },
 ];
 
 export interface MissingGrammar {

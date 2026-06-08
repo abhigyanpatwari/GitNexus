@@ -189,6 +189,45 @@ type LoadResult =
 const loadCache = new Map<string, LoadResult>();
 const logged = new Set<string>();
 
+/**
+ * Runtime opt-out for genuinely-optional grammars (Swift/Dart/Kotlin).
+ *
+ * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` has historically been an *install-time*
+ * env only — the postinstall build scripts read it to skip building the
+ * vendored grammars. There was no way to disable an optional grammar at
+ * analyze time, so users on a platform with a broken/partial binding had no
+ * escape hatch short of uninstalling the package (#2091, #2093). This honors
+ * the same env name at runtime: when set, the named optional grammars report
+ * as unavailable and the pipeline skips their files (mirroring a genuinely
+ * absent binding) instead of attempting to load them.
+ *
+ * Accepts `1` / `true` / `all` / `*` (every optional grammar), or a
+ * comma-separated list of language ids and/or package names
+ * (e.g. `swift,tree-sitter-dart`). Grammars that are *required* dependencies
+ * but routed through the optional machinery for ABI safety (C —
+ * `optional: true` with `severity: 'error'`) are intentionally NOT skippable
+ * here: opting out of a required parser is always an install/platform problem
+ * to surface, never a user choice.
+ */
+const isRuntimeSkippedGrammar = (key: string, source: GrammarSource): boolean => {
+  // Only genuinely-optional grammars (optionalDependencies / vendored), never
+  // required deps that merely use the optional machinery for ABI safety.
+  if (source.optional !== true || source.severity === 'error') return false;
+  const raw = (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '').trim().toLowerCase();
+  if (raw === '') return false;
+  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*') return true;
+  // `key` is the SupportedLanguages value (e.g. `swift`). Match either that or
+  // a `tree-sitter-<lang>` package spelling, with/without the prefix.
+  const named = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .flatMap((s) => [s, s.replace(/^tree-sitter-/, '')]),
+  );
+  return named.has(key) || named.has(`tree-sitter-${key}`);
+};
+
 const logFailure = (key: string, result: LoadResult): void => {
   if (result.ok === true) return;
   if (logged.has(key)) return;
@@ -227,6 +266,22 @@ const loadGrammar = (key: string): LoadResult => {
     return result;
   }
 
+  // Runtime opt-out: treat a user-skipped optional grammar exactly like an
+  // absent binding (non-fatal unavailable + one warning), without attempting
+  // the native load. See `isRuntimeSkippedGrammar`.
+  if (isRuntimeSkippedGrammar(key, source)) {
+    const result: LoadResult = {
+      ok: false,
+      error: new Error('skipped via GITNEXUS_SKIP_OPTIONAL_GRAMMARS'),
+      note: source.unavailableNote,
+      fatal: false,
+      severity: 'warn',
+    };
+    loadCache.set(key, result);
+    logFailure(key, result);
+    return result;
+  }
+
   let result: LoadResult;
   try {
     result = { ok: true, grammar: source.load() };
@@ -247,6 +302,22 @@ const loadGrammar = (key: string): LoadResult => {
 
 export const isLanguageAvailable = (language: SupportedLanguages, filePath?: string): boolean =>
   loadGrammar(resolveLanguageKey(language, filePath)).ok;
+
+/**
+ * True when `language`'s grammar is being treated as unavailable specifically
+ * because of the runtime GITNEXUS_SKIP_OPTIONAL_GRAMMARS opt-out — as opposed
+ * to a genuinely-missing/broken native binding. Lets callers surface an
+ * accurate "skipped on purpose" message instead of a spurious "npm rebuild"
+ * recovery hint. Returns false for required grammars and for an absent env.
+ */
+export const isGrammarRuntimeSkipped = (
+  language: SupportedLanguages,
+  filePath?: string,
+): boolean => {
+  const key = resolveLanguageKey(language, filePath);
+  const source = SOURCES[key];
+  return source !== undefined && isRuntimeSkippedGrammar(key, source);
+};
 
 export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): unknown => {
   const key = resolveLanguageKey(language, filePath);
