@@ -26,13 +26,18 @@ export interface RegisterPhaseOptions<TOptions> {
    * Predicate deciding whether this phase is included for a given options
    * object. Absent ⇒ the phase is always enabled. This is the generalised
    * form of the legacy `if (!skipGraphPhases)` guard.
+   *
+   * `options` is required, not optional: callers normalize an absent options
+   * object once at `build()` (e.g. `buildPhaseList` passes `options ?? {}`), so
+   * individual predicates read `(o) => !o.skipGraphPhases` without a defensive
+   * `?.` on every phase (#2080 review S1).
    */
-  readonly enabledWhen?: (options: TOptions | undefined) => boolean;
+  readonly enabledWhen?: (options: TOptions) => boolean;
 }
 
 interface PhaseRegistration<TOptions> {
   readonly phase: PipelinePhase;
-  readonly enabledWhen?: (options: TOptions | undefined) => boolean;
+  readonly enabledWhen?: (options: TOptions) => boolean;
 }
 
 /**
@@ -56,9 +61,11 @@ export class PhaseRegistry<TOptions = unknown> {
   /**
    * Build the ordered phase list for the given options. A phase is included
    * iff it has no `enabledWhen` predicate or its predicate returns `true`.
-   * Order matches registration order.
+   * Order matches registration order. `options` is required — callers that may
+   * have no options normalize once at the call site (`options ?? {}`) so the
+   * predicates never see `undefined`.
    */
-  build(options?: TOptions): PipelinePhase[] {
+  build(options: TOptions): PipelinePhase[] {
     return this.registrations
       .filter((r) => r.enabledWhen === undefined || r.enabledWhen(options))
       .map((r) => r.phase);

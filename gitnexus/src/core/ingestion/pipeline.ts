@@ -153,22 +153,26 @@ export interface PipelineOptions {
  * options combination.
  */
 export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
-  return new PhaseRegistry<PipelineOptions>()
-    .register(scanPhase)
-    .register(structurePhase)
-    .register(markdownPhase)
-    .register(cobolPhase)
-    .register(parsePhase)
-    .register(routesPhase)
-    .register(toolsPhase)
-    .register(ormPhase)
-    .register(crossFilePhase)
-    .register(scopeResolutionPhase)
-    .register(pruneLocalSymbolsPhase)
-    .register(mroPhase, { enabledWhen: (o) => !o?.skipGraphPhases })
-    .register(communitiesPhase, { enabledWhen: (o) => !o?.skipGraphPhases })
-    .register(processesPhase, { enabledWhen: (o) => !o?.skipGraphPhases })
-    .build(options);
+  return (
+    new PhaseRegistry<PipelineOptions>()
+      .register(scanPhase)
+      .register(structurePhase)
+      .register(markdownPhase)
+      .register(cobolPhase)
+      .register(parsePhase)
+      .register(routesPhase)
+      .register(toolsPhase)
+      .register(ormPhase)
+      .register(crossFilePhase)
+      .register(scopeResolutionPhase)
+      .register(pruneLocalSymbolsPhase)
+      .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      // Normalize a missing options object once here so phase predicates above
+      // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
+      .build(options ?? {})
+  );
 }
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────

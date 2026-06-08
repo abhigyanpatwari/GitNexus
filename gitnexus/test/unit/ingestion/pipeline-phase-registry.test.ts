@@ -20,7 +20,7 @@ describe('PhaseRegistry', () => {
       .register(fakePhase('a'))
       .register(fakePhase('b'))
       .register(fakePhase('c'))
-      .build(undefined);
+      .build({});
     expect(list.map((p) => p.name)).toEqual(['a', 'b', 'c']);
   });
 
@@ -34,17 +34,18 @@ describe('PhaseRegistry', () => {
   it('excludes a phase whose enabledWhen returns false', () => {
     const reg = new PhaseRegistry<{ skip?: boolean }>()
       .register(fakePhase('core'))
-      .register(fakePhase('optional'), { enabledWhen: (o) => !o?.skip });
+      .register(fakePhase('optional'), { enabledWhen: (o) => !o.skip });
 
     expect(reg.build({ skip: true }).map((p) => p.name)).toEqual(['core']);
     expect(reg.build({ skip: false }).map((p) => p.name)).toEqual(['core', 'optional']);
-    expect(reg.build(undefined).map((p) => p.name)).toEqual(['core', 'optional']);
+    // empty (normalized) options → predicate sees a real object, phase enabled
+    expect(reg.build({}).map((p) => p.name)).toEqual(['core', 'optional']);
   });
 
   it('enabledWhen filtering does not reorder surviving phases', () => {
     const list = new PhaseRegistry<{ drop?: boolean }>()
       .register(fakePhase('first'))
-      .register(fakePhase('gated'), { enabledWhen: (o) => !o?.drop })
+      .register(fakePhase('gated'), { enabledWhen: (o) => !o.drop })
       .register(fakePhase('last'))
       .build({ drop: true });
     expect(list.map((p) => p.name)).toEqual(['first', 'last']);
