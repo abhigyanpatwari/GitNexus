@@ -34,6 +34,8 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { emitFileCfgs, DEFAULT_MAX_CFG_EDGES_PER_FUNCTION } from '../../cfg/emit.js';
+import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
@@ -252,6 +254,15 @@ interface RunScopeResolutionInput {
    * cache miss is safe (the provider re-parses).
    */
   readonly treeCache?: { get(filePath: string): unknown };
+  /**
+   * CFG/PDG opt-in (#2081 M1). When true, emit BasicBlock nodes + CFG edges
+   * from each ParsedFile's worker-built `cfgSideChannel` during Phase-4 graph
+   * emission (while the disk store is still live). Default/false ⇒ no CFG
+   * nodes or edges and a byte-identical graph.
+   */
+  readonly pdg?: boolean;
+  /** Per-function CFG edge cap (0/undefined ⇒ {@link DEFAULT_MAX_CFG_EDGES_PER_FUNCTION}). */
+  readonly pdgMaxEdgesPerFunction?: number;
   /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
@@ -677,6 +688,36 @@ export function runScopeResolution(
       fileContents: getFileContents(),
       resolutionConfig,
     });
+  }
+
+  // ── CFG/PDG emission (#2081 M1, opt-in via `--pdg`) ──────────────────────
+  // Emit BasicBlock nodes + CFG edges from each ParsedFile's worker-built
+  // `cfgSideChannel`, HERE — the last point inside scope-resolution where the
+  // ParsedFiles are still loaded (`emitParsedFiles` carries the channel; the
+  // disk store is cleared right after this orchestrator returns, see phase.ts).
+  // A post-`mro` phase would read empty data (KTD1). Off by default ⇒ zero
+  // BasicBlock/CFG nodes/edges and a byte-identical graph.
+  if (input.pdg === true) {
+    let cfgBlocks = 0;
+    let cfgEdges = 0;
+    for (const pf of emitParsedFiles) {
+      const cfgs = pf.cfgSideChannel as readonly FunctionCfg[] | undefined;
+      if (cfgs === undefined || cfgs.length === 0) continue;
+      const emitted = emitFileCfgs(
+        graph,
+        cfgs,
+        input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+        input.onWarn,
+      );
+      cfgBlocks += emitted.blocks;
+      cfgEdges += emitted.edges;
+    }
+    if (cfgBlocks > 0) {
+      logger.debug(
+        `[scope-resolution] CFG emit (lang=${provider.language}): ` +
+          `${cfgBlocks} BasicBlock nodes, ${cfgEdges} CFG edges`,
+      );
+    }
   }
 
   if (PROF) {

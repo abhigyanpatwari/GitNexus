@@ -65,6 +65,12 @@ export interface PipelineOptions {
    */
   pdgMaxFunctionLines?: number;
   /**
+   * Per-function CFG edge cap for the scope-resolution emit step
+   * (`undefined`/0 ⇒ the emit default). Over-cap functions stop at the cap and
+   * log a structured drop warning (no silent truncation).
+   */
+  pdgMaxEdgesPerFunction?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to
