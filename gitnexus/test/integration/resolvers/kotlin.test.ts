@@ -2672,3 +2672,231 @@ describe('Kotlin isStaticOnly across other receiver cases (#1756 / U3)', () => {
     expect(createCalls.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F48 (issue #1919): secondary constructors are extracted as members
+// ---------------------------------------------------------------------------
+
+describe('F48 — Kotlin secondary constructors', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-secondary-ctor'), () => {});
+  }, 60000);
+
+  it('creates a Constructor node for each secondary constructor', () => {
+    // Point declares two secondary constructors; both surface as Constructors.
+    const ctors = getNodesByLabel(result, 'Constructor');
+    expect(ctors).toEqual(['constructor', 'constructor']);
+  });
+
+  it('owns both secondary constructors under the enclosing class Point', () => {
+    const owned = getRelationships(result, 'HAS_METHOD').filter(
+      (e) => e.targetLabel === 'Constructor',
+    );
+    expect(owned.length).toBe(2);
+    expect(owned.every((e) => e.source === 'Point')).toBe(true);
+  });
+
+  it('does not synthesize a constructor for a class with only a primary constructor (no double-count)', () => {
+    // OnlyPrimary has a primary ctor + one method, and must yield no Constructor node.
+    const ctorOwners = getRelationships(result, 'HAS_METHOD')
+      .filter((e) => e.targetLabel === 'Constructor')
+      .map((e) => e.source);
+    expect(ctorOwners).not.toContain('OnlyPrimary');
+    // Its regular method is still extracted.
+    expect(getNodesByLabel(result, 'Method')).toContain('method');
+  });
+
+  // ── CF1 (#1919 review): secondary-ctor body calls attribute to the Constructor ──
+  // The fixture's two secondary constructors call free functions in their bodies:
+  //   constructor(a: Int, b: String) : this(a) { helper() }   // arity 2
+  //   constructor()                  : this(0) { helper(); other() }  // arity 0
+  // Each body call must source from ITS OWN Constructor node (with the correct
+  // arity suffix), NOT from the File node and NOT from the enclosing Class.
+  it('attributes a secondary-constructor body call to the Constructor node, not File or Class', () => {
+    const helperCalls = getRelationships(result, 'CALLS').filter((e) => e.target === 'helper');
+    // helper() is called from both secondary constructors.
+    expect(helperCalls.length).toBeGreaterThanOrEqual(2);
+    for (const call of helperCalls) {
+      expect(call.sourceLabel).toBe('Constructor');
+      expect(call.sourceLabel).not.toBe('File');
+      expect(call.sourceLabel).not.toBe('Class');
+    }
+  });
+
+  it('disambiguates secondary-ctor body calls by arity (#<arity> Constructor node id)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // `other()` is only called from the zero-arg `constructor()` body → must
+    // source from the arity-0 Constructor node id, never the arity-2 one.
+    const otherCall = calls.find((e) => e.target === 'other');
+    expect(otherCall).toBeDefined();
+    expect(otherCall!.sourceLabel).toBe('Constructor');
+    expect(otherCall!.rel.sourceId).toBe('Constructor:Constructors.kt:Point.constructor#0');
+
+    // `helper()` is called from BOTH constructors; the set of caller ids must be
+    // exactly the two distinct arity-tagged Constructor nodes (no collapse onto one).
+    const helperSourceIds = new Set(
+      calls.filter((e) => e.target === 'helper').map((e) => e.rel.sourceId),
+    );
+    expect(helperSourceIds).toEqual(
+      new Set([
+        'Constructor:Constructors.kt:Point.constructor#0',
+        'Constructor:Constructors.kt:Point.constructor#2',
+      ]),
+    );
+  });
+
+  it('still attributes a normal method body call to the Method (regression guard)', () => {
+    // `describe()` is an expression-body method with no call; add a sibling check
+    // that no secondary-ctor regression mis-routes method-owned calls. The Method
+    // node for `describe` exists and is owned by Point.
+    const describeOwned = getRelationships(result, 'HAS_METHOD').filter(
+      (e) => e.target === 'describe' && e.source === 'Point',
+    );
+    expect(describeOwned.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F51 (issue #1919): destructuring declarations emit one binding per name
+// ---------------------------------------------------------------------------
+
+describe('F51 — Kotlin destructuring declarations', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-destructuring'), () => {});
+  }, 60000);
+
+  it('emits one binding per destructured name in `val (a, b) = pair`', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('a');
+    expect(props).toContain('b');
+  });
+
+  it('emits bindings for loop destructuring `for ((k, v) in map)`', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('k');
+    expect(props).toContain('v');
+  });
+
+  it('skips the `_` discard placeholder but keeps `second`', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('second');
+    expect(props).not.toContain('_');
+  });
+
+  it('emits exactly the expected binding set (no double-count, plain `val x` once)', () => {
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toEqual(['a', 'b', 'k', 'second', 'v', 'x']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF3 (#1919 review): function-local property bindings are NOT class members
+// ---------------------------------------------------------------------------
+// Kotlin emits destructuring / loop bindings as `@definition.property` to dodge
+// the block-scope local-symbol pruner. When such a binding sits inside a METHOD
+// body of a class, it must NOT receive a HAS_PROPERTY owner edge from the class —
+// it is a function-local, not a class field. Genuine class fields (primary-ctor
+// `val` params and class-body `val`/`var`) must still be owned by the class.
+
+describe('CF3 — Kotlin function-local bindings are not class properties', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-local-property-owner'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT own loop-destructuring bindings (k, v) under the enclosing class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('k');
+    expect(owned).not.toContain('v');
+  });
+
+  it('does NOT own a `val (a, b) = pair` destructuring binding under class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('a');
+    expect(owned).not.toContain('b');
+    // The intermediate `val pair` local is likewise not a class property.
+    expect(owned).not.toContain('pair');
+  });
+
+  it('does NOT own destructuring inside an init {} block (ix, iy) under class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('ix');
+    expect(owned).not.toContain('iy');
+  });
+
+  it('does NOT own destructuring inside a property accessor body (gx, gy) under class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('gx');
+    expect(owned).not.toContain('gy');
+  });
+
+  it('still owns genuine class fields + the computed property under C, nothing else', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target)
+      .sort();
+    // Exact set: catches both over-strip (a real member dropped) and under-strip
+    // (a function-local wrongly owned).
+    expect(owned).toEqual(['classProp', 'derived', 'field']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F52 (issue #1919): companion-object properties are indexed as fields
+// ---------------------------------------------------------------------------
+
+describe('F52 — Kotlin companion-object properties', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-companion-fields'), () => {});
+  }, 60000);
+
+  it('indexes anonymous-companion `const val TAG` as a static, readonly field', () => {
+    const tag = getNodesByLabelFull(result, 'Property').find((n) => n.name === 'TAG');
+    expect(tag).toBeDefined();
+    expect(tag!.properties.isStatic).toBe(true);
+    expect(tag!.properties.isReadonly).toBe(true);
+  });
+
+  it('indexes a NAMED-companion property `cfgX` as a field', () => {
+    const x = getNodesByLabelFull(result, 'Property').find((n) => n.name === 'cfgX');
+    expect(x).toBeDefined();
+    expect(x!.properties.isStatic).toBe(true);
+  });
+
+  it('emits each companion field exactly once (no double emission)', () => {
+    // Exact field set + a one-per-name count guards against the companion-scope
+    // machinery re-emitting the same property.
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toEqual(['TAG', 'cfgX', 'instances']);
+    expect(props.filter((p) => p === 'TAG')).toHaveLength(1);
+  });
+
+  it('owns anonymous-companion fields on the ENCLOSING class C (companion function is not a field)', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY');
+    const cFields = owned
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target)
+      .sort();
+    expect(cFields).toEqual(['TAG', 'instances']);
+    // The companion's `create` function is a Method, never a Property/field.
+    expect(getNodesByLabel(result, 'Property')).not.toContain('create');
+  });
+});

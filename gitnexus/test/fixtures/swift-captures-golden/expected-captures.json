@@ -59,6 +59,10 @@
     "captureGroups": 12,
     "digest": "a9c40a2dcb51c6e6a9adbaa869183eed90a81302729d4d7a0c300084ea2978e1"
   },
+  "swift-enum-members/Direction.swift": {
+    "captureGroups": 18,
+    "digest": "6378c8860113e9d0331f4da4d05e64e6933a995493131d2f2165f64f82978b0b"
+  },
   "swift-export-visibility/App.swift": {
     "captureGroups": 10,
     "digest": "6be49190e8a120ed1c3c3812afaa717f60fc12dae82d4b1b7158a358c53ea75a"
@@ -198,6 +202,10 @@
   "swift-parent-resolution/Sources/Models/User.swift": {
     "captureGroups": 10,
     "digest": "bd01b5adcd523ceee95772cc74ded0dbc1d70449fc9e9d17e975299dcbac783f"
+  },
+  "swift-protocol-property/Repository.swift": {
+    "captureGroups": 7,
+    "digest": "28e5a3c93f0dc2c0f940a6def1491d4a339e86fdc71858ecd61f4aea372afd6a"
   },
   "swift-qualified-base/Sources/Derived.swift": {
     "captureGroups": 4,

@@ -8,8 +8,7 @@
  *
  * Part of RFC #909 Ring 2 SHARED — #913.
  *
- * Consumed by: #915 (SCC finalize link pass), #923 (shadow harness when
- * resolving callsite file → enclosing module).
+ * Consumed by: #915 (SCC finalize link pass).
  */
 
 import type { ScopeId } from './types.js';

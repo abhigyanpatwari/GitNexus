@@ -893,6 +893,21 @@ describe('C++ structured binding in range-for', () => {
     );
     expect(wrongSave).toBeUndefined();
   });
+
+  // F9 — a plain structured-binding declaration emits one Variable per bound name.
+  it('emits a Variable for each name in `auto [firstId, secondId] = makePair();`', () => {
+    const vars = getNodesByLabelFull(result, 'Variable').map((v) => v.name);
+    expect(vars).toContain('firstId');
+    expect(vars).toContain('secondId');
+  });
+
+  it('classifies top-level structured-binding names as module scope', () => {
+    const bound = getNodesByLabelFull(result, 'Variable').filter(
+      (v) => v.name === 'firstId' || v.name === 'secondId',
+    );
+    expect(bound).toHaveLength(2);
+    for (const v of bound) expect(v.properties.scope).toBe('module');
+  });
 });
 
 // ---------------------------------------------------------------------------
