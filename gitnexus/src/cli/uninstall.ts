@@ -94,13 +94,19 @@ async function removeJsoncKey(
 }
 
 /**
- * Remove every hook entry whose command string contains `commandNeedle`
- * from the given `eventNames` arrays in a JSONC settings file. Mirrors
- * the idempotency probes in setup.ts (hasGitnexusHook /
- * geminiHasGitnexusHook). Returns how many entries matched.
+ * Remove the gitnexus hook command(s) — those whose command string contains
+ * `commandNeedle` — from the given `eventNames` arrays in a JSONC settings
+ * file. Mirrors the idempotency probes in setup.ts (hasGitnexusHook /
+ * geminiHasGitnexusHook). Returns how many event entries contained a gitnexus
+ * command.
  *
- * Entries are removed highest-index-first within each event so the
- * remaining indices stay valid across edits.
+ * Removal is element-granular to honor the "other hooks are preserved"
+ * contract: only the matching command object inside an entry's `hooks[]` is
+ * deleted. The surrounding matcher entry is removed only when it becomes
+ * empty (i.e. it held nothing but gitnexus commands — which is exactly what
+ * setup creates). A user who hand-added their own command alongside ours
+ * keeps it. Edits are applied highest-index-first so earlier indices stay
+ * valid across edits.
  */
 async function removeHookEntries(
   filePath: string,
@@ -128,29 +134,44 @@ async function removeHookEntries(
   let current = raw;
   let total = 0;
 
-  const matches = (entry: any): boolean =>
-    Array.isArray(entry?.hooks) &&
-    entry.hooks.some(
-      (hh: any) => typeof hh?.command === 'string' && hh.command.includes(commandNeedle),
-    );
+  const isGitnexusHook = (hh: any): boolean =>
+    typeof hh?.command === 'string' && hh.command.includes(commandNeedle);
 
   for (const eventName of eventNames) {
     const entries = parsed?.hooks?.[eventName];
     if (!Array.isArray(entries)) continue;
 
-    const indices: number[] = [];
-    entries.forEach((entry: any, i: number) => {
-      if (matches(entry)) indices.push(i);
-    });
-    if (indices.length === 0) continue;
-    total += indices.length;
-
-    if (dryRun) continue;
-    // Highest first: removing a later array element never shifts the
+    // Walk entries high → low so removing a later one never shifts the
     // index of an earlier one.
-    for (const idx of indices.reverse()) {
-      const edits = modify(current, ['hooks', eventName, idx], undefined, { formattingOptions });
-      current = applyEdits(current, edits);
+    for (let entryIdx = entries.length - 1; entryIdx >= 0; entryIdx--) {
+      const entry = entries[entryIdx];
+      if (!Array.isArray(entry?.hooks)) continue;
+
+      const hookIdxs: number[] = [];
+      entry.hooks.forEach((hh: any, hi: number) => {
+        if (isGitnexusHook(hh)) hookIdxs.push(hi);
+      });
+      if (hookIdxs.length === 0) continue;
+
+      total += 1;
+      if (dryRun) continue;
+
+      if (hookIdxs.length === entry.hooks.length) {
+        // The entry held only gitnexus command(s) — drop the whole entry.
+        const edits = modify(current, ['hooks', eventName, entryIdx], undefined, {
+          formattingOptions,
+        });
+        current = applyEdits(current, edits);
+      } else {
+        // The entry also holds user command(s) — delete only ours, keep
+        // the rest. Highest hook index first to keep lower indices valid.
+        for (const hi of hookIdxs.reverse()) {
+          const edits = modify(current, ['hooks', eventName, entryIdx, 'hooks', hi], undefined, {
+            formattingOptions,
+          });
+          current = applyEdits(current, edits);
+        }
+      }
     }
   }
 
@@ -189,7 +210,10 @@ async function listGitnexusSkillNames(): Promise<string[]> {
     const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith('.md')) {
-        names.add(path.basename(entry.name, '.md'));
+        // Guard against a bare `.md` file: basename('.md', '.md') === '',
+        // which would later resolve to the skills dir itself and wipe it.
+        const base = path.basename(entry.name, '.md');
+        if (base) names.add(base);
       } else if (entry.isDirectory()) {
         try {
           await fs.access(path.join(skillsRoot, entry.name, 'SKILL.md'));
@@ -216,46 +240,93 @@ async function removeSkillsFrom(
 ): Promise<number> {
   let removed = 0;
   for (const name of skillNames) {
+    // Defense in depth: an empty/relative name would resolve back to
+    // targetDir (or escape it) and wipe unrelated content. Only act on a
+    // plain child directory name.
+    if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+      continue;
+    }
     if (await removeDir(path.join(targetDir, name), dryRun)) removed++;
   }
   return removed;
 }
 
 /**
- * Remove the `[mcp_servers.gitnexus]` table from Codex's config.toml,
- * deleting the header line and everything up to the next top-level table
- * header (or EOF). Returns the removal status.
+ * Remove the `[mcp_servers.gitnexus]` table — and any of its descendant
+ * sub-tables (`[mcp_servers.gitnexus.env]`, `[[mcp_servers.gitnexus.x]]`) —
+ * from Codex's config.toml. Used only as a fallback when the `codex` binary
+ * isn't on PATH; the CLI's `codex mcp remove` is preferred.
+ *
+ * Hand-rolled (no TOML dependency), but careful about the cases a naive
+ * line-scan gets wrong:
+ *   - descendant sub-tables of the section are also removed (else they'd be
+ *     left dangling, referencing a server that no longer exists);
+ *   - `[...]`-shaped lines inside a multiline string (`"""`/`'''`) are NOT
+ *     treated as table headers;
+ *   - unrelated whitespace/formatting elsewhere in the file is left intact
+ *     (no global blank-line reflow). Only a single blank separator line
+ *     directly above the removed section is dropped.
  */
 function stripTomlSection(raw: string, sectionName: string): string {
   const header = `[${sectionName}]`;
+  const childTable = `[${sectionName}.`;
+  const childArray = `[[${sectionName}.`;
+  const headerRe = /^\[\[?[^[\]]+\]\]?\s*(#.*)?$/;
+
+  const isSectionHeader = (t: string): boolean =>
+    t === header || t.startsWith(childTable) || t.startsWith(childArray);
+
+  // Count non-overlapping occurrences of a delimiter on a line.
+  const countDelim = (s: string, d: string): number => {
+    let n = 0;
+    for (let i = s.indexOf(d); i !== -1; i = s.indexOf(d, i + d.length)) n++;
+    return n;
+  };
+  // A line opens (or closes) a multiline string when it contains an odd
+  // number of one of the multiline delimiters.
+  const openingDelim = (s: string): string | null => {
+    if (countDelim(s, '"""') % 2 === 1) return '"""';
+    if (countDelim(s, "'''") % 2 === 1) return "'''";
+    return null;
+  };
+
+  const lines = raw.split(/\r?\n/);
   const out: string[] = [];
   let skipping = false;
+  let mlDelim: string | null = null;
 
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!skipping && trimmed === header) {
-      skipping = true;
+  for (const line of lines) {
+    if (mlDelim) {
+      // Inside a multiline string: brackets here are data, not headers.
+      if (countDelim(line, mlDelim) % 2 === 1) mlDelim = null;
+      if (!skipping) out.push(line);
       continue;
     }
-    if (skipping) {
-      // A new table header ends the gitnexus section.
-      if (/^\[\[?.+\]\]?$/.test(trimmed)) {
-        skipping = false;
-      } else {
+
+    const trimmed = line.trim();
+    if (headerRe.test(trimmed)) {
+      if (isSectionHeader(trimmed)) {
+        // Drop a single blank separator line immediately above the section.
+        if (!skipping && out.length > 0 && out[out.length - 1].trim() === '') out.pop();
+        skipping = true;
         continue;
       }
+      // A non-descendant header ends the section.
+      skipping = false;
+      out.push(line);
+      continue;
     }
-    out.push(line);
+
+    // Track whether this (non-header) line opens a multiline string so a
+    // bracketed line inside it isn't mistaken for a header.
+    mlDelim = openingDelim(line);
+
+    if (!skipping) out.push(line);
   }
 
-  // Collapse the blank-line gap setup left before the appended section.
-  return (
-    out
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .replace(/^\n+/, '')
-      .trimEnd() + '\n'
-  );
+  let result = out.join('\n');
+  if (!result.endsWith('\n')) result += '\n';
+  return result;
 }
 
 async function uninstallCodex(result: UninstallResult, dryRun: boolean): Promise<void> {
@@ -284,6 +355,7 @@ async function uninstallCodex(result: UninstallResult, dryRun: boolean): Promise
     await execFileAsync('codex', ['mcp', 'remove', 'gitnexus'], {
       shell: process.platform === 'win32',
       windowsHide: true,
+      timeout: 10000,
     });
     result.removed.push('Codex MCP server');
     return;
@@ -368,7 +440,13 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     if (status === 'removed') result.removed.push(`Claude Code hooks (${count})`);
     else if (status === 'corrupt')
       result.errors.push('Claude Code hooks: settings.json is corrupt — left untouched');
-    if (await removeDir(path.join(home, '.claude', 'hooks', 'gitnexus'), dryRun))
+    // Don't delete the hook script while a registered entry may still point
+    // at it (corrupt = we couldn't parse/remove the entry) — that would
+    // leave the editor invoking a missing script on every matched tool call.
+    if (
+      status !== 'corrupt' &&
+      (await removeDir(path.join(home, '.claude', 'hooks', 'gitnexus'), dryRun))
+    )
       result.removed.push('Claude Code hook scripts (~/.claude/hooks/gitnexus/)');
   } catch (err: any) {
     result.errors.push(`Claude Code hooks: ${err.message}`);
@@ -385,7 +463,11 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     if (status === 'removed') result.removed.push(`Antigravity hooks (${count})`);
     else if (status === 'corrupt')
       result.errors.push('Antigravity hooks: settings.json is corrupt — left untouched');
-    if (await removeDir(path.join(home, '.gemini', 'config', 'hooks', 'gitnexus'), dryRun))
+    // See the Claude block above: don't orphan a still-registered hook.
+    if (
+      status !== 'corrupt' &&
+      (await removeDir(path.join(home, '.gemini', 'config', 'hooks', 'gitnexus'), dryRun))
+    )
       result.removed.push('Antigravity hook scripts (~/.gemini/config/hooks/gitnexus/)');
   } catch (err: any) {
     result.errors.push(`Antigravity hooks: ${err.message}`);
@@ -428,6 +510,9 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     console.log('');
     console.log('  Errors:');
     for (const err of result.errors) console.log(`    ! ${err}`);
+    // Signal partial failure to callers/CI without aborting the remaining
+    // cleanup (which has already run by this point).
+    process.exitCode = 1;
   }
 
   console.log('');
