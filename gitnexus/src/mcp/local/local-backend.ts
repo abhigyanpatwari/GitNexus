@@ -326,6 +326,34 @@ interface ImpactParams {
   summaryOnly?: boolean;
 }
 
+type ExplicitRangeSide = 'new' | 'old';
+type ExplicitRangeChangeType = 'added' | 'modified' | 'deleted';
+
+interface ExplicitRangeInput {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  side?: ExplicitRangeSide;
+  change_type?: ExplicitRangeChangeType;
+  changeType?: ExplicitRangeChangeType;
+}
+
+interface MappedSymbolRange {
+  id: string;
+  name: string;
+  type: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  matched_ranges: Array<{
+    filePath: string;
+    startLine: number;
+    endLine: number;
+    side?: ExplicitRangeSide;
+    change_type?: ExplicitRangeChangeType;
+  }>;
+}
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -948,6 +976,8 @@ export class LocalBackend {
         return this.impact(repo, params);
       case 'detect_changes':
         return this.detectChanges(repo, params);
+      case 'symbols_for_ranges':
+        return this.symbolsForRanges(repo, params);
       case 'rename':
         return this.rename(repo, params);
       // Legacy aliases for backwards compatibility
@@ -2543,120 +2573,46 @@ export class LocalBackend {
       };
     }
 
-    // Map diff hunks to indexed symbols via range overlap
+    const changedRanges = fileDiffs.flatMap((fileDiff) =>
+      fileDiff.ranges.map((range) => ({
+        filePath: fileDiff.filePath,
+        startLine: range.startLine,
+        endLine: range.endLine,
+        change_type: range.change_type,
+        ...(range.side ? { side: range.side } : {}),
+      })),
+    );
+
+    const mapped = await this.mapRangesToSymbols(repo, changedRanges, {
+      resolveDeletedRanges: scope !== 'compare',
+    });
+
+    // Map range evidence into detect_changes-specific buckets
     const changedSymbolsById = new Map<string, any>();
     const deletedSymbolsById = new Map<string, any>();
-    const changedRanges: any[] = [];
-    const unmatchedRanges: any[] = [];
-    const canResolveDeletedSymbols = scope !== 'compare';
-    for (const fileDiff of fileDiffs) {
-      if (fileDiff.ranges.length === 0) continue;
-
-      for (const range of fileDiff.ranges) {
-        const changedRange: any = {
-          filePath: fileDiff.filePath,
-          startLine: range.startLine,
-          endLine: range.endLine,
-          change_type: range.change_type,
-        };
-        if (range.side) changedRange.side = range.side;
-        changedRanges.push(changedRange);
-      }
-
-      const rangesToResolve = fileDiff.ranges.filter(
-        (range) => range.change_type !== 'deleted' || canResolveDeletedSymbols,
-      );
-
-      for (const range of fileDiff.ranges) {
-        if (range.change_type === 'deleted' && !canResolveDeletedSymbols) {
-          unmatchedRanges.push({
-            filePath: fileDiff.filePath,
-            startLine: range.startLine,
-            endLine: range.endLine,
-            reason: 'Deleted range requires base graph mapping for compare scope',
+    for (const symbol of mapped.symbols) {
+      for (const range of symbol.matched_ranges) {
+        if (range.change_type === 'deleted') {
+          deletedSymbolsById.set(symbol.id, {
+            id: symbol.id,
+            name: symbol.name,
+            type: symbol.type,
+            filePath: symbol.filePath,
+            inboundCallers: 0,
           });
-        }
-      }
-
-      if (rangesToResolve.length === 0) continue;
-
-      // Build range overlap conditions for all ranges in this file
-      const overlapConditions = rangesToResolve
-        .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
-        .join(' OR ');
-
-      const queryParams: Record<string, any> = { filePath: fileDiff.filePath };
-      rangesToResolve.forEach((range, i) => {
-        queryParams[`hunkStart${i}`] = range.startLine;
-        queryParams[`hunkEnd${i}`] = range.endLine;
-      });
-
-      const symbolQuery = `
-        MATCH (n) WHERE n.filePath ENDS WITH $filePath
-          AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-          AND (${overlapConditions})
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
-               n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-      `;
-
-      let rows: any[] = [];
-      try {
-        rows = await executeParameterized(repo.id, symbolQuery, queryParams);
-      } catch (e) {
-        logQueryError('detect-changes:file-symbols', e);
-      }
-
-      const symbolRanges = rows.map((sym) => ({
-        id: sym.id || sym[0],
-        name: sym.name || sym[1],
-        type: sym.type || sym[2],
-        filePath: sym.filePath || sym[3],
-        startLine: Number(sym.startLine ?? sym[4]),
-        endLine: Number(sym.endLine ?? sym[5]),
-      }));
-      for (const range of rangesToResolve) {
-        const matches = symbolRanges.filter(
-          (sym) =>
-            Number.isFinite(sym.startLine) &&
-            Number.isFinite(sym.endLine) &&
-            sym.startLine <= range.endLine &&
-            sym.endLine >= range.startLine,
-        );
-        if (matches.length === 0) {
-          unmatchedRanges.push({
-            filePath: fileDiff.filePath,
-            startLine: range.startLine,
-            endLine: range.endLine,
-            reason:
-              range.change_type === 'deleted'
-                ? 'Deleted range did not resolve to an indexed symbol'
-                : 'No indexed symbol overlapped this changed range',
+        } else {
+          changedSymbolsById.set(symbol.id, {
+            id: symbol.id,
+            name: symbol.name,
+            type: symbol.type,
+            filePath: symbol.filePath,
+            change_type: range.change_type ?? 'modified',
           });
-          continue;
-        }
-
-        for (const sym of matches) {
-          if (range.change_type === 'deleted') {
-            deletedSymbolsById.set(sym.id, {
-              id: sym.id,
-              name: sym.name,
-              type: sym.type,
-              filePath: sym.filePath,
-              inboundCallers: 0,
-            });
-          } else {
-            changedSymbolsById.set(sym.id, {
-              id: sym.id,
-              name: sym.name,
-              type: sym.type,
-              filePath: sym.filePath,
-              change_type: range.change_type,
-            });
-          }
         }
       }
     }
 
+    const unmatchedRanges = mapped.unmatched_ranges;
     const deletedSymbols = Array.from(deletedSymbolsById.values());
     if (deletedSymbols.length > 0) {
       try {
@@ -2746,6 +2702,208 @@ export class LocalBackend {
       deleted_symbols: deletedSymbols,
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
+    };
+  }
+
+  private normalizeExplicitRange(input: unknown): ExplicitRangeInput | null {
+    if (!input || typeof input !== 'object') return null;
+    const range = input as Record<string, unknown>;
+    if (typeof range.filePath !== 'string' || !range.filePath.trim()) return null;
+    const startLine = Number(range.startLine);
+    const endLine = Number(range.endLine);
+    if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine <= 0 || endLine < startLine) {
+      return null;
+    }
+
+    const side = range.side === 'new' || range.side === 'old' ? range.side : undefined;
+    const changeTypeRaw = range.change_type ?? range.changeType;
+    const change_type =
+      changeTypeRaw === 'added' || changeTypeRaw === 'modified' || changeTypeRaw === 'deleted'
+        ? changeTypeRaw
+        : undefined;
+
+    return {
+      filePath: range.filePath,
+      startLine,
+      endLine,
+      ...(side ? { side } : {}),
+      ...(change_type ? { change_type } : {}),
+    };
+  }
+
+  private async mapRangesToSymbols(
+    repo: RepoHandle,
+    rawRanges: unknown[],
+    options: { resolveDeletedRanges: boolean },
+  ): Promise<{
+    input_ranges: ExplicitRangeInput[];
+    symbols: MappedSymbolRange[];
+    unmatched_ranges: Array<{
+      filePath: string;
+      startLine: number;
+      endLine: number;
+      reason: string;
+    }>;
+  }> {
+    const input_ranges = rawRanges
+      .map((range) => this.normalizeExplicitRange(range))
+      .filter((range): range is ExplicitRangeInput => Boolean(range));
+
+    const byFile = new Map<string, ExplicitRangeInput[]>();
+    for (const range of input_ranges) {
+      const fileRanges = byFile.get(range.filePath) ?? [];
+      fileRanges.push(range);
+      byFile.set(range.filePath, fileRanges);
+    }
+
+    const symbolsById = new Map<string, MappedSymbolRange>();
+    const unmatched_ranges: Array<{
+      filePath: string;
+      startLine: number;
+      endLine: number;
+      reason: string;
+    }> = [];
+
+    for (const [filePath, fileRanges] of byFile) {
+      const rangesToResolve = fileRanges.filter(
+        (range) => range.change_type !== 'deleted' || options.resolveDeletedRanges,
+      );
+
+      for (const range of fileRanges) {
+        if (range.change_type === 'deleted' && !options.resolveDeletedRanges) {
+          unmatched_ranges.push({
+            filePath,
+            startLine: range.startLine,
+            endLine: range.endLine,
+            reason: 'Deleted range requires base graph mapping for compare scope',
+          });
+        }
+      }
+
+      if (rangesToResolve.length === 0) continue;
+
+      const overlapConditions = rangesToResolve
+        .map((_, i) => `(n.startLine <= $rangeEnd${i} AND n.endLine >= $rangeStart${i})`)
+        .join(' OR ');
+
+      const queryParams: Record<string, any> = { filePath };
+      rangesToResolve.forEach((range, i) => {
+        queryParams[`rangeStart${i}`] = range.startLine;
+        queryParams[`rangeEnd${i}`] = range.endLine;
+      });
+
+      const symbolQuery = `
+        MATCH (n) WHERE n.filePath ENDS WITH $filePath
+          AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
+          AND (${overlapConditions})
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+               n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      `;
+
+      let rows: any[] = [];
+      try {
+        rows = await executeParameterized(repo.id, symbolQuery, queryParams);
+      } catch (e) {
+        logQueryError('symbols-for-ranges:file-symbols', e);
+      }
+
+      const symbolRanges = rows.map((sym) => ({
+        id: sym.id || sym[0],
+        name: sym.name || sym[1],
+        type: sym.type || sym[2],
+        filePath: sym.filePath || sym[3],
+        startLine: Number(sym.startLine ?? sym[4]),
+        endLine: Number(sym.endLine ?? sym[5]),
+      }));
+
+      for (const range of rangesToResolve) {
+        const matches = symbolRanges.filter(
+          (sym) =>
+            Number.isFinite(sym.startLine) &&
+            Number.isFinite(sym.endLine) &&
+            sym.startLine <= range.endLine &&
+            sym.endLine >= range.startLine,
+        );
+        if (matches.length === 0) {
+          unmatched_ranges.push({
+            filePath,
+            startLine: range.startLine,
+            endLine: range.endLine,
+            reason:
+              range.change_type === 'deleted'
+                ? 'Deleted range did not resolve to an indexed symbol'
+                : 'No indexed symbol overlapped this changed range',
+          });
+          continue;
+        }
+
+        for (const sym of matches) {
+          if (!symbolsById.has(sym.id)) {
+            symbolsById.set(sym.id, {
+              id: sym.id,
+              name: sym.name,
+              type: sym.type,
+              filePath: sym.filePath,
+              startLine: sym.startLine,
+              endLine: sym.endLine,
+              matched_ranges: [],
+            });
+          }
+          symbolsById.get(sym.id)!.matched_ranges.push({
+            filePath,
+            startLine: range.startLine,
+            endLine: range.endLine,
+            ...(range.side ? { side: range.side } : {}),
+            ...(range.change_type ? { change_type: range.change_type } : {}),
+          });
+        }
+      }
+    }
+
+    return {
+      input_ranges,
+      symbols: Array.from(symbolsById.values()),
+      unmatched_ranges,
+    };
+  }
+
+  private async symbolsForRanges(
+    repo: RepoHandle,
+    params: {
+      ranges?: unknown[];
+    },
+  ): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    if (!Array.isArray(params?.ranges) || params.ranges.length === 0) {
+      return { error: 'ranges array is required.' };
+    }
+
+    const mapped = await this.mapRangesToSymbols(repo, params.ranges, {
+      resolveDeletedRanges: true,
+    });
+    if (mapped.input_ranges.length === 0) {
+      return { error: 'ranges array must contain at least one valid range object.' };
+    }
+
+    const deletedCount = mapped.symbols.filter((symbol) =>
+      symbol.matched_ranges.some((range) => range.change_type === 'deleted'),
+    ).length;
+
+    return {
+      schema_version: 'symbols-for-ranges.v1alpha1',
+      repo: {
+        name: repo.name,
+        indexed_commit: repo.lastCommit,
+      },
+      summary: {
+        input_ranges: mapped.input_ranges.length,
+        matched_symbols: mapped.symbols.length,
+        unmatched_ranges: mapped.unmatched_ranges.length,
+        deleted_symbols: deletedCount,
+      },
+      symbols: mapped.symbols,
+      unmatched_ranges: mapped.unmatched_ranges,
     };
   }
 

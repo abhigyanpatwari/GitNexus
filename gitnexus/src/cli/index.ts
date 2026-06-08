@@ -263,6 +263,13 @@ program
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
 program
+  .command('symbols-for-ranges')
+  .description('Map caller-supplied file ranges onto indexed symbols')
+  .requiredOption('--input <path>', 'Path to input JSON containing explicit ranges')
+  .option('-r, --repo <name>', 'Target repository')
+  .action(createLbugLazyAction(() => import('./symbols-for-ranges.js'), 'symbolsForRangesCommand'));
+
+program
   .command('pr-impact')
   .description('Generate a local deterministic PR impact report')
   .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare')

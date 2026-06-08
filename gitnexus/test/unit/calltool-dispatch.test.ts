@@ -1302,6 +1302,95 @@ describe('LocalBackend.callTool', () => {
     ]);
   });
 
+  it('maps caller-supplied ranges to symbols and preserves unmatched/deleted evidence', async () => {
+    (executeParameterized as any).mockImplementation(
+      (_repoId: string, cypher: string, params: Record<string, unknown>) => {
+        if (!cypher.includes('RETURN n.id AS id')) return [];
+        if (params.filePath === 'src/app.ts') {
+          return [
+            {
+              id: 'Function:src/app.ts:mapped',
+              name: 'mapped',
+              type: 'Function',
+              filePath: 'src/app.ts',
+              startLine: 1,
+              endLine: 3,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('symbols_for_ranges', {
+      ranges: [
+        {
+          filePath: 'src/app.ts',
+          startLine: 2,
+          endLine: 2,
+          side: 'new',
+          change_type: 'modified',
+        },
+        {
+          filePath: 'src/app.ts',
+          startLine: 3,
+          endLine: 3,
+          side: 'old',
+          change_type: 'deleted',
+        },
+        {
+          filePath: 'src/loose.ts',
+          startLine: 9,
+          endLine: 9,
+          side: 'new',
+          change_type: 'modified',
+        },
+      ],
+    });
+
+    expect(result.schema_version).toBe('symbols-for-ranges.v1alpha1');
+    expect(result.summary).toEqual({
+      input_ranges: 3,
+      matched_symbols: 1,
+      unmatched_ranges: 1,
+      deleted_symbols: 1,
+    });
+    expect(result.symbols).toEqual([
+      {
+        id: 'Function:src/app.ts:mapped',
+        name: 'mapped',
+        type: 'Function',
+        filePath: 'src/app.ts',
+        startLine: 1,
+        endLine: 3,
+        matched_ranges: [
+          {
+            filePath: 'src/app.ts',
+            startLine: 2,
+            endLine: 2,
+            side: 'new',
+            change_type: 'modified',
+          },
+          {
+            filePath: 'src/app.ts',
+            startLine: 3,
+            endLine: 3,
+            side: 'old',
+            change_type: 'deleted',
+          },
+        ],
+      },
+    ]);
+    expect(result.unmatched_ranges).toEqual([
+      {
+        filePath: 'src/loose.ts',
+        startLine: 9,
+        endLine: 9,
+        reason: 'No indexed symbol overlapped this changed range',
+      },
+    ]);
+  });
+
   it('dispatches rename tool', async () => {
     (executeParameterized as any)
       .mockResolvedValueOnce([

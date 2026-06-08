@@ -38,6 +38,7 @@ Created: 2026-06-05
 - Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki planner/runner plus read-only status endpoint, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper, and Task 7 OCaml experimental support have completed their first local slices.
 - 2026-06-08T10:47+01:00 post-tranche consolidation decision: the latest Task 4 range/deletion follow-ons and Task 2 wiki execution-boundary follow-on are complete. The next selected task is `Worktree Verification / Checkpoint Packet`, a green-lane consolidation task to review the accumulated WIP, rerun the right verification set, and prepare a clean checkpoint recommendation before selecting another feature expansion.
 - 2026-06-08T10:53+01:00 worktree verification decision: focused touched-slice tests, build, and whitespace checks passed. `NO_NEXT_TASK_SELECTED` for feature expansion until a new selected-task packet names the next feature scope; checkpoint commit/review is recommended before broadening.
+- 2026-06-08T15:19+01:00 checkpoint decision: commit `2a38a6db` (`checkpoint: local feature tranche through wiki-refresh and diff evidence`) closed the dirty-tree boundary. The next selected task is `Task 4 symbols-for-ranges primitive`.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`), CLI wrapper commit `39d77845` (`feat: add pr impact cli command`), and local read-only MCP exposure are complete. GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
 ## Feature Queue
@@ -63,18 +64,91 @@ This section controls the next Goal selection after the completed local V1 tranc
 | Completed | Task 2 Full Wiki Mutation / Provider Execution | Red-lane readiness plus no-write policy implementation | Completed on 2026-06-08T10:39+01:00; `gitnexus wiki-refresh` now emits an explicit planning-only execution boundary and required human decisions. | Focused wiki-refresh tests plus adjacent wiki planner/provider/API/help tests, build, and diff check. | Provider execution, secrets/tokens, config writes, output mutation/publication, and unattended generation remain deferred. |
 | Completed | Post-Tranche Consolidation / Next-Slice Selection | Readiness Goal | Completed on 2026-06-08T10:47+01:00; recent PR Impact and wiki readiness follow-ons are reconciled and red-lane feature expansions remain deferred. | Updated next-task map and `NEXT_TASK_SELECTED` recorded. | Next selected task is worktree verification/checkpoint preparation, not feature expansion. |
 | Completed | Worktree Verification / Checkpoint Packet | Green-lane consolidation | Completed on 2026-06-08T10:53+01:00; accumulated uncommitted source/docs/test WIP was reviewed by slice and verified together. | Focused touched-slice tests, `npm run build`, `git diff --check`, and checkpoint note in `documentation.md`. | No new feature behavior was implemented. |
-| No current feature task | `NO_NEXT_TASK_SELECTED` | Baton state | All currently selected green/amber follow-ons are complete. Remaining work needs a new selected-task packet because it crosses feature expansion, output/provider, GitHub/security, generated-test runtime, base-graph architecture, or OCaml resolver boundaries. | Human/operator task selection or a new evidence-backed packet. | Do not start another feature expansion from stale queue notes. |
+| Completed | Task 4 `symbols-for-ranges` primitive | Green/amber implementation packet | Completed on 2026-06-08T15:34+01:00 as the first stable no-write local range-input primitive aligned with issue #1901. | Focused CLI/backend tests, adjacent PR Impact/parser/tool tests, build, and diff check. | `impact-for-symbols` remains the next narrower Task 4 follow-on. |
+| Active | Task 4 `impact-for-symbols` primitive readiness | Green/amber readiness packet | Issue #1901 explicitly pairs `impact-for-symbols` with `symbols-for-ranges`; the next safe boundary is direct symbol-to-process mapping, not GitHub/provider flow. | Packet defining the direct-mode contract, write set, and TDD plan for batch symbol-to-process/process-step output. | Keep scope to direct process membership first; do not broaden into upstream blast-radius mode, provider/GitHub semantics, or posting/workflow surfaces. |
 | Completed | Task 7 OCaml Module-System Depth | Research/readiness plus comment cleanup | Completed on 2026-06-08T10:12+01:00; deeper OCaml work now requires resolver/dependency/product-lane expansion rather than another small query capture. | Local source map, public issue/package evidence, OCaml focused tests, and comment-drift cleanup. | Do not implement Dune, PPX, interface/implementation matching, module alias/functor resolution, dependency upgrades, or production classification without a new red/amber packet. |
 | Completed | Task 6 `/api/info` API-Smoke Route | Technical readiness plus implementation | Completed on 2026-06-08T09:57+01:00 as a deterministic APIRequestContext generated-spec renderer. | Focused renderer tests, adjacent Task 6 tests, build, and diff check passed. | Do not broaden into more API-smoke routes without a new selected route contract. |
 | Completed | Task 4 GitHub PR Automation Boundary | Readiness checkpoint | Boundary completed on 2026-06-08T09:45+01:00; GitHub posting/check automation remains red-lane deferred. | `documentation.md` checkpoint plus GitHub issue/PR/docs evidence. | Do not re-enter unless a new no-write primitive or GitHub integration packet is selected. |
 
 Default recommendation:
 
-- `NO_NEXT_TASK_SELECTED` for feature expansion after Worktree Verification / Checkpoint Packet.
-- Recommended immediate human/operator action before broadening: review and checkpoint the current dirty tree.
-- Task 4 GitHub boundary readiness is complete for the current run; do not loop on it unless selecting a no-write graph primitive follow-on.
+- Active packet is `Task 4 impact-for-symbols primitive readiness`.
+- Recommended immediate action is to shape the direct-mode batch symbol-to-process contract before any broader Task 4 expansion.
+- Task 4 GitHub boundary readiness is complete for the current run; keep the next packet on the no-write primitive lane rather than drifting into provider or GitHub semantics.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If the human operator chooses another priority, create a selected-task packet for that task before source edits.
+
+### Task 4 `symbols-for-ranges` Primitive - 2026-06-08
+
+Selected task:
+
+- Implement the first stable no-write graph-mapping primitive proposed by GitNexus issue #1901: `symbols-for-ranges`.
+
+Readiness verdict:
+
+- Safe to begin as a green/amber repo-local slice.
+- The existing `detect_changes` flow already performs the core mapping internally: parse ranges, resolve overlaps to symbols, preserve unmatched evidence, and preserve local deleted-range evidence.
+- The smallest useful external boundary is caller-supplied ranges mapped onto the indexed graph.
+- Keep this packet narrower than the full issue:
+  - include `symbols-for-ranges`
+  - exclude `impact-for-symbols`
+  - exclude GitHub/provider diff ingestion
+  - exclude historical/base-graph snapshot semantics
+  - exclude posting/check workflows
+
+Expected vs actual:
+
+| Area | Expected behavior | Current local behavior | Packet response |
+| --- | --- | --- | --- |
+| External boundary | Callers should hand GitNexus explicit file/range inputs instead of forcing GitNexus-owned `git diff` selection. | `detect_changes` owns diff selection internally and only accepts `scope`/`base_ref`/`repo`. | Add a caller-supplied range-input surface. |
+| Mapping contract | Output should return matched symbols plus unmatched ranges in a stable machine-readable shape. | Internal `detect_changes` returns changed/unmatched/deleted evidence only after it computes its own diff. | Extract/reuse the mapping path and expose it directly. |
+| Deletion support | Old-side deleted ranges should not be silently dropped. | Local parser/mapping now handles old-side deleted ranges for `detect_changes`. | Preserve deleted-range semantics when callers provide `side: old` and `changeType: deleted`. |
+| Ownership split | GitNexus should own graph mapping, not provider PR semantics. | Current local source already aligns with that direction after the no-write range/deletion follow-ons. | Keep this packet local/no-write and avoid provider/auth semantics. |
+
+Lane:
+
+- Green/amber.
+- Green for helper extraction, CLI wiring, and deterministic JSON contract tests.
+- Amber only where a new public CLI contract is introduced.
+
+Likely write set:
+
+- `gitnexus/src/mcp/local/local-backend.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts`
+- `gitnexus/src/cli/i18n/en.ts`
+- `gitnexus/src/cli/i18n/zh-CN.ts`
+- `gitnexus/src/cli/symbols-for-ranges.ts` (new)
+- focused backend/CLI tests
+- long-horizon docs for checkpointing
+
+Smallest implementation slice:
+
+- Add a local CLI command:
+  - `gitnexus symbols-for-ranges --input <path> --repo <name>`
+- Accept a JSON file containing explicit ranges.
+- Return a deterministic JSON result with:
+  - schema/version marker
+  - repo identity
+  - matched symbols
+  - unmatched ranges
+  - deleted-symbol evidence when applicable
+- Do not add MCP exposure, `impact-for-symbols`, provider diff adapters, or GitHub URL parsing in this packet.
+
+TDD plan:
+
+1. Add a focused failing CLI test using a small range-input fixture.
+2. Add or adapt a backend test proving caller-supplied ranges map to symbols and preserve unmatched/deleted evidence.
+3. Verify the red failures are due to the missing command/surface rather than broken fixtures.
+4. Implement the thinnest backend/CLI path to pass.
+5. Run focused CLI/backend tests.
+6. Run adjacent PR Impact/parser/tool tests if the surface reuses shared mapping code.
+7. Run `npm run build` and `git diff --check`.
+
+Stop rules:
+
+- Stop if the slice starts to require GitHub/network/provider tokens, PR URL parsing, base-graph history, external writes, or broad `impact-for-symbols` orchestration.
+- Stop if the contract cannot be kept deterministic without inventing provider-specific semantics.
 
 ### Overnight Run Packet - 2026-06-08
 

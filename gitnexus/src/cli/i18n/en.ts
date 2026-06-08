@@ -135,6 +135,8 @@ export const en = {
   'help.command.cypher.description': 'Execute raw Cypher query against the knowledge graph',
   'help.command.detectChanges.description':
     'Map git diff hunks to indexed symbols and affected execution flows',
+  'help.command.symbolsForRanges.description':
+    'Map caller-supplied file ranges onto indexed symbols',
   'help.command.prImpact.description': 'Generate a local deterministic PR impact report',
   'help.command.regressionForensics.description':
     'Generate a local deterministic regression forensics report',
@@ -238,6 +240,7 @@ export const en = {
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.detectChanges.scope': 'What to analyze: unstaged, staged, all, or compare',
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
+  'help.option.symbolsForRanges.input': 'Path to input JSON containing explicit ranges',
   'help.option.prImpact.format': 'Output format: markdown or json',
   'help.option.regressionForensics.failureJson': 'Path to local failure evidence JSON',
   'help.option.regressionForensics.prImpactJson': 'Path to local PR impact JSON',

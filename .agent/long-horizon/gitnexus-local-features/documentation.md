@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: Worktree Verification / Checkpoint Packet completed; `NO_NEXT_TASK_SELECTED` for feature expansion
+- Mode: Task 4 `symbols-for-ranges` primitive implemented locally; next selected task is Task 4 `impact-for-symbols` primitive readiness
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Supporting Codex 5.4 handover note: `codex-5-4-handover-20260608.md`
@@ -123,6 +123,8 @@ Current state:
 - 2026-06-08T13:05+01:00: Structured-review findings addressed with TDD. `detect_changes` summary/CLI no-change handling now treats `changed_ranges`, `unmatched_ranges`, and `deleted_symbols` as change evidence; compare-scope deleted ranges are no longer resolved against the current graph and are downgraded to unmatched evidence until a base-graph primitive exists. Focused tests, adjacent PR Impact/parser tests, `npm run build`, and `git diff --check` passed. `NO_NEXT_TASK_SELECTED` for feature expansion.
 - 2026-06-08T13:27+01:00: Post-fix non-interactive Codex review completed and recorded in `codex-structured-review-postfix-20260608-132546.md`. Result: `patch is correct`, no actionable findings. The reviewer confirmed the prior P1/P2/P3 findings are addressed and noted only documentation drift around `changed_count`; that drift was corrected immediately afterward. `NO_NEXT_TASK_SELECTED` for feature expansion.
 - 2026-06-08T15:05+01:00: Final checkpoint-readiness review completed. Manual slice-by-slice source review found no new actionable issues after the 13:27 post-fix reviewer pass. Because no source files changed after that verified tranche, existing focused test/build evidence remains valid; fresh `git status`, `git diff --name-status`, `git diff --stat`, `git diff --check`, untracked-file inventory, and wiring/drift checks all aligned with the expected Task 2/4/6/7 slices plus workflow docs. Current recommendation: checkpoint-ready for commit preparation. Keep `NO_NEXT_TASK_SELECTED` for feature expansion until this tranche is checkpointed or explicitly carried forward as intentional WIP.
+- 2026-06-08T15:19+01:00: Checkpoint commit `2a38a6db` (`checkpoint: local feature tranche through wiki-refresh and diff evidence`) closed the dirty-tree boundary. A new selected-task packet is now active: `Task 4 symbols-for-ranges primitive`, the first stable no-write graph-mapping primitive aligned with GitNexus issue #1901. The packet stays local/repo-only: explicit range-input contract, no provider/GitHub semantics, no historical/base-graph architecture, and no `impact-for-symbols` broadening in the same slice.
+- 2026-06-08T15:34+01:00: Task 4 `symbols-for-ranges` primitive implemented with TDD. Added a new local CLI command and backend primitive that accept caller-supplied explicit ranges and return deterministic JSON (`symbols-for-ranges.v1alpha1`) with matched symbols plus unmatched/deleted-range evidence. Focused packet tests (101), adjacent PR Impact/parser/tool tests (60), `npm run build`, and `git diff --check` passed. Next selected task is `Task 4 impact-for-symbols primitive readiness`, staying on the same no-write Task 4 lane and still excluding provider/GitHub semantics.
 
 ### 2026-06-08T12:17+01:00 - Review-First Checkpoint Pass
 
