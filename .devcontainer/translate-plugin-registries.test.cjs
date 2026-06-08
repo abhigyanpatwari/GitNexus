@@ -447,7 +447,9 @@ test('Claude plugin manifests track the current gitnexus release version', () =>
 
   assert.ok(Array.isArray(marketplaceManifest.plugins), 'expected marketplace plugins array');
 
-  const gitnexusMarketplaceEntry = marketplaceManifest.plugins.find((plugin) => plugin.name === 'gitnexus');
+  const gitnexusMarketplaceEntry = marketplaceManifest.plugins.find(
+    (plugin) => plugin.name === 'gitnexus',
+  );
 
   assert.ok(gitnexusMarketplaceEntry, 'expected gitnexus marketplace entry');
   assert.equal(pluginManifest.version, gitnexusPkg.version);
