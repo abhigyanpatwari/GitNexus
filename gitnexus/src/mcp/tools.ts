@@ -186,6 +186,11 @@ Each edit is tagged with confidence:
         new_name: { type: 'string', description: 'The new name for the symbol' },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
         dry_run: { type: 'boolean', description: 'Preview edits without modifying files (default: true)', default: true },
+        // WI-4 (issue #159 P2): opt-in LSP-backed rename path.
+        // When `'lsp'`, the tool prefers the LSP `textDocument/rename`
+        // path; any refuse → heuristic fallback (byte-identical edits
+        // + `lsp_status` notice). Omit for the default heuristic path.
+        precision: { type: 'string', enum: ['lsp'], description: "Opt-in: 'lsp' uses the LSP `textDocument/rename` path. Any refusal (server, probe, resolution, mappable) falls back to the heuristic path with a `lsp_status` notice; `changes[]` is byte-identical to a no-precision call. Omit for default behavior." },
         repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
       },
       required: ['new_name'],
@@ -228,6 +233,11 @@ Results from multi-repo queries include '_repoId' attribution.`,
         // (#53) Disambiguate overloaded methods (interface vs impl) by file path.
         // Matches the `context` tool's `file_path` contract.
         file_path: { type: 'string', description: 'File path to disambiguate symbols (matches the context tool\'s `file_path` parameter; preferred candidate is the one whose filePath ends with this suffix).' },
+        // (#159 P2) WI-5: opt-in LSP provenance + union-seeding on the
+        // direct-caller set. Additive (omitted ⇒ byte-stable). Acts
+        // only when `precision==='lsp' && direction==='upstream'`.
+        // See design doc `## Contracts` (impact) + KD-5.
+        precision: { type: 'string', enum: ['lsp'], description: 'Optional precision mode. `lsp` augments the d=1 caller set with textDocument/references and tags entries with source (lsp|heuristic|both). Refuses silently if the LSP server is unavailable.' },
         repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
         repos: { type: 'array', items: { type: 'string' }, description: 'Multiple repos for cross-repo queries. When provided, analyzes impact across all listed repos in parallel with repoId attribution.' },
       },

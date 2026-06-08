@@ -1,6 +1,8 @@
 {
   "dependencies": {
     "tree-sitter": "^0.21.1",
-    "tree-sitter-java": "^0.23.5"
+    "tree-sitter-java": "^0.23.5",
+    "vscode-jsonrpc": "8.2.1",
+    "vscode-languageserver-protocol": "^3.18.0"
   }
 }

@@ -1,0 +1,12 @@
+{
+  "_comment": "Baseline `analyze` (no --lsp) stats for the WI-9 zero-config regression guard. Captured by running `gitnexus analyze` against a fresh tmpdir copy of gitnexus/test/fixtures/mini-repo/ (TypeScript: ~9 .ts files). The volatile fields (repoPath, lastCommit, indexedAt) are intentionally NOT pinned — only the `stats` block is checked. See docs/designs/159-lsp-readonly-foundation.md Inv 2 + tests/integration/regression/lsp-zero-config.test.ts.",
+  "stats": {
+    "files": 9,
+    "nodes": 35,
+    "edges": 70,
+    "communities": 4,
+    "processes": 4,
+    "embeddings": 0
+  },
+  "_capture_instructions": "Run from a fresh tmpdir: cp -R gitnexus/test/fixtures/mini-repo/. <tmp>/ && cd <tmp> && git init && git add -A && git commit -m init && cd /path/to/gitnexus && TSX_DISABLE_CACHE=1 NODE_OPTIONS='--max-old-space-size=8192' node --import tsx ./src/cli/index.ts analyze <tmp> | tail -3. Then read <tmp>/.gitnexus/meta.json and copy the `stats` block here."
+}

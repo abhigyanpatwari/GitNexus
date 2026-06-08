@@ -150,4 +150,31 @@ program
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
+// ─── LSP utilities (one-shot `doctor` diagnostic) ──────────────────
+//
+// WI-#7: surfaces whether `typescript-language-server` is on PATH
+// and whether the workspace is in a state where LSP results are
+// trustworthy. Always exits 0 (informational — absence is a
+// normal report, not an error). See design `#sd-lsp-doctor`.
+
+program
+  .command('lsp <action>')
+  .description('LSP utilities (doctor)')
+  .option('--format <format>', 'text or json (default: text)', 'text')
+  .action(createLazyAction(() => import('./lsp.js'), 'lspCommand'));
+
+// ─── Verify (LSP read-only — Mode C) ────────────────────────────────
+//
+// WI-#8: read-only verifier that compares heuristic CALLS edges
+// to LSP-resolved definitions. See design `#sd-verify-mode-c`.
+
+program
+  .command('verify')
+  .description('Verify heuristic accuracy against LSP (Mode C) — read-only')
+  .option('--lsp', 'Run Mode C: compare heuristic CALLS edges to LSP-resolved targets')
+  .option('--strict', 'Exit non-zero when LSP is unavailable')
+  .option('--sample <n>', 'Sample size (default: 200)', '200')
+  .option('-r, --repo <name>', 'Target repository')
+  .action(createLazyAction(() => import('./verify.js'), 'verifyCommand'));
+
 program.parse(process.argv);

@@ -79,7 +79,9 @@
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.18.0"
   },
   "optionalDependencies": {
     "tree-sitter-dart": "github:UserNobody14/tree-sitter-dart#80e23c07b64494f7e21090bb3450223ef0b192f4",

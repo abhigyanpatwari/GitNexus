@@ -8,7 +8,19 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
 import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady } from '../core/lbug-adapter.js';
+// WI-4 (issue #159 P2): opt-in `precision:'lsp'` branch for `rename`.
+// We re-use the read-only LSP funnel (`withReferenceProvider`) and the
+// WI-3 adapter + precise applier. No graph writes (Inv-1); the
+// adapter's node_modules/.d.ts/multi-line refusals (KD-7) are
+// preserved unchanged.
+import {
+  withReferenceProvider,
+  workspaceEditToApplierChanges,
+  workspaceEditToChanges,
+  applyPreciseEdits,
+} from '../../core/ingestion/lsp/reference-provider.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -28,8 +40,14 @@ import { CrossRepoResolver, type ChangedSymbol, type RepoHandle as ResolverRepoH
 import { queryEndpoints, type EndpointInfo } from './endpoint-query.js';
 import { parseMethodLevelMapping, parseClassLevelPrefix, combinePaths } from './route-annotation-parser.js';
 import { parseDiffOutputWithLines, type FileDiffWithLines, type LineRange } from './parse-diff-lines.js';
+import { normalizeFilePath } from '../../lib/utils.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
+// (#159 P2) WI-5: opt-in LSP provenance + union-seeding for impact.
+// `mapLocationToNodeId` resolves an LSP `Location` to a graph nodeId
+// (or NO_NODE / AMBIGUOUS — both skipped). See design doc
+// `## Contracts` (impact) + KD-5.
+import { mapLocationToNodeId, type MapperResult } from '../../core/ingestion/lsp/location-mapper.js';
 
 /**
  * Quick test-file detection for filtering impact results.
@@ -48,13 +66,11 @@ export function isTestFilePath(filePath: string): boolean {
   );
 }
 
+// Source of truth lives in core/ingestion/lsp/node-labels.ts to avoid a
+// circular ESM import (location-mapper.ts → local-backend.ts → TDZ crash).
+import { VALID_NODE_LABELS } from '../../core/ingestion/lsp/node-labels.js';
 /** Valid LadybugDB node labels for safe Cypher query construction */
-export const VALID_NODE_LABELS = new Set([
-  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement',
-  'Community', 'Process', 'Struct', 'Enum', 'Macro', 'Typedef', 'Union',
-  'Namespace', 'Trait', 'Impl', 'TypeAlias', 'Const', 'Static', 'Property',
-  'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
-]);
+export { VALID_NODE_LABELS };
 
 /** Valid relation types for impact analysis filtering */
 export const VALID_RELATION_TYPES = new Set([
@@ -3312,6 +3328,11 @@ export class LocalBackend {
     new_name: string;
     file_path?: string;
     dry_run?: boolean;
+    // WI-4 (issue #159 P2): additive opt-in for LSP-backed rename.
+    // When `'lsp'`, the tool prefers the LSP `textDocument/rename`
+    // path; any refuse → heuristic fallback with `source:'heuristic'`
+    // + `lsp_status` notice (byte-identical edits, AC-2/AC-3).
+    precision?: 'lsp';
   }): Promise<any> {
     await this.ensureInitialized(repo.id);
     
@@ -3351,7 +3372,106 @@ export class LocalBackend {
     if (oldName === new_name) {
       return { error: 'New name is the same as the current name.' };
     }
-    
+
+    // ── WI-4 (issue #159 P2): opt-in `precision:'lsp'` branch ────
+    // Top-of-function guard: when the caller asked for the LSP path
+    // AND every gate (server, probe, resolveSymbol, mappable
+    // WorkspaceEdit) succeeds, return early with `source:'lsp'` +
+    // `applyPreciseEdits` apply (KD-2). On ANY gate failure
+    // (funnel returns `null`), fall through to the unchanged
+    // heuristic body below — the caller's `source` becomes
+    // `'heuristic'` with an `lsp_status` notice (AC-2 / AC-3,
+    // byte-identical edits vs. no-`precision`).
+    //
+    // Guards above this point (P5 `oldName===new_name` and P6
+    // `status:'ambiguous'`) have already short-circuited, so the
+    // funnel is only ever called when the symbol is uniquely
+    // resolved and the new name is different.
+    const precision = params.precision;
+    let lspStatus: string | undefined;
+    if (precision === 'lsp' && sym.filePath) {
+      // The funnel needs an absolute `file://` URI for the
+      // target's definition file (used by `didOpen` + as the
+      // LSP requests' `textDocument.uri`). We resolve via
+      // `assertSafePath` so the URI is rooted inside the repo
+      // (Inv-8 / KD-7).
+      let targetUri: string;
+      try {
+        targetUri = pathToFileURL(assertSafePath(sym.filePath)).toString();
+      } catch {
+        targetUri = '';
+      }
+      if (targetUri) {
+        // We need two views of the adapter result:
+        //   - applier shape (`ApplierChangesFile[]`) for the
+        //     precise per-edit splice (KD-2) — carries the raw
+        //     `newText`/`range` the applier needs, plus the
+        //     pre-read `content` (E-1: shared between adapter
+        //     and applier);
+        //   - public display shape (`ChangesFile[]`) for the wire
+        //     output — emitted on the `rename` MCP response.
+        // We compute BOTH shapes inside the funnel callback.
+        // Each adapter reads each file (the second read is a
+        // page-cache hit, cost is negligible). We accept the
+        // redundant read in exchange for not having to
+        // hand-project the applier shape back to the public
+        // shape (S-14 + S-30: remove the hand-projection).
+        const lspResult = await withReferenceProvider(repo, targetUri, async (provider) => {
+          // KD-4: pin the identifier position via `workspace/symbol`.
+          const loc = await provider.resolveSymbol(oldName, sym.filePath);
+          if (!loc) return null;
+          // `textDocument/rename` → `WorkspaceEdit` (or `null` on
+          // server refuse / non-text op).
+          const edit = await provider.rename(loc, new_name);
+          if (!edit) return null;
+          // Public-shape adapter: refuse node_modules/.d.ts/out-of-repo/
+          // multi-line (KD-7).
+          const publicChanges = await workspaceEditToChanges(edit, repo.repoPath);
+          // Applier-shape adapter: also refuse (same gates), but
+          // keep the raw `newText`/`range` and the pre-read
+          // `content` (KD-2 + E-1).
+          const lspChanges = await workspaceEditToApplierChanges(edit, repo.repoPath);
+          if (!publicChanges || !lspChanges) return null;
+          return { publicChanges, lspChanges };
+        });
+        if (lspResult) {
+          const { publicChanges, lspChanges } = lspResult;
+          // KD-2: apply via the precise per-edit applier (NOT the
+          // file-global regex apply at `:3604-3615`, which is
+          // unchanged and stays on the heuristic path). The
+          // applier writes once per file with `dry_run` honored.
+          // The applier takes the `ApplierChangesFile[]` shape
+          // (carries the raw LSP `newText`/`range` and the
+          // pre-read `content` from E-1); the wire output uses
+          // the public `ChangesFile[]` shape.
+          const writeSummary = await applyPreciseEdits(lspChanges, {
+            repoPath: repo.repoPath,
+            dryRun: dry_run,
+          }).catch((e) => { logQueryError('rename:lsp-apply', e); return { written: 0, skipped: 0 }; });
+          return {
+            status: 'success',
+            old_name: oldName,
+            new_name,
+            files_affected: publicChanges.length,
+            total_edits: publicChanges.reduce((sum, c) => sum + c.edits.length, 0),
+            graph_edits: 0,
+            text_search_edits: 0,
+            changes: publicChanges,
+            applied: !dry_run,
+            source: 'lsp',
+            lsp_written: writeSummary.written,
+            lsp_skipped: writeSummary.skipped,
+          };
+        }
+        // Funnel returned `null` — record the notice + fall through
+        // to the heuristic body (byte-identical edits, AC-2).
+        lspStatus = 'LSP unavailable; fell back to heuristic rename.';
+      } else {
+        lspStatus = 'LSP target path could not be resolved; fell back to heuristic rename.';
+      }
+    }
+    // ── end WI-4 branch (fall-through continues to heuristic body) ──
+
     // Step 2: Collect edits from graph (high confidence)
     const changes = new Map<string, { file_path: string; edits: any[] }>();
 
@@ -3577,7 +3697,7 @@ export class LocalBackend {
       const files = output.trim().split('\n').filter(f => f.length > 0);
       
       for (const file of files) {
-        const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
+        const normalizedFile = normalizeFilePath(file);
         if (graphFiles.has(normalizedFile)) continue; // already covered by graph
         
         try {
@@ -3623,6 +3743,13 @@ export class LocalBackend {
       text_search_edits: astSearchEdits,
       changes: allChanges,
       applied: !dry_run,
+      // WI-4: the heuristic body is the default path (and the
+      // LSP-branch fallback). `source` annotates the provenance
+      // (AC-7). `lsp_status` is set ONLY when `precision:'lsp'`
+      // was requested AND the funnel refused — it surfaces the
+      // notice in a structured form for the caller.
+      source: 'heuristic',
+      ...(lspStatus ? { lsp_status: lspStatus } : {}),
     };
   }
 
@@ -3633,6 +3760,12 @@ export class LocalBackend {
     relationTypes?: string[];
     includeTests?: boolean;
     minConfidence?: number;
+    // (#159 P2) WI-5: opt-in LSP provenance. Forwarded to
+    // `_impactImpl` unchanged. The `params` shape is pass-through
+    // to `_impactImpl`, so adding the field here is purely
+    // additive — the existing call sites that omit it see no
+    // behavior change.
+    precision?: 'lsp';
   }): Promise<any> {
     // Validate minConfidence range (#66). Reject out-of-range values explicitly
     // so callers learn about the 0-1 contract instead of silently getting
@@ -3670,6 +3803,12 @@ export class LocalBackend {
     // to the name-resolution sub-queries so the candidate whose filePath
     // contains the suffix is preferred.
     file_path?: string;
+    // (#159 P2) WI-5: opt-in LSP provenance + union-seeding on the d=1
+    // caller set. Additive (omitted ⇒ byte-stable). Acts ONLY when
+    // `precision==='lsp' && direction==='upstream'`; any other
+    // combination is a no-op identical to the no-precision path.
+    // See design doc `## Contracts` (impact) + KD-5.
+    precision?: 'lsp';
   }): Promise<any> {
     await this.ensureInitialized(repo.id);
 
@@ -3824,6 +3963,65 @@ export class LocalBackend {
     if (!sym) return { error: `Target '${target}' not found` };
 
     const symId = sym.id || sym[0];
+    const symFilePath = (sym.filePath ?? sym[3] ?? '') as string;
+
+    // ── (#159 P2) WI-5: opt-in LSP provenance + union-seeding ─────
+    // Resolves the target sym's location via LSP, gathers
+    // textDocument/references, and maps each reference to a
+    // graph nodeId. The result `lspIds` is the set of CALLERS
+    // the LSP server sees for this target — superset of the
+    // graph's d=1 set. `null` ⇒ refuse (no LSP enrichment,
+    // graph result unchanged). The union with the d=1
+    // heuristic set happens INSIDE the BFS loop (see below) at
+    // the depth-1 boundary; appending to visited/frontier after
+    // the loop exits would be a no-op (KD-5).
+    //
+    // Compute ONLY when precision==='lsp' && direction==='upstream'.
+    // For downstream + precision:'lsp' (or any other combo),
+    // `lspIds` stays `null` ⇒ the BFS runs unchanged.
+    let lspIds: Set<string> | null = null;
+    if (params.precision === 'lsp' && direction === 'upstream') {
+      const targetFileUri = symFilePath
+        ? (symFilePath.startsWith('file://') ? symFilePath : pathToFileURL(path.resolve(symFilePath)).href)
+        : '';
+      lspIds = await withReferenceProvider(
+        repo as any,
+        targetFileUri,
+        async (provider) => {
+          // Resolve the identifier position for the target. We
+          // pass `symFilePath` as a hint so the funnel can
+          // narrow `workspace/symbol` when the name is common.
+          // `null` ⇒ refuse.
+          const loc = await provider.resolveSymbol(targetName, symFilePath || undefined);
+          if (!loc) return null;
+          // Gather LSP references (caller positions).
+          // `null` ⇒ refuse; `[]` ⇒ empty set (legitimate answer,
+          // the union is empty, no entry to add).
+          const refs = await provider.references(loc);
+          if (refs === null) return null;
+          // Map each Location → nodeId. NO_NODE and AMBIGUOUS
+          // are skipped (refuse over guess) — they are NOT
+          // errors; they are expected outcomes for references
+          // in non-indexed files or with multi-match positions.
+          const ids = new Set<string>();
+          for (const ref of refs) {
+            const mapped: MapperResult = await mapLocationToNodeId(ref, repo.id);
+            // MapperResult: { kind: 'node', nodeId } | { kind: 'NO_NODE' } | { kind: 'AMBIGUOUS' }
+            if (mapped.kind === 'node' && typeof mapped.nodeId === 'string') {
+              ids.add(mapped.nodeId);
+            }
+          }
+          return ids;
+        },
+      );
+      // `lspIds` is `Set<string> | null` — the funnel returns
+      // `null` on any gate failure and the fn's resolved value
+      // (an empty Set on the "ran, found no callers" branch)
+      // otherwise. The downstream `if (lspIds)` guard handles
+      // the null case correctly; the `undefined` normalization
+      // is dead because the funnel never resolves to `undefined`
+      // (S-16).
+    }
 
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
@@ -3939,25 +4137,45 @@ export class LocalBackend {
 
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
-      
+
       // Batch frontier nodes into a single Cypher query per depth level
       const idList = frontier.map(id => `'${id.replace(/'/g, "''")}'`).join(', ');
       const query = direction === 'upstream'
         ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
         : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
-      
+
       try {
         const related = await executeQuery(repo.id, query);
-        
+
         for (const rel of related) {
           const relId = rel.id || rel[1];
           const filePath = rel.filePath || rel[4] || '';
-          
+
           if (!includeTests && isTestFilePath(filePath)) continue;
-          
+
           if (!visited.has(relId)) {
             visited.add(relId);
             nextFrontier.push(relId);
+            // (S-17 + S-22) At d=1, tag the entry as 'both' or
+            // 'heuristic' right here, in the push loop. The
+            // lsp-only stub pass below (still inside this d=1
+            // iteration) adds the lsp-only entries with
+            // source:'lsp'. No post-hoc re-walk of `impacted`
+            // is needed — the d1GraphRaw Set + the second
+            // for-loop are deleted (S-17).
+            //
+            // The source field is only set when the funnel
+            // returned a non-null `lspIds`. When the funnel
+            // refused (`lspIds === null`), we leave the field
+            // OFF so legacy consumers see "no source field"
+            // (the AC-10 byte-identical contract: precision
+            // mode does not change the wire shape when the LSP
+            // path refused at any gate). The M4/M4b/M4c tests
+            // pin this behavior.
+            let source: 'lsp' | 'heuristic' | 'both' | undefined;
+            if (depth === 1 && lspIds) {
+              source = lspIds.has(relId) ? 'both' : 'heuristic';
+            }
             impacted.push({
               depth,
               id: relId,
@@ -3966,6 +4184,7 @@ export class LocalBackend {
               filePath,
               relationType: rel.relType || rel[5],
               confidence: rel.confidence || rel[6] || 1.0,
+              ...(source !== undefined ? { source } : {}),
             });
           }
         }
@@ -3976,7 +4195,43 @@ export class LocalBackend {
         traversalComplete = false;
         break;
       }
-      
+
+      // ── (#159 P2) WI-5: depth-1 boundary LSP union (KD-5) ────────
+      // The load-bearing KD-5 invariant: the union MUST happen
+      // INSIDE the loop, at the depth-1 iteration, AFTER the
+      // graph query at d=1 has run and BEFORE the loop advances
+      // to d=2. Post-loop appending is a no-op — the BFS is
+      // driven by the `frontier` array, which has already moved
+      // on.
+      //
+      // d=1 graph entries are tagged at the push site above
+      // (S-17 + S-22 — single-pass). The lsp-only stubs are
+      // added HERE (S-17). No re-walk of `impacted` is needed.
+      //
+      // No-ops (graph unchanged) when `lspIds === null`
+      // (provider refused at any gate). When lspIds is an
+      // empty Set, the union loop is a no-op and every d=1
+      // graph entry got 'heuristic' above — correct: precision
+      // mode is active but the LSP path found no callers.
+      if (depth === 1 && lspIds) {
+        for (const id of lspIds) {
+          if (id === symId) continue;          // never the target itself
+          if (visited.has(id)) continue;        // already graph-resident (graph ∩ lsp)
+          visited.add(id);
+          nextFrontier.push(id);
+          impacted.push({
+            depth: 1,
+            id,
+            name: id,                           // lsp-only stub (no name from LSP)
+            type: '',                           // unknown without graph
+            filePath: '',                       // unknown without graph
+            relationType: 'CALLS',              // best-effort: LSP references are call-shaped
+            confidence: 1.0,
+            source: 'lsp',
+          });
+        }
+      }
+
       frontier = nextFrontier;
     }
     
