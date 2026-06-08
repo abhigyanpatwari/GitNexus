@@ -205,6 +205,7 @@ interface ParsedSymbol {
   isReadonly?: boolean;
   isAbstract?: boolean;
   isFinal?: boolean;
+  isDeleted?: boolean;
   annotations?: string[];
 }
 
@@ -2176,6 +2177,9 @@ const processFileGroup = (
         isReadonly: methodProps.isReadonly as boolean | undefined,
         isAbstract: methodProps.isAbstract as boolean | undefined,
         isFinal: methodProps.isFinal as boolean | undefined,
+        ...(methodProps.isDeleted !== undefined
+          ? { isDeleted: methodProps.isDeleted as boolean }
+          : {}),
         ...(methodProps.isVirtual !== undefined
           ? { isVirtual: methodProps.isVirtual as boolean }
           : {}),

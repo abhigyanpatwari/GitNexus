@@ -252,6 +252,7 @@ function buildMethod(
     ...(config.isAsync?.(node) ? { isAsync: true } : {}),
     ...(config.isPartial?.(node) ? { isPartial: true } : {}),
     ...(config.isConst?.(node) ? { isConst: true } : {}),
+    ...(config.isDeleted?.(node) ? { isDeleted: true } : {}),
     annotations: config.extractAnnotations?.(node) ?? [],
     sourceFile: context.filePath,
     line: node.startPosition.row + 1,

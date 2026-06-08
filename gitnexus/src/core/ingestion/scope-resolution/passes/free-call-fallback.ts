@@ -383,6 +383,18 @@ export function emitFreeCallFallback(
         );
       }
       if (fnDef === undefined) continue;
+      if (fnDef.isDeleted === true) {
+        recordSuppressedOutcome(options.recordResolutionOutcome, {
+          phase: 'free-call-fallback',
+          filePath: parsed.filePath,
+          name: site.name,
+          range: site.atRange,
+          reason: 'selected-callable-deleted',
+          candidates: [fnDef],
+        });
+        handledSites.add(siteKey(parsed.filePath, site));
+        continue;
+      }
       if (
         (fnDefFromImplicitThis || fnDef.type === 'Method' || fnDef.type === 'Constructor') &&
         options.isCallableVisibleFromCaller !== undefined &&

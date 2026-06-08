@@ -162,6 +162,13 @@ export function emitCppScopeCaptures(
             'true',
           );
         }
+        if (hasDeletedMethodClause(fnNode)) {
+          grouped['@declaration.is-deleted'] = syntheticCapture(
+            '@declaration.is-deleted',
+            fnNode,
+            'true',
+          );
+        }
 
         // Detect static storage class (file-local linkage)
         if (hasStaticStorageClass(fnNode)) {
@@ -1709,6 +1716,23 @@ function hasExplicitSpecifier(node: SyntaxNode): boolean {
     if (child !== null && child.text === 'explicit') return true;
   }
   return /\bexplicit\b/.test(node.text.slice(0, 128));
+}
+
+function hasDeletedMethodClause(node: SyntaxNode): boolean {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'delete_method_clause') return true;
+    // tree-sitter-cpp 0.23 parses a deleted free-function declaration as
+    // `declaration > init_declarator > delete_expression`, while class
+    // members use the dedicated `delete_method_clause`.
+    if (
+      child?.type === 'init_declarator' &&
+      child.childForFieldName('value')?.type === 'delete_expression'
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

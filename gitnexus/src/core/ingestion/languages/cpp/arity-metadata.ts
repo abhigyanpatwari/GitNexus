@@ -222,8 +222,14 @@ function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
     }
     return null;
   }
-  // Unwrap pointer_declarator / reference_declarator
-  while (decl.type === 'pointer_declarator' || decl.type === 'reference_declarator') {
+  // Unwrap declarator wrappers. Deleted free functions are represented as
+  // `init_declarator(function_declarator, delete_expression)` by
+  // tree-sitter-cpp 0.23.
+  while (
+    decl.type === 'pointer_declarator' ||
+    decl.type === 'reference_declarator' ||
+    decl.type === 'init_declarator'
+  ) {
     const next = decl.childForFieldName('declarator');
     if (next === null) {
       // reference_declarator may not use field name

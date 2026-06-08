@@ -90,7 +90,11 @@ export function reconcileOwnership(
 
       if (def.type === 'Method' || def.type === 'Function' || def.type === 'Constructor') {
         const existing = model.methods.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        const existingDef = existing.find((e) => e.nodeId === def.nodeId);
+        if (existingDef !== undefined) {
+          if (def.isDeleted === true) {
+            (existingDef as { isDeleted?: boolean }).isDeleted = true;
+          }
           skippedAlreadyPresent++;
           continue;
         }

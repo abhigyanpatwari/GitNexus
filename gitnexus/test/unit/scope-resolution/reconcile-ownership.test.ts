@@ -212,6 +212,30 @@ describe('reconcileOwnership', () => {
     expect(model.methods.lookupAllByOwner('def:User', 'save')).toHaveLength(1);
   });
 
+  it('preserves deleted-callable metadata when the worker def is already registered', () => {
+    const model = createSemanticModel();
+    model.symbols.add('models.cpp', 'touch', 'def:Gadget.touch', 'Method', {
+      ownerId: 'def:Gadget',
+      qualifiedName: 'Gadget.touch',
+    });
+    const deleted = {
+      ...mkMethod({
+        nodeId: 'def:Gadget.touch',
+        filePath: 'models.cpp',
+        name: 'touch',
+        ownerId: 'def:Gadget',
+      }),
+      isDeleted: true,
+    };
+
+    const stats = reconcileOwnership([mkFile('models.cpp', [deleted])], model);
+    const registered = model.methods.lookupAllByOwner('def:Gadget', 'touch');
+
+    expect(stats.skippedAlreadyPresent).toBe(1);
+    expect(registered).toHaveLength(1);
+    expect(registered[0].isDeleted).toBe(true);
+  });
+
   it('registers nested class-like types (Class/Enum/Interface) into TypeRegistry by owner', () => {
     const model = createSemanticModel();
     const inner: SymbolDefinition = {

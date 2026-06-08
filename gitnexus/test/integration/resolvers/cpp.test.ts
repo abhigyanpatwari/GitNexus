@@ -4282,3 +4282,43 @@ describe('C++ root-anchored base ignores enclosing-relative type (issue #1982)',
     expect(e!.rel.targetId).not.toContain('Wrap');
   });
 });
+
+describe('C++ deleted overload selection (#1893 A2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-deleted-overload'), () => {});
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === target,
+    );
+
+  it('keeps a live free-function winner callable', () => {
+    expect(callsFrom('call_live_free', 'choose')).toHaveLength(1);
+  });
+
+  it('suppresses a deleted best free-function match instead of rerouting', () => {
+    expect(callsFrom('call_deleted_free', 'choose')).toHaveLength(0);
+  });
+
+  it('keeps a live member winner callable', () => {
+    expect(callsFrom('call_live_member', 'touch')).toHaveLength(1);
+  });
+
+  it('suppresses a deleted best member match instead of rerouting', () => {
+    expect(callsFrom('call_deleted_member', 'touch')).toHaveLength(0);
+  });
+
+  it('keeps a defaulted constructor callable', () => {
+    expect(callsFrom('call_defaulted_constructor', 'Gadget')).toHaveLength(1);
+  });
+
+  it('records both deleted-winner suppressions explicitly', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'selected-callable-deleted',
+    );
+    expect(outcomes).toHaveLength(2);
+  });
+});

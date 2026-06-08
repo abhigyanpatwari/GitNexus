@@ -194,6 +194,14 @@ const CPP_SCOPE_QUERY = `
   declarator: (function_declarator
     declarator: (identifier) @declaration.name)) @declaration.function
 
+;; tree-sitter-cpp 0.23 represents a deleted free function as an
+;; init_declarator whose value is a delete_expression.
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @declaration.name)
+    value: (delete_expression))) @declaration.function
+
 ;; Free operator prototype: std::ostream& operator<<(std::ostream&, T)
 (declaration
   declarator: (function_declarator

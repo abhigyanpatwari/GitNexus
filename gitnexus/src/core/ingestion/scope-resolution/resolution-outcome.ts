@@ -4,6 +4,7 @@ export type ResolutionSuppressionReason =
   | 'adl-ordinary-lookup-blocked'
   | 'conversion-rank-tied'
   | 'inline-ns-ambiguous'
+  | 'selected-callable-deleted'
   | 'overload-ambiguous'
   | 'overload-ambiguous-normalization';
 

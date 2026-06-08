@@ -261,6 +261,17 @@ export function emitReceiverBoundCalls(
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                memberDef,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
             // Super/base calls resolve through the MRO chain, not
             // through imports — the ancestor method is found by
             // walking `methodDispatch.mroFor(enclosingClass)`, which
@@ -335,6 +346,17 @@ export function emitReceiverBoundCalls(
             break;
           }
           if (memberDef !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                memberDef,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -436,6 +458,17 @@ export function emitReceiverBoundCalls(
             continue;
           }
           if (memberDef !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                memberDef,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
             const reason =
               site.kind === 'write' || site.kind === 'read'
                 ? site.kind
@@ -468,6 +501,18 @@ export function emitReceiverBoundCalls(
         for (const targetFile of targetFiles) {
           const memberDef = findExportedDef(targetFile, memberName, index);
           if (memberDef !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                memberDef,
+              )
+            ) {
+              handledSites.add(siteKey);
+              found = true;
+              break;
+            }
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -519,6 +564,17 @@ export function emitReceiverBoundCalls(
           continue;
         }
         if (memberDef !== undefined) {
+          if (
+            suppressDeletedCallTarget(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              memberDef,
+            )
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -560,6 +616,17 @@ export function emitReceiverBoundCalls(
           }
         }
         if (memberDef !== undefined) {
+          if (
+            suppressDeletedCallTarget(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              memberDef,
+            )
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
           const reason =
             site.kind === 'write' || site.kind === 'read'
               ? site.kind
@@ -597,6 +664,18 @@ export function emitReceiverBoundCalls(
             if (classDef3 !== undefined) {
               const memberDef = findOwnedMember(classDef3.nodeId, memberName, model);
               if (memberDef !== undefined) {
+                if (
+                  suppressDeletedCallTarget(
+                    options.recordResolutionOutcome,
+                    parsed.filePath,
+                    site,
+                    memberDef,
+                  )
+                ) {
+                  handledSites.add(siteKey);
+                  found3 = true;
+                  break;
+                }
                 const ok = tryEmitEdge(
                   graph,
                   scopes,
@@ -672,6 +751,17 @@ export function emitReceiverBoundCalls(
             break;
           }
           if (memberDef !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                memberDef,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -801,6 +891,17 @@ export function emitReceiverBoundCalls(
             continue;
           }
           if (memberDef !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                memberDef,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
             // For read/write ACCESSES, mirror the legacy DAG's reason
             // convention so consumers asserting `reason === 'write'`
             // keep working.
@@ -877,6 +978,17 @@ export function emitReceiverBoundCalls(
           continue;
         }
         if (picked !== undefined) {
+          if (
+            suppressDeletedCallTarget(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              picked,
+            )
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
           // Static-only filter (#1756 / U3): unlike Case 4 there's no
           // MRO chain to walk here — Case 5 dispatches on a single
           // owner via `pickOverload`. When the picked candidate is
@@ -1059,6 +1171,25 @@ function pickFirstNonStaticOnly(
   if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
   if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
   return candidates[0] ?? overloads[0];
+}
+
+function suppressDeletedCallTarget(
+  record: ResolutionOutcomeRecorder | undefined,
+  filePath: string,
+  site: ParsedFile['referenceSites'][number],
+  target: SymbolDefinition,
+): boolean {
+  if (site.kind !== 'call' || target.isDeleted !== true) return false;
+  record?.({
+    kind: 'suppressed',
+    phase: 'receiver-bound-calls',
+    filePath,
+    name: site.name,
+    range: site.atRange,
+    reason: 'selected-callable-deleted',
+    candidateIds: [target.nodeId],
+  });
+  return true;
 }
 
 function recordReceiverOverloadSuppression(
