@@ -57,8 +57,7 @@ export interface RawSignals {
  *
  * Emission order mirrors the `EvidenceWeights` layout: where-found →
  * type-binding → corroborators → arity → degraded. Stable order makes
- * the per-signal contributions easy to reason about in tests and in the
- * shadow-mode parity dashboard.
+ * the per-signal contributions easy to reason about in tests.
  */
 export function composeEvidence(signals: RawSignals): readonly ResolutionEvidence[] {
   const out: ResolutionEvidence[] = [];
@@ -141,7 +140,7 @@ export function composeEvidence(signals: RawSignals): readonly ResolutionEvidenc
 
 /**
  * Sum evidence weights and clamp to `[0, 1]`. Separate from `composeEvidence`
- * so tests and the parity dashboard can inspect the raw evidence list.
+ * so tests can inspect the raw evidence list.
  */
 export function confidenceFromEvidence(evidence: readonly ResolutionEvidence[]): number {
   let sum = 0;
