@@ -39,6 +39,46 @@ const DART_SCOPE_QUERY = `
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum
 
+; ── Declarations — type aliases (old-style + new-style function typedefs) ────
+; Both forms parse as type_alias; the name position differs, and a generic
+; <T> parameter list intervenes for the generic variants. Per #1919 review CF2,
+; a generic type_parameters node sits between the name and the next anchor, so
+; the non-generic adjacency patterns silently drop the generic forms. Four
+; standalone patterns (NOT one alternation — the tree-sitter 0.21 hazard drops
+; sibling branches) keep the name capture unambiguous and single-match per form:
+;   non-generic old-style  typedef int Cmp(int a, int b);
+;       children: return-type, NAME, formal_parameter_list
+;   generic old-style      typedef int Cmp<T>(T a, T b);          (CF2)
+;       children: return-type, NAME, type_parameters, formal_parameter_list
+;   non-generic new-style  typedef Pred = bool Function(int);
+;       children: NAME, "=", function_type
+;   generic new-style      typedef Mapper<T> = T Function(T);
+;       children: NAME, type_parameters, "=", function_type
+; The alias name is the type_identifier immediately before the param list (old)
+; or before "=" (new); for the generic forms it is the one immediately before
+; the intervening type_parameters. Mirrors Kotlin's @declaration.type_alias
+; rule; the generic scope-extractor maps "type_alias" → TypeAlias.
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (formal_parameter_list)) @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (type_parameters)
+  .
+  (formal_parameter_list)) @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  "=") @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (type_parameters)
+  .
+  "=") @declaration.type_alias
+
 ; ── Declarations — top-level functions (parent is program, not method) ───────
 (program
   (function_signature

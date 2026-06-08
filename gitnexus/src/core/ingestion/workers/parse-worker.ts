@@ -58,6 +58,7 @@ import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   buildConcreteTypedefDefinitionRanges,
   FUNCTION_NODE_TYPES,
+  findAncestorBeforeBoundary,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
@@ -69,6 +70,8 @@ import {
   isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
+  PARAMETER_LIST_NODE_TYPES,
+  LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
@@ -1779,14 +1782,52 @@ const processFileGroup = (
               provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
               null
           : undefined;
-      const enclosingClassInfo = needsOwner
-        ? cachedFindEnclosingClassInfo(
-            nameNode || definitionNode,
-            file.path,
-            provider.resolveEnclosingOwner,
-            getQualifiedOwnerName,
-          )
-        : null;
+      // A Property declared inside a function/lambda BODY is a function-LOCAL
+      // binding (e.g. Kotlin `val (a,b) = pair` or a `for ((k,v) in m)` loop
+      // destructuring emitted as `@definition.property` to dodge the local-symbol
+      // pruner), NOT a class member. Such locals must not get a HAS_PROPERTY owner
+      // edge from the enclosing class. Detect them by walking from the def node:
+      // if a function-like ancestor is reached BEFORE any class container, the
+      // property is enclosed by a function. Language-agnostic — genuine class
+      // fields sit directly in the class body with no intervening function, so
+      // they are unaffected (#1919 review CF3).
+      //
+      // EXCEPTION: a constructor PARAMETER property (TypeScript
+      // `constructor(public name: string)`) is also enclosed by a function, but
+      // it IS a class member — it is reached through the parameter list, not the
+      // executable body. So only strip the owner when the property is NOT inside
+      // a parameter list of that function (i.e. it's a body local).
+      const propOwnerNode = nameNode || definitionNode;
+      // A Property is function-local (and must NOT get a class HAS_PROPERTY owner)
+      // when its nearest enclosing executable body — reached before any class
+      // container — is a function/accessor/initializer body, AND it is not a
+      // constructor parameter-property (rescued by the param-list carve-out).
+      // Uses LOCAL_SCOPE_BODY_NODE_TYPES (not FUNCTION_NODE_TYPES): the latter
+      // mis-includes Dart bare signatures (over-stripping accessors) and omits
+      // Kotlin/Swift init+accessor bodies (under-stripping their locals) — see
+      // the #1919 review of this guard.
+      const isFunctionLocalProperty =
+        nodeLabel === 'Property' &&
+        propOwnerNode !== undefined &&
+        findAncestorBeforeBoundary(
+          propOwnerNode,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+          CLASS_CONTAINER_TYPES,
+        ) !== null &&
+        findAncestorBeforeBoundary(
+          propOwnerNode,
+          PARAMETER_LIST_NODE_TYPES,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+        ) === null;
+      const enclosingClassInfo =
+        needsOwner && !isFunctionLocalProperty
+          ? cachedFindEnclosingClassInfo(
+              nameNode || definitionNode,
+              file.path,
+              provider.resolveEnclosingOwner,
+              getQualifiedOwnerName,
+            )
+          : null;
       const enclosingClassId =
         enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
       const objectLiteralOwnerInfo =

@@ -115,6 +115,7 @@ export function resolveDefGraphId(
     type?: NodeLabel;
     parameterTypes?: readonly string[];
     parameterTypeClasses?: readonly ParameterTypeClass[];
+    parameterCount?: number;
     templateArguments?: readonly string[];
     templateConstraints?: unknown;
     /** #1982 bridge-held namespace path; see `SymbolDefinition.namespacePrefix`. */
@@ -170,6 +171,15 @@ export function resolveDefGraphId(
       const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
       const pHit = nodeLookup.get(pKey);
       if (pHit !== undefined) return pHit;
+    }
+    // Arity-disambiguating key (see node-lookup.ts): route a same-name overload
+    // to the structure node with the matching parameter count. Critical for a
+    // zero-arg overload (no parameterTypes) that would otherwise collapse onto a
+    // sibling overload via the source-order-dependent qualified key.
+    if (isOverloadableCallable(def.type) && def.parameterCount !== undefined) {
+      const aKey = qualifiedKey(filePath, def.type, `${qn}#${def.parameterCount}`);
+      const aHit = nodeLookup.get(aKey);
+      if (aHit !== undefined) return aHit;
     }
     if (
       (def.type === 'Class' ||

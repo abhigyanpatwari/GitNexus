@@ -11,17 +11,18 @@
     "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
   },
   "c": {
-    "fingerprint": "39f3a8346bb58159e9d79e2db6e1dd34ec6d70028e507ffd39548667dc658aa2",
+    "fingerprint": "12a196b2d6249c8d86a931b12ecebc2a0cdf8d6f47683acdd0d8e9d8bc7657f5",
     "scaling_budget": 1.5,
-    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96.",
-    "_note": "#1983: + c-static-linkage-worker fixture (caller.c/lib.c/lib.h/local.c \u2014 worker-path static-linkage side-channel test). Pure fixture-corpus drift: no c/captures.ts or query change branch-vs-main, existing fixtures' captures byte-identical (c-captures.test.ts 45/45), scaling stays linear (~0.97). The baseline was missed when the fixture landed; regenerated here. fingerprint 0de009b->39f3a83."
+    "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance — flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96.",
+    "_note": "#1983: + c-static-linkage-worker fixture (caller.c/lib.c/lib.h/local.c — worker-path static-linkage side-channel test). Pure fixture-corpus drift: no c/captures.ts or query change branch-vs-main, existing fixtures' captures byte-identical (c-captures.test.ts 45/45), scaling stays linear (~0.97). The baseline was missed when the fixture landed; regenerated here. fingerprint 0de009b->39f3a83.",
+    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
   },
   "cpp": {
-    "fingerprint": "6d6207ae1df3943c5fae28983e0c294e55225456e7cf39af1d46fda21b6787c4",
+    "fingerprint": "fd3d3768cdebbb4767d7cf18b8d2df19d61de969c816d7f4d6b599f947811356",
     "scaling_budget": 1.5,
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
-    "_rebaselined": "#1965 / #1923 F4: uninitialized non-leading multi-declarators now emit @declaration.variable captures; cpp-adl-inner-callable-outer-noncallable data::Pair a, b adds the legitimate fixture drift. Linear (~1.06).",
-    "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift \u2014 no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267. #1995: + cpp-union-nested-tail-collision and cpp-anon-ns-tail-collision fixtures \u2014 pure fixture-corpus drift; fixture_count 270->272, fingerprint 538e8be->d63ded6. #1993: + cpp-cross-namespace-same-tail fixture \u2014 pure fixture-corpus drift; fixture_count 272->273, fingerprint d63ded6->6d6207ae."
+    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression).",
+    "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift — no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267. #1995: + cpp-union-nested-tail-collision and cpp-anon-ns-tail-collision fixtures — pure fixture-corpus drift; fixture_count 270->272, fingerprint 538e8be->d63ded6. #1993: + cpp-cross-namespace-same-tail fixture — pure fixture-corpus drift; fixture_count 272->273, fingerprint d63ded6->6d6207ae."
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1924 F16: record primary-constructor base bindings now exclude constructor arguments; capture fingerprint changes, scaling remains linear. | #2036 review follow-up: csharp-record-base now exercises primary-constructor base dispatch end to end; +2 capture groups, scaling remains linear.",
@@ -32,8 +33,8 @@
   "rust": {
     "fingerprint": "ac610bbe97666bf285923479dd7b43a2fe4c5354aae8df1bcbafdc04fb220f82",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) \u2014 legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical. | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
-    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED \u2014 @declaration.macro/@reference.macro + MacroRegistry \u2192 USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126). #1992: + rust-nested-tail-collision-generic and rust-generic-impl-same-method-name (F3) fixtures \u2014 pure fixture-corpus drift, no scope-extractor change; fixture_count 127->129, fingerprint 56ffc1c0->b00aea0f."
+    "_rebaselined": "#1956 tri-review U1: rust-qualified-trait fixture (scoped + generic-of-scoped impl trait paths); bareTypeIdentifier now resolves scoped_type_identifier bases by their name: tail (additive, no existing-fixture drift); linear (~1.04). #1975: + rust-scoped-impl fixture (impl a::Inner / b::Inner inherent scoped impls) — legacy @definition.impl scoped arm + findEnclosingClassInfo inherent-impl scoped target; rust scope-extractor captures byte-identical. | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
+    "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED — @declaration.macro/@reference.macro + MacroRegistry → USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126). #1992: + rust-nested-tail-collision-generic and rust-generic-impl-same-method-name (F3) fixtures — pure fixture-corpus drift, no scope-extractor change; fixture_count 127->129, fingerprint 56ffc1c0->b00aea0f."
   },
   "php": {
     "fingerprint": "bc2c27c5ba26d5aea61142a2a99fb772222f5b969205260eb7a71b4c0bd73cdb",
@@ -45,18 +46,18 @@
     "fingerprint": "b5ea93bb3d0469c3821a8c70f5d5991c6f326e41097c119ad691154301dcc753",
     "scaling_budget": 1.5,
     "_rebaselined": "#1956 synth-widening: + ruby-qualified-base fixture; synth now reduces a scope_resolution superclass (class C < Mod::Super) to its trailing constant (matching the #1940 legacy leg), at parity. Linear (~1.03). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
-    "_note": "F62: + scope_resolution class/module declaration captures \u2014 fixture count 78\u219281, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) \u2014 pure fixture-corpus drift, scope-extractor captures unchanged; 81\u219282. #1991: + ruby-nested-mixin-tail-collision fixture (85\u219286). Recomputed on the #942 merge (fixture-comment rewording shifts capture byte-positions, capture LOGIC unchanged): bf6b13a -> b5ea93bb."
+    "_note": "F62: + scope_resolution class/module declaration captures — fixture count 78→81, fingerprint drift expected. #1975: + ruby-tail-collision fixture (Foo::Bar vs Baz::Bar stay distinct nodes) — pure fixture-corpus drift, scope-extractor captures unchanged; 81→82. #1991: + ruby-nested-mixin-tail-collision fixture (85→86). Recomputed on the #942 merge (fixture-comment rewording shifts capture byte-positions, capture LOGIC unchanged): bf6b13a -> b5ea93bb."
   },
   "swift": {
-    "fingerprint": "53325c6345161c5a495f997297af5a24fb718fd3e6647040160f8ab2a2c8e4c0",
+    "fingerprint": "180ac68e780bdf6f9089d53f51cbb9a66aed3e7774631cc3fcbaae5020213998",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956: swift-qualified-base fixture + heritage-bearing scale source (class: Base, Serviceable \u2014 extends + protocol conformance); linear (~1.03)."
+    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
   },
   "dart": {
-    "fingerprint": "a9e882b537765e8fd0ddfcd33b38b253dd86fc5ddffa6e4bf5a85ed8ee615eaa",
+    "fingerprint": "94bf2c26e1ba96f4211634aa572c0a989b503e717e75dfc5df04f66c417de80f",
     "scaling_budget": 1.5,
     "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
-    "_rebaselined": "#1970 review + tri-review follow-ups: constructor-call retag, cascade calls, built-in suppression, enum scope, #1926 F24/F25, named-ctor dedup (crash fix), container-name binding suppression; heritage file-affinity resolution. Fixtures: member-call-contexts, constructor-body, named-constructor-body, heritage-name-collision, construct-cascade."
+    "_rebaselined": "#1919 review CF3 fix: extended kotlin-local-property-owner (init/accessor destructuring) + new dart-accessor-owner fixture (getter/setter ownership). Fingerprint-only corpus drift; scaling ~1.0."
   },
   "java": {
     "fingerprint": "9b29cafe32873b4902bda311bd089ffc04efe08f13557b966d29544be514080a",
@@ -67,8 +68,8 @@
   "typescript": {
     "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures \u2014 fingerprint drift expected.",
-    "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected."
+    "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures — fingerprint drift expected.",
+    "_note": "#1968: F44, F85, F87 — fingerprint drift expected."
   },
   "javascript": {
     "fingerprint": "d72f03c6c502235d2d4b74d66baa5c7d361f040d7a1b72e84acad61210d05ae8",
@@ -77,9 +78,9 @@
     "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   },
   "kotlin": {
-    "fingerprint": "a16400622892183581b8f5f8fa01f07842d19b8cf49ed021df52bd17009d749f",
+    "fingerprint": "90aa832978d9744e50058e77a04748390a7e34e36b309f6c1d178eb07280b7ea",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1956 synth-widening: + kotlin-qualified-base fixture; synthesizeKotlinInheritanceReferences now handles the explicit_delegation form (class F : Iface by d -> Iface), matching the #1940 legacy leg, at parity. Linear (~0.87). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1930 F45: default parameters now emit optional-arity metadata; capture fingerprint changes, scaling remains linear."
+    "_rebaselined": "#1919 review CF3 fix: extended kotlin-local-property-owner (init/accessor destructuring) + new dart-accessor-owner fixture (getter/setter ownership). Fingerprint-only corpus drift; scaling ~1.0."
   }
 }
