@@ -84,9 +84,7 @@ describe('Spring @RequestMapping route ingestion pipeline', () => {
       }
     });
     // At least one route should be linked to the UserController file
-    const userRoutes = handlesRouteEdges.filter((e) =>
-      e.filePath.includes('UserController.java'),
-    );
+    const userRoutes = handlesRouteEdges.filter((e) => e.filePath.includes('UserController.java'));
     expect(userRoutes.length).toBeGreaterThanOrEqual(1);
   });
 });
