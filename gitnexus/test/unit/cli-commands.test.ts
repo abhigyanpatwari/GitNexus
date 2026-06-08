@@ -1,4 +1,13 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+async function readRepoJson<T>(relativePath: string): Promise<T> {
+  return JSON.parse(await fs.readFile(path.join(REPO_ROOT, relativePath), 'utf8')) as T;
+}
 
 // Mock all the heavy imports before importing index
 vi.mock('../../src/cli/analyze.js', () => ({
@@ -19,6 +28,26 @@ describe('CLI commands', () => {
     it('package.json has a valid version string', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       expect(pkg.default.version).toMatch(/^\d+\.\d+\.\d+/);
+    });
+
+    it('keeps Claude plugin manifests aligned with the gitnexus release version', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const pluginManifest = await readRepoJson<{ version: string }>(
+        'gitnexus-claude-plugin/.claude-plugin/plugin.json',
+      );
+      const marketplaceManifest = await readRepoJson<{
+        plugins?: Array<{ name: string; version: string }>;
+      }>('.claude-plugin/marketplace.json');
+
+      expect(Array.isArray(marketplaceManifest.plugins)).toBe(true);
+
+      const gitnexusEntries = (marketplaceManifest.plugins ?? []).filter(
+        (plugin) => plugin.name === 'gitnexus',
+      );
+
+      expect(gitnexusEntries).toHaveLength(1);
+      expect(pluginManifest.version).toBe(pkg.default.version);
+      expect(gitnexusEntries[0]?.version).toBe(pkg.default.version);
     });
   });
 
