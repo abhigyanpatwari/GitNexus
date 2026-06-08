@@ -17,6 +17,7 @@ import {
   CODE_ELEMENT_SCHEMA,
   COMMUNITY_SCHEMA,
   PROCESS_SCHEMA,
+  BASICBLOCK_SCHEMA,
   RELATION_SCHEMA,
   EMBEDDING_SCHEMA,
   CREATE_VECTOR_INDEX_QUERY,
@@ -68,9 +69,13 @@ describe('LadybugDB Schema', () => {
       }
     });
 
+    it('includes the BasicBlock taint/PDG substrate node (issue #2080)', () => {
+      expect(NODE_TABLES).toContain('BasicBlock');
+    });
+
     it('has expected total count', () => {
-      // 9 core + 19 multi-language + Route + Tool = 31
-      expect(NODE_TABLES).toHaveLength(31);
+      // 9 core + 19 multi-language + Route + Tool + BasicBlock = 32
+      expect(NODE_TABLES).toHaveLength(32);
     });
   });
 
@@ -87,6 +92,12 @@ describe('LadybugDB Schema', () => {
         'STEP_IN_PROCESS',
       ];
       for (const t of expected) {
+        expect(REL_TYPES).toContain(t);
+      }
+    });
+
+    it('includes the taint/PDG substrate edge types (issue #2080)', () => {
+      for (const t of ['CFG', 'REACHING_DEF', 'TAINTED', 'SANITIZES', 'TAINT_PATH']) {
         expect(REL_TYPES).toContain(t);
       }
     });
@@ -121,6 +132,19 @@ describe('LadybugDB Schema', () => {
     it('Property schema preserves declaredType', () => {
       expect(SCHEMA_QUERIES).toContain(PROPERTY_SCHEMA);
       expect(PROPERTY_SCHEMA).toContain('declaredType STRING');
+    });
+
+    it('BasicBlock schema is wired into SCHEMA_QUERIES (issue #2080, F1 guard)', () => {
+      // Defining BASICBLOCK_SCHEMA is not enough — it must be appended to
+      // NODE_SCHEMA_QUERIES (→ SCHEMA_QUERIES) or initLbug never creates the
+      // table and the bulk-COPY round-trip fails with "table does not exist".
+      expect(SCHEMA_QUERIES).toContain(BASICBLOCK_SCHEMA);
+      expect(BASICBLOCK_SCHEMA).toContain('CREATE NODE TABLE BasicBlock');
+      expect(BASICBLOCK_SCHEMA).toContain('filePath STRING');
+      expect(BASICBLOCK_SCHEMA).toContain('startLine INT64');
+      expect(BASICBLOCK_SCHEMA).toContain('endLine INT64');
+      expect(BASICBLOCK_SCHEMA).toContain('text STRING');
+      expect(BASICBLOCK_SCHEMA).toContain('PRIMARY KEY (id)');
     });
 
     it('Community schema has heuristicLabel and cohesion', () => {
@@ -162,6 +186,10 @@ describe('LadybugDB Schema', () => {
     it('connects symbols to Process (STEP_IN_PROCESS)', () => {
       expect(RELATION_SCHEMA).toContain('FROM Function TO Process');
       expect(RELATION_SCHEMA).toContain('FROM Method TO Process');
+    });
+
+    it('connects BasicBlock to BasicBlock (taint/PDG substrate edges, #2080)', () => {
+      expect(RELATION_SCHEMA).toContain('FROM BasicBlock TO BasicBlock');
     });
 
     it('has all FROM/TO pairs needed for HAS_METHOD edges', () => {
@@ -208,7 +236,8 @@ describe('LadybugDB Schema', () => {
 
   describe('schema query ordering', () => {
     it('NODE_SCHEMA_QUERIES has correct count', () => {
-      expect(NODE_SCHEMA_QUERIES).toHaveLength(31);
+      // 31 + BasicBlock = 32
+      expect(NODE_SCHEMA_QUERIES).toHaveLength(32);
     });
 
     it('REL_SCHEMA_QUERIES has one relation table', () => {
@@ -216,8 +245,8 @@ describe('LadybugDB Schema', () => {
     });
 
     it('SCHEMA_QUERIES includes all node + rel + embedding schemas', () => {
-      // 31 node + 1 rel + 1 embedding = 33
-      expect(SCHEMA_QUERIES).toHaveLength(33);
+      // 32 node + 1 rel + 1 embedding = 34
+      expect(SCHEMA_QUERIES).toHaveLength(34);
     });
 
     it('node schemas come before relation schemas in SCHEMA_QUERIES', () => {
