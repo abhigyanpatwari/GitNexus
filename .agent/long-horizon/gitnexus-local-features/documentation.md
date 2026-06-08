@@ -11,7 +11,7 @@ Current state:
 
 - Branch: `local/gitnexus-local-features`
 - Baseline: `local/enterprise-handoff/rc109-fix5-dirty-baseline`
-- Mode: current workflow row is `R3 Active slice complete but uncheckpointed`; the active tranche through Task 6 detail-route API-smoke, Task 5 explicit-range regression forensics, Task 6 explicit-range E2E planning, and Task 4 coexistence/parity research is complete and awaiting checkpoint/review
+- Mode: current workflow row is `R7 No defensible next task`; checkpoint commit `8544ab82` closed the completed tranche and there is no next top-level task selected yet
 - Canonical docs: this source repo bundle
 - Comprehensive map: `feature-map.md`
 - Supporting Codex 5.4 handover note: `codex-5-4-handover-20260608.md`
@@ -25,12 +25,12 @@ Current state:
 
 ### Decision-Table Evaluation
 
-- Current row fired: `R3 Active slice complete but uncheckpointed`
-- Current active packet: completed tranche covering Task 6 detail-route API-smoke, Task 5 explicit-range regression-forensics intake, Task 6 explicit-range E2E planning intake, and Task 4 coexistence/parity research
-- Current branch/WIP status: dirty only with the intended docs/source/test tranche after the previous clean checkpoint commit `2a38a6db`
-- Checkpoint status: pending for the just-completed tranche
-- Immediate action: review the current tranche as one vertical batch, prepare a checkpoint recommendation, and then select the next top-level task
-- Next baton target after checkpoint: `Worktree review / checkpoint packet`, then either the next approved feature-sized slice or `NO_NEXT_TASK_SELECTED`
+- Current row fired: `R7 No defensible next task`
+- Current active packet: `NO_NEXT_TASK_SELECTED`
+- Current branch/WIP status: clean worktree after checkpoint commit `8544ab82`
+- Checkpoint status: closed by commit `8544ab82` (`checkpoint: complete explicit-range and api-smoke tranche`)
+- Immediate action: wait for the next selected top-level task, or prepare the next recommendation packet when asked
+- Next baton target after checkpoint: `NO_NEXT_TASK_SELECTED`
 
 ## Decisions
 
@@ -60,6 +60,7 @@ Current state:
 - 2026-06-08: The user chose the big-slice task model. Top-level tasks should usually be meaningful vertical feature slices, while smaller packets remain internal execution steps unless risk, ambiguity, or verification boundaries justify splitting them out. The earlier micro-packet phase remains valid historical stabilization work, but it is no longer the preferred default.
 - 2026-06-08T19:09+01:00: Completed the current four-task vertical tranche. Task 6 API-smoke now covers deterministic list-to-detail specs for `/api/process` and `/api/cluster` alongside the existing `/api/processes`, `/api/health`, `/api/info`, and `/api/clusters` routes. Task 5 `regression-forensics` now accepts exactly one of `--pr-impact-json` or `--impact-for-ranges-json` and records evidence mode explicitly. Task 6 `e2e-test-plan` now accepts exactly one of `--pr-impact-json` or `--impact-for-ranges-json`, carries explicit impact-evidence provenance, and honestly derives weaker route/symbol proposals when running from explicit-range evidence. Focused tests (37), `npm run build`, and `git diff --check` passed for the source tranche.
 - 2026-06-08T19:09+01:00: Task 4 coexistence/parity research concluded that classic `pr-impact` should remain the richer diff-owned report lane, while `symbols-for-ranges`, `impact-for-symbols`, and `impact-for-ranges` remain the separate operator-owned explicit-range lane. Current recommendation is coexistence, not early convergence, because forcing parity now would either duplicate orchestration or overclaim missing risk/API/test semantics. The conclusion is recorded in `brainstorming-pr-review-blast-radius.md`.
+- 2026-06-08T20:02+01:00: Review/checkpoint packet completed. Checkpoint commit `8544ab82` (`checkpoint: complete explicit-range and api-smoke tranche`) closed the source/docs/test boundary for the four-task tranche. The worktree is clean. Current baton is `NO_NEXT_TASK_SELECTED` until the next feature-sized slice is chosen.
 - 2026-06-08T09:34+01:00: Task 2 Wiki Mutation / Manual Refresh Policy produced a local manual-refresh planner CLI slice: `gitnexus wiki-refresh [path]`. The command emits deterministic Markdown/JSON readiness over graph freshness, wiki metadata, and provider readiness, recommends `gitnexus wiki "<path>"` only when prerequisites pass, and does not run the generator, invoke providers, mutate wiki output, or write config. Full output mutation/provider execution remains deferred.
 - 2026-06-05: Upstream Docker README/compose guidance and embedding PR evidence were reconciled with Steve's local Podman profile. Decision: default to Podman/container-side indexing for Podman-managed repos; do not configure Windows/User PowerShell `GITNEXUS_EMBEDDING_*` variables unless host CLI parity is explicitly requested.
 - 2026-06-05: Redundant `gitnexus-host` compatibility helper was quarantined. New workflow uses only bare `gitnexus` for the host/npm CLI and `gitnexus-podman` for the Podman/container runtime.

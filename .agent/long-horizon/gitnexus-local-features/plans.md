@@ -99,8 +99,8 @@ Board activation note:
 
 | Slot | Packet | Status | Notes |
 | --- | --- | --- | --- |
-| Active | Worktree review / checkpoint packet | Ready after completed tranche | Review the combined Task 6/Task 5/Task 6/Task 4 tranche, verify grouping, and prepare the checkpoint recommendation before opening another top-level feature slice. |
-| Ready 1 | Next approved feature-sized slice | Pending selection | Choose only after the checkpoint closes and the next branch-level priority is named. |
+| Active | `NO_NEXT_TASK_SELECTED` | Current baton | Checkpoint commit `8544ab82` closed the completed tranche. No next feature-sized packet has been selected yet. |
+| Ready 1 | Next approved feature-sized slice | Pending selection | Choose the next vertical task only after a fresh priority decision or recommendation pass. |
 | Ready 2 | Task 4 parity revisit | Explicitly deferred | Revisit only if a future packet deliberately funds real parity work between `pr-impact` and the explicit-range lane. |
 | Deferred / Red | GitHub posting/check automation; provider execution; historical/base-graph architecture; CI/workflow mutation; secrets/tokens | Deferred | Never move red-lane work into a ready slot without explicit human-operator direction. |
 
@@ -113,8 +113,8 @@ Board selection rule:
 
 Default recommendation:
 
-- Active packet should now be the review/checkpoint packet for the completed tranche.
-- Recommended immediate action is to review the combined source/docs/test batch, prepare the checkpoint recommendation, and only then choose the next feature-sized slice.
+- Active packet is now `NO_NEXT_TASK_SELECTED`.
+- Recommended immediate action is to choose the next feature-sized slice before any new source edits begin.
 - Task 4 coexistence/parity research is complete for the current run; keep `pr-impact` and the explicit-range lane separate unless a later packet explicitly funds true parity work.
 - Do not add more generated API-smoke routes or more Task 4 convergence work until a new top-level packet is selected.
 - If the human operator chooses another priority, create a selected-task packet for that task before source edits.
