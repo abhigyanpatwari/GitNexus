@@ -54,11 +54,10 @@ describe('GET /api/fs/list — handleFsListRequest', () => {
 
   it('defaults to / when dir is omitted (linux server)', async () => {
     const { status } = await invoke({});
-    if (process.platform === 'win32') {
-      expect(status).toBe(400);
-    } else {
-      expect(status).toBe(200);
-    }
+    // On Linux root / is the filesystem root; on Windows path.normalize('/')
+    // normalizes to \ while path.resolve('/') resolves to the CWD drive root.
+    // Our guard skips the traversal check for bare root paths.
+    expect(status).toBe(200);
   });
 
   it('returns 400 for a relative path', async () => {
