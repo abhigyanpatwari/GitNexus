@@ -177,8 +177,19 @@ function logQueryError(context: string, err: unknown): void {
   logger.error({ context, err: msg }, 'GitNexus query failed');
 }
 
-const isReadOnlyDbError = (err: unknown): boolean =>
-  /read-only database/i.test(err instanceof Error ? err.message : String(err));
+const isReadOnlyDbError = (err: unknown): boolean => {
+  // Walk the `cause` chain (bounded) so a wrapped read-only error (e.g. the
+  // pool adapter's `{ cause }` wrapper) is still detected here — this is the
+  // copy the MCP cypher handler uses to surface its curated read-only message
+  // (#2068 follow-up). Mirrors lbug-adapter's isReadOnlyDbError.
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur != null; depth++) {
+    const msg = cur instanceof Error ? cur.message : String(cur);
+    if (/read-only database/i.test(msg)) return true;
+    cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
+  }
+  return false;
+};
 
 /**
  * Per-query latency telemetry for production aggregation (#553).
