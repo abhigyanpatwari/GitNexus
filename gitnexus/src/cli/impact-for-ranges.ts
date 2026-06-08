@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { writeSync } from 'node:fs';
+import {
+  renderImpactForRangesMarkdown,
+  type ImpactForRangesReport,
+} from '../core/pr-impact/impact-for-ranges-report.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 
 let _backend: LocalBackend | null = null;
@@ -27,6 +31,7 @@ function output(data: unknown): void {
 export interface ImpactForRangesCommandOptions {
   input?: string;
   repo?: string;
+  format?: string;
 }
 
 export async function impactForRangesCommand(
@@ -44,7 +49,7 @@ export async function impactForRangesCommand(
   }
 
   const backend = await getBackend();
-  const result = await backend.callTool('impact_for_ranges', {
+  const result = (await backend.callTool('impact_for_ranges', {
     repo: options.repo,
     ranges: ranges.map((range: any) => ({
       filePath: range?.filePath,
@@ -53,6 +58,12 @@ export async function impactForRangesCommand(
       side: range?.side,
       change_type: range?.change_type ?? range?.changeType,
     })),
-  });
+  })) as ImpactForRangesReport | { error: string };
+
+  if ((options?.format || 'json').toLowerCase() === 'markdown' && !('error' in result)) {
+    output(renderImpactForRangesMarkdown(result));
+    return;
+  }
+
   output(result);
 }

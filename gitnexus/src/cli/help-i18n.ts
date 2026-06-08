@@ -129,6 +129,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'impact-for-symbols|-r, --repo <name>': 'help.option.repo.target',
   'impact-for-ranges|--input <path>': 'help.option.impactForRanges.input',
   'impact-for-ranges|-r, --repo <name>': 'help.option.repo.target',
+  'impact-for-ranges|-f, --format <format>': 'help.option.prImpact.format',
   'pr-impact|-s, --scope <scope>': 'help.option.detectChanges.scope',
   'pr-impact|-b, --base-ref <ref>': 'help.option.detectChanges.baseRef',
   'pr-impact|-r, --repo <name>': 'help.option.repo.target',

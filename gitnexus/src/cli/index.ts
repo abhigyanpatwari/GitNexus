@@ -281,6 +281,7 @@ program
   .description('Compose caller-supplied ranges into direct process evidence')
   .requiredOption('--input <path>', 'Path to input JSON containing explicit ranges')
   .option('-r, --repo <name>', 'Target repository')
+  .option('-f, --format <format>', 'Output format: markdown or json', 'json')
   .action(createLbugLazyAction(() => import('./impact-for-ranges.js'), 'impactForRangesCommand'));
 
 program

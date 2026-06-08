@@ -97,4 +97,83 @@ describe('impact-for-ranges CLI command', () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('renders markdown when format=markdown is requested', async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-impact-ranges-md-cli-'));
+    try {
+      const inputPath = path.join(tempDir, 'ranges.json');
+      writeFileSync(
+        inputPath,
+        JSON.stringify([
+          {
+            filePath: 'src/app.ts',
+            startLine: 2,
+            endLine: 4,
+            side: 'new',
+            changeType: 'modified',
+          },
+        ]),
+      );
+      callToolMock.mockResolvedValue({
+        schema_version: 'impact-for-ranges.v1alpha1',
+        repo: { name: 'gitnexus-local-features', indexed_commit: 'abc123' },
+        summary: {
+          input_ranges: 1,
+          matched_symbols: 1,
+          unmatched_ranges: 0,
+          deleted_symbols: 0,
+          symbols_with_processes: 1,
+          unmapped_symbols: 0,
+          unknown_symbols: 0,
+          affected_processes: 1,
+        },
+        symbols: [
+          {
+            id: 'Function:src/app.ts:mapped',
+            name: 'mapped',
+            type: 'Function',
+            filePath: 'src/app.ts',
+            change_types: ['modified'],
+            matched_ranges: [
+              {
+                filePath: 'src/app.ts',
+                startLine: 2,
+                endLine: 4,
+                side: 'new',
+                change_type: 'modified',
+              },
+            ],
+            processes: [{ id: 'Process:login-flow', name: 'LoginFlow', process_type: 'entry_point' }],
+          },
+        ],
+        unmapped_symbols: [],
+        unknown_symbols: [],
+        unmatched_ranges: [],
+        affected_processes: [
+          {
+            id: 'Process:login-flow',
+            name: 'LoginFlow',
+            process_type: 'entry_point',
+            matched_symbols: 1,
+          },
+        ],
+        caveats: ['Direct process membership only; no caller traversal or risk scoring is included.'],
+      });
+
+      const { impactForRangesCommand } = await import('../../src/cli/impact-for-ranges.js');
+
+      await impactForRangesCommand({
+        input: inputPath,
+        repo: 'gitnexus-local-features',
+        format: 'markdown',
+      });
+
+      const output: string = writeSyncMock.mock.calls[0][1];
+      expect(output).toContain('# GitNexus Impact For Ranges');
+      expect(output).toContain('## Symbols With Direct Process Evidence');
+      expect(output).toContain('LoginFlow');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
