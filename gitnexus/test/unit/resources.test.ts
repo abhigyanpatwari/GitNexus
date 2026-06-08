@@ -80,12 +80,12 @@ describe('getResourceDefinitions', () => {
 });
 
 describe('getResourceTemplates', () => {
-  it('returns 8 dynamic templates', () => {
+  it('returns 9 dynamic templates', () => {
     const templates = getResourceTemplates();
-    expect(templates).toHaveLength(8);
+    expect(templates).toHaveLength(9);
   });
 
-  it('includes context, clusters, processes, schema, cluster detail, process detail, group contracts/status', () => {
+  it('includes context, clusters, processes, schema, cluster detail, process detail, coverage, group contracts/status', () => {
     const templates = getResourceTemplates();
     const uris = templates.map((t) => t.uriTemplate);
     expect(uris).toContain('gitnexus://repo/{name}/context');
@@ -94,6 +94,7 @@ describe('getResourceTemplates', () => {
     expect(uris).toContain('gitnexus://repo/{name}/schema');
     expect(uris).toContain('gitnexus://repo/{name}/cluster/{clusterName}');
     expect(uris).toContain('gitnexus://repo/{name}/process/{processName}');
+    expect(uris).toContain('gitnexus://repo/{name}/coverage');
     expect(uris).toContain('gitnexus://group/{name}/contracts');
     expect(uris).toContain('gitnexus://group/{name}/status');
   });
