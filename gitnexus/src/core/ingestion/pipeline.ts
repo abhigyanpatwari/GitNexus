@@ -59,15 +59,18 @@ export interface PipelineOptions {
    */
   pdg?: boolean;
   /**
-   * Per-function source-line cap for worker-side CFG construction
-   * (`undefined`/0 ⇒ no cap). Bounds the cost of a pathological mega-function;
-   * over-cap functions are skipped (no CFG emitted for them).
+   * Per-function source-line cap for worker-side CFG construction.
+   * `undefined` ⇒ the worker applies `DEFAULT_PDG_MAX_FUNCTION_LINES`; `0` ⇒ no
+   * cap (unlimited). Bounds the cost of a pathological mega-function; over-cap
+   * functions are skipped (no CFG emitted for them). No CLI flag in M1 —
+   * programmatic / server analyze-worker path only.
    */
   pdgMaxFunctionLines?: number;
   /**
-   * Per-function CFG edge cap for the scope-resolution emit step
-   * (`undefined`/0 ⇒ the emit default). Over-cap functions stop at the cap and
-   * log a structured drop warning (no silent truncation).
+   * Per-function CFG edge cap for the scope-resolution emit step.
+   * `undefined` ⇒ `DEFAULT_MAX_CFG_EDGES_PER_FUNCTION`; `0` ⇒ no cap (unlimited).
+   * Over-cap functions stop at the cap and log a structured drop warning (no
+   * silent truncation). No CLI flag in M1 — programmatic / server path only.
    */
   pdgMaxEdgesPerFunction?: number;
   /**

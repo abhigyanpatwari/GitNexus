@@ -16,6 +16,14 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import type { CfgVisitor, FunctionCfg } from './types.js';
 
+/**
+ * Default per-function source-line cap used by the worker when the `--pdg` run
+ * does not specify `pdgMaxFunctionLines`. A function longer than this (almost
+ * always minified/generated code) is skipped rather than walked — its CFG is
+ * both expensive and low-value. Overridable via `PipelineOptions.pdgMaxFunctionLines`.
+ */
+export const DEFAULT_PDG_MAX_FUNCTION_LINES = 2000;
+
 export interface CollectedCfgs {
   readonly cfgs: readonly FunctionCfg[];
   /** Functions skipped for exceeding `maxFunctionLines` (0 ⇒ none skipped). */

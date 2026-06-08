@@ -63,10 +63,11 @@ describe('U4 — emitFileCfgs node/edge shape', () => {
     expect(r.edges).toBe(rels.length);
     expect(nodes.length).toBeGreaterThan(0);
 
-    // every node is a BasicBlock with the KTD3 id `BasicBlock:<file>:<funcStart>:<idx>`
+    // every node is a BasicBlock with the KTD3 id
+    // `BasicBlock:<file>:<funcStartLine>:<funcStartCol>:<idx>`
     for (const n of nodes) {
       expect(n.label).toBe('BasicBlock');
-      expect(n.id).toMatch(/^BasicBlock:src\/f\.ts:\d+:\d+$/);
+      expect(n.id).toMatch(/^BasicBlock:src\/f\.ts:\d+:\d+:\d+$/);
       expect(n.properties.filePath).toBe('src/f.ts');
       expect(n.properties.name).toBe(''); // no name column
     }
@@ -83,6 +84,21 @@ describe('U4 — emitFileCfgs node/edge shape', () => {
     emitFileCfgs(graph, cfgs);
     const ids = nodes.map((n) => n.id);
     expect(new Set(ids).size).toBe(ids.length); // no collisions
+  });
+
+  it('two functions sharing a start LINE get distinct ids (start-column disambiguates)', () => {
+    // Both arrows begin on line 1; without the start-column segment in the id
+    // their block indices (each restarting at 0) collide and graph.addNode's
+    // first-writer-wins silently drops the second function's blocks.
+    const cfgs = cfgsOf(`const h = { a: () => foo(), b: () => bar() };`, 'one-line.ts');
+    expect(cfgs.length).toBe(2);
+    expect(cfgs[0].functionStartLine).toBe(cfgs[1].functionStartLine); // same line
+    expect(cfgs[0].functionStartColumn).not.toBe(cfgs[1].functionStartColumn); // diff column
+    const { graph, nodes } = recordingGraph();
+    emitFileCfgs(graph, cfgs);
+    const ids = nodes.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length); // no collision despite shared line
+    expect(nodes.length).toBe(cfgs[0].blocks.length + cfgs[1].blocks.length); // all blocks survive
   });
 });
 
@@ -108,10 +124,9 @@ describe('U4 — AC2: every BasicBlock is reachable from its function ENTRY', ()
       (adj.get(e.sourceId) ?? adj.set(e.sourceId, []).get(e.sourceId)!).push(e.targetId);
 
     for (const cfg of cfgs) {
-      const entryId = `BasicBlock:r.ts:${cfg.functionStartLine}:${cfg.entryIndex}`;
-      const fnNodeIds = nodes
-        .map((n) => n.id)
-        .filter((id) => id.startsWith(`BasicBlock:r.ts:${cfg.functionStartLine}:`));
+      const prefix = `BasicBlock:r.ts:${cfg.functionStartLine}:${cfg.functionStartColumn}:`;
+      const entryId = `${prefix}${cfg.entryIndex}`;
+      const fnNodeIds = nodes.map((n) => n.id).filter((id) => id.startsWith(prefix));
       // BFS from ENTRY
       const seen = new Set([entryId]);
       const stack = [entryId];

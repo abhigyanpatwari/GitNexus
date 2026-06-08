@@ -47,7 +47,7 @@ program
   .option(
     '--pdg',
     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
-      'for TypeScript/JavaScript. Opt-in; off by default. (#2081 M1)',
+      'for supported languages. Opt-in; off by default. (#2081 M1)',
   )
   .option(
     '--default-branch <branch>',

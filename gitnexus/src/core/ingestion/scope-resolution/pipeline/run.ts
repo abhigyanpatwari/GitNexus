@@ -261,7 +261,8 @@ interface RunScopeResolutionInput {
    * nodes or edges and a byte-identical graph.
    */
   readonly pdg?: boolean;
-  /** Per-function CFG edge cap (0/undefined ⇒ {@link DEFAULT_MAX_CFG_EDGES_PER_FUNCTION}). */
+  /** Per-function CFG edge cap. `undefined` ⇒ {@link DEFAULT_MAX_CFG_EDGES_PER_FUNCTION};
+   *  `0` ⇒ no cap (unlimited). */
   readonly pdgMaxEdgesPerFunction?: number;
   /**
    * Optional graph-node lookup built ONCE by the caller and shared across
@@ -700,22 +701,32 @@ export function runScopeResolution(
   if (input.pdg === true) {
     let cfgBlocks = 0;
     let cfgEdges = 0;
+    let cfgDroppedEdges = 0;
     for (const pf of emitParsedFiles) {
-      const cfgs = pf.cfgSideChannel as readonly FunctionCfg[] | undefined;
-      if (cfgs === undefined || cfgs.length === 0) continue;
+      const cfgs = pf.cfgSideChannel;
+      // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
+      // durable store. A stale or wrong-shape value (e.g. a pre-SCHEMA_BUMP
+      // shard that slipped the version gate) must skip emission, not throw a
+      // TypeError mid-graph-build and abort scope-resolution for the language.
+      if (!Array.isArray(cfgs) || cfgs.length === 0) continue;
       const emitted = emitFileCfgs(
         graph,
-        cfgs,
+        cfgs as readonly FunctionCfg[],
         input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
-        input.onWarn,
+        // Log cap-overflow drops UNCONDITIONALLY (not via input.onWarn, which is
+        // gated behind the semantic-model validator and silent in production) so
+        // the per-function edge cap never truncates the CFG silently (R6/KTD6).
+        (message) => logger.warn(message),
       );
       cfgBlocks += emitted.blocks;
       cfgEdges += emitted.edges;
+      cfgDroppedEdges += emitted.droppedEdges;
     }
     if (cfgBlocks > 0) {
       logger.debug(
         `[scope-resolution] CFG emit (lang=${provider.language}): ` +
-          `${cfgBlocks} BasicBlock nodes, ${cfgEdges} CFG edges`,
+          `${cfgBlocks} BasicBlock nodes, ${cfgEdges} CFG edges` +
+          (cfgDroppedEdges > 0 ? `, ${cfgDroppedEdges} edges dropped (per-function cap)` : ''),
       );
     }
   }

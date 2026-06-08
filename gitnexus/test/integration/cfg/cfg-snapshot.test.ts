@@ -88,7 +88,7 @@ describe('U7 — AC2: every BasicBlock reachable from its function ENTRY', () =>
       (adj.get(e.sourceId) ?? adj.set(e.sourceId, []).get(e.sourceId)!).push(e.targetId);
 
     for (const cfg of cfgs) {
-      const prefix = `BasicBlock:ten-functions.ts:${cfg.functionStartLine}:`;
+      const prefix = `BasicBlock:ten-functions.ts:${cfg.functionStartLine}:${cfg.functionStartColumn}:`;
       const entryId = `${prefix}${cfg.entryIndex}`;
       for (const id of nodeIds.filter((i) => i.startsWith(prefix))) {
         expect(reaches(adj, entryId, id), `${id} unreachable from ENTRY`).toBe(true);
@@ -143,11 +143,14 @@ describe('U7 — AC3: hazard topologies', () => {
     expect(fn.edges.some((e) => e.kind === 'break')).toBe(true);
   });
 
-  it('labeled continue returns to the outer loop header', () => {
+  it('labeled continue returns to the OUTER loop header (not the nearest)', () => {
     const cfgs = cfgsOfFile('hazards.ts');
     const fn = cfgs.find((c) => c.blocks.some((b) => b.text.includes('continue outer;')))!;
     const cont = blockWith(fn, 'continue outer;');
-    // the outer for-of header is the first block reachable that contains "x"/"xs"
-    expect(fn.edges.some((e) => e.from === cont && e.kind === 'continue')).toBe(true);
+    // outer loop iterates `xs`; its header is the only block whose text holds "xs"
+    const outerHeader = blockWith(fn, 'xs');
+    expect(
+      fn.edges.some((e) => e.from === cont && e.to === outerHeader && e.kind === 'continue'),
+    ).toBe(true);
   });
 });

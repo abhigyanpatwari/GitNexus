@@ -121,6 +121,13 @@ export interface AnalyzeOptions {
    * scope-resolution (BasicBlock/CFG emit gate). Off by default.
    */
   pdg?: boolean;
+  /** Per-function source-line cap for worker-side CFG construction (#2081 M1).
+   *  Forwarded to `PipelineOptions.pdgMaxFunctionLines`. No CLI flag in M1 —
+   *  programmatic / server analyze-worker path only; the worker applies
+   *  `DEFAULT_PDG_MAX_FUNCTION_LINES` when unset. */
+  pdgMaxFunctionLines?: number;
+  /** Per-function CFG edge cap. Forwarded to `PipelineOptions.pdgMaxEdgesPerFunction`. */
+  pdgMaxEdgesPerFunction?: number;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -515,6 +522,8 @@ export async function runFullAnalysis(
       // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
       // build gate (workerData.pdg) and the scope-resolution emit gate.
       pdg: options.pdg === true,
+      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
     },
   );
 

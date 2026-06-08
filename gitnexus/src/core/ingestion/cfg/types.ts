@@ -47,6 +47,15 @@ export interface FunctionCfg {
   /** Source span of the owning function — anchors the BasicBlock node ids. */
   readonly functionStartLine: number;
   readonly functionEndLine: number;
+  /**
+   * Start COLUMN of the owning function. Combined with `functionStartLine` it
+   * disambiguates the BasicBlock node ids when two functions share a start line
+   * — e.g. `{ a: () => x(), b: () => y() }`, where both arrows begin on the same
+   * line and each restarts its block indices at 0. Without the column the ids
+   * collide and the graph's first-writer-wins `addNode` silently drops the
+   * second function's blocks and cross-wires its edges.
+   */
+  readonly functionStartColumn: number;
   readonly entryIndex: number;
   readonly exitIndex: number;
   readonly blocks: readonly BasicBlockData[];

@@ -32,6 +32,10 @@ export class CfgBuilder {
     private readonly filePath: string,
     private readonly functionStartLine: number,
     private readonly functionEndLine: number,
+    /** Start column of the owning function — disambiguates same-line functions
+     *  in the BasicBlock ids (see {@link FunctionCfg.functionStartColumn}).
+     *  Defaults to 0 for hand-built test CFGs that don't model columns. */
+    private readonly functionStartColumn: number = 0,
   ) {
     this.entryIndex = this.newBlock(functionStartLine, functionStartLine, '', 'entry');
     this.exitIndex = this.newBlock(functionEndLine, functionEndLine, '', 'exit');
@@ -80,6 +84,7 @@ export class CfgBuilder {
       filePath: this.filePath,
       functionStartLine: this.functionStartLine,
       functionEndLine: this.functionEndLine,
+      functionStartColumn: this.functionStartColumn,
       entryIndex: this.entryIndex,
       exitIndex: this.exitIndex,
       blocks: this.blocks.map((b, index) => ({ index, ...b })),
@@ -89,8 +94,8 @@ export class CfgBuilder {
 }
 
 /**
- * Block indices reachable from `entryIndex` by following edges. Used by the
- * reachability property test (R9) and as a self-check in the emit step.
+ * Block indices reachable from `entryIndex` by following edges. Backs the
+ * reachability property tests (R9) over hand-built and visitor-produced CFGs.
  */
 export const reachableBlocks = (cfg: FunctionCfg): Set<number> => {
   const adj = new Map<number, number[]>();

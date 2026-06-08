@@ -284,6 +284,45 @@ describe('TS/JS CfgVisitor — non-local jumps (R10)', () => {
       cfg.edges.some((e) => e.from === cont && e.to === outerHeader && e.kind === 'continue'),
     ).toBe(true);
   });
+
+  it('a standalone throw (no enclosing try) wires to EXIT and ends its block', () => {
+    const cfg = cfgOf(`function f(x) { if (x) { throw new Error(); } done(); }`);
+    const thr = block(cfg, 'throw new Error();');
+    expect(cfg.edges).toContainEqual({ from: thr, to: cfg.exitIndex, kind: 'throw' });
+    // the throw terminates its block — control does not fall into done()
+    expect(reaches(cfg, thr, block(cfg, 'done();'))).toBe(false);
+    // done() is still reachable via the if's false branch
+    expect(reachable(cfg, block(cfg, 'done();'))).toBe(true);
+  });
+
+  it('code after an unconditional return is emitted but unreachable from ENTRY', () => {
+    const cfg = cfgOf(`function f() { first(); return 1; dead(); }`);
+    const dead = block(cfg, 'dead();');
+    expect(reachable(cfg, dead)).toBe(false); // emitted, but no edge reaches it
+    expect(reachable(cfg, block(cfg, 'first();'))).toBe(true);
+  });
+});
+
+describe('TS/JS CfgVisitor — function-type coverage', () => {
+  // TS_FUNCTION_TYPES spans more than function_declaration/arrow. Confirm the
+  // body-walk produces a well-formed CFG for async / generator / method bodies.
+  it('builds a CFG for async functions, generators, and class methods', () => {
+    const code = `
+      async function af(x) { if (x) { await a(); } done(); }
+      function* gf(xs) { for (const x of xs) { yield x; } }
+      class C { m(x) { if (x) { p(); } else { q(); } } async am() { await z(); } }
+    `;
+    const fns = collectFunctions(parse(code));
+    // af, gf, m, am — four CFG-bearing functions
+    const cfgs = fns.map((fn) => visitor.buildFunctionCfg(fn, 'ft.ts')).filter((c) => c);
+    expect(cfgs.length).toBe(4);
+    for (const cfg of cfgs) {
+      expect(cfg).toBeDefined();
+      if (!cfg) continue;
+      expect(cfg.blocks[cfg.entryIndex].kind).toBe('entry');
+      expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    }
+  });
 });
 
 describe('TS/JS CfgVisitor — AC1: 10-function fixture', () => {

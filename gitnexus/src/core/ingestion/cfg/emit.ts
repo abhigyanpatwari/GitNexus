@@ -37,8 +37,12 @@ export interface CfgEmitResult {
   cappedFunctions: number;
 }
 
-const basicBlockId = (filePath: string, functionStartLine: number, blockIndex: number): string =>
-  `BasicBlock:${filePath}:${functionStartLine}:${blockIndex}`;
+const basicBlockId = (
+  filePath: string,
+  functionStartLine: number,
+  functionStartColumn: number,
+  blockIndex: number,
+): string => `BasicBlock:${filePath}:${functionStartLine}:${functionStartColumn}:${blockIndex}`;
 
 /**
  * Emit BasicBlock nodes + CFG edges for every function CFG in `cfgs`.
@@ -58,11 +62,11 @@ export function emitFileCfgs(
   const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
 
   for (const cfg of cfgs) {
-    const { filePath, functionStartLine } = cfg;
+    const { filePath, functionStartLine, functionStartColumn } = cfg;
 
     for (const b of cfg.blocks) {
       graph.addNode({
-        id: basicBlockId(filePath, functionStartLine, b.index),
+        id: basicBlockId(filePath, functionStartLine, functionStartColumn, b.index),
         label: 'BasicBlock',
         properties: {
           name: '', // BasicBlock has no name column; identified by id + span
@@ -87,8 +91,8 @@ export function emitFileCfgs(
         );
         break;
       }
-      const sourceId = basicBlockId(filePath, functionStartLine, e.from);
-      const targetId = basicBlockId(filePath, functionStartLine, e.to);
+      const sourceId = basicBlockId(filePath, functionStartLine, functionStartColumn, e.from);
+      const targetId = basicBlockId(filePath, functionStartLine, functionStartColumn, e.to);
       graph.addRelationship({
         id: generateId('CFG', `${sourceId}->${targetId}:${e.kind}`),
         type: 'CFG',

@@ -109,7 +109,7 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
-import { collectFunctionCfgs } from '../cfg/collect.js';
+import { collectFunctionCfgs, DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -145,7 +145,8 @@ let shardSeq = 0;
 // (0/undefined ⇒ no cap; see collectFunctionCfgs).
 const PDG_ENABLED: boolean = (workerData as { pdg?: boolean } | undefined)?.pdg === true;
 const PDG_MAX_FUNCTION_LINES: number =
-  (workerData as { pdgMaxFunctionLines?: number } | undefined)?.pdgMaxFunctionLines ?? 0;
+  (workerData as { pdgMaxFunctionLines?: number } | undefined)?.pdgMaxFunctionLines ??
+  DEFAULT_PDG_MAX_FUNCTION_LINES;
 
 // ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
 // When GITNEXUS_WORKER_BOOTSTRAP=1 (or --verbose sets GITNEXUS_VERBOSE), each
@@ -1224,13 +1225,25 @@ const processFileGroup = (
       // carries captureSideChannel carries this — its coherence rests on the
       // SCHEMA_BUMP + the pdg-folded chunk-hash key (see parse-cache.ts).
       if (PDG_ENABLED && provider.cfgVisitor) {
-        const { cfgs } = collectFunctionCfgs(
-          tree.rootNode,
-          provider.cfgVisitor,
-          file.path,
-          PDG_MAX_FUNCTION_LINES,
-        );
-        if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
+        // Isolate the CFG build per file: a throw here (an unexpected tree-sitter
+        // node shape, a deep-nesting stack overflow) must NOT propagate — it
+        // would escape processFileGroup to the language-group catch, which treats
+        // any throw as "parser unavailable" and silently drops EVERY remaining
+        // file in the group. Skip CFG for this one file; parsing + scope
+        // resolution proceed unaffected (CFG is a strictly-additive opt-in).
+        try {
+          const { cfgs } = collectFunctionCfgs(
+            tree.rootNode,
+            provider.cfgVisitor,
+            file.path,
+            PDG_MAX_FUNCTION_LINES,
+          );
+          if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
+        } catch (err) {
+          const message = `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`;
+          if (parentPort) parentPort.postMessage({ type: 'warning', message });
+          else logger.warn(message);
+        }
       }
 
       result.parsedFiles.push(withChannels);

@@ -20,6 +20,17 @@
  *    `throw` with no catch propagates through finally to the enclosing handler.
  *  - labeled `break`/`continue` resolve against the labeled loop's frame.
  *
+ * Known M1 limitations (conservative under-approximations — sound for a CFG, to
+ * be tightened when the downstream taint analysis needs the precision):
+ *  - A non-local jump (`break`/`continue`/`return`) out of a `try` that has a
+ *    `finally` edges directly to its target rather than routing THROUGH the
+ *    `finally` block first. The general fix duplicates `finally` per exit path;
+ *    deferred past M1. Normal completion and `throw` DO route through `finally`.
+ *  - A `break`/`continue` to a label on a non-loop/non-switch block, and the
+ *    OUTER label of a doubly-labeled construct (`outer: inner: for (...)`), are
+ *    not modeled — the jump becomes a CFG sink (no mis-routing, just a missing
+ *    edge). Single-labeled loops/switches resolve correctly.
+ *
  * Block/edge accounting and reachability are pinned in
  * `test/unit/cfg/cfg-builder.test.ts` (core) and
  * `test/unit/cfg/typescript-visitor.test.ts` (this visitor, per hazard).
@@ -488,7 +499,8 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
   if (!TS_FUNCTION_TYPES.has(fnNode.type)) return undefined;
   const startLine = startLineOf(fnNode);
   const endLine = endLineOf(fnNode);
-  const builder = new CfgBuilder(filePath, startLine, endLine);
+  const startColumn = fnNode.startPosition.column;
+  const builder = new CfgBuilder(filePath, startLine, endLine, startColumn);
 
   const body = fnNode.childForFieldName('body');
   if (!body) return undefined; // overload signature / abstract method — no body
