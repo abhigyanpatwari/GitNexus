@@ -848,3 +848,26 @@ describe.skipIf(!dartAvailable)('Dart heritage cross-file name collision', () =>
     expect(fileEdge!.targetFilePath).toContain('file_logger.dart');
   });
 });
+
+// ---------------------------------------------------------------------------
+// CF3 (#1919 review): Dart class getters/setters keep their class owner edge.
+// ---------------------------------------------------------------------------
+// A Dart accessor's name lives under `method_signature`; the CF3 owner-strip
+// guard must NOT treat that signature as an executable body and strip the
+// HAS_PROPERTY owner (the over-strip regression this guards against).
+describe('CF3 — Dart class accessors keep their class owner', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-accessor-owner'), () => {});
+  }, 60000);
+
+  it('owns the getter/setter property `answer` and the stored field under Box', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'Box')
+      .map((e) => e.target)
+      .sort();
+    expect(owned).toContain('answer');
+    expect(owned).toContain('normalField');
+  });
+});

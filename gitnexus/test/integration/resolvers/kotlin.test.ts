@@ -2830,12 +2830,30 @@ describe('CF3 — Kotlin function-local bindings are not class properties', () =
     expect(owned).not.toContain('pair');
   });
 
-  it('still owns genuine class fields (primary-ctor val + class-body val) under C', () => {
+  it('does NOT own destructuring inside an init {} block (ix, iy) under class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('ix');
+    expect(owned).not.toContain('iy');
+  });
+
+  it('does NOT own destructuring inside a property accessor body (gx, gy) under class C', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'C')
+      .map((e) => e.target);
+    expect(owned).not.toContain('gx');
+    expect(owned).not.toContain('gy');
+  });
+
+  it('still owns genuine class fields + the computed property under C, nothing else', () => {
     const owned = getRelationships(result, 'HAS_PROPERTY')
       .filter((e) => e.source === 'C')
       .map((e) => e.target)
       .sort();
-    expect(owned).toEqual(['classProp', 'field']);
+    // Exact set: catches both over-strip (a real member dropped) and under-strip
+    // (a function-local wrongly owned).
+    expect(owned).toEqual(['classProp', 'derived', 'field']);
   });
 });
 

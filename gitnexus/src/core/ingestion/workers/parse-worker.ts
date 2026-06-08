@@ -71,6 +71,7 @@ import {
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   PARAMETER_LIST_NODE_TYPES,
+  LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
@@ -1797,15 +1798,26 @@ const processFileGroup = (
       // executable body. So only strip the owner when the property is NOT inside
       // a parameter list of that function (i.e. it's a body local).
       const propOwnerNode = nameNode || definitionNode;
+      // A Property is function-local (and must NOT get a class HAS_PROPERTY owner)
+      // when its nearest enclosing executable body — reached before any class
+      // container — is a function/accessor/initializer body, AND it is not a
+      // constructor parameter-property (rescued by the param-list carve-out).
+      // Uses LOCAL_SCOPE_BODY_NODE_TYPES (not FUNCTION_NODE_TYPES): the latter
+      // mis-includes Dart bare signatures (over-stripping accessors) and omits
+      // Kotlin/Swift init+accessor bodies (under-stripping their locals) — see
+      // the #1919 review of this guard.
       const isFunctionLocalProperty =
         nodeLabel === 'Property' &&
         propOwnerNode !== undefined &&
-        findAncestorBeforeBoundary(propOwnerNode, FUNCTION_NODE_TYPES, CLASS_CONTAINER_TYPES) !==
-          null &&
+        findAncestorBeforeBoundary(
+          propOwnerNode,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+          CLASS_CONTAINER_TYPES,
+        ) !== null &&
         findAncestorBeforeBoundary(
           propOwnerNode,
           PARAMETER_LIST_NODE_TYPES,
-          FUNCTION_NODE_TYPES,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
         ) === null;
       const enclosingClassInfo =
         needsOwner && !isFunctionLocalProperty
