@@ -1250,6 +1250,10 @@ const processFileGroup = (
     // Per-file map: decorator end-line → decorator info, for associating with definitions
     const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
 
+    // Java Spring: class-level @RequestMapping prefix to prepend to method-level routes.
+    // Populated during the capture loop; applied after the loop completes.
+    let javaClassPrefix: string | undefined;
+
     // Track start indices of definition nodes already processed by higher-priority captures
     // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
     // patterns overlap with the same source range.
@@ -1312,19 +1316,29 @@ const processFileGroup = (
         });
 
         if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
-          const routePath = decoratorArg || '';
-          const method = decoratorName.replace('Mapping', '').toUpperCase();
-          const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
-            ? method
-            : 'GET';
-          result.decoratorRoutes.push({
-            filePath: file.path,
-            routePath,
-            httpMethod,
-            decoratorName,
-            lineNumber: decoratorNode.startPosition.row + lineOffset,
-            ...(decoratorReceiver ? { decoratorReceiver } : {}),
-          });
+          // Java Spring class-level @RequestMapping is a URL prefix, not a standalone route.
+          // Record it for later joining with method-level routes in this file.
+          if (
+            language === SupportedLanguages.Java &&
+            decoratorName === 'RequestMapping' &&
+            decoratorNode.parent?.parent?.type === 'class_declaration'
+          ) {
+            javaClassPrefix = decoratorArg || '';
+          } else {
+            const routePath = decoratorArg || '';
+            const method = decoratorName.replace('Mapping', '').toUpperCase();
+            const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
+              ? method
+              : 'GET';
+            result.decoratorRoutes.push({
+              filePath: file.path,
+              routePath,
+              httpMethod,
+              decoratorName,
+              lineNumber: decoratorNode.startPosition.row + lineOffset,
+              ...(decoratorReceiver ? { decoratorReceiver } : {}),
+            });
+          }
         }
         // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
         if (decoratorName === 'tool') {
@@ -2257,6 +2271,18 @@ const processFileGroup = (
         result.routerImports,
         (result.routerModuleAliases ??= []),
       );
+    }
+
+    // Java Spring: apply class-level @RequestMapping prefix to method-level
+    // routes in this file. The prefix was captured during the match loop and
+    // deferred so it can be applied regardless of query-match ordering.
+    if (language === SupportedLanguages.Java && javaClassPrefix) {
+      for (const dr of result.decoratorRoutes) {
+        if (dr.filePath !== file.path) continue;
+        if (dr.prefix === undefined || dr.prefix === null) {
+          dr.prefix = javaClassPrefix;
+        }
+      }
     }
 
     // Vue: emit CALLS edges for components used in <template>

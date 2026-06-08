@@ -763,6 +763,44 @@ export const JAVA_QUERIES = `
     object: (_) @assignment.receiver
     field: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; Spring route annotations on methods: @GetMapping("/path"), @PostMapping("/path"), etc.
+; Positional string argument form: @GetMapping("/users")
+(method_declaration
+  (modifiers
+    (annotation
+      name: (identifier) @decorator.name
+      arguments: (annotation_argument_list
+        (string_literal (string_fragment) @decorator.arg))) @decorator))
+
+; Named argument form: @GetMapping(value = "/users") or @GetMapping(path = "/users")
+(method_declaration
+  (modifiers
+    (annotation
+      name: (identifier) @decorator.name
+      arguments: (annotation_argument_list
+        (element_value_pair
+          key: (identifier) @_java_ann_key (#match? @_java_ann_key "^(value|path)$")
+          value: (string_literal (string_fragment) @decorator.arg)))) @decorator))
+
+; Class-level @RequestMapping prefix: @RequestMapping("/api") on a class
+; Positional form
+(class_declaration
+  (modifiers
+    (annotation
+      name: (identifier) @decorator.name (#eq? @decorator.name "RequestMapping")
+      arguments: (annotation_argument_list
+        (string_literal (string_fragment) @decorator.arg))) @decorator))
+
+; Class-level @RequestMapping prefix: named argument form
+(class_declaration
+  (modifiers
+    (annotation
+      name: (identifier) @decorator.name (#eq? @decorator.name "RequestMapping")
+      arguments: (annotation_argument_list
+        (element_value_pair
+          key: (identifier) @_java_ann_key (#match? @_java_ann_key "^(value|path)$")
+          value: (string_literal (string_fragment) @decorator.arg)))) @decorator))
 `;
 
 // C queries - works with tree-sitter-c
