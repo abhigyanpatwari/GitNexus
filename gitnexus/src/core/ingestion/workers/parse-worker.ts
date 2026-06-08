@@ -1080,7 +1080,6 @@ export function extractORMQueries(
 // import the function and its types directly from `route-extractors/`.
 
 import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
-import { extractSpringRoutes } from '../route-extractors/spring.js';
 
 const processFileGroup = (
   files: ParseWorkerInput[],
@@ -2261,12 +2260,13 @@ const processFileGroup = (
       );
     }
 
-    // Java Spring: extract @RequestMapping/@GetMapping/etc. routes with per-class
-    // prefix resolution. The dedicated extractor handles multiple classes per file
-    // and joins class-level @RequestMapping prefix with method-level route paths.
-    if (language === SupportedLanguages.Java) {
-      const springRoutes = extractSpringRoutes(tree, file.path, lineOffset);
-      for (const r of springRoutes) result.decoratorRoutes.push(r);
+    // Language-specific decorator route extraction via provider hook.
+    // The provider's extractDecoratorRoutes walks the AST for framework-specific
+    // route patterns (e.g., Java Spring class-level prefix joining). Routes are
+    // appended to decoratorRoutes for the routes phase to emit as Route nodes.
+    if (provider.extractDecoratorRoutes) {
+      const frameworkRoutes = provider.extractDecoratorRoutes(tree, file.path, lineOffset);
+      for (const r of frameworkRoutes) result.decoratorRoutes.push(r);
     }
 
     // Vue: emit CALLS edges for components used in <template>
