@@ -233,4 +233,27 @@ export const zhCN = {
   'help.option.group.contracts.unmatched': '仅显示未匹配契约',
   'help.analyze.environment':
     '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n\n当参数和对应环境变量同时提供时，参数优先。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
+
+  // ── Coverage ──────────────────────────────────────────────────────────
+  'coverage.imported': '覆盖率已导入：运行 "{{runId}}"',
+  'coverage.linesCovered': '{{covered}} / {{total}} 行已覆盖（{{percent}}）',
+  'coverage.noRuns': '没有覆盖率运行记录。使用 gitnexus coverage import <文件> 导入',
+  'coverage.runsTitle': '覆盖率运行（{{count}}）：',
+  'coverage.runNotFound': '未找到运行：{{runId}}',
+  'coverage.removed': '已删除覆盖率运行：{{label}}',
+  'coverage.removedAll': '已删除 {{count}} 个覆盖率运行。',
+  'coverage.noRunsToRemove': '没有可删除的覆盖率运行。',
+  'coverage.streamComplete': '流式摄入完成：运行 "{{runId}}"',
+  'coverage.fileNotFound': '覆盖率文件未找到：{{path}}',
+  'coverage.notGitRepo': '当前目录不是 git 仓库。请从已索引的仓库中运行 "gitnexus coverage"。',
+  'coverage.noGitRoot': '无法确定 git 仓库根目录。',
+  'coverage.needTwoRuns': '请提供至少 2 个运行 ID 来合并。',
+  'coverage.allSymbolsCovered': '所有符号均已完全覆盖。',
+  'coverage.topUncovered': '覆盖不足的符号（{{count}}）：',
+  'coverage.noSymbolData': '无符号级覆盖率数据。',
+  'coverage.diffTitle': '覆盖率差异：{{from}} -> {{to}}',
+  'coverage.symbolChanges': '符号覆盖率变更：',
+  'coverage.graphNotAvailable': '警告：知识图谱不可用。请先运行 "gitnexus analyze" 以获取符号级覆盖率。',
+  'coverage.graphSaveFailed': '警告：无法将覆盖率保存到知识图谱：{{message}}',
+  'coverage.coverageRemoveFailed': '警告：无法从知识图谱中移除覆盖率：{{message}}',
 } satisfies EnglishMessages;

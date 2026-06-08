@@ -53,6 +53,7 @@ function runCli(args: string[]): Promise<ChildResult> {
       env: {
         ...process.env,
         GITNEXUS_HOME: tmpHome,
+        GITNEXUS_LANG: 'en',
         NODE_OPTIONS: '',
         // Force NDJSON path: pino-pretty only activates when stderr is a
         // TTY and !CI && !VITEST. spawn() pipes stderr, so it's not a

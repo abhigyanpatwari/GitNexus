@@ -100,7 +100,7 @@ export function getResourceTemplates(): ResourceTemplate[] {
     {
       uriTemplate: 'gitnexus://repo/{name}/coverage',
       name: 'Coverage Status',
-      description: 'Current fuzz coverage summary for the repository including overall ratio and available runs',
+      description: 'Current test coverage summary for the repository including overall ratio and available runs',
       mimeType: 'application/json',
     },
   ];
@@ -506,7 +506,7 @@ async function getCoverageResource(backend: LocalBackend, repoName?: string): Pr
     return JSON.stringify(
       {
         repo: repo.name,
-        coverageStatus: 'Use the coverage_status MCP tool to retrieve current fuzz coverage data.',
+        coverageStatus: 'Use the coverage_status MCP tool to retrieve current test coverage data.',
         coverageDiff: 'Use the coverage_diff MCP tool with two run IDs to compare coverage.',
         hint: 'Run `gitnexus coverage import <file>` in the terminal if no coverage data exists.',
       },

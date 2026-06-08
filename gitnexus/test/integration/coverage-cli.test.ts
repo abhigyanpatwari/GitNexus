@@ -27,25 +27,26 @@ end_of_record
 
       const importOut = execSync(
         `node ${cliEntry} coverage import ${tmpFile} --format lcov --label "smoke-test"`,
-        { cwd: repoPath, encoding: 'utf-8', timeout: 30000 },
+        { cwd: repoPath, encoding: 'utf-8', timeout: 30000, env: { ...process.env, GITNEXUS_LANG: 'en' } },
       );
       expect(importOut).toContain('Coverage imported');
 
       const listOut = execSync(
         `node ${cliEntry} coverage list`,
-        { cwd: repoPath, encoding: 'utf-8', timeout: 15000 },
+        { cwd: repoPath, encoding: 'utf-8', timeout: 15000, env: { ...process.env, GITNEXUS_LANG: 'en' } },
       );
       expect(listOut).toContain('Coverage runs');
 
-      // Grab a run ID from the list output
+      // Grab a run ID from the list output (first column is the run ID)
       const listLines = listOut.split('\n').filter(l => l.trim());
       const runIdLine = listLines.find(l => l.includes('smoke-test'));
+      // Run ID is the first column (e.g. "run-1234567890")
       const runId = runIdLine ? runIdLine.trim().split(/\s+/)[0].trim() : null;
 
-      if (runId) {
+      if (runId && runId.startsWith('run-')) {
         execSync(
           `node ${cliEntry} coverage rm ${runId}`,
-          { cwd: repoPath, encoding: 'utf-8', timeout: 15000 },
+          { cwd: repoPath, encoding: 'utf-8', timeout: 15000, env: { ...process.env, GITNEXUS_LANG: 'en' } },
         );
       }
     } finally {

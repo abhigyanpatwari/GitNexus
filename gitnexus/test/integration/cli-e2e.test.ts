@@ -87,6 +87,8 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
   return {
     ...process.env,
     GITNEXUS_HOME: suiteGitnexusHome,
+    // Force English output for consistent test assertions
+    GITNEXUS_LANG: 'en',
     // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
     // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
     // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.

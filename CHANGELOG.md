@@ -4,11 +4,40 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Test coverage system** — full coverage data ingestion, storage, and visualization pipeline
+  - `gitnexus/src/core/coverage/` module: types, store (SQLite), parsers, mappers, ingestor, streaming, merger, graph-bridge
+  - Coverage parsers: LCOV, Go coverprofile, Cobertura XML (Java/Python/.NET/Rust), generic JSON
+  - `gitnexus coverage` CLI command group: `import`, `list`, `show`, `diff`, `merge`, `rm`, `stream`
+  - MCP tools: `coverage_status`, `coverage_diff` — query current coverage and compare runs
+  - MCP resource: `gitnexus://repo/{name}/coverage`
+  - Coverage data integrated into `context`, `impact`, and `detect_changes` MCP tools (coverageRatio, coverageRisk, branchCoverage)
+  - `CoverageRun` node label and `COVERED_BY` relationship in the knowledge graph
+  - Coverage properties on symbol nodes: coverageRatio, lastCoveredAt, branchCoverage
+  - Edge traversal properties on CALLS relationships: traverseCount, traversedInRuns
+  - CoverageStore (SQLite) at `.gitnexus/coverage.db` with line_hits, branch_hits, symbol_coverage, and edge_traversal tables
+  - Streaming ingestion for real-time coverage data via `gitnexus coverage stream`
+  - Coverage i18n keys (en/zh-CN)
+- **Cobertura XML parser** for Java (JaCoCo/Cobertura), Python (coverage.py), .NET (OpenCover), Rust (tarpaulin) coverage formats
+- **CoverageRun node and COVERED_BY relationship** in `gitnexus-shared` graph types
+- **CoverageRun entry** in LadybugDB schema constants and CSV writer
+- **CoverageRun entry** in gitnexus-web constants (NODE_COLORS, NODE_SIZES)
+
 ### Changed
+
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)
 - Added automatic cleanup of stale KuzuDB index files
 - LadybugDB v0.15 requires explicit VECTOR extension loading for semantic search
+- Coverage tool/resource descriptions updated from "fuzz coverage" to "test coverage"
+- `coverage list` now displays both run ID and label (previously showed only label)
+- i18n: Added coverage-related message keys for CLI output
+
+### Fixed
+
+- CLI tests now force `GITNEXUS_LANG=en` to ensure consistent English assertions regardless of system locale
+- Coverage CLI smoke test correctly parses run ID from list output
 
 ## [1.5.3] - 2026-04-01
 

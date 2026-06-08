@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 
+// Force English output for consistent test assertions
+vi.stubEnv('GITNEXUS_LANG', 'en');
+
 const mockAccess = vi.fn();
 const mockGetStoragePaths = vi.fn();
 const mockLoadMeta = vi.fn();

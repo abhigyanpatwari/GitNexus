@@ -11,7 +11,7 @@
  * The LocalBackend is fully mocked: this isolates the CLI option → tool param
  * mapping from any graph/DB behaviour.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { callTool, init } = vi.hoisted(() => ({
   callTool: vi.fn(),
@@ -35,12 +35,19 @@ vi.mock('node:fs', () => ({
   writeSync: vi.fn(),
 }));
 
+import { setCliLanguage } from '../../src/cli/i18n/index.js';
 import { impactCommand } from '../../src/cli/tool.js';
 
 describe('CLI impact disambiguation flags (#1907)', () => {
   beforeEach(() => {
+    // Force English output for consistent test assertions
+    setCliLanguage('en');
     callTool.mockReset();
     callTool.mockResolvedValue({ status: 'found', impactedCount: 0 });
+  });
+
+  afterEach(() => {
+    setCliLanguage(null);
   });
 
   it('forwards --uid/--file/--kind as target_uid/file_path/kind', async () => {

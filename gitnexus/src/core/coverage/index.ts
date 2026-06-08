@@ -7,4 +7,5 @@ export { mergeRuns } from './merger.js';
 export { parseLcov } from './parsers/lcov.js';
 export { parseGoCover } from './parsers/go-cover.js';
 export { parseGenericCoverage } from './parsers/generic.js';
+export { parseCobertura } from './parsers/cobertura.js';
 export { writeCoverageToGraph, removeCoverageFromGraph } from './graph-bridge.js';

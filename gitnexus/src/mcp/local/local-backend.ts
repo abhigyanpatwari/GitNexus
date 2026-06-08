@@ -4476,7 +4476,7 @@ export class LocalBackend {
   }
 
   /**
-   * Coverage status — returns current fuzz coverage overview.
+   * Coverage status — returns current test coverage overview.
    */
   private async coverageStatus(repo: RepoHandle, params: any): Promise<any> {
     await this.ensureInitialized(repo.id);
@@ -4521,7 +4521,7 @@ export class LocalBackend {
   }
 
   /**
-   * Coverage diff — compare two fuzz runs and report added/removed coverage.
+   * Coverage diff — compare two test coverage runs and report added/removed coverage.
    */
   private async coverageDiff(repo: RepoHandle, params: any): Promise<any> {
     await this.ensureInitialized(repo.id);

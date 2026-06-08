@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import path from 'path';
 import fs from 'fs/promises';
-import { cliError } from './cli-message.js';
+import { cliError, cliInfoKey } from './cli-message.js';
 import { createKnowledgeGraph } from '../core/graph/graph.js';
 import type { KnowledgeGraph } from '../core/graph/types.js';
 import { loadKnowledgeGraph, saveKnowledgeGraph, removeCoverageFromLbug } from '../core/lbug/lbug-adapter.js';
@@ -61,8 +61,10 @@ async function trySaveGraph(graph: KnowledgeGraph, lbugPath: string): Promise<vo
 
 function detectFormat(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
+  const base = path.basename(filePath).toLowerCase();
   if (ext === '.lcov' || ext === '.info') return 'lcov';
   if (ext === '.cov' || ext === '.coverprofile') return 'go';
+  if (ext === '.xml' || base.includes('cobertura') || base.includes('jacoco')) return 'cobertura';
   return 'generic';
 }
 
@@ -82,14 +84,14 @@ export function registerCoverageCommands(program: Command): void {
   // ── import ───────────────────────────────────────────────────────────
   coverage
     .command('import [file]')
-    .description('Import a coverage file (lcov, go coverprofile, or generic JSON)')
-    .option('--format <format>', 'Coverage format: lcov, go, or generic (auto-detected if omitted)')
+    .description('Import a coverage file (lcov, go coverprofile, cobertura XML, or generic JSON)')
+    .option('--format <format>', 'Coverage format: lcov, go, cobertura, or generic (auto-detected if omitted)')
     .option('--label <label>', 'Human-readable label for the run')
     .option('--command <command>', 'Test command that produced this coverage')
     .action(async (fileArg: string | undefined, opts: Record<string, string>) => {
       try {
         const repoPath = await getRepoPath();
-        const { openCoverageStore, ingestCoverage, parseLcov, parseGoCover, parseGenericCoverage } =
+        const { openCoverageStore, ingestCoverage, parseLcov, parseGoCover, parseGenericCoverage, parseCobertura } =
           await import('../core/coverage/index.js');
 
         // Resolve input file
@@ -124,6 +126,13 @@ export function registerCoverageCommands(program: Command): void {
           });
         } else if (format === 'go') {
           canonical = parseGoCover(raw, {
+            id: runId,
+            timestamp: now,
+            label: opts.label,
+            command: opts.command,
+          });
+        } else if (format === 'cobertura') {
+          canonical = parseCobertura(raw, {
             id: runId,
             timestamp: now,
             label: opts.label,
@@ -186,13 +195,12 @@ export function registerCoverageCommands(program: Command): void {
 
           console.log(`Coverage runs (${runs.length}):\n`);
           for (const run of runs) {
-            const label = run.label || run.id;
             const ratio = formatPercent(run.coverageRatio);
             const ts = run.timestamp
               ? new Date(run.timestamp).toLocaleString()
               : 'unknown date';
             console.log(
-              `  ${label.padEnd(30)} ${ratio.padEnd(8)} ${run.coveredLines}/${run.totalLines} lines  ${ts}`,
+              `  ${run.id.padEnd(28)} ${(run.label || '').padEnd(20)} ${ratio.padEnd(8)} ${run.coveredLines}/${run.totalLines} lines  ${ts}`,
             );
           }
         } finally {
@@ -473,6 +481,66 @@ export function registerCoverageCommands(program: Command): void {
             store.deleteRun(runId);
             console.log(`Removed coverage run: ${run.label || runId}`);
           }
+        } finally {
+          store.close();
+        }
+      } catch (err: unknown) {
+        cliError((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  // ── stream ──────────────────────────────────────────────────────────
+  coverage
+    .command('stream')
+    .description('Stream coverage data from stdin (newline-delimited JSON, one entry per line)')
+    .option('--label <label>', 'Human-readable label for the run')
+    .option('--command <command>', 'Test command that produced this coverage')
+    .option('--batch-size <size>', 'Number of lines to buffer before flushing', '1000')
+    .option('--flush-interval <ms>', 'Maximum milliseconds between flushes', '100')
+    .action(async (opts: Record<string, string>) => {
+      try {
+        const repoPath = await getRepoPath();
+        const { openCoverageStore, streamIngest } =
+          await import('../core/coverage/index.js');
+
+        const lbugPath = getLbugPath(repoPath);
+        const graph = await tryLoadGraph(lbugPath);
+        const store = openCoverageStore(repoPath);
+
+        try {
+          const now = new Date().toISOString();
+          const runId = `stream-${Date.now()}`;
+          const meta = {
+            id: runId,
+            timestamp: now,
+            label: opts.label,
+            command: opts.command,
+          };
+
+          const batchSize = parseInt(opts.batchSize, 10) || 1000;
+          const flushInterval = parseInt(opts.flushInterval, 10) || 100;
+
+          const resultId = await streamIngest(
+            process.stdin,
+            { store, graph },
+            meta,
+            batchSize,
+            flushInterval,
+          );
+
+          await trySaveGraph(graph, lbugPath);
+
+          const run = store.getRun(resultId);
+          const totalLines = run?.totalLines ?? 0;
+          const coveredLines = run?.coveredLines ?? 0;
+          const ratio = run?.coverageRatio ?? 0;
+
+          console.log(`Stream complete: run "${resultId}"`);
+          console.log(
+            `  ${coveredLines} / ${totalLines} lines covered ` +
+              `(${formatPercent(ratio)})`,
+          );
         } finally {
           store.close();
         }
