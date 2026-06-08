@@ -38,6 +38,7 @@ const { ensurePaths, DIRS, FILES } = require('./ensure-host-config-dirs.cjs');
 
 const CLAUDE = '/home/node/.claude/plugins';
 const CURSOR = '/home/node/.cursor/plugins';
+const REPO_ROOT = path.join(__dirname, '..');
 
 // Make a fresh throwaway directory under the OS temp root. mkdtemp picks a
 // unique name on every call, so we don't need Date.now() or random names.
@@ -47,6 +48,10 @@ function tmp() {
 
 function rw(value, cli, ctr) {
   return rewriteDeep(value, buildRe(cli), ctr);
+}
+
+function readRepoJson(relPath) {
+  return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8'));
 }
 
 test('claude: Windows backslash absolute path -> container path', () => {
@@ -433,4 +438,18 @@ test('ensurePaths: does NOT pre-create the shareable subdirs (now copied, not bo
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('Claude plugin manifests track the current gitnexus release version', () => {
+  const gitnexusPkg = readRepoJson('gitnexus/package.json');
+  const pluginManifest = readRepoJson('gitnexus-claude-plugin/.claude-plugin/plugin.json');
+  const marketplaceManifest = readRepoJson('.claude-plugin/marketplace.json');
+
+  assert.ok(Array.isArray(marketplaceManifest.plugins), 'expected marketplace plugins array');
+
+  const gitnexusMarketplaceEntry = marketplaceManifest.plugins.find((plugin) => plugin.name === 'gitnexus');
+
+  assert.ok(gitnexusMarketplaceEntry, 'expected gitnexus marketplace entry');
+  assert.equal(pluginManifest.version, gitnexusPkg.version);
+  assert.equal(gitnexusMarketplaceEntry.version, gitnexusPkg.version);
 });
