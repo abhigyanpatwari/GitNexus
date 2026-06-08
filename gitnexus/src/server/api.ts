@@ -384,7 +384,13 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
   id: row.id ?? row[0],
   label: table as GraphNode['label'],
   properties: {
-    name: row.name ?? row.label ?? row[1],
+    // `?? ''` keeps NodeProperties.name a `string` even for label rows that
+    // project no name/label column (BasicBlock — taint/PDG substrate #2080).
+    // Without it, BasicBlock rows carry name:undefined (masked by the cast
+    // below) and the web layer (Header search, circles/tree layout) derefs
+    // `.name` unguarded → TypeError once M1 emits blocks. `row.text` gives a
+    // BasicBlock a sensible fallback name before the empty-string floor.
+    name: row.name ?? row.label ?? row.text ?? row[1] ?? '',
     filePath: row.filePath ?? row[2],
     startLine: row.startLine,
     endLine: row.endLine,
