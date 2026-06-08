@@ -1503,6 +1503,174 @@ describe('LocalBackend.callTool', () => {
     ]);
   });
 
+  it('composes caller-supplied ranges into direct process evidence', async () => {
+    (executeParameterized as any).mockImplementation(
+      (_repoId: string, cypher: string, params: Record<string, unknown>) => {
+        if (cypher.includes('RETURN n.id AS id')) {
+          if (params.filePath === 'src/app.ts') {
+            return [
+              {
+                id: 'Function:src/app.ts:mapped',
+                name: 'mapped',
+                type: 'Function',
+                filePath: 'src/app.ts',
+                startLine: 1,
+                endLine: 3,
+              },
+              {
+                id: 'Function:src/app.ts:lonely',
+                name: 'lonely',
+                type: 'Function',
+                filePath: 'src/app.ts',
+                startLine: 8,
+                endLine: 10,
+              },
+            ];
+          }
+          return [];
+        }
+        if (cypher.includes('RETURN s.id AS id, s.name AS name')) {
+          return [
+            {
+              id: 'Function:src/app.ts:mapped',
+              name: 'mapped',
+              type: 'Function',
+              filePath: 'src/app.ts',
+              startLine: 1,
+              endLine: 3,
+            },
+            {
+              id: 'Function:src/app.ts:lonely',
+              name: 'lonely',
+              type: 'Function',
+              filePath: 'src/app.ts',
+              startLine: 8,
+              endLine: 10,
+            },
+          ];
+        }
+        if (cypher.includes('RETURN s.id AS sid, p.id AS pid')) {
+          return [
+            {
+              sid: 'Function:src/app.ts:mapped',
+              pid: 'Process:login-flow',
+              pName: 'LoginFlow',
+              pType: 'entry_point',
+              step: 2,
+              stepCount: 5,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('impact_for_ranges', {
+      ranges: [
+        {
+          filePath: 'src/app.ts',
+          startLine: 2,
+          endLine: 2,
+          side: 'new',
+          change_type: 'modified',
+        },
+        {
+          filePath: 'src/app.ts',
+          startLine: 9,
+          endLine: 9,
+          side: 'old',
+          change_type: 'deleted',
+        },
+        {
+          filePath: 'src/loose.ts',
+          startLine: 9,
+          endLine: 9,
+          side: 'new',
+          change_type: 'modified',
+        },
+      ],
+    });
+
+    expect(result.schema_version).toBe('impact-for-ranges.v1alpha1');
+    expect(result.summary).toEqual({
+      input_ranges: 3,
+      matched_symbols: 2,
+      unmatched_ranges: 1,
+      deleted_symbols: 1,
+      symbols_with_processes: 1,
+      unmapped_symbols: 1,
+      unknown_symbols: 0,
+      affected_processes: 1,
+    });
+    expect(result.symbols).toEqual([
+      {
+        id: 'Function:src/app.ts:mapped',
+        name: 'mapped',
+        type: 'Function',
+        filePath: 'src/app.ts',
+        startLine: 1,
+        endLine: 3,
+        matched_ranges: [
+          {
+            filePath: 'src/app.ts',
+            startLine: 2,
+            endLine: 2,
+            side: 'new',
+            change_type: 'modified',
+          },
+        ],
+        change_types: ['modified'],
+        processes: [
+          {
+            id: 'Process:login-flow',
+            name: 'LoginFlow',
+            process_type: 'entry_point',
+            step_index: 2,
+            step_count: 5,
+          },
+        ],
+      },
+    ]);
+    expect(result.unmapped_symbols).toEqual([
+      {
+        id: 'Function:src/app.ts:lonely',
+        name: 'lonely',
+        type: 'Function',
+        filePath: 'src/app.ts',
+        startLine: 8,
+        endLine: 10,
+        matched_ranges: [
+          {
+            filePath: 'src/app.ts',
+            startLine: 9,
+            endLine: 9,
+            side: 'old',
+            change_type: 'deleted',
+          },
+        ],
+        change_types: ['deleted'],
+        reason: 'No direct process membership found for this symbol',
+      },
+    ]);
+    expect(result.unmatched_ranges).toEqual([
+      {
+        filePath: 'src/loose.ts',
+        startLine: 9,
+        endLine: 9,
+        reason: 'No indexed symbol overlapped this changed range',
+      },
+    ]);
+    expect(result.affected_processes).toEqual([
+      {
+        id: 'Process:login-flow',
+        name: 'LoginFlow',
+        process_type: 'entry_point',
+        step_count: 5,
+        matched_symbols: 1,
+      },
+    ]);
+  });
+
   it('dispatches rename tool', async () => {
     (executeParameterized as any)
       .mockResolvedValueOnce([

@@ -44,6 +44,7 @@ const allHelpCommands = [
   ['wiki-refresh'],
   ['symbols-for-ranges'],
   ['impact-for-symbols'],
+  ['impact-for-ranges'],
   ['augment'],
   ['publish'],
   ['query'],

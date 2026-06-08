@@ -364,6 +364,48 @@ interface ExplicitSymbolInput {
   endLine?: number;
 }
 
+interface DirectProcessSymbol {
+  id: string;
+  name: string;
+  type: string;
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+interface DirectProcessEntry {
+  id: string;
+  name: string;
+  process_type: string;
+  step_index?: number;
+  step_count?: number;
+}
+
+interface DirectProcessAffectedProcess {
+  id: string;
+  name: string;
+  process_type: string;
+  step_count?: number;
+  matched_symbols: number;
+}
+
+interface DirectProcessUnknownSymbol {
+  id: string;
+  name?: string;
+  type?: string;
+  filePath?: string;
+  reason: string;
+}
+
+interface DirectProcessResolution {
+  inputSymbols: ExplicitSymbolInput[];
+  resolvedCount: number;
+  symbols: Array<DirectProcessSymbol & { processes: DirectProcessEntry[] }>;
+  unmappedSymbols: Array<DirectProcessSymbol & { reason: string }>;
+  unknownSymbols: DirectProcessUnknownSymbol[];
+  affectedProcesses: DirectProcessAffectedProcess[];
+}
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -990,6 +1032,8 @@ export class LocalBackend {
         return this.symbolsForRanges(repo, params);
       case 'impact_for_symbols':
         return this.impactForSymbols(repo, params);
+      case 'impact_for_ranges':
+        return this.impactForRanges(repo, params);
       case 'rename':
         return this.rename(repo, params);
       // Legacy aliases for backwards compatibility
@@ -2940,19 +2984,11 @@ export class LocalBackend {
     };
   }
 
-  private async impactForSymbols(
+  private async resolveDirectProcessImpact(
     repo: RepoHandle,
-    params: {
-      symbols?: unknown[];
-    },
-  ): Promise<any> {
-    await this.ensureInitialized(repo.id);
-
-    if (!Array.isArray(params?.symbols) || params.symbols.length === 0) {
-      return { error: 'symbols array is required.' };
-    }
-
-    const inputSymbols = params.symbols
+    rawSymbols: unknown[],
+  ): Promise<DirectProcessResolution | { error: string }> {
+    const inputSymbols = rawSymbols
       .map((symbol) => this.normalizeExplicitSymbol(symbol))
       .filter((symbol): symbol is ExplicitSymbolInput => Boolean(symbol));
     if (inputSymbols.length === 0) {
@@ -2978,17 +3014,7 @@ export class LocalBackend {
       logQueryError('impact-for-symbols:resolve-symbols', e);
     }
 
-    const resolvedSymbols = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        type: string;
-        filePath?: string;
-        startLine?: number;
-        endLine?: number;
-      }
-    >();
+    const resolvedSymbols = new Map<string, DirectProcessSymbol>();
     for (const row of symbolRows) {
       const id = String(row.id ?? row[0] ?? '');
       if (!id) continue;
@@ -3022,32 +3048,14 @@ export class LocalBackend {
       logQueryError('impact-for-symbols:process-membership', e);
     }
 
-    const processesBySymbol = new Map<
-      string,
-      Array<{
-        id: string;
-        name: string;
-        process_type: string;
-        step_index?: number;
-        step_count?: number;
-      }>
-    >();
-    const affectedProcesses = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        process_type: string;
-        step_count?: number;
-        matched_symbols: number;
-      }
-    >();
+    const processesBySymbol = new Map<string, DirectProcessEntry[]>();
+    const affectedProcesses = new Map<string, DirectProcessAffectedProcess>();
     for (const row of processRows) {
       const sid = String(row.sid ?? row[0] ?? '');
       const pid = String(row.pid ?? row[1] ?? '');
       if (!sid || !pid) continue;
 
-      const processEntry = {
+      const processEntry: DirectProcessEntry = {
         id: pid,
         name: String(row.pName ?? row[2] ?? 'unknown'),
         process_type: String(row.pType ?? row[3] ?? 'unknown'),
@@ -3071,37 +3079,9 @@ export class LocalBackend {
       }
     }
 
-    const symbols: Array<{
-      id: string;
-      name: string;
-      type: string;
-      filePath?: string;
-      startLine?: number;
-      endLine?: number;
-      processes: Array<{
-        id: string;
-        name: string;
-        process_type: string;
-        step_index?: number;
-        step_count?: number;
-      }>;
-    }> = [];
-    const unmappedSymbols: Array<{
-      id: string;
-      name: string;
-      type: string;
-      filePath?: string;
-      startLine?: number;
-      endLine?: number;
-      reason: string;
-    }> = [];
-    const unknownSymbols: Array<{
-      id: string;
-      name?: string;
-      type?: string;
-      filePath?: string;
-      reason: string;
-    }> = [];
+    const symbols: Array<DirectProcessSymbol & { processes: DirectProcessEntry[] }> = [];
+    const unmappedSymbols: Array<DirectProcessSymbol & { reason: string }> = [];
+    const unknownSymbols: DirectProcessUnknownSymbol[] = [];
 
     for (const input of inputSymbols) {
       const resolved = resolvedSymbols.get(input.id);
@@ -3142,7 +3122,41 @@ export class LocalBackend {
     }
 
     const sortByInputOrder = <T extends { id: string }>(items: T[]): T[] =>
-      items.sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+      items.sort(
+        (a, b) =>
+          (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (order.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+
+    return {
+      inputSymbols,
+      resolvedCount: resolvedSymbols.size,
+      symbols: sortByInputOrder(symbols),
+      unmappedSymbols: sortByInputOrder(unmappedSymbols),
+      unknownSymbols: sortByInputOrder(unknownSymbols),
+      affectedProcesses: Array.from(affectedProcesses.values()).sort(
+        (a, b) =>
+          b.matched_symbols - a.matched_symbols ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
+      ),
+    };
+  }
+
+  private async impactForSymbols(
+    repo: RepoHandle,
+    params: {
+      symbols?: unknown[];
+    },
+  ): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    if (!Array.isArray(params?.symbols) || params.symbols.length === 0) {
+      return { error: 'symbols array is required.' };
+    }
+
+    const direct = await this.resolveDirectProcessImpact(repo, params.symbols);
+    if ('error' in direct) return direct;
 
     return {
       schema_version: 'impact-for-symbols.v1alpha1',
@@ -3151,19 +3165,104 @@ export class LocalBackend {
         indexed_commit: repo.lastCommit,
       },
       summary: {
-        input_symbols: inputSymbols.length,
-        resolved_symbols: resolvedSymbols.size,
-        symbols_with_processes: symbols.length,
-        unmapped_symbols: unmappedSymbols.length,
-        unknown_symbols: unknownSymbols.length,
-        affected_processes: affectedProcesses.size,
+        input_symbols: direct.inputSymbols.length,
+        resolved_symbols: direct.resolvedCount,
+        symbols_with_processes: direct.symbols.length,
+        unmapped_symbols: direct.unmappedSymbols.length,
+        unknown_symbols: direct.unknownSymbols.length,
+        affected_processes: direct.affectedProcesses.length,
       },
-      symbols: sortByInputOrder(symbols),
-      unmapped_symbols: sortByInputOrder(unmappedSymbols),
-      unknown_symbols: sortByInputOrder(unknownSymbols),
-      affected_processes: Array.from(affectedProcesses.values()).sort(
-        (a, b) => b.matched_symbols - a.matched_symbols || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
-      ),
+      symbols: direct.symbols,
+      unmapped_symbols: direct.unmappedSymbols,
+      unknown_symbols: direct.unknownSymbols,
+      affected_processes: direct.affectedProcesses,
+    };
+  }
+
+  private async impactForRanges(
+    repo: RepoHandle,
+    params: {
+      ranges?: unknown[];
+    },
+  ): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    if (!Array.isArray(params?.ranges) || params.ranges.length === 0) {
+      return { error: 'ranges array is required.' };
+    }
+
+    const mapped = await this.mapRangesToSymbols(repo, params.ranges, {
+      resolveDeletedRanges: true,
+    });
+    if (mapped.input_ranges.length === 0) {
+      return { error: 'ranges array must contain at least one valid range object.' };
+    }
+
+    const direct = await this.resolveDirectProcessImpact(
+      repo,
+      mapped.symbols.map((symbol) => ({
+        id: symbol.id,
+        name: symbol.name,
+        type: symbol.type,
+        filePath: symbol.filePath,
+        startLine: symbol.startLine,
+        endLine: symbol.endLine,
+      })),
+    );
+    if ('error' in direct) return direct;
+
+    const matchedRangesById = new Map(mapped.symbols.map((symbol) => [symbol.id, symbol.matched_ranges]));
+    const changeTypesFor = (id: string): ExplicitRangeChangeType[] =>
+      Array.from(
+        new Set(
+          (matchedRangesById.get(id) ?? [])
+            .map((range) => range.change_type)
+            .filter((value): value is ExplicitRangeChangeType => Boolean(value)),
+        ),
+      ).sort();
+
+    const decorateWithRanges = <
+      T extends {
+        id: string;
+      },
+    >(
+      items: T[],
+    ) =>
+      items.map((item) => ({
+        ...item,
+        matched_ranges: matchedRangesById.get(item.id) ?? [],
+        change_types: changeTypesFor(item.id),
+      }));
+
+    const deletedCount = mapped.symbols.filter((symbol) =>
+      symbol.matched_ranges.some((range) => range.change_type === 'deleted'),
+    ).length;
+
+    return {
+      schema_version: 'impact-for-ranges.v1alpha1',
+      repo: {
+        name: repo.name,
+        indexed_commit: repo.lastCommit,
+      },
+      summary: {
+        input_ranges: mapped.input_ranges.length,
+        matched_symbols: mapped.symbols.length,
+        unmatched_ranges: mapped.unmatched_ranges.length,
+        deleted_symbols: deletedCount,
+        symbols_with_processes: direct.symbols.length,
+        unmapped_symbols: direct.unmappedSymbols.length,
+        unknown_symbols: direct.unknownSymbols.length,
+        affected_processes: direct.affectedProcesses.length,
+      },
+      symbols: decorateWithRanges(direct.symbols),
+      unmapped_symbols: decorateWithRanges(direct.unmappedSymbols),
+      unknown_symbols: decorateWithRanges(direct.unknownSymbols),
+      unmatched_ranges: mapped.unmatched_ranges,
+      affected_processes: direct.affectedProcesses,
+      caveats: [
+        'Direct process membership only; no caller traversal or risk scoring is included.',
+        'No API impact or graph-derived test signal is included in this composed surface.',
+      ],
     };
   }
 

@@ -66,7 +66,9 @@ This section controls the next Goal selection after the completed local V1 tranc
 | Completed | Worktree Verification / Checkpoint Packet | Green-lane consolidation | Completed on 2026-06-08T10:53+01:00; accumulated uncommitted source/docs/test WIP was reviewed by slice and verified together. | Focused touched-slice tests, `npm run build`, `git diff --check`, and checkpoint note in `documentation.md`. | No new feature behavior was implemented. |
 | Completed | Task 4 `symbols-for-ranges` primitive | Green/amber implementation packet | Completed on 2026-06-08T15:34+01:00 as the first stable no-write local range-input primitive aligned with issue #1901. | Focused CLI/backend tests, adjacent PR Impact/parser/tool tests, build, and diff check. | `impact-for-symbols` remains the next narrower Task 4 follow-on. |
 | Completed | Task 4 `impact-for-symbols` primitive | Green/amber implementation packet | Completed on 2026-06-08T15:52+01:00 as the direct symbol-to-process/process-step companion primitive to `symbols-for-ranges`, returning deterministic `impact-for-symbols.v1alpha1` JSON with mapped, unmapped, and unknown symbol evidence. | Focused CLI/backend/help tests, adjacent Task 4 tests, build, and diff check. | Broader Task 4 composition remains a separate readiness packet. |
-| Active | Task 4 primitive-composition readiness | Green readiness packet | With both local no-write primitives implemented (`symbols-for-ranges` and `impact-for-symbols`), the next safe boundary is deciding how they compose into a deterministic local report-input lane without reintroducing GitHub/provider semantics. | Packet defining composition shape, likely write set, and TDD plan for any next local composition/report surface. | Keep scope to local primitive composition only; do not broaden into GitHub posting, provider execution, historical/base-graph architecture, or full blast-radius orchestration. |
+| Completed | Task 4 primitive-composition readiness | Green readiness packet | Completed on 2026-06-08T17:02+01:00. The selected composition lane is a local direct-process surface, `impact-for-ranges`, that honestly composes `symbols-for-ranges -> impact-for-symbols` without claiming full blast-radius, API-impact, or test-signal parity. | Source analysis, expected-vs-actual reconciliation, bounded write set, focused TDD plan, and stop-rule confirmation. | Keep composition direct-only; do not broaden into GitHub posting, provider execution, historical/base-graph architecture, or fake parity with the older `pr-impact` pipeline. |
+| Completed | Task 4 `impact-for-ranges` composed primitive | Green/amber implementation packet | Completed on 2026-06-08T17:02+01:00 as the first deterministic local composition surface over explicit ranges. Adds `gitnexus impact-for-ranges --input <path> --repo <name>` plus backend `impact_for_ranges`, returning `impact-for-ranges.v1alpha1` JSON with matched/unmatched range evidence, direct process membership, and explicit caveats about what is intentionally excluded. | Focused CLI/backend/help tests, adjacent Task 4 pipeline/primitive tests, build, and diff check. | This is direct process evidence only; it does not replace `pr-impact` risk/API/test-signal semantics. |
+| Active | Task 4 direct-composition report readiness | Green readiness packet | With `impact-for-ranges` implemented, the next safe boundary is deciding whether to add a deterministic local report layer over the composed direct-process evidence or stop the lane at the primitive surface. | Packet defining report scope, exact truth claims, likely write set, and TDD plan for any next local report/readout surface. | Keep scope to direct-composition readout only; do not backfill fake blast-radius parity, GitHub/provider semantics, or historical/base-graph architecture. |
 | Completed | Task 7 OCaml Module-System Depth | Research/readiness plus comment cleanup | Completed on 2026-06-08T10:12+01:00; deeper OCaml work now requires resolver/dependency/product-lane expansion rather than another small query capture. | Local source map, public issue/package evidence, OCaml focused tests, and comment-drift cleanup. | Do not implement Dune, PPX, interface/implementation matching, module alias/functor resolution, dependency upgrades, or production classification without a new red/amber packet. |
 | Completed | Task 6 `/api/info` API-Smoke Route | Technical readiness plus implementation | Completed on 2026-06-08T09:57+01:00 as a deterministic APIRequestContext generated-spec renderer. | Focused renderer tests, adjacent Task 6 tests, build, and diff check passed. | Do not broaden into more API-smoke routes without a new selected route contract. |
 | Completed | Task 4 GitHub PR Automation Boundary | Readiness checkpoint | Boundary completed on 2026-06-08T09:45+01:00; GitHub posting/check automation remains red-lane deferred. | `documentation.md` checkpoint plus GitHub issue/PR/docs evidence. | Do not re-enter unless a new no-write primitive or GitHub integration packet is selected. |
@@ -76,14 +78,14 @@ This section controls the next Goal selection after the completed local V1 tranc
 Board activation note:
 
 - The board below is the live next-task control surface.
-- Current evaluated state is still equivalent to `R3 Active slice complete but uncheckpointed`.
-- Immediate action is to review/checkpoint/close the current dirty-tree boundary from the completed `impact-for-symbols` tranche.
-- Only after that checkpoint boundary is handled should the `Active` slot below become the executing packet.
+- Current evaluated state is `R5 No implementation packet, but green readiness exists`.
+- The previous dirty-tree boundary is already closed by checkpoint commit `2a38a6db` plus the committed Task 4 primitive follow-ons.
+- The `Active` slot below is now the executing packet.
 
 | Slot | Packet | Status | Notes |
 | --- | --- | --- | --- |
-| Active | Task 4 primitive-composition readiness | Activation pending checkpoint | Define the smallest deterministic local composition lane over `symbols-for-ranges -> impact-for-symbols`. |
-| Ready 1 | Task 4 local primitive-composition implementation | Conditional on readiness completion | Same-feature continuation if the readiness packet produces a bounded write set and TDD path. |
+| Active | Task 4 direct-composition report readiness | Executing | Decide whether the composed `impact-for-ranges` surface should gain a bounded Markdown/JSON readout layer or remain a primitive-only surface. |
+| Ready 1 | Task 4 local direct-composition report implementation | Conditional on readiness completion | Same-feature continuation if the readiness packet produces a bounded truth-preserving report shape and TDD path. |
 | Ready 2 | Task 6 next API-smoke route readiness | Green readiness fallback | Lowest-blast-radius alternative if Task 4 cannot move forward cleanly; choose the next backend route contract before any new generated spec. |
 | Deferred / Red | GitHub posting/check automation; provider execution; historical/base-graph architecture; CI/workflow mutation; secrets/tokens | Deferred | Never move red-lane work into a ready slot without explicit human-operator direction. |
 
@@ -96,8 +98,8 @@ Board selection rule:
 
 Default recommendation:
 
-- Active packet is `Task 4 primitive-composition readiness`.
-- Recommended immediate action is to review/checkpoint/close the current `impact-for-symbols` dirty-tree boundary first; after that, activate the composition-readiness packet.
+- Active packet is `Task 4 direct-composition report readiness`.
+- Recommended immediate action is to define the smallest truth-preserving readout layer over `impact-for-ranges`, then either activate the bounded same-feature implementation slice or record the narrower follow-on/blocker.
 - Task 4 GitHub boundary readiness is complete for the current run; keep the next packet on the no-write primitive lane rather than drifting into provider or GitHub semantics.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If the human operator chooses another priority, create a selected-task packet for that task before source edits.

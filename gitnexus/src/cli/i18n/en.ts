@@ -139,6 +139,8 @@ export const en = {
     'Map caller-supplied file ranges onto indexed symbols',
   'help.command.impactForSymbols.description':
     'Map caller-supplied symbols onto direct process evidence',
+  'help.command.impactForRanges.description':
+    'Compose caller-supplied ranges into direct process evidence',
   'help.command.prImpact.description': 'Generate a local deterministic PR impact report',
   'help.command.regressionForensics.description':
     'Generate a local deterministic regression forensics report',
@@ -244,6 +246,7 @@ export const en = {
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
   'help.option.symbolsForRanges.input': 'Path to input JSON containing explicit ranges',
   'help.option.impactForSymbols.input': 'Path to input JSON containing explicit symbols',
+  'help.option.impactForRanges.input': 'Path to input JSON containing explicit ranges',
   'help.option.prImpact.format': 'Output format: markdown or json',
   'help.option.regressionForensics.failureJson': 'Path to local failure evidence JSON',
   'help.option.regressionForensics.prImpactJson': 'Path to local PR impact JSON',
