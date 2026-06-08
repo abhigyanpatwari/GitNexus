@@ -1,4 +1,4 @@
-<!-- version: 1.9.9 -->
+<!-- version: 1.9.10 -->
 <!-- Last updated: 2026-06-08 -->
 
 Last reviewed: 2026-06-08
@@ -36,6 +36,7 @@ For the local enterprise-feature workstream:
 - Use Continuous Agentic Kanban as the faster-paced operating variant: Kanban controls task flow, XP/TDD controls engineering discipline, CI/CD-style checks enforce quality, and selected-task packets preserve Codex continuity.
 - The human operator is `MAIN` and has superseding authority over this workstream's rules.
 - The long-horizon control bundle is `.agent/long-horizon/gitnexus-local-features/`.
+- This workstream uses a decision-table workflow: the canonical table lives in `.agent/long-horizon/gitnexus-local-features/implement.md`, the live board lives in `plans.md`, and the live evaluated state lives in `documentation.md`.
 - Use branch `local/gitnexus-local-features`.
 - Work one implementation feature at a time on the shared branch.
 - Formal Goal Contracts are not required for this workstream. Use a selected-task work packet instead.
@@ -97,6 +98,7 @@ commits, or posts.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-08 | 1.9.10 | Added the repo-level pointer to the decision-table workflow, with canonical table in `implement.md`, live board in `plans.md`, and evaluated state in `documentation.md`. |
 | 2026-06-08 | 1.9.9 | Added Codex 5.4 handover guidance and replaced rigid fast-flow timeboxes with packet/verification-loop appetite language. |
 | 2026-06-08 | 1.9.8 | Added Continuous Agentic Kanban as the faster-paced local-features workflow: one active slice, up to three ready packets, appetite boxes, and test/review/checkpoint gates. |
 | 2026-06-08 | 1.9.7 | Added the GitNexus testing ladder for small/medium/large verification, golden tests, runtime checks, and non-interactive Codex review. |

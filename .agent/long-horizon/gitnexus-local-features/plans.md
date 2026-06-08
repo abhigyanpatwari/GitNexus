@@ -65,15 +65,39 @@ This section controls the next Goal selection after the completed local V1 tranc
 | Completed | Post-Tranche Consolidation / Next-Slice Selection | Readiness Goal | Completed on 2026-06-08T10:47+01:00; recent PR Impact and wiki readiness follow-ons are reconciled and red-lane feature expansions remain deferred. | Updated next-task map and `NEXT_TASK_SELECTED` recorded. | Next selected task is worktree verification/checkpoint preparation, not feature expansion. |
 | Completed | Worktree Verification / Checkpoint Packet | Green-lane consolidation | Completed on 2026-06-08T10:53+01:00; accumulated uncommitted source/docs/test WIP was reviewed by slice and verified together. | Focused touched-slice tests, `npm run build`, `git diff --check`, and checkpoint note in `documentation.md`. | No new feature behavior was implemented. |
 | Completed | Task 4 `symbols-for-ranges` primitive | Green/amber implementation packet | Completed on 2026-06-08T15:34+01:00 as the first stable no-write local range-input primitive aligned with issue #1901. | Focused CLI/backend tests, adjacent PR Impact/parser/tool tests, build, and diff check. | `impact-for-symbols` remains the next narrower Task 4 follow-on. |
-| Active | Task 4 `impact-for-symbols` primitive readiness | Green/amber readiness packet | Issue #1901 explicitly pairs `impact-for-symbols` with `symbols-for-ranges`; the next safe boundary is direct symbol-to-process mapping, not GitHub/provider flow. | Packet defining the direct-mode contract, write set, and TDD plan for batch symbol-to-process/process-step output. | Keep scope to direct process membership first; do not broaden into upstream blast-radius mode, provider/GitHub semantics, or posting/workflow surfaces. |
+| Completed | Task 4 `impact-for-symbols` primitive | Green/amber implementation packet | Completed on 2026-06-08T15:52+01:00 as the direct symbol-to-process/process-step companion primitive to `symbols-for-ranges`, returning deterministic `impact-for-symbols.v1alpha1` JSON with mapped, unmapped, and unknown symbol evidence. | Focused CLI/backend/help tests, adjacent Task 4 tests, build, and diff check. | Broader Task 4 composition remains a separate readiness packet. |
+| Active | Task 4 primitive-composition readiness | Green readiness packet | With both local no-write primitives implemented (`symbols-for-ranges` and `impact-for-symbols`), the next safe boundary is deciding how they compose into a deterministic local report-input lane without reintroducing GitHub/provider semantics. | Packet defining composition shape, likely write set, and TDD plan for any next local composition/report surface. | Keep scope to local primitive composition only; do not broaden into GitHub posting, provider execution, historical/base-graph architecture, or full blast-radius orchestration. |
 | Completed | Task 7 OCaml Module-System Depth | Research/readiness plus comment cleanup | Completed on 2026-06-08T10:12+01:00; deeper OCaml work now requires resolver/dependency/product-lane expansion rather than another small query capture. | Local source map, public issue/package evidence, OCaml focused tests, and comment-drift cleanup. | Do not implement Dune, PPX, interface/implementation matching, module alias/functor resolution, dependency upgrades, or production classification without a new red/amber packet. |
 | Completed | Task 6 `/api/info` API-Smoke Route | Technical readiness plus implementation | Completed on 2026-06-08T09:57+01:00 as a deterministic APIRequestContext generated-spec renderer. | Focused renderer tests, adjacent Task 6 tests, build, and diff check passed. | Do not broaden into more API-smoke routes without a new selected route contract. |
 | Completed | Task 4 GitHub PR Automation Boundary | Readiness checkpoint | Boundary completed on 2026-06-08T09:45+01:00; GitHub posting/check automation remains red-lane deferred. | `documentation.md` checkpoint plus GitHub issue/PR/docs evidence. | Do not re-enter unless a new no-write primitive or GitHub integration packet is selected. |
 
+## Live 3-Slot Board
+
+Board activation note:
+
+- The board below is the live next-task control surface.
+- Current evaluated state is still equivalent to `R3 Active slice complete but uncheckpointed`.
+- Immediate action is to review/checkpoint/close the current dirty-tree boundary from the completed `impact-for-symbols` tranche.
+- Only after that checkpoint boundary is handled should the `Active` slot below become the executing packet.
+
+| Slot | Packet | Status | Notes |
+| --- | --- | --- | --- |
+| Active | Task 4 primitive-composition readiness | Activation pending checkpoint | Define the smallest deterministic local composition lane over `symbols-for-ranges -> impact-for-symbols`. |
+| Ready 1 | Task 4 local primitive-composition implementation | Conditional on readiness completion | Same-feature continuation if the readiness packet produces a bounded write set and TDD path. |
+| Ready 2 | Task 6 next API-smoke route readiness | Green readiness fallback | Lowest-blast-radius alternative if Task 4 cannot move forward cleanly; choose the next backend route contract before any new generated spec. |
+| Deferred / Red | GitHub posting/check automation; provider execution; historical/base-graph architecture; CI/workflow mutation; secrets/tokens | Deferred | Never move red-lane work into a ready slot without explicit human-operator direction. |
+
+Board selection rule:
+
+1. Continue same feature if safe.
+2. Otherwise choose green readiness.
+3. Otherwise choose amber with premortem.
+4. Otherwise stop with blocker.
+
 Default recommendation:
 
-- Active packet is `Task 4 impact-for-symbols primitive readiness`.
-- Recommended immediate action is to shape the direct-mode batch symbol-to-process contract before any broader Task 4 expansion.
+- Active packet is `Task 4 primitive-composition readiness`.
+- Recommended immediate action is to review/checkpoint/close the current `impact-for-symbols` dirty-tree boundary first; after that, activate the composition-readiness packet.
 - Task 4 GitHub boundary readiness is complete for the current run; keep the next packet on the no-write primitive lane rather than drifting into provider or GitHub semantics.
 - Do not add more generated API-smoke routes until the backend route contract is decision-complete.
 - If the human operator chooses another priority, create a selected-task packet for that task before source edits.
@@ -148,6 +172,78 @@ TDD plan:
 Stop rules:
 
 - Stop if the slice starts to require GitHub/network/provider tokens, PR URL parsing, base-graph history, external writes, or broad `impact-for-symbols` orchestration.
+- Stop if the contract cannot be kept deterministic without inventing provider-specific semantics.
+
+### Task 4 `impact-for-symbols` Primitive - 2026-06-08
+
+Selected task:
+
+- Implement the direct symbol-to-process/process-step companion primitive proposed by GitNexus issue #1901: `impact-for-symbols`.
+
+Readiness verdict:
+
+- Safe to implement as a green/amber repo-local slice immediately after `symbols-for-ranges`.
+- Existing backend queries already expose direct process participation through `STEP_IN_PROCESS`; the smallest useful external boundary is a caller-supplied symbol batch mapped onto that direct evidence.
+- Keep this packet narrower than the broader `impact` tool:
+  - include direct process membership and process-step evidence
+  - include explicit unknown/unmapped symbol reporting
+  - exclude upstream/downstream traversal semantics
+  - exclude GitHub/provider PR semantics
+  - exclude historical/base-graph composition
+
+Expected vs actual:
+
+| Area | Expected behavior | Current local behavior | Packet response |
+| --- | --- | --- | --- |
+| External boundary | Callers should hand GitNexus explicit symbol refs instead of forcing a full diff walk. | `impact` starts from one target and performs upstream/downstream traversal. | Add a caller-supplied symbol-batch surface. |
+| Evidence shape | Output should return direct process/process-step evidence plus explicit unknown/unmapped symbol cases. | Existing backend surfaces process participation indirectly through `context()` and per-symbol `impact()` enrichment only. | Extract/reuse direct process membership and expose it as a deterministic JSON contract. |
+| Scope control | Direct process membership should stay separate from broader blast-radius traversal. | Existing `impact` includes caller traversal, risk scoring, modules, and pagination. | Keep this packet local/no-write and direct-only. |
+
+Lane:
+
+- Green/amber.
+- Green for helper extraction, CLI wiring, deterministic JSON contract tests, and help/i18n wiring.
+- Amber only where a new public CLI contract is introduced.
+
+Likely write set:
+
+- `gitnexus/src/mcp/local/local-backend.ts`
+- `gitnexus/src/cli/index.ts`
+- `gitnexus/src/cli/help-i18n.ts`
+- `gitnexus/src/cli/i18n/en.ts`
+- `gitnexus/src/cli/i18n/zh-CN.ts`
+- `gitnexus/src/cli/impact-for-symbols.ts` (new)
+- focused backend/CLI/help tests
+- long-horizon docs for checkpointing
+
+Smallest implementation slice:
+
+- Add a local CLI command:
+  - `gitnexus impact-for-symbols --input <path> --repo <name>`
+- Accept a JSON file containing explicit symbols or a `symbols` array from `symbols-for-ranges`.
+- Return deterministic JSON with:
+  - schema/version marker
+  - repo identity
+  - mapped symbols with direct process/process-step evidence
+  - unmapped symbols
+  - unknown symbols
+  - affected-process summary
+- Do not add MCP exposure, traversal fan-out, provider diff adapters, or GitHub URL parsing in this packet.
+
+TDD plan:
+
+1. Add a focused backend dispatch test for mapped, unmapped, and unknown symbol cases.
+2. Add a focused CLI test reading a symbol-batch JSON file.
+3. Add help-surface coverage for the new command.
+4. Verify the red failures are due to the missing tool/command rather than broken fixtures.
+5. Implement the thinnest backend/CLI path to pass.
+6. Run focused CLI/backend/help tests.
+7. Run adjacent Task 4 tests.
+8. Run `npm run build` and `git diff --check`.
+
+Stop rules:
+
+- Stop if the slice starts to require upstream/downstream traversal, GitHub/network/provider tokens, PR URL parsing, base-graph history, external writes, or broad PR-impact orchestration.
 - Stop if the contract cannot be kept deterministic without inventing provider-specific semantics.
 
 ### Overnight Run Packet - 2026-06-08

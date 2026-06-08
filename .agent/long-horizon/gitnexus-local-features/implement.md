@@ -42,6 +42,20 @@ Operating method:
 - Autonomous work means bounded selected-task packets, repo exploration before edits, small verified slices, fresh checkpoints, and explicit stop rules.
 - For overnight or long unattended runs, continue through green/amber lane work when the selected-task packet is clear; stop only when the task crosses a red-lane boundary or loses a defensible verification path.
 
+### Canonical Decision Table
+
+Use this propositional decision table as the primary workflow control model for this branch.
+
+| Rule | Condition set | Action | Required record update | Stop rule |
+| --- | --- | --- | --- | --- |
+| `R1 Red boundary` | `red_lane = true` | `stop_for_operator` | Record the red boundary, why it fired, and what direction would unlock progress in `documentation.md`. | Do not continue autonomously across secrets/tokens, paid/provider execution, GitHub/CI writes, destructive git, production/external writes, unbounded automation, or major architecture/language-semantics expansion. |
+| `R2 Active slice incomplete` | `active_packet_exists AND implementation_in_progress AND verification_incomplete` | `continue_current_slice_only` | Keep the same active packet in `plans.md`/`feature-map.md`; append verification progress and remaining work in `documentation.md`. | Do not widen scope, switch features, or open another implementation slice while the current slice is still incomplete. |
+| `R3 Active slice complete but uncheckpointed` | `implementation_complete AND focused_tests_pass AND broader_checks_pass AND checkpoint_pending` | `checkpoint_current_slice` | Record `R3` in `documentation.md`, mark checkpoint pending/current dirty-tree boundary, and name the next baton target after checkpoint. | Do not activate a new implementation packet until the current dirty-tree boundary is reviewed, checkpointed, or explicitly carried as intentional WIP. |
+| `R4 Same-feature continuation available` | `current_packet_complete AND next_same_feature_packet_decision_complete` | `select_next_same_feature_packet` | Mark the next same-feature packet `Active` in `plans.md` and update the baton in `documentation.md`. | Keep the continuation on the same feature lane; stop if the next packet crosses a red boundary or loses a defensible verification surface. |
+| `R5 No implementation packet, but green readiness exists` | `no_safe_implementation_packet AND green_readiness_packet_exists` | `select_green_readiness_packet` | Mark the green readiness packet `Active` in `plans.md` and update the baton in `documentation.md`. | Prefer the lowest-blast-radius readiness packet that preserves continuity; stop if none is decision-complete enough to name a write set/verification surface. |
+| `R6 Only amber readiness exists` | `no_green_packet AND amber_packet_exists` | `select_amber_packet_with_premortem` | Mark the amber packet `Active`, record premortem/rollback expectations, and document why no green packet was defensible. | Do not start amber work without premortem, rollback notes, and a clear verification ladder. |
+| `R7 No defensible next task` | `no_packet_is_defensible` | `record_NO_NEXT_TASK_SELECTED` | Record `NO_NEXT_TASK_SELECTED` in `documentation.md` with the exact blocker and what would unlock progress. | Stop rather than inventing a packet, widening scope, or silently drifting into adjacent work. |
+
 - Keep one selected task active at a time.
 - Keep one active implementation slice at a time, but maintain up to three shaped ready packets when possible.
 - Treat a ready packet as the unit of fast motion: task, outcome, lane, appetite, write set, acceptance criteria, testing ladder, reviewer gate, stop rules, rollback/checkpoint notes, and next likely packet.
