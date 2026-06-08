@@ -205,6 +205,8 @@ TIPS:
     description: `360-degree view of a single code symbol.
 Shows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.
 
+When test coverage data has been imported, the result includes coverageRatio (0-1), lastCoveredAt (timestamp), and branchCoverage ({total, covered}) fields on the symbol.
+
 WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
 
@@ -258,9 +260,11 @@ Maps git diff hunks to indexed symbols, then traces which processes are impacted
 WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
+Changed symbols include coverage risk assessment: HIGH if the symbol has >80% test coverage (changing well-tested code is riskier), LOW otherwise.
+
 GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
 
-Returns: changed symbols, affected processes, and a risk summary.`,
+Returns: changed symbols (with coverage risk), affected processes, and a risk summary.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -337,6 +341,8 @@ Output includes:
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
 - byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list.
+
+When test coverage data has been imported, each affected symbol includes coverageRatio (0-1) and coverageRisk (HIGH if >80% covered, MEDIUM if >40%, LOW otherwise). Changing well-covered code is riskier because regressions are more likely to be detected by existing tests.
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
@@ -585,9 +591,9 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
   {
     name: 'coverage_status',
     description:
-      'Get the current fuzz coverage status for an indexed repository. ' +
+      'Get the current test coverage status for an indexed repository. ' +
       'Returns overall coverage ratio, top uncovered symbols, and available runs. ' +
-      'Use this before modifying code to understand which areas lack fuzz coverage.',
+      'Use this before modifying code to understand which areas lack test coverage.',
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -603,8 +609,8 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
   {
     name: 'coverage_diff',
     description:
-      'Compare coverage between two fuzz runs. Returns newly covered symbols, regressions, and coverage delta. ' +
-      'Use this to track coverage improvement over time or verify that a change increased fuzz coverage.',
+      'Compare test coverage between two runs. Returns newly covered symbols, regressions, and coverage delta. ' +
+      'Use this to track coverage improvement over time or verify that a change increased test coverage.',
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
