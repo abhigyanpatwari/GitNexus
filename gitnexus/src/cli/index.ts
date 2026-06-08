@@ -45,6 +45,11 @@ program
   )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option(
+    '--pdg',
+    'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
+      'for TypeScript/JavaScript. Opt-in; off by default. (#2081 M1)',
+  )
+  .option(
     '--default-branch <branch>',
     'Default branch used in the generated regression-compare example (base_ref). ' +
       'Falls back to .gitnexusrc, then auto-detected origin/HEAD, then "main".',

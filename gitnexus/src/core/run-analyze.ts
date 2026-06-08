@@ -116,6 +116,12 @@ export interface AnalyzeOptions {
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
   /**
+   * Build the CFG/PDG substrate (#2081 M1). Forwarded to `PipelineOptions.pdg`,
+   * which threads to BOTH the worker (CFG build, via workerData) AND
+   * scope-resolution (BasicBlock/CFG emit gate). Off by default.
+   */
+  pdg?: boolean;
+  /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
    * hardcoded "main" (#243). Resolved by the CLI; `undefined` here keeps the
@@ -506,6 +512,9 @@ export async function runFullAnalysis(
     {
       parseCache,
       workerPoolSize: options.workerPoolSize,
+      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+      // build gate (workerData.pdg) and the scope-resolution emit gate.
+      pdg: options.pdg === true,
     },
   );
 
