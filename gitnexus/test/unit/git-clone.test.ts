@@ -5,6 +5,7 @@ import {
   validateGitUrl,
   cloneOrPull,
   buildCloneArgs,
+  buildGitEnv,
   normalizeGitUrlForCompare,
   assertRemoteMatchesRequestedUrl,
 } from '../../src/server/git-clone.js';
@@ -310,6 +311,61 @@ describe('git-clone', () => {
       expect(args[depthIdx + 1]).toBe('1');
       // --depth must be before the `--` separator (it's an option, not a positional).
       expect(depthIdx).toBeLessThan(args.indexOf('--'));
+    });
+
+    it('never embeds a token in argv: token is injected via env, not URL', () => {
+      // Buffer for buildCloneArgs is URL-only; token must travel through env
+      // (buildGitEnv) so it cannot appear in `ps auxww` or in command logs.
+      const args = buildCloneArgs('https://github.com/owner/repo.git', '/safe/target');
+      expect(args.some((a) => a.includes('ghp_'))).toBe(false);
+      expect(args.some((a) => /[A-Za-z0-9]{40}/.test(a) && !a.includes('github.com'))).toBe(false);
+    });
+  });
+
+  describe('buildGitEnv — token injection', () => {
+    // The token MUST travel via GIT_CONFIG_* env vars (git ≥2.31), not via
+    // argv or URL. This keeps it out of `ps`, shell history, and stderr.
+
+    it('passes through base env and sets prompt-suppression env vars', () => {
+      const env = buildGitEnv({ FOO: 'bar' });
+      expect(env.FOO).toBe('bar');
+      expect(env.GIT_TERMINAL_PROMPT).toBe('0');
+      expect(env.GIT_ASKPASS).toBeDefined();
+    });
+
+    it('does not set GIT_CONFIG_* env vars when no token is provided', () => {
+      const env = buildGitEnv({});
+      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
+      expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+    });
+
+    it('also leaves GIT_CONFIG_* unset when token is empty string', () => {
+      const env = buildGitEnv({}, { token: '' });
+      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
+      expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+    });
+
+    it('sets http.extraHeader with Basic auth when token is provided', () => {
+      const env = buildGitEnv({}, { token: 'ghp_secret123' });
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      expect(env.GIT_CONFIG_KEY_0).toBe('http.extraHeader');
+      const expected =
+        'Authorization: Basic ' +
+        Buffer.from('x-access-token:ghp_secret123').toString('base64');
+      expect(env.GIT_CONFIG_VALUE_0).toBe(expected);
+    });
+
+    it('never includes the raw token value in any env entry', () => {
+      // Defence-in-depth: token must only appear inside the base64 of the
+      // Authorization header, never as a plain substring of any env var.
+      const token = 'ghp_uniqueRawSecret_98765';
+      const env = buildGitEnv({ EXISTING: 'value' }, { token });
+      for (const [key, value] of Object.entries(env)) {
+        if (key === 'GIT_CONFIG_VALUE_0') continue;
+        expect(String(value)).not.toContain(token);
+      }
     });
   });
 
