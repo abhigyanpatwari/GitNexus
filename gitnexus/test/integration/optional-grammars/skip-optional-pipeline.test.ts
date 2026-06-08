@@ -13,16 +13,20 @@
  * unavailable even though its binding is installed). This is the automated
  * analog of the manual end-to-end verification: Python indexes, Swift is
  * cleanly skipped, and the "scope extraction failed for …swift" noise never
- * appears. The env is set BEFORE the run so the first `isLanguageAvailable`
- * call inside the pipeline observes it (parser-loader memoizes per process).
+ * appears.
+ *
+ * `parser-loader` memoizes availability per process, so we `vi.resetModules()`
+ * BEFORE setting the env and dynamically import the pipeline + logger from the
+ * same fresh registry. That makes the first `isLanguageAvailable` call observe
+ * our env regardless of import order, and keeps the logger capture wired to the
+ * loader's logger instance (a static import would not survive resetModules).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runPipelineFromRepo, getNodesByLabel, type PipelineResult } from '../resolvers/helpers.js';
-import { _captureLogger, type LoggerCapture } from '../../../src/core/logger.js';
+import type { PipelineResult } from '../resolvers/helpers.js';
 
 const ENV = 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS';
 
@@ -30,12 +34,17 @@ describe('optional-grammar pipeline exclusion (#2091/#2093)', () => {
   let repoDir = '';
   let result: PipelineResult;
   let messages: string[] = [];
-  let cap: LoggerCapture | undefined;
   let prevEnv: string | undefined;
+  let getNodesByLabel: (r: PipelineResult, label: string) => string[];
 
   beforeAll(async () => {
     prevEnv = process.env[ENV];
+    vi.resetModules();
     process.env[ENV] = 'swift';
+    const helpers = await import('../resolvers/helpers.js');
+    const loggerMod = await import('../../../src/core/logger.js');
+    getNodesByLabel = helpers.getNodesByLabel;
+
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-skip-pipeline-'));
     fs.writeFileSync(
       path.join(repoDir, 'app.py'),
@@ -46,16 +55,15 @@ describe('optional-grammar pipeline exclusion (#2091/#2093)', () => {
       'struct Foo {\n  func bar() -> Int { return 42 }\n}\n',
     );
 
-    cap = _captureLogger();
+    const cap = loggerMod._captureLogger();
     try {
-      result = await runPipelineFromRepo(repoDir, () => {}, { skipGraphPhases: true });
+      result = await helpers.runPipelineFromRepo(repoDir, () => {}, { skipGraphPhases: true });
       messages = cap
         .records()
         .map((r) => (typeof r.msg === 'string' ? r.msg : ''))
         .filter(Boolean);
     } finally {
       cap.restore();
-      cap = undefined;
     }
   }, 60_000);
 
@@ -71,6 +79,18 @@ describe('optional-grammar pipeline exclusion (#2091/#2093)', () => {
 
   it('skips the Swift file at the parse phase (non-vacuity: Swift was present)', () => {
     expect(messages.some((m) => /Skipping 1 swift file\(s\)/.test(m))).toBe(true);
+  });
+
+  it('routes the opt-out message, not the missing-binding "npm rebuild" hint', () => {
+    // The "Skipping N swift file(s)" prefix is shared by BOTH the opt-out and
+    // the missing-binding branches — so assert the opt-out branch specifically:
+    // a message naming the env var, and NO "npm rebuild" hint anywhere. This is
+    // what proves the isGrammarRuntimeSkipped routing in parse-impl.ts fired.
+    expect(messages.some((m) => /GITNEXUS_SKIP_OPTIONAL_GRAMMARS/.test(m))).toBe(true);
+    expect(
+      messages.every((m) => !/npm rebuild/i.test(m)),
+      messages.join('\n'),
+    ).toBe(true);
   });
 
   it('never falls through to the main-thread re-extract (no "scope extraction failed")', () => {

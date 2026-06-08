@@ -39,6 +39,15 @@ interface GrammarSource {
   unavailableNote: string;
   optional?: boolean;
   severity?: 'warn' | 'error';
+  /**
+   * When true, this grammar may be disabled at runtime via
+   * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Set ONLY on genuinely-optional grammars
+   * (optionalDependencies / vendored — swift/dart/kotlin). Required dependencies
+   * routed through the optional machinery for ABI safety (e.g. C, which is
+   * `optional: true` + `severity: 'error'`) must NOT set this — opting out of a
+   * required parser is always an install/platform problem, never a user choice.
+   */
+  userSkippable?: boolean;
 }
 
 const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
@@ -139,6 +148,7 @@ const SOURCES: Record<string, GrammarSource> = {
   [SupportedLanguages.Swift]: {
     load: () => _require('tree-sitter-swift'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
       'Swift parsing disabled: vendored `tree-sitter-swift` (under ' +
       '`gitnexus/vendor/tree-sitter-swift`) failed to load. ' +
@@ -148,6 +158,7 @@ const SOURCES: Record<string, GrammarSource> = {
   [SupportedLanguages.Dart]: {
     load: () => _require('tree-sitter-dart'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
       'Dart parsing disabled: vendored `tree-sitter-dart` (under ' +
       '`gitnexus/vendor/tree-sitter-dart`) failed to load. ' +
@@ -157,6 +168,7 @@ const SOURCES: Record<string, GrammarSource> = {
   [SupportedLanguages.Kotlin]: {
     load: () => _require('tree-sitter-kotlin'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
       'Kotlin parsing disabled: `tree-sitter-kotlin` is an optionalDependency ' +
       'and is not installed (or its native binding failed to build).',
@@ -201,31 +213,49 @@ const logged = new Set<string>();
  * as unavailable and the pipeline skips their files (mirroring a genuinely
  * absent binding) instead of attempting to load them.
  *
- * Accepts `1` / `true` / `all` / `*` (every optional grammar), or a
+ * Accepts `1` / `true` / `all` / `*` (every skippable grammar), or a
  * comma-separated list of language ids and/or package names
- * (e.g. `swift,tree-sitter-dart`). Grammars that are *required* dependencies
- * but routed through the optional machinery for ABI safety (C —
- * `optional: true` with `severity: 'error'`) are intentionally NOT skippable
- * here: opting out of a required parser is always an install/platform problem
- * to surface, never a user choice.
+ * (e.g. `swift,tree-sitter-dart`). Only grammars flagged `userSkippable` (the
+ * genuinely-optional swift/dart/kotlin) can be skipped — required dependencies
+ * routed through the optional machinery for ABI safety (C) carry no
+ * `userSkippable` and are never skippable here.
  */
-const isRuntimeSkippedGrammar = (key: string, source: GrammarSource): boolean => {
-  // Only genuinely-optional grammars (optionalDependencies / vendored), never
-  // required deps that merely use the optional machinery for ABI safety.
-  if (source.optional !== true || source.severity === 'error') return false;
+type SkipDirective = 'all' | Set<string> | null;
+
+// Parsed form of GITNEXUS_SKIP_OPTIONAL_GRAMMARS, resolved lazily ONCE per
+// process. The env is set before analyze runs, so re-reading + re-allocating a
+// Set on every call was wasted work (and a latent trap for any future per-file
+// caller). `vi.resetModules()` gives the unit tests a fresh module — and thus a
+// fresh memo — per case, so this stays test-friendly.
+//   'all' → every userSkippable grammar; Set → only the named ids
+//   (and `tree-sitter-<id>` spellings); null → env unset/empty (nothing).
+let _skipDirective: SkipDirective | undefined;
+const skipDirective = (): SkipDirective => {
+  if (_skipDirective !== undefined) return _skipDirective;
   const raw = (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '').trim().toLowerCase();
-  if (raw === '') return false;
-  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*') return true;
-  // `key` is the SupportedLanguages value (e.g. `swift`). Match either that or
-  // a `tree-sitter-<lang>` package spelling, with/without the prefix.
-  const named = new Set(
+  if (raw === '') return (_skipDirective = null);
+  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*')
+    return (_skipDirective = 'all');
+  return (_skipDirective = new Set(
     raw
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
       .flatMap((s) => [s, s.replace(/^tree-sitter-/, '')]),
-  );
-  return named.has(key) || named.has(`tree-sitter-${key}`);
+  ));
+};
+
+const isRuntimeSkippedGrammar = (key: string, source: GrammarSource): boolean => {
+  // Only grammars explicitly flagged user-skippable (swift/dart/kotlin) — never
+  // required deps that use the optional machinery for ABI safety (C carries no
+  // `userSkippable`).
+  if (source.userSkippable !== true) return false;
+  const directive = skipDirective();
+  if (directive === null) return false;
+  if (directive === 'all') return true;
+  // `key` is the SupportedLanguages value (e.g. `swift`); the directive Set
+  // already holds both the bare id and the `tree-sitter-<id>` spelling.
+  return directive.has(key) || directive.has(`tree-sitter-${key}`);
 };
 
 const logFailure = (key: string, result: LoadResult): void => {
@@ -270,10 +300,13 @@ const loadGrammar = (key: string): LoadResult => {
   // absent binding (non-fatal unavailable + one warning), without attempting
   // the native load. See `isRuntimeSkippedGrammar`.
   if (isRuntimeSkippedGrammar(key, source)) {
+    // Deliberate opt-out: emit an accurate "disabled on purpose" note rather
+    // than `source.unavailableNote` (which blames a missing/unbuilt binding and
+    // would mislead a user who set the env intentionally — #2101 review).
     const result: LoadResult = {
       ok: false,
-      error: new Error('skipped via GITNEXUS_SKIP_OPTIONAL_GRAMMARS'),
-      note: source.unavailableNote,
+      error: new Error('runtime opt-out'),
+      note: `${key} parsing disabled via GITNEXUS_SKIP_OPTIONAL_GRAMMARS (unset it to re-enable).`,
       fatal: false,
       severity: 'warn',
     };

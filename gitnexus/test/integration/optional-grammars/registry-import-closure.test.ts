@@ -87,8 +87,13 @@ describe('optional-grammar static-import closure (#2091/#2093)', () => {
     // grammar this would be ERR_MODULE_NOT_FOUND; here the grammar is present
     // so pre-fix it would instead surface as a loaded binding below.)
     if (result.status !== 0) {
+      // status is null when the child was killed by a signal (e.g. a native
+      // addon SIGSEGV) — surface the signal so that's distinguishable from a
+      // non-zero exit / module-not-found.
+      const exit =
+        result.status !== null ? `status ${result.status}` : `signal ${result.signal ?? 'unknown'}`;
       throw new Error(
-        `importing the scope-resolution registry failed (status ${result.status}):\n` +
+        `importing the scope-resolution registry failed (${exit}):\n` +
           `stderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
       );
     }
