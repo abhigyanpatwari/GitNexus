@@ -2188,6 +2188,39 @@ export class LocalBackend {
       }
     }
 
+    // Coverage enrichment: fetch coverageRatio, lastCoveredAt, branchTotal, branchCovered
+    let coverageInfo: { coverageRatio: number; lastCoveredAt: string; branchCoverage?: { total: number; covered: number } } | undefined;
+    try {
+      const covRows = await executeParameterized(
+        repo.id,
+        `
+        MATCH (n {id: $symId})
+        RETURN n.coverageRatio AS coverageRatio, n.lastCoveredAt AS lastCoveredAt,
+               n.branchTotal AS branchTotal, n.branchCovered AS branchCovered
+        LIMIT 1
+      `,
+        { symId },
+      );
+      if (covRows.length > 0) {
+        const cr = covRows[0] as any;
+        const ratio = cr.coverageRatio ?? cr[0];
+        const lastAt = cr.lastCoveredAt ?? cr[1];
+        const bTotal = cr.branchTotal ?? cr[2];
+        const bCovered = cr.branchCovered ?? cr[3];
+        if (ratio !== null && ratio !== undefined) {
+          coverageInfo = {
+            coverageRatio: typeof ratio === 'number' ? ratio : Number(ratio),
+            lastCoveredAt: lastAt ?? '',
+            ...(typeof bTotal === 'number' && typeof bCovered === 'number'
+              ? { branchCoverage: { total: bTotal, covered: bCovered } }
+              : {}),
+          };
+        }
+      }
+    } catch {
+      /* coverage properties unavailable — omit silently */
+    }
+
     return {
       status: 'found',
       symbol: {
@@ -2199,6 +2232,8 @@ export class LocalBackend {
         endLine: sym.endLine || sym[5],
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
+        ...(coverageInfo ? { coverageRatio: coverageInfo.coverageRatio, lastCoveredAt: coverageInfo.lastCoveredAt } : {}),
+        ...(coverageInfo?.branchCoverage ? { branchCoverage: coverageInfo.branchCoverage } : {}),
       },
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
@@ -2465,18 +2500,26 @@ export class LocalBackend {
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
           AND (${overlapConditions})
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
-               n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+               n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine,
+               n.coverageRatio AS coverageRatio
       `;
 
       try {
         const rows = await executeParameterized(repo.id, symbolQuery, queryParams);
         for (const sym of rows) {
+          const ratio = sym.coverageRatio ?? sym[6];
           changedSymbols.push({
             id: sym.id || sym[0],
             name: sym.name || sym[1],
             type: sym.type || sym[2],
             filePath: sym.filePath || sym[3],
             change_type: 'touched',
+            ...(typeof ratio === 'number'
+              ? {
+                  coverageRatio: ratio,
+                  coverageRisk: ratio > 0.8 ? 'HIGH' : 'LOW',
+                }
+              : {}),
           });
         }
       } catch (e) {
@@ -3471,6 +3514,59 @@ export class LocalBackend {
     for (const items of Object.values(paginatedGrouped)) {
       for (const it of items) {
         it.processes = perSymbolProcesses.get(String(it.id)) ?? [];
+      }
+    }
+
+    // ── Per-symbol coverage enrichment (post-pagination) ───────────────
+    // Fetches coverageRatio for each symbol returned in byDepth so consumers
+    // can assess the risk of changing well-covered code. Uses the same chunked
+    // pattern as process enrichment to bound DB round-trips.
+    const perSymbolCoverage = new Map<string, { coverageRatio: number; coverageRisk: string }>();
+    {
+      const pageIds = new Set<string>();
+      for (const items of Object.values(paginatedGrouped)) {
+        for (const it of items) {
+          const id = String(it.id ?? '');
+          if (id) pageIds.add(id);
+        }
+      }
+      const maxCoverageIds = MAX_CHUNKS * CHUNK_SIZE;
+      let pageIdArr = Array.from(pageIds);
+      if (pageIdArr.length > maxCoverageIds) {
+        pageIdArr = pageIdArr.slice(0, maxCoverageIds);
+      }
+      for (let i = 0; i < pageIdArr.length; i += CHUNK_SIZE) {
+        const chunkIds = pageIdArr.slice(i, i + CHUNK_SIZE);
+        try {
+          const rows = await executeParameterized(
+            repo.id,
+            `
+            MATCH (n) WHERE n.id IN $ids AND n.coverageRatio IS NOT NULL
+            RETURN n.id AS id, n.coverageRatio AS coverageRatio
+          `,
+            { ids: chunkIds },
+          ).catch(() => []);
+          for (const row of rows) {
+            const sid = row.id ?? row[0];
+            const ratio = row.coverageRatio ?? row[1];
+            if (!sid || typeof ratio !== 'number') continue;
+            const risk = ratio > 0.8 ? 'HIGH' : ratio > 0.4 ? 'MEDIUM' : 'LOW';
+            perSymbolCoverage.set(String(sid), { coverageRatio: ratio, coverageRisk: risk });
+          }
+        } catch (e) {
+          logQueryError('impact:per-symbol-coverage-chunk', e);
+        }
+      }
+    }
+
+    // Attach coverage fields to each paginated item.
+    for (const items of Object.values(paginatedGrouped)) {
+      for (const it of items) {
+        const cov = perSymbolCoverage.get(String(it.id));
+        if (cov) {
+          it.coverageRatio = cov.coverageRatio;
+          it.coverageRisk = cov.coverageRisk;
+        }
       }
     }
 

@@ -2336,18 +2336,22 @@ export const saveKnowledgeGraph = async (
       }
     }
 
-    // 3. Update coverageRatio / lastCoveredAt on symbol nodes.
+    // 3. Update coverageRatio / lastCoveredAt / branchTotal / branchCovered on symbol nodes.
     for (const node of graph.nodes) {
       if (node.label === 'CoverageRun') continue;
       const ratio = node.properties.coverageRatio;
       if (ratio === undefined) continue;
 
       const label = escapeTableName(node.label);
+      const bc = node.properties.branchCoverage as { total: number; covered: number } | undefined;
+      const branchTotal = bc?.total ?? null;
+      const branchCovered = bc?.covered ?? null;
       try {
         await queryAndDrain(
           conn!,
           `MATCH (n:${label} {id: ${escapeCypherValue(node.id)}}) ` +
-            `SET n.coverageRatio = ${ratio}, n.lastCoveredAt = ${escapeCypherValue(node.properties.lastCoveredAt ?? null)}`,
+            `SET n.coverageRatio = ${ratio}, n.lastCoveredAt = ${escapeCypherValue(node.properties.lastCoveredAt ?? null)}, ` +
+            `n.branchTotal = ${branchTotal !== null ? branchTotal : 'NULL'}, n.branchCovered = ${branchCovered !== null ? branchCovered : 'NULL'}`,
         );
       } catch {
         // Node may not exist in LadybugDB yet, or the table may not
@@ -2402,7 +2406,7 @@ export const removeCoverageFromLbug = async (
         await queryAndDrain(
           conn!,
           `MATCH (n:${label} {id: ${escapeCypherValue(nodeId)}}) ` +
-            `SET n.coverageRatio = NULL, n.lastCoveredAt = NULL`,
+            `SET n.coverageRatio = NULL, n.lastCoveredAt = NULL, n.branchTotal = NULL, n.branchCovered = NULL`,
         );
       } catch {
         // Node or property may not exist — skip.
