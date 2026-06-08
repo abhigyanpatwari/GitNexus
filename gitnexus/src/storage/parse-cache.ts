@@ -55,7 +55,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-const SCHEMA_BUMP = 4;
+const SCHEMA_BUMP = 5; // #2081 M1: ParsedFile gained `cfgSideChannel`
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -143,10 +143,16 @@ export const fileContentHash = (content: Buffer | string): string => sha256Hex(c
  */
 export const computeChunkHash = (
   entries: Array<{ filePath: string; contentHash: string }>,
+  pdg = false,
 ): string => {
   const sorted = [...entries].sort((a, b) => (a.filePath < b.filePath ? -1 : 1));
   const joined = sorted.map((e) => `${e.filePath}:${e.contentHash}`).join('\n');
-  return sha256Hex(joined);
+  // Fold the `--pdg` opt-in into the key (#2081 M1) so a chunk cached WITHOUT a
+  // CFG (`cfgSideChannel`) is NOT reused on a `--pdg` run, and vice-versa — the
+  // #2038-class warm-cache trap where an option-blind key silently serves
+  // field-less shards. Only prefixed when `pdg` is on, so the default (pdg-off)
+  // path keeps its existing keys and warm caches survive this change.
+  return sha256Hex(pdg ? `pdg\n${joined}` : joined);
 };
 
 /**

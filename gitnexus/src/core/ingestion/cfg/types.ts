@@ -61,4 +61,13 @@ export interface FunctionCfg {
  */
 export interface CfgVisitor<TNode = unknown> {
   buildFunctionCfg(fnNode: TNode, filePath: string): FunctionCfg | undefined;
+
+  /**
+   * Whether `node` is a CFG-bearing function this visitor handles. Lets the
+   * worker enumerate functions (and apply the per-function line budget) by a
+   * cheap node-type test, instead of attempting to build a CFG for every AST
+   * node. `buildFunctionCfg` still re-checks, so this is purely an optimization
+   * + the seam the line-budget hooks into.
+   */
+  isFunction(node: TNode): boolean;
 }

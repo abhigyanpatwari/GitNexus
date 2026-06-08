@@ -448,6 +448,10 @@ export async function runChunkedParseAndResolve(
         // Initialized below before the chunk loop (same deferred-init pattern
         // as `parsedFileStorePath`); this closure only runs from the loop.
         durableParsedFileStoragePath: durableParsedFileDir,
+        // CFG/PDG opt-in (#2081 M1) — baked into each worker's workerData so the
+        // worker builds + attaches cfgSideChannel. Off by default.
+        pdg: options?.pdg === true,
+        pdgMaxFunctionLines: options?.pdgMaxFunctionLines,
         // Fan each chunk across the whole pool (#worker-idle): without this a
         // chunk smaller than the 8 MB sub-batch cap became a single job on a
         // single worker. Honors an explicit `subBatchMaxBytes` / env override.
@@ -724,7 +728,7 @@ export async function runChunkedParseAndResolve(
           filePath: f.path,
           contentHash: fileContentHash(f.content),
         }));
-        chunkHash = computeChunkHash(entries);
+        chunkHash = computeChunkHash(entries, options?.pdg === true);
       }
 
       const cachedRaw =

@@ -512,9 +512,14 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
   return builder.finish();
 }
 
+/** Whether a node is a TS/JS function this visitor builds a CFG for. */
+function isFunction(node: SyntaxNode): boolean {
+  return TS_FUNCTION_TYPES.has(node.type);
+}
+
 /** The TS/JS CFG visitor (shared by TypeScript and JavaScript). */
 export function createTypeScriptCfgVisitor(): CfgVisitor<SyntaxNode> {
-  return { buildFunctionCfg };
+  return { buildFunctionCfg, isFunction };
 }
 
 export { TS_FUNCTION_TYPES };
