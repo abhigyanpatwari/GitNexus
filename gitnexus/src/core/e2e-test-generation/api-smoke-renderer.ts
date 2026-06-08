@@ -94,12 +94,88 @@ const renderProcessesRouteSpec = (proposal: E2ETestPlanProposal): string => {
     '    expect(response.ok()).toBeTruthy();',
     '',
     '    const body: unknown = await response.json();',
-    '    expect(Array.isArray(body)).toBe(true);',
+    '    expect(body).toEqual(',
+    '      expect.objectContaining({',
+    '        processes: expect.any(Array),',
+    '      }),',
+    '    );',
     '',
-    '    for (const process of body) {',
+    '    const payload = body as { processes: unknown[] };',
+    '    for (const process of payload.processes) {',
     '      expect(process).toEqual(',
     '        expect.objectContaining({',
+    '          id: expect.any(String),',
+    '          label: expect.any(String),',
+    '          heuristicLabel: expect.any(String),',
+    '          processType: expect.any(String),',
+    '          stepCount: expect.any(Number),',
+    '        }),',
+    '      );',
+    '    }',
+    '  });',
+    '});',
+  ].join('\n');
+};
+
+const renderProcessDetailRouteSpec = (proposal: E2ETestPlanProposal): string => {
+  const title = singleQuoted(proposal.title);
+  return [
+    "import { test, expect } from '@playwright/test';",
+    '',
+    "const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';",
+    'const REPO = process.env.GITNEXUS_REPO;',
+    '',
+    'const apiUrl = (path: string): string => {',
+    '  const url = new URL(path, BACKEND_URL);',
+    "  if (REPO) url.searchParams.set('repo', REPO);",
+    '  return url.toString();',
+    '};',
+    '',
+    `test.describe('Generated GitNexus API smoke plan: ${title}', () => {`,
+    "  test('route /api/process uses an explicit list-to-detail strategy and returns the stable process-detail JSON shape', async ({ request }) => {",
+    "    const listResponse = await request.get(apiUrl('/api/processes'));",
+    '',
+    '    expect(listResponse.ok()).toBeTruthy();',
+    '',
+    '    const listBody: unknown = await listResponse.json();',
+    '    expect(listBody).toEqual(',
+    '      expect.objectContaining({',
+    '        processes: expect.any(Array),',
+    '      }),',
+    '    );',
+    '',
+    '    const processes = (listBody as { processes: Array<Record<string, unknown>> }).processes;',
+    '    const firstProcess = processes[0];',
+    '    expect(firstProcess).toBeDefined();',
+    '',
+    "    const selectedName = String(firstProcess.heuristicLabel ?? firstProcess.label ?? '').trim();",
+    '    expect(selectedName).not.toBe(\'\');',
+    '',
+    "    const detailResponse = await request.get(apiUrl(`/api/process?name=${encodeURIComponent(selectedName)}`));",
+    '',
+    '    expect(detailResponse.ok()).toBeTruthy();',
+    '',
+    '    const detailBody: unknown = await detailResponse.json();',
+    '    expect(detailBody).toEqual(',
+    '      expect.objectContaining({',
+    '        process: expect.objectContaining({',
+    '          id: expect.any(String),',
+    '          label: expect.any(String),',
+    '          heuristicLabel: expect.any(String),',
+    '          processType: expect.any(String),',
+    '          stepCount: expect.any(Number),',
+    '        }),',
+    '        steps: expect.any(Array),',
+    '      }),',
+    '    );',
+    '',
+    '    const payload = detailBody as { steps: unknown[] };',
+    '    for (const step of payload.steps) {',
+    '      expect(step).toEqual(',
+    '        expect.objectContaining({',
+    '          step: expect.any(Number),',
     '          name: expect.any(String),',
+    '          type: expect.any(String),',
     '        }),',
     '      );',
     '    }',
@@ -204,6 +280,74 @@ const renderClustersRouteSpec = (proposal: E2ETestPlanProposal): string => {
   ].join('\n');
 };
 
+const renderClusterDetailRouteSpec = (proposal: E2ETestPlanProposal): string => {
+  const title = singleQuoted(proposal.title);
+  return [
+    "import { test, expect } from '@playwright/test';",
+    '',
+    "const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';",
+    'const REPO = process.env.GITNEXUS_REPO;',
+    '',
+    'const apiUrl = (path: string): string => {',
+    '  const url = new URL(path, BACKEND_URL);',
+    "  if (REPO) url.searchParams.set('repo', REPO);",
+    '  return url.toString();',
+    '};',
+    '',
+    `test.describe('Generated GitNexus API smoke plan: ${title}', () => {`,
+    "  test('route /api/cluster uses an explicit list-to-detail strategy and returns the stable cluster-detail JSON shape', async ({ request }) => {",
+    "    const listResponse = await request.get(apiUrl('/api/clusters'));",
+    '',
+    '    expect(listResponse.ok()).toBeTruthy();',
+    '',
+    '    const listBody: unknown = await listResponse.json();',
+    '    expect(listBody).toEqual(',
+    '      expect.objectContaining({',
+    '        clusters: expect.any(Array),',
+    '      }),',
+    '    );',
+    '',
+    '    const clusters = (listBody as { clusters: Array<Record<string, unknown>> }).clusters;',
+    '    const firstCluster = clusters[0];',
+    '    expect(firstCluster).toBeDefined();',
+    '',
+    "    const selectedName = String(firstCluster.heuristicLabel ?? firstCluster.label ?? '').trim();",
+    '    expect(selectedName).not.toBe(\'\');',
+    '',
+    "    const detailResponse = await request.get(apiUrl(`/api/cluster?name=${encodeURIComponent(selectedName)}`));",
+    '',
+    '    expect(detailResponse.ok()).toBeTruthy();',
+    '',
+    '    const detailBody: unknown = await detailResponse.json();',
+    '    expect(detailBody).toEqual(',
+    '      expect.objectContaining({',
+    '        cluster: expect.objectContaining({',
+    '          id: expect.any(String),',
+    '          label: expect.any(String),',
+    '          heuristicLabel: expect.any(String),',
+    '          cohesion: expect.any(Number),',
+    '          symbolCount: expect.any(Number),',
+    '          subCommunities: expect.any(Number),',
+    '        }),',
+    '        members: expect.any(Array),',
+    '      }),',
+    '    );',
+    '',
+    '    const payload = detailBody as { members: unknown[] };',
+    '    for (const member of payload.members) {',
+    '      expect(member).toEqual(',
+    '        expect.objectContaining({',
+    '          name: expect.any(String),',
+    '          type: expect.any(String),',
+    '          filePath: expect.any(String),',
+    '        }),',
+    '      );',
+    '    }',
+    '  });',
+    '});',
+  ].join('\n');
+};
+
 const renderProposal = (
   proposal: E2ETestPlanProposal,
   options: ApiSmokeSpecRenderOptions,
@@ -226,13 +370,15 @@ const renderProposal = (
 
   if (
     route !== '/api/processes' &&
+    route !== '/api/process' &&
     route !== '/api/health' &&
     route !== '/api/info' &&
-    route !== '/api/clusters'
+    route !== '/api/clusters' &&
+    route !== '/api/cluster'
   ) {
     return block(
       proposal.id,
-      'Only /api/processes, /api/health, /api/info, and /api/clusters route proposals have deterministic API-smoke fixtures in V1.',
+      'Only /api/processes, /api/process, /api/health, /api/info, /api/clusters, and /api/cluster route proposals have deterministic API-smoke fixtures in V1.',
     );
   }
 
@@ -252,8 +398,12 @@ const renderProposal = (
     text:
       route === '/api/health'
         ? renderHealthRouteSpec(proposal)
+        : route === '/api/process'
+          ? renderProcessDetailRouteSpec(proposal)
         : route === '/api/info'
           ? renderInfoRouteSpec(proposal)
+          : route === '/api/cluster'
+            ? renderClusterDetailRouteSpec(proposal)
           : route === '/api/clusters'
             ? renderClustersRouteSpec(proposal)
           : renderProcessesRouteSpec(proposal),

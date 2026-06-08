@@ -27,8 +27,8 @@ Completed local base:
 - Task 2 Auto-Updating Code Wiki planner/runner, read-only status endpoint, provider-readiness status, `gitnexus wiki-refresh`, and explicit planning-only execution boundary.
 - Task 3 Multi-Repo Support Improvements README/tool-surface reconciliation.
 - Task 4 PR Impact / Blast Radius report core, CLI, read-only MCP `pr_impact`, changed/unmatched range evidence, and deleted-symbol evidence.
-- Task 5 Auto Regression Forensics report core and local CLI.
-- Task 6 E2E/API-smoke proposal/report core, CLI, generated UI specs for `/api/repos`, `/api/repo`, `/api/graph`, `/api/file`, and API-smoke specs for `/api/processes`, `/api/health`, `/api/info`.
+- Task 5 Auto Regression Forensics report core and local CLI, now with dual intake from classic `pr-impact` or explicit-range `impact-for-ranges`.
+- Task 6 E2E/API-smoke proposal/report core, CLI, dual intake from classic `pr-impact` or explicit-range `impact-for-ranges`, generated UI specs for `/api/repos`, `/api/repo`, `/api/graph`, `/api/file`, and API-smoke specs for `/api/processes`, `/api/process`, `/api/health`, `/api/info`, `/api/clusters`, `/api/cluster`.
 - Task 7 OCaml experimental support, Query Depth V2, and Module-System Depth readiness.
 
 Deferred boundaries:

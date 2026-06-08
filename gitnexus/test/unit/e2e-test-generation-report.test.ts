@@ -110,7 +110,8 @@ const baseInput: E2ETestPlanInput = {
     refs: {
       known_bad_ref: 'HEAD',
     },
-    pr_impact: {
+    impact_evidence: {
+      evidence_mode: 'pr-impact',
       schema_version: 'pr-impact.v1alpha1',
       verdict: 'BLOCK',
       files_changed: 2,
@@ -199,5 +200,130 @@ describe('E2E test plan report core', () => {
 
     expect(report.confidence).toBe('LOW');
     expect(report.caveats).toContain('PR Impact graph evidence is stale; generated-test planning is advisory only.');
+  });
+
+  it('supports explicit-range evidence with honest provenance and caveats', () => {
+    const report = buildE2ETestPlanReport({
+      ...baseInput,
+      prImpactReport: undefined,
+      impactForRangesReport: {
+        schema_version: 'impact-for-ranges.v1alpha1',
+        repo: {
+          name: 'gitnexus-local-features',
+          indexed_commit: 'abc123',
+        },
+        summary: {
+          input_ranges: 2,
+          matched_symbols: 2,
+          unmatched_ranges: 0,
+          deleted_symbols: 0,
+          symbols_with_processes: 1,
+          unmapped_symbols: 1,
+          unknown_symbols: 1,
+          affected_processes: 1,
+        },
+        symbols: [
+          {
+            id: 'Function:src/components/GraphCanvas.tsx:renderGraph',
+            name: 'renderGraph',
+            type: 'Function',
+            filePath: 'src/components/GraphCanvas.tsx',
+            change_types: ['modified'],
+            matched_ranges: [
+              {
+                filePath: 'src/components/GraphCanvas.tsx',
+                startLine: 10,
+                endLine: 40,
+                side: 'new',
+                change_type: 'modified',
+              },
+            ],
+            processes: [
+              {
+                id: 'Process:graph-view',
+                name: 'GraphView',
+                process_type: 'ui_flow',
+              },
+            ],
+          },
+        ],
+        unmapped_symbols: [
+          {
+            id: 'Function:src/ui/legend.ts:renderLegend',
+            name: 'renderLegend',
+            type: 'Function',
+            filePath: 'src/ui/legend.ts',
+            change_types: ['modified'],
+            matched_ranges: [
+              {
+                filePath: 'src/ui/legend.ts',
+                startLine: 1,
+                endLine: 12,
+                side: 'new',
+                change_type: 'modified',
+              },
+            ],
+            processes: [],
+            reason: 'No direct process membership found for this symbol',
+          },
+        ],
+        unknown_symbols: [
+          {
+            id: 'Symbol:unknown',
+            name: 'unknownSurface',
+            type: 'Function',
+            change_types: ['modified'],
+            matched_ranges: [
+              {
+                filePath: 'src/unknown.ts',
+                startLine: 1,
+                endLine: 3,
+                side: 'new',
+                change_type: 'modified',
+              },
+            ],
+            reason: 'Symbol could not be resolved confidently',
+          },
+        ],
+        unmatched_ranges: [],
+        affected_processes: [
+          {
+            id: 'Process:graph-view',
+            name: 'GraphView',
+            process_type: 'ui_flow',
+            matched_symbols: 1,
+          },
+        ],
+        caveats: ['Direct process membership only; no caller traversal or risk scoring is included.'],
+      },
+      routeEvidence: [
+        {
+          route: '/api/processes',
+          consumers: 0,
+          mismatches: 0,
+          evidence: 'backend route exists without current frontend consumer',
+        },
+      ],
+    });
+
+    expect(report.source_reports).toMatchObject({
+      impact_evidence_mode: 'impact-for-ranges',
+      impact_schema_version: 'impact-for-ranges.v1alpha1',
+      impact_indexed_commit: 'abc123',
+    });
+    expect(report.source_reports.impact_verdict).toBeUndefined();
+    expect(report.confidence).toBe('MEDIUM');
+    expect(report.proposals.map((proposal) => proposal.id)).toEqual([
+      'symbol-render-graph',
+      'route-api-processes',
+      'symbol-render-legend',
+    ]);
+    expect(report.caveats).toContain(
+      'Impact-for-ranges evidence mode does not include classic PR-impact verdicts, api_impacts, or graph-derived test signal.',
+    );
+    expect(report.caveats).toContain(
+      'Route/API prioritization in impact-for-ranges mode is inferred from supplied route evidence rather than classic PR-impact api_impacts.',
+    );
+    expect(report.caveats).toContain('Explicit-range evidence reported 1 unknown symbol(s).');
   });
 });

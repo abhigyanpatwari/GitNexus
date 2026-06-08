@@ -25,12 +25,13 @@ expected report.verdict to be BLOCK // Object.is equality
 Received: NEEDS_DISCUSSION
 ```
 
-## PR Impact Linkage
+## Impact Evidence
 
+- Evidence mode: pr-impact
 - Schema: pr-impact.v1alpha1
+- Mapped symbols: 1
 - Verdict: BLOCK
 - Files changed: 2
-- Mapped symbols: 1
 - Test signal: unknown_or_unreferenced
 
 ## Candidate Causes
@@ -41,7 +42,7 @@ Received: NEEDS_DISCUSSION
 
 ## Evidence
 
-- computeVerdict: PR Impact verdict: BLOCK; Risk: HIGH; Direct dependents: 4; Processes affected: 2; Test reference: unknown_or_unreferenced
+- computeVerdict: Evidence mode: pr-impact; PR Impact verdict: BLOCK; Risk: HIGH; Direct dependents: 4; Processes affected: 2; Test reference: unknown_or_unreferenced
 
 ## Caveats
 

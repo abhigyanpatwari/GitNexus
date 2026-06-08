@@ -5,11 +5,13 @@ import {
   type RegressionForensicsFailureInput,
   type RegressionForensicsInput,
 } from '../core/regression-forensics/report.js';
+import type { ImpactForRangesReport } from '../core/pr-impact/impact-for-ranges-report.js';
 import type { PrImpactReport } from '../core/pr-impact/report.js';
 
 export interface RegressionForensicsCommandOptions {
   failureJson?: string;
   prImpactJson?: string;
+  impactForRangesJson?: string;
   format?: string;
 }
 
@@ -33,14 +35,17 @@ const readJsonFile = <T>(filePath: string): T =>
 export async function regressionForensicsCommand(
   options?: RegressionForensicsCommandOptions,
 ): Promise<void> {
-  if (!options?.failureJson || !options?.prImpactJson) {
-    throw new Error('Both --failure-json and --pr-impact-json are required.');
+  const hasPrImpact = Boolean(options?.prImpactJson);
+  const hasImpactForRanges = Boolean(options?.impactForRangesJson);
+  if (!options?.failureJson || hasPrImpact === hasImpactForRanges) {
+    throw new Error(
+      'Required options: --failure-json plus exactly one of --pr-impact-json or --impact-for-ranges-json.',
+    );
   }
 
   const failure = readJsonFile<FailureJsonInput>(options.failureJson);
-  const prImpactReport = readJsonFile<PrImpactReport>(options.prImpactJson);
 
-  const input: RegressionForensicsInput = {
+  const baseInput = {
     failure: {
       failureCommand: failure.failureCommand,
       exitCode: failure.exitCode,
@@ -52,8 +57,16 @@ export async function regressionForensicsCommand(
       knownGoodRef: failure.knownGoodRef,
       knownBadRef: failure.knownBadRef,
     },
-    prImpactReport,
   };
+  const input: RegressionForensicsInput = hasPrImpact
+    ? {
+        ...baseInput,
+        prImpactReport: readJsonFile<PrImpactReport>(options!.prImpactJson!),
+      }
+    : {
+        ...baseInput,
+        impactForRangesReport: readJsonFile<ImpactForRangesReport>(options!.impactForRangesJson!),
+      };
 
   const report = buildRegressionForensicsReport(input);
   if ((options.format || 'markdown').toLowerCase() === 'json') {

@@ -19,7 +19,8 @@ Schema: e2e-test-plan.v1alpha1
 - Covered by existing spec: 1
 - New proposals: 1
 - High priority: 1
-- Source PR Impact verdict: BLOCK
+- Impact evidence mode: pr-impact
+- Source impact verdict: BLOCK
 - Regression Forensics confidence: MEDIUM
 
 ## Proposed Scenarios

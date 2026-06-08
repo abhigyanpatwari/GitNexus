@@ -499,3 +499,49 @@ Use this staged approach unless later research or `MAIN` approval changes the di
 4. GitHub PR URL ingestion.
 5. GitHub comment/check automation.
 6. Generated remediation/test stubs.
+
+## 2026-06-08 Coexistence / Parity Conclusion
+
+This note is now decision-complete enough to guide the branch:
+
+- Keep classic `pr-impact` as the richer diff-owned report lane.
+- Keep the explicit-range lane as a separate operator-owned triage lane:
+  - `symbols-for-ranges`
+  - `impact-for-symbols`
+  - `impact-for-ranges`
+- Do not force early convergence merely because the lower-level primitives now exist.
+
+Why:
+
+1. `pr-impact` still owns richer semantics that the explicit-range lane does not yet reproduce honestly:
+   - bounded blast-radius traversal and risk grading
+   - API impact entries
+   - graph-derived test-signal approximation
+   - diff-owned verdict logic
+2. The explicit-range lane is now valuable on its own:
+   - callers can provide exact local change ranges
+   - GitNexus can return deterministic symbol/process evidence without owning diff selection
+   - downstream consumers such as `regression-forensics` and `e2e-test-plan` can use that weaker-but-honest evidence mode
+3. Premature convergence would create one of two bad outcomes:
+   - duplicate orchestration while keeping two semantic tiers hidden inside one command, or
+   - overclaim parity where the explicit-range lane does not actually have API/test/risk semantics
+
+Recommended product shape for now:
+
+- `pr-impact` remains the primary richer report for local diff-to-graph review.
+- Explicit-range primitives remain the composable local operator surface for:
+  - targeted triage
+  - editor/agent supplied ranges
+  - downstream tools that can tolerate weaker evidence with explicit caveats
+- Future convergence should only be selected if a dedicated parity task is approved to answer:
+  - how risk grading would be reproduced
+  - how API impact would be reproduced
+  - how test-signal approximation would be reproduced
+  - whether historical/base-graph semantics are needed
+  - whether the merged contract is actually simpler for users
+
+Current branch recommendation:
+
+- No new Task 4 implementation slice is recommended right now.
+- Treat coexistence as the correct current answer.
+- Move forward on downstream consumers or other feature lanes rather than reopening Task 4 convergence speculatively.

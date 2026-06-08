@@ -297,7 +297,8 @@ program
   .command('regression-forensics')
   .description('Generate a local deterministic regression forensics report')
   .requiredOption('--failure-json <path>', 'Path to local failure evidence JSON')
-  .requiredOption('--pr-impact-json <path>', 'Path to local PR impact JSON')
+  .option('--pr-impact-json <path>', 'Path to local PR impact JSON')
+  .option('--impact-for-ranges-json <path>', 'Path to local impact-for-ranges JSON')
   .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
   .action(
     createLbugLazyAction(() => import('./regression-forensics.js'), 'regressionForensicsCommand'),
@@ -307,7 +308,8 @@ program
   .command('e2e-test-plan')
   .description('Generate a local deterministic E2E test plan report')
   .requiredOption('--target-json <path>', 'Path to local target contract JSON')
-  .requiredOption('--pr-impact-json <path>', 'Path to local PR impact JSON')
+  .option('--pr-impact-json <path>', 'Path to local PR impact JSON')
+  .option('--impact-for-ranges-json <path>', 'Path to local impact-for-ranges JSON')
   .requiredOption('--existing-scenarios-json <path>', 'Path to local E2E scenario inventory JSON')
   .requiredOption('--route-evidence-json <path>', 'Path to local route/API evidence JSON')
   .option('--regression-forensics-json <path>', 'Path to local regression forensics JSON')

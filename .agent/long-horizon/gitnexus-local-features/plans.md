@@ -10,6 +10,7 @@ Created: 2026-06-05
 - Use branch `local/gitnexus-local-features` for all selected feature work.
 - Implement one feature at a time on the shared branch.
 - Run the work through one selected task at a time; the selected-task packet is defined by this queue plus `feature-map.md` and `documentation.md`.
+- Task model: top-level queue entries should usually be meaningful vertical feature slices. Smaller packets, primitives, routes, and helpers should appear as internal steps beneath the selected task unless they are genuinely independent.
 - Use Structured Delegation via Evidence-Gated Small-Batch Kanban: autonomous work is bounded by selected-task packets, small verified slices, fresh checkpoints, and explicit stop rules.
 - Use Continuous Agentic Kanban for faster flow: one active implementation slice, up to three ready packets, appetite boxes, TDD/test-ladder verification, reviewer-agent checkpoints when warranted, and a documented baton after every slice.
 - Formal Goal Contracts are no longer required for this workstream. Older Goal Contract sections remain useful historical/task-brief material, but the active control rule is the selected-task packet.
@@ -20,8 +21,9 @@ Created: 2026-06-05
 - Comprehensive feature map: `feature-map.md` is the single-place map for feature status, dependencies, source surfaces, tests, gates, evidence files, and next actions.
 - Supporting Codex 5.4 handover note: `codex-5-4-handover-20260608.md` summarizes the state to inherit, faster packet-cycle rule, dirty-tree warning, and recommended first move after model switch. It does not override the four-file control surface.
 - Treat the shared branch as a small-batch lane, not a dumping ground: keep WIP to one implementation feature, verify each slice, and checkpoint before moving to the next feature.
+- Same-feature continuation should prefer finishing a meaningful vertical increment before opening another feature lane.
 - A ready packet should name task, outcome, lane, appetite, likely write set, acceptance criteria, testing ladder, reviewer gate, stop rules, rollback/checkpoint notes, and next likely packet.
-- Appetite defaults: green-lane slices are micro/small packets sized to one focused red-green-review loop; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
+- Appetite defaults: green-lane internal slices should usually fit one focused red-green-review loop inside a larger selected task; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
 - For overnight or 6-8 hour autonomous runs, keep exactly one selected task active at a time, premortem risky tasks before amber-lane source edits, checkpoint after each completed/blocked task, and move to the next readiness or implementation task only when the next boundary is defensible.
 - Branch-trusted autonomy applies on `local/gitnexus-local-features`: green/amber lane repo-local work may proceed once the selected-task packet is clear; red-lane work requires explicit human-operator direction.
 - Green lane: repo-local docs, tests, fixtures, source code, deterministic reports, dry-run/status behavior, local CLI/MCP surfaces, and focused refactors inside the selected task may proceed autonomously with verification.
@@ -50,12 +52,17 @@ Created: 2026-06-05
 | 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium completed for local MCP slice plus no-write range/deletion primitives` | `local V1 complete plus follow-on primitives` | Report core, thin local CLI wrapper, read-only local MCP `pr_impact`, new-side changed/unmatched range evidence, and local old-side deletion evidence implemented and verified; GitHub automation and historical/provider base-graph semantics deferred |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
-| 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core, thin local CLI wrapper, mocked UI generated specs for `/api/repos`, `/api/repo`, `/api/graph`, `/api/file`, and API-smoke generated specs for `/api/processes`, `/api/health`, and `/api/info` implemented and verified |
+| 6 | End-to-End Test Generation | `light scoping completed for first slice` | `local V1 complete` | Deterministic `e2e-test-plan.v1alpha1` proposal/report core, thin local CLI wrapper, dual intake from classic `pr-impact` or `impact-for-ranges`, mocked UI generated specs for `/api/repos`, `/api/repo`, `/api/graph`, `/api/file`, and API-smoke generated specs for `/api/processes`, `/api/process`, `/api/health`, `/api/info`, `/api/clusters`, and `/api/cluster` implemented and verified |
 | 7 | OCaml Support | `light scoping completed plus approval packet` | `local V1 complete` | Experimental `.ml` / `.mli` support and Query Depth V2 module type/include/functor-reference captures implemented locally; deeper OCaml semantics deferred |
 
 ## Next Task Queue
 
 This section controls the next Goal selection after the completed local V1 tranche. It does not start implementation by itself.
+
+Historical note:
+
+- The completed micro-packet entries below remain as accurate history from the stabilization phase.
+- Going forward, prefer feature-sized vertical selected tasks and keep smaller packets as internal execution notes unless they are truly independent.
 
 | Priority | Task | Goal to create | Scope | Verification surface | Stop rule |
 | --- | --- | --- | --- | --- | --- |
@@ -73,7 +80,10 @@ This section controls the next Goal selection after the completed local V1 tranc
 | Completed | Task 4 pipeline-convergence readiness | Green readiness packet | Completed on 2026-06-08T17:14+01:00 with `NO_IMPLEMENTATION_SLICE`. Current `pr-impact` still depends on upstream traversal risk, API impact, and graph-derived test-reference approximation; forcing it through the new explicit-range lane would either duplicate the richer pipeline or overstate parity. | Source comparison of current `pr-impact` requirements against `impact-for-ranges` capabilities. | Keep the richer `pr-impact` pipeline separate until parity work is explicitly selected. |
 | Completed | Task 6 next API-smoke route readiness | Green readiness fallback | Completed on 2026-06-08T17:14+01:00. `/api/clusters` was selected as the next safe API-smoke route because it is read-only, list-shaped, and returns a stable `{ clusters: [...] }` wrapper without requiring caller-supplied graph names. | Route handler/source review and existing API-smoke lane policy. | Do not jump to detail routes that require selected process/cluster names in the same slice. |
 | Completed | Task 6 `/api/clusters` API-smoke route | Green/amber implementation packet | Completed on 2026-06-08T17:14+01:00. The deterministic API-smoke renderer now supports `/api/clusters` with stable-shape assertions over `{ clusters: [] }` and per-cluster `id`, `heuristicLabel`, and `symbolCount`. | Focused API-smoke renderer tests, build, and diff check. | Read-only stable-shape assertions only; no graph-content assumptions. |
-| Active | Task 6 API detail-route readiness | Green readiness packet | The next safe boundary is deciding whether `/api/process` or `/api/cluster` can enter the deterministic API-smoke lane without hidden graph-name discovery, brittle fixture coupling, or silent route-specific assumptions. | Packet defining candidate route, required query-param strategy, stable contract assertions, and stop rule. | Do not implement a detail-route smoke spec unless the selected-name strategy is explicit and repeatable. |
+| Completed | Task 6 API detail-route vertical slice | Green/amber implementation packet | Completed on 2026-06-08T19:09+01:00. The deterministic API-smoke renderer now covers both `/api/process` and `/api/cluster` with an explicit list-to-detail strategy over `/api/processes` and `/api/clusters`, asserting only stable detail-route response shape. | Focused API-smoke renderer tests, build, and diff check. | Keep the route contract explicit; do not widen into hidden discovery or graph-content assertions. |
+| Completed | Task 5 explicit-range regression-forensics intake | Green/amber implementation packet | Completed on 2026-06-08T19:09+01:00. `gitnexus regression-forensics` now accepts exactly one of `--pr-impact-json` or `--impact-for-ranges-json`, records evidence mode explicitly, and preserves Markdown/JSON output with honest caveats for weaker explicit-range evidence. | Focused regression-forensics report/CLI tests, build, and diff check. | Do not imply classic PR-impact verdict/API/test semantics when running from explicit-range evidence. |
+| Completed | Task 6 explicit-range E2E planning intake | Green/amber implementation packet | Completed on 2026-06-08T19:09+01:00. `gitnexus e2e-test-plan` now accepts exactly one of `--pr-impact-json` or `--impact-for-ranges-json`, records impact-evidence provenance, and derives weaker route/symbol proposals from supplied explicit-range evidence plus route evidence when available. | Focused E2E report/CLI/renderer tests, build, and diff check. | Preserve honest caveats instead of faking parity with classic `pr-impact` input. |
+| Completed | Task 4 coexistence/parity research | Green research/readiness packet | Completed on 2026-06-08T19:09+01:00. Recommendation: keep classic `pr-impact` as the richer diff-owned report lane and keep `symbols-for-ranges` / `impact-for-symbols` / `impact-for-ranges` as the separate operator-owned explicit-range lane. | Source comparison, downstream-consumer review, and recorded design conclusion in the long-horizon docs. | Do not reopen parity work unless a future packet explicitly funds true risk/API/test-signal convergence. |
 | Completed | Task 7 OCaml Module-System Depth | Research/readiness plus comment cleanup | Completed on 2026-06-08T10:12+01:00; deeper OCaml work now requires resolver/dependency/product-lane expansion rather than another small query capture. | Local source map, public issue/package evidence, OCaml focused tests, and comment-drift cleanup. | Do not implement Dune, PPX, interface/implementation matching, module alias/functor resolution, dependency upgrades, or production classification without a new red/amber packet. |
 | Completed | Task 6 `/api/info` API-Smoke Route | Technical readiness plus implementation | Completed on 2026-06-08T09:57+01:00 as a deterministic APIRequestContext generated-spec renderer. | Focused renderer tests, adjacent Task 6 tests, build, and diff check passed. | Do not broaden into more API-smoke routes without a new selected route contract. |
 | Completed | Task 4 GitHub PR Automation Boundary | Readiness checkpoint | Boundary completed on 2026-06-08T09:45+01:00; GitHub posting/check automation remains red-lane deferred. | `documentation.md` checkpoint plus GitHub issue/PR/docs evidence. | Do not re-enter unless a new no-write primitive or GitHub integration packet is selected. |
@@ -89,9 +99,9 @@ Board activation note:
 
 | Slot | Packet | Status | Notes |
 | --- | --- | --- | --- |
-| Active | Task 6 API detail-route readiness | Executing | Decide whether `/api/process` or `/api/cluster` has an explicit, repeatable name-selection strategy suitable for the deterministic API-smoke lane. |
-| Ready 1 | Task 6 local API detail-route implementation | Conditional on readiness completion | Same-feature continuation if the readiness packet produces a bounded route contract and explicit selected-name strategy. |
-| Ready 2 | Task 4 pipeline-convergence revisit | Deferred same-feature fallback | Revisit only if a future packet explicitly chooses parity work between `pr-impact` and the explicit-range lane. |
+| Active | Worktree review / checkpoint packet | Ready after completed tranche | Review the combined Task 6/Task 5/Task 6/Task 4 tranche, verify grouping, and prepare the checkpoint recommendation before opening another top-level feature slice. |
+| Ready 1 | Next approved feature-sized slice | Pending selection | Choose only after the checkpoint closes and the next branch-level priority is named. |
+| Ready 2 | Task 4 parity revisit | Explicitly deferred | Revisit only if a future packet deliberately funds real parity work between `pr-impact` and the explicit-range lane. |
 | Deferred / Red | GitHub posting/check automation; provider execution; historical/base-graph architecture; CI/workflow mutation; secrets/tokens | Deferred | Never move red-lane work into a ready slot without explicit human-operator direction. |
 
 Board selection rule:
@@ -103,10 +113,10 @@ Board selection rule:
 
 Default recommendation:
 
-- Active packet is `Task 6 API detail-route readiness`.
-- Recommended immediate action is to decide whether `/api/process` or `/api/cluster` has a repeatable selected-name strategy; if not, record `NO_IMPLEMENTATION_SLICE` instead of inventing fixture discovery behavior.
-- Task 4 GitHub boundary readiness is complete for the current run; keep the next packet on the no-write primitive lane rather than drifting into provider or GitHub semantics.
-- Do not add more generated API-smoke routes until the backend route contract is decision-complete.
+- Active packet should now be the review/checkpoint packet for the completed tranche.
+- Recommended immediate action is to review the combined source/docs/test batch, prepare the checkpoint recommendation, and only then choose the next feature-sized slice.
+- Task 4 coexistence/parity research is complete for the current run; keep `pr-impact` and the explicit-range lane separate unless a later packet explicitly funds true parity work.
+- Do not add more generated API-smoke routes or more Task 4 convergence work until a new top-level packet is selected.
 - If the human operator chooses another priority, create a selected-task packet for that task before source edits.
 
 ### Task 4 `symbols-for-ranges` Primitive - 2026-06-08

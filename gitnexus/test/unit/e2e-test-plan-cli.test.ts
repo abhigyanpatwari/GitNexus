@@ -71,6 +71,61 @@ const prImpactJson = {
   caveats: ['High-risk impact has no known graph-derived test reference.'],
 };
 
+const impactForRangesJson = {
+  schema_version: 'impact-for-ranges.v1alpha1',
+  repo: {
+    name: 'gitnexus-local-features',
+    indexed_commit: 'abc123',
+  },
+  summary: {
+    input_ranges: 1,
+    matched_symbols: 1,
+    unmatched_ranges: 0,
+    deleted_symbols: 0,
+    symbols_with_processes: 1,
+    unmapped_symbols: 0,
+    unknown_symbols: 0,
+    affected_processes: 1,
+  },
+  symbols: [
+    {
+      id: 'Function:src/components/GraphCanvas.tsx:renderGraph',
+      name: 'renderGraph',
+      type: 'Function',
+      filePath: 'src/components/GraphCanvas.tsx',
+      change_types: ['modified'],
+      matched_ranges: [
+        {
+          filePath: 'src/components/GraphCanvas.tsx',
+          startLine: 20,
+          endLine: 60,
+          side: 'new',
+          change_type: 'modified',
+        },
+      ],
+      processes: [
+        {
+          id: 'Process:graph-view',
+          name: 'GraphView',
+          process_type: 'ui_flow',
+        },
+      ],
+    },
+  ],
+  unmapped_symbols: [],
+  unknown_symbols: [],
+  unmatched_ranges: [],
+  affected_processes: [
+    {
+      id: 'Process:graph-view',
+      name: 'GraphView',
+      process_type: 'ui_flow',
+      matched_symbols: 1,
+    },
+  ],
+  caveats: ['Direct process membership only; no caller traversal or risk scoring is included.'],
+};
+
 const existingScenariosJson = [
   {
     name: 'Server Connection & Graph Loading > selects a repo from landing',
@@ -138,10 +193,10 @@ describe('e2e-test-plan CLI command', () => {
       format: 'markdown',
     });
 
-    expect(readFileSyncMock).toHaveBeenNthCalledWith(1, 'target.json', 'utf-8');
-    expect(readFileSyncMock).toHaveBeenNthCalledWith(2, 'pr-impact.json', 'utf-8');
-    expect(readFileSyncMock).toHaveBeenNthCalledWith(3, 'existing.json', 'utf-8');
-    expect(readFileSyncMock).toHaveBeenNthCalledWith(4, 'routes.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenCalledWith('target.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenCalledWith('pr-impact.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenCalledWith('existing.json', 'utf-8');
+    expect(readFileSyncMock).toHaveBeenCalledWith('routes.json', 'utf-8');
 
     const output: string = writeSyncMock.mock.calls[0][1];
     expect(output).toContain('# GitNexus E2E Test Plan Report');
@@ -171,7 +226,62 @@ describe('e2e-test-plan CLI command', () => {
     const output: string = writeSyncMock.mock.calls[0][1];
     const parsed = JSON.parse(output);
     expect(parsed.schema_version).toBe('e2e-test-plan.v1alpha1');
-    expect(parsed.source_reports.pr_impact_schema_version).toBe('pr-impact.v1alpha1');
+    expect(parsed.source_reports.impact_evidence_mode).toBe('pr-impact');
+    expect(parsed.source_reports.impact_schema_version).toBe('pr-impact.v1alpha1');
+  });
+
+  it('accepts impact-for-ranges JSON as the alternative impact evidence input', async () => {
+    readFileSyncMock.mockImplementation((filePath: string) => {
+      if (filePath === 'target.json') return JSON.stringify(targetJson);
+      if (filePath === 'impact-for-ranges.json') return JSON.stringify(impactForRangesJson);
+      if (filePath === 'existing.json') return JSON.stringify(existingScenariosJson);
+      if (filePath === 'routes.json') return JSON.stringify(processesRouteEvidenceJson);
+      throw new Error(`unexpected path ${filePath}`);
+    });
+
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await e2eTestPlanCommand({
+      targetJson: 'target.json',
+      impactForRangesJson: 'impact-for-ranges.json',
+      existingScenariosJson: 'existing.json',
+      routeEvidenceJson: 'routes.json',
+      format: 'json',
+    });
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    const parsed = JSON.parse(output);
+    expect(parsed.source_reports.impact_evidence_mode).toBe('impact-for-ranges');
+    expect(parsed.source_reports.impact_schema_version).toBe('impact-for-ranges.v1alpha1');
+    expect(parsed.proposals.some((proposal: { id: string }) => proposal.id === 'route-api-processes')).toBeTruthy();
+  });
+
+  it('rejects missing or mixed impact evidence inputs', async () => {
+    const { e2eTestPlanCommand } = await import('../../src/cli/e2e-test-plan.js');
+
+    await expect(
+      e2eTestPlanCommand({
+        targetJson: 'target.json',
+        existingScenariosJson: 'existing.json',
+        routeEvidenceJson: 'routes.json',
+        format: 'json',
+      }),
+    ).rejects.toThrow(
+      'Required options: --target-json, --existing-scenarios-json, --route-evidence-json, and exactly one of --pr-impact-json or --impact-for-ranges-json.',
+    );
+
+    await expect(
+      e2eTestPlanCommand({
+        targetJson: 'target.json',
+        prImpactJson: 'pr-impact.json',
+        impactForRangesJson: 'impact-for-ranges.json',
+        existingScenariosJson: 'existing.json',
+        routeEvidenceJson: 'routes.json',
+        format: 'json',
+      }),
+    ).rejects.toThrow(
+      'Required options: --target-json, --existing-scenarios-json, --route-evidence-json, and exactly one of --pr-impact-json or --impact-for-ranges-json.',
+    );
   });
 
   it('writes generated Playwright specs only when explicitly requested', async () => {

@@ -10,12 +10,14 @@ import {
 } from '../core/e2e-test-generation/report.js';
 import { renderE2EGeneratedApiSmokeSpecs } from '../core/e2e-test-generation/api-smoke-renderer.js';
 import { renderE2EGeneratedSpecs } from '../core/e2e-test-generation/spec-renderer.js';
+import type { ImpactForRangesReport } from '../core/pr-impact/impact-for-ranges-report.js';
 import type { PrImpactReport } from '../core/pr-impact/report.js';
 import type { RegressionForensicsReport } from '../core/regression-forensics/report.js';
 
 export interface E2ETestPlanCommandOptions {
   targetJson?: string;
   prImpactJson?: string;
+  impactForRangesJson?: string;
   existingScenariosJson?: string;
   routeEvidenceJson?: string;
   regressionForensicsJson?: string;
@@ -128,19 +130,20 @@ const writeGeneratedApiSmokeSpecs = (
 export async function e2eTestPlanCommand(
   options?: E2ETestPlanCommandOptions,
 ): Promise<void> {
+  const hasPrImpact = Boolean(options?.prImpactJson);
+  const hasImpactForRanges = Boolean(options?.impactForRangesJson);
   if (
     !options?.targetJson ||
-    !options?.prImpactJson ||
+    hasPrImpact === hasImpactForRanges ||
     !options?.existingScenariosJson ||
     !options?.routeEvidenceJson
   ) {
     throw new Error(
-      'Required options: --target-json, --pr-impact-json, --existing-scenarios-json, and --route-evidence-json.',
+      'Required options: --target-json, --existing-scenarios-json, --route-evidence-json, and exactly one of --pr-impact-json or --impact-for-ranges-json.',
     );
   }
 
   const target = readJsonFile<E2ETestTargetContract>(options.targetJson);
-  const prImpactReport = readJsonFile<PrImpactReport>(options.prImpactJson);
   const existingScenarios = readJsonFile<E2EExistingScenario[]>(
     options.existingScenariosJson,
   );
@@ -149,13 +152,21 @@ export async function e2eTestPlanCommand(
     ? readJsonFile<RegressionForensicsReport>(options.regressionForensicsJson)
     : undefined;
 
-  const input: E2ETestPlanInput = {
-    target,
-    prImpactReport,
-    regressionForensicsReport,
-    existingScenarios,
-    routeEvidence,
-  };
+  const input: E2ETestPlanInput = hasPrImpact
+    ? {
+        target,
+        prImpactReport: readJsonFile<PrImpactReport>(options.prImpactJson!),
+        regressionForensicsReport,
+        existingScenarios,
+        routeEvidence,
+      }
+    : {
+        target,
+        impactForRangesReport: readJsonFile<ImpactForRangesReport>(options.impactForRangesJson!),
+        regressionForensicsReport,
+        existingScenarios,
+        routeEvidence,
+      };
 
   const report = buildE2ETestPlanReport(input);
   if (options.writeSpecs || options.writeApiSmokeSpecs) {

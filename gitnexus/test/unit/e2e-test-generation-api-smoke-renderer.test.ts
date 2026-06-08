@@ -28,8 +28,9 @@ const baseReport: E2ETestPlanReport = {
     high_priority: 1,
   },
   source_reports: {
-    pr_impact_schema_version: 'pr-impact.v1alpha1',
-    pr_impact_verdict: 'NEEDS_DISCUSSION',
+    impact_evidence_mode: 'pr-impact',
+    impact_schema_version: 'pr-impact.v1alpha1',
+    impact_verdict: 'NEEDS_DISCUSSION',
   },
   proposals: [
     {
@@ -72,6 +73,40 @@ describe('E2E generated API smoke renderer', () => {
 
     const golden = readFileSync(
       path.join(__dirname, '../fixtures/e2e-test-generation/generated-api-processes-smoke.spec.ts'),
+      'utf-8',
+    ).trim();
+    expect(result.specs[0].text).toBe(golden);
+  });
+
+  it('renders deterministic Playwright APIRequestContext text for /api/process', () => {
+    const result = renderE2EGeneratedApiSmokeSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-process',
+          title: 'Exercise route /api/process after impacted API change',
+          target_spec: 'gitnexus/test/api-smoke/api-process.spec.ts',
+          evidence: [
+            'Route /api/process has risk MEDIUM',
+            'Consumers: 0',
+            'Mismatches: 0',
+          ],
+        },
+      ],
+    });
+
+    expect(result.blocked).toEqual([]);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0].path).toBe(
+      'gitnexus/test/api-smoke/generated/route-api-process.generated.api.spec.ts',
+    );
+    expect(result.specs[0].text).toContain("request.get(apiUrl('/api/processes'))");
+    expect(result.specs[0].text).toContain('/api/process?name=');
+    expect(result.specs[0].text).not.toContain('page.goto');
+
+    const golden = readFileSync(
+      path.join(__dirname, '../fixtures/e2e-test-generation/generated-api-process-smoke.spec.ts'),
       'utf-8',
     ).trim();
     expect(result.specs[0].text).toBe(golden);
@@ -176,6 +211,40 @@ describe('E2E generated API smoke renderer', () => {
     expect(result.specs[0].text).toBe(golden);
   });
 
+  it('renders deterministic Playwright APIRequestContext text for /api/cluster', () => {
+    const result = renderE2EGeneratedApiSmokeSpecs({
+      ...baseReport,
+      proposals: [
+        {
+          ...baseReport.proposals[0],
+          id: 'route-api-cluster',
+          title: 'Exercise route /api/cluster after impacted API change',
+          target_spec: 'gitnexus/test/api-smoke/api-cluster.spec.ts',
+          evidence: [
+            'Route /api/cluster has risk MEDIUM',
+            'Consumers: 0',
+            'Mismatches: 0',
+          ],
+        },
+      ],
+    });
+
+    expect(result.blocked).toEqual([]);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0].path).toBe(
+      'gitnexus/test/api-smoke/generated/route-api-cluster.generated.api.spec.ts',
+    );
+    expect(result.specs[0].text).toContain("request.get(apiUrl('/api/clusters'))");
+    expect(result.specs[0].text).toContain('/api/cluster?name=');
+    expect(result.specs[0].text).not.toContain('page.goto');
+
+    const golden = readFileSync(
+      path.join(__dirname, '../fixtures/e2e-test-generation/generated-api-cluster-smoke.spec.ts'),
+      'utf-8',
+    ).trim();
+    expect(result.specs[0].text).toBe(golden);
+  });
+
   it('blocks unsupported routes instead of widening the API-smoke lane silently', () => {
     const result = renderE2EGeneratedApiSmokeSpecs({
       ...baseReport,
@@ -195,7 +264,7 @@ describe('E2E generated API smoke renderer', () => {
       {
         proposalId: 'route-api-graph',
         reason:
-          'Only /api/processes, /api/health, /api/info, and /api/clusters route proposals have deterministic API-smoke fixtures in V1.',
+          'Only /api/processes, /api/process, /api/health, /api/info, /api/clusters, and /api/cluster route proposals have deterministic API-smoke fixtures in V1.',
       },
     ]);
   });

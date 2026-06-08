@@ -1,8 +1,10 @@
+import type { ImpactForRangesReport, ImpactForRangesSymbol } from '../pr-impact/impact-for-ranges-report.js';
 import type { PrImpactReport, PrImpactSymbolImpactInput } from '../pr-impact/report.js';
 
 export const REGRESSION_FORENSICS_SCHEMA_VERSION = 'regression-forensics.v1alpha1' as const;
 
 export type RegressionForensicsConfidence = 'LOW' | 'MEDIUM' | 'HIGH';
+export type RegressionForensicsEvidenceMode = 'pr-impact' | 'impact-for-ranges';
 
 export interface RegressionForensicsFailureInput {
   failureCommand: string;
@@ -21,11 +23,20 @@ export interface RegressionForensicsRefsInput {
   knownBadRef?: string;
 }
 
-export interface RegressionForensicsInput {
+type RegressionForensicsImpactInput =
+  | {
+      prImpactReport: PrImpactReport;
+      impactForRangesReport?: never;
+    }
+  | {
+      prImpactReport?: never;
+      impactForRangesReport: ImpactForRangesReport;
+    };
+
+export type RegressionForensicsInput = {
   failure: RegressionForensicsFailureInput;
   refs: RegressionForensicsRefsInput;
-  prImpactReport: PrImpactReport;
-}
+} & RegressionForensicsImpactInput;
 
 export interface RegressionForensicsCandidateCause {
   symbol: string;
@@ -33,6 +44,19 @@ export interface RegressionForensicsCandidateCause {
   confidence: RegressionForensicsConfidence;
   reason: string;
   evidence: string[];
+}
+
+export interface RegressionForensicsImpactEvidenceSummary {
+  evidence_mode: RegressionForensicsEvidenceMode;
+  schema_version: string;
+  verdict?: string;
+  files_changed?: number;
+  mapped_symbols: number;
+  test_signal?: string;
+  input_ranges?: number;
+  symbols_with_processes?: number;
+  unmatched_ranges?: number;
+  affected_processes?: number;
 }
 
 export interface RegressionForensicsReport {
@@ -50,24 +74,12 @@ export interface RegressionForensicsReport {
     known_good_ref?: string;
     known_bad_ref?: string;
   };
-  pr_impact: {
-    schema_version: string;
-    verdict: string;
-    files_changed: number;
-    mapped_symbols: number;
-    test_signal: string;
-  };
+  impact_evidence: RegressionForensicsImpactEvidenceSummary;
   candidate_causes: RegressionForensicsCandidateCause[];
   caveats: string[];
 }
 
 const highRisk = new Set(['HIGH', 'CRITICAL']);
-
-const causeConfidence = (impact: PrImpactSymbolImpactInput): RegressionForensicsConfidence => {
-  if (highRisk.has(impact.risk) && impact.direct > 0) return 'HIGH';
-  if (impact.direct > 0 || impact.processesAffected > 0) return 'MEDIUM';
-  return 'LOW';
-};
 
 const confidenceRank: Record<RegressionForensicsConfidence, number> = {
   LOW: 1,
@@ -80,24 +92,48 @@ const minConfidence = (
   b: RegressionForensicsConfidence,
 ): RegressionForensicsConfidence => (confidenceRank[a] <= confidenceRank[b] ? a : b);
 
-const findSymbolFile = (input: RegressionForensicsInput, impact: PrImpactSymbolImpactInput): string => {
+const isPrImpactInput = (
+  input: RegressionForensicsInput,
+): input is RegressionForensicsInput & { prImpactReport: PrImpactReport } =>
+  'prImpactReport' in input && input.prImpactReport !== undefined;
+
+const causeConfidence = (impact: PrImpactSymbolImpactInput): RegressionForensicsConfidence => {
+  if (highRisk.has(impact.risk) && impact.direct > 0) return 'HIGH';
+  if (impact.direct > 0 || impact.processesAffected > 0) return 'MEDIUM';
+  return 'LOW';
+};
+
+const strongestConfidence = (
+  causes: RegressionForensicsCandidateCause[],
+): RegressionForensicsConfidence =>
+  causes.reduce<RegressionForensicsConfidence>(
+    (best, cause) =>
+      confidenceRank[cause.confidence] > confidenceRank[best] ? cause.confidence : best,
+    'LOW',
+  );
+
+const findPrImpactSymbolFile = (
+  input: RegressionForensicsInput & { prImpactReport: PrImpactReport },
+  impact: PrImpactSymbolImpactInput,
+): string => {
   const symbol = input.prImpactReport.mapped_symbols.find(
     (candidate) => candidate.id === impact.symbolId || candidate.name === impact.symbolName,
   );
   return symbol?.filePath ?? 'unknown';
 };
 
-const buildCandidateCauses = (
-  input: RegressionForensicsInput,
+const buildPrImpactCandidateCauses = (
+  input: RegressionForensicsInput & { prImpactReport: PrImpactReport },
 ): RegressionForensicsCandidateCause[] =>
   input.prImpactReport.impacts.map((impact) => ({
     symbol: impact.symbolName,
-    file: findSymbolFile(input, impact),
+    file: findPrImpactSymbolFile(input, impact),
     confidence: causeConfidence(impact),
     reason: highRisk.has(impact.risk)
       ? 'High-risk changed symbol is linked to the failing surface.'
       : 'Changed symbol is linked to the failing surface.',
     evidence: [
+      'Evidence mode: pr-impact',
       `PR Impact verdict: ${input.prImpactReport.verdict}`,
       `Risk: ${impact.risk}`,
       `Direct dependents: ${impact.direct}`,
@@ -106,24 +142,76 @@ const buildCandidateCauses = (
     ],
   }));
 
+const formatMatchedRanges = (symbol: ImpactForRangesSymbol): string =>
+  symbol.matched_ranges
+    .map((range) => `${range.filePath}:${range.startLine}-${range.endLine}`)
+    .join(', ');
+
+const buildImpactForRangesCandidateCauses = (
+  input: RegressionForensicsInput & { impactForRangesReport: ImpactForRangesReport },
+): RegressionForensicsCandidateCause[] => {
+  const direct = input.impactForRangesReport.symbols.map((symbol) => ({
+    symbol: symbol.name,
+    file: symbol.filePath ?? 'unknown',
+    confidence: 'MEDIUM' as const,
+    reason: 'Explicit-range evidence links the changed symbol to direct process membership.',
+    evidence: [
+      'Evidence mode: impact-for-ranges',
+      `Matched ranges: ${formatMatchedRanges(symbol) || 'none reported'}`,
+      `Direct processes: ${(symbol.processes ?? []).map((process) => process.name).join(', ') || 'none'}`,
+      `Change types: ${symbol.change_types.join(', ') || 'modified'}`,
+    ],
+  }));
+
+  const unmapped = input.impactForRangesReport.unmapped_symbols.map((symbol) => ({
+    symbol: symbol.name,
+    file: symbol.filePath ?? 'unknown',
+    confidence: 'LOW' as const,
+    reason: 'Explicit-range evidence matched the symbol but found no direct process membership.',
+    evidence: [
+      'Evidence mode: impact-for-ranges',
+      `Matched ranges: ${formatMatchedRanges(symbol) || 'none reported'}`,
+      `Reason: ${symbol.reason ?? 'No direct process membership found for this symbol'}`,
+      `Change types: ${symbol.change_types.join(', ') || 'modified'}`,
+    ],
+  }));
+
+  return [...direct, ...unmapped];
+};
+
+const buildCandidateCauses = (input: RegressionForensicsInput): RegressionForensicsCandidateCause[] =>
+  isPrImpactInput(input)
+    ? buildPrImpactCandidateCauses(input)
+    : buildImpactForRangesCandidateCauses(input as RegressionForensicsInput & {
+        impactForRangesReport: ImpactForRangesReport;
+      });
+
 const computeConfidence = (
   input: RegressionForensicsInput,
   causes: RegressionForensicsCandidateCause[],
 ): RegressionForensicsConfidence => {
-  if (input.prImpactReport.graph.freshness !== 'fresh') return 'LOW';
+  if (isPrImpactInput(input)) {
+    if (input.prImpactReport.graph.freshness !== 'fresh') return 'LOW';
 
-  const strongestCause = causes.reduce<RegressionForensicsConfidence>(
-    (best, cause) =>
-      confidenceRank[cause.confidence] > confidenceRank[best] ? cause.confidence : best,
-    'LOW',
-  );
+    const strongestCause = strongestConfidence(causes);
+    let confidence =
+      input.prImpactReport.verdict === 'BLOCK' || input.prImpactReport.verdict === 'NEEDS_DISCUSSION'
+        ? strongestCause
+        : 'LOW';
 
-  let confidence =
-    input.prImpactReport.verdict === 'BLOCK' || input.prImpactReport.verdict === 'NEEDS_DISCUSSION'
-      ? strongestCause
+    if (!input.refs.knownGoodRef) confidence = minConfidence(confidence, 'MEDIUM');
+    if (input.failure.failingTests.length === 0) confidence = minConfidence(confidence, 'MEDIUM');
+
+    return confidence;
+  }
+
+  const impact = input.impactForRangesReport;
+  let confidence: RegressionForensicsConfidence =
+    impact.summary.symbols_with_processes > 0 && causes.some((cause) => cause.confidence === 'MEDIUM')
+      ? 'MEDIUM'
       : 'LOW';
 
-  if (!input.refs.knownGoodRef) confidence = minConfidence(confidence, 'MEDIUM');
+  if (impact.repo.indexed_commit === undefined) confidence = minConfidence(confidence, 'LOW');
   if (input.failure.failingTests.length === 0) confidence = minConfidence(confidence, 'MEDIUM');
 
   return confidence;
@@ -136,8 +224,30 @@ const recommendationFor = (confidence: RegressionForensicsConfidence): string =>
   if (confidence === 'MEDIUM') {
     return 'Investigate candidate causes before retrying the failing command.';
   }
-  return 'Gather stronger failure and graph evidence before making a causal claim.';
+  return 'Gather stronger failure and impact evidence before making a causal claim.';
 };
+
+const buildImpactEvidenceSummary = (
+  input: RegressionForensicsInput,
+): RegressionForensicsImpactEvidenceSummary =>
+  isPrImpactInput(input)
+    ? {
+        evidence_mode: 'pr-impact',
+        schema_version: input.prImpactReport.schema_version,
+        verdict: input.prImpactReport.verdict,
+        files_changed: input.prImpactReport.summary.files_changed,
+        mapped_symbols: input.prImpactReport.summary.mapped_symbols,
+        test_signal: input.prImpactReport.test_signal.status,
+      }
+    : {
+        evidence_mode: 'impact-for-ranges',
+        schema_version: input.impactForRangesReport.schema_version,
+        mapped_symbols: input.impactForRangesReport.summary.matched_symbols,
+        input_ranges: input.impactForRangesReport.summary.input_ranges,
+        symbols_with_processes: input.impactForRangesReport.summary.symbols_with_processes,
+        unmatched_ranges: input.impactForRangesReport.summary.unmatched_ranges,
+        affected_processes: input.impactForRangesReport.summary.affected_processes,
+      };
 
 const buildCaveats = (input: RegressionForensicsInput): string[] => {
   const caveats: string[] = [];
@@ -148,11 +258,34 @@ const buildCaveats = (input: RegressionForensicsInput): string[] => {
   if (input.failure.failingTests.length === 0) {
     caveats.push('No failing test names were provided; failure localization is weaker.');
   }
-  if (input.prImpactReport.graph.freshness !== 'fresh') {
-    caveats.push('PR Impact graph evidence is stale; causal confidence is limited.');
+
+  if (isPrImpactInput(input)) {
+    if (input.prImpactReport.graph.freshness !== 'fresh') {
+      caveats.push('PR Impact graph evidence is stale; causal confidence is limited.');
+    }
+    caveats.push(...input.prImpactReport.caveats);
+  } else {
+    const impact = input.impactForRangesReport;
+    if (impact.repo.indexed_commit === undefined) {
+      caveats.push('Explicit-range evidence does not report an indexed commit; freshness confidence is limited.');
+    }
+    if (impact.summary.unmatched_ranges > 0) {
+      caveats.push(`Explicit-range evidence includes ${impact.summary.unmatched_ranges} unmatched range(s).`);
+    }
+    if (impact.summary.unknown_symbols > 0) {
+      caveats.push(`Explicit-range evidence includes ${impact.summary.unknown_symbols} unknown symbol(s).`);
+    }
+    if (impact.summary.unmapped_symbols > 0) {
+      caveats.push(
+        `Explicit-range evidence includes ${impact.summary.unmapped_symbols} matched symbol(s) without direct process membership.`,
+      );
+    }
+    caveats.push(
+      'Explicit-range evidence mode does not include classic PR-impact verdicts, API-impact entries, or graph-derived test signal.',
+    );
+    caveats.push(...impact.caveats);
   }
 
-  caveats.push(...input.prImpactReport.caveats);
   caveats.push('Report identifies candidate causes, not a proven root cause.');
 
   return Array.from(new Set(caveats));
@@ -179,13 +312,7 @@ export const buildRegressionForensicsReport = (
       known_good_ref: input.refs.knownGoodRef,
       known_bad_ref: input.refs.knownBadRef,
     },
-    pr_impact: {
-      schema_version: input.prImpactReport.schema_version,
-      verdict: input.prImpactReport.verdict,
-      files_changed: input.prImpactReport.summary.files_changed,
-      mapped_symbols: input.prImpactReport.summary.mapped_symbols,
-      test_signal: input.prImpactReport.test_signal.status,
-    },
+    impact_evidence: buildImpactEvidenceSummary(input),
     candidate_causes: candidateCauses,
     caveats: buildCaveats(input),
   };
@@ -234,14 +361,27 @@ export const renderRegressionForensicsMarkdown = (
 
   lines.push(
     '',
-    '## PR Impact Linkage',
+    '## Impact Evidence',
     '',
-    `- Schema: ${report.pr_impact.schema_version}`,
-    `- Verdict: ${report.pr_impact.verdict}`,
-    `- Files changed: ${report.pr_impact.files_changed}`,
-    `- Mapped symbols: ${report.pr_impact.mapped_symbols}`,
-    `- Test signal: ${report.pr_impact.test_signal}`,
+    `- Evidence mode: ${report.impact_evidence.evidence_mode}`,
+    `- Schema: ${report.impact_evidence.schema_version}`,
+    `- Mapped symbols: ${report.impact_evidence.mapped_symbols}`,
   );
+
+  if (report.impact_evidence.evidence_mode === 'pr-impact') {
+    lines.push(
+      `- Verdict: ${report.impact_evidence.verdict ?? 'unknown'}`,
+      `- Files changed: ${report.impact_evidence.files_changed ?? 0}`,
+      `- Test signal: ${report.impact_evidence.test_signal ?? 'unknown_or_unreferenced'}`,
+    );
+  } else {
+    lines.push(
+      `- Input ranges: ${report.impact_evidence.input_ranges ?? 0}`,
+      `- Symbols with direct processes: ${report.impact_evidence.symbols_with_processes ?? 0}`,
+      `- Unmatched ranges: ${report.impact_evidence.unmatched_ranges ?? 0}`,
+      `- Affected processes: ${report.impact_evidence.affected_processes ?? 0}`,
+    );
+  }
 
   if (report.candidate_causes.length > 0) {
     lines.push('', '## Candidate Causes', '');

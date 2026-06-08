@@ -138,9 +138,13 @@ const OPTION_DESCRIPTION_KEYS = {
     'help.option.regressionForensics.failureJson',
   'regression-forensics|--pr-impact-json <path>':
     'help.option.regressionForensics.prImpactJson',
+  'regression-forensics|--impact-for-ranges-json <path>':
+    'help.option.regressionForensics.impactForRangesJson',
   'regression-forensics|-f, --format <format>': 'help.option.regressionForensics.format',
   'e2e-test-plan|--target-json <path>': 'help.option.e2eTestPlan.targetJson',
   'e2e-test-plan|--pr-impact-json <path>': 'help.option.e2eTestPlan.prImpactJson',
+  'e2e-test-plan|--impact-for-ranges-json <path>':
+    'help.option.e2eTestPlan.impactForRangesJson',
   'e2e-test-plan|--existing-scenarios-json <path>':
     'help.option.e2eTestPlan.existingScenariosJson',
   'e2e-test-plan|--route-evidence-json <path>':

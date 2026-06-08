@@ -28,8 +28,9 @@ const baseReport: E2ETestPlanReport = {
     high_priority: 1,
   },
   source_reports: {
-    pr_impact_schema_version: 'pr-impact.v1alpha1',
-    pr_impact_verdict: 'NEEDS_DISCUSSION',
+    impact_evidence_mode: 'pr-impact',
+    impact_schema_version: 'pr-impact.v1alpha1',
+    impact_verdict: 'NEEDS_DISCUSSION',
   },
   proposals: [
     {

@@ -40,6 +40,9 @@ Operating method:
 - Use Structured Delegation via Evidence-Gated Small-Batch Kanban.
 - Use Continuous Agentic Kanban as the faster-paced operating variant: Kanban flow control, XP/TDD engineering discipline, CI/CD-style verification, and Codex selected-task packets.
 - Autonomous work means bounded selected-task packets, repo exploration before edits, small verified slices, fresh checkpoints, and explicit stop rules.
+- Task model: top-level selected tasks should usually be meaningful vertical feature slices rather than isolated helper slices.
+- A selected task should normally carry the core behavior, required wiring, output/report surface, tests, and checkpoint together.
+- Smaller packets remain useful, but as internal implementation mechanics inside the selected task unless verification, risk, or ambiguity makes a separate top-level task necessary.
 - For overnight or long unattended runs, continue through green/amber lane work when the selected-task packet is clear; stop only when the task crosses a red-lane boundary or loses a defensible verification path.
 
 ### Canonical Decision Table
@@ -58,8 +61,9 @@ Use this propositional decision table as the primary workflow control model for 
 
 - Keep one selected task active at a time.
 - Keep one active implementation slice at a time, but maintain up to three shaped ready packets when possible.
+- Treat the selected task as the feature-sized unit of value; use packets/slices as the internal execution structure beneath it.
 - Treat a ready packet as the unit of fast motion: task, outcome, lane, appetite, write set, acceptance criteria, testing ladder, reviewer gate, stop rules, rollback/checkpoint notes, and next likely packet.
-- Appetite defaults: green-lane slices should be micro/small packets sized to one focused red-green-review loop; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
+- Appetite defaults: green-lane internal slices should usually fit one focused red-green-review loop inside a larger selected task; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
 - Select the next task only after the current selected task is achieved or legitimately blocked and the next feature/slice boundary is known.
 - Do not pre-create multiple task tracks for the feature backlog.
 - Task baton rule: after a selected task is finished or blocked, the supervisor turn must not end until one of these is true:

@@ -250,9 +250,13 @@ export const en = {
   'help.option.prImpact.format': 'Output format: markdown or json',
   'help.option.regressionForensics.failureJson': 'Path to local failure evidence JSON',
   'help.option.regressionForensics.prImpactJson': 'Path to local PR impact JSON',
+  'help.option.regressionForensics.impactForRangesJson':
+    'Path to local impact-for-ranges JSON',
   'help.option.regressionForensics.format': 'Output format: markdown or json',
   'help.option.e2eTestPlan.targetJson': 'Path to local target contract JSON',
   'help.option.e2eTestPlan.prImpactJson': 'Path to local PR impact JSON',
+  'help.option.e2eTestPlan.impactForRangesJson':
+    'Path to local impact-for-ranges JSON',
   'help.option.e2eTestPlan.existingScenariosJson':
     'Path to local E2E scenario inventory JSON',
   'help.option.e2eTestPlan.routeEvidenceJson': 'Path to local route/API evidence JSON',

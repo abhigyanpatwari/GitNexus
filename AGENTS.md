@@ -1,4 +1,4 @@
-<!-- version: 1.9.10 -->
+<!-- version: 1.9.11 -->
 <!-- Last updated: 2026-06-08 -->
 
 Last reviewed: 2026-06-08
@@ -39,12 +39,15 @@ For the local enterprise-feature workstream:
 - This workstream uses a decision-table workflow: the canonical table lives in `.agent/long-horizon/gitnexus-local-features/implement.md`, the live board lives in `plans.md`, and the live evaluated state lives in `documentation.md`.
 - Use branch `local/gitnexus-local-features`.
 - Work one implementation feature at a time on the shared branch.
+- Task model: `Task = meaningful vertical feature slice`; `Step = internal sub-step inside the task`.
+- Prefer top-level tasks that deliver visible capability across behavior, wiring, output surface, tests, and checkpoint.
+- Do not promote every primitive, route, formatter, or helper into its own top-level task unless risk, ambiguity, or verification boundaries make that necessary.
 - Formal Goal Contracts are not required for this workstream. Use a selected-task work packet instead.
 - Before autonomous work starts, the selected-task packet must be identifiable from `plans.md`, `feature-map.md`, and `documentation.md`: task name, goal shape, proposed scope, risk lane, likely write set, verification surface, and stop rules.
 - Work packet baton rule: after finishing or blocking a selected task, do not end the turn until the next selected task is recorded, or `NO_NEXT_TASK_SELECTED` is documented with the exact blocker.
 - Baton audit steps: read `plans.md`, `documentation.md`, and `feature-map.md`, then either continue the selected implementation task when its lane permits, switch to the next readiness task if defensible, or document `NO_NEXT_TASK_SELECTED`.
 - Fast-flow rule: keep one active implementation slice, but maintain up to three ready packets when possible so Codex can keep moving without re-planning from scratch after each verified slice.
-- Appetite rule: green-lane slices should be micro/small packets sized to one focused red-green-review loop; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
+- Appetite rule: green-lane internal slices should usually fit one focused red-green-review loop inside a larger selected task; amber-lane slices may be larger but must stay bounded with premortem and rollback notes. Track elapsed time as an observation metric, not as a permission gate, because Codex 5.4 may complete well-shaped packets much faster than human estimates.
 - Use non-interactive `codex exec` worker runs only for the selected task and only with the current long-horizon bundle as required context.
 - The Codex Goal tool may be used as optional tracking, but the workflow must not block merely because no formal Goal Contract exists.
 - Branch-trusted autonomy applies on `local/gitnexus-local-features`: once a selected-task packet exists, Codex may proceed through green/amber lane repo-local work without a separate `MAIN | READY_FOR_IMPLEMENTATION` phrase.
@@ -98,6 +101,7 @@ commits, or posts.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-08 | 1.9.11 | Added the big-slice task model: top-level tasks should be meaningful vertical feature slices, with smaller packets treated as internal steps unless risk or ambiguity requires otherwise. |
 | 2026-06-08 | 1.9.10 | Added the repo-level pointer to the decision-table workflow, with canonical table in `implement.md`, live board in `plans.md`, and evaluated state in `documentation.md`. |
 | 2026-06-08 | 1.9.9 | Added Codex 5.4 handover guidance and replaced rigid fast-flow timeboxes with packet/verification-loop appetite language. |
 | 2026-06-08 | 1.9.8 | Added Continuous Agentic Kanban as the faster-paced local-features workflow: one active slice, up to three ready packets, appetite boxes, and test/review/checkpoint gates. |

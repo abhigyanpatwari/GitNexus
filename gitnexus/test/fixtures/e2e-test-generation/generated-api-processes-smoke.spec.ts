@@ -16,12 +16,21 @@ test.describe('Generated GitNexus API smoke plan: Exercise route /api/processes 
     expect(response.ok()).toBeTruthy();
 
     const body: unknown = await response.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(body).toEqual(
+      expect.objectContaining({
+        processes: expect.any(Array),
+      }),
+    );
 
-    for (const process of body) {
+    const payload = body as { processes: unknown[] };
+    for (const process of payload.processes) {
       expect(process).toEqual(
         expect.objectContaining({
-          name: expect.any(String),
+          id: expect.any(String),
+          label: expect.any(String),
+          heuristicLabel: expect.any(String),
+          processType: expect.any(String),
+          stepCount: expect.any(Number),
         }),
       );
     }
