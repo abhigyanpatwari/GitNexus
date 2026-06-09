@@ -76,7 +76,6 @@ on:
       - 'gitnexus/vendor/tree-sitter-swift/package.json'
       # Transition window: kotlin's pin still lives here until it is vendored.
       - 'gitnexus/package.json'
-      - 'gitnexus/package-lock.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
 
@@ -267,7 +266,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.guard.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # 45 (not 30) for headroom: the kotlin parser.c is ~23 MB and swift's ~18 MB,
+    # and compiling them under emulation on the arm runners is slow.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
