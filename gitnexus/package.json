@@ -72,6 +72,8 @@
     "js-yaml": "^4.1.1",
     "jsonc-parser": "^3.3.1",
     "mnemonist": "^0.40.3",
+    "node-addon-api": "^8.0.0",
+    "node-gyp-build": "^4.8.0",
     "onnxruntime-common": "^1.26.0",
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
@@ -89,10 +91,6 @@
     "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
     "uuid": "^14.0.0"
-  },
-  "optionalDependencies": {
-    "node-addon-api": "^8.0.0",
-    "node-gyp-build": "^4.8.0"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",

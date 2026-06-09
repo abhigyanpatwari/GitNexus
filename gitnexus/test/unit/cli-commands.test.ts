@@ -84,6 +84,23 @@ describe('CLI commands', () => {
       expect(pkg.default.files).toContain('vendor');
     });
 
+    it('declares node-gyp-build/node-addon-api as regular dependencies (runtime-load contract)', async () => {
+      // Every vendored grammar's index.js does `require("node-gyp-build")` at
+      // runtime to load even a prebuilt .node, so node-gyp-build must always be
+      // present. They were optionalDependencies (surviving --omit=optional only
+      // via tree-sitter's transitive edge); promote them so the contract is
+      // explicit and robust to a future tree-sitter change.
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const deps = pkg.default.dependencies ?? {};
+      const optional = (pkg.default as { optionalDependencies?: Record<string, string> })
+        .optionalDependencies;
+      expect(deps['node-gyp-build']).toBeDefined();
+      expect(deps['node-addon-api']).toBeDefined();
+      // No grammar/native-build entries linger in optionalDependencies.
+      expect(optional?.['node-gyp-build']).toBeUndefined();
+      expect(optional?.['node-addon-api']).toBeUndefined();
+    });
+
     it('keeps vendored Swift runtime with vendored source + GitNexus-built prebuilds and hoisted activation script', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const swiftPkg = await import('../../vendor/tree-sitter-swift/package.json', {
