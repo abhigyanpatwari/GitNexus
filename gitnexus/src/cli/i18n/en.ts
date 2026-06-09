@@ -106,6 +106,8 @@ export const en = {
   'help.option.version': 'output the version number',
   'help.command.setup.description':
     'One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex',
+  'help.command.ciSetup.description':
+    'Generate CI/CD workflows, Docker Compose, and MCP config for a shared team GitNexus server',
   'help.command.analyze.description': 'Index a repository (full analysis)',
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
@@ -146,6 +148,16 @@ export const en = {
     'Cross-repo impact for a symbol in one member repo of a group',
   'help.command.group.query.description': 'Search execution flows across all repos in a group',
   'help.command.group.contracts.description': 'Inspect Contract Registry',
+  'help.option.ciSetup.ci': 'CI/CD system: github-actions, azure-devops, or both',
+  'help.option.ciSetup.deploy': 'Deploy target: docker, azure-container-app, or both',
+  'help.option.ciSetup.port': 'Host port to bind (container always runs on 4747)',
+  'help.option.ciSetup.auth': 'Auth mode: token (Caddy proxy) or none',
+  'help.option.ciSetup.branchStrategy': 'Index strategy: pr-scoped or main-only',
+  'help.option.ciSetup.dryRun':
+    'Print generated files without writing (default when no mode flag given)',
+  'help.option.ciSetup.apply': 'Write files with per-file confirmation gates',
+  'help.option.ciSetup.yes': 'Skip per-file confirmation prompts (use with --apply)',
+  'help.option.ciSetup.outputDir': 'Directory to write generated files (default: git root)',
   'help.option.analyze.force': 'Force full re-index even if up to date',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':

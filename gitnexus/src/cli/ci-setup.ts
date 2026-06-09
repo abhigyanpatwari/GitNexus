@@ -35,9 +35,7 @@ export const ciSetupCommand = async (options?: {
   const detect = await detectEnvironment(cwd);
 
   if (!detect.gitRoot) {
-    console.error(
-      '✗ Not a git repository. Run `gitnexus ci-setup` from inside a git repo root.',
-    );
+    console.log('✗ Not a git repository. Run `gitnexus ci-setup` from inside a git repo root.');
     process.exit(1);
   }
 
@@ -51,14 +49,23 @@ export const ciSetupCommand = async (options?: {
   if (detect.hasDocker) {
     console.log('   ✓ Docker: docker-compose or Dockerfile found');
   }
-  console.log(`   ${detect.portAvailable ? '✓' : '⚠'} Port 4747: ${detect.portAvailable ? 'available' : 'in use (serve may already be running)'}`);
+  console.log(
+    `   ${detect.portAvailable ? '✓' : '⚠'} Port 4747: ${detect.portAvailable ? 'available' : 'in use (serve may already be running)'}`,
+  );
   console.log('   ⚠ License: PolyForm-Noncommercial — confirm non-commercial use\n');
 
   // Parse and validate options from commander flags
   const partial: Partial<CiSetupOptions> = {};
   if (options?.ci) partial.ci = options.ci as CiSystem;
   if (options?.deploy) partial.deploy = options.deploy as DeployTarget;
-  if (options?.port) partial.port = parseInt(options.port, 10);
+  if (options?.port) {
+    const portNum = parseInt(options.port as string, 10);
+    if (isNaN(portNum) || portNum < 1 || portNum > 65534) {
+      console.log(`✗ Invalid port: "${options.port}". Must be an integer between 1 and 65534.`);
+      process.exit(1);
+    }
+    partial.port = portNum;
+  }
   if (options?.auth) partial.auth = options.auth as AuthMode;
   if (options?.branchStrategy) partial.branchStrategy = options.branchStrategy as BranchStrategy;
   if (options?.dryRun !== undefined) partial.dryRun = options.dryRun;
@@ -120,13 +127,15 @@ async function applyFiles(
 
       if (existingContent !== null && !opts.yes) {
         console.log(`\n⚠ ${file.relativePath} already exists and differs.`);
-        if (!opts.yes) {
-          const { confirm } = await import('@inquirer/prompts');
-          const ok = await confirm({ message: `Overwrite ${file.relativePath}?`, default: false });
-          if (!ok) {
-            result.skipped.push(`${file.relativePath} (skipped by user)`);
-            continue;
-          }
+        if (!process.stdin.isTTY) {
+          result.skipped.push(`${file.relativePath} (differs, non-TTY — use --yes to overwrite)`);
+          continue;
+        }
+        const { confirm } = await import('@inquirer/prompts');
+        const ok = await confirm({ message: `Overwrite ${file.relativePath}?`, default: false });
+        if (!ok) {
+          result.skipped.push(`${file.relativePath} (skipped by user)`);
+          continue;
         }
       }
 
@@ -175,12 +184,16 @@ function printResult(result: CiSetupResult, opts: CiSetupOptions): void {
   }
 
   if (opts.ci === 'github-actions' || opts.ci === 'both') {
-    console.log(`  ${step++}. Commit .github/workflows/gitnexus-ci.yml and push to trigger the first index.`);
+    console.log(
+      `  ${step++}. Commit .github/workflows/gitnexus-ci.yml and push to trigger the first index.`,
+    );
   }
   if (opts.ci === 'azure-devops' || opts.ci === 'both') {
     console.log(`  ${step++}. Import azure-pipelines-gitnexus.yml into Azure DevOps and run it.`);
   }
 
-  console.log(`  ${step++}. Follow GITNEXUS.md to connect Claude Code / Cursor to the shared server.`);
+  console.log(
+    `  ${step++}. Follow GITNEXUS.md to connect Claude Code / Cursor to the shared server.`,
+  );
   console.log('');
 }

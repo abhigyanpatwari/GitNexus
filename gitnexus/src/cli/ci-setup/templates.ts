@@ -24,10 +24,18 @@ name: GitNexus Index
 
 ${onBlock}
 
+permissions:
+  contents: read
+
+concurrency:
+  group: gitnexus-$\{{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gitnexus-index:
     name: Index repository
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +144,7 @@ services:
       GITNEXUS_HOME: /data/gitnexus
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${opts.port}/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4747/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -172,7 +180,7 @@ services:
   gitnexus:
     image: ghcr.io/abhigyanpatwari/gitnexus:latest
     ports:
-      - "\${GITNEXUS_PORT:-${opts.port}}:${opts.port}"
+      - "\${GITNEXUS_PORT:-${opts.port}}:4747"
     volumes:
       - gitnexus-data:/data/gitnexus
       - \${WORKSPACE_DIR:-./workspace}:/workspace:ro
@@ -180,7 +188,7 @@ services:
       GITNEXUS_HOME: /data/gitnexus
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${opts.port}/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4747/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -201,7 +209,7 @@ function buildCaddyfile(opts: CiSetupOptions): string {
     @authorized header Authorization "Bearer {env.GITNEXUS_TOKEN}"
 
     handle @authorized {
-        reverse_proxy gitnexus:${opts.port}
+        reverse_proxy gitnexus:4747
     }
 
     respond "Unauthorized" 401
@@ -277,7 +285,7 @@ az containerapp create \\
   --resource-group "\$RESOURCE_GROUP" \\
   --environment "\$ENVIRONMENT" \\
   --image ghcr.io/abhigyanpatwari/gitnexus:latest \\
-  --target-port ${opts.port} \\
+  --target-port 4747 \\
   --ingress internal \\
   --env-vars "GITNEXUS_HOME=/data/gitnexus" \\
   --volume-name gitnexus-data \\
@@ -308,15 +316,10 @@ function buildMcpSnippet(opts: CiSetupOptions): string {
       }`
       : '';
 
+  const commentLine = urlComment.replace(/^\s*\/\/\s*/, '').trim();
   return `{
-  // GitNexus shared MCP server snippet — merge into ~/.claude/settings.json mcpServers block.
-  // Do NOT auto-apply: use 'gitnexus setup' for personal stdio MCP; this snippet is for the
-  // shared HTTP server variant.
-  //
-  // NOTE: Verify the exact Claude Code HTTP MCP entry format against current docs
-  // (https://github.com/anthropics/claude-code) before applying — field names may evolve.
-  //
-${urlComment}
+  "_comment": "${commentLine}",
+  "_note": "Merge into ~/.claude/settings.json mcpServers block. Verify the exact Claude Code HTTP MCP entry format against current docs before applying.",
   "mcpServers": {
     "gitnexus": {
       "type": "http",
@@ -449,7 +452,7 @@ When the CI workflow runs \`analyze --skills\`, GitNexus generates repo-specific
 - \`.claude/skills/gitnexus/\` — standard GitNexus MCP skills (query, impact, context, detect-changes)
 - \`.claude/skills/generated/\` — community-detected area skills (one file per functional cluster)
 
-These are committed to the repository so every developer's Claude Code session has them available automatically.
+These are written into the repository by the CI workflow. To share them with your team, add a \`git add .claude/skills/ && git commit\` step after \`analyze --skills\` in your workflow, or commit them manually after the first run.
 
 ---
 
