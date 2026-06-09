@@ -20,8 +20,9 @@ import { fileURLToPath } from 'node:url';
  *
  * Two cohorts:
  *   1. VENDORED grammars (gitnexus/vendor/tree-sitter-*) — GitNexus owns these
- *      prebuilds (cross-built by .github/workflows/build-tree-sitter-prebuilds.yml,
- *      or copied from upstream for Swift). Every one MUST cover all 6 tuples.
+ *      prebuilds (cross-built by .github/workflows/build-tree-sitter-prebuilds.yml;
+ *      Swift's were originally upstream-shipped, now rebuilt the same way). Each
+ *      one that does NOT also vendor its build source MUST cover all 6 tuples.
  *   2. npm-dependency grammars — upstream owns their prebuilds. We assert 6/6
  *      too, with documented exceptions (see KNOWN_NPM_GAPS).
  */
@@ -90,9 +91,10 @@ describe('vendored grammar prebuild coverage (toolchain-free on every supported 
     // A grammar that vendors its build sources (binding.gyp) can source-build the
     // gaps on any toolchain host (e.g. CI), so an incomplete prebuild set is
     // tolerated for it — the build-tree-sitter-prebuilds workflow fills the
-    // prebuilds to make it toolchain-free. A prebuild-only grammar (no source,
-    // e.g. swift, whose prebuilds come from upstream) MUST ship all six, or it is
-    // dead on the missing platform.
+    // prebuilds to make it toolchain-free. Every grammar GitNexus currently
+    // vendors carries its source (incl. swift, unified with the rest), so the
+    // strict branch below is defensive: a hypothetical prebuild-only grammar (no
+    // binding.gyp) MUST ship all six, or it is dead on the missing platform.
     const hasSourceFallback = existsSync(path.join(grammarDir, 'binding.gyp'));
 
     it(

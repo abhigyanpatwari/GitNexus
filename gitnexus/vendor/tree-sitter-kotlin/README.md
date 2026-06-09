@@ -18,8 +18,10 @@ prebuilds itself and vendors them here. `node-gyp-build` selects the correct
 binary at require time; `build-tree-sitter-kotlin.cjs` probes availability at
 install time.
 
-This differs from `tree-sitter-swift`, whose prebuilds are **copied from the
-upstream package** (Swift ships them). Kotlin's are **GitNexus-cross-built**.
+`tree-sitter-swift` is handled the same way now: its prebuilds were originally
+**copied from upstream** (Swift ships them), but it is unified with this pipeline —
+its source is vendored and its prebuilds are **GitNexus-cross-built** too, so all
+of Dart/Proto/Swift/Kotlin go through one uniform build path.
 
 ### Updating this vendor package
 

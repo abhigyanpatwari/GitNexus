@@ -6,12 +6,19 @@ name: Build tree-sitter prebuilds
 # risk for any tree-sitter grammar" pipeline.
 #
 # Grammars covered here (the at-risk set — everything else already ships 6
-# upstream prebuilds AND stays dependency-review-tracked, so it is left alone):
-#   - tree-sitter-dart   (vendored; currently `npx node-gyp rebuild` at postinstall)
-#   - tree-sitter-proto  (vendored; currently `npx node-gyp rebuild` at postinstall)
-#   - tree-sitter-kotlin (third-party optionalDependency, source-only — needs a
-#                         vendor skeleton in place before this workflow targets it)
-# (tree-sitter-swift already vendors upstream-shipped prebuilds and needs nothing.)
+# upstream prebuilds AND stays dependency-review-tracked, so it is left alone).
+# All five are vendored under gitnexus/vendor/; `kind` (below) only picks where
+# the build job fetches the C source to compile:
+#   - tree-sitter-c      (vendored prebuild-only; built from the published npm
+#                         package — closes upstream's 4/6 ARM gap #2116 for a
+#                         REQUIRED grammar)
+#   - tree-sitter-dart   (vendored source; built from gitnexus/vendor/)
+#   - tree-sitter-proto  (vendored source; built from gitnexus/vendor/)
+#   - tree-sitter-kotlin (vendored source; built from the published npm package —
+#                         upstream ships source only)
+#   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
+#                         prebuilds were originally upstream-shipped, now
+#                         GitNexus-cross-built like the rest for uniformity)
 #
 # Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
 # all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
@@ -37,7 +44,7 @@ on:
   workflow_dispatch:
     inputs:
       grammars:
-        description: 'Comma-separated grammar shortnames to build (dart,proto,kotlin), or "all".'
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift), or "all".'
         required: false
         type: string
         default: 'all'
@@ -64,6 +71,7 @@ on:
       - 'gitnexus/vendor/tree-sitter-dart/package.json'
       - 'gitnexus/vendor/tree-sitter-proto/package.json'
       - 'gitnexus/vendor/tree-sitter-kotlin/package.json'
+      - 'gitnexus/vendor/tree-sitter-swift/package.json'
       # Transition window: kotlin's pin still lives here until it is vendored.
       - 'gitnexus/package.json'
       - 'gitnexus/package-lock.json'
@@ -126,6 +134,10 @@ jobs:
             dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
             proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
             kotlin: { name: 'tree-sitter-kotlin', kind: 'npm' },
+            // swift is vendored WITH its source (parser.c/scanner.c/binding.gyp),
+            // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
+            // were originally upstream-shipped; rebuilding them here unifies it.
+            swift:  { name: 'tree-sitter-swift',  kind: 'vendored' },
           };
           const PLATFORMS = [
             { platform_arch: 'linux-x64',    os: 'ubuntu-24.04' },
@@ -330,6 +342,7 @@ jobs:
               dart:   "void main() { print(\"hi\"); }",
               proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
               kotlin: "fun main() { println(\"hi\") }",
+              swift:  "func greet() { print(\"hi\") }",
             };
             const lang = require("node-gyp-build")(process.cwd());
             const Parser = require("tree-sitter");

@@ -7,39 +7,39 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * Behavioral coverage for the postinstall activation script
- * `scripts/build-tree-sitter-kotlin.cjs`.
+ * `scripts/build-tree-sitter-swift.cjs`.
  *
- * Kotlin is a vendored grammar (like Swift/Dart/Proto/C). The script prefers a
- * committed prebuild for this platform-arch (toolchain-free); if none matches it
- * source-builds from the vendored grammar source. Its hard invariant is that it
- * MUST NEVER exit non-zero — it runs in `gitnexus`'s postinstall, so a non-zero
- * exit would break `npm install gitnexus` for every user. This suite executes
- * the real script bytes across its branches and asserts exit code 0 every time.
+ * Swift is a vendored grammar, unified with Kotlin/Dart/Proto/C: the script
+ * prefers a committed prebuild for this platform-arch (toolchain-free); if none
+ * matches it source-builds from the vendored grammar source. Its hard invariant
+ * is that it MUST NEVER exit non-zero — it runs in `gitnexus`'s postinstall, so a
+ * non-zero exit would break `npm install gitnexus` for every user. This suite
+ * executes the real script bytes across its branches and asserts exit code 0
+ * every time (mirrors build-tree-sitter-kotlin-probe.test.ts).
  *
  * The script is copied into an isolated temp `scripts/` dir so its
- * `__dirname`-relative `../node_modules/tree-sitter-kotlin` resolves under our
- * control (absent dir, or a present-but-unbuildable dir) without touching the
- * repo's real node_modules. The temp dir has no reachable `node-gyp-build` /
- * `node-addon-api`, so the source-build path stops at the "hoisted build deps
- * not resolvable" guard (still exit 0) instead of invoking a real compile.
+ * `__dirname`-relative `../node_modules/tree-sitter-swift` resolves under our
+ * control. The temp dir has no reachable `node-gyp-build` / `node-addon-api`, so
+ * the source-build path stops at the "hoisted build deps not resolvable" guard
+ * (still exit 0) instead of invoking a real compile.
  */
 
 const probeSource = readFileSync(
-  fileURLToPath(new URL('../../scripts/build-tree-sitter-kotlin.cjs', import.meta.url)),
+  fileURLToPath(new URL('../../scripts/build-tree-sitter-swift.cjs', import.meta.url)),
   'utf8',
 );
 
 // Catch-branch sentinel (only printed when an actual node-gyp build is attempted
 // and throws) — must NOT appear on the deps-unavailable guard path.
-const CATCH_UNAVAILABLE = 'Kotlin (.kt/.kts) parsing will be unavailable';
+const CATCH_UNAVAILABLE = 'Swift (.swift) parsing will be unavailable';
 
 let tmpRoot: string;
 let scriptPath: string;
 
 beforeAll(() => {
-  tmpRoot = mkdtempSync(path.join(tmpdir(), 'gn-kotlin-build-'));
+  tmpRoot = mkdtempSync(path.join(tmpdir(), 'gn-swift-build-'));
   mkdirSync(path.join(tmpRoot, 'scripts'), { recursive: true });
-  scriptPath = path.join(tmpRoot, 'scripts', 'build-tree-sitter-kotlin.cjs');
+  scriptPath = path.join(tmpRoot, 'scripts', 'build-tree-sitter-swift.cjs');
   writeFileSync(scriptPath, probeSource);
 });
 
@@ -60,7 +60,7 @@ function runProbe(overrides: Record<string, string | undefined>) {
   return spawnSync(process.execPath, [scriptPath], { env, encoding: 'utf8', timeout: 30_000 });
 }
 
-describe('build-tree-sitter-kotlin.cjs vendored grammar activation', () => {
+describe('build-tree-sitter-swift.cjs vendored grammar activation', () => {
   it('exits 0 and reports skipping when GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1', () => {
     const r = runProbe({ GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' });
     expect(r.status).toBe(0);
@@ -70,7 +70,7 @@ describe('build-tree-sitter-kotlin.cjs vendored grammar activation', () => {
   });
 
   it('exits 0 silently when the materialized package is absent (no binding.gyp)', () => {
-    // No node_modules/tree-sitter-kotlin next to the script — materialize was
+    // No node_modules/tree-sitter-swift next to the script — materialize was
     // skipped/failed, so there is no binding.gyp to build. Silent exit 0.
     const r = runProbe({});
     expect(r.status).toBe(0);
@@ -84,7 +84,7 @@ describe('build-tree-sitter-kotlin.cjs vendored grammar activation', () => {
     // source-build path; in this temp env node-gyp-build/node-addon-api are not
     // resolvable, so it stops at the deps guard (or, if they were resolvable,
     // the node-gyp build would fail) — either way it warns and exits 0.
-    const pkg = path.join(tmpRoot, 'node_modules', 'tree-sitter-kotlin');
+    const pkg = path.join(tmpRoot, 'node_modules', 'tree-sitter-swift');
     mkdirSync(path.join(pkg, 'bindings', 'node'), { recursive: true });
     writeFileSync(path.join(pkg, 'binding.gyp'), '{ "targets": [] }');
     writeFileSync(path.join(pkg, 'bindings', 'node', 'index.js'), '');

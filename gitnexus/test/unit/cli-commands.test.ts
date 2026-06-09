@@ -84,7 +84,7 @@ describe('CLI commands', () => {
       expect(pkg.default.files).toContain('vendor');
     });
 
-    it('keeps vendored Swift runtime with prebuilds and hoisted activation script', async () => {
+    it('keeps vendored Swift runtime with vendored source + GitNexus-built prebuilds and hoisted activation script', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const swiftPkg = await import('../../vendor/tree-sitter-swift/package.json', {
         with: { type: 'json' },
@@ -95,9 +95,22 @@ describe('CLI commands', () => {
       expect(pkg.default.dependencies['tree-sitter']).toBe('0.21.1');
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-swift.cjs');
       expect(swiftPkg.default.version).toBe('0.7.1');
+      // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(swiftPkg.default.scripts?.install).toBeUndefined();
       expect(swiftPkg.default.dependencies).toBeUndefined();
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
+      // Swift is now unified with Dart/Proto/Kotlin/C: the grammar SOURCE is
+      // vendored so build-tree-sitter-swift.cjs can source-build the binding
+      // when no committed prebuild matches (e.g. CI before prebuilds land).
+      const bindingGyp = await fs.readFile(
+        path.join(REPO_ROOT, 'gitnexus/vendor/tree-sitter-swift/binding.gyp'),
+        'utf8',
+      );
+      expect(bindingGyp).toContain('tree_sitter_swift_binding');
+      expect(bindingGyp).toContain('src/parser.c');
+      await expect(
+        fs.stat(path.join(REPO_ROOT, 'gitnexus/vendor/tree-sitter-swift/src/parser.c')),
+      ).resolves.toBeDefined();
     });
 
     it('keeps vendored Kotlin runtime with GitNexus-built prebuilds and hoisted activation script (#2107)', async () => {
