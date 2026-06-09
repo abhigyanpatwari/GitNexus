@@ -159,6 +159,7 @@ Your AI agent gets these tools automatically:
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
+gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
@@ -195,6 +196,8 @@ gitnexus group contracts <name>  # Inspect extracted contracts and cross-links
 gitnexus group query <name> <q>  # Search execution flows across all repos in a group
 gitnexus group status <name>     # Check staleness of repos in a group
 ```
+
+> **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
 ## Remote Embeddings
 
