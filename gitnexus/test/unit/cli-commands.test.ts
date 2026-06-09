@@ -117,6 +117,21 @@ describe('CLI commands', () => {
       expect(kotlinPkg.default.dependencies).toBeUndefined();
       expect(kotlinPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
     });
+
+    it('vendors tree-sitter-c prebuild-only at the 0.21.4 ABI pin instead of an npm dependency (#2116/#1242)', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const cPkg = await import('../../vendor/tree-sitter-c/package.json', {
+        with: { type: 'json' },
+      });
+      // c is a REQUIRED grammar that hard-fails install on toolchain-less ARM
+      // (upstream ships 4/6). Vendored with GitNexus-built prebuilds for all 6,
+      // held at 0.21.4 for ABI safety (#1242) — so it is NOT an npm dependency.
+      expect(pkg.default.dependencies['tree-sitter-c']).toBeUndefined();
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-c.cjs');
+      expect(cPkg.default.version).toBe('0.21.4');
+      expect(cPkg.default.scripts?.install).toBeUndefined();
+      expect(cPkg.default.dependencies).toBeUndefined();
+    });
   });
 
   describe('analyzeCommand', () => {

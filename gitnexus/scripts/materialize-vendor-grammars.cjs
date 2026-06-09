@@ -13,19 +13,28 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const VENDORED_GRAMMARS = [
+// tree-sitter-c is a REQUIRED grammar that we vendor prebuild-only purely to
+// close upstream's ARM prebuild gap (#2116) — it needs no toolchain and is not a
+// language the user opts out of, so it is always materialized, even under
+// GITNEXUS_SKIP_OPTIONAL_GRAMMARS. The rest are optional (user-skippable, and
+// Dart/Proto compile from source) and honor the skip flag.
+const REQUIRED_VENDORED = ['tree-sitter-c'];
+const OPTIONAL_VENDORED = [
   'tree-sitter-dart',
   'tree-sitter-proto',
   'tree-sitter-swift',
   'tree-sitter-kotlin',
 ];
 
-if (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1') {
+const skipOptional = process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1';
+if (skipOptional) {
   console.warn(
-    '[gitnexus] Skipping vendored grammar materialize (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1). Dart/Proto/Swift/Kotlin parsing will be unavailable.',
+    '[gitnexus] GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1: skipping optional Dart/Proto/Swift/Kotlin materialize (required C is still materialized).',
   );
-  process.exit(0);
 }
+const VENDORED_GRAMMARS = skipOptional
+  ? REQUIRED_VENDORED
+  : [...REQUIRED_VENDORED, ...OPTIONAL_VENDORED];
 
 for (const name of VENDORED_GRAMMARS) {
   const src = path.join(ROOT, 'vendor', name);

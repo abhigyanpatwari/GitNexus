@@ -60,6 +60,7 @@ on:
     branches: [main]
     paths:
       # Vendored grammars: their version lives in the vendor snapshot package.json.
+      - 'gitnexus/vendor/tree-sitter-c/package.json'
       - 'gitnexus/vendor/tree-sitter-dart/package.json'
       - 'gitnexus/vendor/tree-sitter-proto/package.json'
       - 'gitnexus/vendor/tree-sitter-kotlin/package.json'
@@ -117,6 +118,11 @@ jobs:
           // 'vendored' builds from gitnexus/vendor/<name> (which carries the C
           // source + binding.gyp). Extend this list to cover a new grammar.
           const REGISTRY = {
+            // c is vendored prebuild-only but BUILT from the published npm
+            // package (kind 'npm'), held at 0.21.4 — it closes upstream's 4/6
+            // ARM gap (#2116) for a REQUIRED grammar that otherwise hard-fails
+            // install on toolchain-less ARM.
+            c:      { name: 'tree-sitter-c',      kind: 'npm' },
             dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
             proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
             kotlin: { name: 'tree-sitter-kotlin', kind: 'npm' },
@@ -317,6 +323,7 @@ jobs:
             // Catch an emulated x64 Node silently mis-passing on an arm64 runner.
             if (process.arch !== expect) throw new Error(`runner arch ${process.arch} != ${expect}`);
             const snippets = {
+              c:      "int main(void) { return 0; }",
               dart:   "void main() { print(\"hi\"); }",
               proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
               kotlin: "fun main() { println(\"hi\") }",

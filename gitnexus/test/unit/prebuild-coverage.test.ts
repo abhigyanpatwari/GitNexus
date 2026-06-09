@@ -46,12 +46,11 @@ const NODE_MODULES = path.join(GITNEXUS_ROOT, 'node_modules');
  * grammar drops MORE than its allow-listed gap (a new silent regression) OR if
  * an allow-listed gap is closed upstream (prompting allow-list removal).
  *
- * tree-sitter-c@0.21.4 ships only 4/6 (no linux-arm64 / win32-arm64); pinned to
- * the 0.21.x line pending the tree-sitter 0.21->0.23 runtime upgrade. See #2116.
+ * (tree-sitter-c@0.21.4 ships only 4/6 — no linux-arm64/win32-arm64, #2116 — but
+ * it is now VENDORED with GitNexus-built prebuilds for all 6, so it falls under
+ * the vendored cohort below, not here.)
  */
-const KNOWN_NPM_GAPS: Record<string, string[]> = {
-  'tree-sitter-c': ['linux-arm64', 'win32-arm64'],
-};
+const KNOWN_NPM_GAPS: Record<string, string[]> = {};
 
 function isNapiBinary(file: string): boolean {
   return readFileSync(file).includes(NAPI_SYMBOL);
