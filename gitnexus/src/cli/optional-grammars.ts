@@ -4,18 +4,22 @@
  * tree-sitter-dart, tree-sitter-proto, and tree-sitter-swift are vendored
  * under vendor/ and materialized into node_modules/ at postinstall. Dart
  * and Proto are built from source with node-gyp; Swift ships platform
- * prebuilds activated via node-gyp-build. All three can be skipped via
+ * prebuilds activated via node-gyp-build. tree-sitter-kotlin is a declared
+ * optionalDependency (not vendored). All can be skipped via
  * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
- * soft-fail when the toolchain is missing (Dart/Proto) or no prebuild
- * matches the host platform (Swift).
+ * soft-fail when the toolchain is missing (Dart/Proto), when no prebuild
+ * matches the host platform (Swift), or when the optional install was
+ * skipped or its native build failed (Kotlin).
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
- * stderr line per missing grammar so users learn why .dart/.proto/.swift
+ * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt
  * support is unavailable instead of silently getting a degraded index.
  */
 
 import { createRequire } from 'module';
+import { SupportedLanguages } from 'gitnexus-shared';
+import { isGrammarRuntimeSkipped } from '../core/tree-sitter/parser-loader.js';
 import { cliWarn } from './cli-message.js';
 
 const _require = createRequire(import.meta.url);
@@ -27,17 +31,55 @@ interface OptionalGrammar {
   pkg: string;
   /** File extensions this grammar parses */
   extensions: string[];
+  /**
+   * SupportedLanguages id, when this grammar backs an ingestion language.
+   * Used to ask `isGrammarRuntimeSkipped` whether the grammar was disabled via
+   * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` (vs. genuinely missing). Omitted for
+   * `.proto`, which is a gRPC-extractor concern, not a SupportedLanguages.
+   */
+  language?: SupportedLanguages;
 }
 
 const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
-  { name: 'tree-sitter-dart', pkg: 'tree-sitter-dart', extensions: ['.dart'] },
+  {
+    name: 'tree-sitter-dart',
+    pkg: 'tree-sitter-dart',
+    extensions: ['.dart'],
+    language: SupportedLanguages.Dart,
+  },
   { name: 'tree-sitter-proto', pkg: 'tree-sitter-proto', extensions: ['.proto'] },
-  { name: 'tree-sitter-swift', pkg: 'tree-sitter-swift', extensions: ['.swift'] },
+  {
+    name: 'tree-sitter-swift',
+    pkg: 'tree-sitter-swift',
+    extensions: ['.swift'],
+    language: SupportedLanguages.Swift,
+  },
+  {
+    name: 'tree-sitter-kotlin',
+    pkg: 'tree-sitter-kotlin',
+    extensions: ['.kt', '.kts'],
+    language: SupportedLanguages.Kotlin,
+  },
 ];
+
+/**
+ * The file extensions backed by an optional grammar — the single source for
+ * the `analyze` preflight glob (so the glob can't drift from this list).
+ */
+export function getOptionalGrammarExtensions(): string[] {
+  return [...new Set(OPTIONAL_GRAMMARS.flatMap((g) => g.extensions))];
+}
 
 export interface MissingGrammar {
   name: string;
   extensions: string[];
+  /**
+   * `missing` — the native binding could not be loaded (not installed / build
+   * soft-failed / no prebuild). `skipped` — the binding is fine but the user
+   * disabled it via `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Drives the warning text
+   * so a deliberate opt-out is not told to reinstall.
+   */
+  reason: 'missing' | 'skipped';
 }
 
 /**
@@ -59,6 +101,13 @@ export interface MissingGrammar {
 export function detectMissingOptionalGrammars(): MissingGrammar[] {
   const missing: MissingGrammar[] = [];
   for (const g of OPTIONAL_GRAMMARS) {
+    // Deliberate runtime opt-out comes first: even an installed binding is
+    // treated as unavailable, with a `skipped` reason so the warning says so
+    // instead of suggesting a reinstall (#2101 review).
+    if (g.language !== undefined && isGrammarRuntimeSkipped(g.language)) {
+      missing.push({ name: g.name, extensions: g.extensions, reason: 'skipped' });
+      continue;
+    }
     try {
       _require(g.pkg);
     } catch (err) {
@@ -80,7 +129,7 @@ export function detectMissingOptionalGrammars(): MissingGrammar[] {
           { grammar: g.name, extensions: g.extensions, error: msg },
         );
       }
-      missing.push({ name: g.name, extensions: g.extensions });
+      missing.push({ name: g.name, extensions: g.extensions, reason: 'missing' });
     }
   }
   return missing;
@@ -110,9 +159,16 @@ export function warnMissingOptionalGrammars(opts?: {
     if (relevantExtensions && !g.extensions.some((e) => relevantExtensions.has(e))) {
       continue;
     }
-    cliWarn(
-      `GitNexus${ctx}: optional grammar "${g.name}" is unavailable — ${g.extensions.join('/')} files will not be parsed. Reinstall without GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (and ensure python3, make, g++) to enable.`,
-      { grammar: g.name, extensions: g.extensions, context: opts?.context },
-    );
+    const exts = g.extensions.join('/');
+    const message =
+      g.reason === 'skipped'
+        ? `GitNexus${ctx}: optional grammar "${g.name}" is disabled via GITNEXUS_SKIP_OPTIONAL_GRAMMARS — ${exts} files will not be parsed. Unset the variable to re-enable.`
+        : `GitNexus${ctx}: optional grammar "${g.name}" is unavailable — ${exts} files will not be parsed. Reinstall without GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (and ensure python3, make, g++) to enable.`;
+    cliWarn(message, {
+      grammar: g.name,
+      extensions: g.extensions,
+      reason: g.reason,
+      context: opts?.context,
+    });
   }
 }

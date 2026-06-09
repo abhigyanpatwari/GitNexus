@@ -9,6 +9,11 @@ import { createTypeRegistry } from '../../../src/core/ingestion/model/type-regis
 import { createMethodRegistry } from '../../../src/core/ingestion/model/method-registry.js';
 import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
 import { ALL_NODE_LABELS } from '../../../src/core/ingestion/model/index.js';
+import {
+  CLASS_TYPES_TUPLE,
+  FREE_CALLABLE_TUPLE,
+} from '../../../src/core/ingestion/model/symbol-table.js';
+import { EMBEDDABLE_LABELS } from '../../../src/core/embeddings/types.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { makeDef as makeBaseDef } from './helpers.js';
 
@@ -98,6 +103,30 @@ describe('NodeLabel taxonomy coverage', () => {
     expect(INERT_LABELS.has('Namespace')).toBe(true);
     expect(INERT_LABELS.has('Variable')).toBe(true);
     expect(INERT_LABELS.has('Import')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BasicBlock — taint/PDG substrate node (issue #2080). It is a control-flow
+// node, never a symbol-resolution or embedding target (KTD4). These guards
+// fail if a future change accidentally promotes it into a dispatch/callable
+// tuple or the embeddable set.
+// ---------------------------------------------------------------------------
+
+describe('BasicBlock taint/PDG substrate label (issue #2080)', () => {
+  it('is classified inert — not a dispatch or callable resolution target', () => {
+    expect(INERT_LABELS.has('BasicBlock')).toBe(true);
+    expect(DISPATCH_LABELS.has('BasicBlock')).toBe(false);
+    expect(CALLABLE_ONLY_LABELS.has('BasicBlock')).toBe(false);
+  });
+
+  it('is excluded from the class-like and free-callable tuples', () => {
+    expect((CLASS_TYPES_TUPLE as readonly string[]).includes('BasicBlock')).toBe(false);
+    expect((FREE_CALLABLE_TUPLE as readonly string[]).includes('BasicBlock')).toBe(false);
+  });
+
+  it('is not embeddable', () => {
+    expect((EMBEDDABLE_LABELS as readonly string[]).includes('BasicBlock')).toBe(false);
   });
 });
 

@@ -23,7 +23,15 @@
  */
 
 import Parser from 'tree-sitter';
-import Dart from 'tree-sitter-dart';
+import { SupportedLanguages } from 'gitnexus-shared';
+// `tree-sitter-dart` is an optional/vendored grammar that may be absent on a
+// default install. Loaded lazily + guarded via parser-loader rather than
+// statically imported: this module is pulled onto the main thread eagerly by
+// the scope-resolution registry and the language-provider index, so a top-level
+// `import Dart from 'tree-sitter-dart'` would throw ERR_MODULE_NOT_FOUND at
+// module-load and crash `analyze` even for repos with no Dart files (#2091,
+// #2093). The grammar is only ever needed inside the lazy getters below.
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 const DART_SCOPE_QUERY = `
 ; ── Scopes ───────────────────────────────────────────────────────────────────
@@ -134,14 +142,19 @@ let _query: Parser.Query | null = null;
 export function getDartParser(): Parser {
   if (_parser === null) {
     _parser = new Parser();
-    _parser.setLanguage(Dart as Parameters<Parser['setLanguage']>[0]);
+    _parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Dart) as Parameters<Parser['setLanguage']>[0],
+    );
   }
   return _parser;
 }
 
 export function getDartScopeQuery(): Parser.Query {
   if (_query === null) {
-    _query = new Parser.Query(Dart as Parameters<Parser['setLanguage']>[0], DART_SCOPE_QUERY);
+    _query = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Dart) as Parameters<Parser['setLanguage']>[0],
+      DART_SCOPE_QUERY,
+    );
   }
   return _query;
 }
