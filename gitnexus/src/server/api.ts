@@ -569,7 +569,10 @@ export const handleFsListRequest = async (
       res.status(400).json({ error: '"dir" must be an absolute path' });
       return;
     }
-    if (path.normalize(dir) !== path.resolve(dir)) {
+    // Skip the traversal guard for bare root directories (/ on Linux, C:\ on
+    // Windows) where path.normalize and path.resolve diverge on Windows.
+    const isRoot = dir === path.parse(dir).root;
+    if (!isRoot && path.normalize(dir) !== path.resolve(dir)) {
       res.status(400).json({ error: '"dir" must not contain traversal sequences' });
       return;
     }
