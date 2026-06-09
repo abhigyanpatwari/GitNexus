@@ -424,6 +424,94 @@ describe('uninstallCommand', () => {
     expect(out).not.toContain('command = "gitnexus"');
   });
 
+  // ── #5 (regression): a multiline line containing an odd count of BOTH
+  // delimiters must not desync the scanner (it previously stuck in multiline
+  // mode and failed to strip the real section). ──
+  it('strips the real section even when a multiline string mixes \'\'\' and """ on one line', async () => {
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(
+      configPath,
+      [
+        '[mcp_servers.other]',
+        // Opens a ''' literal; the """ on this same line is data, not an opener.
+        'note = \'\'\'has """ inside',
+        'still in string [mcp_servers.gitnexus]',
+        "'''",
+        'command = "other"',
+        '',
+        '[mcp_servers.gitnexus]',
+        'command = "gitnexus"',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    const out = await fs.readFile(configPath, 'utf-8');
+    // The multiline literal (incl. the fake header line) is preserved...
+    expect(out).toContain('still in string [mcp_servers.gitnexus]');
+    expect(out).toContain('command = "other"');
+    // ...and the real section was actually removed (the bug left it behind).
+    expect(out).not.toContain('command = "gitnexus"');
+  });
+
+  // ── sweep: a section header with a trailing inline comment is still stripped ──
+  it('strips a [mcp_servers.gitnexus] header that has a trailing inline comment', async () => {
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(
+      configPath,
+      [
+        '[mcp_servers.other]',
+        'command = "other"',
+        '',
+        '[mcp_servers.gitnexus] # GitNexus MCP',
+        'command = "gitnexus"',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    const out = await fs.readFile(configPath, 'utf-8');
+    expect(out).not.toContain('mcp_servers.gitnexus');
+    expect(out).not.toContain('command = "gitnexus"');
+    expect(out).toContain('[mcp_servers.other]');
+  });
+
+  // ── sweep: CRLF config.toml keeps its line endings (no silent LF rewrite) ──
+  it('preserves CRLF line endings when stripping the Codex section', async () => {
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(
+      configPath,
+      [
+        '[mcp_servers.other]',
+        'command = "other"',
+        '',
+        '[mcp_servers.gitnexus]',
+        'command = "gitnexus"',
+        '',
+      ].join('\r\n'),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    const out = await fs.readFile(configPath, 'utf-8');
+    expect(out).not.toContain('[mcp_servers.gitnexus]');
+    expect(out).toContain('[mcp_servers.other]');
+    expect(out).toContain('\r\n');
+    // No bare LF: every newline is part of a CRLF.
+    expect(out).not.toMatch(/[^\r]\n/);
+  });
+
   // ── dry-run leaves hooks and skills intact ──
   it('dry run does not remove hooks, hook scripts, or skills', async () => {
     const settingsPath = path.join(tempHome, '.claude', 'settings.json');

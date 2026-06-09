@@ -3,12 +3,22 @@
  *
  * Reverses `gitnexus setup`: removes the GitNexus MCP server entries,
  * skills, and hooks that setup writes into each detected AI editor's
- * global configuration. Mirrors setup.ts target-by-target.
+ * global configuration. The set of targets (paths, key paths, hook events,
+ * needles, script dirs) is shared with setup.ts via editor-targets.ts, so the
+ * two stay in lock-step.
  *
  * Surgical and idempotent: only gitnexus-owned keys/entries/dirs are
  * removed. Unrelated user config (other MCP servers, other hooks, JSONC
  * comments, indentation) is preserved. Files that are absent or that
  * never contained a gitnexus entry are left untouched.
+ *
+ * Ownership is by name: skill directories are matched by the bundled gitnexus
+ * skill names, MCP entries by the `gitnexus` key, hooks by the gitnexus command
+ * needle. There is no per-install provenance marker yet (a user dir that
+ * happens to share a bundled skill name, or files a user added inside an
+ * installed skill dir, are matched purely by name) — which is why uninstall is
+ * a dry-run preview by default and prints the exact paths it will remove.
+ * Richer provenance tracking is a tracked follow-up.
  *
  * Intentionally NOT done here (printed as hints instead, since both are
  * destructive in ways setup never caused):
@@ -20,7 +30,6 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
@@ -33,6 +42,7 @@ import {
   type ParseError,
   type JSONPath,
 } from 'jsonc-parser';
+import { getEditorTargets, detectIndentation } from './editor-targets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,17 +52,6 @@ interface UninstallResult {
   removed: string[];
   skipped: string[];
   errors: string[];
-}
-
-/**
- * Detect indentation style from file content (mirrors setup.ts) so that
- * jsonc edits preserve the file's existing formatting.
- */
-function detectIndentation(raw: string): { tabSize: number; insertSpaces: boolean } {
-  const firstIndented = raw.match(/^( +|\t)/m);
-  if (!firstIndented) return { tabSize: 2, insertSpaces: true };
-  if (firstIndented[1] === '\t') return { tabSize: 1, insertSpaces: false };
-  return { tabSize: firstIndented[1].length, insertSpaces: true };
 }
 
 type RemovalStatus = 'removed' | 'absent' | 'corrupt' | 'missing';
@@ -230,23 +229,32 @@ async function listGitnexusSkillNames(): Promise<string[]> {
 }
 
 /**
- * Remove the gitnexus skill directories from a target skills folder.
- * Returns the count removed (or that would be removed in dryRun).
+ * Remove the gitnexus skill directories from a target skills folder. Returns
+ * the absolute paths that were removed (or would be removed in dryRun) so the
+ * caller can show the user exactly what is affected.
  */
 async function removeSkillsFrom(
   targetDir: string,
   skillNames: string[],
   dryRun: boolean,
-): Promise<number> {
-  let removed = 0;
+): Promise<string[]> {
+  const removed: string[] = [];
   for (const name of skillNames) {
-    // Defense in depth: an empty/relative name would resolve back to
+    // Defense in depth: an empty/relative/absolute name would resolve back to
     // targetDir (or escape it) and wipe unrelated content. Only act on a
     // plain child directory name.
-    if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+    if (
+      !name ||
+      name.includes('/') ||
+      name.includes('\\') ||
+      name === '.' ||
+      name === '..' ||
+      path.isAbsolute(name)
+    ) {
       continue;
     }
-    if (await removeDir(path.join(targetDir, name), dryRun)) removed++;
+    const dir = path.join(targetDir, name);
+    if (await removeDir(dir, dryRun)) removed.push(dir);
   }
   return removed;
 }
@@ -271,23 +279,38 @@ function stripTomlSection(raw: string, sectionName: string): string {
   const header = `[${sectionName}]`;
   const childTable = `[${sectionName}.`;
   const childArray = `[[${sectionName}.`;
-  const headerRe = /^\[\[?[^[\]]+\]\]?\s*(#.*)?$/;
+  // Capture group 1 is the bracket token only, so a trailing inline comment
+  // (`[mcp_servers.gitnexus] # note`) is stripped before classification —
+  // otherwise an exact `=== header` check fails and the section is left behind.
+  const headerRe = /^(\[\[?[^[\]]+\]\]?)\s*(#.*)?$/;
 
-  const isSectionHeader = (t: string): boolean =>
-    t === header || t.startsWith(childTable) || t.startsWith(childArray);
+  const isSectionHeader = (token: string): boolean =>
+    token === header || token.startsWith(childTable) || token.startsWith(childArray);
 
-  // Count non-overlapping occurrences of a delimiter on a line.
-  const countDelim = (s: string, d: string): number => {
-    let n = 0;
-    for (let i = s.indexOf(d); i !== -1; i = s.indexOf(d, i + d.length)) n++;
-    return n;
-  };
-  // A line opens (or closes) a multiline string when it contains an odd
-  // number of one of the multiline delimiters.
-  const openingDelim = (s: string): string | null => {
-    if (countDelim(s, '"""') % 2 === 1) return '"""';
-    if (countDelim(s, "'''") % 2 === 1) return "'''";
-    return null;
+  // Return the multiline-string delimiter still OPEN at the end of `line`,
+  // given the state at its start (null = outside any multiline string). Scans
+  // left→right so the delimiter that actually opens first wins — a line with an
+  // odd count of BOTH `"""` and `'''` (e.g. `x = '''has """ inside`) no longer
+  // mis-picks the wrong delimiter and desyncs the scanner.
+  const multilineStateAfter = (line: string, startState: string | null): string | null => {
+    let state = startState;
+    let i = 0;
+    while (i < line.length) {
+      if (state) {
+        const close = line.indexOf(state, i);
+        if (close === -1) return state; // still open at end of line
+        i = close + state.length;
+        state = null;
+      } else {
+        const a = line.indexOf('"""', i);
+        const b = line.indexOf("'''", i);
+        if (a === -1 && b === -1) return null;
+        const useA = b === -1 || (a !== -1 && a < b);
+        state = useA ? '"""' : "'''";
+        i = (useA ? a : b) + 3;
+      }
+    }
+    return state;
   };
 
   const lines = raw.split(/\r?\n/);
@@ -298,14 +321,15 @@ function stripTomlSection(raw: string, sectionName: string): string {
   for (const line of lines) {
     if (mlDelim) {
       // Inside a multiline string: brackets here are data, not headers.
-      if (countDelim(line, mlDelim) % 2 === 1) mlDelim = null;
+      mlDelim = multilineStateAfter(line, mlDelim);
       if (!skipping) out.push(line);
       continue;
     }
 
     const trimmed = line.trim();
-    if (headerRe.test(trimmed)) {
-      if (isSectionHeader(trimmed)) {
+    const headerMatch = trimmed.match(headerRe);
+    if (headerMatch) {
+      if (isSectionHeader(headerMatch[1])) {
         // Drop a single blank separator line immediately above the section.
         if (!skipping && out.length > 0 && out[out.length - 1].trim() === '') out.pop();
         skipping = true;
@@ -319,18 +343,25 @@ function stripTomlSection(raw: string, sectionName: string): string {
 
     // Track whether this (non-header) line opens a multiline string so a
     // bracketed line inside it isn't mistaken for a header.
-    mlDelim = openingDelim(line);
+    mlDelim = multilineStateAfter(line, null);
 
     if (!skipping) out.push(line);
   }
 
-  let result = out.join('\n');
-  if (!result.endsWith('\n')) result += '\n';
+  // Preserve the file's line endings: a CRLF (Windows) config.toml should not
+  // be silently rewritten to LF. Rejoin with the dominant EOL of the input.
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  let result = out.join(eol);
+  if (!result.endsWith(eol)) result += eol;
   return result;
 }
 
-async function uninstallCodex(result: UninstallResult, dryRun: boolean): Promise<void> {
-  const configPath = path.join(os.homedir(), '.codex', 'config.toml');
+async function uninstallCodex(
+  result: UninstallResult,
+  dryRun: boolean,
+  configPath: string,
+  tomlSection: string,
+): Promise<void> {
   let raw: string;
   try {
     raw = await fs.readFile(configPath, 'utf-8');
@@ -339,13 +370,13 @@ async function uninstallCodex(result: UninstallResult, dryRun: boolean): Promise
     return;
   }
 
-  if (!raw.includes('[mcp_servers.gitnexus]')) {
+  if (!raw.includes(`[${tomlSection}]`)) {
     result.skipped.push('Codex MCP (not configured)');
     return;
   }
 
   if (dryRun) {
-    result.removed.push('Codex MCP server');
+    result.removed.push(`Codex MCP server — [${tomlSection}] in ${configPath}`);
     return;
   }
 
@@ -357,15 +388,15 @@ async function uninstallCodex(result: UninstallResult, dryRun: boolean): Promise
       windowsHide: true,
       timeout: 10000,
     });
-    result.removed.push('Codex MCP server');
+    result.removed.push("Codex MCP server — via 'codex mcp remove gitnexus'");
     return;
   } catch {
     // Fall through to manual edit.
   }
 
   try {
-    await fs.writeFile(configPath, stripTomlSection(raw, 'mcp_servers.gitnexus'), 'utf-8');
-    result.removed.push('Codex MCP server (~/.codex/config.toml)');
+    await fs.writeFile(configPath, stripTomlSection(raw, tomlSection), 'utf-8');
+    result.removed.push(`Codex MCP server — [${tomlSection}] in ${configPath}`);
   } catch (err: any) {
     result.errors.push(`Codex: ${err.message}`);
   }
@@ -375,7 +406,7 @@ async function uninstallCodex(result: UninstallResult, dryRun: boolean): Promise
 
 export const uninstallCommand = async (options?: { force?: boolean }) => {
   const dryRun = !options?.force;
-  const home = os.homedir();
+  const targets = getEditorTargets();
 
   console.log('');
   console.log('  GitNexus Uninstall');
@@ -389,33 +420,13 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
   const result: UninstallResult = { removed: [], skipped: [], errors: [] };
 
   // ─── MCP server entries (JSONC editors) ──────────────────────────
-  const mcpTargets: Array<{ label: string; file: string; keyPath: JSONPath }> = [
-    {
-      label: 'Cursor',
-      file: path.join(home, '.cursor', 'mcp.json'),
-      keyPath: ['mcpServers', 'gitnexus'],
-    },
-    {
-      label: 'Claude Code',
-      file: path.join(home, '.claude.json'),
-      keyPath: ['mcpServers', 'gitnexus'],
-    },
-    {
-      label: 'Antigravity',
-      file: path.join(home, '.gemini', 'antigravity', 'mcp_config.json'),
-      keyPath: ['mcpServers', 'gitnexus'],
-    },
-    {
-      label: 'OpenCode',
-      file: path.join(home, '.config', 'opencode', 'opencode.json'),
-      keyPath: ['mcp', 'gitnexus'],
-    },
-  ];
-
-  for (const target of mcpTargets) {
+  for (const target of targets.mcpJsonc) {
     try {
       const status = await removeJsoncKey(target.file, target.keyPath, dryRun);
-      if (status === 'removed') result.removed.push(`${target.label} MCP server`);
+      if (status === 'removed')
+        result.removed.push(
+          `${target.label} MCP server — ${target.keyPath.join('.')} in ${target.file}`,
+        );
       else if (status === 'corrupt')
         result.errors.push(
           `${target.label}: ${path.basename(target.file)} is corrupt — left untouched`,
@@ -426,66 +437,41 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     }
   }
 
-  await uninstallCodex(result, dryRun);
+  await uninstallCodex(result, dryRun, targets.codex.configFile, targets.codex.tomlSection);
 
   // ─── Hooks ───────────────────────────────────────────────────────
-  // Claude Code: PreToolUse/PostToolUse entries + bundled hook scripts.
-  try {
-    const { status, count } = await removeHookEntries(
-      path.join(home, '.claude', 'settings.json'),
-      ['PreToolUse', 'PostToolUse'],
-      'gitnexus-hook',
-      dryRun,
-    );
-    if (status === 'removed') result.removed.push(`Claude Code hooks (${count})`);
-    else if (status === 'corrupt')
-      result.errors.push('Claude Code hooks: settings.json is corrupt — left untouched');
-    // Don't delete the hook script while a registered entry may still point
-    // at it (corrupt = we couldn't parse/remove the entry) — that would
-    // leave the editor invoking a missing script on every matched tool call.
-    if (
-      status !== 'corrupt' &&
-      (await removeDir(path.join(home, '.claude', 'hooks', 'gitnexus'), dryRun))
-    )
-      result.removed.push('Claude Code hook scripts (~/.claude/hooks/gitnexus/)');
-  } catch (err: any) {
-    result.errors.push(`Claude Code hooks: ${err.message}`);
-  }
-
-  // Antigravity / Gemini CLI: AfterTool entry + bundled adapter scripts.
-  try {
-    const { status, count } = await removeHookEntries(
-      path.join(home, '.gemini', 'settings.json'),
-      ['AfterTool'],
-      'gitnexus-antigravity-hook',
-      dryRun,
-    );
-    if (status === 'removed') result.removed.push(`Antigravity hooks (${count})`);
-    else if (status === 'corrupt')
-      result.errors.push('Antigravity hooks: settings.json is corrupt — left untouched');
-    // See the Claude block above: don't orphan a still-registered hook.
-    if (
-      status !== 'corrupt' &&
-      (await removeDir(path.join(home, '.gemini', 'config', 'hooks', 'gitnexus'), dryRun))
-    )
-      result.removed.push('Antigravity hook scripts (~/.gemini/config/hooks/gitnexus/)');
-  } catch (err: any) {
-    result.errors.push(`Antigravity hooks: ${err.message}`);
+  for (const hook of targets.hooks) {
+    try {
+      const { status, count } = await removeHookEntries(
+        hook.settingsFile,
+        hook.events,
+        hook.needle,
+        dryRun,
+      );
+      if (status === 'removed')
+        result.removed.push(`${hook.label} hooks (${count}) — ${hook.settingsFile}`);
+      else if (status === 'corrupt')
+        result.errors.push(
+          `${hook.label} hooks: ${path.basename(hook.settingsFile)} is corrupt — left untouched`,
+        );
+      // Don't delete the hook script while a registered entry may still point
+      // at it (corrupt = we couldn't parse/remove the entry) — that would
+      // leave the editor invoking a missing script on every matched tool call.
+      if (status !== 'corrupt' && (await removeDir(hook.scriptDir, dryRun)))
+        result.removed.push(`${hook.label} hook scripts — ${hook.scriptDir}`);
+    } catch (err: any) {
+      result.errors.push(`${hook.label} hooks: ${err.message}`);
+    }
   }
 
   // ─── Skills ──────────────────────────────────────────────────────
+  // Skill directories are identified by the bundled gitnexus skill names; the
+  // exact paths are listed below so the user can see what will be removed.
   const skillNames = await listGitnexusSkillNames();
-  const skillTargets: Array<{ label: string; dir: string }> = [
-    { label: 'Claude Code', dir: path.join(home, '.claude', 'skills') },
-    { label: 'Antigravity', dir: path.join(home, '.gemini', 'antigravity', 'skills') },
-    { label: 'Cursor', dir: path.join(home, '.cursor', 'skills') },
-    { label: 'OpenCode', dir: path.join(home, '.config', 'opencode', 'skills') },
-    { label: 'Codex', dir: path.join(home, '.agents', 'skills') },
-  ];
-  for (const target of skillTargets) {
+  for (const target of targets.skills) {
     try {
-      const count = await removeSkillsFrom(target.dir, skillNames, dryRun);
-      if (count > 0) result.removed.push(`${target.label} skills (${count})`);
+      const removedDirs = await removeSkillsFrom(target.dir, skillNames, dryRun);
+      for (const dir of removedDirs) result.removed.push(`${target.label} skill — ${dir}`);
     } catch (err: any) {
       result.errors.push(`${target.label} skills: ${err.message}`);
     }
@@ -514,6 +500,10 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     // cleanup (which has already run by this point).
     process.exitCode = 1;
   }
+
+  console.log('');
+  console.log('  Note: skill directories are matched by bundled gitnexus skill name. If you');
+  console.log('  customized files inside an installed skill dir, back them up before --force.');
 
   console.log('');
   console.log('  Not removed automatically:');
