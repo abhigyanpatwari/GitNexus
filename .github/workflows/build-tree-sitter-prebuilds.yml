@@ -386,11 +386,17 @@ jobs:
   aggregate:
     name: Vendor prebuilds + open PR
     needs: [guard, build]
+    # Open the prebuild PR on a non-fork pull_request that bumped a grammar
+    # version (the documented version-change -> prebuild-PR flow), or on a manual
+    # dispatch with open_pr=true. Event-gating is explicit so we never rely on
+    # GHA coercing a null `inputs.open_pr` on pull_request events (Codex F4):
+    # `inputs.open_pr` is null off-dispatch, and `null != false` is direction-
+    # ambiguous, so `open_pr` is only consulted on workflow_dispatch.
     if: >-
       needs.guard.outputs.any == 'true' &&
       needs.guard.outputs.release_app == 'true' &&
-      inputs.open_pr != false &&
-      github.event.pull_request.head.repo.fork != true
+      github.event.pull_request.head.repo.fork != true &&
+      (github.event_name == 'pull_request' || inputs.open_pr == true)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
