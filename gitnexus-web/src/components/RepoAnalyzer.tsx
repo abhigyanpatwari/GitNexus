@@ -191,6 +191,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const isMountedRef = useRef(true);
 
   useEffect(() => {
+    // Set true on every mount (not just the initial ref value) so the guard is
+    // correct under React StrictMode's mount→unmount→mount double-invoke.
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       sseControllerRef.current?.abort();
