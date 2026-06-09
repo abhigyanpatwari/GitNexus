@@ -1,0 +1,20 @@
+{
+  "straight-line": {
+    "fingerprint": "f5524690b5b7d484573710938c5e9a28e08ef0882fea95111f01575c71f4a66a",
+    "scaling_budget": 1.8,
+    "bytes_budget": 1.2,
+    "_note": "#2081 M1: ONE function, N coalescing statements (extendBlock path). Time ~1.25-1.39 after the O(n)-fragment-join fix; bytes ~1.03 (linear). Budget 1.8 catches a return to ~4.0 quadratic; small absolute time → noisier, hence the wider time budget. Re-baseline the fingerprint only on an intentional CFG-shape change."
+  },
+  "many-functions": {
+    "fingerprint": "c167ccd83086254e2b71eca153ca4a833be14b2d2a3827ab76b49f643aad13d5",
+    "scaling_budget": 1.5,
+    "bytes_budget": 1.2,
+    "_note": "#2081 M1: N small branchy functions (collect walk + per-function build). Time ~1.0 (clean linear); bytes ~1.01."
+  },
+  "branchy": {
+    "fingerprint": "944ab56ffc70e195f74d8533a8aadf4930d37d13bcfa47cc4feff29e74ddca5c",
+    "scaling_budget": 1.6,
+    "bytes_budget": 1.2,
+    "_note": "#2081 M1: ONE function, N sequential ifs (block/edge growth in one CFG). Time ~1.1; bytes ~1.04."
+  }
+}

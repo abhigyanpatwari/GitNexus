@@ -17,7 +17,14 @@ import type { BasicBlockData, CfgEdgeData, CfgEdgeKind, FunctionCfg } from './ty
 interface MutableBlock {
   startLine: number;
   endLine: number;
-  text: string;
+  /**
+   * Block source accumulated as fragments, joined once in {@link finish}. A
+   * coalescing straight-line run appends one fragment per statement; storing
+   * them as an array and joining at the end keeps that O(n) instead of the
+   * O(n²) of repeatedly concatenating onto a growing string (a long generated
+   * init function is the worst case — see bench/cfg).
+   */
+  textParts: string[];
   kind: BasicBlockData['kind'];
 }
 
@@ -48,7 +55,7 @@ export class CfgBuilder {
     text: string,
     kind: BasicBlockData['kind'] = 'normal',
   ): number {
-    this.blocks.push({ startLine, endLine, text, kind });
+    this.blocks.push({ startLine, endLine, textParts: text ? [text] : [], kind });
     return this.blocks.length - 1;
   }
 
@@ -70,7 +77,7 @@ export class CfgBuilder {
     const b = this.blocks[index];
     if (!b) return;
     if (endLine > b.endLine) b.endLine = endLine;
-    if (appendText) b.text = b.text ? `${b.text}\n${appendText}` : appendText;
+    if (appendText) b.textParts.push(appendText);
   }
 
   get blockCount(): number {
@@ -87,7 +94,13 @@ export class CfgBuilder {
       functionStartColumn: this.functionStartColumn,
       entryIndex: this.entryIndex,
       exitIndex: this.exitIndex,
-      blocks: this.blocks.map((b, index) => ({ index, ...b })),
+      blocks: this.blocks.map((b, index) => ({
+        index,
+        startLine: b.startLine,
+        endLine: b.endLine,
+        text: b.textParts.join('\n'),
+        kind: b.kind,
+      })),
       edges: [...this.edges],
     };
   }
