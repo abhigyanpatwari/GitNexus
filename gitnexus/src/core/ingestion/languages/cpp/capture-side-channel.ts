@@ -42,6 +42,11 @@ import {
   applyCppTwoPhaseSideChannel,
   type CppTwoPhaseSideChannel,
 } from './two-phase-lookup.js';
+import {
+  applyCppMemberLookupSideChannel,
+  collectCppMemberLookupSideChannel,
+  type CppMemberLookupSideChannel,
+} from './member-lookup.js';
 
 /**
  * Plain JSON-serializable composite of every C++ capture-time side-channel
@@ -62,6 +67,7 @@ export interface CppCaptureSideChannel {
   readonly inlineNamespaceRanges: readonly string[];
   readonly fileLocal: CppFileLocalSideChannel;
   readonly twoPhase: CppTwoPhaseSideChannel;
+  readonly memberLookup: CppMemberLookupSideChannel;
 }
 
 /**
@@ -74,6 +80,7 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
   const inlineNamespaceRanges = collectCppInlineNamespaceSideChannel(filePath);
   const fileLocal = collectCppFileLocalSideChannel(filePath);
   const twoPhase = collectCppTwoPhaseSideChannel(filePath);
+  const memberLookup = collectCppMemberLookupSideChannel(filePath);
 
   const isEmpty =
     adl.argInfoBySite.length === 0 &&
@@ -82,10 +89,12 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
     fileLocal.fileLocalNames.length === 0 &&
     fileLocal.anonymousNamespaceRanges.length === 0 &&
     twoPhase.dependentBases.length === 0 &&
-    twoPhase.dependentPackBaseClasses.length === 0;
+    twoPhase.dependentPackBaseClasses.length === 0 &&
+    memberLookup.baseEdges.length === 0 &&
+    memberLookup.memberUsings.length === 0;
   if (isEmpty) return undefined;
 
-  return { kind: 'cpp', adl, inlineNamespaceRanges, fileLocal, twoPhase };
+  return { kind: 'cpp', adl, inlineNamespaceRanges, fileLocal, twoPhase, memberLookup };
 }
 
 /**
@@ -108,4 +117,7 @@ export function applyCppCaptureSideChannel(parsed: ParsedFile): void {
   }
   if (data.fileLocal !== undefined) applyCppFileLocalSideChannel(parsed.filePath, data.fileLocal);
   if (data.twoPhase !== undefined) applyCppTwoPhaseSideChannel(parsed.filePath, data.twoPhase);
+  if (data.memberLookup !== undefined) {
+    applyCppMemberLookupSideChannel(parsed.filePath, data.memberLookup);
+  }
 }

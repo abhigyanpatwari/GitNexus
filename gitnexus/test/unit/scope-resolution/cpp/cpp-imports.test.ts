@@ -14,9 +14,14 @@ import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helper
 
 function parseNode(src: string, type: string): SyntaxNode | null {
   const tree = getCppParser().parse(src);
-  for (let i = 0; i < tree.rootNode.namedChildCount; i++) {
-    const child = tree.rootNode.namedChild(i);
-    if (child?.type === type) return child as SyntaxNode;
+  const stack: SyntaxNode[] = [tree.rootNode as SyntaxNode];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === type) return node;
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child !== null) stack.push(child as SyntaxNode);
+    }
   }
   return null;
 }
@@ -59,6 +64,12 @@ describe('C++ include decomposition (splitCppInclude)', () => {
 // ── using declaration decomposition ─────────────────────────────────────────
 
 describe('C++ using declaration decomposition (splitCppUsingDecl)', () => {
+  it('does not treat a class-scope member using-declaration as an import', () => {
+    const node = parseNode('struct Derived : Base { using Base::run; };', 'using_declaration');
+    expect(node).not.toBeNull();
+    expect(splitCppUsingDecl(node!)).toBeNull();
+  });
+
   it('decomposes "using namespace std;" as wildcard import', () => {
     const node = parseNode('using namespace std;', 'using_declaration');
     expect(node).not.toBeNull();
