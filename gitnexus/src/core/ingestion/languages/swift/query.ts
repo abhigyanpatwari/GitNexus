@@ -43,7 +43,15 @@
  */
 
 import Parser from 'tree-sitter';
-import Swift from 'tree-sitter-swift';
+import { SupportedLanguages } from 'gitnexus-shared';
+// `tree-sitter-swift` is an optional/vendored grammar that may be absent on a
+// default install. It is loaded lazily + guarded via parser-loader rather than
+// statically imported: this module is pulled onto the main thread eagerly by
+// the scope-resolution registry and the language-provider index, so a top-level
+// `import Swift from 'tree-sitter-swift'` would throw ERR_MODULE_NOT_FOUND at
+// module-load and crash `analyze` even for repos with no Swift files (#2091,
+// #2093). The grammar is only ever needed inside the lazy getters below.
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 const SWIFT_SCOPE_QUERY = `
 ;; ── Scopes ──────────────────────────────────────────────────────────
@@ -186,14 +194,19 @@ let _query: Parser.Query | null = null;
 export function getSwiftParser(): Parser {
   if (_parser === null) {
     _parser = new Parser();
-    _parser.setLanguage(Swift as Parameters<Parser['setLanguage']>[0]);
+    _parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Swift) as Parameters<Parser['setLanguage']>[0],
+    );
   }
   return _parser;
 }
 
 export function getSwiftScopeQuery(): Parser.Query {
   if (_query === null) {
-    _query = new Parser.Query(Swift as Parameters<Parser['setLanguage']>[0], SWIFT_SCOPE_QUERY);
+    _query = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Swift) as Parameters<Parser['setLanguage']>[0],
+      SWIFT_SCOPE_QUERY,
+    );
   }
   return _query;
 }
