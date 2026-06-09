@@ -1,0 +1,173 @@
+name: Vendored grammar updates
+
+# Gives GitNexus's VENDORED tree-sitter grammars (gitnexus/vendor/tree-sitter-*)
+# the same daily "you're behind upstream" visibility Dependabot gives the
+# npm-dependency grammars. The vendored grammars are off the dependency graph,
+# so Dependabot can't see them; this checks each against its upstream (npm
+# latest for swift/kotlin, GitHub default-branch drift for dart/proto) and
+# opens/updates a tracking issue when one falls behind.
+#
+# Logic + per-grammar upstream coords: .github/scripts/check-vendored-grammar-updates.py
+# Companion: tree-sitter-upgrade-readiness.yml tracks the tree-sitter RUNTIME
+# upgrade (ABI), a different concern from vendored version drift.
+#
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+
+on:
+  schedule:
+    # Daily at 09:05 UTC — just after the upgrade-readiness tracker (09:00) and
+    # Dependabot's daily run, so all dependency signals surface together.
+    - cron: '5 9 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/check-vendored-grammar-updates.py'
+      - '.github/workflows/vendored-grammar-updates.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check vendored grammar drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Needed to open/update/close the tracking issue on scheduled runs.
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check vendored grammar drift
+        id: check
+        shell: bash
+        env:
+          # Raises the GitHub API rate limit (60 → 5000/hr) for the drift fetches.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          python3 .github/scripts/check-vendored-grammar-updates.py > drift-report.md
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          {
+            echo 'report<<DRIFT_EOF'
+            cat drift-report.md
+            echo 'DRIFT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "=== Report ==="
+          cat drift-report.md
+
+      # On PR runs the script just self-validates; drift is informational.
+      - name: Annotate PR when a vendored grammar is behind
+        if: github.event_name == 'pull_request' && steps.check.outputs.exit_code != '0'
+        run: echo "::warning::A vendored tree-sitter grammar is behind upstream. See the job output."
+
+      - name: Upsert tracking issue on scheduled drift
+        if: github.event_name == 'schedule' && steps.check.outputs.exit_code != '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REPORT: ${{ steps.check.outputs.report }}
+        with:
+          script: |
+            const title = 'Vendored tree-sitter grammar updates available';
+            const report = process.env.REPORT;
+            const body =
+              report +
+              '\n\n<sub>Generated daily by `.github/workflows/vendored-grammar-updates.yml`. ' +
+              'Closes automatically when every vendored grammar is current with upstream.</sub>';
+
+            // One status per grammar, parsed from the report's last table cell.
+            const parseRows = (md) => {
+              const map = {};
+              for (const m of (md || '').matchAll(/\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+) \|$/gm)) {
+                map[m[1]] = m[2].trim();
+              }
+              return map;
+            };
+
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'tree-sitter-drift',
+              per_page: 20,
+            });
+            const existing = open.find((i) => i.title === title);
+
+            if (existing) {
+              const oldRows = parseRows(existing.body);
+              const newRows = parseRows(report);
+              const changes = [];
+              for (const [name, status] of Object.entries(newRows)) {
+                if (oldRows[name] && oldRows[name] !== status) {
+                  changes.push(`\`${name}\`: ${oldRows[name]} → ${status}`);
+                }
+              }
+              const behind = Object.entries(newRows)
+                .filter(([, s]) => s.includes('behind'))
+                .map(([n]) => n);
+              let comment = `Behind upstream: ${behind.length ? behind.map((n) => `\`${n}\``).join(', ') : 'none'}.`;
+              comment += changes.length
+                ? '\n\nChanges since last run:\n' + changes.map((c) => `- ${c}`).join('\n')
+                : ' No changes from the previous run.';
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: comment,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.info(`Updated issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['tree-sitter-drift', 'dependencies'],
+              });
+              core.info(`Opened issue #${created.number}`);
+            }
+
+      - name: Close tracking issue when all vendored grammars are current
+        if: github.event_name == 'schedule' && steps.check.outputs.exit_code == '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'Vendored tree-sitter grammar updates available';
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'tree-sitter-drift',
+              per_page: 20,
+            });
+            const existing = open.find((i) => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: 'All vendored tree-sitter grammars are now current with upstream. Closing automatically.',
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+              });
+              core.info(`Closed issue #${existing.number}`);
+            }
