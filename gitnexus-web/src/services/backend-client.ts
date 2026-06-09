@@ -755,21 +755,56 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
   return response.json();
 };
 
-// ── Filesystem API ───────────────────────────────────────────────────────
+// ── Upload API ─────────────────────────────────────────────────────────────
 
-export interface DirEntry {
-  name: string;
-}
+/**
+ * Upload a folder (selected via `<input webkitdirectory>`) and start analysis.
+ * Sends the file blobs plus a JSON `manifest` of their relative paths — the
+ * multipart filename can't carry the path (browsers strip separators), so the
+ * manifest is the source of truth. Uses XHR for upload progress. Returns the
+ * analysis jobId, which the caller drives through the normal SSE flow.
+ */
+export const uploadFolder = (
+  files: File[],
+  manifest: string[],
+  onProgress?: (percent: number) => void,
+): Promise<{ jobId: string; status: string }> => {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    // Manifest MUST precede the file parts (the server enforces this).
+    form.append('manifest', JSON.stringify(manifest));
+    for (const f of files) form.append('files', f);
 
-/** List subdirectories at the given absolute server-side path. */
-export const listDirectories = async (dir: string): Promise<{ entries: DirEntry[] }> => {
-  const response = await fetchWithTimeout(
-    `${_backendUrl}/api/fs/list?dir=${encodeURIComponent(dir)}`,
-    undefined,
-    5_000,
-  );
-  await assertOk(response);
-  return response.json() as Promise<{ entries: DirEntry[] }>;
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${_backendUrl}/api/analyze/upload`);
+    xhr.timeout = 5 * 60_000; // up to 5 min for large repos
+    xhr.upload.onprogress = (e) => {
+      if (onProgress && e.lengthComputable) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as { jobId: string; status: string });
+        } catch {
+          reject(new Error('Invalid server response'));
+        }
+        return;
+      }
+      let msg = `Upload failed (${xhr.status})`;
+      try {
+        const body = JSON.parse(xhr.responseText);
+        if (body?.error) msg = body.error;
+      } catch {
+        /* keep default message */
+      }
+      reject(new Error(msg));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed: network error'));
+    xhr.ontimeout = () => reject(new Error('Upload timed out'));
+    xhr.send(form);
+  });
 };
 
 // ── Analyze API ────────────────────────────────────────────────────────────

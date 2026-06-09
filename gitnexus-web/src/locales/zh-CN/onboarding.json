@@ -61,13 +61,12 @@
     "gitlabRepositoryUrl": "GitLab 仓库 URL",
     "gitlabSupported": "支持 GitLab.com 和自托管 GitLab 实例。",
     "localFolderPath": "本地文件夹路径",
-    "browseForFolder": "浏览服务器目录",
     "hideBackground": "隐藏（分析继续在后台进行）",
-    "directoryPicker": {
-      "title": "浏览服务器目录",
-      "select": "选择此文件夹",
-      "empty": "此目录为空。",
-      "goBack": "返回上级"
+    "upload": {
+      "button": "上传文件夹",
+      "uploading": "上传中… {{percent}}%",
+      "selected": "已准备 {{count}} 个文件（已跳过 {{dropped}} 个：.git、node_modules、构建产物）",
+      "empty": "该文件夹中未找到可分析的文件。"
     }
   }
 }

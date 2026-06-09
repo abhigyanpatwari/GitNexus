@@ -35,6 +35,9 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import { createAnalyzeUploadHandler, requireLocalhostOrigin } from './analyze-upload.js';
+import { UPLOAD_ROOT } from './upload-paths.js';
+import { sweepStaleUploads } from './upload-sweep.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -564,66 +567,6 @@ const requestedRepo = (req: express.Request): string | undefined => {
 };
 
 /**
- * Handle a GET /api/fs/list request. Lists subdirectories at a given
- * absolute path. Extracted for unit testing (same rationale as
- * handleFileRequest — avoids CodeQL js/missing-rate-limiting false
- * positives in tests).
- */
-export const handleFsListRequest = async (
-  req: { query: any },
-  res: {
-    status: (code: number) => { json: (body: any) => void };
-    json: (body: any) => void;
-  },
-): Promise<void> => {
-  try {
-    const raw = req.query.dir ?? '/';
-    const dir = assertString(raw, 'dir');
-
-    if (!path.isAbsolute(dir)) {
-      res.status(400).json({ error: '"dir" must be an absolute path' });
-      return;
-    }
-    // Skip the traversal guard for bare root directories (/ on Linux, C:\ on
-    // Windows) where path.normalize and path.resolve diverge on Windows.
-    const isRoot = dir === path.parse(dir).root;
-    if (!isRoot && path.normalize(dir) !== path.resolve(dir)) {
-      res.status(400).json({ error: '"dir" must not contain traversal sequences' });
-      return;
-    }
-
-    let dirents;
-    try {
-      dirents = await fs.readdir(dir, { withFileTypes: true });
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') {
-        res.status(404).json({ error: 'Directory not found' });
-        return;
-      }
-      if (code === 'EACCES' || code === 'EPERM') {
-        res.status(403).json({ error: 'Permission denied' });
-        return;
-      }
-      throw err;
-    }
-
-    const entries = dirents
-      .filter((d) => d.isDirectory())
-      .map((d) => ({ name: d.name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    res.json({ entries });
-  } catch (err: unknown) {
-    if (err instanceof BadRequestError) {
-      res.status(err.status).json({ error: err.message });
-      return;
-    }
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-/**
  * Handle a GET /api/file request body. Extracted from createServer's route
  * registration so it can be unit-tested without spinning up an HTTP server
  * — calling app.get(...) inside a test triggers CodeQL's
@@ -801,6 +744,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const cleanupMcp = mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
 
+  // Backstop: remove any upload staging dirs orphaned by a previous crash.
+  void sweepStaleUploads().catch(() => {});
+
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
   // which would corrupt LadybugDB (analyze calls closeLbug + initLbug while embed has queries in flight).
   const activeRepoPaths = new Set<string>();
@@ -815,6 +761,149 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   const releaseRepoLock = (repoPath: string): void => {
     activeRepoPaths.delete(repoPath);
+  };
+
+  // Launch the analyze worker for an already-resolved repo directory. Shared by
+  // the JSON /api/analyze route and the multipart /api/analyze/upload route so
+  // the lock + fork + auto-retry + IPC machinery lives in one place.
+  const launchAnalysisWorker = (
+    job: { id: string },
+    targetPath: string,
+    opts: {
+      force?: boolean;
+      embeddings?: boolean;
+      dropEmbeddings?: boolean;
+      registryName?: string;
+    },
+  ): void => {
+    // Acquire shared repo lock (keyed on storagePath to match embed handler)
+    const analyzeLockKey = getStoragePath(targetPath);
+    const lockErr = acquireRepoLock(analyzeLockKey);
+    if (lockErr) {
+      jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
+      return;
+    }
+
+    jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
+
+    // ── Worker fork with auto-retry ──────────────────────────────
+    const MAX_WORKER_RETRIES = 2;
+    const callerPath = fileURLToPath(import.meta.url);
+    const isDev = callerPath.endsWith('.ts');
+    const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
+    const workerPath = path.join(path.dirname(callerPath), workerFile);
+    const tsxHookArgs: string[] = isDev
+      ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
+      : [];
+
+    const forkWorker = () => {
+      const currentJob = jobManager.getJob(job.id);
+      if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+
+      const child = fork(workerPath, [], {
+        execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+
+      // Capture stderr for crash diagnostics
+      let stderrChunks = '';
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderrChunks += chunk.toString();
+        if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
+      });
+
+      child.on('message', (msg: any) => {
+        if (msg.type === 'progress') {
+          jobManager.updateJob(job.id, {
+            status: 'analyzing',
+            progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+          });
+        } else if (msg.type === 'complete') {
+          releaseRepoLock(analyzeLockKey);
+          // Reinitialize backend BEFORE marking complete — ensures the new
+          // repo is queryable when the client receives the SSE complete event.
+          backend
+            .init()
+            .then(() => {
+              jobManager.updateJob(job.id, {
+                status: 'complete',
+                repoName: msg.result.repoName,
+              });
+            })
+            .catch((err) => {
+              logger.error({ err }, 'backend.init() failed after analyze:');
+              jobManager.updateJob(job.id, {
+                status: 'failed',
+                error: 'Server failed to reload after analysis. Try again.',
+              });
+            });
+        } else if (msg.type === 'error') {
+          releaseRepoLock(analyzeLockKey);
+          jobManager.updateJob(job.id, {
+            status: 'failed',
+            error: msg.message,
+          });
+        }
+      });
+
+      child.on('error', (err) => {
+        releaseRepoLock(analyzeLockKey);
+        jobManager.updateJob(job.id, {
+          status: 'failed',
+          error: `Worker process error: ${err.message}`,
+        });
+      });
+
+      child.on('exit', (code) => {
+        const j = jobManager.getJob(job.id);
+        if (!j || j.status === 'complete' || j.status === 'failed') return;
+
+        // Worker crashed — attempt retry if under the limit
+        if (j.retryCount < MAX_WORKER_RETRIES) {
+          j.retryCount++;
+          const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
+          const lastErr = stderrChunks.trim().split('\n').pop() || '';
+          logger.warn(
+            `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
+              (lastErr ? `: ${lastErr}` : ''),
+          );
+          jobManager.updateJob(job.id, {
+            status: 'analyzing',
+            progress: {
+              phase: 'retrying',
+              percent: j.progress.percent,
+              message: `Worker crashed, retrying (${j.retryCount}/${MAX_WORKER_RETRIES})...`,
+            },
+          });
+          stderrChunks = '';
+          setTimeout(forkWorker, delay);
+        } else {
+          // Exhausted retries — permanent failure
+          releaseRepoLock(analyzeLockKey);
+          jobManager.updateJob(job.id, {
+            status: 'failed',
+            error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
+          });
+        }
+      });
+
+      // Register child for cancellation + timeout tracking
+      jobManager.registerChild(job.id, child);
+
+      // Send start command to child
+      child.send({
+        type: 'start',
+        repoPath: targetPath,
+        options: {
+          force: !!opts.force,
+          embeddings: !!opts.embeddings,
+          dropEmbeddings: !!opts.dropEmbeddings,
+          ...(opts.registryName ? { registryName: opts.registryName } : {}),
+        },
+      });
+    };
+
+    forkWorker();
   };
 
   /**
@@ -1052,6 +1141,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           } catch {
             /* clone dir may not exist */
           }
+        }
+
+        // 2b. Delete the uploaded repo dir if entry.path lives under
+        // UPLOAD_ROOT. Drive this off entry.path (not a name-rederived dir) so
+        // a same-named clone is never affected.
+        const resolvedEntry = path.resolve(entry.path);
+        if (resolvedEntry === UPLOAD_ROOT || resolvedEntry.startsWith(UPLOAD_ROOT + path.sep)) {
+          await fs.rm(resolvedEntry, { recursive: true, force: true }).catch(() => {});
         }
 
         // 3. Unregister from the global registry
@@ -1325,8 +1422,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     await handleFileRequest(req, res, entry.path);
   });
 
-  app.get('/api/fs/list', createRouteLimiter(), (req, res) => handleFsListRequest(req, res));
-
   // Grep — regex search across file contents in the indexed repo
   // Uses filesystem-based search for memory efficiency (never loads all files into memory)
   // Rate-limited (CodeQL js/missing-rate-limiting): scans every file in
@@ -1490,229 +1585,127 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // ── Analyze API ──────────────────────────────────────────────────────
 
   // POST /api/analyze — start a new analysis job
-  app.post('/api/analyze', createRouteLimiter({ limit: 10 }), async (req, res) => {
-    try {
-      const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
+  app.post(
+    '/api/analyze',
+    createRouteLimiter({ limit: 10 }),
+    requireLocalhostOrigin,
+    async (req, res) => {
+      try {
+        const { url: repoUrl, force, embeddings, dropEmbeddings } = req.body;
+        // `path` is canonicalized below (realpath), so keep it mutable.
+        let repoLocalPath: string | undefined = req.body.path;
 
-      // Input type validation
-      if (repoUrl !== undefined && typeof repoUrl !== 'string') {
-        res.status(400).json({ error: '"url" must be a string' });
-        return;
-      }
-      if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {
-        res.status(400).json({ error: '"path" must be a string' });
-        return;
-      }
-
-      if (!repoUrl && !repoLocalPath) {
-        res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
-        return;
-      }
-
-      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
-      if (repoLocalPath) {
-        if (!path.isAbsolute(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must be an absolute path' });
+        // Input type validation
+        if (repoUrl !== undefined && typeof repoUrl !== 'string') {
+          res.status(400).json({ error: '"url" must be a string' });
           return;
         }
-        if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must not contain traversal sequences' });
+        if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {
+          res.status(400).json({ error: '"path" must be a string' });
           return;
         }
-      }
 
-      const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
+        if (!repoUrl && !repoLocalPath) {
+          res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
+          return;
+        }
 
-      // If job was already running (dedup), just return its id
-      if (job.status !== 'queued') {
-        res.status(202).json({ jobId: job.id, status: job.status });
-        return;
-      }
-
-      // Mark as active synchronously to prevent race with concurrent requests
-      jobManager.updateJob(job.id, { status: 'cloning' });
-
-      // Start async work — don't await
-      (async () => {
-        let targetPath = repoLocalPath;
-        try {
-          // Clone if URL provided
-          if (repoUrl && !repoLocalPath) {
-            const repoName = extractRepoName(repoUrl);
-            targetPath = getCloneDir(repoName);
-
-            jobManager.updateJob(job.id, {
-              status: 'cloning',
-              repoName,
-              progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
-            });
-
-            await cloneOrPull(repoUrl, targetPath, (progress) => {
-              jobManager.updateJob(job.id, {
-                progress: { phase: progress.phase, percent: 5, message: progress.message },
-              });
-            });
-          }
-
-          if (!targetPath) {
-            throw new Error('No target path resolved');
-          }
-
-          // Acquire shared repo lock (keyed on storagePath to match embed handler)
-          const analyzeLockKey = getStoragePath(targetPath);
-          const lockErr = acquireRepoLock(analyzeLockKey);
-          if (lockErr) {
-            jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
+        // Path validation. The previous `normalize !== resolve` guard was inert
+        // (both collapse `..` identically) and only false-rejected trailing
+        // slashes. Analyzing a local path the operator names is the tool's
+        // intended capability (same as the CLI); the cross-origin reach is what
+        // mattered, and that is closed by requireLocalhostOrigin above. Here we
+        // just require an absolute path that actually exists and is a directory,
+        // using its realpath-canonical form downstream.
+        if (repoLocalPath) {
+          if (!path.isAbsolute(repoLocalPath)) {
+            res.status(400).json({ error: '"path" must be an absolute path' });
             return;
           }
-
-          jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
-
-          // ── Worker fork with auto-retry ──────────────────────────────
-          //
-          // Forks a child process with 8GB heap. If the worker crashes
-          // (OOM, native addon segfault, etc.), it retries up to
-          // MAX_WORKER_RETRIES times with exponential backoff before
-          // marking the job as permanently failed.
-          //
-          // In dev mode (tsx), registers the tsx ESM hook via a file://
-          // URL so the child can compile TypeScript on-the-fly.
-
-          const MAX_WORKER_RETRIES = 2;
-          const callerPath = fileURLToPath(import.meta.url);
-          const isDev = callerPath.endsWith('.ts');
-          const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
-          const workerPath = path.join(path.dirname(callerPath), workerFile);
-          const tsxHookArgs: string[] = isDev
-            ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
-            : [];
-
-          const forkWorker = () => {
-            const currentJob = jobManager.getJob(job.id);
-            if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed')
+          try {
+            const resolved = await fs.realpath(repoLocalPath);
+            if (!(await fs.stat(resolved)).isDirectory()) {
+              res.status(400).json({ error: '"path" must be a directory' });
               return;
-
-            const child = fork(workerPath, [], {
-              execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
-              stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-            });
-
-            // Capture stderr for crash diagnostics
-            let stderrChunks = '';
-            child.stderr?.on('data', (chunk: Buffer) => {
-              stderrChunks += chunk.toString();
-              if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
-            });
-
-            child.on('message', (msg: any) => {
-              if (msg.type === 'progress') {
-                jobManager.updateJob(job.id, {
-                  status: 'analyzing',
-                  progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
-                });
-              } else if (msg.type === 'complete') {
-                releaseRepoLock(analyzeLockKey);
-                // Reinitialize backend BEFORE marking complete — ensures the new
-                // repo is queryable when the client receives the SSE complete event.
-                backend
-                  .init()
-                  .then(() => {
-                    jobManager.updateJob(job.id, {
-                      status: 'complete',
-                      repoName: msg.result.repoName,
-                    });
-                  })
-                  .catch((err) => {
-                    logger.error({ err }, 'backend.init() failed after analyze:');
-                    jobManager.updateJob(job.id, {
-                      status: 'failed',
-                      error: 'Server failed to reload after analysis. Try again.',
-                    });
-                  });
-              } else if (msg.type === 'error') {
-                releaseRepoLock(analyzeLockKey);
-                jobManager.updateJob(job.id, {
-                  status: 'failed',
-                  error: msg.message,
-                });
-              }
-            });
-
-            child.on('error', (err) => {
-              releaseRepoLock(analyzeLockKey);
-              jobManager.updateJob(job.id, {
-                status: 'failed',
-                error: `Worker process error: ${err.message}`,
-              });
-            });
-
-            child.on('exit', (code) => {
-              const j = jobManager.getJob(job.id);
-              if (!j || j.status === 'complete' || j.status === 'failed') return;
-
-              // Worker crashed — attempt retry if under the limit
-              if (j.retryCount < MAX_WORKER_RETRIES) {
-                j.retryCount++;
-                const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
-                const lastErr = stderrChunks.trim().split('\n').pop() || '';
-                logger.warn(
-                  `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
-                    (lastErr ? `: ${lastErr}` : ''),
-                );
-                jobManager.updateJob(job.id, {
-                  status: 'analyzing',
-                  progress: {
-                    phase: 'retrying',
-                    percent: j.progress.percent,
-                    message: `Worker crashed, retrying (${j.retryCount}/${MAX_WORKER_RETRIES})...`,
-                  },
-                });
-                stderrChunks = '';
-                setTimeout(forkWorker, delay);
-              } else {
-                // Exhausted retries — permanent failure
-                releaseRepoLock(analyzeLockKey);
-                jobManager.updateJob(job.id, {
-                  status: 'failed',
-                  error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
-                });
-              }
-            });
-
-            // Register child for cancellation + timeout tracking
-            jobManager.registerChild(job.id, child);
-
-            // Send start command to child
-            child.send({
-              type: 'start',
-              repoPath: targetPath,
-              options: {
-                force: !!force,
-                embeddings: !!embeddings,
-                dropEmbeddings: !!dropEmbeddings,
-              },
-            });
-          };
-
-          forkWorker();
-        } catch (err: any) {
-          if (targetPath) releaseRepoLock(getStoragePath(targetPath));
-          jobManager.updateJob(job.id, {
-            status: 'failed',
-            error: err.message || 'Analysis failed',
-          });
+            }
+            repoLocalPath = resolved;
+          } catch {
+            res.status(404).json({ error: '"path" does not exist or is not accessible' });
+            return;
+          }
         }
-      })();
 
-      res.status(202).json({ jobId: job.id, status: job.status });
-    } catch (err: any) {
-      if (err.message?.includes('already in progress')) {
-        res.status(409).json({ error: err.message });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to start analysis' });
+        const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
+
+        // If job was already running (dedup), just return its id
+        if (job.status !== 'queued') {
+          res.status(202).json({ jobId: job.id, status: job.status });
+          return;
+        }
+
+        // Mark as active synchronously to prevent race with concurrent requests
+        jobManager.updateJob(job.id, { status: 'cloning' });
+
+        // Start async work — don't await
+        (async () => {
+          let targetPath = repoLocalPath;
+          try {
+            // Clone if URL provided
+            if (repoUrl && !repoLocalPath) {
+              const repoName = extractRepoName(repoUrl);
+              targetPath = getCloneDir(repoName);
+
+              jobManager.updateJob(job.id, {
+                status: 'cloning',
+                repoName,
+                progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
+              });
+
+              await cloneOrPull(repoUrl, targetPath, (progress) => {
+                jobManager.updateJob(job.id, {
+                  progress: { phase: progress.phase, percent: 5, message: progress.message },
+                });
+              });
+            }
+
+            if (!targetPath) {
+              throw new Error('No target path resolved');
+            }
+
+            launchAnalysisWorker(job, targetPath, { force, embeddings, dropEmbeddings });
+          } catch (err: any) {
+            if (targetPath) releaseRepoLock(getStoragePath(targetPath));
+            jobManager.updateJob(job.id, {
+              status: 'failed',
+              error: err.message || 'Analysis failed',
+            });
+          }
+        })();
+
+        res.status(202).json({ jobId: job.id, status: job.status });
+      } catch (err: any) {
+        if (err.message?.includes('already in progress')) {
+          res.status(409).json({ error: err.message });
+        } else {
+          res.status(500).json({ error: err.message || 'Failed to start analysis' });
+        }
       }
-    }
-  });
+    },
+  );
+
+  // POST /api/analyze/upload — analyze a browser folder upload.
+  // Securely ingests the multipart upload into a sandbox, promotes it to a
+  // persistent dir, and analyzes it via the shared job/worker machinery.
+  // localhost-only (no cross-origin write reach) + conservative rate limit.
+  app.post(
+    '/api/analyze/upload',
+    createRouteLimiter({ limit: 5 }),
+    requireLocalhostOrigin,
+    createAnalyzeUploadHandler({
+      createJob: (params) => jobManager.createJob(params),
+      launch: (job, targetPath, opts) => launchAnalysisWorker(job, targetPath, opts),
+    }),
+  );
 
   // GET /api/analyze/:jobId — poll job status
   app.get('/api/analyze/:jobId', (req, res) => {

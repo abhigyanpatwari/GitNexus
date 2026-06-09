@@ -21,10 +21,11 @@ import {
   startAnalyze,
   cancelAnalyze,
   streamAnalyzeProgress,
+  uploadFolder,
   type JobProgress,
 } from '../services/backend-client';
 import { AnalyzeProgress } from './AnalyzeProgress';
-import { DirectoryPicker } from './DirectoryPicker';
+import { filterRepoFiles } from '@/lib/upload-filter';
 import { useTranslation } from 'react-i18next';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -167,7 +168,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const { t } = useTranslation(['common', 'errors', 'onboarding']);
   const inputId = useId();
   const [mode, setMode] = useState<InputMode>('github');
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [uploadSummary, setUploadSummary] = useState<{ count: number; dropped: number } | null>(
+    null,
+  );
   const [githubUrl, setGithubUrl] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('');
   const [localPath, setLocalPath] = useState('');
@@ -183,6 +187,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const jobIdRef = useRef<string | null>(null);
   const sseControllerRef = useRef<AbortController | null>(null);
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
@@ -237,8 +242,6 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             ? { url: gitlabUrl.trim() }
             : { path: localPath.trim() };
       const { jobId } = await startAnalyze(request);
-      jobIdRef.current = jobId;
-      setPhase('analyzing');
 
       const nameSource =
         mode === 'github'
@@ -246,29 +249,62 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           : mode === 'gitlab'
             ? gitlabUrl.trim()
             : localPath.trim();
-      const controller = streamAnalyzeProgress(
-        jobId,
-        (p) => setProgress(p),
-        (data) => {
-          const name =
-            data.repoName ??
-            nameSource.split(/[/\\]/).filter(Boolean).at(-1) ??
-            t('onboarding:repoAnalyzer.defaultRepoName');
-          setCompletedRepoName(name);
-          setPhase('done');
-          sseControllerRef.current = null;
-          completeTimerRef.current = setTimeout(() => {
-            completeTimerRef.current = null;
-            onComplete(name);
-          }, 1200);
-        },
-        (errMsg) => {
-          setValidationError(errMsg || t('errors:analysisFailed'));
-          setPhase('error');
-        },
-      );
-      sseControllerRef.current = controller;
+      trackJob(jobId, nameSource);
     } catch (err) {
+      setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
+      setPhase('error');
+    }
+  };
+
+  // Drive an already-created analysis job through the SSE progress stream to
+  // completion. Shared by the path/URL analyze flow and the folder-upload flow.
+  const trackJob = (jobId: string, fallbackNameSource: string | null) => {
+    jobIdRef.current = jobId;
+    setPhase('analyzing');
+    const controller = streamAnalyzeProgress(
+      jobId,
+      (p) => setProgress(p),
+      (data) => {
+        const name =
+          data.repoName ??
+          (fallbackNameSource
+            ? fallbackNameSource.split(/[/\\]/).filter(Boolean).at(-1)
+            : undefined) ??
+          t('onboarding:repoAnalyzer.defaultRepoName');
+        setCompletedRepoName(name);
+        setPhase('done');
+        sseControllerRef.current = null;
+        completeTimerRef.current = setTimeout(() => {
+          completeTimerRef.current = null;
+          onComplete(name);
+        }, 1200);
+      },
+      (errMsg) => {
+        setValidationError(errMsg || t('errors:analysisFailed'));
+        setPhase('error');
+      },
+    );
+    sseControllerRef.current = controller;
+  };
+
+  // Upload a browser-selected folder (webkitdirectory) and start analysis. The
+  // upload endpoint returns a jobId, which then joins the normal SSE flow.
+  const handleFolderUpload = async (fileList: FileList) => {
+    const { files, manifest, droppedCount } = filterRepoFiles(fileList);
+    if (files.length === 0) {
+      setValidationError(t('onboarding:repoAnalyzer.upload.empty'));
+      return;
+    }
+    setValidationError(null);
+    setUploadSummary({ count: files.length, dropped: droppedCount });
+    setUploadPercent(0);
+    setPhase('starting');
+    try {
+      const { jobId } = await uploadFolder(files, manifest, (pct) => setUploadPercent(pct));
+      setUploadPercent(null);
+      trackJob(jobId, null);
+    } catch (err) {
+      setUploadPercent(null);
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
       setPhase('error');
     }
@@ -444,25 +480,54 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
             )}
           </div>
+          {/* Upload a folder from your computer — no server path or mount needed.
+              The browser can't expose an absolute path, so we upload the files. */}
+          <input
+            ref={folderInputRef}
+            type="file"
+            // @ts-expect-error -- webkitdirectory is non-standard but widely supported
+            webkitdirectory=""
+            multiple
+            className="hidden"
+            data-testid="folder-upload-input"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                handleFolderUpload(e.target.files);
+              }
+              e.target.value = '';
+            }}
+          />
           <button
             type="button"
-            data-testid="browse-server-dirs"
-            onClick={() => setPickerOpen(true)}
+            data-testid="upload-folder"
+            onClick={() => folderInputRef.current?.click()}
             disabled={isLoading}
             className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-border-subtle bg-elevated px-3 py-2 text-xs font-medium text-text-secondary transition-all duration-150 hover:bg-hover hover:text-text-primary disabled:opacity-50"
           >
             <FolderOpen className="h-3.5 w-3.5" />
-            {t('onboarding:repoAnalyzer.browseForFolder')}
+            {t('onboarding:repoAnalyzer.upload.button')}
           </button>
-          <DirectoryPicker
-            open={pickerOpen}
-            onClose={() => setPickerOpen(false)}
-            onSelect={(selectedPath) => {
-              setLocalPath(selectedPath);
-              setPickerOpen(false);
-              setValidationError(null);
-            }}
-          />
+          {uploadPercent !== null && (
+            <div role="status" data-testid="upload-progress" className="space-y-1">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
+                <div
+                  className="h-full bg-accent transition-all duration-150"
+                  style={{ width: `${uploadPercent}%` }}
+                />
+              </div>
+              <p className="text-xs text-text-muted">
+                {t('onboarding:repoAnalyzer.upload.uploading', { percent: uploadPercent })}
+              </p>
+            </div>
+          )}
+          {uploadSummary && uploadPercent === null && phase !== 'error' && (
+            <p className="text-xs text-text-muted" data-testid="upload-summary">
+              {t('onboarding:repoAnalyzer.upload.selected', {
+                count: uploadSummary.count,
+                dropped: uploadSummary.dropped,
+              })}
+            </p>
+          )}
         </div>
       )}
 
