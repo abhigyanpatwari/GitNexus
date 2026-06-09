@@ -111,6 +111,12 @@ withTestLbugDB(
         // At least one of the search phases must have fired for any
         // non-error response — bm25 and/or vector always runs.
         expect(result.timing.bm25 ?? result.timing.vector).toBeGreaterThanOrEqual(0);
+
+        // Success path (FTS present + Process/Community tables exist): no degraded
+        // signal. Guards R6 — the response shape stays byte-identical when nothing
+        // fails (the `warning`/`partial` fields appear only on degradation).
+        expect(result).not.toHaveProperty('warning');
+        expect(result).not.toHaveProperty('partial');
       });
 
       // PR #222 port: the query tool batches per-symbol process/cohesion/content

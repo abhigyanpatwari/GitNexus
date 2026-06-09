@@ -177,6 +177,21 @@ function logQueryError(context: string, err: unknown): void {
   logger.error({ context, err: msg }, 'GitNexus query failed');
 }
 
+/**
+ * A "missing table/label/relation" prepare error is benign for the query tool's
+ * best-effort enrichment: a repo analyzed without processes or communities simply
+ * has no `Process`/`Community` tables, so the `STEP_IN_PROCESS` / `MEMBER_OF`
+ * enrichment queries fail to prepare. That is a normal configuration, NOT a
+ * degraded result — it must not raise the `partial` flag (which callers would
+ * then learn to ignore). Real failures (timeouts, locks, native faults) do.
+ */
+function isBenignMissingTableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /does not exist|no such (table|label|rel)|unknown (table|label)|not (defined|found)/i.test(
+    msg,
+  );
+}
+
 const isReadOnlyDbError = (err: unknown): boolean => {
   // Walk the `cause` chain (bounded) so a wrapped read-only error (e.g. the
   // pool adapter's `{ cause }` wrapper) is still detected here — this is the
@@ -1127,6 +1142,12 @@ export class LocalBackend {
     const processRowsByNode = new Map<string, any[]>();
     const cohesionByNode = new Map<string, { cohesion: number; module?: string }>();
     const contentByNode = new Map<string, string>();
+    // Set when a batched enrichment query throws a REAL failure (timeout, lock,
+    // native fault) — NOT the benign "no Process/Community table" case, which is
+    // a normal config (a repo analyzed without processes/communities) and must
+    // not raise a `partial` flag callers would learn to ignore. See
+    // isBenignMissingTableError + the response build below.
+    let enrichmentDegraded = false;
 
     // Chunk the IN-list like the impact path (CHUNK_SIZE=100) so a large result
     // set never builds an unbounded `IN` parameter. Default batch is
@@ -1155,6 +1176,7 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('query:process-lookup', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
 
       // Cluster membership + cohesion. Keep the FIRST community row per node to
@@ -1181,6 +1203,7 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('query:cluster-info', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
 
       // Optionally fetch content for every matched symbol.
@@ -1201,6 +1224,7 @@ export class LocalBackend {
           }
         } catch (e) {
           logQueryError('query:content-fetch', e);
+          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
         }
       }
     }
@@ -1324,15 +1348,29 @@ export class LocalBackend {
     const timing = timer.summary();
     logQueryTiming(searchQuery, timing);
 
+    // Compose a single `warning` from all degraded conditions (FTS-missing
+    // and/or a real enrichment failure) so neither overwrites the other, and
+    // flag `partial` when enrichment was lost. Both are omitted on the clean
+    // path, leaving the success-path response shape byte-identical.
+    const warnings: string[] = [];
+    if (!ftsUsed) {
+      warnings.push(
+        'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
+      );
+    }
+    if (enrichmentDegraded) {
+      warnings.push(
+        'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
+      );
+    }
+
     return {
       processes,
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
-      ...(!ftsUsed && {
-        warning:
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
-      }),
+      ...(warnings.length > 0 && { warning: warnings.join(' ') }),
+      ...(enrichmentDegraded && { partial: true }),
     };
   }
 
