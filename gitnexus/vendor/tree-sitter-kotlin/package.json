@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-kotlin",
+  "version": "0.3.8",
+  "description": "Kotlin grammar for tree-sitter",
+  "repository": "https://github.com/fwcd/tree-sitter-kotlin",
+  "license": "MIT",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "_vendoredBy": "gitnexus - minimal runtime package derived from tree-sitter-kotlin@0.3.8 (fwcd). Unlike Swift's upstream-shipped prebuilds, upstream tree-sitter-kotlin ships SOURCE ONLY (no prebuilds/); the native prebuilds/ here are GitNexus-cross-built by .github/workflows/build-tree-sitter-prebuilds.yml. Copied to node_modules/ by materialize-vendor-grammars.cjs; prebuild activation via build-tree-sitter-kotlin.cjs (no scripts.install here — #836/#1728). The C source (parser.c/scanner.c/binding.gyp) is deliberately NOT vendored: the parser.c is ~23 MB and the workflow builds from the published npm package, so committing it would bloat git history with no runtime benefit.",
+  "peerDependencies": {
+    "tree-sitter": "^0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  }
+}

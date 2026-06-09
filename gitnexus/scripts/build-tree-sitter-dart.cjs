@@ -27,6 +27,17 @@ try {
     process.exit(0);
   }
 
+  // Prefer a committed prebuild (toolchain-free). If node-gyp-build resolves a
+  // binary for this platform-arch under prebuilds/, no source build is needed.
+  // Before any prebuilds are vendored this throws and we fall through to the
+  // source build below — no behavior change.
+  try {
+    require('node-gyp-build').path(dartDir);
+    process.exit(0);
+  } catch {
+    // No matching prebuild for this host — fall through to the source build.
+  }
+
   try {
     require.resolve('node-addon-api');
     require.resolve('node-gyp-build');

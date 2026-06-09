@@ -8,19 +8,18 @@ import { fileURLToPath } from 'node:url';
 /**
  * Behavioral coverage for the postinstall probe `scripts/build-tree-sitter-kotlin.cjs`.
  *
- * The probe's hard invariant is that it MUST NEVER exit non-zero — it runs in
+ * Kotlin is a vendored grammar (like Swift): the probe calls `node-gyp-build`
+ * against the materialized package to surface a single install-time warning when
+ * no prebuild matches this platform-arch, instead of a first-use runtime error.
+ * Its hard invariant is that it MUST NEVER exit non-zero — it runs in
  * `gitnexus`'s postinstall, so a non-zero exit would break `npm install gitnexus`
- * for every user. The static package.json assertion in `cli-commands.test.ts`
- * only checks wiring (the script is referenced in `postinstall`); it never runs
- * the probe, so a regression that turned an `exit(0)` into `exit(1)`/`throw`
- * would ship undetected. This suite executes the real script bytes across its
- * branches and asserts exit code 0 every time.
+ * for every user. This suite executes the real script bytes across its branches
+ * and asserts exit code 0 every time.
  *
- * To exercise the "package absent" branches without mutating the repo's real
- * node_modules, the probe is copied into an isolated temp `scripts/` dir; its
- * `__dirname`-relative `../node_modules/tree-sitter-kotlin` then resolves to a
- * non-existent path — the exact state npm leaves behind after it prunes the
- * failed optional dependency on a toolchain-less host (see #2107 / PR #2110).
+ * The probe is copied into an isolated temp `scripts/` dir so its
+ * `__dirname`-relative `../node_modules/tree-sitter-kotlin` resolves under our
+ * control (absent dir, or a present-but-no-prebuild dir) without touching the
+ * repo's real node_modules.
  */
 
 const probeSource = readFileSync(
@@ -35,9 +34,8 @@ let scriptPath: string;
 
 beforeAll(() => {
   tmpRoot = mkdtempSync(path.join(tmpdir(), 'gn-kotlin-probe-'));
-  const scriptsDir = path.join(tmpRoot, 'scripts');
-  mkdirSync(scriptsDir, { recursive: true });
-  scriptPath = path.join(scriptsDir, 'build-tree-sitter-kotlin.cjs');
+  mkdirSync(path.join(tmpRoot, 'scripts'), { recursive: true });
+  scriptPath = path.join(tmpRoot, 'scripts', 'build-tree-sitter-kotlin.cjs');
   writeFileSync(scriptPath, probeSource);
 });
 
@@ -50,10 +48,7 @@ function runProbe(overrides: Record<string, string | undefined>) {
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
   }
-  // Normalize the two variables under test so the case is deterministic even
-  // when the test runner itself was launched under npm with these set.
   delete env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS;
-  delete env.npm_config_omit;
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete env[k];
     else env[k] = v;
@@ -61,52 +56,45 @@ function runProbe(overrides: Record<string, string | undefined>) {
   return spawnSync(process.execPath, [scriptPath], { env, encoding: 'utf8', timeout: 10_000 });
 }
 
-describe('build-tree-sitter-kotlin.cjs install probe', () => {
+describe('build-tree-sitter-kotlin.cjs vendored prebuild probe', () => {
   it('exits 0 and reports skipping when GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1', () => {
     const r = runProbe({ GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' });
     expect(r.status).toBe(0);
     expect(r.signal).toBeNull();
-    expect(r.stderr).toContain('Skipping native-binding probe');
+    expect(r.stderr).toContain('Skipping prebuild probe');
     expect(r.stderr).not.toContain(UNAVAILABLE);
   });
 
-  it('warns (and exits 0) when the package is absent and optionals were not omitted', () => {
-    // Regression guard for #2107 / PR #2110: npm prunes the failed optional
-    // dependency on a toolchain-less host, so the probe must surface its guidance
-    // on the dir-absent branch rather than silently exiting.
+  it('exits 0 silently when the materialized package is absent', () => {
+    // No node_modules/tree-sitter-kotlin next to the script — nothing to probe
+    // (materialize was skipped/failed). Swift-style: silent exit 0.
     const r = runProbe({});
     expect(r.status).toBe(0);
     expect(r.signal).toBeNull();
-    expect(r.stderr).toContain(UNAVAILABLE);
-  });
-
-  it('stays silent (and exits 0) when optionals were deliberately omitted (omit=optional)', () => {
-    const r = runProbe({ npm_config_omit: 'optional' });
-    expect(r.status).toBe(0);
     expect(r.stderr).not.toContain(UNAVAILABLE);
   });
 
-  it('treats a comma-joined list (dev,optional) as an opt-out and stays silent', () => {
-    const r = runProbe({ npm_config_omit: 'dev,optional' });
-    expect(r.status).toBe(0);
-    expect(r.stderr).not.toContain(UNAVAILABLE);
-  });
-
-  it('still warns when only non-optional groups are omitted (omit=dev)', () => {
-    const r = runProbe({ npm_config_omit: 'dev' });
-    expect(r.status).toBe(0);
-    expect(r.stderr).toContain(UNAVAILABLE);
+  it('warns (and exits 0) when the package is present but no prebuild loads', () => {
+    // Materialize a package shell (bindings/node/index.js present) with no
+    // loadable prebuild → node-gyp-build throws → the probe must warn, not exit
+    // non-zero. (Here the throw is a missing node-gyp-build resolution, an
+    // equivalent trigger of the catch branch's never-fail guarantee.)
+    const pkg = path.join(tmpRoot, 'node_modules', 'tree-sitter-kotlin', 'bindings', 'node');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(path.join(pkg, 'index.js'), '');
+    try {
+      const r = runProbe({});
+      expect(r.status).toBe(0);
+      expect(r.signal).toBeNull();
+      expect(r.stderr).toContain('Prebuild probe failed');
+      expect(r.stderr).toContain(UNAVAILABLE);
+    } finally {
+      rmSync(path.join(tmpRoot, 'node_modules'), { recursive: true, force: true });
+    }
   });
 
   it('never exits non-zero across env permutations (postinstall hard invariant)', () => {
-    const permutations: Record<string, string | undefined>[] = [
-      { GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' },
-      {},
-      { npm_config_omit: 'optional' },
-      { npm_config_omit: 'dev,optional' },
-      { npm_config_omit: 'dev' },
-    ];
-    for (const overrides of permutations) {
+    for (const overrides of [{ GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' }, {}]) {
       const r = runProbe(overrides);
       expect(r.status).toBe(0);
       expect(r.signal).toBeNull();

@@ -13,11 +13,16 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const VENDORED_GRAMMARS = ['tree-sitter-dart', 'tree-sitter-proto', 'tree-sitter-swift'];
+const VENDORED_GRAMMARS = [
+  'tree-sitter-dart',
+  'tree-sitter-proto',
+  'tree-sitter-swift',
+  'tree-sitter-kotlin',
+];
 
 if (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1') {
   console.warn(
-    '[gitnexus] Skipping vendored grammar materialize (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1). Dart/Proto/Swift parsing will be unavailable.',
+    '[gitnexus] Skipping vendored grammar materialize (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1). Dart/Proto/Swift/Kotlin parsing will be unavailable.',
   );
   process.exit(0);
 }

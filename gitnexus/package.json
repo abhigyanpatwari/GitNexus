@@ -92,8 +92,7 @@
   },
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
-    "node-gyp-build": "^4.8.0",
-    "tree-sitter-kotlin": "^0.3.8"
+    "node-gyp-build": "^4.8.0"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",

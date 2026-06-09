@@ -170,8 +170,10 @@ const SOURCES: Record<string, GrammarSource> = {
     optional: true,
     userSkippable: true,
     unavailableNote:
-      'Kotlin parsing disabled: `tree-sitter-kotlin` is an optionalDependency ' +
-      'and is not installed (or its native binding failed to build).',
+      'Kotlin parsing disabled: vendored `tree-sitter-kotlin` (under ' +
+      '`gitnexus/vendor/tree-sitter-kotlin`) failed to load. ' +
+      'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
+      `See ${ISSUES_URL}/2107.`,
   },
 };
 

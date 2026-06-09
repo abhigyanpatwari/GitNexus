@@ -100,14 +100,22 @@ describe('CLI commands', () => {
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
     });
 
-    it('declares tree-sitter-kotlin as an optionalDependency probed at postinstall (#2107)', async () => {
+    it('keeps vendored Kotlin runtime with GitNexus-built prebuilds and hoisted activation script (#2107)', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const kotlinPkg = await import('../../vendor/tree-sitter-kotlin/package.json', {
+        with: { type: 'json' },
+      });
       const optional = pkg.default.optionalDependencies ?? {};
-      // Kotlin is a third-party npm optionalDependency (not vendored), so npm
-      // skips it when its source-only native build soft-fails — the gitnexus
-      // install still succeeds.
-      expect(optional['tree-sitter-kotlin']).toBeDefined();
+      // Kotlin is now VENDORED (like Swift/Dart/Proto), not a third-party npm
+      // optionalDependency. Its prebuilds are GitNexus-cross-built (upstream
+      // ships source only) and materialized into node_modules/ at postinstall.
+      expect(optional['tree-sitter-kotlin']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-kotlin.cjs');
+      expect(kotlinPkg.default.version).toBe('0.3.8');
+      // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
+      expect(kotlinPkg.default.scripts?.install).toBeUndefined();
+      expect(kotlinPkg.default.dependencies).toBeUndefined();
+      expect(kotlinPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
     });
   });
 
