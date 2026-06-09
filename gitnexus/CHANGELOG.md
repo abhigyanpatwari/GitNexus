@@ -6,12 +6,7 @@ All notable changes to GitNexus will be documented in this file.
 
 ### Added
 
-- **`list_repos` MCP tool pagination** — `list_repos` now accepts optional `limit` (default 50, max 200) and `offset` arguments and returns `{ repositories, pagination: { total, limit, offset, returned, hasMore, nextOffset } }`, so MCP clients/LLMs can enumerate every indexed repository without losing entries to response/token truncation when many repos are registered (#2119). Repositories are returned in a deterministic order (lower-cased name, then path) so paging never skips or duplicates an entry. Covers both the local stdio and remote `/api/mcp` transports.
 - **Taint/PDG substrate (M0)** — foundational schema + seams for reliable taint analysis on a PDG-expandable substrate (#2080, Epic #2087). Adds the `BasicBlock` node label and `CFG` / `REACHING_DEF` / `TAINTED` / `SANITIZES` / `TAINT_PATH` relationship types to the graph schema (round-trip through the bulk-COPY path), a phase-registry seam (`registerPhase` / `enabledWhen`) generalising the graph-phase opt-in guard, and a per-language source/sink/sanitizer config registry seam. All additive and inert — no phase emits the new nodes/edges yet, and a default `analyze` run is byte-identical to before. De-risking spikes (LadybugDB rel-property indexing, post-dominator feasibility) recorded on the issue.
-
-### Changed
-
-- **`list_repos` MCP result shape (contract change)** — the tool result changed from a bare JSON array to the `{ repositories, pagination }` object described above. A zero-argument call now returns the first page (the default 50 repositories) with continuation metadata instead of the full array; follow `pagination.nextOffset` while `pagination.hasMore` is true to retrieve the rest. The `GET /api/repos` HTTP endpoint, the `gitnexus list` CLI, and the internal `LocalBackend.listRepos()` method are unchanged. (#2119)
 
 ## [1.6.6] - 2026-06-08
 
