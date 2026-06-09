@@ -21,8 +21,10 @@
  *   node update-vendored-grammars.mjs            # detect only → JSON report on stdout
  *   node update-vendored-grammars.mjs --apply X  # re-vendor grammar X in place
  *
- * tree-sitter-c is intentionally absent: it is HELD at 0.21.4 for ABI safety
- * (#1242) and must never be auto-bumped.
+ * tree-sitter-c is MONITORED but report-only (`hold`): it is ABI-pinned at 0.21.4
+ * (#1242/#858) and must not auto-bump without a tree-sitter runtime upgrade, so an
+ * available c update is detected + reported but never auto-applied — even if it is
+ * ABI-13/14. A maintainer re-vendors it deliberately.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -37,8 +39,15 @@ const VENDOR = path.join(REPO_ROOT, 'gitnexus', 'vendor');
 const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION range
 
 // Source-of-origin per grammar. npm grammars resolve `latest` via the registry;
-// github grammars (no usable npm release) track the default branch HEAD.
+// github grammars (no usable npm release) track the default branch HEAD. A `hold`
+// reason makes a grammar report-only: updates are detected + surfaced but never
+// auto-applied (c is ABI-pinned and must not move without a runtime upgrade).
 const GRAMMARS = {
+  c: {
+    name: 'tree-sitter-c',
+    npm: 'tree-sitter-c',
+    hold: 'ABI-pinned at 0.21.4 (#1242/#858) — needs a tree-sitter runtime upgrade before bumping',
+  },
   swift: { name: 'tree-sitter-swift', npm: 'tree-sitter-swift' },
   kotlin: { name: 'tree-sitter-kotlin', npm: 'tree-sitter-kotlin' },
   dart: { name: 'tree-sitter-dart', github: 'UserNobody14/tree-sitter-dart' },
@@ -147,8 +156,10 @@ function detect() {
       update: newer,
       abi,
       abiCompatible: abi == null ? null : COMPATIBLE_ABI.has(abi),
-      // Only auto-appliable when there's an update AND the ABI is known-compatible.
-      applicable: newer && abi != null && COMPATIBLE_ABI.has(abi),
+      hold: g.hold || null,
+      // Auto-appliable only when there's an update, the ABI is known-compatible,
+      // AND the grammar is not on a policy hold (c).
+      applicable: newer && abi != null && COMPATIBLE_ABI.has(abi) && !g.hold,
     });
   }
   return report;
@@ -176,6 +187,12 @@ function apply(key) {
   if (!g) {
     console.error(`unknown grammar '${key}'`);
     process.exit(2);
+  }
+  if (g.hold) {
+    console.error(
+      `${key}: report-only (${g.hold}); not auto-applied. Re-vendor manually if intended.`,
+    );
+    process.exit(3);
   }
   const have = vendoredVersion(g);
   const up = resolveUpstream(g);

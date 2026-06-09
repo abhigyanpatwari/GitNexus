@@ -23,7 +23,7 @@ const MOD = pathToFileURL(
 let mod: {
   readAbi: (root: string) => number | null;
   COMPATIBLE_ABI: Set<number>;
-  GRAMMARS: Record<string, { name: string; npm?: string; github?: string }>;
+  GRAMMARS: Record<string, { name: string; npm?: string; github?: string; hold?: string }>;
 };
 let tmp: string;
 
@@ -62,10 +62,17 @@ describe('COMPATIBLE_ABI gate', () => {
 });
 
 describe('GRAMMARS registry', () => {
-  it('covers swift/kotlin (npm) + dart/proto (github) and EXCLUDES the ABI-pinned c', () => {
-    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(['dart', 'kotlin', 'proto', 'swift']);
+  it('covers all five grammars (swift/kotlin npm, dart/proto github, c npm)', () => {
+    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(['c', 'dart', 'kotlin', 'proto', 'swift']);
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
-    expect(mod.GRAMMARS).not.toHaveProperty('c');
+  });
+
+  it('monitors c but marks it report-only (ABI-pinned hold); the rest are auto-updatable', () => {
+    expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
+    expect(mod.GRAMMARS.c.hold).toBeTruthy(); // detected/reported, never auto-applied
+    for (const k of ['swift', 'kotlin', 'dart', 'proto']) {
+      expect(mod.GRAMMARS[k].hold).toBeUndefined();
+    }
   });
 });
