@@ -1591,9 +1591,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     requireLocalhostOrigin,
     async (req, res) => {
       try {
-        const { url: repoUrl, force, embeddings, dropEmbeddings } = req.body;
-        // `path` is canonicalized below (realpath), so keep it mutable.
-        let repoLocalPath: string | undefined = req.body.path;
+        const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
 
         // Input type validation
         if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1612,27 +1610,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         // Path validation. The previous `normalize !== resolve` guard was inert
         // (both collapse `..` identically) and only false-rejected trailing
-        // slashes. Analyzing a local path the operator names is the tool's
-        // intended capability (same as the CLI); the cross-origin reach is what
-        // mattered, and that is closed by requireLocalhostOrigin above. Here we
-        // just require an absolute path that actually exists and is a directory,
-        // using its realpath-canonical form downstream.
-        if (repoLocalPath) {
-          if (!path.isAbsolute(repoLocalPath)) {
-            res.status(400).json({ error: '"path" must be an absolute path' });
-            return;
-          }
-          try {
-            const resolved = await fs.realpath(repoLocalPath);
-            if (!(await fs.stat(resolved)).isDirectory()) {
-              res.status(400).json({ error: '"path" must be a directory' });
-              return;
-            }
-            repoLocalPath = resolved;
-          } catch {
-            res.status(404).json({ error: '"path" does not exist or is not accessible' });
-            return;
-          }
+        // slashes, so it is dropped. Analyzing a local path the operator names
+        // is the tool's intended capability (same as the CLI); the dangerous
+        // part was cross-origin reach, which is closed by requireLocalhostOrigin
+        // on this route. We only require an absolute path here and let the
+        // analyze worker surface a clear error if it does not exist. (We do NOT
+        // realpath/stat the path in-route: that would be a user-controlled
+        // filesystem read — CodeQL js/path-injection — for no security gain.)
+        if (repoLocalPath && !path.isAbsolute(repoLocalPath)) {
+          res.status(400).json({ error: '"path" must be an absolute path' });
+          return;
         }
 
         const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });

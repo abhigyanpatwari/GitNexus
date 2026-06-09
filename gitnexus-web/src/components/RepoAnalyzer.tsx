@@ -168,7 +168,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const { t } = useTranslation(['common', 'errors', 'onboarding']);
   const inputId = useId();
   const [mode, setMode] = useState<InputMode>('github');
-  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [uploadSummary, setUploadSummary] = useState<{ count: number; dropped: number } | null>(
     null,
   );
@@ -297,14 +297,14 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     }
     setValidationError(null);
     setUploadSummary({ count: files.length, dropped: droppedCount });
-    setUploadPercent(0);
+    setUploading(true);
     setPhase('starting');
     try {
-      const { jobId } = await uploadFolder(files, manifest, (pct) => setUploadPercent(pct));
-      setUploadPercent(null);
+      const { jobId } = await uploadFolder(files, manifest);
+      setUploading(false);
       trackJob(jobId, null);
     } catch (err) {
-      setUploadPercent(null);
+      setUploading(false);
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
       setPhase('error');
     }
@@ -507,20 +507,17 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             <FolderOpen className="h-3.5 w-3.5" />
             {t('onboarding:repoAnalyzer.upload.button')}
           </button>
-          {uploadPercent !== null && (
+          {uploading && (
             <div role="status" data-testid="upload-progress" className="space-y-1">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
-                <div
-                  className="h-full bg-accent transition-all duration-150"
-                  style={{ width: `${uploadPercent}%` }}
-                />
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
               </div>
               <p className="text-xs text-text-muted">
-                {t('onboarding:repoAnalyzer.upload.uploading', { percent: uploadPercent })}
+                {t('onboarding:repoAnalyzer.upload.uploading')}
               </p>
             </div>
           )}
-          {uploadSummary && uploadPercent === null && phase !== 'error' && (
+          {uploadSummary && !uploading && phase !== 'error' && (
             <p className="text-xs text-text-muted" data-testid="upload-summary">
               {t('onboarding:repoAnalyzer.upload.selected', {
                 count: uploadSummary.count,

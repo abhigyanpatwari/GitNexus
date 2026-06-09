@@ -761,50 +761,26 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
  * Upload a folder (selected via `<input webkitdirectory>`) and start analysis.
  * Sends the file blobs plus a JSON `manifest` of their relative paths — the
  * multipart filename can't carry the path (browsers strip separators), so the
- * manifest is the source of truth. Uses XHR for upload progress. Returns the
- * analysis jobId, which the caller drives through the normal SSE flow.
+ * manifest is the source of truth. Routed through fetchWithTimeout (the shared,
+ * origin-validated request path) rather than a raw XHR; returns the analysis
+ * jobId, which the caller drives through the normal SSE flow.
  */
-export const uploadFolder = (
+export const uploadFolder = async (
   files: File[],
   manifest: string[],
-  onProgress?: (percent: number) => void,
 ): Promise<{ jobId: string; status: string }> => {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    // Manifest MUST precede the file parts (the server enforces this).
-    form.append('manifest', JSON.stringify(manifest));
-    for (const f of files) form.append('files', f);
+  const form = new FormData();
+  // Manifest MUST precede the file parts (the server enforces this).
+  form.append('manifest', JSON.stringify(manifest));
+  for (const f of files) form.append('files', f);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${_backendUrl}/api/analyze/upload`);
-    xhr.timeout = 5 * 60_000; // up to 5 min for large repos
-    xhr.upload.onprogress = (e) => {
-      if (onProgress && e.lengthComputable) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText) as { jobId: string; status: string });
-        } catch {
-          reject(new Error('Invalid server response'));
-        }
-        return;
-      }
-      let msg = `Upload failed (${xhr.status})`;
-      try {
-        const body = JSON.parse(xhr.responseText);
-        if (body?.error) msg = body.error;
-      } catch {
-        /* keep default message */
-      }
-      reject(new Error(msg));
-    };
-    xhr.onerror = () => reject(new Error('Upload failed: network error'));
-    xhr.ontimeout = () => reject(new Error('Upload timed out'));
-    xhr.send(form);
-  });
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/analyze/upload`,
+    { method: 'POST', body: form },
+    5 * 60_000, // up to 5 min for large repos
+  );
+  await assertOk(response);
+  return response.json() as Promise<{ jobId: string; status: string }>;
 };
 
 // ── Analyze API ────────────────────────────────────────────────────────────

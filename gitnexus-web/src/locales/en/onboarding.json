@@ -64,7 +64,7 @@
     "hideBackground": "Hide (analysis continues in background)",
     "upload": {
       "button": "Upload a folder",
-      "uploading": "Uploading… {{percent}}%",
+      "uploading": "Uploading…",
       "selected": "{{count}} files ready ({{dropped}} skipped: .git, node_modules, build output)",
       "empty": "No analyzable files found in that folder."
     }
