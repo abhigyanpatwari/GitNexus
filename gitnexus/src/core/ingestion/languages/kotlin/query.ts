@@ -1,5 +1,13 @@
 import Parser from 'tree-sitter';
-import Kotlin from 'tree-sitter-kotlin';
+import { SupportedLanguages } from 'gitnexus-shared';
+// `tree-sitter-kotlin` is an optionalDependency that may be absent on a default
+// install (or fail its native build). Loaded lazily + guarded via parser-loader
+// rather than statically imported: this module is pulled onto the main thread
+// eagerly by the scope-resolution registry and the language-provider index, so
+// a top-level `import Kotlin from 'tree-sitter-kotlin'` would throw
+// ERR_MODULE_NOT_FOUND at module-load and crash `analyze` even for repos with no
+// Kotlin files (#2091, #2093). The grammar is only ever needed in the getters.
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 const KOTLIN_SCOPE_QUERY = `
 ;; Scopes
@@ -179,14 +187,19 @@ let query: Parser.Query | null = null;
 export function getKotlinParser(): Parser {
   if (parser === null) {
     parser = new Parser();
-    parser.setLanguage(Kotlin as Parameters<Parser['setLanguage']>[0]);
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Kotlin) as Parameters<Parser['setLanguage']>[0],
+    );
   }
   return parser;
 }
 
 export function getKotlinScopeQuery(): Parser.Query {
   if (query === null) {
-    query = new Parser.Query(Kotlin as Parameters<Parser['setLanguage']>[0], KOTLIN_SCOPE_QUERY);
+    query = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Kotlin) as Parameters<Parser['setLanguage']>[0],
+      KOTLIN_SCOPE_QUERY,
+    );
   }
   return query;
 }
