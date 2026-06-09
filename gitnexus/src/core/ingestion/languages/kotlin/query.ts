@@ -1,5 +1,13 @@
 import Parser from 'tree-sitter';
-import Kotlin from 'tree-sitter-kotlin';
+import { SupportedLanguages } from 'gitnexus-shared';
+// `tree-sitter-kotlin` is an optionalDependency that may be absent on a default
+// install (or fail its native build). Loaded lazily + guarded via parser-loader
+// rather than statically imported: this module is pulled onto the main thread
+// eagerly by the scope-resolution registry and the language-provider index, so
+// a top-level `import Kotlin from 'tree-sitter-kotlin'` would throw
+// ERR_MODULE_NOT_FOUND at module-load and crash `analyze` even for repos with no
+// Kotlin files (#2091, #2093). The grammar is only ever needed in the getters.
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 const KOTLIN_SCOPE_QUERY = `
 ;; Scopes
@@ -8,6 +16,16 @@ const KOTLIN_SCOPE_QUERY = `
 (object_declaration) @scope.class
 (companion_object) @scope.class
 (function_declaration) @scope.function
+
+;; Secondary-constructor body scope (issue #1919 review CF1). A
+;; secondary constructor's "constructor(...) { ... }" body executes statements
+;; just like a method body, so it must be its OWN Function scope — otherwise a
+;; call inside the body resolves its caller anchor up to the enclosing Class
+;; scope (the class's Class def), mis-attributing the CALLS edge to the class
+;; rather than the Constructor. The matching @declaration.constructor is
+;; synthesized in captures.ts (synthesizeKotlinSecondaryConstructorDeclarations)
+;; so this scope owns a Constructor def keyed to the structure-phase node id.
+(secondary_constructor) @scope.function
 
 ;; Companion-object marker (issue #1756 / U4). Side-channel capture that
 ;; lets populateCompanionMembersOnEnclosingClass distinguish a companion
@@ -117,6 +135,26 @@ const KOTLIN_SCOPE_QUERY = `
   (function_value_parameters)
   [(user_type) (nullable_type) (function_type)] @type-binding.type) @type-binding.return
 
+;; References — callable references ("::method", "Type::new", "obj::m") — F47.
+;; A "callable_reference" references a function/constructor as a value (no
+;; call_suffix), so the registry-primary call path never saw it. Real-parse
+;; (issue #1919) shows the canonical shape inside a function body is:
+;;   "::topLevelFn"   -> (callable_reference :: (simple_identifier))   member only
+;;   "String::length" -> (callable_reference (type_identifier) :: (simple_identifier))
+;;   "obj::method"    -> (callable_reference (type_identifier) :: (simple_identifier))
+;;   "Type::new"      -> (callable_reference (type_identifier) :: (simple_identifier))
+;; The receiver (real type OR object) is always a "type_identifier"; the
+;; referenced member is the LAST "simple_identifier". One rule with an
+;; optional receiver and an end-anchored member covers all four forms with
+;; exactly one match per callable_reference (no sibling-branch double-match).
+;; (NOTE: a qualified "A.B::m" parses as a nested navigation_expression, not a
+;; callable_reference, and is already captured by the read.member rule below.)
+;; emitKotlinScopeCaptures rewrites this into a free/member call reference.
+(callable_reference
+  (type_identifier)? @reference.receiver
+  (simple_identifier) @reference.name
+  .) @reference.callable
+
 ;; References — direct calls / constructor syntax
 (call_expression
   (simple_identifier) @reference.name) @reference.call.free
@@ -149,14 +187,19 @@ let query: Parser.Query | null = null;
 export function getKotlinParser(): Parser {
   if (parser === null) {
     parser = new Parser();
-    parser.setLanguage(Kotlin as Parameters<Parser['setLanguage']>[0]);
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Kotlin) as Parameters<Parser['setLanguage']>[0],
+    );
   }
   return parser;
 }
 
 export function getKotlinScopeQuery(): Parser.Query {
   if (query === null) {
-    query = new Parser.Query(Kotlin as Parameters<Parser['setLanguage']>[0], KOTLIN_SCOPE_QUERY);
+    query = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Kotlin) as Parameters<Parser['setLanguage']>[0],
+      KOTLIN_SCOPE_QUERY,
+    );
   }
   return query;
 }

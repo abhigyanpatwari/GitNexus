@@ -38,9 +38,10 @@ export function emitPythonScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Skip the parse when the caller (parse phase's ASTCache) already
-  // produced a Tree for this source. Cache miss = re-parse, same as
-  // before. The cachedTree parameter is typed as `unknown` at the
+  // Skip the parse when the caller (the scope-resolution orchestrator's
+  // `treeCache`) already produced a Tree for this source — empty under
+  // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
+  // is typed as `unknown` at the
   // contract layer (see `LanguageProvider.emitScopeCaptures`); cast
   // here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;

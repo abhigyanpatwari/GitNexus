@@ -52,9 +52,7 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     // fallback, which historically does NOT run the FastAPI router
     // bindings extractor — the very behaviour we want to pin lives
     // exclusively inside the worker entry point.
-    result = await runPipelineFromRepo(FIXTURE, () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-    });
+    result = await runPipelineFromRepo(FIXTURE, () => {}, {});
   }, 60_000);
 
   function routeNames(): string[] {

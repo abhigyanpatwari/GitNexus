@@ -12,6 +12,9 @@ import {
   cppVariableConfig,
 } from '../../src/core/ingestion/variable-extractors/configs/c-cpp.js';
 import { rubyVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/ruby.js';
+import { dartVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/dart.js';
+import { kotlinVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/jvm.js';
+import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import type { VariableExtractorContext } from '../../src/core/ingestion/variable-types.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import Parser from 'tree-sitter';
@@ -22,6 +25,14 @@ import Rust from 'tree-sitter-rust';
 import Cpp from 'tree-sitter-cpp';
 import C from 'tree-sitter-c';
 import Ruby from 'tree-sitter-ruby';
+import Dart from 'tree-sitter-dart';
+
+let Kotlin: unknown;
+try {
+  Kotlin = require('tree-sitter-kotlin');
+} catch {
+  // Kotlin grammar may not be installed
+}
 
 const parser = new Parser();
 
@@ -267,6 +278,76 @@ describe('VariableExtractor — Go', () => {
     expect(info!.type).toBe('int');
   });
 
+  it('extracts every name from multi-name const declarations', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nconst X, Y,Z,A,B = 1, 2,3,4,5');
+    const constNode = tree.rootNode.namedChildren.find(
+      (child) => child.type === 'const_declaration',
+    );
+    expect(constNode).toBeDefined();
+
+    const infos = extractor.extractAll(constNode!, ctx);
+    expect(infos.map((info) => info.name)).toEqual(['X', 'Y', 'Z', 'A', 'B']);
+    for (const info of infos) {
+      expect(info.isConst).toBe(true);
+      expect(info.isMutable).toBe(false);
+      expect(info.visibility).toBe('public');
+      expect(info.type).toBeNull();
+    }
+  });
+
+  it('extracts every name from multi-name var declarations with a shared type', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nvar a, b int');
+    const varNode = tree.rootNode.namedChildren.find((child) => child.type === 'var_declaration');
+    expect(varNode).toBeDefined();
+
+    const infos = extractor.extractAll(varNode!, ctx);
+    expect(infos.map((info) => info.name)).toEqual(['a', 'b']);
+    for (const info of infos) {
+      expect(info.isConst).toBe(false);
+      expect(info.isMutable).toBe(true);
+      expect(info.visibility).toBe('package');
+      expect(info.type).toBe('int');
+    }
+  });
+
+  it('preserves per-spec types in grouped multi-name var declarations', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nvar (\n  a, b int\n  c string\n)');
+    const varNode = tree.rootNode.namedChildren.find((child) => child.type === 'var_declaration');
+    expect(varNode).toBeDefined();
+
+    const infos = extractor.extractAll(varNode!, ctx);
+    expect(infos.map((info) => [info.name, info.type])).toEqual([
+      ['a', 'int'],
+      ['b', 'int'],
+      ['c', 'string'],
+    ]);
+
+    const cInfo = infos.find((info) => info.name === 'c');
+    expect(cInfo).toBeDefined();
+    expect(cInfo!.isConst).toBe(false);
+    expect(cInfo!.isMutable).toBe(true);
+    expect(cInfo!.visibility).toBe('package');
+  });
+
+  it('matches parse-worker nodeName selection for grouped multi-name vars', () => {
+    parser.setLanguage(Go);
+    const tree = parser.parse('package main\nvar (\n  a, b int\n  c string\n)');
+    const varNode = tree.rootNode.namedChildren.find((child) => child.type === 'var_declaration');
+    expect(varNode).toBeDefined();
+
+    const selected = extractor.extractAll(varNode!, ctx).find((info) => info.name === 'c');
+    expect(selected).toMatchObject({
+      name: 'c',
+      type: 'string',
+      visibility: 'package',
+      isConst: false,
+      isMutable: true,
+    });
+  });
+
   it('detects lowercase as package-private', () => {
     parser.setLanguage(Go);
     const tree = parser.parse('package main\nconst maxSize = 100');
@@ -402,6 +483,41 @@ describe('VariableExtractor — C++', () => {
     expect(info).not.toBeNull();
     expect(info!.name).toBe('SIZE');
     expect(info!.isConst).toBe(true);
+  });
+
+  // F9 — structured binding declarations emit one Variable per bound name.
+  it('emits a Variable per name for `auto [a, b] = make_pair();`', () => {
+    parser.setLanguage(Cpp);
+    const tree = parser.parse('auto [a, b] = make_pair();');
+    const node = tree.rootNode.child(0)!;
+    expect(extractor.isVariableDeclaration(node)).toBe(true);
+
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['a', 'b']);
+    // Top-level declaration → module scope (C++ is in the safe set re: the
+    // determineScope class-body block hazard).
+    for (const info of infos) expect(info.scope).toBe('module');
+  });
+
+  it('emits a Variable per name for the reference form `auto& [x, y, z] = tup;`', () => {
+    parser.setLanguage(Cpp);
+    const tree = parser.parse('auto& [x, y, z] = tup;');
+    const node = tree.rootNode.child(0)!;
+
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['x', 'y', 'z']);
+    for (const info of infos) expect(info.scope).toBe('module');
+  });
+
+  it('does not double-emit for an ordinary single-name declaration `int n = 0;`', () => {
+    parser.setLanguage(Cpp);
+    const tree = parser.parse('int n = 0;');
+    const node = tree.rootNode.child(0)!;
+
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos).toHaveLength(1);
+    expect(infos[0]!.name).toBe('n');
+    expect(infos[0]!.scope).toBe('module');
   });
 });
 
@@ -616,6 +732,29 @@ describe('VariableExtractor — block-scoped declarations', () => {
     expect(info!.scope).toBe('block');
   });
 
+  it('Python: class-body attribute is not block-scoped (class body is a `block` node)', () => {
+    // Regression: tree-sitter-python models the class body as a `block` node, the
+    // same node type as a function body. A class attribute must NOT be classified
+    // as a function-local block, or the pruner would silently drop it.
+    const extractor = createVariableExtractor(pythonVariableConfig);
+    const ctx: VariableExtractorContext = {
+      filePath: 'test.py',
+      language: SupportedLanguages.Python,
+    };
+    parser.setLanguage(Python);
+    const tree = parser.parse('class Settings:\n    MAX_SIZE = 100');
+    // module > class_definition > block > expression_statement > assignment
+    const classDef = tree.rootNode.namedChildren.find((c) => c.type === 'class_definition')!;
+    const body = classDef.childForFieldName('body')!;
+    const exprStmt = body.namedChildren.find((c) => c.type === 'expression_statement');
+    expect(exprStmt).toBeDefined();
+    const info = extractor.extract(exprStmt!, ctx);
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe('MAX_SIZE');
+    expect(info!.scope).not.toBe('block');
+    expect(info!.scope).toBe('module');
+  });
+
   it('Python: rejects non-assignment expression statements (e.g. function calls)', () => {
     const extractor = createVariableExtractor(pythonVariableConfig);
     const ctx: VariableExtractorContext = {
@@ -629,5 +768,161 @@ describe('VariableExtractor — block-scoped declarations', () => {
     // extract() should return null because this is a call, not an assignment
     const info = extractor.extract(exprStmt, ctx);
     expect(info).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dart config — F29: top-level variable declarations
+//
+// Top-level Dart vars are loose siblings under `program` (no `declaration`
+// wrapper). The structure query captures the container node
+// (initialized_identifier_list / static_final_declaration_list) as
+// @definition.variable, so the extractor is fed that container. The previous
+// config read a `type_identifier` that does not exist as a direct child of the
+// captured node — a dead read. These tests feed the real captured container.
+// ---------------------------------------------------------------------------
+
+describe('VariableExtractor — Dart (F29 top-level)', () => {
+  const extractor = createVariableExtractor(dartVariableConfig);
+  const ctx: VariableExtractorContext = {
+    filePath: 'test.dart',
+    language: SupportedLanguages.Dart,
+  };
+
+  /** The top-level variable container the structure query captures. */
+  function captureContainer(src: string): SyntaxNode {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(src);
+    let found: SyntaxNode | undefined;
+    const walk = (n: SyntaxNode) => {
+      if (
+        (n.type === 'initialized_identifier_list' || n.type === 'static_final_declaration_list') &&
+        n.parent?.type === 'program'
+      ) {
+        found ??= n;
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error('no top-level variable container found');
+    return found;
+  }
+
+  it('extracts a typed final top-level variable with the real type (F29)', () => {
+    const node = captureContainer('final int count = 3;');
+    expect(extractor.isVariableDeclaration(node)).toBe(true);
+    const info = extractor.extract(node, ctx);
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe('count');
+    expect(info!.type).toBe('int');
+    expect(info!.isConst).toBe(true);
+    expect(info!.isMutable).toBe(false);
+    expect(info!.scope).toBe('module');
+  });
+
+  it('extracts an inferred var as untyped (not from a phantom field) (F29)', () => {
+    const node = captureContainer("var name = 'x';");
+    const info = extractor.extract(node, ctx);
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe('name');
+    // `var` is inferred → no type annotation, so type is null (not a phantom).
+    expect(info!.type).toBeNull();
+    expect(info!.isMutable).toBe(true);
+    expect(info!.isConst).toBe(false);
+  });
+
+  it('extracts both names from a multi-name top-level const (F29)', () => {
+    const node = captureContainer('const a = 1, b = 2;');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name).sort()).toEqual(['a', 'b']);
+    for (const i of infos) {
+      expect(i.isConst).toBe(true);
+      expect(i.isMutable).toBe(false);
+    }
+  });
+
+  it('does not let a neighbouring declaration’s type/modifier bleed in', () => {
+    // Three declarations under one program. The `var name` container sits after
+    // `final int count` — its type/modifier must NOT leak onto `name`.
+    parser.setLanguage(Dart);
+    const tree = parser.parse("final int count = 3;\nvar name = 'x';\nconst a = 1, b = 2;");
+    const containers: SyntaxNode[] = [];
+    const walk = (n: SyntaxNode) => {
+      if (
+        (n.type === 'initialized_identifier_list' || n.type === 'static_final_declaration_list') &&
+        n.parent?.type === 'program'
+      ) {
+        containers.push(n);
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+
+    const byName = new Map<string, ReturnType<typeof extractor.extractAll>[number]>();
+    for (const c of containers)
+      for (const info of extractor.extractAll(c, ctx)) byName.set(info.name, info);
+
+    expect(byName.get('name')!.type).toBeNull(); // not 'int' from count
+    expect(byName.get('name')!.isConst).toBe(false); // not final from count
+    expect(byName.get('count')!.type).toBe('int');
+    expect(byName.get('a')!.isConst).toBe(true);
+    expect(byName.get('b')!.isConst).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kotlin destructuring declarations (F51, issue #1919)
+// ---------------------------------------------------------------------------
+
+const describeKotlin = Kotlin ? describe : describe.skip;
+
+describeKotlin('VariableExtractor — Kotlin (F51 destructuring)', () => {
+  const extractor = createVariableExtractor(kotlinVariableConfig);
+  const ctx: VariableExtractorContext = {
+    filePath: 'test.kt',
+    language: SupportedLanguages.Kotlin,
+  };
+
+  /** The first property_declaration whose text starts with `prefix`. */
+  function propertyDecl(src: string, prefix: string): SyntaxNode {
+    parser.setLanguage(Kotlin as Parser.Language);
+    const tree = parser.parse(src);
+    let found: SyntaxNode | undefined;
+    const walk = (n: SyntaxNode) => {
+      if (n.type === 'property_declaration' && n.text.trimStart().startsWith(prefix)) {
+        found ??= n;
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error(`no property_declaration starting with ${prefix}`);
+    return found;
+  }
+
+  it('emits one Variable per destructured name (`val (a, b) = pair`)', () => {
+    const node = propertyDecl('fun f() { val (a, b) = pair }', 'val (a');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['a', 'b']);
+  });
+
+  it('skips the `_` discard placeholder (`val (_, second) = pair`)', () => {
+    const node = propertyDecl('fun f() { val (_, second) = pair }', 'val (_');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['second']);
+  });
+
+  it('still emits exactly one name for a plain `val x = 1` (no double-count)', () => {
+    const node = propertyDecl('fun f() { val x = 1 }', 'val x');
+    const infos = extractor.extractAll(node, ctx);
+    expect(infos.map((i) => i.name)).toEqual(['x']);
   });
 });

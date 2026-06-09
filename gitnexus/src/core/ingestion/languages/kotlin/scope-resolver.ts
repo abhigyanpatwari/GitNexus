@@ -14,6 +14,7 @@ import {
   type KotlinResolveContext,
 } from './index.js';
 import { clearCompanionScopes } from './companion-scopes.js';
+import { applyKotlinCaptureSideChannel } from './capture-side-channel.js';
 import { isKotlinStaticOnly } from './owners.js';
 
 /**
@@ -83,6 +84,23 @@ export const kotlinScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => kotlinArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildKotlinMro(graph, parsedFiles, nodeLookup),
+
+  // Worker-boundary restore (see `ScopeResolver.applyCaptureSideChannel`).
+  // `emitKotlinScopeCaptures` records per-file companion-object scope ids
+  // (`markCompanionScope` → `companionScopesByFile`) as a SIDE EFFECT — that
+  // state is NOT serialized onto the returned ParsedFile's scopes/defs. On the
+  // worker path those marks are populated in the worker process and lost across
+  // the MessageChannel / disk store; the main thread reuses the serialized
+  // ParsedFile and skips `extractParsedFile`, so `isKotlinStaticOnly` and
+  // `populateCompanionMembersOnEnclosingClass` (owners.ts) would see an empty
+  // map and companion/static dispatch would emit zero CALLS edges. The worker
+  // stashed a plain-data snapshot on `parsed.captureSideChannel` via
+  // `kotlinProvider.collectCaptureSideChannel`; this restores it into the
+  // module map WITHOUT any tree-sitter re-parse (the #1983 fix). The
+  // freshly-extracted leg never calls this — its marks were just populated in
+  // this process. Runs BEFORE `populateOwners` so the restored companion map is
+  // visible to it.
+  applyCaptureSideChannel: applyKotlinCaptureSideChannel,
 
   populateOwners: (parsed: ParsedFile) => populateKotlinOwners(parsed),
 

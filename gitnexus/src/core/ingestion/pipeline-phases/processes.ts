@@ -4,7 +4,7 @@
  * Detects execution flows (processes) and creates Process nodes +
  * STEP_IN_PROCESS edges. Also links Route/Tool nodes to processes.
  *
- * @deps    communities, routes, tools
+ * @deps    communities, routes, tools, pruneLocalSymbols
  * @reads   graph (all nodes and relationships), communityResult, routeRegistry, toolDefs
  * @writes  graph (Process nodes, STEP_IN_PROCESS edges, ENTRY_POINT_OF edges)
  */
@@ -27,8 +27,10 @@ export interface ProcessesOutput {
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
   // `structure` supplies `totalFiles` (progress counter) without the spurious
-  // structural data dependency on `parse`.
-  deps: ['communities', 'routes', 'tools', 'structure'],
+  // structural data dependency on `parse`. `pruneLocalSymbols` is declared
+  // explicitly so process extraction always reads the trimmed graph even if a
+  // future option drops the intervening `mro`/`communities` phases.
+  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure'],
 
   async execute(
     ctx: PipelineContext,

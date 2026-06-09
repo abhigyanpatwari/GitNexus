@@ -4,7 +4,8 @@
  * Determines whether a symbol (function, class, etc.) is exported/public
  * in its language. This is a pure function — safe for use in worker threads.
  *
- * Shared between parse-worker.ts (worker pool) and parsing-processor.ts (sequential fallback).
+ * Used by the language providers during worker parsing (parse-worker.ts) — the
+ * sole parse path. (Sequential parsing was removed.)
  */
 
 import { findSiblingChild, type SyntaxNode } from './utils/ast-helpers.js';

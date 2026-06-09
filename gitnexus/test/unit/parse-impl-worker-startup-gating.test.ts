@@ -5,13 +5,12 @@
  * bounded, jittered restart loop (see worker-pool.ts). `handleWorkerStartupFailure`
  * is reached only when that self-heal is EXHAUSTED, a deterministic crash-loop
  * was detected, or the pool could not be constructed — i.e. the workers truly
- * cannot start. In every such case it FAILS FAST with the captured cause,
- * rather than silently degrading to the ~10× slower sequential parser (which
- * masked a worker-startup regression as a 123-minute "stuck" run in #1741).
- *
- * The decision is automatic and flag-free: there is no `--allow-sequential-fallback`
- * and no dependence on how the pool was sized. An operator who genuinely wants
- * sequential parsing passes `--workers 0`.
+ * cannot start. In every such case it FAILS FAST with the captured cause.
+ * There is no sequential parser to silently degrade to — that fallback was
+ * removed (it had masked a worker-startup regression as a 123-minute "stuck"
+ * run in #1741). The message names the fix (the worker startup / construction
+ * error) rather than offering a `--workers 0` escape hatch, which no longer
+ * exists.
  */
 import { describe, expect, it } from 'vitest';
 import { handleWorkerStartupFailure } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
@@ -49,7 +48,10 @@ describe('handleWorkerStartupFailure — always fail fast with the cause (#1741)
     );
     expect(message).toMatch(/deterministic/i);
     expect(message).toContain('tree-sitter-c-sharp'); // captured stderr propagated
-    expect(message).toContain('--workers 0'); // the explicit sequential escape hatch
+    // Sequential parsing was removed: the message no longer offers a `--workers 0`
+    // escape hatch — it names the fix instead (fail clearly, no silent fallback).
+    expect(message).not.toContain('--workers 0');
+    expect(message).toContain('Fix the worker startup failure');
     // The native-binding hint is apt for an init crash and is kept (R7).
     expect(message).toMatch(/native binding/i);
   });
@@ -58,7 +60,8 @@ describe('handleWorkerStartupFailure — always fail fast with the cause (#1741)
     const message = messageFrom(() => handleWorkerStartupFailure(initError('transient-exhausted')));
     expect(message).toMatch(/exhausted the bounded startup retry budget/i);
     expect(message).toContain('tree-sitter-c-sharp');
-    expect(message).toContain('--workers 0');
+    expect(message).not.toContain('--workers 0');
+    expect(message).toContain('Fix the worker startup failure');
   });
 
   it('throws on a pool *construction* failure (plain Error, not an init error)', () => {
@@ -66,7 +69,8 @@ describe('handleWorkerStartupFailure — always fail fast with the cause (#1741)
       handleWorkerStartupFailure(new Error('Worker script not found: /tmp/parse-worker.js')),
     );
     expect(message).toMatch(/could not be constructed/i);
-    expect(message).toContain('--workers 0');
+    expect(message).not.toContain('--workers 0');
+    expect(message).toContain('Fix the worker pool construction error');
     // The real construction error is surfaced verbatim (R7) …
     expect(message).toContain('Worker script not found: /tmp/parse-worker.js');
     // … and the native-binding guess is NOT applied to a construction failure.

@@ -5,10 +5,20 @@ import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/as
  * Decompose a `preproc_include` node into a CaptureMatch with structured
  * import captures. C #include maps to a wildcard import (all symbols
  * from the header are visible).
+ *
+ * Only literal include paths are emitted as import sources:
+ *   #include <stdio.h>   → system_lib_string
+ *   #include "local.h"   → string_literal
+ * A computed include like `#include HEADER_MACRO` carries an `identifier`
+ * path node (the macro name, not a header path). Emitting it as an import
+ * source produces a garbage literal edge, so we skip it entirely — matching
+ * the convention in interpretCImport, which drops imports with no resolvable
+ * source (issue #1919 F5).
  */
 export function splitCInclude(node: SyntaxNode): CaptureMatch | null {
   // node.type === 'preproc_include'
   // path field: (string_literal (string_content)) | (system_lib_string)
+  //             | (identifier)  ← computed macro include, NOT a header path
   const pathNode = node.childForFieldName?.('path') ?? null;
   if (pathNode === null) {
     // Fallback: scan children
@@ -24,7 +34,13 @@ export function splitCInclude(node: SyntaxNode): CaptureMatch | null {
   return buildIncludeCapture(node, pathNode);
 }
 
-function buildIncludeCapture(node: SyntaxNode, pathNode: SyntaxNode): CaptureMatch {
+function buildIncludeCapture(node: SyntaxNode, pathNode: SyntaxNode): CaptureMatch | null {
+  // Skip computed includes (`#include MACRO`) — the path is an `identifier`,
+  // not a literal header path. Emitting it would create a garbage import.
+  if (pathNode.type !== 'string_literal' && pathNode.type !== 'system_lib_string') {
+    return null;
+  }
+
   let raw: string;
   if (pathNode.type === 'string_literal') {
     // string_literal has children: `"`, string_content, `"`

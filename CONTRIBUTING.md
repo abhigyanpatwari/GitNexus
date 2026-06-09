@@ -157,7 +157,12 @@ routes between two modes based on the triggering event:
   suffix; RC tags are excluded at trigger via a negative glob). Publishes to
   the `latest` dist-tag with a changelog-backed GitHub release. Maintainers
   are expected to tag from `main` as a convention; the workflow itself does
-  not enforce branch reachability. No Docker build (RC-only).
+  not enforce branch reachability. No Docker build (RC-only). Before cutting a
+  stable release, keep `gitnexus/package.json`,
+  `gitnexus-claude-plugin/.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`, and the matching `CHANGELOG.md` entry in
+  lockstep — the always-on `gitnexus` unit suite now fails if those manifest
+  versions drift.
 - **Release-candidate mode** — runs on every push to `main` (typically a
   merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
   via `paths-ignore`. Publishes to the `rc` dist-tag with version

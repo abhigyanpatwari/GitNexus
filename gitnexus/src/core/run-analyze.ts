@@ -48,7 +48,16 @@ import {
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
-import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
+import {
+  loadParseCache,
+  saveParseCache,
+  pruneCache,
+  PARSE_CACHE_VERSION,
+} from '../storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
   getRemoteUrl,
@@ -132,8 +141,8 @@ export interface AnalyzeOptions {
    * Worker pool size override, threaded from the CLI `--workers` flag.
    * Forwarded to `PipelineOptions.workerPoolSize` so the parse phase
    * sizes the pool without `analyzeCommand` mutating `process.env`.
-   * `0` disables the pool (sequential fallback); positive integer sets
-   * the count; `undefined` defers to the env / auto-formula fallback.
+   * Must be a positive integer — `0` hard-errors (sequential parsing was
+   * removed); `undefined` defers to the env / auto-formula fallback.
    */
   workerPoolSize?: number;
 }
@@ -983,7 +992,19 @@ export async function runFullAnalysis(
       if (pruned > 0) {
         log(`Parse cache: pruned ${pruned} stale chunk entries`);
       }
-      await saveParseCache(storagePath, parseCache);
+      const savedKeys = await saveParseCache(storagePath, parseCache);
+      // Prune the durable ParsedFile store to EXACTLY the parse cache's
+      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
+      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
+      // and its durable shards exist. A quarantined chunk (in usedKeys but with
+      // no parse-cache shard) drops its durable subdir here and re-dispatches
+      // next run. Same try/catch — a durable-store write failure must never
+      // break an otherwise successful run (next run treats it as a miss).
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storagePath),
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }

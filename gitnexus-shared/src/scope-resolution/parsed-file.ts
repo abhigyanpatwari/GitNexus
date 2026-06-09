@@ -74,4 +74,28 @@ export interface ParsedFile {
    */
   readonly localDefs: readonly SymbolDefinition[];
   readonly referenceSites: readonly ReferenceSite[];
+  /**
+   * Opaque, language-private serialization of capture-time side-channel
+   * state that a provider's `emitScopeCaptures` populates into module-level
+   * maps as a SIDE EFFECT (not onto the scopes/defs of this `ParsedFile`).
+   *
+   * Such state is computed inside the parse worker (where `emitScopeCaptures`
+   * runs) and would otherwise be lost across the worker→main MessageChannel
+   * and the disk store, because scope-resolution reuses the serialized
+   * `ParsedFile` and SKIPS re-extraction on the main thread (#1983 — the
+   * whole point is to avoid a main-thread tree-sitter re-parse). Carrying the
+   * data here lets the main thread repopulate those maps WITHOUT re-parsing.
+   *
+   * Shared / ingestion code treats this as opaque (`unknown`) per AGENTS.md
+   * (no language names in shared code). The producing language fills it via
+   * the `LanguageProvider.collectCaptureSideChannel` hook (worker side) and
+   * consumes it via the `ScopeResolver.applyCaptureSideChannel` hook
+   * (main-thread resolution side). It MUST be plain JSON-serializable data
+   * (objects / arrays / primitives) so it round-trips through the disk-backed
+   * `parsedfile-store` (JSON.stringify + interning reviver).
+   *
+   * Optional: providers whose `emitScopeCaptures` is pure (no module-level
+   * side effects — the contract default) leave this undefined.
+   */
+  readonly captureSideChannel?: unknown;
 }

@@ -267,6 +267,7 @@ import type {
   Callsite,
   ConstraintContext,
   ParsedFile,
+  ReferenceSite,
   ScopeId,
   SupportedLanguages,
   SymbolDefinition,
@@ -290,6 +291,10 @@ export type LinearizeStrategy = (
 
 /** Result of `ScopeResolver.arityCompatibility` — mirrors `RegistryProviders.arityCompatibility`. */
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
+
+export type ReceiverMemberResolution =
+  | { readonly kind: 'resolved'; readonly definition: SymbolDefinition }
+  | { readonly kind: 'ambiguous'; readonly candidateIds: readonly string[] };
 
 /** Re-exported for ScopeResolver consumers — same shape as
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
@@ -407,7 +412,7 @@ export interface ScopeResolver {
    * for the Tier-A predicate registry and Kleene 3-valued evaluator.
    */
   readonly constraintCompatibility?: (
-    callsite: Callsite,
+    callsite: ReferenceSite,
     def: SymbolDefinition,
     ctx: ConstraintContext,
   ) => ArityVerdict;
@@ -513,6 +518,45 @@ export interface ScopeResolver {
     nodeLookup: GraphNodeLookup,
     resolutionConfig?: unknown,
   ) => void;
+
+  /**
+   * Restore capture-time per-file side-channel state that `emitScopeCaptures`
+   * produces as a side effect into module-level maps, NOT onto the returned
+   * `ParsedFile`. Such state never crosses the worker boundary: in worker-mode
+   * parses `emitScopeCaptures` runs inside the worker, so its module-level
+   * marks are populated in the WORKER process. The main thread then reuses the
+   * serialized `ParsedFile` (see `RunScopeResolutionInput.preExtractedParsedFiles`)
+   * and skips `extractParsedFile`, so those marks would otherwise be missing in
+   * the main process where resolution consumes them.
+   *
+   * This hook reads the worker-serialized snapshot from
+   * `parsed.captureSideChannel` (produced by the matching
+   * `LanguageProvider.collectCaptureSideChannel` hook in the worker) and writes
+   * it back into the module maps. It does NO tree-sitter parse and needs no
+   * source `content` — that is the whole point of #1983 (the prior re-parse
+   * replay re-introduced the main-thread tree-sitter OOM on huge `.h`/`.cpp`
+   * repos and was replaced by this data-only restore).
+   *
+   * C++ is the only language with this pattern today: `emitCppScopeCaptures`
+   * records ADL call-site arg shapes, inline-/anonymous-namespace ranges,
+   * dependent-base names, and file-local linkage into module maps that
+   * `populateOwners` and the ADL / two-phase-lookup passes read on the main
+   * thread. Without this restore, all of that is empty on the worker path and
+   * advanced C++ resolution (ADL / SFINAE-adjacent / inline-namespace) silently
+   * produces zero edges.
+   *
+   * Called by `runScopeResolution` ONLY for pre-extracted files (the worker
+   * already populated the marks in-process for freshly extracted files, so the
+   * fresh-extract leg never calls this). Runs BEFORE `populateOwners(parsed)`
+   * so the resolved-range Sets it repopulates are visible to that hook.
+   *
+   * Languages whose `emitScopeCaptures` is pure (the contract default — see
+   * `scope-extractor.ts`) leave this undefined; the restore is a no-op for them.
+   *
+   * @param parsed   The pre-extracted ParsedFile being reused. Its
+   *                 `captureSideChannel` carries the worker-computed data.
+   */
+  readonly applyCaptureSideChannel?: (parsed: ParsedFile) => void;
 
   /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
@@ -794,6 +838,21 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     callsite?: Callsite,
   ) => SymbolDefinition | 'ambiguous' | undefined;
+
+  /**
+   * Optional language-specific member-lattice lookup. Runs for a resolved
+   * simple receiver type before the generic flattened-MRO walk. Languages
+   * with lookup-set semantics that cannot be represented by one linear MRO
+   * may resolve a member, report ambiguity (which suppresses fallback), or
+   * return undefined to retain the shared behavior.
+   */
+  readonly resolveReceiverMember?: (
+    ownerDef: SymbolDefinition,
+    memberName: string,
+    callsite: Callsite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => ReceiverMemberResolution | undefined;
 
   /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`

@@ -386,5 +386,9 @@ describe('readResource', () => {
     const result = await readResource('gitnexus://repos', backend);
     expect(result).toContain('Multiple repos indexed');
     expect(result).toContain('repo parameter');
+    // The example must use a registered tool name, not the unregistered
+    // `gitnexus_search` / `gitnexus_*` prefix (#2059).
+    expect(result).toContain('query({query: "auth"');
+    expect(result).not.toMatch(/gitnexus_/);
   });
 });

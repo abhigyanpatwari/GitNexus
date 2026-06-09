@@ -9,25 +9,17 @@
  *
  *   - `processRoutesFromExtracted` — CALLS edges from framework routes
  *     (e.g. Laravel) to their controller methods.
- *   - `processNextjsFetchRoutes` / `extractFetchCallsFromFiles` /
- *     `extractConsumerAccessedKeys` — FETCHES edges from `fetch()` calls to
- *     Next.js Route nodes.
+ *   - `processNextjsFetchRoutes` / `extractConsumerAccessedKeys` — FETCHES edges
+ *     from `fetch()` calls to Next.js Route nodes.
  *   - `buildExportedTypeMapFromGraph` — exported symbol → return/declared type
  *     map, consumed by the cross-file enrichment pass.
  */
 
-import Parser from 'tree-sitter';
 import { KnowledgeGraph } from '../graph/types.js';
-import { ASTCache } from './ast-cache.js';
 import type { SemanticModel, SymbolTableReader } from './model/index.js';
-import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
-import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
-import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
-import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
@@ -39,6 +31,34 @@ const MAX_TYPE_NAME_LENGTH = 256;
  *  Consumed by the cross-file re-resolution / enrichment pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
 
+/** Record one exported graph node into the incremental ExportedTypeMap. */
+export const accumulateExportedTypesFromParsedNode = (
+  result: ExportedTypeMap,
+  node: { id: string; properties?: Record<string, unknown> },
+  symbolTable: SymbolTableReader,
+): void => {
+  if (!node.properties?.isExported) return;
+  if (!node.properties?.filePath || !node.properties?.name) return;
+  const filePath = node.properties.filePath as string;
+  const name = node.properties.name as string;
+  if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
+  const defs = symbolTable.lookupExactAll(filePath, name);
+  const def = defs.find((d) => d.nodeId === node.id) ?? defs[0];
+  if (!def) return;
+  const typeName = def.returnType ?? def.declaredType;
+  if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;
+  const simpleType = extractReturnTypeName(typeName) ?? typeName;
+  if (!simpleType) return;
+  let fileExports = result.get(filePath);
+  if (!fileExports) {
+    fileExports = new Map();
+    result.set(filePath, fileExports);
+  }
+  if (fileExports.size < MAX_EXPORTS_PER_FILE) {
+    fileExports.set(name, simpleType);
+  }
+};
+
 /** Build ExportedTypeMap from graph nodes — used for the worker path where the
  *  sequential TypeEnv is not available in the main thread. Collects
  *  returnType/declaredType from exported symbols with known types. */
@@ -48,29 +68,7 @@ export function buildExportedTypeMapFromGraph(
 ): ExportedTypeMap {
   const result: ExportedTypeMap = new Map();
   graph.forEachNode((node) => {
-    if (!node.properties?.isExported) return;
-    if (!node.properties?.filePath || !node.properties?.name) return;
-    const filePath = node.properties.filePath as string;
-    const name = node.properties.name as string;
-    if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
-    // For callable symbols, use returnType; for properties/variables, use declaredType.
-    // Use lookupExactAll + nodeId match to handle same-name methods in different classes.
-    const defs = symbolTable.lookupExactAll(filePath, name);
-    const def = defs.find((d) => d.nodeId === node.id) ?? defs[0];
-    if (!def) return;
-    const typeName = def.returnType ?? def.declaredType;
-    if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;
-    // Extract simple type name (strip Promise<>, etc.) — reuse shared utility
-    const simpleType = extractReturnTypeName(typeName) ?? typeName;
-    if (!simpleType) return;
-    let fileExports = result.get(filePath);
-    if (!fileExports) {
-      fileExports = new Map();
-      result.set(filePath, fileExports);
-    }
-    if (fileExports.size < MAX_EXPORTS_PER_FILE) {
-      fileExports.set(name, simpleType);
-    }
+    accumulateExportedTypesFromParsedNode(result, node, symbolTable);
   });
   return result;
 }
@@ -447,80 +445,4 @@ export const processNextjsFetchRoutes = (
       }
     }
   }
-};
-
-/**
- * Extract fetch() calls from source files (sequential path).
- * Workers handle this via tree-sitter captures in parse-worker; this function
- * provides the same extraction for the sequential fallback path.
- */
-export const extractFetchCallsFromFiles = async (
-  files: { path: string; content: string }[],
-  astCache: ASTCache,
-): Promise<ExtractedFetchCall[]> => {
-  const parser = await loadParser();
-  const result: ExtractedFetchCall[] = [];
-
-  for (const file of files) {
-    const language = getLanguageFromFilename(file.path);
-    if (!language) continue;
-    if (!isLanguageAvailable(language)) continue;
-
-    const provider = getProvider(language);
-    const queryStr = provider.treeSitterQueries;
-    if (!queryStr) continue;
-
-    await loadLanguage(language, file.path);
-
-    let tree = astCache.get(file.path);
-    if (!tree) {
-      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
-      try {
-        tree = parseSourceSafe(parser, parseContent, undefined, {
-          bufferSize: getTreeSitterBufferSize(parseContent),
-        });
-      } catch {
-        continue;
-      }
-      astCache.set(file.path, tree);
-    }
-
-    let matches;
-    try {
-      const lang = parser.getLanguage();
-      const query = new Parser.Query(lang, queryStr);
-      matches = query.matches(tree.rootNode);
-    } catch {
-      continue;
-    }
-
-    for (const match of matches) {
-      const captureMap: Record<string, any> = {};
-      match.captures.forEach((c) => (captureMap[c.name] = c.node));
-
-      if (captureMap['route.fetch']) {
-        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
-        if (urlNode) {
-          result.push({
-            filePath: file.path,
-            fetchURL: urlNode.text,
-            lineNumber: captureMap['route.fetch'].startPosition.row,
-          });
-        }
-      } else if (captureMap['http_client'] && captureMap['http_client.url']) {
-        const method = captureMap['http_client.method']?.text;
-        const url = captureMap['http_client.url'].text;
-        const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
-        if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
-          result.push({
-            filePath: file.path,
-            fetchURL: url,
-            lineNumber: captureMap['http_client'].startPosition.row,
-          });
-        }
-      }
-    }
-  }
-
-  return result;
 };

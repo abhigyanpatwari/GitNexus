@@ -20,6 +20,7 @@ export {
   scopeResolutionPhase,
   type ScopeResolutionOutput,
 } from '../scope-resolution/pipeline/phase.js';
+export { pruneLocalSymbolsPhase, type PruneLocalSymbolsOutput } from './prune-local-symbols.js';
 export { mroPhase, type MROOutput } from './mro.js';
 export { communitiesPhase, type CommunitiesOutput } from './communities.js';
 export { processesPhase, type ProcessesOutput } from './processes.js';
@@ -29,3 +30,4 @@ export { processesPhase, type ProcessesOutput } from './processes.js';
 export { runPipeline } from './runner.js';
 export type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 export { getPhaseOutput } from './types.js';
+export { PhaseRegistry, type RegisterPhaseOptions } from './registry.js';

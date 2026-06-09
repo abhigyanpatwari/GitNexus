@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
-import { buildTestGraph } from '../helpers/test-graph.js';
+import { buildTestGraph, type TestNodeInput, type TestRelInput } from '../helpers/test-graph.js';
 import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
 
 let tmpHandle: TestDBHandle;
@@ -220,5 +220,90 @@ describe('streamAllCSVsToDisk', () => {
     const fileCsv = result.nodeFiles.get('File');
     expect(fileCsv).toBeDefined();
     expect(fileCsv!.rows).toBe(1);
+  });
+});
+
+/**
+ * Deterministic output — `GITNEXUS_SORT_GRAPH_OUTPUT` makes the CSV a pure function of the
+ * graph's node/edge SET (id-sorted) instead of of insertion order. This is the
+ * structural enabler for the out-of-core / windowed resolve: with it on,
+ * a windowed emit that produces the same edge set in a different order yields
+ * byte-identical CSV. Default off = today's insertion-order bytes exactly.
+ */
+describe('streamAllCSVsToDisk — deterministic output ordering', () => {
+  // Folder nodes: single-line CSV rows (no multi-line `content` column), so the
+  // id is the first comma-separated field and split('\n') is safe. ids are
+  // deliberately NOT in insertion order (c, a, b).
+  const NODES: TestNodeInput[] = [
+    { id: 'folder:c', label: 'Folder', name: 'c', filePath: 'c' },
+    { id: 'folder:a', label: 'Folder', name: 'a', filePath: 'a' },
+    { id: 'folder:b', label: 'Folder', name: 'b', filePath: 'b' },
+  ];
+  const RELS: TestRelInput[] = [
+    { sourceId: 'folder:c', targetId: 'folder:a', type: 'CONTAINS' },
+    { sourceId: 'folder:a', targetId: 'folder:b', type: 'CONTAINS' },
+    { sourceId: 'folder:b', targetId: 'folder:c', type: 'CONTAINS' },
+  ];
+  const dataRows = (csv: string): string[] =>
+    csv
+      .trim()
+      .split('\n')
+      .slice(1)
+      .filter((l) => l.length > 0);
+  const firstCol = (row: string): string => row.split(',')[0];
+
+  const run = async (
+    nodes: TestNodeInput[],
+    rels: TestRelInput[],
+    sorted: boolean,
+    sub: string,
+  ): Promise<{ folderIds: string[]; relRows: string[] }> => {
+    if (sorted) process.env.GITNEXUS_SORT_GRAPH_OUTPUT = '1';
+    else delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
+    try {
+      const result = await streamAllCSVsToDisk(
+        buildTestGraph(nodes, rels),
+        repoDir,
+        path.join(csvDir, sub),
+      );
+      const folderCsv = result.nodeFiles.get('Folder');
+      const folderIds = folderCsv
+        ? dataRows(await fs.readFile(folderCsv.csvPath, 'utf-8')).map(firstCol)
+        : [];
+      const relRows = dataRows(await fs.readFile(result.relCsvPath, 'utf-8'));
+      return { folderIds, relRows };
+    } finally {
+      delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
+    }
+  };
+
+  it('default off: node rows follow graph insertion order (not id-sorted)', async () => {
+    const { folderIds } = await run(NODES, RELS, false, 'u6a-off');
+    expect(folderIds).not.toEqual([...folderIds].sort()); // insertion order c, a, b
+  });
+
+  it('flag on: node rows are sorted by id', async () => {
+    const { folderIds } = await run(NODES, RELS, true, 'u6a-on');
+    expect(folderIds).toEqual([...folderIds].sort());
+  });
+
+  it('flag on makes output independent of graph insertion order; off does not', async () => {
+    const nodesRev = [...NODES].reverse();
+    const relsRev = [...RELS].reverse();
+
+    const onFwd = await run(NODES, RELS, true, 'u6a-on-fwd');
+    const onRev = await run(nodesRev, relsRev, true, 'u6a-on-rev');
+    // SORTED: byte-for-byte identical regardless of insertion order — the deterministic-output property.
+    expect(onRev.folderIds).toEqual(onFwd.folderIds);
+    expect(onRev.relRows).toEqual(onFwd.relRows);
+
+    const offFwd = await run(NODES, RELS, false, 'u6a-off-fwd');
+    const offRev = await run(nodesRev, relsRev, false, 'u6a-off-rev');
+    // UNSORTED: insertion order leaks into the bytes (today's behavior).
+    expect(offRev.folderIds).not.toEqual(offFwd.folderIds);
+
+    // SAME node/edge SET in both modes — sorting reorders rows, never adds/drops.
+    expect([...onFwd.folderIds].sort()).toEqual([...offFwd.folderIds].sort());
+    expect([...onFwd.relRows].sort()).toEqual([...offFwd.relRows].sort());
   });
 });

@@ -15,9 +15,33 @@
 import fs from 'fs/promises';
 import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
-import type { GraphNode } from 'gitnexus-shared';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName } from './schema.js';
+import { parseTruthyEnv } from '../ingestion/utils/env.js';
+
+/**
+ * Deterministic output ordering — optional (out-of-core / windowed-resolve
+ * enabler). When `GITNEXUS_SORT_GRAPH_OUTPUT` is set, nodes and relationships
+ * are emitted sorted by their (unique, dedup-key) graph `id` rather than in
+ * graph-insertion order, making the CSV a pure function of the graph's node/edge
+ * SET instead of of emit order. Default off returns the iterator untouched, so
+ * the bytes are identical to today. With it on, a windowed/out-of-core emit
+ * (the later windowed-resolve work) need only reproduce the same edge SET, not the global insertion order —
+ * which removes "CSV row order == Map insertion order" as a byte-identical
+ * hazard for every later windowing step.
+ */
+const byGraphId = <T extends { id: string }>(a: T, b: T): number =>
+  a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+
+const orderedNodes = (graph: KnowledgeGraph, sorted: boolean): Iterable<GraphNode> =>
+  sorted ? [...graph.iterNodes()].sort(byGraphId) : graph.iterNodes();
+
+const orderedRelationships = (
+  graph: KnowledgeGraph,
+  sorted: boolean,
+): Iterable<GraphRelationship> =>
+  sorted ? [...graph.iterRelationships()].sort(byGraphId) : graph.iterRelationships();
 
 /** Flush buffered rows to disk every N rows */
 const FLUSH_EVERY = 500;
@@ -215,6 +239,9 @@ export const streamAllCSVsToDisk = async (
   repoPath: string,
   csvDir: string,
 ): Promise<StreamedCSVResult> => {
+  // Deterministic (id-sorted) node/relationship row order when enabled;
+  // default off = today's graph-insertion order (byte-identical).
+  const sortOutput = parseTruthyEnv(process.env.GITNEXUS_SORT_GRAPH_OUTPUT);
   // Remove stale CSVs from previous crashed runs, then recreate
   try {
     await fs.rm(csvDir, { recursive: true, force: true });
@@ -278,6 +305,13 @@ export const streamAllCSVsToDisk = async (
     'id,name,filePath,description',
   );
 
+  // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
+  // blocks are identified by id + source span. Emitted by no phase yet.
+  const basicBlockWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'basicblock.csv'),
+    'id,filePath,startLine,endLine,text',
+  );
+
   // Multi-language node types share the same CSV shape (no isExported column)
   const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
   const MULTI_LANG_TYPES = [
@@ -326,7 +360,7 @@ export const streamAllCSVsToDisk = async (
   const seenNodeIds = new Set<string>();
 
   // --- SINGLE PASS over all nodes ---
-  for (const node of graph.iterNodes()) {
+  for (const node of orderedNodes(graph, sortOutput)) {
     if (seenNodeIds.has(node.id)) continue;
     seenNodeIds.add(node.id);
 
@@ -451,6 +485,17 @@ export const streamAllCSVsToDisk = async (
           ].join(','),
         );
         break;
+      case 'BasicBlock':
+        await basicBlockWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(node.properties.filePath || ''),
+            escapeCSVNumber(node.properties.startLine, -1),
+            escapeCSVNumber(node.properties.endLine, -1),
+            escapeCSVField(node.properties.text || ''),
+          ].join(','),
+        );
+        break;
       default: {
         // Code element nodes (Function, Class, Interface, CodeElement)
         const writer = codeWriterMap[node.label];
@@ -508,6 +553,7 @@ export const streamAllCSVsToDisk = async (
     sectionWriter,
     routeWriter,
     toolWriter,
+    basicBlockWriter,
     ...multiLangWriters.values(),
   ];
   await Promise.all(allWriters.map((w) => w.finish()));
@@ -515,7 +561,7 @@ export const streamAllCSVsToDisk = async (
   // --- Stream relationship CSV ---
   const relCsvPath = path.join(csvDir, 'relations.csv');
   const relWriter = new BufferedCSVWriter(relCsvPath, 'from,to,type,confidence,reason,step');
-  for (const rel of graph.iterRelationships()) {
+  for (const rel of orderedRelationships(graph, sortOutput)) {
     await relWriter.addRow(
       [
         escapeCSVField(rel.sourceId),
@@ -544,6 +590,7 @@ export const streamAllCSVsToDisk = async (
     ['Section' as NodeTableName, sectionWriter],
     ['Route' as NodeTableName, routeWriter],
     ['Tool' as NodeTableName, toolWriter],
+    ['BasicBlock' as NodeTableName, basicBlockWriter],
     ...Array.from(multiLangWriters.entries()).map(
       ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],
     ),

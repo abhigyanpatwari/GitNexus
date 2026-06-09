@@ -54,10 +54,9 @@
  *   6. **Intersection types in parameters** — `T&U $param` takes the first
  *      named part (`T`). This matches the legacy type-extractor's behavior.
  *
- * Shadow-harness corpus parity is the authoritative signal for which of
- * these matter in practice. The CI parity gate blocks any PR that regresses
- * either the legacy or registry-primary run of
- * `test/integration/resolvers/php.test.ts`.
+ * The `test/integration/resolvers/php.test.ts` resolver suite is the
+ * authoritative signal for which of these matter in practice; it runs in
+ * the standard CI test workflow, so a regression blocks the merge.
  */
 
 export { emitPhpScopeCaptures } from './captures.js';

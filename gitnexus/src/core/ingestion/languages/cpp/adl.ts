@@ -109,6 +109,38 @@ const noAdlSites = new Set<string>();
 const classToNamespaceQualifiedName = new Map<string, string>();
 
 /**
+ * Per-`filePath` index of the site keys this file contributed to
+ * `argInfoBySite` / `noAdlSites`, kept in **strict lockstep** with those two
+ * maps (#1983 perf). Without it, `collectCppAdlSideChannel(filePath)` had to
+ * scan the ENTIRE module-level maps (every site of every file the worker
+ * parsed in the current sub-batch) and `parseSiteKey` each entry just to pick
+ * out one file's slice — O(F²) per sub-batch (~100M `parseSiteKey` calls
+ * across the Linux kernel). These indexes turn collect into
+ * O(entries-for-this-file).
+ *
+ * Lockstep invariant: a key is pushed here at most once, exactly when it is
+ * first inserted into the corresponding map, and both indexes are cleared
+ * wherever `argInfoBySite` / `noAdlSites` are cleared (`clearCppAdlState` and
+ * the per-file restore in `applyCppAdlSideChannel`). The "first insert only"
+ * guard mirrors the maps' own de-dup (`Map.set` / `Set.add` are idempotent on
+ * the key), so iterating an index yields each of this file's keys exactly once
+ * — byte-identical to the old filtered full scan.
+ */
+const argInfoSiteKeysByFile = new Map<string, string[]>();
+const noAdlSiteKeysByFile = new Map<string, string[]>();
+
+/** Push `key` into the per-file index `idx[filePath]` (creating the bucket on
+ *  first use). Callers guard against duplicate keys so each key appears once. */
+function pushFileSiteKey(idx: Map<string, string[]>, filePath: string, key: string): void {
+  let keys = idx.get(filePath);
+  if (keys === undefined) {
+    keys = [];
+    idx.set(filePath, keys);
+  }
+  keys.push(key);
+}
+
+/**
  * ADL candidate index — built **once** per pipeline run from
  * `(scopes, parsedFiles)` and reused by every call site.
  *
@@ -370,13 +402,94 @@ export function markCppAdlSiteArgs(
   col: number,
   args: readonly CppAdlArgInfo[],
 ): void {
-  argInfoBySite.set(siteKey(filePath, line, col), args);
+  const key = siteKey(filePath, line, col);
+  // Lockstep with `argInfoSiteKeysByFile`: index the key only on first insert
+  // (a re-mark overwrites the value but must NOT duplicate the index entry).
+  if (!argInfoBySite.has(key)) pushFileSiteKey(argInfoSiteKeysByFile, filePath, key);
+  argInfoBySite.set(key, args);
 }
 
 /** Mark a call site as ADL-suppressed (function child wrapped in
  *  `parenthesized_expression`, e.g. `(f)(s)`). */
 export function markCppAdlSiteNoAdl(filePath: string, line: number, col: number): void {
-  noAdlSites.add(siteKey(filePath, line, col));
+  const key = siteKey(filePath, line, col);
+  // Lockstep with `noAdlSiteKeysByFile`: index the key only on first insert.
+  if (!noAdlSites.has(key)) pushFileSiteKey(noAdlSiteKeysByFile, filePath, key);
+  noAdlSites.add(key);
+}
+
+/**
+ * Plain-data, JSON-serializable snapshot of the per-file ADL capture state
+ * (`argInfoBySite` entries for this file + `noAdlSites` keys for this file).
+ * Carried on `ParsedFile.captureSideChannel` across the worker→main boundary
+ * (#1983); the call-site key's `line:col` are stored per-entry so the full
+ * `filePath:line:col` key can be reconstructed without parsing.
+ */
+export interface CppAdlSideChannel {
+  /** Per-call-site arg info: `[line, col, args]` for sites in this file. */
+  readonly argInfoBySite: readonly [number, number, readonly CppAdlArgInfo[]][];
+  /** ADL-suppressed sites in this file: `[line, col]`. */
+  readonly noAdlSites: readonly [number, number][];
+}
+
+const SITE_KEY_RE = /^(.*):(\d+):(\d+)$/;
+
+/** Split a `filePath:line:col` site key, tolerating colons in the path. */
+function parseSiteKey(key: string): { filePath: string; line: number; col: number } | undefined {
+  const m = SITE_KEY_RE.exec(key);
+  if (m === null) return undefined;
+  return { filePath: m[1], line: Number(m[2]), col: Number(m[3]) };
+}
+
+/**
+ * Snapshot this file's ADL capture state for the worker→main side-channel.
+ *
+ * Uses the per-file `argInfoSiteKeysByFile` / `noAdlSiteKeysByFile` indexes to
+ * touch only THIS file's entries — O(entries-for-this-file) — instead of the
+ * old O(all-entries) full scan over `argInfoBySite` / `noAdlSites` (#1983).
+ * The output order, and therefore the serialized JSON shape, is byte-identical
+ * to the old filtered scan: the index records keys in the same insertion order
+ * the maps' own iteration would have yielded for this file, and each key is
+ * indexed exactly once (mark guards on first insert), so the same per-file
+ * subsequence is produced.
+ *
+ * `parseSiteKey` is still used to recover `line:col` from each key, but now
+ * only for this file's keys (a bounded handful), never for the whole batch.
+ */
+export function collectCppAdlSideChannel(filePath: string): CppAdlSideChannel {
+  const args: [number, number, readonly CppAdlArgInfo[]][] = [];
+  for (const key of argInfoSiteKeysByFile.get(filePath) ?? []) {
+    const value = argInfoBySite.get(key);
+    const parsed = parseSiteKey(key);
+    if (value !== undefined && parsed !== undefined) {
+      args.push([parsed.line, parsed.col, value]);
+    }
+  }
+  const noAdl: [number, number][] = [];
+  for (const key of noAdlSiteKeysByFile.get(filePath) ?? []) {
+    const parsed = parseSiteKey(key);
+    if (parsed !== undefined) {
+      noAdl.push([parsed.line, parsed.col]);
+    }
+  }
+  return { argInfoBySite: args, noAdlSites: noAdl };
+}
+
+/** Restore this file's ADL capture state from the side-channel (no parse).
+ *  Keeps the per-file site-key indexes in lockstep with `argInfoBySite` /
+ *  `noAdlSites` (first-insert-only) so a later `collectCppAdlSideChannel` on
+ *  the same process would still produce a correct, duplicate-free snapshot. */
+export function applyCppAdlSideChannel(filePath: string, data: CppAdlSideChannel): void {
+  for (const [line, col, value] of data.argInfoBySite) {
+    const key = siteKey(filePath, line, col);
+    if (!argInfoBySite.has(key)) pushFileSiteKey(argInfoSiteKeysByFile, filePath, key);
+    argInfoBySite.set(key, value);
+  }
+  for (const [line, col] of data.noAdlSites) {
+    const key = siteKey(filePath, line, col);
+    if (!noAdlSites.has(key)) pushFileSiteKey(noAdlSiteKeysByFile, filePath, key);
+    noAdlSites.add(key);
+  }
 }
 
 /** Clear ADL state. Called from `cppScopeResolver.loadResolutionConfig`
@@ -385,6 +498,11 @@ export function markCppAdlSiteNoAdl(filePath: string, line: number, col: number)
 export function clearCppAdlState(): void {
   argInfoBySite.clear();
   noAdlSites.clear();
+  // Lockstep: the per-file site-key indexes mirror argInfoBySite/noAdlSites and
+  // MUST be cleared together — a stale index would resurrect a prior pass's
+  // (or prior file's, after a re-key) keys into the next snapshot.
+  argInfoSiteKeysByFile.clear();
+  noAdlSiteKeysByFile.clear();
   classToNamespaceQualifiedName.clear();
   adlIndex = undefined;
   adlIndexSource = undefined;

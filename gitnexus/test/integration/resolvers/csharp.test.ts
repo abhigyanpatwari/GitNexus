@@ -2509,7 +2509,7 @@ describe('C# large-file + frozen-bucket regression (issue #1066)', () => {
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'csharp-large-cache-miss-resolution'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+      {},
     );
   }, 120000);
 
@@ -2619,7 +2619,7 @@ describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'csharp-namespace-as-root-no-trailing-newline'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+      {},
     );
   }, 60000);
 

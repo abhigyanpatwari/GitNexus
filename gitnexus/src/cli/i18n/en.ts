@@ -175,7 +175,7 @@ export const en = {
   'help.option.analyze.walCheckpointThreshold':
     'LadybugDB WAL auto-checkpoint threshold in bytes during analyze (integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
   'help.option.analyze.workers':
-    'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
+    'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   'help.option.analyze.embeddingThreads': 'Limit local ONNX embedding CPU threads',
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',

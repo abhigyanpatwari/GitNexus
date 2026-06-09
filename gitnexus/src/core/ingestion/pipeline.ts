@@ -31,9 +31,11 @@ import {
   ormPhase,
   crossFilePhase,
   scopeResolutionPhase,
+  pruneLocalSymbolsPhase,
   mroPhase,
   communitiesPhase,
   processesPhase,
+  PhaseRegistry,
   type ScopeResolutionOutput,
   type PipelinePhase,
   type CommunitiesOutput,
@@ -41,29 +43,29 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
-  /** Skip MRO, community detection, and process extraction for faster test runs. */
-  skipGraphPhases?: boolean;
-  /** Force sequential parsing (no worker pool). Useful for testing the sequential path. */
-  skipWorkers?: boolean;
   /**
-   * @internal Test-only override for worker-pool gating thresholds.
-   * When unset, production defaults apply (15 files OR 512 KB total bytes).
-   * Setting either field lowers the corresponding threshold so small test
-   * fixtures can still exercise the worker-pool path. Do not use from
-   * production call sites.
+   * Skip MRO, community detection, and process extraction for faster test runs.
+   * The `pruneLocalSymbols` phase still runs — it is graph construction (it cleans
+   * up inert local symbols), not graph analysis — so set `keepLocalValueSymbols`
+   * to retain those nodes under `skipGraphPhases`.
    */
-  workerThresholdsForTest?: {
-    minFiles?: number;
-    minBytes?: number;
-  };
+  skipGraphPhases?: boolean;
+  /**
+   * Request parsing with the worker pool disabled. The sequential parser was
+   * removed — the worker pool is the sole parse path — so setting this now
+   * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to
+   * `--workers 0`). Retained so callers get an actionable error rather than a
+   * silently-different result.
+   */
+  skipWorkers?: boolean;
   /**
    * @internal Test-only override for the worker script URL the pool
    * spawns. When unset, parse-impl resolves `parse-worker.js` from the
    * adjacent `workers/` directory (or the compiled `dist/` fallback
    * under vitest). Integration tests use this to inject a custom
    * worker script that deterministically triggers worker-pool
-   * resilience paths (e.g., crash-on-poison-file) — same precedent as
-   * `workerThresholdsForTest`. Do not use from production call sites.
+   * resilience paths (e.g., crash-on-poison-file). Do not use from production
+   * call sites.
    */
   workerUrlForTest?: URL;
   /**
@@ -85,11 +87,11 @@ export interface PipelineOptions {
    * `createWorkerPool` so the pool sizing bypasses the env-var fallback
    * in `resolveAutoPoolSize`. The env-var channel
    * (`GITNEXUS_WORKER_POOL_SIZE`) remains as a back-compat fallback when
-   * this field is undefined. Setting `workerPoolSize: 0` disables the
-   * pool entirely (sequential fallback) — equivalent to `skipWorkers`
-   * but expressed in the same units as `--workers <N>` so long-running
-   * hosts (eval-server, MCP daemon) can size per-call without leaking
-   * `process.env` state across analyze invocations.
+   * this field is undefined. Must be a positive integer — `0` hard-errors
+   * (sequential parsing was removed; equivalent to `skipWorkers`), expressed
+   * in the same units as `--workers <N>` so long-running hosts (eval-server,
+   * MCP daemon) can size per-call without leaking `process.env` state across
+   * analyze invocations.
    */
   workerPoolSize?: number;
   /**
@@ -119,6 +121,14 @@ export interface PipelineOptions {
    * without leaking `process.env` state across invocations.
    */
   chunkByteBudget?: number;
+  /**
+   * Keep inert block-local value symbols (Const/Variable/Static) that the
+   * `pruneLocalSymbols` phase would otherwise drop. Mirrors the
+   * `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` env var, but threaded per-call so
+   * long-running hosts (eval-server, MCP daemon) can opt out without leaking
+   * `process.env` state across invocations. When undefined, the env var decides.
+   */
+  keepLocalValueSymbols?: boolean;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
@@ -129,30 +139,40 @@ export interface PipelineOptions {
  * Phase dependency graph:
  *
  *   scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
- *     → crossFile → mro → communities → processes
+ *     → crossFile → scopeResolution → pruneLocalSymbols
+ *     → mro → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
- * object, and add it to the appropriate position in this array.
+ * object, and `.register()` it at the appropriate position below. Opt-in
+ * phases pass an `enabledWhen` predicate (issue #2080 phase-registry seam) —
+ * the legacy `if (!skipGraphPhases)` guard is now expressed that way on the
+ * three graph phases, with no change in behaviour.
+ *
+ * Exported for the parity test (`pipeline-phase-registry.test.ts`), which
+ * asserts the produced list is byte-identical to the legacy array for every
+ * options combination.
  */
-function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
-  const phases: PipelinePhase[] = [
-    scanPhase,
-    structurePhase,
-    markdownPhase,
-    cobolPhase,
-    parsePhase,
-    routesPhase,
-    toolsPhase,
-    ormPhase,
-    crossFilePhase,
-    scopeResolutionPhase,
-  ];
-
-  if (!options?.skipGraphPhases) {
-    phases.push(mroPhase, communitiesPhase, processesPhase);
-  }
-
-  return phases;
+export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
+  return (
+    new PhaseRegistry<PipelineOptions>()
+      .register(scanPhase)
+      .register(structurePhase)
+      .register(markdownPhase)
+      .register(cobolPhase)
+      .register(parsePhase)
+      .register(routesPhase)
+      .register(toolsPhase)
+      .register(ormPhase)
+      .register(crossFilePhase)
+      .register(scopeResolutionPhase)
+      .register(pruneLocalSymbolsPhase)
+      .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      // Normalize a missing options object once here so phase predicates above
+      // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
+      .build(options ?? {})
+  );
 }
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────

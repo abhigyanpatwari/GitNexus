@@ -44,11 +44,18 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
  * On version mismatch, `loadParseCache` returns an empty cache and the
  * next save overwrites the on-disk file with the new version baked in.
  */
-// Bumped to 3 in RING4-1 (#942): ParseWorkerResult lost its `heritage` field
-// when the legacy heritage path was deleted. Invalidating stale on-disk caches
-// prevents cross-version replay (e.g. a rollback reading a heritage-less cache
-// into legacy code that expects `result.heritage`).
-const SCHEMA_BUMP = 3;
+// Bumped to 4 in #1983: on-disk parse-cache shards omit legacy DAG fields
+// (`calls`, `assignments`, `constructorBindings`) unused after RING4-1 (#942)
+// and the worker `parsedFiles` (the worker writes those to the disk ParsedFile
+// store instead). #2038 added a DURABLE, content-addressed ParsedFile store
+// (`parsedfile-cache/`, see parsedfile-store.ts) keyed by chunk hash that
+// mirrors THIS cache's lifecycle — version-gated by PARSE_CACHE_VERSION, pruned
+// in lockstep to the surviving keys. On a warm parse-cache hit the chunk's
+// ParsedFiles are restored from it, so scope-resolution does NOT re-extract on
+// the main thread (the #1983 OOM). Because the two stores share this version,
+// any future change to the `ParsedFile` serialization shape MUST bump
+// SCHEMA_BUMP so both invalidate in lockstep.
+const SCHEMA_BUMP = 4;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -108,6 +115,14 @@ export interface ParseCache {
    * Transient — never serialized to disk.
    */
   usedKeys: Set<string>;
+  /**
+   * When set, chunk payloads are loaded from / flushed to sharded files on
+   * demand instead of retaining every chunk in `entries` for the whole run
+   * (#1983 — Linux kernel OOM from duplicate in-memory cache + graph).
+   */
+  storagePath?: string;
+  /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
+  onDiskKeys?: Set<string>;
 }
 
 /** SHA-256 hex of a single string or buffer. */
@@ -146,13 +161,13 @@ export const computeChunkHash = (
 const MAP_TAG = '__$mapEntries$__';
 const SET_TAG = '__$setValues$__';
 
-const mapReplacer = (_key: string, value: unknown): unknown => {
+export const mapReplacer = (_key: string, value: unknown): unknown => {
   if (value instanceof Map) return { [MAP_TAG]: Array.from(value.entries()) };
   if (value instanceof Set) return { [SET_TAG]: Array.from(value.values()) };
   return value;
 };
 
-const mapReviver = (_key: string, value: unknown): unknown => {
+export const mapReviver = (_key: string, value: unknown): unknown => {
   if (value && typeof value === 'object') {
     const v = value as Record<string, unknown>;
     if (Array.isArray(v[MAP_TAG])) return new Map(v[MAP_TAG] as [unknown, unknown][]);
@@ -172,6 +187,87 @@ const getCacheIndexPath = (storagePath: string): string =>
 const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
   path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
 
+/**
+ * Drop fields that are not replayed by `mergeChunkResults` / parse-impl after
+ * RING4-1 (#942). Shrinks on-disk shards and peak RSS during cold runs.
+ */
+export const slimParseWorkerResultsForCache = (
+  chunkResults: readonly ParseWorkerResult[],
+): ParseWorkerResult[] => {
+  const slim: ParseWorkerResult[] = [];
+  for (const result of chunkResults) {
+    slim.push({
+      ...result,
+      calls: [],
+      assignments: [],
+      constructorBindings: [],
+      parsedFiles: [],
+    });
+  }
+  return slim;
+};
+
+const readParseCacheChunkFromDisk = async (
+  storagePath: string,
+  chunkHash: string,
+): Promise<ParseWorkerResult[] | undefined> => {
+  if (!isValidChunkCacheKey(chunkHash)) return undefined;
+  try {
+    const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
+    const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
+    return Array.isArray(chunkData) ? chunkData : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Load one chunk shard. Does not retain it in `cache.entries`. */
+export const loadParseCacheChunk = async (
+  cache: ParseCache,
+  chunkHash: string,
+): Promise<ParseWorkerResult[] | undefined> => {
+  const inMemory = cache.entries.get(chunkHash);
+  if (inMemory !== undefined) return inMemory;
+  if (cache.storagePath && cache.onDiskKeys?.has(chunkHash)) {
+    return readParseCacheChunkFromDisk(cache.storagePath, chunkHash);
+  }
+  return undefined;
+};
+
+/**
+ * Cache directories already created this process. `persistParseCacheChunk` runs
+ * once per cache-miss chunk; without this guard every miss re-issues a redundant
+ * `mkdir` syscall (hundreds on a large cold repo) (#1983). Storage paths are
+ * process-scoped, so the Set stays bounded.
+ */
+const createdCacheDirs = new Set<string>();
+
+/**
+ * Persist one chunk shard and avoid retaining it in RAM for the rest of the
+ * run. Falls back to `cache.entries` when `storagePath` is unset (unit tests).
+ */
+export const persistParseCacheChunk = async (
+  cache: ParseCache,
+  chunkHash: string,
+  chunkResults: readonly ParseWorkerResult[],
+): Promise<void> => {
+  const slim = slimParseWorkerResultsForCache(chunkResults);
+  if (cache.storagePath) {
+    const cacheDir = getCacheDirPath(cache.storagePath);
+    if (!createdCacheDirs.has(cacheDir)) {
+      await fs.mkdir(cacheDir, { recursive: true });
+      createdCacheDirs.add(cacheDir);
+    }
+    const payload = JSON.stringify(slim, mapReplacer);
+    await fs.writeFile(getCacheChunkPath(cache.storagePath, chunkHash), payload, 'utf-8');
+    cache.onDiskKeys ??= new Set<string>();
+    cache.onDiskKeys.add(chunkHash);
+    cache.entries.delete(chunkHash);
+    return;
+  }
+  cache.entries.set(chunkHash, slim);
+};
+
 const loadLegacyParseCache = async (storagePath: string): Promise<ParseCache> => {
   const cachePath = getLegacyCachePath(storagePath);
   try {
@@ -184,15 +280,15 @@ const loadLegacyParseCache = async (storagePath: string): Promise<ParseCache> =>
       typeof data.entries !== 'object' ||
       data.entries === null
     ) {
-      return emptyCache();
+      return emptyCache(storagePath);
     }
     const entries = new Map<string, ParseWorkerResult[]>();
     for (const [k, v] of Object.entries(data.entries)) {
       if (Array.isArray(v)) entries.set(k, v as ParseWorkerResult[]);
     }
-    return { version: PARSE_CACHE_VERSION, entries, usedKeys: new Set<string>() };
+    return { version: PARSE_CACHE_VERSION, entries, usedKeys: new Set<string>(), storagePath };
   } catch {
-    return emptyCache();
+    return emptyCache(storagePath);
   }
 };
 
@@ -207,22 +303,24 @@ const loadShardedParseCache = async (storagePath: string): Promise<ParseCache | 
       data.version !== PARSE_CACHE_VERSION ||
       !Array.isArray(data.keys)
     ) {
-      return emptyCache();
+      return emptyCache(storagePath);
     }
 
-    const entries = new Map<string, ParseWorkerResult[]>();
+    const onDiskKeys = new Set<string>();
     for (const chunkHash of data.keys) {
-      if (typeof chunkHash !== 'string' || !isValidChunkCacheKey(chunkHash)) continue;
-      try {
-        const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
-        const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
-        if (Array.isArray(chunkData)) entries.set(chunkHash, chunkData);
-      } catch {
-        /* skip corrupt or missing shard */
+      if (typeof chunkHash === 'string' && isValidChunkCacheKey(chunkHash)) {
+        onDiskKeys.add(chunkHash);
       }
     }
 
-    return { version: PARSE_CACHE_VERSION, entries, usedKeys: new Set<string>() };
+    // Lazy: index only — load individual shards on cache hit (#1983).
+    return {
+      version: PARSE_CACHE_VERSION,
+      entries: new Map<string, ParseWorkerResult[]>(),
+      usedKeys: new Set<string>(),
+      storagePath,
+      onDiskKeys,
+    };
   } catch {
     return null;
   }
@@ -248,38 +346,57 @@ export const loadParseCache = async (storagePath: string): Promise<ParseCache> =
  * reparses. This is not a single atomic swap of the whole tree, but avoids
  * leaving a half-written shard set visible to readers.
  */
-export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<void> => {
+export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<string[]> => {
   await fs.mkdir(storagePath, { recursive: true });
   const cacheDir = getCacheDirPath(storagePath);
   const tmpDir = `${cacheDir}.tmp`;
   await fs.rm(tmpDir, { recursive: true, force: true });
   await fs.mkdir(tmpDir, { recursive: true });
 
-  const keys: string[] = [];
-  for (const [chunkHash, chunkResults] of cache.entries) {
-    if (!isValidChunkCacheKey(chunkHash)) continue;
-    let payload: string;
-    try {
-      payload = JSON.stringify(chunkResults, mapReplacer);
-    } catch {
-      // Extremely dense chunks could theoretically exceed string limits; skip
-      // rather than failing the entire save (orchestrator catches save errors).
+  const keys = [...cache.usedKeys].filter(isValidChunkCacheKey).sort();
+  // Track hashes whose shard was actually written/copied this save. A hash can
+  // be in `usedKeys` without a backing shard — its in-memory serialize threw, or
+  // its on-disk copy failed/was-absent (e.g. a worker-quarantined chunk added to
+  // usedKeys but never persisted). Writing such a hash into `index.keys` would
+  // make the next load reference a shard that doesn't exist (#1983). Build the
+  // index from what we persisted, not from the raw usedKeys snapshot.
+  const writtenKeys: string[] = [];
+  for (const chunkHash of keys) {
+    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    const inMemory = cache.entries.get(chunkHash);
+    if (inMemory !== undefined) {
+      let payload: string;
+      try {
+        payload = JSON.stringify(inMemory, mapReplacer);
+      } catch {
+        continue;
+      }
+      await fs.writeFile(chunkPath, payload, 'utf-8');
+      writtenKeys.push(chunkHash);
       continue;
     }
-    keys.push(chunkHash);
-    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
-    await fs.writeFile(chunkPath, payload, 'utf-8');
+    const existingPath = getCacheChunkPath(storagePath, chunkHash);
+    try {
+      await fs.copyFile(existingPath, chunkPath);
+      writtenKeys.push(chunkHash);
+    } catch {
+      /* shard missing — skip; next run treats as cache miss */
+    }
   }
 
   const index: ShardedParseCacheIndex = {
     version: cache.version,
-    keys,
+    keys: writtenKeys,
   };
   await fs.writeFile(path.join(tmpDir, CACHE_INDEX_FILENAME), JSON.stringify(index), 'utf-8');
 
   await fs.rm(cacheDir, { recursive: true, force: true });
   await fs.rename(tmpDir, cacheDir);
   await fs.rm(getLegacyCachePath(storagePath), { force: true });
+  // The authoritative final key set actually backed by a shard on disk.
+  // Callers (the durable ParsedFile store) prune to exactly these so the two
+  // content-addressed stores stay coherent — a chunk is cached iff BOTH have it.
+  return writtenKeys;
 };
 
 /**
@@ -295,11 +412,21 @@ export const pruneCache = (cache: ParseCache, usedHashes: ReadonlySet<string>): 
       removed++;
     }
   }
+  if (cache.onDiskKeys) {
+    for (const k of cache.onDiskKeys) {
+      if (!usedHashes.has(k)) {
+        cache.onDiskKeys.delete(k);
+        removed++;
+      }
+    }
+  }
   return removed;
 };
 
-const emptyCache = (): ParseCache => ({
+const emptyCache = (storagePath?: string): ParseCache => ({
   version: PARSE_CACHE_VERSION,
   entries: new Map<string, ParseWorkerResult[]>(),
   usedKeys: new Set<string>(),
+  storagePath,
+  onDiskKeys: storagePath ? new Set<string>() : undefined,
 });

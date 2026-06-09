@@ -6,6 +6,9 @@ import { pythonConfig } from '../../src/core/ingestion/field-extractors/configs/
 import { goConfig } from '../../src/core/ingestion/field-extractors/configs/go.js';
 import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-cpp.js';
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
+import { dartConfig } from '../../src/core/ingestion/field-extractors/configs/dart.js';
+import { kotlinConfig } from '../../src/core/ingestion/field-extractors/configs/jvm.js';
+import { swiftConfig } from '../../src/core/ingestion/field-extractors/configs/swift.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
@@ -16,6 +19,21 @@ import Go from 'tree-sitter-go';
 import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
 import CSharp from 'tree-sitter-c-sharp';
+import Dart from 'tree-sitter-dart';
+
+let Kotlin: unknown;
+try {
+  Kotlin = require('tree-sitter-kotlin');
+} catch {
+  // Kotlin grammar may not be installed
+}
+
+let Swift: unknown;
+try {
+  Swift = require('tree-sitter-swift');
+} catch {
+  // Swift grammar is an optional dependency; may not be installed
+}
 import { csharpConfig as csharpFieldConfig } from '../../src/core/ingestion/field-extractors/configs/csharp.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
@@ -703,6 +721,48 @@ describe('GenericFieldExtractor — Go', () => {
     expect(goConfig.extractType(xNode)).toBe('float64');
   });
 
+  it('extracts every name from Go multi-name struct fields', () => {
+    const { typeDecl } = findTypeSpec(`type Point struct {\n\tX, y int\n}`);
+
+    const result = extractor.extract(typeDecl, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(2);
+
+    const xField = result!.fields.find((field) => field.name === 'X');
+    expect(xField).toBeDefined();
+    expect(xField!.type).toBe('int');
+    expect(xField!.visibility).toBe('public');
+
+    const yField = result!.fields.find((field) => field.name === 'y');
+    expect(yField).toBeDefined();
+    expect(yField!.type).toBe('int');
+    expect(yField!.visibility).toBe('package');
+  });
+
+  it('extracts Go multi-name struct fields when called with the runtime struct_type owner', () => {
+    const { typeDecl } = findTypeSpec(`type Point struct {\n\tX, y int\n}`);
+    const typeSpec = typeDecl.namedChild(0)!;
+    const structType = typeSpec.namedChild(1)!;
+
+    expect(structType.type).toBe('struct_type');
+    expect(extractor.isTypeDeclaration(structType)).toBe(true);
+
+    const result = extractor.extract(structType, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('Point');
+    expect(result!.fields).toHaveLength(2);
+
+    const xField = result!.fields.find((field) => field.name === 'X');
+    expect(xField).toBeDefined();
+    expect(xField!.type).toBe('int');
+    expect(xField!.visibility).toBe('public');
+
+    const yField = result!.fields.find((field) => field.name === 'y');
+    expect(yField).toBeDefined();
+    expect(yField!.type).toBe('int');
+    expect(yField!.visibility).toBe('package');
+  });
+
   it('reports isStatic and isReadonly as false for all fields', () => {
     const { typeDecl } = findTypeSpec(`type S struct {\n\tX int\n}`);
     const typeSpec = typeDecl.namedChild(0)!;
@@ -1029,5 +1089,281 @@ describe('GenericFieldExtractor — C# primary constructor fields', () => {
 
     const countField = result!.fields.find((f) => f.name === 'Count');
     expect(countField).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dart config — F26: static const / static final class fields
+// ---------------------------------------------------------------------------
+
+describe('GenericFieldExtractor — Dart', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(dartConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Dart;
+  mockContext.filePath = 'test.dart';
+
+  it('extracts a static const field as static + readonly (F26)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  static const a = 1;
+}`);
+    const classNode = tree.rootNode.child(0);
+    expect(classNode).toBeDefined();
+    expect(extractor.isTypeDeclaration(classNode!)).toBe(true);
+
+    const result = extractor.extract(classNode!, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('C');
+    const a = result!.fields.find((f) => f.name === 'a');
+    expect(a).toBeDefined();
+    expect(a!.isStatic).toBe(true);
+    expect(a!.isReadonly).toBe(true);
+    expect(a!.visibility).toBe('public');
+  });
+
+  it('extracts multi-name static final fields, all static + readonly (F26)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  static final String b = 'x', c = 'y';
+}`);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    // Exact-count guard (#1919 review CF4): `find()` below passes even on a
+    // double-emit, so assert b/c surface exactly twice total — one field each,
+    // no duplicate from the static_final_declaration_list multi-name path.
+    expect(result!.fields.filter((f) => f.name === 'b' || f.name === 'c')).toHaveLength(2);
+    const b = result!.fields.find((f) => f.name === 'b');
+    const c = result!.fields.find((f) => f.name === 'c');
+    expect(b).toBeDefined();
+    expect(c).toBeDefined();
+    for (const f of [b!, c!]) {
+      expect(f.isStatic).toBe(true);
+      expect(f.isReadonly).toBe(true);
+      expect(f.type).toBe('String');
+    }
+  });
+
+  it('still extracts instance fields (regression)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  int z = 0;
+}`);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    const z = result!.fields.find((f) => f.name === 'z');
+    expect(z).toBeDefined();
+    expect(z!.isStatic).toBe(false);
+    expect(z!.isReadonly).toBe(false);
+    expect(z!.type).toBe('int');
+  });
+
+  it('marks an underscore-prefixed static const as private (F26)', () => {
+    parser.setLanguage(Dart);
+    const tree = parser.parse(`class C {
+  static const _p = 1;
+}`);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    const p = result!.fields.find((f) => f.name === '_p');
+    expect(p).toBeDefined();
+    expect(p!.visibility).toBe('private');
+    expect(p!.isStatic).toBe(true);
+    expect(p!.isReadonly).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kotlin config — F52: companion-object properties indexed as fields
+// ---------------------------------------------------------------------------
+
+const describeKotlin = Kotlin ? describe : describe.skip;
+
+describeKotlin('GenericFieldExtractor — Kotlin (F52 companion)', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(kotlinConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Kotlin;
+  mockContext.filePath = 'test.kt';
+
+  /** The first companion_object node in `src`. */
+  function companion(src: string): Parser.SyntaxNode {
+    parser.setLanguage(Kotlin as Parser.Language);
+    const tree = parser.parse(src);
+    let found: Parser.SyntaxNode | undefined;
+    const walk = (n: Parser.SyntaxNode) => {
+      if (n.type === 'companion_object') found ??= n;
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error('no companion_object found');
+    return found;
+  }
+
+  it('extracts a `const val` companion property as a static, readonly field', () => {
+    const node = companion(`class C {
+  companion object {
+    const val TAG = "c"
+  }
+}`);
+    expect(extractor.isTypeDeclaration(node)).toBe(true);
+    const result = extractor.extract(node, mockContext);
+    expect(result).not.toBeNull();
+    const tag = result!.fields.find((f) => f.name === 'TAG');
+    expect(tag).toBeDefined();
+    expect(tag!.isStatic).toBe(true);
+    expect(tag!.isReadonly).toBe(true);
+  });
+
+  it('extracts a property from a NAMED companion object', () => {
+    const node = companion(`class C {
+  companion object Factory {
+    val x = 1
+  }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const x = result!.fields.find((f) => f.name === 'x');
+    expect(x).toBeDefined();
+    expect(x!.isStatic).toBe(true);
+    expect(x!.isReadonly).toBe(true);
+  });
+
+  it('indexes only the property, not the function, and emits it exactly once', () => {
+    const node = companion(`class C {
+  companion object {
+    val onlyField = 1
+    fun create() {}
+  }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const fieldNames = result!.fields.map((f) => f.name);
+    expect(fieldNames).toEqual(['onlyField']); // function excluded, no duplication
+  });
+
+  // CF4 (#1919 review): guard the new `isInsideKotlinCompanion` walk against
+  // false-positives — a plain (non-companion) class property must be isStatic=false.
+  it('reports a plain non-companion class property as isStatic=false (CF4)', () => {
+    const classNode = firstNodeOfType(
+      `class C {
+  val x: Int = 1
+}`,
+      'class_declaration',
+    );
+    expect(extractor.isTypeDeclaration(classNode)).toBe(true);
+    const result = extractor.extract(classNode, mockContext);
+    expect(result).not.toBeNull();
+    const x = result!.fields.find((f) => f.name === 'x');
+    expect(x).toBeDefined();
+    expect(x!.isStatic).toBe(false);
+  });
+
+  /** Parse `src` and return the first node of the given type (depth-first). */
+  function firstNodeOfType(src: string, type: string): Parser.SyntaxNode {
+    parser.setLanguage(Kotlin as Parser.Language);
+    const tree = parser.parse(src);
+    let found: Parser.SyntaxNode | undefined;
+    const walk = (n: Parser.SyntaxNode) => {
+      if (found) return;
+      if (n.type === type) {
+        found = n;
+        return;
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) walk(c);
+      }
+    };
+    walk(tree.rootNode);
+    if (!found) throw new Error(`no ${type} found`);
+    return found;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Swift config — F75: protocol property requirements extracted as fields
+// ---------------------------------------------------------------------------
+
+const describeSwift = Swift ? describe : describe.skip;
+
+describeSwift('GenericFieldExtractor — Swift (F75 protocol property requirements)', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(swiftConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Swift;
+  mockContext.filePath = 'test.swift';
+
+  /** Parse `src` and return the first class/protocol declaration node. */
+  function declNode(src: string): Parser.SyntaxNode {
+    parser.setLanguage(Swift as Parser.Language);
+    const tree = parser.parse(src);
+    const node = tree.rootNode.child(0);
+    if (!node) throw new Error('no declaration node');
+    return node;
+  }
+
+  it('extracts a `{ get }` protocol property requirement as a field (F75)', () => {
+    const node = declNode(`protocol P {
+  var title: String { get }
+}`);
+    expect(extractor.isTypeDeclaration(node)).toBe(true);
+    const result = extractor.extract(node, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('P');
+    const title = result!.fields.find((f) => f.name === 'title');
+    expect(title).toBeDefined();
+    expect(title!.type).toBe('String');
+    expect(title!.isStatic).toBe(false);
+  });
+
+  it('extracts a `{ get set }` protocol property requirement (F75)', () => {
+    const node = declNode(`protocol P {
+  var count: Int { get set }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const count = result!.fields.find((f) => f.name === 'count');
+    expect(count).toBeDefined();
+    expect(count!.type).toBe('Int');
+  });
+
+  it('extracts a static protocol property requirement as static (F75)', () => {
+    const node = declNode(`protocol P {
+  static var shared: P { get }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const shared = result!.fields.find((f) => f.name === 'shared');
+    expect(shared).toBeDefined();
+    expect(shared!.type).toBe('P');
+    expect(shared!.isStatic).toBe(true);
+  });
+
+  it('extracts all requirements from a multi-property protocol (F75)', () => {
+    const node = declNode(`protocol P {
+  var title: String { get }
+  var count: Int { get set }
+  static var shared: P { get }
+}`);
+    const result = extractor.extract(node, mockContext);
+    const names = result!.fields.map((f) => f.name).sort();
+    expect(names).toEqual(['count', 'shared', 'title']);
+  });
+
+  it('still extracts a class stored property exactly once (regression)', () => {
+    const node = declNode(`class C {
+  var name: String = ""
+}`);
+    expect(extractor.isTypeDeclaration(node)).toBe(true);
+    const result = extractor.extract(node, mockContext);
+    const matches = result!.fields.filter((f) => f.name === 'name');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].type).toBe('String');
   });
 });
