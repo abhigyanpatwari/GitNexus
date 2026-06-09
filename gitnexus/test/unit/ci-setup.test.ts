@@ -16,7 +16,10 @@ vi.mock('@inquirer/prompts', () => ({
 vi.mock('child_process', () => ({
   execSync: vi.fn((cmd: string) => {
     const gitRoot = process.env._TEST_GIT_ROOT;
-    if (cmd.includes('rev-parse --show-toplevel') || cmd.includes('rev-parse --is-inside-work-tree')) {
+    if (
+      cmd.includes('rev-parse --show-toplevel') ||
+      cmd.includes('rev-parse --is-inside-work-tree')
+    ) {
       if (!gitRoot) throw new Error('not a git repository');
       return Buffer.from(gitRoot);
     }
@@ -166,10 +169,7 @@ describe('ciSetupCommand', () => {
       outputDir: tempDir,
     });
 
-    const dcContent = await fs.readFile(
-      path.join(tempDir, 'docker-compose.gitnexus.yml'),
-      'utf-8',
-    );
+    const dcContent = await fs.readFile(path.join(tempDir, 'docker-compose.gitnexus.yml'), 'utf-8');
     expect(dcContent).not.toContain('gitnexus-proxy');
     expect(dcContent).not.toContain('caddy');
   });

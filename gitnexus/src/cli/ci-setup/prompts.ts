@@ -1,5 +1,12 @@
 import { select } from '@inquirer/prompts';
-import type { CiSetupOptions, CiSystem, DeployTarget, AuthMode, BranchStrategy, DetectResult } from './types.js';
+import type {
+  CiSetupOptions,
+  CiSystem,
+  DeployTarget,
+  AuthMode,
+  BranchStrategy,
+  DetectResult,
+} from './types.js';
 
 export async function resolveOptions(
   detect: DetectResult,
@@ -24,7 +31,7 @@ export async function resolveOptions(
     dryRun: partial.dryRun ?? false,
     apply: partial.apply ?? false,
     yes: partial.yes ?? false,
-    outputDir: partial.outputDir ?? (detect.gitRoot ?? process.cwd()),
+    outputDir: partial.outputDir ?? detect.gitRoot ?? process.cwd(),
   };
 }
 
