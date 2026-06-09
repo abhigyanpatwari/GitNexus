@@ -24,6 +24,22 @@ program
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
+  .command('ci-setup')
+  .description(
+    'Generate CI/CD workflows, Docker Compose, and MCP config for a shared team GitNexus server',
+  )
+  .option('--ci <system>', 'CI/CD system: github-actions, azure-devops, or both')
+  .option('--deploy <target>', 'Deploy target: docker, azure-container-app, or both')
+  .option('--port <port>', 'gitnexus serve port', '4747')
+  .option('--auth <mode>', 'Auth mode: token (Caddy proxy) or none', 'token')
+  .option('--branch-strategy <strategy>', 'Index strategy: pr-scoped or main-only', 'pr-scoped')
+  .option('--dry-run', 'Print generated files without writing (default when no mode flag given)')
+  .option('--apply', 'Write files with per-file confirmation gates')
+  .option('--yes', 'Skip per-file confirmation prompts (use with --apply)')
+  .option('--output-dir <path>', 'Directory to write generated files (default: git root)')
+  .action(createLazyAction(() => import('./ci-setup.js'), 'ciSetupCommand'));
+
+program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
