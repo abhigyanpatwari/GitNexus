@@ -20,6 +20,7 @@ import { markCppDependentBase, markCppDependentPackBase } from './two-phase-look
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
+import { captureCppMemberLookupFacts } from './member-lookup.js';
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -464,6 +465,7 @@ export function emitCppScopeCaptures(
   // and the resolver can suppress unqualified-call binding to those
   // bases per ISO C++ two-phase lookup.
   detectCppDependentBases(tree.rootNode, filePath);
+  captureCppMemberLookupFacts(tree.rootNode, filePath);
 
   return out;
 }
