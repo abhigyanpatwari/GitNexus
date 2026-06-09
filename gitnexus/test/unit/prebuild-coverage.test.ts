@@ -87,17 +87,32 @@ describe('vendored grammar prebuild coverage (toolchain-free on every supported 
     const grammarDir = path.join(VENDOR_DIR, grammar);
     const { covered, nonNapi } = prebuiltTuples(grammarDir);
     const missing = TUPLES.filter((t) => !covered.has(t));
+    // A grammar that vendors its build sources (binding.gyp) can source-build the
+    // gaps on any toolchain host (e.g. CI), so an incomplete prebuild set is
+    // tolerated for it — the build-tree-sitter-prebuilds workflow fills the
+    // prebuilds to make it toolchain-free. A prebuild-only grammar (no source,
+    // e.g. swift, whose prebuilds come from upstream) MUST ship all six, or it is
+    // dead on the missing platform.
+    const hasSourceFallback = existsSync(path.join(grammarDir, 'binding.gyp'));
 
-    it(`${grammar}: ships an N-API prebuild for all 6 platform-arch tuples`, () => {
-      // GitNexus owns these prebuilds — run the build-tree-sitter-prebuilds
-      // workflow to (re)generate any that are missing.
-      expect(
-        missing,
-        `${grammar} is missing prebuilds for: ${missing.join(', ') || 'none'} ` +
-          `(run the build-tree-sitter-prebuilds workflow)`,
-      ).toEqual([]);
-      expect(nonNapi, `${grammar} has non-N-API prebuilds: ${nonNapi.join(', ')}`).toEqual([]);
-    });
+    it(
+      hasSourceFallback
+        ? `${grammar}: present prebuilds are N-API (source-build fallback covers any gaps)`
+        : `${grammar}: ships an N-API prebuild for all 6 platform-arch tuples`,
+      () => {
+        // Any prebuild that IS present must be a loadable N-API binary — always.
+        expect(nonNapi, `${grammar} has non-N-API prebuilds: ${nonNapi.join(', ')}`).toEqual([]);
+        if (!hasSourceFallback) {
+          // Prebuild-only — run the build-tree-sitter-prebuilds workflow to
+          // (re)generate any that are missing.
+          expect(
+            missing,
+            `prebuild-only ${grammar} is missing prebuilds for: ${missing.join(', ') || 'none'} ` +
+              `(run the build-tree-sitter-prebuilds workflow)`,
+          ).toEqual([]);
+        }
+      },
+    );
   }
 });
 

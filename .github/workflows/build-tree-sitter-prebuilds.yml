@@ -318,6 +318,9 @@ jobs:
           # Pin tree-sitter to the repo's exact runtime peer so an ABI mismatch
           # fails HERE, not in a user's install (mirrors the #1922 ABI gate).
           npm install --no-audit --no-fund --ignore-scripts node-gyp-build@^4 tree-sitter@0.21.1
+          # The node script is single-quoted on purpose — its ${...} are JS
+          # template literals read from the environment, not shell expansions.
+          # shellcheck disable=SC2016
           GRAMMAR="$GRAMMAR" EXPECT_ARCH="$EXPECT_ARCH" node -e '
             const expect = process.env.EXPECT_ARCH;
             // Catch an emulated x64 Node silently mis-passing on an arm64 runner.

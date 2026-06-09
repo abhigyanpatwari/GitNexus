@@ -1,10 +1,12 @@
 ## GitNexus vendor notice
 
-This directory is a GitNexus-managed minimal **runtime** package derived from
-`tree-sitter-c@0.21.4` (tree-sitter/tree-sitter-c). It carries only the runtime
-files (`bindings/node/`, `src/node-types.json`, `LICENSE`) plus the native
-`prebuilds/`. The C source (`parser.c`, `binding.gyp`) is not vendored — the
-prebuilds are produced from the published npm package.
+This directory is a GitNexus-managed **runtime** package derived from
+`tree-sitter-c@0.21.4` (tree-sitter/tree-sitter-c). It carries the runtime files
+(`bindings/node/`, `src/node-types.json`, `LICENSE`), the native `prebuilds/`,
+**and** the grammar source (`binding.gyp`, `src/parser.c`, `src/tree_sitter/`).
+The prebuilds make C parsing toolchain-free; the source lets
+`build-tree-sitter-c.cjs` compile the binding on a toolchain host when no
+prebuild matches (e.g. CI before the prebuilds are vendored).
 
 ### Why this is vendored (unlike the other npm grammars)
 

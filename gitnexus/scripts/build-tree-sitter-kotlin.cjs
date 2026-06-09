@@ -1,47 +1,69 @@
 #!/usr/bin/env node
 /**
- * Probe tree-sitter-kotlin prebuild availability at install time.
+ * Activate the tree-sitter-kotlin native binding after materialize-vendor-grammars.cjs.
  *
- * Like tree-sitter-swift, the vendored package ships platform prebuilds (under
- * vendor/tree-sitter-kotlin/prebuilds/, materialized into node_modules/ by
- * materialize-vendor-grammars.cjs); node-gyp-build selects the correct binary at
- * require time. Unlike Swift — whose prebuilds are copied from upstream — these
- * are GitNexus-cross-built (upstream tree-sitter-kotlin ships source only) by
- * .github/workflows/build-tree-sitter-prebuilds.yml.
+ * Kotlin is vendored (upstream ships source only; GitNexus cross-builds the
+ * prebuilds via .github/workflows/build-tree-sitter-prebuilds.yml). Resolution
+ * order, mirroring Dart/Proto/C: prefer a committed prebuild for this
+ * platform-arch (toolchain-free); otherwise build from the vendored source so
+ * Kotlin parsing still works on any host with a toolchain — e.g. CI, where the
+ * prebuilds may not yet be vendored.
  *
- * This script calls node-gyp-build once against the materialized package so a
- * missing-prebuild failure surfaces as a single install-time warning (with the
- * rest of the gitnexus install succeeding) rather than as a runtime error the
- * first time Kotlin parsing is requested. The result is discarded — the runtime
- * require() path in parser-loader does the actual load. Running the probe here
- * instead of an npm `install` script on the vendored package preserves the #836
- * hygiene (no scripts.install inside vendor/). This probe MUST NEVER throw or
- * exit non-zero — it must never break `gitnexus` install.
- *
- * (This replaces the prior third-party-optionalDependency probe from #2110:
- * Kotlin is now vendored with prebuilds, mirroring Swift.)
+ * MUST NEVER throw or exit non-zero — it must never break `gitnexus` install.
  */
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
+// Opt-out: Kotlin is optional, so the env var skips its build entirely (also
+// skipped at materialize). Strict `=== '1'` only.
 if (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1') {
-  console.warn('[tree-sitter-kotlin] Skipping prebuild probe (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1).');
+  console.warn(
+    '[tree-sitter-kotlin] Skipping build (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1). Kotlin parsing will be unavailable until reinstalled without the env var.',
+  );
   process.exit(0);
 }
 
 const kotlinDir = path.join(__dirname, '..', 'node_modules', 'tree-sitter-kotlin');
+const bindingGyp = path.join(kotlinDir, 'binding.gyp');
+const bindingNode = path.join(kotlinDir, 'build', 'Release', 'tree_sitter_kotlin_binding.node');
 
 try {
-  if (!fs.existsSync(path.join(kotlinDir, 'bindings', 'node', 'index.js'))) {
+  if (!fs.existsSync(bindingGyp) || fs.existsSync(bindingNode)) {
     process.exit(0);
   }
 
-  const nodeGypBuild = require('node-gyp-build');
-  nodeGypBuild(kotlinDir);
+  // Prefer a committed prebuild for this platform-arch (no toolchain needed).
+  try {
+    require('node-gyp-build').path(kotlinDir);
+    process.exit(0);
+  } catch {
+    // No matching prebuild — fall through to the source build below.
+  }
+
+  try {
+    require.resolve('node-addon-api');
+    require.resolve('node-gyp-build');
+  } catch (resolveErr) {
+    console.warn(
+      '[tree-sitter-kotlin] Skipping build: hoisted build deps not resolvable (%s).',
+      resolveErr.message,
+    );
+    console.warn(
+      '[tree-sitter-kotlin] Kotlin parsing will be unavailable until a prebuild or toolchain is present.',
+    );
+    process.exit(0);
+  }
+
+  console.log(
+    '[tree-sitter-kotlin] No prebuild for this platform — building native binding from source...',
+  );
+  execSync('npx node-gyp rebuild', { cwd: kotlinDir, stdio: 'pipe', timeout: 180000 });
+  console.log('[tree-sitter-kotlin] Native binding built successfully');
 } catch (err) {
-  console.warn('[tree-sitter-kotlin] Prebuild probe failed:', err.message);
+  console.warn('[tree-sitter-kotlin] Could not build native binding:', err.message);
   console.warn(
-    '[tree-sitter-kotlin] Kotlin (.kt/.kts) parsing will be unavailable (no prebuild matches this platform-arch). Non-Kotlin functionality is unaffected.',
+    '[tree-sitter-kotlin] Kotlin (.kt/.kts) parsing will be unavailable. Non-Kotlin functionality is unaffected.',
   );
   process.exit(0);
 }
