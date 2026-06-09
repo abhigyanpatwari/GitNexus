@@ -53,6 +53,17 @@ const NODE_MODULES = path.join(GITNEXUS_ROOT, 'node_modules');
  */
 const KNOWN_NPM_GAPS: Record<string, string[]> = {};
 
+/**
+ * Vendored grammars declared "fully prebuilt": GitNexus has committed 6/6
+ * prebuilds for them, so they MUST keep all six even though they also vendor
+ * source (binding.gyp). Without this list the strict 6/6 assertion is dormant for
+ * every grammar that carries source — a dropped prebuild would pass CI silently.
+ * Grammars graduate into this set as the build-tree-sitter-prebuilds workflow
+ * lands their binaries (today only Swift ships 6/6; c/dart/proto/kotlin are
+ * source-build-only until the workflow runs).
+ */
+const FULLY_PREBUILT = new Set<string>(['tree-sitter-swift']);
+
 function isNapiBinary(file: string): boolean {
   return readFileSync(file).includes(NAPI_SYMBOL);
 }
@@ -96,21 +107,30 @@ describe('vendored grammar prebuild coverage (toolchain-free on every supported 
     // strict branch below is defensive: a hypothetical prebuild-only grammar (no
     // binding.gyp) MUST ship all six, or it is dead on the missing platform.
     const hasSourceFallback = existsSync(path.join(grammarDir, 'binding.gyp'));
+    // A declared-fully-prebuilt grammar must ship all six EVEN THOUGH it has a
+    // source fallback — otherwise the strict 6/6 assertion is dormant for every
+    // source-carrying grammar and a dropped prebuild slips through CI.
+    const mustBeFullyPrebuilt = FULLY_PREBUILT.has(grammar);
 
     it(
-      hasSourceFallback
-        ? `${grammar}: present prebuilds are N-API (source-build fallback covers any gaps)`
-        : `${grammar}: ships an N-API prebuild for all 6 platform-arch tuples`,
+      mustBeFullyPrebuilt
+        ? `${grammar}: ships an N-API prebuild for ALL 6 tuples (declared fully-prebuilt)`
+        : hasSourceFallback
+          ? `${grammar}: present prebuilds are N-API (source-build fallback covers any gaps)`
+          : `${grammar}: ships an N-API prebuild for all 6 platform-arch tuples`,
       () => {
         // Any prebuild that IS present must be a loadable N-API binary — always.
         expect(nonNapi, `${grammar} has non-N-API prebuilds: ${nonNapi.join(', ')}`).toEqual([]);
-        if (!hasSourceFallback) {
-          // Prebuild-only — run the build-tree-sitter-prebuilds workflow to
+        if (mustBeFullyPrebuilt || !hasSourceFallback) {
+          // Either declared fully-prebuilt, or prebuild-only (no source fallback):
+          // all six are required. Run the build-tree-sitter-prebuilds workflow to
           // (re)generate any that are missing.
           expect(
             missing,
-            `prebuild-only ${grammar} is missing prebuilds for: ${missing.join(', ') || 'none'} ` +
-              `(run the build-tree-sitter-prebuilds workflow)`,
+            `${grammar} is missing prebuilds for: ${missing.join(', ') || 'none'} ` +
+              (mustBeFullyPrebuilt
+                ? `(declared fully-prebuilt in FULLY_PREBUILT — its 6/6 set must stay complete)`
+                : `(prebuild-only — run the build-tree-sitter-prebuilds workflow)`),
           ).toEqual([]);
         }
       },
