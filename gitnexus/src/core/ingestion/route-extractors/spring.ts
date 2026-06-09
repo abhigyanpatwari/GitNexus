@@ -8,12 +8,19 @@
  *
  * This module is the ingestion-layer counterpart of
  * `group/extractors/http-patterns/java.ts` (which extracts HTTP contracts
- * for cross-repo matching). The group layer uses its own tree-sitter queries;
- * this module reuses the parse-worker's `@decorator` capture mechanism but
- * owns the prefix-joining logic so `parse-worker.ts` stays language-agnostic.
+ * for cross-repo matching). It uses the same tree-sitter capture approach:
+ * a single predicate-free query matches all route annotations generically,
+ * then a for-loop discriminates class-level prefixes from method-level routes
+ * by reading `@node.type` and the annotation name.
+ *
+ * The query is predicate-free to avoid the tree-sitter 0.21.x hazard where
+ * `#match?` / `#eq?` predicates in a top-level `[...]` alternation silently
+ * drop sibling-branch matches (see group-layer `JAVA_ROUTE_ANNOTATION_PATTERNS`
+ * header comment for details).
  */
 
-import type Parser from 'tree-sitter';
+import Parser from 'tree-sitter';
+import Java from 'tree-sitter-java';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 
 /** HTTP method mapping for Spring shortcut annotations. */
@@ -25,73 +32,91 @@ const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
   PatchMapping: 'PATCH',
 };
 
-/** All annotation names that define route endpoints (class or method level). */
-const SPRING_ROUTE_ANNOTATIONS = new Set([
-  'RequestMapping',
-  ...Object.keys(METHOD_ANNOTATION_TO_HTTP),
-]);
-
 /**
- * Extract a string-literal annotation argument (positional or named `path`/`value`).
- * Returns null if the annotation has no recognisable string argument.
+ * Single predicate-free tree-sitter query that captures all route annotations
+ * on classes and methods. Discrimination by annotation name and node type
+ * happens in the loop below.
+ *
+ * Captures:
+ *   @ann   → annotation name identifier (RequestMapping, GetMapping, etc.)
+ *   @node  → enclosing declaration (class_declaration | method_declaration)
+ *   @value → the string-literal argument
+ *   @key   → the named-argument member key (absent for positional form)
  */
-function extractAnnotationPath(annotationNode: Parser.SyntaxNode): string | null {
-  const argList = annotationNode.childForFieldName('arguments');
-  if (!argList) return null;
+const ROUTE_ANNOTATION_QUERY = new Parser.Query(
+  Java,
+  `
+  [
+    (class_declaration
+      (modifiers
+        (annotation
+          name: (identifier) @ann
+          arguments: (annotation_argument_list (string_literal) @value)))) @node
+    (class_declaration
+      (modifiers
+        (annotation
+          name: (identifier) @ann
+          arguments: (annotation_argument_list
+            (element_value_pair
+              key: (identifier) @key
+              value: (string_literal) @value))))) @node
+    (method_declaration
+      (modifiers
+        (annotation
+          name: (identifier) @ann
+          arguments: (annotation_argument_list (string_literal) @value)))) @node
+    (method_declaration
+      (modifiers
+        (annotation
+          name: (identifier) @ann
+          arguments: (annotation_argument_list
+            (element_value_pair
+              key: (identifier) @key
+              value: (string_literal) @value))))) @node
+  ]
+`,
+);
 
-  for (const child of argList.namedChildren) {
-    // Positional: (string_literal (string_fragment))
-    if (child.type === 'string_literal') {
-      const frag = child.namedChildren.find((c) => c.type === 'string_fragment');
-      return frag?.text ?? null;
-    }
-    // Named: (element_value_pair key: (identifier) value: (string_literal ...))
-    if (child.type === 'element_value_pair') {
-      const key = child.childForFieldName('key');
-      if (key && (key.text === 'path' || key.text === 'value')) {
-        const value = child.childForFieldName('value');
-        if (value?.type === 'string_literal') {
-          const frag = value.namedChildren.find((c) => c.type === 'string_fragment');
-          return frag?.text ?? null;
-        }
-      }
-    }
+/** Strip surrounding quotes from a tree-sitter string_literal node text. */
+function unquote(text: string): string {
+  // string_literal includes the quotes: "foo" → extract inner string_fragment
+  // But in matches, @value captures the full string_literal node; extract text
+  // by stripping first/last character (the quote marks).
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+/** Only `path` or `value` keys carry a route — skip `produces`, `consumes`, etc. */
+function isRouteKey(keyNode: Parser.SyntaxNode | undefined): boolean {
+  if (!keyNode) return true; // positional = always a route
+  return keyNode.text === 'path' || keyNode.text === 'value';
+}
+
+/** Walk up from a method node to its enclosing class_declaration. */
+function findEnclosingClass(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  let cur: Parser.SyntaxNode | null = node.parent;
+  while (cur) {
+    if (cur.type === 'class_declaration') return cur;
+    cur = cur.parent;
   }
   return null;
 }
 
 /**
- * Find route-defining annotations on a declaration's modifiers node.
- * Returns annotation name + extracted path for each match.
- */
-function findRouteAnnotations(
-  modifiersNode: Parser.SyntaxNode | null,
-): Array<{ name: string; path: string; annotationNode: Parser.SyntaxNode }> {
-  if (!modifiersNode) return [];
-  const results: Array<{ name: string; path: string; annotationNode: Parser.SyntaxNode }> = [];
-
-  for (const child of modifiersNode.namedChildren) {
-    if (child.type !== 'annotation') continue;
-    const nameNode = child.childForFieldName('name');
-    if (!nameNode) continue;
-    const name = nameNode.text;
-    if (!SPRING_ROUTE_ANNOTATIONS.has(name)) continue;
-    const path = extractAnnotationPath(child) ?? '';
-    results.push({ name, path, annotationNode: child });
-  }
-  return results;
-}
-
-/**
  * Extract Spring route annotations from a parsed Java file.
  *
- * Walks the AST for class declarations with `@RequestMapping` prefixes and
- * method declarations with route annotations. Handles multiple classes per
- * file, each with its own prefix.
+ * Uses a single tree-sitter query pass to capture all annotations, then
+ * discriminates class-level prefixes from method-level routes in a loop.
+ * Handles multiple classes per file, each with its own prefix.
  *
  * @param tree - tree-sitter parse tree
  * @param filePath - relative file path (for `ExtractedDecoratorRoute.filePath`)
- * @param lineOffset - line offset for Vue SFC / similar pre-processing (usually 0)
+ * @param lineOffset - line offset for pre-processing (usually 0)
  * @returns Decorator routes with prefix already set per-class
  */
 export function extractSpringRoutes(
@@ -99,77 +124,62 @@ export function extractSpringRoutes(
   filePath: string,
   lineOffset = 0,
 ): ExtractedDecoratorRoute[] {
-  const routes: ExtractedDecoratorRoute[] = [];
+  const matches = ROUTE_ANNOTATION_QUERY.matches(tree.rootNode);
 
-  // Walk all class declarations in the file
-  const classNodes = collectNodes(tree.rootNode, 'class_declaration');
+  // Phase 1: collect class-level @RequestMapping prefixes keyed by node id
+  const prefixByClassId = new Map<number, string>();
 
-  for (const classNode of classNodes) {
-    const modifiers = classNode.namedChildren.find((c) => c.type === 'modifiers') ?? null;
-    const classAnnotations = findRouteAnnotations(modifiers);
+  for (const match of matches) {
+    const caps: Record<string, Parser.SyntaxNode> = {};
+    for (const { name, node } of match.captures) {
+      caps[name] = node;
+    }
+    const annNode = caps['ann'];
+    const node = caps['node'];
+    const valueNode = caps['value'];
+    const keyNode = caps['key'];
+    if (!annNode || !node || !valueNode) continue;
 
-    // Find class-level @RequestMapping prefix
-    const classPrefixAnnotation = classAnnotations.find((a) => a.name === 'RequestMapping');
-    const classPrefix = classPrefixAnnotation?.path ?? '';
-
-    // Walk method declarations inside this class
-    const methodNodes = collectDirectMethods(classNode);
-
-    for (const methodNode of methodNodes) {
-      const methodModifiers = methodNode.namedChildren.find((c) => c.type === 'modifiers') ?? null;
-      const methodAnnotations = findRouteAnnotations(methodModifiers);
-
-      for (const ann of methodAnnotations) {
-        // Skip class-level-only annotations on methods (e.g. bare @RequestMapping
-        // on a method — treated as GET with the given path)
-        const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann.name] ?? 'GET';
-
-        routes.push({
-          filePath,
-          routePath: ann.path,
-          httpMethod,
-          decoratorName: ann.name,
-          lineNumber: ann.annotationNode.startPosition.row + lineOffset,
-          ...(classPrefix ? { prefix: classPrefix } : {}),
-        });
-      }
+    if (node.type === 'class_declaration' && annNode.text === 'RequestMapping') {
+      if (!isRouteKey(keyNode)) continue;
+      prefixByClassId.set(node.id, unquote(valueNode.text));
     }
   }
 
+  // Phase 2: collect method-level routes and resolve their class prefix
+  const routes: ExtractedDecoratorRoute[] = [];
+
+  for (const match of matches) {
+    const caps: Record<string, Parser.SyntaxNode> = {};
+    for (const { name, node } of match.captures) {
+      caps[name] = node;
+    }
+    const annNode = caps['ann'];
+    const node = caps['node'];
+    const valueNode = caps['value'];
+    const keyNode = caps['key'];
+    if (!annNode || !node || !valueNode) continue;
+
+    if (node.type !== 'method_declaration') continue;
+
+    const ann = annNode.text;
+    const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
+    if (!httpMethod) continue; // skip @RequestMapping on methods (ambiguous verb)
+    if (!isRouteKey(keyNode)) continue;
+
+    const routePath = unquote(valueNode.text);
+    const enclosingClass = findEnclosingClass(node);
+    const classPrefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
+
+    routes.push({
+      filePath,
+      routePath,
+      httpMethod,
+      decoratorName: ann,
+      lineNumber: annNode.startPosition.row + lineOffset,
+      ...(classPrefix ? { prefix: classPrefix } : {}),
+    });
+  }
+
   return routes;
-}
-
-/** Recursively collect nodes of a given type (skipping nested classes). */
-function collectNodes(root: Parser.SyntaxNode, type: string): Parser.SyntaxNode[] {
-  const results: Parser.SyntaxNode[] = [];
-  const visit = (node: Parser.SyntaxNode): void => {
-    if (node.type === type) {
-      results.push(node);
-      return; // don't recurse into nested classes
-    }
-    for (const child of node.namedChildren) {
-      visit(child);
-    }
-  };
-  visit(root);
-  return results;
-}
-
-/** Collect direct method declarations inside a class (not from nested classes). */
-function collectDirectMethods(classNode: Parser.SyntaxNode): Parser.SyntaxNode[] {
-  const methods: Parser.SyntaxNode[] = [];
-  const body = classNode.childForFieldName('body');
-  if (!body) return methods;
-
-  const visit = (node: Parser.SyntaxNode): void => {
-    for (const child of node.namedChildren) {
-      if (child.type === 'method_declaration') {
-        methods.push(child);
-      } else if (child.type !== 'class_declaration' && child.type !== 'interface_declaration') {
-        visit(child);
-      }
-    }
-  };
-  visit(body);
-  return methods;
 }

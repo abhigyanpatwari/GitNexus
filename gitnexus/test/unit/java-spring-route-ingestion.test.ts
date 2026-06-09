@@ -164,4 +164,79 @@ public class V2Controller {
       expect(route.routePath).toBe('/items');
     }
   });
+
+  it('ignores non-route named args like produces/consumes', () => {
+    const tree = parse(`
+@RestController
+@RequestMapping("/api")
+public class MediaController {
+    @GetMapping(value = "/json", produces = "application/json")
+    public String json() { return "{}"; }
+}
+`);
+
+    const routes = extractSpringRoutes(tree, 'MediaController.java');
+    // Should only extract the route path, not the produces value
+    expect(routes).toHaveLength(1);
+    expect(routes[0].routePath).toBe('/json');
+    expect(routes[0].prefix).toBe('/api');
+  });
+
+  it('does not bleed prefix across unrelated classes', () => {
+    const tree = parse(`
+@RestController
+@RequestMapping("/api/v1")
+class V1Controller {
+    @GetMapping("/old")
+    public String old() { return "v1"; }
+}
+
+@RestController
+class NoPrefix {
+    @GetMapping("/bare")
+    public String bare() { return "no prefix"; }
+}
+
+@RestController
+@RequestMapping("/api/v3")
+class V3Controller {
+    @GetMapping("/new")
+    public String newer() { return "v3"; }
+}
+`);
+
+    const routes = extractSpringRoutes(tree, 'Multi.java');
+    expect(routes).toHaveLength(3);
+
+    const v1 = routes.find((r) => r.routePath === '/old');
+    expect(v1!.prefix).toBe('/api/v1');
+
+    const bare = routes.find((r) => r.routePath === '/bare');
+    expect(bare!.prefix).toBeUndefined();
+
+    const v3 = routes.find((r) => r.routePath === '/new');
+    expect(v3!.prefix).toBe('/api/v3');
+  });
+
+  it('reports correct line numbers', () => {
+    const tree = parse(`@RestController
+@RequestMapping("/api")
+public class LineTest {
+    @GetMapping("/first")
+    public String first() { return "1"; }
+
+    @PostMapping("/second")
+    public String second() { return "2"; }
+}
+`);
+
+    const routes = extractSpringRoutes(tree, 'LineTest.java');
+    expect(routes).toHaveLength(2);
+    // @GetMapping is on line index 3 (0-based)
+    const first = routes.find((r) => r.routePath === '/first');
+    expect(first!.lineNumber).toBe(3);
+    // @PostMapping is on line index 6
+    const second = routes.find((r) => r.routePath === '/second');
+    expect(second!.lineNumber).toBe(6);
+  });
 });

@@ -36,6 +36,8 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
+import type Parser from 'tree-sitter';
+import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -247,10 +249,10 @@ interface LanguageProviderConfig {
    * Default: undefined (no language-specific decorator route extraction).
    */
   readonly extractDecoratorRoutes?: (
-    tree: import('tree-sitter').Tree,
+    tree: Parser.Tree,
     filePath: string,
     lineOffset: number,
-  ) => import('./workers/parse-worker.js').ExtractedDecoratorRoute[];
+  ) => ExtractedDecoratorRoute[];
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.
