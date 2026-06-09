@@ -1900,7 +1900,57 @@ describe('C++ inheritance-lattice member lookup (#1891)', () => {
     const outcomes = getResolutionOutcomes(result).filter(
       (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'member-lookup-ambiguous',
     );
-    expect(outcomes.map((outcome) => outcome.name)).toEqual(['collide', 'shared']);
+    const names = outcomes.map((outcome) => outcome.name);
+    expect(names).toContain('collide');
+    expect(names).toContain('overrideMember');
+    expect(names).toContain('shared');
+  });
+
+  it('keeps sibling non-virtual subobjects ambiguous when one branch overrides the member', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'nonVirtualOverrideCall' && call.target === 'overrideMember',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('merges inherited using-declarations with methods declared by the same intermediate class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'inheritedUsingCall' && call.target === 'inheritedUsing',
+    );
+    expect(calls).toHaveLength(1);
+    const target = result.graph.getNode(calls[0]!.rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('uses qualified base identities when same-simple-name direct bases collide', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'qualifiedUsingCall' && call.target === 'qualified',
+    );
+    expect(calls).toHaveLength(1);
+    const target = result.graph.getNode(calls[0]!.rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('normalizes every segment of a nested templated base name', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'nestedTemplateCall' && call.target === 'nestedTemplate',
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('applies lattice ambiguity suppression to explicit this receivers', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'callThis' && call.target === 'collide',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('resolves inherited members across files', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'crossFileCall' && call.target === 'crossFile',
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetFilePath).toBe('base.h');
   });
 });
 
