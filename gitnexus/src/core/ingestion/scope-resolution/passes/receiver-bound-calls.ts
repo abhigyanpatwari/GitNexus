@@ -82,6 +82,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'unwrapCollectionAccessor'
   | 'hoistTypeBindingsToModule'
   | 'resolveQualifiedReceiverMember'
+  | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
   | 'constraintCompatibility'
@@ -375,6 +376,51 @@ export function emitReceiverBoundCalls(
       if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
+          const languageResolution = provider.resolveReceiverMember?.(
+            enclosingClass,
+            memberName,
+            site,
+            scopes,
+            model,
+          );
+          if (languageResolution?.kind === 'ambiguous') {
+            options.recordResolutionOutcome?.({
+              kind: 'suppressed',
+              phase: 'receiver-bound-calls',
+              filePath: parsed.filePath,
+              name: site.name,
+              range: site.atRange,
+              reason: 'member-lookup-ambiguous',
+              candidateIds: languageResolution.candidateIds,
+            });
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (languageResolution?.kind === 'resolved') {
+            const memberDef = languageResolution.definition;
+            const reason =
+              site.kind === 'write' || site.kind === 'read'
+                ? site.kind
+                : memberDef.filePath !== parsed.filePath
+                  ? 'import-resolved'
+                  : 'global';
+            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              reason,
+              seen,
+              confidence,
+              collapse,
+            );
+            if (ok) emitted++;
+            handledSites.add(siteKey);
+            continue;
+          }
+
           const chain = [
             enclosingClass.nodeId,
             ...scopes.methodDispatch.mroFor(enclosingClass.nodeId),
@@ -722,6 +768,51 @@ export function emitReceiverBoundCalls(
           );
         }
         if (ownerDef !== undefined) {
+          const languageResolution = provider.resolveReceiverMember?.(
+            ownerDef,
+            memberName,
+            site,
+            scopes,
+            model,
+          );
+          if (languageResolution?.kind === 'ambiguous') {
+            options.recordResolutionOutcome?.({
+              kind: 'suppressed',
+              phase: 'receiver-bound-calls',
+              filePath: parsed.filePath,
+              name: site.name,
+              range: site.atRange,
+              reason: 'member-lookup-ambiguous',
+              candidateIds: languageResolution.candidateIds,
+            });
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (languageResolution?.kind === 'resolved') {
+            const memberDef = languageResolution.definition;
+            const reason =
+              site.kind === 'write' || site.kind === 'read'
+                ? site.kind
+                : memberDef.filePath !== parsed.filePath
+                  ? 'import-resolved'
+                  : 'global';
+            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              reason,
+              seen,
+              confidence,
+              collapse,
+            );
+            if (ok) emitted++;
+            handledSites.add(siteKey);
+            continue;
+          }
+
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguous = false;
