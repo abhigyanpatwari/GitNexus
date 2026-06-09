@@ -358,7 +358,7 @@ interface ImpactParams {
 export interface ListReposPagination {
   /** Total repositories across all pages. */
   total: number;
-  /** Effective page size used (after clamping to the maximum). */
+  /** Effective page size used (equals the requested limit; out-of-range is rejected, not clamped). */
   limit: number;
   /** Offset this page started at. */
   offset: number;
@@ -376,20 +376,26 @@ export interface ListReposPagination {
  * There is NO MCP-SDK-level enforcement of a tool's advertised `inputSchema`
  * (the SDK validates only the JSON-RPC envelope), and `callTool` is reachable
  * directly, so the backend is the real validation boundary. Malformed values —
- * non-number, `NaN`, non-integer, `limit < 1`, or `offset < 0` — are REJECTED
- * with a clear error. A `limit` above `maxLimit` is CLAMPED to the documented
- * maximum (mirroring the `impact` tool's clamp convention); the effective limit
- * is echoed back in the result's `pagination.limit`. An omitted value (only
- * `undefined`) falls back to the default.
+ * non-number, `NaN`, non-integer, `limit < 1`, `limit > maxLimit`, or
+ * `offset < 0` — are REJECTED with a clear error. `limit` is bounded but NOT
+ * silently clamped: an over-max value throws (symmetric with the other bounds)
+ * so a client never receives a smaller page than it asked for without knowing.
+ * An omitted value (only `undefined`) falls back to the default.
  */
 export function parseListReposPagination(
   params: { limit?: unknown; offset?: unknown } | null | undefined,
   opts: { defaultLimit: number; maxLimit: number },
 ): { limit: number; offset: number } {
-  const requireInt = (value: unknown, field: string, min: number): number => {
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
+  const requireInt = (value: unknown, field: string, min: number, max?: number): number => {
+    const valid =
+      typeof value === 'number' &&
+      Number.isInteger(value) &&
+      value >= min &&
+      (max === undefined || value <= max);
+    if (!valid) {
+      const bound = max === undefined ? `>= ${min}` : `between ${min} and ${max}`;
       throw new Error(
-        `list_repos: "${field}" must be an integer >= ${min} (received ${JSON.stringify(value)})`,
+        `list_repos: "${field}" must be an integer ${bound} (received ${JSON.stringify(value)})`,
       );
     }
     return value;
@@ -397,7 +403,7 @@ export function parseListReposPagination(
 
   let limit = opts.defaultLimit;
   if (params?.limit !== undefined) {
-    limit = Math.min(requireInt(params.limit, 'limit', 1), opts.maxLimit);
+    limit = requireInt(params.limit, 'limit', 1, opts.maxLimit);
   }
 
   let offset = 0;

@@ -69,7 +69,7 @@ list_repos { offset: 50 }   → repos 51–100,  nextOffset 100, hasMore true
 list_repos { offset: 400 }  → repos 401–437,                 hasMore false   (done)
 ```
 
-Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). A `limit` above the max is capped; malformed `limit`/`offset` (non-integer, `limit < 1`, `offset < 0`) are rejected. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
+Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). Out-of-range or malformed `limit`/`offset` (non-integer, `limit` outside `[1, 200]`, `offset < 0`) are rejected with a clear error — `limit` above the max is rejected, not silently capped. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
 
 ## Resources Reference
 

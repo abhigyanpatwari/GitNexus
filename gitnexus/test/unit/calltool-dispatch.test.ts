@@ -1841,11 +1841,12 @@ describe('parseListReposPagination', () => {
     });
   });
 
-  it('clamps limit above the maximum to the maximum', () => {
-    expect(parseListReposPagination({ limit: 99999 }, opts).limit).toBe(200);
+  it('rejects a limit above the maximum (does not silently clamp)', () => {
+    expect(() => parseListReposPagination({ limit: 201 }, opts)).toThrow(/limit/);
+    expect(() => parseListReposPagination({ limit: 99999 }, opts)).toThrow(/limit/);
   });
 
-  it('does NOT clamp a valid in-range limit', () => {
+  it('accepts a valid in-range limit, including the boundary', () => {
     expect(parseListReposPagination({ limit: 200 }, opts).limit).toBe(200);
     expect(parseListReposPagination({ limit: 199 }, opts).limit).toBe(199);
   });
@@ -1986,12 +1987,14 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
     });
   });
 
-  it('enforces the maximum limit by clamping', async () => {
+  it('rejects a limit above the maximum through the real callTool path', async () => {
     (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
     await backend.init();
 
-    const page = await backend.callTool('list_repos', { limit: 99999 });
-    expect(page.repositories).toHaveLength(200); // LIST_REPOS_MAX_LIMIT
+    await expect(backend.callTool('list_repos', { limit: 99999 })).rejects.toThrow(/limit/);
+    // A request at the documented maximum is still accepted.
+    const page = await backend.callTool('list_repos', { limit: 200 });
+    expect(page.repositories).toHaveLength(200);
     expect(page.pagination.limit).toBe(200);
     expect(page.pagination.hasMore).toBe(true);
   });
