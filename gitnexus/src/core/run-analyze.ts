@@ -19,8 +19,10 @@ import {
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
+  executeStatement,
   executeWithReusedStatement,
   closeLbug,
+  flushWAL,
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
@@ -68,6 +70,15 @@ import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 export interface AnalyzeCallbacks {
   onProgress: (phase: string, percent: number, message: string) => void;
   onLog?: (message: string) => void;
+  /**
+   * Entry-point shutdown hint for CLI / short-lived worker processes that
+   * hard-exit immediately after `runFullAnalysis()` returns. When true, the
+   * final analyze teardown stops the manual checkpoint driver and issues one
+   * last best-effort `CHECKPOINT`, but skips `closeLbug()` so we avoid native
+   * `conn.close()` crashes on the force-rebuild path. Long-lived/programmatic
+   * callers must leave this false so the connection is fully closed.
+   */
+  processExitFriendlyTeardown?: boolean;
 }
 
 export interface AnalyzeOptions {
@@ -873,6 +884,7 @@ export async function runFullAnalysis(
         cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
         { repoName: projectName, serverName },
         existingEmbeddings,
+        executeStatement,
       );
       if (embeddingResult.semanticMode === 'exact-scan') {
         semanticMode = 'exact-scan';
@@ -1037,7 +1049,11 @@ export async function runFullAnalysis(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
-    await closeLbug();
+    if (callbacks.processExitFriendlyTeardown) {
+      await flushWAL();
+    } else {
+      await closeLbug();
+    }
 
     progress('done', 100, 'Done');
 
@@ -1057,7 +1073,11 @@ export async function runFullAnalysis(
       /* swallow — surface path is the rethrow below */
     }
     try {
-      await closeLbug();
+      if (callbacks.processExitFriendlyTeardown) {
+        await flushWAL();
+      } else {
+        await closeLbug();
+      }
     } catch {
       /* swallow */
     }

@@ -501,6 +501,38 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(vectorIndexCalls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('uses raw statement execution for CREATE_VECTOR_INDEX when provided', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode();
+    const hash = contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG);
+    const existingEmbeddings = new Map<string, string>([[node.id, hash]]);
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const rawStatementCalls: string[] = [];
+    const executeStatement = vi.fn().mockImplementation(async (cypher: string) => {
+      rawStatementCalls.push(cypher);
+    });
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      undefined,
+      undefined,
+      existingEmbeddings,
+      executeStatement,
+    );
+
+    expect(rawStatementCalls.some((call) => call.includes('CREATE_VECTOR_INDEX'))).toBe(true);
+    expect(queryCalls.some((call) => call.includes('CREATE_VECTOR_INDEX'))).toBe(false);
+  });
+
   it('stores embeddings with exact-scan fallback when VECTOR is unavailable', async () => {
     vi.doMock('../../src/core/embeddings/embedder.js', () => ({
       initEmbedder: vi.fn().mockResolvedValue(undefined),
@@ -529,6 +561,44 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(result.semanticMode).toBe('exact-scan');
     expect(stmtCalls.some((call) => call.cypher.includes('CREATE'))).toBe(true);
     expect(progressUpdates.at(-1)?.phase).toBe('ready');
+  });
+
+  it('treats an existing vector index as vector-ready', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode();
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const executeQuery = vi.fn().mockImplementation(async (cypher: string) => {
+      queryCalls.push(cypher);
+      if (cypher.includes('MATCH (n:Function)')) {
+        return [
+          {
+            id: node.id,
+            name: node.name,
+            label: node.label,
+            filePath: node.filePath,
+            content: node.content,
+            startLine: node.startLine,
+            endLine: node.endLine,
+          },
+        ];
+      }
+      if (cypher.includes('CREATE_VECTOR_INDEX')) {
+        throw new Error(
+          "Binder exception: Table CodeEmbedding already has an index with name code_embedding_idx.",
+        );
+      }
+      return [];
+    });
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    const result = await runEmbeddingPipeline(executeQuery, executeWithReusedStatement, onProgress);
+
+    expect(result.vectorIndexReady).toBe(true);
+    expect(result.semanticMode).toBe('vector-index');
+    expect(queryCalls.some((call) => call.includes('CREATE_VECTOR_INDEX'))).toBe(true);
   });
 
   it('does not inject preceding context when overlap is disabled', async () => {

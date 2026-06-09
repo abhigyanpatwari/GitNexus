@@ -77,6 +77,7 @@ process.on('message', async (msg: StartMessage) => {
       onLog: (message) => {
         send({ type: 'progress', phase: 'log', percent: -1, message });
       },
+      processExitFriendlyTeardown: true,
     });
 
     send({ type: 'complete', result });

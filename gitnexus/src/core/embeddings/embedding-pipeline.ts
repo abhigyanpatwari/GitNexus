@@ -55,6 +55,11 @@ const vectorUnavailableMessage =
   '(GITNEXUS_LBUG_EXTENSION_INSTALL=auto), or pre-install it for offline use. ' +
   'Set GITNEXUS_LBUG_EXTENSION_INSTALL=never to skip installs and silence this.';
 
+const isExistingVectorIndexError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already exists/i.test(message) || /already has an index/i.test(message);
+};
+
 /**
  * Resolve the extension-install policy for the embedding WRITE path (analyze).
  *
@@ -224,12 +229,20 @@ export const batchInsertEmbeddings = async (
  */
 const createVectorIndex = async (
   executeQuery: (cypher: string) => Promise<any[]>,
+  executeStatement?: (cypher: string) => Promise<void>,
 ): Promise<boolean> => {
   if (!(await ensureVectorExtensionAvailable())) return false;
   try {
-    await executeQuery(CREATE_VECTOR_INDEX_QUERY);
+    if (executeStatement) {
+      await executeStatement(CREATE_VECTOR_INDEX_QUERY);
+    } else {
+      await executeQuery(CREATE_VECTOR_INDEX_QUERY);
+    }
     return true;
   } catch (error) {
+    if (isExistingVectorIndexError(error)) {
+      return true;
+    }
     if (isDev) {
       logger.warn({ error }, 'Vector index creation warning:');
     }
@@ -256,6 +269,8 @@ export interface EmbeddingPipelineResult {
  * @param existingEmbeddings - Optional map of nodeId → contentHash for incremental mode.
  *        Nodes whose hash matches are skipped; nodes with a changed hash are DELETE'd
  *        and re-embedded; nodes not in the map are embedded fresh.
+ * @param executeStatement - Optional raw statement executor for DDL-style calls
+ *        that LadybugDB cannot prepare, such as CREATE_VECTOR_INDEX.
 
  */
 export const runEmbeddingPipeline = async (
@@ -269,6 +284,7 @@ export const runEmbeddingPipeline = async (
   skipNodeIds?: Set<string>,
   context?: EmbeddingContext,
   existingEmbeddings?: Map<string, string>,
+  executeStatement?: (cypher: string) => Promise<void>,
 ): Promise<EmbeddingPipelineResult> => {
   const finalConfig = resolveEmbeddingConfig(config);
   let totalChunks = 0;
@@ -383,7 +399,7 @@ export const runEmbeddingPipeline = async (
       // Ensure the vector index exists even when no new nodes need embedding.
       // A prior crash or first-time incremental run may have left CodeEmbedding
       // rows without ever reaching index creation.
-      const vectorIndexReady = await createVectorIndex(executeQuery);
+      const vectorIndexReady = await createVectorIndex(executeQuery, executeStatement);
 
       onProgress({
         phase: 'ready',
@@ -544,7 +560,7 @@ export const runEmbeddingPipeline = async (
       logger.info('📇 Creating vector index...');
     }
 
-    const vectorIndexReady = await createVectorIndex(executeQuery);
+    const vectorIndexReady = await createVectorIndex(executeQuery, executeStatement);
 
     onProgress({
       phase: 'ready',

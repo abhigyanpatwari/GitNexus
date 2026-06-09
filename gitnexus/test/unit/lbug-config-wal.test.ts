@@ -17,6 +17,10 @@ describe('isWalCorruptionError', () => {
     ['invalid WAL record', 'Error: invalid WAL record type'],
     ['WAL checksum', 'Checksum verification failed, the WAL file is corrupted.'],
     ['WAL + corrupt', 'the WAL file is corrupted'],
+    [
+      'wal_record assertion',
+      'Assertion failed in file "/__w/ladybug/ladybug/src/storage/wal/wal_record.cpp" on line 76: UNREACHABLE_CODE',
+    ],
   ])('matches WAL corruption: %s', (_label, msg) => {
     expect(isWalCorruptionError(msg)).toBe(true);
     expect(isWalCorruptionError(new Error(msg))).toBe(true);

@@ -270,7 +270,8 @@ const resolveCheckpointThreshold = (): number => {
 };
 
 /** Matches WAL corruption errors from the LadybugDB engine. */
-const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
+const WAL_CORRUPTION_RE =
+  /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal|wal_record\.cpp.*UNREACHABLE_CODE/i;
 
 export const WAL_RECOVERY_SUGGESTION =
   'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.';

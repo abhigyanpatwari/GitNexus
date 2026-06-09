@@ -1285,6 +1285,13 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
   return await executePrepared(cypher, {});
 };
 
+export const executeStatement = async (cypher: string): Promise<void> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  await queryAndDrain(conn, cypher);
+};
+
 export const streamQuery = async (
   cypher: string,
   onRow: (row: any) => void | Promise<void>,

@@ -972,6 +972,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           updateBar(percent, message);
         },
         onLog: barLog,
+        processExitFriendlyTeardown: true,
       },
     );
 

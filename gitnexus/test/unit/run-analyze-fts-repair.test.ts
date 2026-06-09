@@ -244,6 +244,57 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('uses flush-only final teardown for process-exit-friendly full analyze', async () => {
+    const closeLbugMock = vi.fn(async () => undefined);
+    const flushWALMock = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 0, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: closeLbugMock,
+      flushWAL: flushWALMock,
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      createSearchFTSIndexes: vi.fn(async () => undefined),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: { forEachNode: () => undefined },
+        totalFileCount: 0,
+        communityResult: { stats: { totalCommunities: 0 } },
+        processResult: { stats: { totalProcesses: 0 } },
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-exit-friendly-close-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true, skipAgentsMd: true, skipSkills: true },
+        {
+          onProgress: () => {},
+          processExitFriendlyTeardown: true,
+        },
+      );
+
+      expect(closeLbugMock).toHaveBeenCalledTimes(1);
+      expect(flushWALMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('full analyze degrades gracefully (no throw, warns, skips index creation) when FTS extension is unavailable', async () => {
     // Offline-first degradation: when loadFTSExtension() returns false, the
     // analyze path must NOT call createSearchFTSIndexes / verifySearchFTSIndexes
