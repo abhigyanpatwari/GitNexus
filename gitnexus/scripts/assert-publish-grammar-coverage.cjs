@@ -93,8 +93,18 @@ function packFileSet(cwd) {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
+    // The `--ignore-scripts` FLAG is not reliably honored by `npm pack`'s
+    // prepare/prepack lifecycle on every npm version — when it isn't, build.js
+    // runs (polluting this --json stdout with `[build] …`) AND, since this guard
+    // runs in prepack, the inner pack would re-enter the guard (recursion). The
+    // `npm_config_ignore_scripts` env config IS reliable, so set it too.
+    env: { ...process.env, npm_config_ignore_scripts: 'true' },
   });
-  const parsed = JSON.parse(out);
+  // Defensive: if any lifecycle/build output still precedes the JSON array on
+  // stdout (e.g. `[build] …`), parse from the array start (`[` then `{`) rather
+  // than the raw stream. `[build]` does NOT match (no `{` after the bracket).
+  const start = out.search(/\[\s*\{/);
+  const parsed = JSON.parse(start >= 0 ? out.slice(start) : out);
   const files = (parsed[0] && parsed[0].files) || [];
   return new Set(files.map((f) => f.path.replace(/\\/g, '/')));
 }
