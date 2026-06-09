@@ -5,7 +5,7 @@ This directory is a GitNexus-managed **runtime** package derived from
 (`bindings/node/`, `src/node-types.json`, `LICENSE`), the native `prebuilds/`,
 **and** the grammar source (`binding.gyp`, `src/parser.c`, `src/tree_sitter/`).
 The prebuilds make C parsing toolchain-free; the source lets
-`build-tree-sitter-c.cjs` compile the binding on a toolchain host when no
+`build-tree-sitter-grammars.cjs` compile the binding on a toolchain host when no
 prebuild matches (e.g. CI before the prebuilds are vendored).
 
 ### Why this is vendored (unlike the other npm grammars)

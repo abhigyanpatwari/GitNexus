@@ -93,14 +93,14 @@ describe('CLI commands', () => {
       // gate's assumptions (setTimeoutMicros semantics, ABI 13–14 grammar
       // range) can't drift under a minor bump.
       expect(pkg.default.dependencies['tree-sitter']).toBe('0.21.1');
-      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-swift.cjs');
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(swiftPkg.default.version).toBe('0.7.1');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(swiftPkg.default.scripts?.install).toBeUndefined();
       expect(swiftPkg.default.dependencies).toBeUndefined();
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
       // Swift is now unified with Dart/Proto/Kotlin/C: the grammar SOURCE is
-      // vendored so build-tree-sitter-swift.cjs can source-build the binding
+      // vendored so build-tree-sitter-grammars.cjs can source-build the binding
       // when no committed prebuild matches (e.g. CI before prebuilds land).
       const bindingGyp = await fs.readFile(
         path.join(REPO_ROOT, 'gitnexus/vendor/tree-sitter-swift/binding.gyp'),
@@ -123,7 +123,7 @@ describe('CLI commands', () => {
       // optionalDependency. Its prebuilds are GitNexus-cross-built (upstream
       // ships source only) and materialized into node_modules/ at postinstall.
       expect(optional['tree-sitter-kotlin']).toBeUndefined();
-      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-kotlin.cjs');
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(kotlinPkg.default.version).toBe('0.3.8');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(kotlinPkg.default.scripts?.install).toBeUndefined();
@@ -140,7 +140,7 @@ describe('CLI commands', () => {
       // (upstream ships 4/6). Vendored with GitNexus-built prebuilds for all 6,
       // held at 0.21.4 for ABI safety (#1242) — so it is NOT an npm dependency.
       expect(pkg.default.dependencies['tree-sitter-c']).toBeUndefined();
-      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-c.cjs');
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(cPkg.default.version).toBe('0.21.4');
       expect(cPkg.default.scripts?.install).toBeUndefined();
       expect(cPkg.default.dependencies).toBeUndefined();

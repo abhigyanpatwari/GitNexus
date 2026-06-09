@@ -8,7 +8,7 @@ upgrade is handled separately.
 Unified with the Dart/Proto/Kotlin/C vendored grammars, this copy also vendors
 the grammar **source** — `binding.gyp`, `bindings/node/binding.cc`,
 `src/parser.c` (the ABI-14 default; ~18 MB, compresses heavily in git),
-`src/scanner.c`, and `src/tree_sitter/` — so `gitnexus/scripts/build-tree-sitter-swift.cjs`
+`src/scanner.c`, and `src/tree_sitter/` — so `gitnexus/scripts/build-tree-sitter-grammars.cjs`
 can source-build the native binding on any toolchain host when no committed
 prebuild matches (e.g. CI before the prebuilds land). Note: upstream
 deliberately omits the generated `parser.c` (see the FAQ below); GitNexus

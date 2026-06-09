@@ -15,8 +15,8 @@ Upstream `tree-sitter-kotlin` ships **source only** — its npm tarball has no
 and requires a C/C++ toolchain (`python3`/`make`/`g++`). To make Kotlin parsing
 toolchain-free on every host (Swift parity), GitNexus builds the platform
 prebuilds itself and vendors them here. `node-gyp-build` selects the correct
-binary at require time; `build-tree-sitter-kotlin.cjs` probes availability at
-install time.
+binary at require time; `build-tree-sitter-grammars.cjs` activates the binding
+(prefer prebuild, else source-build) at install time.
 
 `tree-sitter-swift` is handled the same way now: its prebuilds were originally
 **copied from upstream** (Swift ships them), but it is unified with this pipeline —
