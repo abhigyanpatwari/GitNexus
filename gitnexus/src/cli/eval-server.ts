@@ -32,7 +32,11 @@
 import http from 'http';
 import { isIPv4, isIPv6 } from 'node:net';
 import { writeSync } from 'node:fs';
-import { LocalBackend } from '../mcp/local/local-backend.js';
+import {
+  LocalBackend,
+  type RepoListing,
+  type ListReposPagination,
+} from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
@@ -265,18 +269,16 @@ export function formatCypherResult(result: any): string {
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
 }
 
-export function formatListReposResult(result: any): string {
-  // `list_repos` returns a paginated { repositories, pagination } object (#2119).
-  // Tolerate a bare array too, in case an older/raw result is ever passed in.
-  const repos = Array.isArray(result?.repositories)
-    ? result.repositories
-    : Array.isArray(result)
-      ? result
-      : [];
-  const pg = result?.pagination;
+export function formatListReposResult(result: {
+  repositories: RepoListing[];
+  pagination?: ListReposPagination;
+}): string {
+  // `list_repos` always returns the paginated { repositories, pagination } object (#2119).
+  const repos = result.repositories;
+  const pg = result.pagination;
 
   if (repos.length === 0) {
-    return pg && typeof pg.total === 'number' && pg.total > 0
+    return pg && pg.total > 0
       ? `No repositories on this page (offset ${pg.offset} of ${pg.total} total).`
       : 'No indexed repositories.';
   }
@@ -290,7 +292,7 @@ export function formatListReposResult(result: any): string {
     lines.push(`    Path: ${r.path}`);
     lines.push(`    Indexed: ${r.indexedAt}`);
   }
-  if (pg && typeof pg.total === 'number') {
+  if (pg) {
     lines.push('');
     lines.push(
       `  Showing ${repos.length} of ${pg.total} (offset ${pg.offset}).` +
@@ -342,6 +344,9 @@ function getNextStepHint(toolName: string): string {
 
     case 'detect_changes':
       return '\n---\nNext: Run gitnexus-context "<symbol>" on high-risk changed symbols to check their callers.';
+
+    case 'list_repos':
+      return '\n---\nNext: READ gitnexus://repo/{name}/context for a repo above. If pagination.hasMore is true, re-run list_repos with offset set to pagination.nextOffset to page through the rest.';
 
     default:
       return '';
