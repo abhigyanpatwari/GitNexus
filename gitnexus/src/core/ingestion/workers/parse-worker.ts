@@ -4,7 +4,6 @@ import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
-import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
 // Explicit subpath import — see parser-loader.ts for rationale (#1013).
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
@@ -66,6 +65,16 @@ try {
 let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
+} catch {}
+
+// tree-sitter-c is now vendored prebuild-only (#2116) and may be absent on a
+// toolchain-less / `--ignore-scripts` install. Guard it like Swift/Dart/Kotlin so
+// a missing binding cannot crash the worker at module-load (#2091/#2093); the
+// main-thread `isLanguageAvailable` filter keeps C files from being dispatched
+// here when the entry is absent.
+let C: TreeSitterLanguage | null = null;
+try {
+  C = _require('tree-sitter-c');
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
@@ -404,7 +413,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
   [SupportedLanguages.Python]: Python,
   [SupportedLanguages.Java]: Java,
-  [SupportedLanguages.C]: C,
+  ...(C ? { [SupportedLanguages.C]: C } : {}),
   [SupportedLanguages.CPlusPlus]: CPP,
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
