@@ -106,6 +106,8 @@ export const en = {
   'help.option.version': 'output the version number',
   'help.command.setup.description':
     'One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex',
+  'help.command.uninstall.description':
+    'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
   'help.command.analyze.description': 'Index a repository (full analysis)',
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
@@ -185,6 +187,7 @@ export const en = {
   'help.option.port': 'Port number',
   'help.option.serve.host': 'Bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)',
   'help.option.force.confirmation': 'Skip confirmation prompt',
+  'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
   'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
