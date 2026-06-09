@@ -64,6 +64,16 @@ const SCENARIOS = [
     name: 'straight-line',
     // One function, N coalescing simple statements → all fold into one basic
     // block whose text is accumulated statement-by-statement (extendBlock).
+    // Uses LARGER sizes than the other scenarios: this scenario's only cost
+    // dimension is text accumulation (output size is constant — 4 blocks at any
+    // N — so the disk/heap ratios can't see it), so the TIME ratio is the sole
+    // guard against an extendBlock O(n²)-concat re-regression. At small N a
+    // quadratic is masked by V8 cons-strings + the linear tree-walk and slips
+    // under the budget; these larger sizes make a real quadratic separate
+    // cleanly (verified: a `+=` regression here exceeds the budget, the
+    // array-join impl stays ~1).
+    small: 2000,
+    large: 8000,
     gen: (n) => {
       let s = 'function f() {\n';
       for (let i = 0; i < n; i++) s += `  let v${i} = ${i} + 1;\n`;
@@ -177,15 +187,19 @@ function fingerprint(scenario) {
 }
 
 function measureScenario(scenario) {
-  const small = measureCollect(scenario.gen(SMALL), `${scenario.name}.ts`, REPS);
-  const large = measureCollect(scenario.gen(LARGE), `${scenario.name}.ts`, REPS);
-  const sizeRatio = LARGE / SMALL;
+  // Per-scenario sizes (straight-line needs larger N to separate a concat
+  // quadratic from noise — see its comment); the rest default to the globals.
+  const nSmall = scenario.small ?? SMALL;
+  const nLarge = scenario.large ?? LARGE;
+  const small = measureCollect(scenario.gen(nSmall), `${scenario.name}.ts`, REPS);
+  const large = measureCollect(scenario.gen(nLarge), `${scenario.name}.ts`, REPS);
+  const sizeRatio = nLarge / nSmall;
   const scalingRatio = small.ms > 0 ? large.ms / small.ms / sizeRatio : 0;
   const diskRatio = small.diskBytes > 0 ? large.diskBytes / small.diskBytes / sizeRatio : 0;
 
   // Memory growth (only when --expose-gc gave us a forced GC).
-  const heapSmall = retainedHeapBytes(scenario.gen(SMALL), `${scenario.name}.ts`);
-  const heapLarge = retainedHeapBytes(scenario.gen(LARGE), `${scenario.name}.ts`);
+  const heapSmall = retainedHeapBytes(scenario.gen(nSmall), `${scenario.name}.ts`);
+  const heapLarge = retainedHeapBytes(scenario.gen(nLarge), `${scenario.name}.ts`);
   const heapRatio =
     heapSmall !== null && heapLarge !== null && heapSmall > 0
       ? heapLarge / heapSmall / sizeRatio
@@ -211,6 +225,18 @@ function measureScenario(scenario) {
 // ---- run ----
 
 const CHECK = process.argv.includes('--check');
+
+// The retained-heap budget is a primary regression detector, but it can only be
+// measured with a forced GC. Rather than let `--check` silently PASS with the
+// heap gate skipped (a green no-op if someone drops --expose-gc), fail loudly.
+if (CHECK && !GC) {
+  process.stderr.write(
+    '[cfg --check] FAIL: retained-heap gate requires --expose-gc. ' +
+      'Run: node --expose-gc --import tsx bench/cfg/measure.mjs --check\n',
+  );
+  process.exit(1);
+}
+
 const results = SCENARIOS.map(measureScenario);
 
 if (!CHECK) {

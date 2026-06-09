@@ -741,7 +741,16 @@ export async function runChunkedParseAndResolve(
           filePath: f.path,
           contentHash: fileContentHash(f.content),
         }));
-        chunkHash = computeChunkHash(entries, options?.pdg === true);
+        chunkHash = computeChunkHash(
+          entries,
+          options?.pdg === true
+            ? {
+                pdg: true,
+                maxFunctionLines: options?.pdgMaxFunctionLines,
+                maxEdgesPerFunction: options?.pdgMaxEdgesPerFunction,
+              }
+            : false,
+        );
       }
 
       const cachedRaw =

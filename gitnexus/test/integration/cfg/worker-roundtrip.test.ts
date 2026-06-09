@@ -116,4 +116,23 @@ describe('U3 — parse-cache key folds the --pdg flag (R4, #2038-class guard)', 
   it('default (no flag arg) equals the explicit pdg-off key — warm caches survive the change', () => {
     expect(computeChunkHash(entries)).toBe(computeChunkHash(entries, false));
   });
+
+  it('the boolean form equals the object form with the same flag (back-compat)', () => {
+    expect(computeChunkHash(entries, true)).toBe(computeChunkHash(entries, { pdg: true }));
+    expect(computeChunkHash(entries, false)).toBe(computeChunkHash(entries, { pdg: false }));
+  });
+
+  it('the cap budgets are folded into the key — a different maxFunctionLines/edges re-dispatches', () => {
+    // Guards the #2038-class trap for the caps: a warm chunk built under one cap
+    // must NOT be served to a --pdg run with a different cap (the emitted CFG
+    // differs). Different cap value ⇒ different key.
+    const base = computeChunkHash(entries, { pdg: true });
+    expect(computeChunkHash(entries, { pdg: true, maxFunctionLines: 500 })).not.toBe(base);
+    expect(computeChunkHash(entries, { pdg: true, maxEdgesPerFunction: 100 })).not.toBe(base);
+    // Same cap values ⇒ same key (deterministic, order-independent).
+    const reordered = [...entries].reverse();
+    expect(computeChunkHash(entries, { pdg: true, maxFunctionLines: 500 })).toBe(
+      computeChunkHash(reordered, { pdg: true, maxFunctionLines: 500 }),
+    );
+  });
 });

@@ -239,6 +239,21 @@ describe('TS/JS CfgVisitor — try/catch/finally (R10)', () => {
     expect(reaches(cfg, block(cfg, 'risky();'), fin)).toBe(true);
     expect(reaches(cfg, fin, block(cfg, 'afterTry();'))).toBe(true);
   });
+
+  it('an INTERIOR block of a branched try body reaches the handler (not just the body entry)', () => {
+    // Regression guard: the exceptional edge must cover every protected-region
+    // block, else a throw from inside a branch is invisible to the catch (a
+    // taint false-negative into `catch` for the downstream PDG analysis).
+    const cfg = cfgOf(`function f(x) {
+      try {
+        guardEntry();
+        if (x) { deep(); }
+      } catch (e) { handler(e); }
+    }`);
+    const handler = block(cfg, 'handler(e);');
+    expect(reaches(cfg, block(cfg, 'deep();'), handler)).toBe(true); // interior → handler
+    expect(reaches(cfg, block(cfg, 'guardEntry();'), handler)).toBe(true);
+  });
 });
 
 describe('TS/JS CfgVisitor — non-local jumps (R10)', () => {
@@ -283,6 +298,20 @@ describe('TS/JS CfgVisitor — non-local jumps (R10)', () => {
     expect(
       cfg.edges.some((e) => e.from === cont && e.to === outerHeader && e.kind === 'continue'),
     ).toBe(true);
+  });
+
+  it('an unresolved labeled jump (stacked outer label) routes to EXIT, not a dangling sink', () => {
+    // `break outer` can't resolve (the outer label is unmodeled in M1), but the
+    // block must still reach EXIT so the graph stays single-exit for the
+    // downstream post-dominator / PDG computation — never a stranded sink.
+    const cfg = cfgOf(`function f(xs, ys) {
+      outer: inner: for (const x of xs) {
+        for (const y of ys) { if (x === y) { break outer; } body(); }
+      }
+    }`);
+    const brk = block(cfg, 'break outer;');
+    expect(edgeKinds(cfg).has('break')).toBe(true);
+    expect(reaches(cfg, brk, cfg.exitIndex)).toBe(true); // not stranded
   });
 
   it('a standalone throw (no enclosing try) wires to EXIT and ends its block', () => {

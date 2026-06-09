@@ -141,18 +141,37 @@ export const fileContentHash = (content: Buffer | string): string => sha256Hex(c
  * in the chunk. We sort by filePath before hashing so chunks composed of
  * the same files in different order produce the same key.
  */
+/** PDG/CFG cache namespace (#2081 M1) — every input that changes the emitted
+ *  `cfgSideChannel` must be folded into the chunk key. */
+export interface PdgCacheKey {
+  readonly pdg?: boolean;
+  /** Per-function source-line cap (changes WHICH functions get a CFG). */
+  readonly maxFunctionLines?: number;
+  /** Per-function edge cap (changes how many edges a function's CFG emits). */
+  readonly maxEdgesPerFunction?: number;
+}
+
 export const computeChunkHash = (
   entries: Array<{ filePath: string; contentHash: string }>,
-  pdg = false,
+  pdg: boolean | PdgCacheKey = false,
 ): string => {
   const sorted = [...entries].sort((a, b) => (a.filePath < b.filePath ? -1 : 1));
   const joined = sorted.map((e) => `${e.filePath}:${e.contentHash}`).join('\n');
-  // Fold the `--pdg` opt-in into the key (#2081 M1) so a chunk cached WITHOUT a
-  // CFG (`cfgSideChannel`) is NOT reused on a `--pdg` run, and vice-versa — the
-  // #2038-class warm-cache trap where an option-blind key silently serves
-  // field-less shards. Only prefixed when `pdg` is on, so the default (pdg-off)
-  // path keeps its existing keys and warm caches survive this change.
-  return sha256Hex(pdg ? `pdg\n${joined}` : joined);
+  const opts: PdgCacheKey = typeof pdg === 'boolean' ? { pdg } : pdg;
+  // pdg-off path keeps its pre-#2081 keys verbatim, so existing warm caches
+  // survive this change untouched.
+  if (!opts.pdg) return sha256Hex(joined);
+  // Fold the FULL --pdg configuration into the key — not just the boolean, but
+  // the budgets that change the emitted CFG (`maxFunctionLines` decides which
+  // functions get a CFG at all; `maxEdgesPerFunction` decides how many edges
+  // each emits). Without the budgets a warm chunk built under one cap is served
+  // to a run with a different cap → a stale/under-built CFG: the #2038-class
+  // option-blind-key trap, extended to the caps. `def` marks an unset (default)
+  // value so two default-cap runs share a key.
+  const ns =
+    `pdg:1;maxFn=${opts.maxFunctionLines ?? 'def'};` +
+    `maxEdge=${opts.maxEdgesPerFunction ?? 'def'}`;
+  return sha256Hex(`${ns}\n${joined}`);
 };
 
 /**

@@ -20,16 +20,21 @@
  *    `throw` with no catch propagates through finally to the enclosing handler.
  *  - labeled `break`/`continue` resolve against the labeled loop's frame.
  *
- * Known M1 limitations (conservative under-approximations — sound for a CFG, to
- * be tightened when the downstream taint analysis needs the precision):
- *  - A non-local jump (`break`/`continue`/`return`) out of a `try` that has a
- *    `finally` edges directly to its target rather than routing THROUGH the
- *    `finally` block first. The general fix duplicates `finally` per exit path;
- *    deferred past M1. Normal completion and `throw` DO route through `finally`.
+ * Known M1 limitations:
+ *  - SOUNDNESS GAP (M2 blocker, not mere precision): a non-local jump
+ *    (`break`/`continue`/`return`) out of a `try` that has a `finally` edges
+ *    directly to its target rather than routing THROUGH the `finally` block
+ *    first. A future taint/PDG pass will therefore MISS flow mediated by a
+ *    `finally` on the early-exit path (e.g. a value the `finally` taints or
+ *    sanitizes before the `return` reaches its target) — a false negative. The
+ *    general fix duplicates `finally` per exit path; deferred past M1 and
+ *    tracked for M2. Normal completion and `throw` DO route through `finally`.
  *  - A `break`/`continue` to a label on a non-loop/non-switch block, and the
  *    OUTER label of a doubly-labeled construct (`outer: inner: for (...)`), are
- *    not modeled — the jump becomes a CFG sink (no mis-routing, just a missing
- *    edge). Single-labeled loops/switches resolve correctly.
+ *    not modeled. The jump is conservatively routed to the function EXIT (a
+ *    sound over-approximation that keeps the graph single-exit — see visitBreak)
+ *    rather than left as a dangling sink; only the precise labeled target is
+ *    unmodeled. Single-labeled loops/switches resolve correctly.
  *
  * Block/edge accounting and reachability are pinned in
  * `test/unit/cfg/cfg-builder.test.ts` (core) and
@@ -206,14 +211,21 @@ class TsCfgWalk {
   private visitBreak(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
     const target = this.cfc.breakTarget(this.labelOf(stmt));
-    if (target !== undefined) this.builder.edge(idx, target, 'break');
+    // An unresolved target — a label this M1 visitor doesn't model (a stacked
+    // outer label like `outer: inner: for`, or a labeled non-loop block) —
+    // would otherwise leave this block with NO out-edge, stranding it and
+    // breaking the single-exit invariant a downstream post-dominator / PDG pass
+    // relies on. Conservatively route an unresolved jump to the function EXIT
+    // ("escapes the function"): sound over-approximation, keeps single-exit.
+    this.builder.edge(idx, target ?? this.builder.exitIndex, 'break');
     return { entry: idx, exits: [] };
   }
 
   private visitContinue(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
     const target = this.cfc.continueTarget(this.labelOf(stmt));
-    if (target !== undefined) this.builder.edge(idx, target, 'continue');
+    // See visitBreak: an unresolved label routes to EXIT to preserve single-exit.
+    this.builder.edge(idx, target ?? this.builder.exitIndex, 'continue');
     return { entry: idx, exits: [] };
   }
 
@@ -424,8 +436,15 @@ class TsCfgWalk {
 
   private visitTry(stmt: SyntaxNode): SeqResult {
     const bodyNode = stmt.childForFieldName('body');
-    const catchClause = stmt.namedChildren.find((c) => c.type === 'catch_clause');
-    const finallyClause = stmt.namedChildren.find((c) => c.type === 'finally_clause');
+    // Single pass over named children — tree-sitter's `namedChildren` getter
+    // allocates a fresh array on every access, so avoid the double `.find`.
+    let catchClause: SyntaxNode | undefined;
+    let finallyClause: SyntaxNode | undefined;
+    for (let i = 0; i < stmt.namedChildCount; i++) {
+      const c = stmt.namedChild(i);
+      if (c?.type === 'catch_clause') catchClause = c;
+      else if (c?.type === 'finally_clause') finallyClause = c;
+    }
 
     // Build finally first so its entry is known as both a normal join and a
     // handler target. The finally body runs in the OUTER handler context.
@@ -443,17 +462,23 @@ class TsCfgWalk {
 
     // Handler for the try body: catch if present, else finally, else outer.
     const tryHandler = catchRes?.entry ?? finallyRes?.entry ?? this.currentHandler();
+    const protectedStart = this.builder.blockCount;
     this.handlers.push(tryHandler);
     const bodyRes = bodyNode ? this.visitSeq(this.statementsOf(bodyNode)) : null;
     this.handlers.pop();
 
-    // Conservative exceptional edge: any statement in the protected region may
-    // raise to the handler, not just an explicit `throw`. Without this the
-    // catch/finally would be unreachable for the common `try { call() } catch`
-    // shape (the exception originates inside a callee). Explicit `throw`s in the
-    // body also add their own precise edge to the same handler (idempotent).
-    if (bodyRes && (catchClause || finallyClause)) {
-      this.builder.edge(bodyRes.entry, tryHandler, 'throw');
+    // Conservative exceptional edges: ANY block in the protected region may raise
+    // to the handler — not just an explicit `throw`, and not just the body ENTRY.
+    // Edging every block created during the try-body walk keeps exception flow
+    // sound when the body BRANCHES: an `if` / nested-try / post-branch block whose
+    // interior blocks would otherwise have no path to the handler — i.e. a taint
+    // false-negative into `catch` for the downstream PDG analysis. The
+    // per-function edge cap bounds the count; explicit `throw`s add their own
+    // (idempotent) edge to the same handler.
+    if (catchClause || finallyClause) {
+      for (let b = protectedStart; b < this.builder.blockCount; b++) {
+        this.builder.edge(b, tryHandler, 'throw');
+      }
     }
 
     const exits: number[] = [];
