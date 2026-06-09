@@ -20,8 +20,11 @@
 // when a production-scale graph would leak visibly. So:
 //   - `--rows` controls fixture size; run it LARGE (tens of thousands) before
 //     concluding "no leak". The default is deliberately not tiny.
-//   - The CLIMB gate combines a per-cycle slope with BOTH an absolute and a
-//     per-row-relative delta floor, so the sensitivity scales with fixture size.
+//   - The verdict (in fts-rss-verdict.mjs) keys on slope DECELERATION, not total
+//     delta, with a noise floor that scales with the working-set growth
+//     (peak−baseline) so sensitivity tracks fixture/arena size — NOT the pre-DB
+//     baseline RSS. A sustained sub-floor positive slope is INCONCLUSIVE (a slow
+//     creep RSS can't distinguish from noise), never a clean PLATEAU.
 //   - The PLATEAU verdict is only valid for the corpus size it was run at; the
 //     output states that size. The production-faithful confirmation is a
 //     `--via-pool` run against a real large analyzed repo over a long session.
@@ -56,6 +59,10 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+// Pure verdict classifier (median, slopeMbPerCycle, classifyVerdict) lives in a
+// side-effect-free sibling module so it is unit-testable without loading the
+// native addon or running this bench. See fts-rss-verdict.mjs.
+import { classifyVerdict, median, slopeMbPerCycle } from './fts-rss-verdict.mjs';
 
 const require = createRequire(import.meta.url);
 const lbugModule = require('@ladybugdb/core');
@@ -294,82 +301,27 @@ async function runViaPool(lbugPath) {
 }
 
 // ── verdict ─────────────────────────────────────────────────────────────────
-function median(xs) {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
-}
-function slopeMbPerCycle(series) {
-  // Least-squares slope of rss vs cycle index.
-  const n = series.length;
-  const xs = series.map((_, i) => i);
-  const xMean = xs.reduce((a, b) => a + b, 0) / n;
-  const yMean = series.reduce((a, b) => a + b, 0) / n;
-  let num = 0,
-    den = 0;
-  for (let i = 0; i < n; i++) {
-    num += (xs[i] - xMean) * (series[i] - yMean);
-    den += (xs[i] - xMean) ** 2;
-  }
-  return den === 0 ? 0 : num / den;
-}
-
 function verdict({ baseline, series, corpus }) {
   const third = Math.max(1, Math.floor(series.length / 3));
   const firstMed = median(series.slice(0, third));
   const lastMed = median(series.slice(-third));
   const delta = lastMed - firstMed;
   const slope = slopeMbPerCycle(series);
-  const peak = Math.max(...series);
 
-  // The discriminant between a real leak and allocator warmup is SLOPE
-  // DECELERATION, not total delta. Both a leak and a warmup-to-plateau climb;
-  // they differ in whether the per-cycle increment is SUSTAINED or DECAYS:
-  //   - true per-reload leak (stranded FTS arena): RSS rises ~linearly, so the
-  //     second-half slope ≈ the first-half slope (the increment does not decay).
-  //   - allocator working-set warmup (native free-pool growing to the working
-  //     set, freed pages retained-then-reused): RSS rises then flattens, so the
-  //     second-half slope is a small FRACTION of the first-half slope. Larger
-  //     fixtures warm up over MORE cycles, which a fixed absolute-delta gate
-  //     misreads as a leak — the slope ratio is scale-invariant and does not.
-  const half = Math.max(1, Math.floor(series.length / 2));
-  const firstHalfSlope = slopeMbPerCycle(series.slice(0, half));
-  const secondHalfSlope = slopeMbPerCycle(series.slice(-half));
-
-  // Detect a STEP DISCONTINUITY — a single cycle-to-cycle jump far larger than
-  // the typical per-cycle delta. A one-time allocator/arena reservation jump
-  // (then flat) is NOT a per-reload leak, but it inflates the second-half slope
-  // and would fool a pure slope test; it also signals a noisy run.
-  const deltas = series.slice(1).map((v, i) => v - series[i]);
-  const absDeltas = deltas.map(Math.abs).sort((a, b) => a - b);
-  const medAbsDelta = absDeltas.length ? absDeltas[Math.floor(absDeltas.length / 2)] : 0;
-  const maxJump = deltas.length ? Math.max(...deltas) : 0;
-  const stepDiscontinuity = maxJump > Math.max(30, 5 * Math.max(medAbsDelta, 1));
-
-  // The discriminant between a real leak and allocator warmup is SLOPE
-  // DECELERATION, not total delta. A true per-reload leak (stranded FTS arena)
-  // rises ~linearly: the second-half slope stays ≈ the first-half slope. An
-  // allocator working-set warmup rises then flattens: the second-half slope is
-  // a small FRACTION of the first-half. Larger fixtures warm up over MORE
-  // cycles, which a fixed absolute-delta gate misreads as a leak — the slope
-  // ratio is scale-invariant. Below SUSTAIN_FLOOR (~0.5 MB/cycle) the tail is
-  // effectively flat (noise).
-  const SUSTAIN_FLOOR = 0.5;
-  const decelRatio = secondHalfSlope / Math.max(firstHalfSlope, 1e-9);
-  let label;
-  if (stepDiscontinuity) {
-    // A discrete jump (then flat) is not linear accumulation, but the run is
-    // noisy — don't claim a clean result either way.
-    label = 'INCONCLUSIVE';
-  } else if (secondHalfSlope < SUSTAIN_FLOOR) {
-    label = 'PLATEAU';
-  } else if (decelRatio >= 0.6) {
-    label = 'CLIMB';
-  } else {
-    // Tail slope above the flat floor but clearly decelerating — converging,
-    // but not yet flat. Honest answer at this corpus is "not resolved".
-    label = 'INCONCLUSIVE';
-  }
+  // All label logic lives in the pure, unit-tested classifier (fts-rss-verdict.mjs):
+  // epsilon-first flat→PLATEAU, decelerated→PLATEAU, sustained-sub-floor→INCONCLUSIVE,
+  // ≥floor sustained→CLIMB, step→INCONCLUSIVE; floor scales with the working-set
+  // growth (peak−baseline), not the pre-DB baseline RSS.
+  const {
+    verdict: label,
+    firstHalfSlope,
+    secondHalfSlope,
+    decelRatio,
+    floor,
+    stepDiscontinuity,
+    maxJump,
+    peak,
+  } = classifyVerdict(series, baseline);
 
   console.log('\n==================== FTS evict→reload RSS verdict ====================');
   console.log(`corpus: ${corpus}`);
@@ -377,7 +329,8 @@ function verdict({ baseline, series, corpus }) {
   console.log(
     `baseline=${baseline}  firstThirdMed=${firstMed}  lastThirdMed=${lastMed}  delta=${delta}MB  ` +
       `peak=${peak}  overallSlope=${slope.toFixed(2)}  firstHalfSlope=${firstHalfSlope.toFixed(2)}  ` +
-      `secondHalfSlope=${secondHalfSlope.toFixed(2)}MB/cycle  maxJump=${maxJump}MB  step=${stepDiscontinuity}  cycles=${series.length}`,
+      `secondHalfSlope=${secondHalfSlope.toFixed(2)}MB/cycle  floor=${floor.toFixed(2)}  decelRatio=${decelRatio.toFixed(2)}  ` +
+      `maxJump=${maxJump}MB  step=${stepDiscontinuity}  cycles=${series.length}`,
   );
   if (label === 'CLIMB') {
     console.log(
@@ -405,7 +358,7 @@ function verdict({ baseline, series, corpus }) {
     );
   }
   console.log(
-    `MACHINE: ${JSON.stringify({ mode: VIA_POOL ? 'via-pool' : 'native', corpus, baseline, firstMed, lastMed, delta, overallSlope: Number(slope.toFixed(3)), firstHalfSlope: Number(firstHalfSlope.toFixed(3)), secondHalfSlope: Number(secondHalfSlope.toFixed(3)), maxJump, stepDiscontinuity, peak, cycles: series.length, verdict: label })}`,
+    `MACHINE: ${JSON.stringify({ mode: VIA_POOL ? 'via-pool' : 'native', corpus, baseline, firstMed, lastMed, delta, overallSlope: Number(slope.toFixed(3)), firstHalfSlope: Number(firstHalfSlope.toFixed(3)), secondHalfSlope: Number(secondHalfSlope.toFixed(3)), floor: Number(floor.toFixed(3)), decelRatio: Number(decelRatio.toFixed(3)), maxJump, stepDiscontinuity, peak, cycles: series.length, verdict: label })}`,
   );
   console.log('=====================================================================\n');
 }
