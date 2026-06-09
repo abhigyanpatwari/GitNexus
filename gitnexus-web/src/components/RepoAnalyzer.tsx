@@ -188,9 +188,11 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const sseControllerRef = useRef<AbortController | null>(null);
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
     return () => {
+      isMountedRef.current = false;
       sseControllerRef.current?.abort();
       if (completeTimerRef.current) clearTimeout(completeTimerRef.current);
     };
@@ -202,13 +204,13 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setGitlabUrl('');
     setLocalPath('');
     setValidationError(null);
+    setUploadSummary(null);
+    setUploading(false);
   };
 
-  // Use the browser's native directory picker (webkitdirectory doesn't give paths,
-  // so we use a text input + a "Browse" button that opens a standard file input
-  // to let users pick files from the folder — the path is typed manually since
-  // browsers don't expose absolute paths for security reasons).
-  // For local paths, the user types or pastes the absolute path.
+  // Local-folder mode uploads the selected folder's files (the browser never
+  // exposes an absolute path, so the old typed-path/browse approach couldn't
+  // work — see handleFolderUpload). A typed server path is also still accepted.
 
   const canSubmit =
     mode === 'github'
@@ -259,6 +261,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // Drive an already-created analysis job through the SSE progress stream to
   // completion. Shared by the path/URL analyze flow and the folder-upload flow.
   const trackJob = (jobId: string, fallbackNameSource: string | null) => {
+    // The component may have unmounted while an upload POST was in flight; don't
+    // open an SSE stream nothing will ever abort.
+    if (!isMountedRef.current) return;
     jobIdRef.current = jobId;
     setPhase('analyzing');
     const controller = streamAnalyzeProgress(
@@ -290,6 +295,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // Upload a browser-selected folder (webkitdirectory) and start analysis. The
   // upload endpoint returns a jobId, which then joins the normal SSE flow.
   const handleFolderUpload = async (fileList: FileList) => {
+    if (uploading || isLoading) return; // guard against a concurrent upload
     const { files, manifest, droppedCount } = filterRepoFiles(fileList);
     if (files.length === 0) {
       setValidationError(t('onboarding:repoAnalyzer.upload.empty'));
@@ -299,11 +305,16 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setUploadSummary({ count: files.length, dropped: droppedCount });
     setUploading(true);
     setPhase('starting');
+    // The selected folder's name (manifest entries are `<folder>/<rest>`) is a
+    // sensible fallback if the server's complete event omits repoName.
+    const folderName = manifest[0]?.split('/')[0] ?? null;
     try {
       const { jobId } = await uploadFolder(files, manifest);
+      if (!isMountedRef.current) return;
       setUploading(false);
-      trackJob(jobId, null);
+      trackJob(jobId, folderName);
     } catch (err) {
+      if (!isMountedRef.current) return;
       setUploading(false);
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
       setPhase('error');
@@ -321,6 +332,8 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     }
     setPhase('input');
     setProgress({ phase: 'queued', percent: 0, message: t('common:analyzePhases.queued') });
+    setUploading(false);
+    setUploadSummary(null);
   };
 
   const isLoading = phase === 'starting';
@@ -508,7 +521,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             {t('onboarding:repoAnalyzer.upload.button')}
           </button>
           {uploading && (
-            <div role="status" data-testid="upload-progress" className="space-y-1">
+            <div role="status" aria-busy="true" data-testid="upload-progress" className="space-y-1">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
                 <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
               </div>
@@ -520,7 +533,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           {uploadSummary && !uploading && phase !== 'error' && (
             <p className="text-xs text-text-muted" data-testid="upload-summary">
               {t('onboarding:repoAnalyzer.upload.selected', {
-                count: uploadSummary.count,
+                fileCount: uploadSummary.count,
                 dropped: uploadSummary.dropped,
               })}
             </p>

@@ -3,10 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
-import {
-  createAnalyzeUploadHandler,
-  requireLocalhostOrigin,
-} from '../../src/server/analyze-upload.js';
+import { createAnalyzeUploadHandler } from '../../src/server/analyze-upload.js';
+import { requireLocalhostOrigin } from '../../src/server/middleware.js';
 
 const BOUNDARY = '----gitnexusuploadtest';
 
@@ -81,7 +79,8 @@ describe('createAnalyzeUploadHandler', () => {
     const top = uniqueTop();
     const createJob = vi.fn(() => ({ id: 'job-1', status: 'queued' }));
     const launch = vi.fn((_j, dir: string) => promoted.push(dir));
-    const handler = createAnalyzeUploadHandler({ createJob, launch });
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
 
     const res = mockRes();
     await handler(
@@ -112,7 +111,8 @@ describe('createAnalyzeUploadHandler', () => {
       throw new Error('Analysis already in progress for another repository');
     });
     const launch = vi.fn((_j, dir: string) => promoted.push(dir));
-    const handler = createAnalyzeUploadHandler({ createJob, launch });
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
 
     const res = mockRes();
     await handler(
@@ -133,7 +133,8 @@ describe('createAnalyzeUploadHandler', () => {
   it('rejects a traversal path in the manifest (400) without launching', async () => {
     const createJob = vi.fn(() => ({ id: 'j', status: 'queued' }));
     const launch = vi.fn();
-    const handler = createAnalyzeUploadHandler({ createJob, launch });
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
 
     const res = mockRes();
     await handler(
@@ -152,7 +153,8 @@ describe('createAnalyzeUploadHandler', () => {
   it('rejects an un-nameable top folder (Windows-reserved → 400)', async () => {
     const createJob = vi.fn(() => ({ id: 'j', status: 'queued' }));
     const launch = vi.fn();
-    const handler = createAnalyzeUploadHandler({ createJob, launch });
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
 
     const res = mockRes();
     await handler(
@@ -171,7 +173,8 @@ describe('createAnalyzeUploadHandler', () => {
     const top = uniqueTop();
     const createJob = vi.fn(() => ({ id: 'job-x', status: 'queued' }));
     const launch = vi.fn((_j, dir: string) => promoted.push(dir));
-    const handler = createAnalyzeUploadHandler({ createJob, launch });
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
 
     const res = mockRes();
     await handler(
@@ -187,6 +190,71 @@ describe('createAnalyzeUploadHandler', () => {
     const dir = launch.mock.calls[0][1] as string;
     await expect(fs.access(path.join(dir, '.gitnexus'))).rejects.toBeTruthy();
     expect(await fs.readFile(path.join(dir, 'a.js'), 'utf8')).toBe('real');
+  });
+
+  it('rejects a single-segment manifest before creating a job (no slot taken)', async () => {
+    const createJob = vi.fn(() => ({ id: 'j', status: 'queued' }));
+    const launch = vi.fn();
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
+
+    const res = mockRes();
+    await handler(
+      mockReq([
+        { name: 'manifest', value: JSON.stringify(['loosefile.js']) },
+        { name: 'files', filename: 'blob', data: Buffer.from('x') },
+      ]) as never,
+      res as never,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(createJob).not.toHaveBeenCalled(); // slot never taken → no wedge
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a multi-top-folder manifest (would silently drop folders)', async () => {
+    const createJob = vi.fn(() => ({ id: 'j', status: 'queued' }));
+    const launch = vi.fn();
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
+
+    const res = mockRes();
+    await handler(
+      mockReq([
+        { name: 'manifest', value: JSON.stringify(['aaa/x.js', 'bbb/y.js']) },
+        { name: 'files', filename: 'blob', data: Buffer.from('1') },
+        { name: 'files', filename: 'blob', data: Buffer.from('2') },
+      ]) as never,
+      res as never,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it('releases the single slot (failJob) when a step fails after createJob', async () => {
+    const top = uniqueTop();
+    const createJob = vi.fn(() => ({ id: 'job-fail', status: 'queued' }));
+    // launch throws AFTER createJob + promote — the slot must be released.
+    const launch = vi.fn((_j, dir: string) => {
+      promoted.push(dir);
+      throw new Error('worker fork blew up');
+    });
+    const failJob = vi.fn();
+    const handler = createAnalyzeUploadHandler({ createJob, launch, failJob });
+
+    const res = mockRes();
+    await handler(
+      mockReq([
+        { name: 'manifest', value: JSON.stringify([`${top}/a.js`]) },
+        { name: 'files', filename: 'blob', data: Buffer.from('x') },
+      ]) as never,
+      res as never,
+    );
+
+    expect(createJob).toHaveBeenCalledOnce();
+    expect(failJob).toHaveBeenCalledWith('job-fail', expect.any(String));
+    expect(res.statusCode).toBe(500);
   });
 });
 

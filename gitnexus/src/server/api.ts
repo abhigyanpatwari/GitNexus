@@ -30,12 +30,13 @@ import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
-import { fork } from 'child_process';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
-import { createAnalyzeUploadHandler, requireLocalhostOrigin } from './analyze-upload.js';
+import { createAnalyzeUploadHandler } from './analyze-upload.js';
+import { requireLocalhostOrigin } from './middleware.js';
+import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
@@ -764,147 +765,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   };
 
   // Launch the analyze worker for an already-resolved repo directory. Shared by
-  // the JSON /api/analyze route and the multipart /api/analyze/upload route so
-  // the lock + fork + auto-retry + IPC machinery lives in one place.
-  const launchAnalysisWorker = (
-    job: { id: string },
-    targetPath: string,
-    opts: {
-      force?: boolean;
-      embeddings?: boolean;
-      dropEmbeddings?: boolean;
-      registryName?: string;
-    },
-  ): void => {
-    // Acquire shared repo lock (keyed on storagePath to match embed handler)
-    const analyzeLockKey = getStoragePath(targetPath);
-    const lockErr = acquireRepoLock(analyzeLockKey);
-    if (lockErr) {
-      jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
-      return;
-    }
-
-    jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
-
-    // ── Worker fork with auto-retry ──────────────────────────────
-    const MAX_WORKER_RETRIES = 2;
-    const callerPath = fileURLToPath(import.meta.url);
-    const isDev = callerPath.endsWith('.ts');
-    const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
-    const workerPath = path.join(path.dirname(callerPath), workerFile);
-    const tsxHookArgs: string[] = isDev
-      ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
-      : [];
-
-    const forkWorker = () => {
-      const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
-
-      const child = fork(workerPath, [], {
-        execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
-        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      });
-
-      // Capture stderr for crash diagnostics
-      let stderrChunks = '';
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderrChunks += chunk.toString();
-        if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
-      });
-
-      child.on('message', (msg: any) => {
-        if (msg.type === 'progress') {
-          jobManager.updateJob(job.id, {
-            status: 'analyzing',
-            progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
-          });
-        } else if (msg.type === 'complete') {
-          releaseRepoLock(analyzeLockKey);
-          // Reinitialize backend BEFORE marking complete — ensures the new
-          // repo is queryable when the client receives the SSE complete event.
-          backend
-            .init()
-            .then(() => {
-              jobManager.updateJob(job.id, {
-                status: 'complete',
-                repoName: msg.result.repoName,
-              });
-            })
-            .catch((err) => {
-              logger.error({ err }, 'backend.init() failed after analyze:');
-              jobManager.updateJob(job.id, {
-                status: 'failed',
-                error: 'Server failed to reload after analysis. Try again.',
-              });
-            });
-        } else if (msg.type === 'error') {
-          releaseRepoLock(analyzeLockKey);
-          jobManager.updateJob(job.id, {
-            status: 'failed',
-            error: msg.message,
-          });
-        }
-      });
-
-      child.on('error', (err) => {
-        releaseRepoLock(analyzeLockKey);
-        jobManager.updateJob(job.id, {
-          status: 'failed',
-          error: `Worker process error: ${err.message}`,
-        });
-      });
-
-      child.on('exit', (code) => {
-        const j = jobManager.getJob(job.id);
-        if (!j || j.status === 'complete' || j.status === 'failed') return;
-
-        // Worker crashed — attempt retry if under the limit
-        if (j.retryCount < MAX_WORKER_RETRIES) {
-          j.retryCount++;
-          const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
-          const lastErr = stderrChunks.trim().split('\n').pop() || '';
-          logger.warn(
-            `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
-              (lastErr ? `: ${lastErr}` : ''),
-          );
-          jobManager.updateJob(job.id, {
-            status: 'analyzing',
-            progress: {
-              phase: 'retrying',
-              percent: j.progress.percent,
-              message: `Worker crashed, retrying (${j.retryCount}/${MAX_WORKER_RETRIES})...`,
-            },
-          });
-          stderrChunks = '';
-          setTimeout(forkWorker, delay);
-        } else {
-          // Exhausted retries — permanent failure
-          releaseRepoLock(analyzeLockKey);
-          jobManager.updateJob(job.id, {
-            status: 'failed',
-            error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
-          });
-        }
-      });
-
-      // Register child for cancellation + timeout tracking
-      jobManager.registerChild(job.id, child);
-
-      // Send start command to child
-      child.send({
-        type: 'start',
-        repoPath: targetPath,
-        options: {
-          force: !!opts.force,
-          embeddings: !!opts.embeddings,
-          dropEmbeddings: !!opts.dropEmbeddings,
-          ...(opts.registryName ? { registryName: opts.registryName } : {}),
-        },
-      });
-    };
-
-    forkWorker();
-  };
+  // the JSON /api/analyze route and the multipart /api/analyze/upload route.
+  const launchAnalysisWorker = createLaunchAnalysisWorker({
+    jobManager,
+    backend,
+    acquireRepoLock,
+    releaseRepoLock,
+  });
 
   /**
    * Maximum time the hold-queue will wait for an active analysis job to complete.
@@ -1691,6 +1558,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     createAnalyzeUploadHandler({
       createJob: (params) => jobManager.createJob(params),
       launch: (job, targetPath, opts) => launchAnalysisWorker(job, targetPath, opts),
+      failJob: (jobId, error) => jobManager.updateJob(jobId, { status: 'failed', error }),
     }),
   );
 

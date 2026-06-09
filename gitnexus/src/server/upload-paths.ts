@@ -14,17 +14,13 @@
 import path from 'path';
 import os from 'os';
 import { sanitizeRepoName } from '../storage/git.js';
+import { REPO_NAME_PATTERN } from './git-clone.js';
 
 /** Root directory for all uploaded repositories. Targets must resolve inside this. */
 export const UPLOAD_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'uploads'));
 
 /** Prefix for per-upload staging directories created under UPLOAD_ROOT. */
 export const STAGING_PREFIX = '.staging-';
-
-// Filesystem-safe repo name: alphanumerics plus `. _ -`. Mirrors
-// git-clone.ts REPO_NAME_PATTERN so getUploadDir(name) cannot escape
-// UPLOAD_ROOT regardless of how the caller derived the name.
-const UPLOAD_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
 /**
  * Get the upload target directory for a repo name.
@@ -41,7 +37,7 @@ export function getUploadDir(repoName: string): string {
     repoName === '..' ||
     repoName === 'unknown' ||
     repoName.startsWith('.') ||
-    !UPLOAD_NAME_PATTERN.test(repoName)
+    !REPO_NAME_PATTERN.test(repoName)
   ) {
     throw new Error('Invalid repository name');
   }

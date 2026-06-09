@@ -35,13 +35,28 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith(STAGING_PREFIX)) continue;
+    if (!entry.isDirectory()) continue;
     const full = path.join(root, entry.name);
     try {
       const st = await fsp.stat(full);
-      if (now - st.mtimeMs > maxAgeMs) {
+      if (now - st.mtimeMs <= maxAgeMs) continue; // recent — keep
+
+      if (entry.name.startsWith(STAGING_PREFIX)) {
+        // Transient staging dir orphaned by a crash — always removable.
         await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
         removed.push(full);
+      } else {
+        // Promoted upload dir. A successfully-analyzed (registered) repo always
+        // has a `.gitnexus` index inside it; a stale promoted dir WITHOUT one is
+        // an orphan from an analysis that failed before registering — remove it.
+        const hasIndex = await fsp
+          .access(path.join(full, '.gitnexus'))
+          .then(() => true)
+          .catch(() => false);
+        if (!hasIndex) {
+          await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
+          removed.push(full);
+        }
       }
     } catch {
       /* stat race — skip */

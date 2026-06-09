@@ -15,17 +15,25 @@ import type { IncomingMessage } from 'http';
 import { ingestUpload } from './upload-ingest.js';
 import { UPLOAD_ROOT, getUploadDir, deriveUploadName } from './upload-paths.js';
 import { BadRequestError } from './validation.js';
+import type { AnalyzeJob } from './analyze-job.js';
 
-export interface UploadJobRef {
-  id: string;
-  status: string;
-}
+/** Minimal job shape the handler needs (a subset of the real AnalyzeJob). */
+export type UploadJobRef = Pick<AnalyzeJob, 'id' | 'status'>;
+
+/** Cap on collision-suffix attempts when allocating an upload dir name. */
+const MAX_NAME_COLLISION_TRIES = 100;
 
 export interface AnalyzeUploadDeps {
   /** Create (or throw on busy) an analysis job for the given upload dir. */
   createJob: (params: { repoPath: string }) => UploadJobRef;
   /** Launch the analyze worker against an already-resolved repo directory. */
   launch: (job: UploadJobRef, targetPath: string, opts: { registryName: string }) => void;
+  /**
+   * Mark a created job failed. The job occupies the single analysis slot from
+   * createJob onward, so ANY error before launch must release it — otherwise a
+   * leaked non-terminal job wedges all future analyses until restart.
+   */
+  failJob: (jobId: string, error: string) => void;
   /** Injectable for tests (defaults to the real ingestUpload). */
   ingest?: typeof ingestUpload;
 }
@@ -35,7 +43,7 @@ export interface AnalyzeUploadDeps {
  * collision with an existing upload. Bounded to avoid an unbounded scan.
  */
 async function pickAvailableName(base: string): Promise<string> {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < MAX_NAME_COLLISION_TRIES; i++) {
     const name = i === 0 ? base : `${base}-${i + 1}`;
     let dir: string;
     try {
@@ -50,7 +58,10 @@ async function pickAvailableName(base: string): Promise<string> {
       return name; // ENOENT → available
     }
   }
-  throw new BadRequestError('Could not allocate an upload directory', 409);
+  throw new BadRequestError(
+    `Could not allocate an upload directory after ${MAX_NAME_COLLISION_TRIES} attempts`,
+    409,
+  );
 }
 
 export function createAnalyzeUploadHandler(deps: AnalyzeUploadDeps) {
@@ -59,20 +70,38 @@ export function createAnalyzeUploadHandler(deps: AnalyzeUploadDeps) {
   return async function handleAnalyzeUploadRequest(req: Request, res: Response): Promise<void> {
     let stageRoot: string | undefined;
     let promotedDir: string | undefined;
+    let createdJobId: string | undefined;
     let launched = false;
     try {
-      const result = await ingest(req as unknown as IncomingMessage);
+      const result = await ingest(req as IncomingMessage);
       stageRoot = result.stageRoot;
 
       const baseName = deriveUploadName(result.topLevelName);
       if (!baseName) {
         throw new BadRequestError('Uploaded folder has no usable name');
       }
+
+      // webkitRelativePath prefixes every entry with the picked folder, so the
+      // real repo root is stageRoot/<topLevelName>. Validate it is a directory
+      // BEFORE taking the single analysis slot — a malformed (non-folder)
+      // upload must not be able to occupy the slot.
+      const innerRoot = path.join(result.stageRoot, result.topLevelName);
+      let innerIsDir = false;
+      try {
+        innerIsDir = (await fsp.stat(innerRoot)).isDirectory();
+      } catch {
+        innerIsDir = false;
+      }
+      if (!innerIsDir) {
+        throw new BadRequestError('Upload must be a folder');
+      }
+
       const finalName = await pickAvailableName(baseName);
       const finalDir = getUploadDir(finalName);
 
-      // createJob BEFORE promote: a busy server throws → 409 and nothing has
-      // been moved into place yet, so the staging dir is the only thing to clean.
+      // createJob occupies the single analysis slot (throws 'already in
+      // progress' → 409). From here on, ANY error before launch MUST release
+      // the slot via failJob in the catch, or the server wedges all analyses.
       let job: UploadJobRef;
       try {
         job = deps.createJob({ repoPath: finalDir });
@@ -83,18 +112,7 @@ export function createAnalyzeUploadHandler(deps: AnalyzeUploadDeps) {
         }
         throw err;
       }
-
-      // webkitRelativePath prefixes every entry with the picked folder, so the
-      // real repo root is stageRoot/<topLevelName>. Promote that inner dir.
-      const innerRoot = path.join(result.stageRoot, result.topLevelName);
-      try {
-        if (!(await fsp.stat(innerRoot)).isDirectory()) {
-          throw new BadRequestError('Upload must be a folder');
-        }
-      } catch (err) {
-        if (err instanceof BadRequestError) throw err;
-        throw new BadRequestError('Upload must be a folder');
-      }
+      createdJobId = job.id;
 
       // Promote staging → persistent upload dir. Both live under UPLOAD_ROOT's
       // filesystem, so this rename stays atomic (no EXDEV).
@@ -116,6 +134,11 @@ export function createAnalyzeUploadHandler(deps: AnalyzeUploadDeps) {
 
       res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err) {
+      // Release the single analysis slot if a job was created but never
+      // launched — otherwise the leaked queued job blocks all future analyses.
+      if (createdJobId && !launched) {
+        deps.failJob(createdJobId, err instanceof Error ? err.message : 'Upload failed');
+      }
       if (stageRoot) {
         await fsp.rm(stageRoot, { recursive: true, force: true }).catch(() => {});
       }
@@ -129,28 +152,4 @@ export function createAnalyzeUploadHandler(deps: AnalyzeUploadDeps) {
       res.status(500).json({ error: 'Upload failed' });
     }
   };
-}
-
-/**
- * Per-route guard that restricts an endpoint to localhost browser origins.
- * Non-browser requests (no Origin header, e.g. curl) pass through. This closes
- * cross-origin reach (e.g. the allow-listed public deploy + Private Network
- * Access) to write routes without affecting read routes.
- */
-export function requireLocalhostOrigin(req: Request, res: Response, next: () => void): void {
-  const origin = req.headers.origin;
-  if (origin === undefined) {
-    next();
-    return;
-  }
-  try {
-    const hostname = new URL(origin).hostname;
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
-      next();
-      return;
-    }
-  } catch {
-    /* malformed origin → reject */
-  }
-  res.status(403).json({ error: 'This endpoint is restricted to localhost origins' });
 }

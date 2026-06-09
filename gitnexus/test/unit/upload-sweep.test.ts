@@ -36,6 +36,25 @@ describe('sweepStaleUploads', () => {
     await expect(fs.access(path.join(root, 'myrepo'))).resolves.toBeUndefined();
   });
 
+  it('removes a stale promoted dir without a .gitnexus index, keeps one with it', async () => {
+    const now = 2_000_000_000_000;
+    const old = new Date(now - 10 * 60 * 60 * 1000);
+
+    // Orphan: a failed analysis that never wrote an index.
+    await fs.mkdir(path.join(root, 'orphan'));
+    await fs.utimes(path.join(root, 'orphan'), old, old);
+
+    // Registered: stale but carries the .gitnexus index → must be kept.
+    await fs.mkdir(path.join(root, 'registered', '.gitnexus'), { recursive: true });
+    await fs.utimes(path.join(root, 'registered'), old, old);
+
+    const { removed } = await sweepStaleUploads({ root, now, maxAgeMs: 6 * 60 * 60 * 1000 });
+
+    expect(removed.some((r) => r.endsWith('orphan'))).toBe(true);
+    await expect(fs.access(path.join(root, 'orphan'))).rejects.toBeTruthy();
+    await expect(fs.access(path.join(root, 'registered'))).resolves.toBeUndefined();
+  });
+
   it('tolerates a missing root', async () => {
     const { removed } = await sweepStaleUploads({ root: path.join(root, 'does-not-exist') });
     expect(removed).toEqual([]);

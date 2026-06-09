@@ -229,11 +229,20 @@ export async function ingestUpload(
       let dest: string;
       try {
         dest = resolveContainedDest(stageRoot, rel);
+        // A folder upload is exactly one top-level directory: every entry must
+        // have ≥2 segments and share the same first segment. This rejects a
+        // bare file at the root (which would make the promote target a file)
+        // and a multi-top manifest (which would silently drop all but the
+        // first folder). Validated here, before any job is created.
+        const segs = String(rel)
+          .split('/')
+          .filter((s) => s.length > 0);
+        const firstSeg = (segs[0] ?? '').normalize('NFC');
         if (!topLevelName) {
-          // The on-disk top folder uses the NFC-normalized first segment
-          // (matching how each path segment is written); the promote step
-          // renames stageRoot/<topLevelName> into place.
-          topLevelName = (String(rel).split('/').filter(Boolean)[0] ?? '').normalize('NFC');
+          topLevelName = firstSeg;
+        }
+        if (segs.length < 2 || firstSeg !== topLevelName) {
+          throw new BadRequestError('Upload must be a single folder of files');
         }
         mkdirContained(stageRoot, dest, dirState);
       } catch (err) {

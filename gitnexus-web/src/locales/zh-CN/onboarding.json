@@ -65,7 +65,7 @@
     "upload": {
       "button": "上传文件夹",
       "uploading": "上传中…",
-      "selected": "已准备 {{count}} 个文件（已跳过 {{dropped}} 个：.git、node_modules、构建产物）",
+      "selected": "已准备 {{fileCount}} 个文件（已跳过 {{dropped}} 个：.git、node_modules、构建产物）",
       "empty": "该文件夹中未找到可分析的文件。"
     }
   }
