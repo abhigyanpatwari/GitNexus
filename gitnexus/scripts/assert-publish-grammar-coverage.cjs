@@ -7,28 +7,25 @@
  * grammar's full source-build set ships (so the install can source-build it,
  * toolchain permitting). A future lean publish — dropping the ~50 MB of generated
  * source to ship prebuilds only — is safe ONLY once every grammar has all six
- * prebuilds; doing it while any grammar is still missing a prebuild would ship a
+ * prebuilds; doing it while any grammar still lacks a prebuild would ship a
  * grammar with NO loadable binding (neither prebuild nor buildable source) → that
- * language is silently dead for users. (Note: the slim must be done by narrowing
- * package.json's `files` field, NOT via .npmignore — `files` overrides .npmignore
- * for the vendored subtree; see gitnexus/.npmignore.)
+ * language is silently dead for users.
  *
- * Rather than infer "is source excluded?" from a single .npmignore toggle line
- * (which a partial/out-of-order edit could defeat — exclude binding.gyp but leave
- * parser.c, and the grammar is unbuildable yet still looks "source-shipping"),
- * this guard inspects the EFFECTIVE tarball: `npm pack --dry-run --ignore-scripts
- * --json` (the `--ignore-scripts` avoids re-entering this guard via prepack). A
- * grammar "ships source" only when EVERY one of its on-disk source-build inputs
- * (binding.gyp + binding.cc + parser.c + scanner.c when present + a tree_sitter
- * header) is actually in the packed file list.
+ * HOW SOURCE INCLUSION IS DECIDED. The `files` allow-list OVERRIDES `.npmignore`
+ * for the vendored subtree (verified: an active "vendor/(star-star)/src/parser.c"
+ * in .npmignore does NOT drop it from `npm pack`). So `.npmignore` can never
+ * exclude vendored source — the ONLY lever is the `files` field. A broad `vendor`
+ * ships the whole subtree (source + prebuilds); a lean publish narrows `files` to
+ * non-source subpaths. This guard therefore reads `files` directly rather than
+ * shelling out to `npm pack` (which, in prepack, would re-enter this guard and,
+ * on npm versions that don't honor --ignore-scripts for prepare/prepack, run the
+ * full build — slow enough to time out and fragile).
  *
  * Wired via `prepack`, so it fails `npm pack` / `npm publish` if the invariant is
- * violated — the gated .npmignore exclusions can never be activated early and
- * silently ship a dead grammar.
+ * violated.
  */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const TUPLES = [
   'linux-x64',
@@ -39,9 +36,9 @@ const TUPLES = [
   'win32-arm64',
 ];
 
-// Source-build inputs (tarball-relative within vendor/<name>/) whose presence in
-// the pack makes a grammar source-buildable. Per-grammar we only require the ones
-// that actually exist on disk (e.g. tree-sitter-c has no external scanner.c).
+// Source-build inputs (relative to vendor/<name>/) whose presence makes a grammar
+// source-buildable. Per-grammar we only require the ones that exist on disk (e.g.
+// tree-sitter-c has no external scanner.c).
 const SOURCE_BUILD_REL = [
   'binding.gyp',
   'bindings/node/binding.cc',
@@ -50,19 +47,47 @@ const SOURCE_BUILD_REL = [
   'src/tree_sitter/parser.h',
 ];
 
-/** The on-disk source-build inputs for a grammar, as tarball-relative paths. */
-function sourceBuildSet(grammarDir, name) {
-  return SOURCE_BUILD_REL.filter((rel) => fs.existsSync(path.join(grammarDir, rel))).map(
-    (rel) => `vendor/${name}/${rel}`,
-  );
+/**
+ * Does the package.json `files` allow-list ship the WHOLE vendor subtree (and
+ * therefore the vendored grammar source)? A bare `vendor` (optionally with a
+ * trailing slash or `/**`/`/*`) includes everything under vendor/. A lean publish
+ * replaces that with non-source subpaths, so this returns false and grammars must
+ * then rely on prebuilds.
+ */
+function filesShipsVendorSource(filesField) {
+  return (filesField || []).some((f) => {
+    const n = String(f)
+      .replace(/\\/g, '/')
+      .replace(/\/+$/, '')
+      .replace(/\/\*\*?$/, '');
+    return n === 'vendor';
+  });
 }
 
-/** Count platform-arch tuples whose prebuilt .node is present in the packed set. */
-function prebuiltTuplesInPack(name, packedFiles) {
+/** The on-disk source-build inputs for a grammar (relative paths). */
+function sourceBuildSet(grammarDir) {
+  return SOURCE_BUILD_REL.filter((rel) => fs.existsSync(path.join(grammarDir, rel)));
+}
+
+/** True when a grammar can be source-built from its vendored files (has gyp + parser). */
+function isBuildableFromSource(grammarDir) {
+  const set = sourceBuildSet(grammarDir);
+  return set.includes('binding.gyp') && set.includes('src/parser.c');
+}
+
+/** Count platform-arch tuples with a committed prebuilt .node on disk. */
+function countPrebuiltTuples(grammarDir) {
+  const pdir = path.join(grammarDir, 'prebuilds');
   let n = 0;
   for (const t of TUPLES) {
-    const prefix = `vendor/${name}/prebuilds/${t}/`;
-    if ([...packedFiles].some((f) => f.startsWith(prefix) && f.endsWith('.node'))) n++;
+    const td = path.join(pdir, t);
+    try {
+      if (fs.statSync(td).isDirectory() && fs.readdirSync(td).some((f) => f.endsWith('.node'))) {
+        n++;
+      }
+    } catch {
+      /* tuple dir absent — not covered */
+    }
   }
   return n;
 }
@@ -78,54 +103,28 @@ function findCoverageProblems({ grammars }) {
     if (g.prebuilt < 6 && !g.shipsSource) {
       const missing = 6 - g.prebuilt;
       problems.push(
-        `${g.name}: ${g.prebuilt}/6 prebuilds in the tarball and source NOT fully shipped ` +
-          `(a source-build input is missing/excluded) — would ship with no loadable binding on ` +
-          `${missing} platform-arch tuple(s).`,
+        `${g.name}: ${g.prebuilt}/6 prebuilds and its vendored source is not shipped ` +
+          `(the package.json \`files\` field excludes it, or it is not buildable) — would ship ` +
+          `with no loadable binding on ${missing} platform-arch tuple(s).`,
       );
     }
   }
   return problems;
 }
 
-/** Build the set of tarball-relative paths `npm pack` would include. */
-function packFileSet(cwd) {
-  const out = execSync('npm pack --dry-run --ignore-scripts --json', {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-    // The `--ignore-scripts` FLAG is not reliably honored by `npm pack`'s
-    // prepare/prepack lifecycle on every npm version — when it isn't, build.js
-    // runs (polluting this --json stdout with `[build] …`) AND, since this guard
-    // runs in prepack, the inner pack would re-enter the guard (recursion). The
-    // `npm_config_ignore_scripts` env config IS reliable, so set it too.
-    env: { ...process.env, npm_config_ignore_scripts: 'true' },
-  });
-  // Defensive: if any lifecycle/build output still precedes the JSON array on
-  // stdout (e.g. `[build] …`), parse from the array start (`[` then `{`) rather
-  // than the raw stream. `[build]` does NOT match (no `{` after the bracket).
-  const start = out.search(/\[\s*\{/);
-  const parsed = JSON.parse(start >= 0 ? out.slice(start) : out);
-  const files = (parsed[0] && parsed[0].files) || [];
-  return new Set(files.map((f) => f.path.replace(/\\/g, '/')));
-}
-
-function collectGrammars(vendorDir, packedFiles) {
+function collectGrammars(vendorDir, shipsVendorSource) {
   if (!fs.existsSync(vendorDir)) return [];
   return fs
     .readdirSync(vendorDir)
     .filter((d) => /^tree-sitter-/.test(d))
     .map((name) => {
       const dir = path.join(vendorDir, name);
-      const srcSet = sourceBuildSet(dir, name);
-      const buildable =
-        srcSet.includes(`vendor/${name}/src/parser.c`) &&
-        srcSet.includes(`vendor/${name}/binding.gyp`);
       return {
         name,
-        prebuilt: prebuiltTuplesInPack(name, packedFiles),
-        // Source ships only when the grammar is buildable AND every one of its
-        // source-build inputs is actually in the packed file list.
-        shipsSource: buildable && srcSet.every((f) => packedFiles.has(f)),
+        prebuilt: countPrebuiltTuples(dir),
+        // Source ships when `files` includes the vendor subtree AND the grammar
+        // actually carries a buildable source set on disk.
+        shipsSource: shipsVendorSource && isBuildableFromSource(dir),
       };
     });
 }
@@ -133,16 +132,10 @@ function collectGrammars(vendorDir, packedFiles) {
 function main() {
   const gitnexusRoot = path.join(__dirname, '..');
   const vendorDir = path.join(gitnexusRoot, 'vendor');
+  const pkg = JSON.parse(fs.readFileSync(path.join(gitnexusRoot, 'package.json'), 'utf8'));
+  const shipsVendorSource = filesShipsVendorSource(pkg.files);
 
-  let packedFiles;
-  try {
-    packedFiles = packFileSet(gitnexusRoot);
-  } catch (err) {
-    console.error(`[publish-guard] Could not compute the npm pack file list: ${err.message}`);
-    process.exit(1);
-  }
-
-  const grammars = collectGrammars(vendorDir, packedFiles);
+  const grammars = collectGrammars(vendorDir, shipsVendorSource);
   if (grammars.length === 0) {
     console.error(`[publish-guard] No vendored tree-sitter grammars found under ${vendorDir}.`);
     process.exit(1);
@@ -154,7 +147,7 @@ function main() {
     for (const p of problems) console.error(`  - ${p}`);
     console.error(
       '\nFix: either commit the missing prebuilds (run the build-tree-sitter-prebuilds\n' +
-        'workflow) or re-comment the lean-publish source exclusions in gitnexus/.npmignore.',
+        'workflow) or keep the vendored source in the package.json `files` field.',
     );
     process.exit(1);
   }
@@ -170,10 +163,11 @@ if (require.main === module) main();
 
 module.exports = {
   findCoverageProblems,
-  prebuiltTuplesInPack,
+  filesShipsVendorSource,
+  isBuildableFromSource,
   sourceBuildSet,
+  countPrebuiltTuples,
   collectGrammars,
-  packFileSet,
   TUPLES,
   SOURCE_BUILD_REL,
 };

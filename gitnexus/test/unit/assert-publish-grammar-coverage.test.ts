@@ -7,18 +7,18 @@ import { fileURLToPath } from 'node:url';
  * Coverage for the publish guard `scripts/assert-publish-grammar-coverage.cjs`.
  *
  * The guard refuses to pack/publish if a vendored grammar would ship with no
- * loadable binding — i.e. a lean-publish `.npmignore` edit dropped a source-build
- * input while a grammar still lacks 6/6 prebuilds. It decides "ships source" by
- * inspecting the EFFECTIVE `npm pack` file list, so a partial exclusion can't slip
- * past. We test the pure decision core directly, and assert the real repo state is
- * publish-safe (catching a premature .npmignore activation in CI, not just at
- * publish time).
+ * loadable binding — i.e. the package.json `files` field was narrowed to drop the
+ * vendored source while a grammar still lacks 6/6 prebuilds. (`.npmignore` can't
+ * exclude the vendored subtree — `files` overrides it — so `files` is the only
+ * lever, and the guard reads it directly rather than shelling out to `npm pack`.)
+ * We test the pure decision core + the `files` check directly, and assert the real
+ * repo state is publish-safe (catching a premature narrowing in CI).
  */
 const requireCjs = createRequire(import.meta.url);
 const SCRIPT = fileURLToPath(
   new URL('../../scripts/assert-publish-grammar-coverage.cjs', import.meta.url),
 );
-const { findCoverageProblems, prebuiltTuplesInPack } = requireCjs(SCRIPT);
+const { findCoverageProblems, filesShipsVendorSource } = requireCjs(SCRIPT);
 
 describe('findCoverageProblems (pure decision core)', () => {
   it('passes when source ships, even with incomplete prebuilds (transitional state)', () => {
@@ -26,13 +26,12 @@ describe('findCoverageProblems (pure decision core)', () => {
     expect(findCoverageProblems({ grammars })).toEqual([]);
   });
 
-  it('fails when source is NOT fully shipped and a grammar lacks 6/6 prebuilds', () => {
-    // e.g. a partial .npmignore edit excluded binding.gyp → shipsSource false.
+  it('fails when source is not shipped and a grammar lacks 6/6 prebuilds', () => {
     const grammars = [{ name: 'tree-sitter-kotlin', prebuilt: 4, shipsSource: false }];
     const problems = findCoverageProblems({ grammars });
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('tree-sitter-kotlin');
-    expect(problems[0]).toContain('source NOT fully shipped');
+    expect(problems[0]).toContain('not shipped');
     expect(problems[0]).toContain('2 platform-arch tuple(s)');
   });
 
@@ -52,23 +51,32 @@ describe('findCoverageProblems (pure decision core)', () => {
   });
 });
 
-describe('prebuiltTuplesInPack', () => {
-  it('counts only tuples whose .node is in the packed set (ignores non-.node / other grammars)', () => {
-    const packed = new Set([
-      'vendor/tree-sitter-swift/prebuilds/linux-x64/tree-sitter-swift.node',
-      'vendor/tree-sitter-swift/prebuilds/darwin-arm64/tree-sitter-swift.node',
-      'vendor/tree-sitter-swift/prebuilds/win32-x64/README.md', // not a .node
-      'vendor/tree-sitter-c/prebuilds/linux-x64/tree-sitter-c.node', // other grammar
-    ]);
-    expect(prebuiltTuplesInPack('tree-sitter-swift', packed)).toBe(2);
-    expect(prebuiltTuplesInPack('tree-sitter-c', packed)).toBe(1);
+describe('filesShipsVendorSource', () => {
+  it('ships when a broad vendor entry is present', () => {
+    expect(filesShipsVendorSource(['dist', 'vendor', 'web'])).toBe(true);
+    expect(filesShipsVendorSource(['vendor/'])).toBe(true);
+    expect(filesShipsVendorSource(['vendor/**'])).toBe(true);
+    expect(filesShipsVendorSource(['vendor/*'])).toBe(true);
+  });
+
+  it('does NOT ship when files is narrowed to non-source subpaths (lean publish)', () => {
+    expect(
+      filesShipsVendorSource([
+        'dist',
+        'vendor/**/prebuilds/**',
+        'vendor/**/package.json',
+        'vendor/**/bindings/node/index.js',
+      ]),
+    ).toBe(false);
+    expect(filesShipsVendorSource([])).toBe(false);
+    expect(filesShipsVendorSource(undefined)).toBe(false);
   });
 });
 
-describe('real repo publish-safety (guards against premature .npmignore activation)', () => {
+describe('real repo publish-safety (guards against premature files narrowing)', () => {
   it('the script exits 0 against the committed repo state', () => {
-    // The guard shells out to `npm pack --dry-run` — allow time for it.
-    const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', timeout: 120_000 });
+    // Deterministic: reads package.json + walks vendor/ — no npm pack, fast.
+    const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', timeout: 20_000 });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('[publish-guard] OK');
   });
