@@ -50,8 +50,9 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "postinstall": "node scripts/materialize-vendor-grammars.cjs && node scripts/build-tree-sitter-c.cjs && node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs && node scripts/build-tree-sitter-swift.cjs && node scripts/build-tree-sitter-kotlin.cjs",
+    "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/build.js"
+    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.1.0",

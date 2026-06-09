@@ -13,6 +13,27 @@ node_modules/
 vendor/**/node_modules
 vendor/**/build
 
+# ── Lean publish (GATED — do NOT uncomment until ALL prebuilds exist) ──────────
+# Once the build-tree-sitter-prebuilds workflow has committed 6/6 prebuilds for
+# EVERY vendored grammar (c, dart, proto, kotlin, swift), uncomment the lines
+# below to ship prebuilds only and drop ~50 MB of generated parser.c source from
+# the tarball. node-gyp-build never needs the source when a prebuild matches; the
+# committed prebuilds still ship (this block does not touch vendor/**/prebuilds).
+#
+# WARNING: uncommenting while ANY grammar still lacks 6/6 prebuilds ships that
+# grammar with neither a prebuild nor buildable source → its language is dead on
+# the affected platforms. The prepack guard
+# (scripts/assert-publish-grammar-coverage.cjs, also `npm run
+# assert-publish-coverage`) ENFORCES this gate and fails the publish if violated,
+# so do not bypass it. Keep the first toggle line below byte-identical to the
+# guard's SOURCE_EXCLUSION_TOGGLE.
+#
+# vendor/**/src/parser.c
+# vendor/**/src/scanner.c
+# vendor/**/src/tree_sitter
+# vendor/**/binding.gyp
+# vendor/**/bindings/node/binding.cc
+
 # Package lock (consumers use their own)
 package-lock.json
 
