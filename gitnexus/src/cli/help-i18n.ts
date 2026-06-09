@@ -12,6 +12,7 @@ const TITLE_KEYS = {
 const COMMAND_DESCRIPTION_KEYS = {
   '': 'help.description.root',
   setup: 'help.command.setup.description',
+  uninstall: 'help.command.uninstall.description',
   analyze: 'help.command.analyze.description',
   index: 'help.command.index.description',
   serve: 'help.command.serve.description',
@@ -69,6 +70,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'index|--allow-non-git': 'help.option.index.allowNonGit',
   'serve|-p, --port <port>': 'help.option.port',
   'serve|--host <host>': 'help.option.serve.host',
+  'uninstall|-f, --force': 'help.option.uninstall.force',
   'clean|-f, --force': 'help.option.force.confirmation',
   'clean|--all': 'help.option.clean.all',
   'clean|--lbug-sidecars': 'help.option.clean.lbugSidecars',
