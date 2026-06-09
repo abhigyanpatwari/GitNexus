@@ -1112,6 +1112,103 @@ export class LocalBackend {
     >();
     const definitions: any[] = []; // standalone symbols not in any process
 
+    // Batch-fetch process participation, cohesion, and (optionally) content for
+    // ALL matched symbols in 2-3 graph queries instead of 2-3 *per symbol*. The
+    // previous per-symbol loop issued up to 3N sequential pool round-trips
+    // (searchLimit symbols × {STEP_IN_PROCESS, MEMBER_OF, content}); on a warm
+    // repo the IPC + query-setup overhead of those round-trips dominated query
+    // latency. Collapsing to `WHERE n.id IN $nodeIds` preserves identical output
+    // (the aggregation loop below is unchanged) while cutting the round-trips.
+    // Array params bind through the pool exactly as bm25Search's
+    // `WHERE n.id IN $nodeIds` already does. (Ported from gitnexus-enterprise
+    // PR #222 — N+1 → 2-3 batched queries.)
+    const nodeIds = merged.map(([, m]) => m.data?.nodeId).filter((id): id is string => !!id);
+
+    const processRowsByNode = new Map<string, any[]>();
+    const cohesionByNode = new Map<string, { cohesion: number; module?: string }>();
+    const contentByNode = new Map<string, string>();
+
+    // Chunk the IN-list like the impact path (CHUNK_SIZE=100) so a large result
+    // set never builds an unbounded `IN` parameter. Default batch is
+    // processLimit*maxSymbolsPerProcess (≤ one chunk), but chunk for robustness.
+    const QUERY_CHUNK_SIZE = 100;
+    for (let i = 0; i < nodeIds.length; i += QUERY_CHUNK_SIZE) {
+      const ids = nodeIds.slice(i, i + QUERY_CHUNK_SIZE);
+
+      // Processes each symbol participates in. `n.id AS nodeId` is prepended as
+      // column 0 so rows from many symbols can be re-associated to their symbol.
+      try {
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          WHERE n.id IN $nodeIds
+          RETURN n.id AS nodeId, p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+        `,
+          { nodeIds: ids },
+        );
+        for (const row of rows) {
+          const nid = row.nodeId ?? row[0];
+          let list = processRowsByNode.get(nid);
+          if (!list) processRowsByNode.set(nid, (list = []));
+          list.push(row);
+        }
+      } catch (e) {
+        logQueryError('query:process-lookup', e);
+      }
+
+      // Cluster membership + cohesion. Keep the FIRST community row per node to
+      // mirror the prior per-symbol `LIMIT 1` (each symbol keeps ITS community,
+      // not one community for the whole batch).
+      try {
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+          WHERE n.id IN $nodeIds
+          RETURN n.id AS nodeId, c.cohesion AS cohesion, c.heuristicLabel AS module
+        `,
+          { nodeIds: ids },
+        );
+        for (const row of rows) {
+          const nid = row.nodeId ?? row[0];
+          if (!cohesionByNode.has(nid)) {
+            cohesionByNode.set(nid, {
+              cohesion: (row.cohesion ?? row[1]) || 0,
+              module: row.module ?? row[2],
+            });
+          }
+        }
+      } catch (e) {
+        logQueryError('query:cluster-info', e);
+      }
+
+      // Optionally fetch content for every matched symbol.
+      if (includeContent) {
+        try {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `
+            MATCH (n)
+            WHERE n.id IN $nodeIds
+            RETURN n.id AS nodeId, n.content AS content
+          `,
+            { nodeIds: ids },
+          );
+          for (const row of rows) {
+            const nid = row.nodeId ?? row[0];
+            contentByNode.set(nid, row.content ?? row[1]);
+          }
+        } catch (e) {
+          logQueryError('query:content-fetch', e);
+        }
+      }
+    }
+
+    // Aggregation is unchanged from the per-symbol version — it now reads the
+    // pre-fetched maps instead of issuing a query per symbol. Iterating `merged`
+    // in the same (sorted) order preserves processMap insertion order, the
+    // definitions order, and the item.score association exactly.
     for (const [_, item] of merged) {
       const sym = item.data;
       if (!sym.nodeId) {
@@ -1124,61 +1221,11 @@ export class LocalBackend {
         continue;
       }
 
-      // Find processes this symbol participates in
-      let processRows: any[] = [];
-      try {
-        processRows = await executeParameterized(
-          repo.lbugPath,
-          `
-          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `,
-          { nodeId: sym.nodeId },
-        );
-      } catch (e) {
-        logQueryError('query:process-lookup', e);
-      }
-
-      // Get cluster membership + cohesion (cohesion used as internal ranking signal)
-      let cohesion = 0;
-      let module: string | undefined;
-      try {
-        const cohesionRows = await executeParameterized(
-          repo.lbugPath,
-          `
-          MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
-          LIMIT 1
-        `,
-          { nodeId: sym.nodeId },
-        );
-        if (cohesionRows.length > 0) {
-          cohesion = (cohesionRows[0].cohesion ?? cohesionRows[0][0]) || 0;
-          module = cohesionRows[0].module ?? cohesionRows[0][1];
-        }
-      } catch (e) {
-        logQueryError('query:cluster-info', e);
-      }
-
-      // Optionally fetch content
-      let content: string | undefined;
-      if (includeContent) {
-        try {
-          const contentRows = await executeParameterized(
-            repo.lbugPath,
-            `
-            MATCH (n {id: $nodeId})
-            RETURN n.content AS content
-          `,
-            { nodeId: sym.nodeId },
-          );
-          if (contentRows.length > 0) {
-            content = contentRows[0].content ?? contentRows[0][0];
-          }
-        } catch (e) {
-          logQueryError('query:content-fetch', e);
-        }
-      }
+      const processRows = processRowsByNode.get(sym.nodeId) ?? [];
+      const coh = cohesionByNode.get(sym.nodeId);
+      const cohesion = coh?.cohesion ?? 0;
+      const module = coh?.module;
+      const content = includeContent ? contentByNode.get(sym.nodeId) : undefined;
 
       const symbolEntry = {
         id: sym.nodeId,
@@ -1197,12 +1244,13 @@ export class LocalBackend {
       } else {
         // Add to each process it belongs to
         for (const row of processRows) {
-          const pid = row.pid ?? row[0];
-          const label = row.label ?? row[1];
-          const hLabel = row.heuristicLabel ?? row[2];
-          const pType = row.processType ?? row[3];
-          const stepCount = row.stepCount ?? row[4];
-          const step = row.step ?? row[5];
+          // Positional fallbacks shift +1 because `n.id AS nodeId` is column 0.
+          const pid = row.pid ?? row[1];
+          const label = row.label ?? row[2];
+          const hLabel = row.heuristicLabel ?? row[3];
+          const pType = row.processType ?? row[4];
+          const stepCount = row.stepCount ?? row[5];
+          const step = row.step ?? row[6];
 
           if (!processMap.has(pid)) {
             processMap.set(pid, {

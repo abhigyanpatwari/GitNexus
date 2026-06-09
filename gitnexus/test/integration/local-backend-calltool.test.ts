@@ -113,6 +113,44 @@ withTestLbugDB(
         expect(result.timing.bm25 ?? result.timing.vector).toBeGreaterThanOrEqual(0);
       });
 
+      // PR #222 port: the query tool batches per-symbol process/cohesion/content
+      // lookups (N+1 → 2-3 `WHERE n.id IN $nodeIds` queries). These assertions
+      // guard the batch-adaptation hazards that a naive cherry-pick would break:
+      // (1) each symbol keeps ITS OWN community (the per-node first-row pick that
+      //     replaced the per-symbol `LIMIT 1`), and (2) content maps to the right
+      //     node — both depend on the +1 positional-index shift after prepending
+      //     `n.id AS nodeId`. func:login is MEMBER_OF comm:auth ("Authentication");
+      //     func:validate has no community, so it must NOT inherit login's.
+      it('query batches per-symbol enrichment without cross-assigning community/content', async () => {
+        const findSym = (res: any, id: string) =>
+          (res.process_symbols ?? []).find((s: any) => s.id === id) ??
+          (res.definitions ?? []).find((s: any) => s.id === id);
+
+        const loginRes = await backend.callTool('query', {
+          query: 'login',
+          include_content: true,
+        });
+        expect(loginRes).not.toHaveProperty('error');
+        const login = findSym(loginRes, 'func:login');
+        expect(login).toBeDefined();
+        // Community correctly associated to its own node (not dropped, not leaked).
+        expect(login.module).toBe('Authentication');
+        // Content correctly mapped to its own node (positional [1] after nodeId).
+        expect(login.content).toBe('function login() {}');
+
+        const validateRes = await backend.callTool('query', {
+          query: 'validate',
+          include_content: true,
+        });
+        expect(validateRes).not.toHaveProperty('error');
+        const validate = findSym(validateRes, 'func:validate');
+        expect(validate).toBeDefined();
+        // validate has no MEMBER_OF edge — a flat batched `LIMIT 1` would have
+        // leaked some other node's community onto it. It must have none.
+        expect(validate.module).toBeUndefined();
+        expect(validate.content).toBe('function validate() {}');
+      });
+
       it('tool_map returns per-tool flows without cross-attributing same-file tools', async () => {
         const result = await backend.callTool('tool_map', {});
         expect(result).not.toHaveProperty('error');
