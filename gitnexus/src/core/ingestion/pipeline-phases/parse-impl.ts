@@ -43,9 +43,13 @@ import {
   type ExportedTypeMap,
 } from '../call-processor.js';
 import { createSemanticModel, type MutableSemanticModel } from '../model/index.js';
-import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
+import {
+  type PipelineProgress,
+  getLanguageFromFilename,
+  SupportedLanguages,
+} from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
-import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
+import { isLanguageAvailable, isGrammarRuntimeSkipped } from '../../tree-sitter/parser-loader.js';
 import {
   createWorkerPool,
   workerPoolDisabledByEnv,
@@ -274,9 +278,18 @@ export async function runChunkedParseAndResolve(
     }
   }
   for (const [lang, count] of skippedByLang) {
-    logger.warn(
-      `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`,
-    );
+    // Distinguish a deliberate runtime opt-out from a genuinely-missing binding
+    // so we don't tell a user who set GITNEXUS_SKIP_OPTIONAL_GRAMMARS to
+    // `npm rebuild` a grammar that built fine (#2091/#2093 review).
+    if (isGrammarRuntimeSkipped(lang as SupportedLanguages)) {
+      logger.warn(
+        `Skipping ${count} ${lang} file(s) — ${lang} parsing disabled via GITNEXUS_SKIP_OPTIONAL_GRAMMARS.`,
+      );
+    } else {
+      logger.warn(
+        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`,
+      );
+    }
   }
 
   // Sort parseableScanned alphabetically for stable chunk membership
