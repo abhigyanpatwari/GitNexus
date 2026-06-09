@@ -37,8 +37,10 @@ name: Build tree-sitter prebuilds
 #
 # Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
 #
-# NOTE: SHAs marked `# PLACEHOLDER-PIN` are not yet pinned in this repo and MUST
-# be pinned (and allowlisted in .github/zizmor.yml / Scorecard) before merge.
+# NOTE: every action below is pinned to a release commit SHA (with the matching
+# `# vX.Y.Z` tag comment verified against the GitHub API). If a future bump adds
+# a new action, pin its real release SHA and allowlist it in .github/zizmor.yml /
+# Scorecard before merge.
 
 on:
   workflow_dispatch:
@@ -260,7 +262,7 @@ jobs:
 
       - name: Ensure Python (arm64 Windows only)
         if: matrix.platform_arch == 'win32-arm64'
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0  # PLACEHOLDER-PIN — verify before merge
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -430,7 +432,7 @@ jobs:
           NODE
 
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@bd77c077858b8d561b7a36cbe48ef4cc642ca39d # v2.4.0  # PLACEHOLDER-PIN — verify before merge
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: 'gitnexus/vendor/tree-sitter-*/prebuilds/**/*.node'
 
