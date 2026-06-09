@@ -99,6 +99,16 @@ describe('CLI commands', () => {
       expect(swiftPkg.default.dependencies).toBeUndefined();
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
     });
+
+    it('declares tree-sitter-kotlin as an optionalDependency probed at postinstall (#2107)', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const optional = pkg.default.optionalDependencies ?? {};
+      // Kotlin is a third-party npm optionalDependency (not vendored), so npm
+      // skips it when its source-only native build soft-fails — the gitnexus
+      // install still succeeds.
+      expect(optional['tree-sitter-kotlin']).toBeDefined();
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-kotlin.cjs');
+    });
   });
 
   describe('analyzeCommand', () => {
