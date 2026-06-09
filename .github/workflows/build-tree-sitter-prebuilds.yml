@@ -320,6 +320,15 @@ jobs:
 
           test -f "$pkgdir/binding.gyp" || { echo "::error::no binding.gyp for $NAME@$REF"; exit 1; }
 
+          # Drop any prebuilds the package shipped in its own tarball before we
+          # build. The tree-sitter-org npm grammars (e.g. tree-sitter-c) bundle
+          # prebuilds/ for all 6 tuples; left in place, the `find ... -print -quit`
+          # below would pick a non-host tuple (e.g. win32-x64 on a linux runner)
+          # and the assertion would wrongly fail. prebuildify rebuilds THIS host's
+          # tuple from the source the tarball also ships. (Vendored grammars are
+          # already cleaned above; this also covers the npm branch.)
+          rm -rf "$pkgdir/prebuilds"
+
           # N-API, stripped, single ABI-stable binary for THIS host's arch. No
           # `-t <node-version>`: an N-API prebuild is Node-version-agnostic, and
           # prebuildify parses a bare `-t 22` as the NUMBER 22 and crashes
@@ -352,7 +361,15 @@ jobs:
           cd "$probe"
           # Pin tree-sitter to the repo's exact runtime peer so an ABI mismatch
           # fails HERE, not in a user's install (mirrors the #1922 ABI gate).
-          npm install --no-audit --no-fund --ignore-scripts node-gyp-build@^4 tree-sitter@0.21.1
+          # NOT --ignore-scripts: tree-sitter@0.21.1's tarball ships prebuilds for
+          # the common tuples but NOT linux-arm64 / win32-arm64, so on the arm64
+          # runners node-gyp-build must source-build the runtime — give it node-gyp
+          # + node-addon-api to do so. Where tree-sitter ships a prebuild (x64,
+          # darwin-arm64) node-gyp-build uses it and nothing compiles. The grammar
+          # .node we built is still loaded as a prebuild; only the runtime peer may
+          # compile. The grammar-vs-runtime ABI check still fires at setLanguage.
+          npm install --no-audit --no-fund \
+            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.21.1
           # The node script is single-quoted on purpose — its ${...} are JS
           # template literals read from the environment, not shell expansions.
           # shellcheck disable=SC2016
