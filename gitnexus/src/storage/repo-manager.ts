@@ -914,8 +914,16 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await fs.access(path.join(entry.storagePath, 'meta.json'));
       valid.push(entry);
-    } catch {
-      // Index no longer exists — skip
+    } catch (err: any) {
+      // Only prune on genuine absence (ENOENT) or structural removal (ENOTDIR).
+      // Transient I/O errors (EIO, EAGAIN, EBUSY, EACCES) must NOT prune —
+      // the file exists but the syscall failed due to temporary conditions.
+      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+        // Index genuinely removed — safe to prune
+      } else {
+        // Transient or unexpected error — keep entry to prevent mass registry wipe
+        valid.push(entry);
+      }
     }
   }
 
