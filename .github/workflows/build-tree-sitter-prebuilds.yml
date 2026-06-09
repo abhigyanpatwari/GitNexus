@@ -101,6 +101,7 @@ jobs:
     outputs:
       any: ${{ steps.decide.outputs.any }}
       matrix: ${{ steps.decide.outputs.matrix }}
+      release_app: ${{ steps.relapp.outputs.configured }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -239,6 +240,22 @@ jobs:
           }
           NODE
 
+      # The aggregate job opens a PR via a GitHub App token; without the App
+      # secrets it would hard-fail AFTER a full native build. Surface their
+      # presence as a guard output so aggregate skips cleanly (the build job's
+      # artifacts still upload). secrets aren't available in a job-level `if:`,
+      # so we compute the boolean here (a step CAN read secrets) and gate on it.
+      - name: Check release App secret
+        id: relapp
+        env:
+          HAS_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          echo "configured=$HAS_APP" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_APP" != "true" ]; then
+            echo "::notice::Release GitHub App secrets (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) are not configured — prebuilds will build and upload as artifacts, but the auto-PR is skipped. Provision the App, or run with open_pr=false to suppress this notice."
+          fi
+
   # ── Build one native prebuild per (grammar, platform-arch). No cross-compile. ─
   build:
     name: ${{ matrix.grammar }} ${{ matrix.platform_arch }}
@@ -370,6 +387,7 @@ jobs:
     needs: [guard, build]
     if: >-
       needs.guard.outputs.any == 'true' &&
+      needs.guard.outputs.release_app == 'true' &&
       inputs.open_pr != false &&
       github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-24.04
