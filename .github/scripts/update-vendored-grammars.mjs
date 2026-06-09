@@ -105,10 +105,19 @@ function fetchSource(g, ref) {
     sh('tar', ['xzf', tgz], { cwd: work });
     return path.join(work, 'package');
   }
-  // github tarball at the resolved sha
-  sh('bash', ['-c', `gh api repos/${g.github}/tarball/${ref} > src.tgz && tar xzf src.tgz`], {
-    cwd: work,
-  });
+  // github tarball at the resolved sha. Download + extract WITHOUT a shell
+  // (no `bash -c`/redirect): `gh api` writes the binary tarball to stdout, which
+  // we capture as a Buffer and write to a fixed path, then extract with execFile.
+  // Avoids the shell-command-injection surface CodeQL flags when an API-derived
+  // ref is interpolated into a `bash -c` string.
+  const tgz = path.join(work, 'src.tgz');
+  fs.writeFileSync(
+    tgz,
+    execFileSync('gh', ['api', `repos/${g.github}/tarball/${ref}`], {
+      maxBuffer: 512 * 1024 * 1024,
+    }),
+  );
+  sh('tar', ['xzf', tgz], { cwd: work });
   const dir = fs.readdirSync(work).find((f) => fs.statSync(path.join(work, f)).isDirectory());
   return path.join(work, dir);
 }
