@@ -320,9 +320,12 @@ jobs:
 
           test -f "$pkgdir/binding.gyp" || { echo "::error::no binding.gyp for $NAME@$REF"; exit 1; }
 
-          # N-API, stripped, single ABI-stable binary for THIS host's arch.
-          # prebuildify emits prebuilds/<platform>-<arch>/<something>.node.
-          ( cd "$pkgdir" && npx --no-install prebuildify --napi --strip -t 22 )
+          # N-API, stripped, single ABI-stable binary for THIS host's arch. No
+          # `-t <node-version>`: an N-API prebuild is Node-version-agnostic, and
+          # prebuildify parses a bare `-t 22` as the NUMBER 22 and crashes
+          # (`v.indexOf is not a function`). prebuildify emits
+          # prebuilds/<platform>-<arch>/<something>.node.
+          ( cd "$pkgdir" && npx --no-install prebuildify --napi --strip )
 
           out=$(find "$pkgdir/prebuilds" -name '*.node' -print -quit)
           test -n "$out" || { echo "::error::prebuildify produced no .node"; exit 1; }
