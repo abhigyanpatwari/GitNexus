@@ -432,4 +432,31 @@ describe('formatListReposResult', () => {
     expect(result).toContain('my-project');
     expect(result).toContain('100 symbols');
   });
+
+  it('formats a paginated { repositories, pagination } result with a continuation footer', () => {
+    const result = formatListReposResult({
+      repositories: [
+        {
+          name: 'my-project',
+          path: '/home/user/my-project',
+          indexedAt: '2024-01-01',
+          stats: { nodes: 100, edges: 200, processes: 10 },
+        },
+      ],
+      pagination: { total: 437, limit: 50, offset: 0, returned: 1, hasMore: true, nextOffset: 50 },
+    });
+    expect(result).toContain('Indexed repositories');
+    expect(result).toContain('my-project');
+    expect(result).toContain('Showing 1 of 437');
+    expect(result).toContain('offset 50'); // continuation hint
+  });
+
+  it('reports an empty page using pagination metadata', () => {
+    const result = formatListReposResult({
+      repositories: [],
+      pagination: { total: 437, limit: 50, offset: 1000, returned: 0, hasMore: false },
+    });
+    expect(result).toContain('No repositories on this page');
+    expect(result).toContain('437');
+  });
 });

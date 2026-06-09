@@ -126,7 +126,7 @@ Your AI agent gets these tools automatically:
 
 | Tool             | What It Does                                                     | `repo` Param |
 | ---------------- | ---------------------------------------------------------------- | ------------ |
-| `list_repos`     | Discover all indexed repositories                                | —            |
+| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`) | —            |
 | `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
 | `context`        | 360-degree symbol view — categorized refs, process participation | Optional     |
 | `impact`         | Blast radius analysis with depth grouping and confidence         | Optional     |

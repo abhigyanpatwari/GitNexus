@@ -266,18 +266,36 @@ export function formatCypherResult(result: any): string {
 }
 
 export function formatListReposResult(result: any): string {
-  if (!Array.isArray(result) || result.length === 0) {
-    return 'No indexed repositories.';
+  // `list_repos` returns a paginated { repositories, pagination } object (#2119).
+  // Tolerate a bare array too, in case an older/raw result is ever passed in.
+  const repos = Array.isArray(result?.repositories)
+    ? result.repositories
+    : Array.isArray(result)
+      ? result
+      : [];
+  const pg = result?.pagination;
+
+  if (repos.length === 0) {
+    return pg && typeof pg.total === 'number' && pg.total > 0
+      ? `No repositories on this page (offset ${pg.offset} of ${pg.total} total).`
+      : 'No indexed repositories.';
   }
 
   const lines = ['Indexed repositories:\n'];
-  for (const r of result) {
+  for (const r of repos) {
     const stats = r.stats || {};
     lines.push(
       `  ${r.name} — ${stats.nodes || '?'} symbols, ${stats.edges || '?'} relationships, ${stats.processes || '?'} flows`,
     );
     lines.push(`    Path: ${r.path}`);
     lines.push(`    Indexed: ${r.indexedAt}`);
+  }
+  if (pg && typeof pg.total === 'number') {
+    lines.push('');
+    lines.push(
+      `  Showing ${repos.length} of ${pg.total} (offset ${pg.offset}).` +
+        (pg.hasMore ? ` More available — re-run with offset ${pg.nextOffset}.` : ''),
+    );
   }
   return lines.join('\n');
 }

@@ -51,6 +51,7 @@ import {
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
+import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from '../tools.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -351,6 +352,60 @@ interface ImpactParams {
   limit?: number;
   offset?: number;
   summaryOnly?: boolean;
+}
+
+/** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
+export interface ListReposPagination {
+  /** Total repositories across all pages. */
+  total: number;
+  /** Effective page size used (after clamping to the maximum). */
+  limit: number;
+  /** Offset this page started at. */
+  offset: number;
+  /** Number of repositories actually returned in this page. */
+  returned: number;
+  /** True when more repositories remain past this page. */
+  hasMore: boolean;
+  /** Offset to request next; present only when `hasMore` is true. */
+  nextOffset?: number;
+}
+
+/**
+ * Validate and normalise `list_repos` pagination arguments.
+ *
+ * There is NO MCP-SDK-level enforcement of a tool's advertised `inputSchema`
+ * (the SDK validates only the JSON-RPC envelope), and `callTool` is reachable
+ * directly, so the backend is the real validation boundary. Malformed values —
+ * non-number, `NaN`, non-integer, `limit < 1`, or `offset < 0` — are REJECTED
+ * with a clear error. A `limit` above `maxLimit` is CLAMPED to the documented
+ * maximum (mirroring the `impact` tool's clamp convention); the effective limit
+ * is echoed back in the result's `pagination.limit`. An omitted value (only
+ * `undefined`) falls back to the default.
+ */
+export function parseListReposPagination(
+  params: { limit?: unknown; offset?: unknown } | null | undefined,
+  opts: { defaultLimit: number; maxLimit: number },
+): { limit: number; offset: number } {
+  const requireInt = (value: unknown, field: string, min: number): number => {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
+      throw new Error(
+        `list_repos: "${field}" must be an integer >= ${min} (received ${JSON.stringify(value)})`,
+      );
+    }
+    return value;
+  };
+
+  let limit = opts.defaultLimit;
+  if (params?.limit !== undefined) {
+    limit = Math.min(requireInt(params.limit, 'limit', 1), opts.maxLimit);
+  }
+
+  let offset = 0;
+  if (params?.offset !== undefined) {
+    offset = requireInt(params.offset, 'offset', 0);
+  }
+
+  return { limit, offset };
 }
 
 export class LocalBackend {
@@ -907,6 +962,58 @@ export class LocalBackend {
   }
 
   /**
+   * Paginated view over {@link listRepos} for the `list_repos` MCP tool (#2119).
+   *
+   * `listRepos()` itself still returns the FULL array — its resource and CLI
+   * consumers (`gitnexus://repos`, `gitnexus://setup`, startup logs) need every
+   * entry, so pagination lives ONLY here, on the tool surface, to keep the
+   * response under MCP/LLM token-truncation limits.
+   *
+   * Determinism: a single registry snapshot is taken per call, then sorted by
+   * lower-cased name with the repository path as a tie-breaker. Sibling clones
+   * share a name but never a path (#2054), so `(name, path)` is a total order —
+   * paging never skips or duplicates an entry while the registry is unchanged.
+   * Codepoint comparison (not `localeCompare`) keeps page boundaries stable
+   * across machines/locales, matching the existing `refreshRepos` ordering.
+   */
+  async listReposPage(params?: { limit?: unknown; offset?: unknown } | null): Promise<{
+    repositories: Awaited<ReturnType<LocalBackend['listRepos']>>;
+    pagination: ListReposPagination;
+  }> {
+    const { limit, offset } = parseListReposPagination(params, {
+      defaultLimit: LIST_REPOS_DEFAULT_LIMIT,
+      maxLimit: LIST_REPOS_MAX_LIMIT,
+    });
+
+    // One consistent snapshot per call (listRepos refreshes the registry once),
+    // sorted into a stable total order before slicing.
+    const all = await this.listRepos();
+    all.sort((a, b) => {
+      const an = a.name.toLowerCase();
+      const bn = b.name.toLowerCase();
+      if (an !== bn) return an < bn ? -1 : 1;
+      return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+    });
+
+    const total = all.length;
+    const repositories = all.slice(offset, offset + limit);
+    const returned = repositories.length;
+    const hasMore = offset + returned < total;
+
+    return {
+      repositories,
+      pagination: {
+        total,
+        limit,
+        offset,
+        returned,
+        hasMore,
+        ...(hasMore && { nextOffset: offset + returned }),
+      },
+    };
+  }
+
+  /**
    * Best-effort sibling-clone drift warning.
    *
    * When the resolved index has a `remoteUrl` recorded and the caller's
@@ -967,7 +1074,10 @@ export class LocalBackend {
 
   async callTool(method: string, params: any): Promise<any> {
     if (method === 'list_repos') {
-      return this.listRepos();
+      // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
+      // callers; the tool wraps it in { repositories, pagination } and forwards
+      // the limit/offset args that this dispatch previously discarded.
+      return this.listReposPage(params);
     }
 
     if (method.startsWith('group_')) {

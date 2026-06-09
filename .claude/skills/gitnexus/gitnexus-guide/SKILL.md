@@ -38,7 +38,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
 | `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
-| `list_repos`     | Discover indexed repos                                                   |
+| `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                   |
 
 ## Resources Reference
 
