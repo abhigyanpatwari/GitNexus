@@ -11,24 +11,30 @@
  *   - `branchy`: ONE function with N sequential `if`s — stresses block/edge
  *     growth within a single CFG.
  *
- * For each scenario it reports `elapsed_ms` at small/large and a scaling ratio
- * `(t_large/t_small)/(N_large/N_small)`: ~1.0 is linear, ~4.0 is quadratic (the
- * O(n²) shape the M1 perf review flagged for `extendBlock`'s concat chain).
+ * For each scenario it reports three scaling ratios at small→large
+ * (`(metric_large/metric_small)/(N_large/N_small)`: ~1.0 is linear, ~4.0 is the
+ * O(n²) shape the M1 perf review flagged for `extendBlock`'s concat chain):
+ *   - TIME — wall-clock of `collectFunctionCfgs` (median of reps);
+ *   - DISK — utf8 byte size of the serialized `cfgSideChannel` (what a `--pdg`
+ *     run writes onto every ParsedFile shard);
+ *   - MEMORY — retained JS heap of the `cfgSideChannel` payload, by the
+ *     release-delta method (heap held minus heap after dropping it). Requires
+ *     `node --expose-gc`; without it the heap metric is null and its gate skips.
  * It also computes an order-independent sha256 fingerprint over the emitted
  * blocks/edges of a fixed-size source — the correctness gate that a structural
  * speedup must leave behavior-identical.
  *
  * Build-free: imports the `.ts` hotpaths through tsx
- * (`node --import tsx bench/cfg/measure.mjs`). Parsing happens ONCE per size and
- * the tree is reused across reps so the measurement isolates CFG build cost, not
- * tree-sitter parse time. `maxFunctionLines` is 0 (no cap) here on purpose — the
- * bench measures the algorithm; the production default cap is a separate safety
- * net (and would otherwise skip the large straight-line function).
+ * (`node --expose-gc --import tsx bench/cfg/measure.mjs`). Parsing happens ONCE
+ * per size and the tree is reused across reps so the time measurement isolates
+ * CFG build cost, not tree-sitter parse time. `maxFunctionLines` is 0 (no cap)
+ * here on purpose — the bench measures the algorithm; the production default cap
+ * is a separate safety net (and would otherwise skip the large straight-line fn).
  *
  * Without args: prints one JSON object per scenario.
  * With `--check`: asserts each scenario's fingerprint == its committed baseline
- * (baselines.json) AND scaling_ratio < its recorded budget; exits non-zero on
- * any drift/regression.
+ * (baselines.json) AND each of the time / disk / heap ratios is below its
+ * recorded budget; exits non-zero on any drift/regression.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -90,7 +96,7 @@ const SCENARIOS = [
 
 const SMALL = 500;
 const LARGE = 2000; // 4× — O(n) ⇒ ratio ~1, O(n²) ⇒ ratio ~4
-const REPS = 7;
+const REPS = 15; // median over more reps → stabler time signal at small absolute ms
 const FP_SIZE = 15; // fixed size for the behavior fingerprint
 const NO_CAP = 0; // measure the algorithm, not the production safety cap
 
@@ -115,12 +121,38 @@ function measureCollect(src, file, reps) {
   return {
     ms: median(samples),
     blockCount: out.cfgs.reduce((a, c) => a + c.blocks.length, 0),
-    // Serialized size of the cfgSideChannel payload — what rides on every
-    // ParsedFile through the disk store + parse cache. Should scale linearly
-    // with source (O(source covered)); a super-linear bytes ratio means the
-    // CFG is duplicating text and will bloat warm-cache shards at scale.
-    bytes: JSON.stringify(out.cfgs).length,
+    // DISK growth: utf8 byte size of the serialized cfgSideChannel — exactly
+    // what a --pdg run writes onto every ParsedFile shard in the durable store
+    // + parse cache (the field is plain JSON, so this is the on-disk delta).
+    // Should scale linearly with source covered; a super-linear ratio means the
+    // CFG duplicates text and bloats warm-cache shards at scale.
+    diskBytes: Buffer.byteLength(JSON.stringify(out.cfgs), 'utf8'),
   };
+}
+
+// ---- memory growth: retained heap of the cfgSideChannel payload ----
+
+// Needs `node --expose-gc` to force collection for a clean delta; without it the
+// heap metric is reported as null and its --check gate is skipped (so a local
+// run without the flag still works).
+const GC = typeof global.gc === 'function' ? () => (global.gc(), global.gc()) : null;
+
+function retainedHeapBytes(src, file) {
+  if (!GC) return null;
+  // Retained-size-by-RELEASE: measure the heap with the CFGs held, drop them,
+  // GC, measure again. The drop isolates exactly the JS heap the cfgSideChannel
+  // payload retains (the extra RAM a --pdg run carries per file until the shard
+  // is flushed) — robust to pre-existing garbage, which is constant across both
+  // measurements. The parse tree is a temporary (its native memory isn't on the
+  // JS heap); block text strings are fresh copies, so they count here.
+  let cfgs = collectFunctionCfgs(parse(src).rootNode, visitor, file, NO_CAP).cfgs;
+  GC();
+  const withCfgs = process.memoryUsage().heapUsed;
+  if (cfgs.length < 0) throw new Error('unreachable'); // keep cfgs live past withCfgs
+  cfgs = null;
+  GC();
+  const withoutCfgs = process.memoryUsage().heapUsed;
+  return Math.max(0, withCfgs - withoutCfgs);
 }
 
 // ---- correctness fingerprint (order-independent over blocks + edges) ----
@@ -149,15 +181,27 @@ function measureScenario(scenario) {
   const large = measureCollect(scenario.gen(LARGE), `${scenario.name}.ts`, REPS);
   const sizeRatio = LARGE / SMALL;
   const scalingRatio = small.ms > 0 ? large.ms / small.ms / sizeRatio : 0;
-  const bytesRatio = small.bytes > 0 ? large.bytes / small.bytes / sizeRatio : 0;
+  const diskRatio = small.diskBytes > 0 ? large.diskBytes / small.diskBytes / sizeRatio : 0;
+
+  // Memory growth (only when --expose-gc gave us a forced GC).
+  const heapSmall = retainedHeapBytes(scenario.gen(SMALL), `${scenario.name}.ts`);
+  const heapLarge = retainedHeapBytes(scenario.gen(LARGE), `${scenario.name}.ts`);
+  const heapRatio =
+    heapSmall !== null && heapLarge !== null && heapSmall > 0
+      ? heapLarge / heapSmall / sizeRatio
+      : null;
+
   return {
     scenario: scenario.name,
     elapsed_ms_small: Number(small.ms.toFixed(3)),
     elapsed_ms_large: Number(large.ms.toFixed(3)),
     scaling_ratio: Number(scalingRatio.toFixed(3)),
-    bytes_small: small.bytes,
-    bytes_large: large.bytes,
-    bytes_ratio: Number(bytesRatio.toFixed(3)),
+    disk_bytes_small: small.diskBytes,
+    disk_bytes_large: large.diskBytes,
+    disk_bytes_ratio: Number(diskRatio.toFixed(3)),
+    heap_bytes_small: heapSmall,
+    heap_bytes_large: heapLarge,
+    heap_ratio: heapRatio === null ? null : Number(heapRatio.toFixed(3)),
     blocks_small: small.blockCount,
     blocks_large: large.blockCount,
     ...fingerprint(scenario),
@@ -191,10 +235,21 @@ if (!CHECK) {
           `(${SMALL}->${LARGE} stmts/fns, ms ${r.elapsed_ms_small}->${r.elapsed_ms_large})`,
       );
     }
-    if (base.bytes_budget !== undefined && r.bytes_ratio >= base.bytes_budget) {
+    if (base.disk_bytes_budget !== undefined && r.disk_bytes_ratio >= base.disk_bytes_budget) {
       failures.push(
-        `${r.scenario}: cfgSideChannel bytes ratio ${r.bytes_ratio} >= budget ${base.bytes_budget} ` +
-          `(bytes ${r.bytes_small}->${r.bytes_large})`,
+        `${r.scenario}: cfgSideChannel disk-bytes ratio ${r.disk_bytes_ratio} >= budget ` +
+          `${base.disk_bytes_budget} (bytes ${r.disk_bytes_small}->${r.disk_bytes_large})`,
+      );
+    }
+    // Heap gate only when measured (--expose-gc present) AND a budget exists.
+    if (
+      base.heap_budget !== undefined &&
+      r.heap_ratio !== null &&
+      r.heap_ratio >= base.heap_budget
+    ) {
+      failures.push(
+        `${r.scenario}: retained-heap ratio ${r.heap_ratio} >= budget ${base.heap_budget} ` +
+          `(heap ${r.heap_bytes_small}->${r.heap_bytes_large})`,
       );
     }
     process.stdout.write(JSON.stringify(r) + '\n');
