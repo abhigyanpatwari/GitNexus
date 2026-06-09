@@ -31,6 +31,7 @@ import type { ParseOutput } from '../../pipeline-phases/parse.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
+import { isLanguageAvailable } from '../../../tree-sitter/parser-loader.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { SCOPE_RESOLVERS } from './registry.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
@@ -170,6 +171,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     for (const f of scannedFiles) {
       const fileLang = getLanguageFromFilename(f.path);
       if (fileLang === null) continue;
+      // Skip files whose grammar isn't available (optional grammars like
+      // swift/dart/kotlin on an install where the binding is absent or the
+      // user set GITNEXUS_SKIP_OPTIONAL_GRAMMARS). The parse phase already
+      // excluded and warned about these (parse-impl.ts); without this guard the
+      // file would fall through to the main-thread re-extract in run.ts and
+      // throw "Unsupported language" (caught, but noisy, and it needlessly
+      // loads the grammar on the main thread). `isLanguageAvailable` is
+      // memoized, so this stays O(1) per language. (#2091, #2093)
+      if (!isLanguageAvailable(fileLang)) continue;
       let bucket = filesByLang.get(fileLang);
       if (bucket === undefined) {
         bucket = [];
