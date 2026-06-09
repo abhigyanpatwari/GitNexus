@@ -36,6 +36,19 @@ import type {
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
+// ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
+// The worker maintains its own grammar table (the guarded `_require`s below +
+// `languageMap`) and intentionally does NOT consult the runtime
+// `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out. It does not need to: the MAIN
+// THREAD's `parseableScanned` filter (pipeline-phases/parse-impl.ts, gated on
+// `parser-loader.isLanguageAvailable`, which honors the runtime opt-out and a
+// genuinely-absent binding alike) excludes files of an unavailable/opted-out
+// language BEFORE any chunk is dispatched, so the worker never receives them.
+// That main-thread filter is the single enforcement point. Any future change
+// that dispatches files to the worker WITHOUT first passing them through
+// `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
+// — routing this table through `parser-loader.getLanguageGrammar` so there is
+// one loader — is the deferred Tier-1 consolidation.)
 // tree-sitter-swift is an optionalDependency — may not be installed
 const _require = createRequire(import.meta.url);
 let Swift: TreeSitterLanguage | null = null;
