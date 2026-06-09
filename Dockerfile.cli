@@ -67,6 +67,28 @@ COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
 # unreachable from $PATH.
 RUN ln -s /app/gitnexus/dist/cli/index.js /usr/local/bin/gitnexus
 
+# Bake the LadybugDB FTS extension into the image so BM25 keyword search works
+# at runtime. The server runs the default `load-only` extension policy (the read
+# pool pins `{ policy: 'load-only' }`), so a runtime `LOAD EXTENSION fts` never
+# INSTALLs — the extension must already exist in the runtime user's HOME
+# extension dir, or every keyword search silently degrades (no FTS indexes are
+# written and ranking falls back to vector-only with only a `warning` field).
+# Run the installer as the `node` user with the SAME HOME the server runs under,
+# so `INSTALL fts` materializes the extension under `$HOME/.lbdb/extension` where
+# the runtime `LOAD` resolves it offline. `ENV HOME` is pinned because Docker
+# does not derive HOME from `USER`, so without it build-install and runtime-load
+# would resolve different paths. Requires network egress for the one-time
+# INSTALL; the build fails loudly if it cannot fetch the extension. The DB-size
+# default comes from GITNEXUS_LBUG_MAX_DB_SIZE (single source of truth, matches
+# the runtime) — it only sizes the throwaway scratch DB used to run INSTALL.
+# The second `--verify-only` step re-LOADs the extension in a FRESH process
+# under the same HOME, so a HOME/extension-dir mismatch fails the build here
+# rather than silently degrading keyword search to vector-only at runtime.
+ENV HOME=/home/node \
+    GITNEXUS_LBUG_MAX_DB_SIZE=17179869184
+RUN su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts" \
+ && su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts --verify-only"
+
 USER node
 
 # The web UI defaults to http://localhost:4747 - keep that contract.
