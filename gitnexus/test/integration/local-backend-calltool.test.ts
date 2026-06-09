@@ -151,6 +151,34 @@ withTestLbugDB(
         expect(validate.content).toBe('function validate() {}');
       });
 
+      // PR #222 port: a symbol in MULTIPLE processes is what fully exercises the
+      // +1 positional shift in the batched STEP_IN_PROCESS aggregation — with a
+      // single process row, `row.pid ?? row[1]` succeeds whether the shift is
+      // right or wrong. func:validate is a step in BOTH proc:login-flow (step 2)
+      // and proc:beta-flow (step 3), so both rows for the one node must be parsed
+      // (pid=row[1], step=row[6]); an off-by-one would drop a process or mis-pair
+      // pid↔step. Also pins process ranking (totalScore via the regroup-by-nodeId).
+      it('query batches a multi-process symbol and ranks processes (positional shift across rows)', async () => {
+        const res = await backend.callTool('query', { query: 'validate' });
+        expect(res).not.toHaveProperty('error');
+        const processIds = (res.processes ?? []).map((p: any) => p.id);
+        // Both of validate's processes must appear — both STEP_IN_PROCESS rows
+        // were parsed and grouped by the correct pid (row[1]).
+        expect(processIds).toContain('proc:login-flow');
+        expect(processIds).toContain('proc:beta-flow');
+
+        // process_symbols dedups by id, so validate appears once carrying the
+        // pid+step of its top-ranked process — they must come from the SAME
+        // shifted row: login-flow⇒step 2, beta-flow⇒step 3.
+        const v = (res.process_symbols ?? []).find((s: any) => s.id === 'func:validate');
+        expect(v).toBeDefined();
+        expect(v.step_index).toBe(v.process_id === 'proc:beta-flow' ? 3 : 2);
+
+        // Ranking: 'login' surfaces proc:login-flow as the top process.
+        const loginRes = await backend.callTool('query', { query: 'login' });
+        expect((loginRes.processes ?? [])[0]?.id).toBe('proc:login-flow');
+      });
+
       it('tool_map returns per-tool flows without cross-attributing same-file tools', async () => {
         const result = await backend.callTool('tool_map', {});
         expect(result).not.toHaveProperty('error');

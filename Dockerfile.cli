@@ -78,11 +78,16 @@ RUN ln -s /app/gitnexus/dist/cli/index.js /usr/local/bin/gitnexus
 # the runtime `LOAD` resolves it offline. `ENV HOME` is pinned because Docker
 # does not derive HOME from `USER`, so without it build-install and runtime-load
 # would resolve different paths. Requires network egress for the one-time
-# INSTALL; the build fails loudly if it cannot fetch the extension. The size arg
-# (16 GiB) matches the runtime LBUG_MAX_DB_SIZE default — it only sizes the
-# throwaway scratch DB used to run INSTALL.
-ENV HOME=/home/node
-RUN su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts 17179869184"
+# INSTALL; the build fails loudly if it cannot fetch the extension. The DB-size
+# default comes from GITNEXUS_LBUG_MAX_DB_SIZE (single source of truth, matches
+# the runtime) — it only sizes the throwaway scratch DB used to run INSTALL.
+# The second `--verify-only` step re-LOADs the extension in a FRESH process
+# under the same HOME, so a HOME/extension-dir mismatch fails the build here
+# rather than silently degrading keyword search to vector-only at runtime.
+ENV HOME=/home/node \
+    GITNEXUS_LBUG_MAX_DB_SIZE=17179869184
+RUN su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts" \
+ && su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts --verify-only"
 
 USER node
 

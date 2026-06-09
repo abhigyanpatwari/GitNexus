@@ -103,13 +103,11 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = 8;
 
-// Optional, behavior-neutral RSS tracing for the FTS evict→reload memory repro
-// (see gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Gated on
-// GITNEXUS_POOL_RSS_TRACE=1: emits one stderr line per pool init/close carrying
-// the process RSS, so a harness can chart whether RSS climbs per evict→reload
-// cycle (native FTS arena stranded across db.close()) or plateaus (bounded by
-// MAX_POOL_SIZE). Writes ONLY to stderr — stdout is the MCP JSON-RPC channel —
-// and is a single env read when disabled, so it cannot affect normal operation.
+// Behavior-neutral RSS tracing for the FTS evict→reload memory repro
+// (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
+// in the pool init/close hot path: it writes ONLY to stderr (stdout is the MCP
+// JSON-RPC channel), and the GITNEXUS_POOL_RSS_TRACE gate makes it a no-op — one
+// env-var compare per call, nothing else — unless a harness explicitly enables it.
 function traceRss(event: 'init' | 'close', repoId: string): void {
   if (process.env.GITNEXUS_POOL_RSS_TRACE !== '1') return;
   const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
