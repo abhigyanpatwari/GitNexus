@@ -1396,6 +1396,25 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     }
   });
 
+  it('serves all sibling clones through the list_repos tool with siblings/remoteUrl intact (#2054, #2119)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    // Exercise the real TOOL surface (callTool → listReposPage), not just
+    // listRepos(): the paginated wrapper must not drop sibling-clone fields
+    // during its sort + slice.
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(4);
+    expect(page.pagination.total).toBe(4);
+    const paths = page.repositories.map((r: any) => path.resolve(r.path)).sort();
+    expect(paths).toEqual(dirs.map((d) => path.resolve(d)).sort());
+    for (const entry of page.repositories) {
+      expect(entry.remoteUrl).toBe('git@github.com:MYCOMPANY/REPO.git');
+      expect(entry.siblings).toHaveLength(3);
+    }
+  });
+
   it('lists all four sibling clones that share a name and remote (#2054)', async () => {
     const { dirs, entries } = makeSiblingClonesFixture(4);
     (listRegisteredRepos as any).mockResolvedValue(entries);
@@ -1920,7 +1939,11 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
     const page = await backend.callTool('list_repos', { limit: 50, offset: 50 });
     expect(page.repositories[0].name).toBe(id(50));
     expect(page.repositories[49].name).toBe(id(99));
-    expect(page.pagination).toMatchObject({
+    // Assert total + limit too (a total miscalculation at non-zero offset would
+    // otherwise slip past this targeted middle-page test).
+    expect(page.pagination).toEqual({
+      total: 437,
+      limit: 50,
       offset: 50,
       returned: 50,
       hasMore: true,
@@ -1970,6 +1993,27 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
       returned: 0,
       hasMore: false,
     });
+  });
+
+  it('accepts a negative-zero offset (treated as the first page)', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 5, offset: -0 });
+    expect(page.repositories[0].name).toBe(id(0));
+    expect(page.pagination.returned).toBe(5);
+    // -0 is accepted (not rejected) and behaves as offset 0 (=== treats them equal).
+    expect(page.pagination.offset === 0).toBe(true);
+  });
+
+  it('accepts a MAX_SAFE_INTEGER offset and returns an empty page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: Number.MAX_SAFE_INTEGER });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({ total: 437, returned: 0, hasMore: false });
+    expect(page.pagination).not.toHaveProperty('nextOffset');
   });
 
   it('returns the full set with metadata when everything fits on one page', async () => {

@@ -269,8 +269,31 @@ describe('MCP server end-to-end startup', () => {
       expect(callResponse.id).toBe(3);
       expect(callResponse.result?.isError).not.toBe(true);
       const callText = callResponse.result!.content![0].text;
-      // Strip the appended next-step hint, then parse the JSON payload.
-      const payload = JSON.parse(callText.split('\n\n---')[0]);
+      // The server appends a non-JSON next-step hint after the JSON payload.
+      // Extract the leading JSON object with a string-aware brace scan so a repo
+      // path containing braces can never truncate the parse (more robust than
+      // splitting on the hint's separator).
+      const jsonStart = callText.indexOf('{');
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      let jsonEnd = callText.length;
+      for (let i = jsonStart; i < callText.length; i++) {
+        const ch = callText[i];
+        if (esc) {
+          esc = false;
+        } else if (ch === '\\') {
+          esc = true;
+        } else if (ch === '"') {
+          inStr = !inStr;
+        } else if (!inStr && ch === '{') {
+          depth++;
+        } else if (!inStr && ch === '}' && --depth === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+      const payload = JSON.parse(callText.slice(jsonStart, jsonEnd));
       expect(Array.isArray(payload.repositories)).toBe(true);
       expect(typeof payload.pagination.total).toBe('number');
       expect(payload.pagination.limit).toBe(5);
