@@ -68,6 +68,13 @@ COPY --from=builder --chown=node:node /app/gitnexus/node_modules ./gitnexus/node
 COPY --from=builder --chown=node:node /app/gitnexus/package.json ./gitnexus/package.json
 COPY --from=builder --chown=node:node /app/gitnexus/scripts/install-duckdb-extension.mjs ./gitnexus/scripts/install-duckdb-extension.mjs
 COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
+# `hooks/` is a published runtime asset (in package.json `files`), not just a
+# dev/CI directory: dist/cli/resolve-invocation.js does
+# `require('../../hooks/claude/resolve-analyze-cmd.cjs')` at module load — the
+# single source of truth for the npm-11 npx-crash invocation decision (#1939).
+# Without this copy, `gitnexus analyze` inside the image crashes with
+# MODULE_NOT_FOUND before it does any work (#2130). Mirror what npm ships.
+COPY --from=builder --chown=node:node /app/gitnexus/hooks ./gitnexus/hooks
 
 # Expose the `gitnexus` binary on PATH so the documented Docker workflow
 # (`docker compose exec gitnexus-server gitnexus index /workspace/<repo>`)
