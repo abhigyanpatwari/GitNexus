@@ -2279,4 +2279,15 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(res).toBeDefined();
     expect(res).not.toHaveProperty('error');
   });
+
+  it('evicts an opened branch pool when the repo leaves the registry (#2106 R3)', async () => {
+    // Open the branch pool via a tool call (ensureInitialized records its key).
+    await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
+    lbugMocks.closeLbug.mockClear();
+    // Unregister the repo, then trigger a refresh (init re-reads the registry).
+    (listRegisteredRepos as any).mockResolvedValue([]);
+    await backend.init();
+    const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
+    expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
+  });
 });

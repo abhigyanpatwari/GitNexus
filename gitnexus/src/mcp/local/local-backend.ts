@@ -591,13 +591,30 @@ export class LocalBackend {
     // the resolve→query wrong-clone window for good (#2067). Only a path that
     // dropped out of the registry must release its pooled connection + state.
     const liveLbugPaths = new Set([...nextRepos.values()].map((h) => h.lbugPath));
-    for (const prev of this.repos.values()) {
-      if (liveLbugPaths.has(prev.lbugPath)) continue;
-      this.initializedRepos.delete(prev.lbugPath);
-      this.lastStalenessCheck.delete(prev.lbugPath);
-      this.lastObservedIndexedAt.delete(prev.lbugPath);
-      this.reinitPromises.delete(prev.lbugPath);
-      closeLbug(prev.lbugPath).catch(() => {});
+    // Branch pools (opened on demand by applyBranchScope) are NOT in this.repos
+    // — branch handles are minted fresh and discarded — so add every registered
+    // branch's lbugPath to the live set. Pure string work over the already-in-
+    // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
+    for (const entry of entries) {
+      for (const b of entry.branches ?? []) {
+        liveLbugPaths.add(getStoragePaths(entry.path, b.branch).lbugPath);
+      }
+    }
+    // initializedRepos is the authoritative set of OPENED pool keys (flat AND
+    // branch); union it with the previously-known flat handles so an orphaned
+    // branch pool (e.g. after `clean --branch` removes its summary) is closed
+    // and forgotten too, not just flat handles.
+    const knownKeys = new Set<string>([
+      ...[...this.repos.values()].map((h) => h.lbugPath),
+      ...this.initializedRepos,
+    ]);
+    for (const key of knownKeys) {
+      if (liveLbugPaths.has(key)) continue;
+      this.initializedRepos.delete(key);
+      this.lastStalenessCheck.delete(key);
+      this.lastObservedIndexedAt.delete(key);
+      this.reinitPromises.delete(key);
+      closeLbug(key).catch(() => {});
     }
 
     this.repos = nextRepos;
