@@ -1,0 +1,6 @@
+baffb118bb04eb3f2a3aea6e132a67f334323eec39fceb3420a04d4b31ac7544  ./darwin-arm64/tree-sitter-swift.node
+b18b2b16c9ec26d4c43ad578fca3fdf1349dafbc5347fd897ff0b9e6c92927c0  ./darwin-x64/tree-sitter-swift.node
+fed213320ee40a725f0b0728975ab9a472348f25b70ec1a0e9ff89e366849af5  ./linux-arm64/tree-sitter-swift.node
+9376099fff5847941bac216afa7142d7b3e98d8c2e5bc8c8c2de486693eeeaf6  ./linux-x64/tree-sitter-swift.node
+49300328ead166d005f5cf0065f21f6bfcacda570f2e026ce6886bad24f2004f  ./win32-arm64/tree-sitter-swift.node
+16c146f30c74953832be37b7a65230d62ea1347a1be6e8ffa7e9bd120cf7f30f  ./win32-x64/tree-sitter-swift.node

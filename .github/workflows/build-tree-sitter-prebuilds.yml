@@ -1,0 +1,529 @@
+name: Build tree-sitter prebuilds
+
+# Cross-builds the native tree-sitter prebuilds GitNexus vendors itself, so that
+# grammars whose upstream packages ship SOURCE ONLY (no usable prebuilds/) never
+# require a C/C++ toolchain at a user's install. This is the "no operational
+# risk for any tree-sitter grammar" pipeline.
+#
+# Grammars covered here (the at-risk set — everything else already ships 6
+# upstream prebuilds AND stays dependency-review-tracked, so it is left alone).
+# All five are vendored under gitnexus/vendor/; `kind` (below) only picks where
+# the build job fetches the C source to compile:
+#   - tree-sitter-c      (vendored prebuild-only; built from the published npm
+#                         package — closes upstream's 4/6 ARM gap #2116 for a
+#                         REQUIRED grammar)
+#   - tree-sitter-dart   (vendored source; built from gitnexus/vendor/)
+#   - tree-sitter-proto  (vendored source; built from gitnexus/vendor/)
+#   - tree-sitter-kotlin (vendored source; built from the published npm package —
+#                         upstream ships source only)
+#   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
+#                         prebuilds were originally upstream-shipped, now
+#                         GitNexus-cross-built like the rest for uniformity)
+#
+# Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
+# all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
+# N-API, so one ABI-stable .node per platform-arch works across all Node majors.
+#
+# COST DISCIPLINE — this is a HEAVY native matrix (up to 3 grammars x 6 runners,
+# incl. macOS + arm64). It is DELIBERATELY NOT wired into normal PR/push CI. It
+# runs only:
+#   1. on manual dispatch (workflow_dispatch); or
+#   2. when a covered grammar's recorded version actually CHANGES — the `guard`
+#      job is the real gate (it diffs the recorded version vs the PR base); the
+#      `paths:` filter below only makes ordinary code PRs cost ZERO matrix time.
+# Net effect: an ordinary code PR triggers nothing; bumping one grammar costs
+# exactly one matrix run for that grammar, which opens a PR committing its rebuilt
+# binaries.
+#
+# Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
+#
+# NOTE: every action below is pinned to a release commit SHA (with the matching
+# `# vX.Y.Z` tag comment verified against the GitHub API). If a future bump adds
+# a new action, pin its real release SHA and allowlist it in .github/zizmor.yml /
+# Scorecard before merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      grammars:
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift), or "all".'
+        required: false
+        type: string
+        default: 'all'
+      ref:
+        description: 'Upstream version/tag/sha override (only honored when exactly one grammar is selected).'
+        required: false
+        type: string
+        default: ''
+      force:
+        description: 'Build even if the recorded version is unchanged (re-cut a broken prebuild).'
+        required: false
+        type: boolean
+        default: false
+      open_pr:
+        description: 'Open a PR with the rebuilt prebuilds (false = artifacts only).'
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    branches: [main]
+    paths:
+      # Vendored grammars: their version lives in the vendor snapshot package.json.
+      - 'gitnexus/vendor/tree-sitter-c/package.json'
+      - 'gitnexus/vendor/tree-sitter-dart/package.json'
+      - 'gitnexus/vendor/tree-sitter-proto/package.json'
+      - 'gitnexus/vendor/tree-sitter-kotlin/package.json'
+      - 'gitnexus/vendor/tree-sitter-swift/package.json'
+      # Transition window: kotlin's pin still lives here until it is vendored.
+      - 'gitnexus/package.json'
+      # Self-test: re-run the guard (normally a no-op) when the recipe changes.
+      - '.github/workflows/build-tree-sitter-prebuilds.yml'
+
+# Least privilege by default; only `aggregate` opts up.
+permissions:
+  contents: read
+
+# One slot per ref. Collapse PR re-pushes, but never cancel a manual re-cut.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── Gate: decide which grammars (if any) need a native rebuild, and emit the
+  #    {grammar x platform-arch} matrix the build job consumes. ───────────────
+  guard:
+    name: Decide what to build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      any: ${{ steps.decide.outputs.any }}
+      matrix: ${{ steps.decide.outputs.matrix }}
+      release_app: ${{ steps.relapp.outputs.configured }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need base history to diff recorded versions
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          # Untrusted dispatch inputs — read via env only, validated in JS.
+          INPUT_GRAMMARS: ${{ inputs.grammars }}
+          INPUT_REF: ${{ inputs.ref }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || 'false' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'NODE'
+          import { execSync } from 'node:child_process';
+          import fs from 'node:fs';
+          import { appendFileSync } from 'node:fs';
+
+          // Registry of the at-risk grammars this workflow owns. `kind` drives
+          // how the build job resolves source: 'npm' pulls the published package;
+          // 'vendored' builds from gitnexus/vendor/<name> (which carries the C
+          // source + binding.gyp). Extend this list to cover a new grammar.
+          const REGISTRY = {
+            // c is vendored prebuild-only but BUILT from the published npm
+            // package (kind 'npm'), held at 0.21.4 — it closes upstream's 4/6
+            // ARM gap (#2116) for a REQUIRED grammar that otherwise hard-fails
+            // install on toolchain-less ARM.
+            c:      { name: 'tree-sitter-c',      kind: 'npm' },
+            dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
+            proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
+            kotlin: { name: 'tree-sitter-kotlin', kind: 'npm' },
+            // swift is vendored WITH its source (parser.c/scanner.c/binding.gyp),
+            // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
+            // were originally upstream-shipped; rebuilding them here unifies it.
+            swift:  { name: 'tree-sitter-swift',  kind: 'vendored' },
+          };
+          const PLATFORMS = [
+            { platform_arch: 'linux-x64',    os: 'ubuntu-24.04' },
+            { platform_arch: 'linux-arm64',  os: 'ubuntu-24.04-arm' },
+            { platform_arch: 'darwin-arm64', os: 'macos-15' },
+            { platform_arch: 'darwin-x64',   os: 'macos-15-intel' }, // macos-13 retired Dec-2025; Intel EOL ~Aug-2027
+            { platform_arch: 'win32-x64',    os: 'windows-2022' },
+            { platform_arch: 'win32-arm64',  os: 'windows-11-arm' },
+          ];
+
+          const clean = (v) => (v || '').replace(/^[\^~]/, '').trim();
+          const json = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
+
+          // Durable version key for a grammar at a checkout root. Prefer the
+          // vendor snapshot (the post-vendor source of truth); fall back to the
+          // optionalDependencies pin during the transition window. (A guard keyed
+          // on the node_modules lock entry would self-disable once a grammar is
+          // vendored, because that entry is deleted.)
+          function recordedVersion(root, name) {
+            const v = json(`${root}/gitnexus/vendor/${name}/package.json`);
+            if (v && v.version) return clean(v.version);
+            const pkg = json(`${root}/gitnexus/package.json`);
+            const od = pkg && (pkg.optionalDependencies || {});
+            const d = pkg && (pkg.dependencies || {});
+            return clean((od && od[name]) || (d && d[name]) || '');
+          }
+
+          const event = process.env.EVENT;
+          const force = process.env.FORCE === 'true';
+
+          // Select which grammar shortnames are in play.
+          let selected;
+          if (event === 'workflow_dispatch') {
+            const raw = (process.env.INPUT_GRAMMARS || 'all').trim();
+            selected = raw === 'all' ? Object.keys(REGISTRY)
+              : raw.split(',').map((s) => s.trim()).filter(Boolean);
+            for (const s of selected) if (!REGISTRY[s]) throw new Error(`unknown grammar '${s}'`);
+          } else {
+            selected = Object.keys(REGISTRY);
+          }
+
+          // Resolve the base-ref recorded versions (pull_request only) so we can
+          // diff. On dispatch, base is irrelevant (manual intent / force wins).
+          const baseRoot = `${process.env.RUNNER_TEMP}/base`;
+          if (event === 'pull_request') {
+            const baseSha = process.env.BASE_SHA;
+            for (const s of selected) {
+              const name = REGISTRY[s].name;
+              for (const rel of [`gitnexus/vendor/${name}/package.json`, `gitnexus/package.json`]) {
+                const dst = `${baseRoot}/${rel}`;
+                fs.mkdirSync(dst.slice(0, dst.lastIndexOf('/')), { recursive: true });
+                try {
+                  const buf = execSync(`git show ${baseSha}:${rel}`, { stdio: ['ignore', 'pipe', 'ignore'] });
+                  fs.writeFileSync(dst, buf);
+                } catch { /* file absent at base — fine */ }
+              }
+            }
+          }
+
+          // The single-ref override is only meaningful for a one-grammar dispatch.
+          const refOverride = clean(process.env.INPUT_REF);
+          if (refOverride && !(event === 'workflow_dispatch' && selected.length === 1)) {
+            throw new Error('ref override requires exactly one grammar selected');
+          }
+          const safeRef = (r) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(r);
+
+          const include = [];
+          const built = [];
+          for (const short of selected) {
+            const { name, kind } = REGISTRY[short];
+            const head = recordedVersion('.', name);
+            const ref = refOverride || head;
+            if (!ref) { console.log(`skip ${short}: no recorded version`); continue; }
+            if (!safeRef(ref)) throw new Error(`unsafe ref for ${short}: '${ref}'`);
+
+            let build = false;
+            if (event === 'workflow_dispatch') {
+              build = true; // manual intent (force toggles only the unchanged-guard, which is bypassed here)
+            } else {
+              const base = recordedVersion(baseRoot, name);
+              build = !!head && head !== base;
+              console.log(`${short}: head='${head || '<absent>'}' base='${base || '<absent>'}' -> ${build ? 'BUILD' : 'skip'}`);
+            }
+            if (force) build = true;
+            if (!build) continue;
+            built.push(short);
+            for (const p of PLATFORMS) include.push({ grammar: short, name, kind, ref, ...p });
+          }
+
+          const out = process.env.GITHUB_OUTPUT;
+          appendFileSync(out, `any=${include.length > 0}\n`);
+          appendFileSync(out, `matrix=${JSON.stringify({ include })}\n`);
+          if (include.length === 0) {
+            console.log('::notice::No covered grammar version changed — skipping native matrix.');
+          } else {
+            console.log(`Building: ${built.join(', ')} (${include.length} jobs)`);
+          }
+          NODE
+
+      # The aggregate job opens a PR via a GitHub App token; without the App
+      # secrets it would hard-fail AFTER a full native build. Surface their
+      # presence as a guard output so aggregate skips cleanly (the build job's
+      # artifacts still upload). secrets aren't available in a job-level `if:`,
+      # so we compute the boolean here (a step CAN read secrets) and gate on it.
+      - name: Check release App secret
+        id: relapp
+        env:
+          HAS_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          echo "configured=$HAS_APP" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_APP" != "true" ]; then
+            echo "::notice::Release GitHub App secrets (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) are not configured — prebuilds will build and upload as artifacts, but the auto-PR is skipped. Provision the App, or run with open_pr=false to suppress this notice."
+          fi
+
+  # ── Build one native prebuild per (grammar, platform-arch). No cross-compile. ─
+  build:
+    name: ${{ matrix.grammar }} ${{ matrix.platform_arch }}
+    needs: guard
+    if: needs.guard.outputs.any == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.guard.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    # 45 (not 30) for headroom: the kotlin parser.c is ~23 MB and swift's ~18 MB,
+    # and compiling them under emulation on the arm runners is slow.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false # this job uploads artifacts (artipacked)
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Ensure Python (arm64 Windows only)
+        if: matrix.platform_arch == 'win32-arm64'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Build prebuild
+        id: build
+        shell: bash
+        env:
+          GRAMMAR: ${{ matrix.grammar }}
+          NAME: ${{ matrix.name }}
+          KIND: ${{ matrix.kind }}
+          REF: ${{ matrix.ref }}
+          PLATFORM_ARCH: ${{ matrix.platform_arch }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ts-build"
+          rm -rf "$work"; mkdir -p "$work"; cd "$work"
+          npm init -y >/dev/null
+
+          # node-addon-api must match what the grammar's binding.cc expects.
+          # GitNexus hoists ^8 for the vendored grammars; npm grammars declare
+          # their own (do NOT pin it for npm grammars — let the dep resolve it).
+          if [ "$KIND" = "vendored" ]; then
+            # Build from the vendored C source (carries parser.c + binding.gyp).
+            srcdir="$work/$NAME"
+            cp -R "$GITHUB_WORKSPACE/gitnexus/vendor/$NAME" "$srcdir"
+            rm -rf "$srcdir/prebuilds" "$srcdir/build" "$srcdir/node_modules"
+            npm install --no-audit --no-fund --ignore-scripts \
+              prebuildify@^6 node-gyp@^11 node-addon-api@^8
+            pkgdir="$srcdir"
+            export npm_config_node_gyp="$work/node_modules/node-gyp/bin/node-gyp.js"
+          else
+            # Pull the published source-only package.
+            npm install --no-audit --no-fund --ignore-scripts \
+              "$NAME@${REF}" prebuildify@^6 node-gyp@^11
+            pkgdir="$work/node_modules/$NAME"
+          fi
+
+          test -f "$pkgdir/binding.gyp" || { echo "::error::no binding.gyp for $NAME@$REF"; exit 1; }
+
+          # Drop any prebuilds the package shipped in its own tarball before we
+          # build. The tree-sitter-org npm grammars (e.g. tree-sitter-c) bundle
+          # prebuilds/ for all 6 tuples; left in place, the `find ... -print -quit`
+          # below would pick a non-host tuple (e.g. win32-x64 on a linux runner)
+          # and the assertion would wrongly fail. prebuildify rebuilds THIS host's
+          # tuple from the source the tarball also ships. (Vendored grammars are
+          # already cleaned above; this also covers the npm branch.)
+          rm -rf "$pkgdir/prebuilds"
+
+          # N-API, stripped, single ABI-stable binary for THIS host's arch. No
+          # `-t <node-version>`: an N-API prebuild is Node-version-agnostic, and
+          # prebuildify parses a bare `-t 22` as the NUMBER 22 and crashes
+          # (`v.indexOf is not a function`). prebuildify emits
+          # prebuilds/<platform>-<arch>/<something>.node.
+          ( cd "$pkgdir" && npx --no-install prebuildify --napi --strip )
+
+          out=$(find "$pkgdir/prebuilds" -name '*.node' -print -quit)
+          test -n "$out" || { echo "::error::prebuildify produced no .node"; exit 1; }
+          produced=$(basename "$(dirname "$out")")
+          [ "$produced" = "$PLATFORM_ARCH" ] || { echo "::error::built $produced, expected $PLATFORM_ARCH"; exit 1; }
+
+          stage="$RUNNER_TEMP/stage/$GRAMMAR/$PLATFORM_ARCH"; mkdir -p "$stage"
+          cp "$out" "$stage/$NAME.node"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the .node loads and parses on this arch
+        shell: bash
+        env:
+          GRAMMAR: ${{ matrix.grammar }}
+          NAME: ${{ matrix.name }}
+          PLATFORM_ARCH: ${{ matrix.platform_arch }}
+          EXPECT_ARCH: ${{ contains(matrix.platform_arch, 'arm64') && 'arm64' || 'x64' }}
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/probe"; rm -rf "$probe"
+          mkdir -p "$probe/prebuilds/$PLATFORM_ARCH"
+          cp "$RUNNER_TEMP/stage/$GRAMMAR/$PLATFORM_ARCH/$NAME.node" \
+             "$probe/prebuilds/$PLATFORM_ARCH/$NAME.node"
+          cd "$probe"
+          # Pin tree-sitter to the repo's exact runtime peer so an ABI mismatch
+          # fails HERE, not in a user's install (mirrors the #1922 ABI gate).
+          # NOT --ignore-scripts: tree-sitter@0.21.1's tarball ships prebuilds for
+          # the common tuples but NOT linux-arm64 / win32-arm64, so on the arm64
+          # runners node-gyp-build must source-build the runtime — give it node-gyp
+          # + node-addon-api to do so. Where tree-sitter ships a prebuild (x64,
+          # darwin-arm64) node-gyp-build uses it and nothing compiles. The grammar
+          # .node we built is still loaded as a prebuild; only the runtime peer may
+          # compile. The grammar-vs-runtime ABI check still fires at setLanguage.
+          npm install --no-audit --no-fund \
+            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.21.1
+          # The node script is single-quoted on purpose — its ${...} are JS
+          # template literals read from the environment, not shell expansions.
+          # shellcheck disable=SC2016
+          GRAMMAR="$GRAMMAR" EXPECT_ARCH="$EXPECT_ARCH" node -e '
+            const expect = process.env.EXPECT_ARCH;
+            // Catch an emulated x64 Node silently mis-passing on an arm64 runner.
+            if (process.arch !== expect) throw new Error(`runner arch ${process.arch} != ${expect}`);
+            const snippets = {
+              c:      "int main(void) { return 0; }",
+              dart:   "void main() { print(\"hi\"); }",
+              proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
+              kotlin: "fun main() { println(\"hi\") }",
+              swift:  "func greet() { print(\"hi\") }",
+            };
+            const lang = require("node-gyp-build")(process.cwd());
+            const Parser = require("tree-sitter");
+            const p = new Parser(); p.setLanguage(lang);
+            const tree = p.parse(snippets[process.env.GRAMMAR]);
+            if (!tree || !tree.rootNode || tree.rootNode.hasError) {
+              throw new Error("parse failed/error: " + (tree && tree.rootNode && tree.rootNode.type));
+            }
+            console.log("OK", process.env.GRAMMAR, process.platform + "-" + process.arch, tree.rootNode.type);
+          '
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ts-prebuild-${{ matrix.grammar }}-${{ matrix.platform_arch }}
+          path: ${{ steps.build.outputs.stage }}/${{ matrix.name }}.node
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Aggregate every grammar's six prebuilds, assert completeness, open a PR. ─
+  aggregate:
+    name: Vendor prebuilds + open PR
+    needs: [guard, build]
+    # Open the prebuild PR on a non-fork pull_request that bumped a grammar
+    # version (the documented version-change -> prebuild-PR flow), or on a manual
+    # dispatch with open_pr=true. Event-gating is explicit so we never rely on
+    # GHA coercing a null `inputs.open_pr` on pull_request events (Codex F4):
+    # `inputs.open_pr` is null off-dispatch, and `null != false` is direction-
+    # ambiguous, so `open_pr` is only consulted on workflow_dispatch.
+    if: >-
+      needs.guard.outputs.any == 'true' &&
+      needs.guard.outputs.release_app == 'true' &&
+      github.event.pull_request.head.repo.fork != true &&
+      (github.event_name == 'pull_request' || inputs.open_pr == true)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # actual writes use a short-lived App token below
+      id-token: write # SLSA provenance attestation
+      attestations: write
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Download all prebuild artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/dl
+          pattern: ts-prebuild-*
+
+      - name: Place prebuilds, assert each built grammar has all 6, write SHA256SUMS
+        id: place
+        shell: bash
+        env:
+          MATRIX: ${{ needs.guard.outputs.matrix }}
+          DL: ${{ runner.temp }}/dl
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          import { execSync } from 'node:child_process';
+          const include = JSON.parse(process.env.MATRIX).include;
+          const dl = process.env.DL;
+          const byGrammar = {};
+          for (const e of include) (byGrammar[e.grammar] ||= { name: e.name, archs: [] }).archs.push(e.platform_arch);
+          const PLATFORMS = ['linux-x64','linux-arm64','darwin-arm64','darwin-x64','win32-x64','win32-arm64'];
+          const changed = [];
+          for (const [grammar, { name }] of Object.entries(byGrammar)) {
+            const dest = `gitnexus/vendor/${name}/prebuilds`;
+            // A vendored grammar with 5/6 prebuilds silently breaks node-gyp-build
+            // on the 6th platform — refuse a partial result.
+            for (const pa of PLATFORMS) {
+              const art = `${dl}/ts-prebuild-${grammar}-${pa}/${name}.node`;
+              if (!fs.existsSync(art)) throw new Error(`missing ${grammar} prebuild for ${pa}`);
+              fs.mkdirSync(`${dest}/${pa}`, { recursive: true });
+              fs.copyFileSync(art, `${dest}/${pa}/${name}.node`);
+            }
+            execSync(`cd ${dest} && find . -name '*.node' | sort | xargs sha256sum > SHA256SUMS`);
+            changed.push(name);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `grammars=${changed.join(',')}\n`);
+          console.log('Vendored prebuilds for:', changed.join(', '));
+          NODE
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: 'gitnexus/vendor/tree-sitter-*/prebuilds/**/*.node'
+
+      - name: Create or update PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GRAMMARS: ${{ steps.place.outputs.grammars }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { execSync } = require('node:child_process');
+            const run = (c) => execSync(c, { stdio: ['ignore', 'pipe', 'inherit'] }).toString().trim();
+            const grammars = process.env.GRAMMARS;
+            const slug = grammars.replace(/[^a-z0-9]+/gi, '-');
+            const branch = `chore/vendor-ts-prebuilds-${slug}-${context.runId}`;
+
+            run('git add gitnexus/vendor/tree-sitter-*/prebuilds');
+            if (!run('git status --porcelain -- gitnexus/vendor/tree-sitter-*/prebuilds')) {
+              core.notice('Prebuilds byte-identical to vendor; nothing to commit.');
+              return;
+            }
+            run('git config user.name "gitnexus-release-bot[bot]"');
+            run('git config user.email "gitnexus-release-bot[bot]@users.noreply.github.com"');
+            run(`git checkout -b "${branch}"`);
+            run(`git commit -m "chore(vendor): rebuild native prebuilds (${grammars})\n\nBuilt by ${process.env.RUN_URL}"`);
+            const { owner, repo } = context.repo;
+            const remote = `https://x-access-token:${process.env.GH_TOKEN}@github.com/${owner}/${repo}.git`;
+            // Plain --force, not --force-with-lease: the branch is ephemeral and
+            // unique per run (keyed by context.runId), written ONLY by this job, so
+            // there is no concurrent writer to protect against. --force-with-lease
+            // would compare against a remote-tracking ref this fresh checkout never
+            // fetched, so re-running the SAME run (branch already pushed by attempt
+            // 1) fails with "stale info" instead of overwriting.
+            run(`git push --force "${remote}" "HEAD:${branch}"`);
+            const body = [
+              `Rebuilt the vendored native prebuilds for: **${grammars}**.`,
+              '',
+              `Builder run: ${process.env.RUN_URL}`,
+              'Each `.node` was `require()`-loaded + parsed a real snippet on its target',
+              'platform-arch before upload. SLSA build-provenance attested; `SHA256SUMS`',
+              'committed alongside each grammar.',
+            ].join('\n');
+            const { data: pr } = await github.rest.pulls.create({
+              owner, repo, head: branch, base: 'main',
+              title: `chore(vendor): tree-sitter prebuilds (${grammars})`, body,
+            });
+            core.info(`Opened PR #${pr.number}`);
