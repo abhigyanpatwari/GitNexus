@@ -25,7 +25,7 @@ const mockMeta: any = {
   stats: { files: 1, nodes: 1 },
 };
 
-describe('listRegisteredRepos({ validate: true }) — transient error safety (#2121)', () => {
+describe('listRegisteredRepos({ validate: true }) — transient error safety (PR #2124)', () => {
   let tmpHome: { dbPath: string; cleanup: () => Promise<void> };
   let tmpRepo: { dbPath: string; cleanup: () => Promise<void> };
   let savedGitnexusHome: string | undefined;
