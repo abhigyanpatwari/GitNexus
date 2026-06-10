@@ -665,6 +665,20 @@ describe('registerRepo branch nesting (#2106)', () => {
     const [entry] = await listRegisteredRepos();
     expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/y']);
   });
+
+  // ─── re-read-before-write merge (#2106 R9) ──────────────────────────
+
+  it('a branch run preserves the freshest top-level fields (alias survives)', async () => {
+    // A primary run set an alias; a later branch run must keep it (re-derives
+    // against the fresh snapshot, not a stale entry-time view).
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'), { name: 'my-alias' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.name).toBe('my-alias'); // top-level alias survived the branch run
+    expect(entry.branch).toBe('main');
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/x']);
+  });
 });
 
 // ─── parseRepoNameFromUrl + getInferredRepoName (#979) ───────────────

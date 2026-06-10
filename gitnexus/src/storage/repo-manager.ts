@@ -508,7 +508,13 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  // Atomic tmp+rename (mirrors saveMeta): a crash mid-write can never leave a
+  // truncated/half-written registry.json that the next load would treat as
+  // empty and silently drop every registered repo (#2106 R9).
+  const target = getGlobalRegistryPath();
+  const tmp = `${target}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf-8');
+  await fs.rename(tmp, target);
 };
 
 /**
@@ -714,21 +720,24 @@ export const registerRepo = async (
     }
   }
 
+  // This run's branch summary (non-primary runs only); hoisted so the
+  // re-read-before-write merge below can re-apply it against a fresh snapshot.
+  const summary: BranchSummary | null = opts?.branch
+    ? {
+        branch: opts.branch,
+        indexedAt: meta.indexedAt,
+        lastCommit: meta.lastCommit,
+        stats: meta.stats,
+      }
+    : null;
+
   let entry: RegistryEntry;
-  if (opts?.branch) {
+  if (summary) {
     // Non-primary branch run (#2106): keep the primary's top-level fields and
     // upsert this branch into branches[]. One entry per path is preserved.
-    const summary: BranchSummary = {
-      branch: opts.branch,
-      indexedAt: meta.indexedAt,
-      lastCommit: meta.lastCommit,
-      stats: meta.stats,
-    };
-    // When the registry entry is missing (lost/rebuilt registry.json) but this
-    // is a non-primary branch run, reconstruct the primary top-level fields from
-    // the FLAT meta.json rather than from this branch's meta — otherwise the
-    // primary slot would be labelled with the feature branch's commit/stats and
-    // `--branch <primary>` could never resolve (#2106 review).
+    // When the registry entry is missing (lost/rebuilt registry.json), rebuild
+    // the primary top-level from the FLAT meta.json rather than this branch's
+    // meta, so `--branch <primary>` can still resolve (#2106 review).
     const flatMeta = existing ? null : await loadMeta(storagePath);
     const base: RegistryEntry = existing ?? {
       name,
@@ -759,13 +768,39 @@ export const registerRepo = async (
     };
   }
 
-  if (existingIdx >= 0) {
-    entries[existingIdx] = entry;
+  // Re-read immediately before writing to narrow the lost-update window (#2106
+  // R9): re-derive THIS run's delta against the FRESHEST snapshot so a
+  // concurrent change to the OTHER axis (a branch upsert vs a primary refresh)
+  // survives instead of being clobbered by a stale entry-time view.
+  const fresh = await readRegistry();
+  const freshIdx = fresh.findIndex((e) => {
+    const a = canonicalizePath(e.path);
+    return process.platform === 'win32'
+      ? a.toLowerCase() === canonicalInput.toLowerCase()
+      : a === canonicalInput;
+  });
+  const freshExisting = freshIdx >= 0 ? fresh[freshIdx] : null;
+  let merged: RegistryEntry;
+  if (summary) {
+    // Branch run: keep the FRESH top-level + branches, just upsert our summary.
+    const base = freshExisting ?? entry;
+    const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
+    branches.push(summary);
+    merged = { ...base, name, branches };
   } else {
-    entries.push(entry);
+    // Primary run: apply our refreshed top-level, but defer to the FRESH
+    // branches[] (a concurrent branch upsert or `clean --branch` wins).
+    merged = { ...entry };
+    if (freshExisting?.branches) merged.branches = freshExisting.branches;
+    else delete merged.branches;
+  }
+  if (freshIdx >= 0) {
+    fresh[freshIdx] = merged;
+  } else {
+    fresh.push(merged);
   }
 
-  await writeRegistry(entries);
+  await writeRegistry(fresh);
   return name;
 };
 
