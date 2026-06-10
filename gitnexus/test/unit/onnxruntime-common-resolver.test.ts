@@ -53,6 +53,17 @@ describe('ensureOnnxRuntimeCommonResolvable — installation', () => {
     // Must not throw even though there is no synchronous-hooks API to call.
     expect(() => mod.ensureOnnxRuntimeCommonResolvable()).not.toThrow();
   });
+
+  it('is best-effort: swallows a registerHooks() failure instead of throwing into the embedder', async () => {
+    const mod = await loadResolver(
+      vi.fn(() => {
+        throw new Error('hook-install-failed');
+      }),
+    );
+    // The call site (initEmbedder) does not guard the return; a throw here would
+    // break `analyze --embeddings`. The outer try/catch must absorb it.
+    expect(() => mod.ensureOnnxRuntimeCommonResolvable()).not.toThrow();
+  });
 });
 
 describe('ensureOnnxRuntimeCommonResolvable — resolve hook behaviour', () => {
