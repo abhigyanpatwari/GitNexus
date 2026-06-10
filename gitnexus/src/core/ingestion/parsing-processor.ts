@@ -7,6 +7,7 @@ import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './c
 
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
+import type { SkippedPath } from './workers/clone-safety.js';
 import { logger } from '../logger.js';
 import type {
   ParseWorkerResult,
@@ -201,7 +202,7 @@ export const dispatchChunkParse = async (
   // boundary. The worker sanitized/dropped the offending value so the run
   // could complete; surface the (rare) data loss so it's visible and the
   // offending extractor can be fixed at source.
-  const skippedPaths: Array<{ path: string; reason: string }> = [];
+  const skippedPaths: SkippedPath[] = [];
   for (const result of chunkResults) {
     for (const entry of result.skippedPaths ?? []) skippedPaths.push(entry);
   }
