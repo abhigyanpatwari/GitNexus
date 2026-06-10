@@ -58,5 +58,14 @@ export const vendoredGrammarDir = (packageName: string): string =>
  * no `node_modules` copy. (`node-gyp-build` itself IS an npm dependency and
  * resolves normally from the grammar directory.)
  */
-export const requireVendoredGrammar = (packageName: string): unknown =>
-  _require(vendoredGrammarDir(packageName));
+export const requireVendoredGrammar = (packageName: string): unknown => {
+  // Fail loudly on a name that isn't actually vendored — a typo or a list that
+  // drifted out of sync (VENDORED_GRAMMAR_PACKAGES vs the CLI probe vs the build
+  // registry) would otherwise surface as a confusing absolute-path require miss.
+  if (!VENDORED_GRAMMAR_PACKAGES.has(packageName)) {
+    throw new Error(
+      `'${packageName}' is not a vendored grammar (expected one of: ${[...VENDORED_GRAMMAR_PACKAGES].join(', ')}).`,
+    );
+  }
+  return _require(vendoredGrammarDir(packageName));
+};
