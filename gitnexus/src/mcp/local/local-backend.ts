@@ -3237,7 +3237,15 @@ export class LocalBackend {
             !relationTypes.includes('ACCESSES')
               ? [...relationTypes, 'ACCESSES']
               : relationTypes;
-          let summary: any = null;
+          // #1858/#2129 review F8 — name the shape the probe summary is read
+          // through (`_runImpactBFS` returns `Promise<any>`, so this is the
+          // narrowing cast) so a future rename of those fields fails tsc instead
+          // of silently zeroing candidate counts.
+          let summary: {
+            impactedCount: number;
+            risk: string;
+            summary?: { direct: number };
+          } | null = null;
           try {
             summary = await this._runImpactBFS(
               repo,
@@ -3524,7 +3532,14 @@ export class LocalBackend {
     // shared state, so its extra round-trip overlaps the traversal instead of
     // adding to the serial path. `skipEpistemic` (ambiguous #2129 candidate
     // probes, group fan-out) resolves to no field, preserving prior behavior.
-    const epistemicPromise: Promise<Record<string, unknown>> = opts.skipEpistemic
+    // #1858/#2129 review F8 — the skip case adds no field, so `epistemic` is
+    // optional here (the union's `{}` subtype). computeEpistemicBoundary's own
+    // return keeps `epistemic` REQUIRED — only this promise widens to the skip
+    // subtype.
+    const epistemicPromise: Promise<{
+      epistemic?: 'exact' | 'lower-bound';
+      boundaries?: string[];
+    }> = opts.skipEpistemic
       ? Promise.resolve({})
       : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
 
