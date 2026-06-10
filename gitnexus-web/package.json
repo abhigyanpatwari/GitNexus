@@ -51,7 +51,7 @@
     "react-syntax-highlighter": "^16.1.1",
     "react-zoom-pan-pinch": "^4.0.3",
     "remark-gfm": "^4.0.1",
-    "sigma": "^3.0.2",
+    "sigma": "^3.0.3",
     "tailwindcss": "^4.2.4",
     "uuid": "^14.0.0",
     "zod": "^4.4.3"
