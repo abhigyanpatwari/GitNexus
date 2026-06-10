@@ -37,10 +37,7 @@ import {
 import { resolveEmbeddingConfig } from './config.js';
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
-import {
-  loadVectorExtension,
-  createVectorIndex as createVectorIndexOnDb,
-} from '../lbug/lbug-adapter.js';
+import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
@@ -224,10 +221,10 @@ export const batchInsertEmbeddings = async (
  * procedure and fails with "We do not support prepare multiple statements" —
  * the silent degrade in #2114.
  */
-const createVectorIndex = async (): Promise<boolean> => {
+const buildVectorIndex = async (): Promise<boolean> => {
   if (!(await ensureVectorExtensionAvailable())) return false;
   try {
-    return await createVectorIndexOnDb();
+    return await createVectorIndex();
   } catch (error) {
     // Surface this even outside dev: it silently downgrades a user-requested
     // feature (semantic search) to exact scan. Log under `err` so pino's
@@ -387,7 +384,7 @@ export const runEmbeddingPipeline = async (
       // Ensure the vector index exists even when no new nodes need embedding.
       // A prior crash or first-time incremental run may have left CodeEmbedding
       // rows without ever reaching index creation.
-      const vectorIndexReady = await createVectorIndex();
+      const vectorIndexReady = await buildVectorIndex();
 
       onProgress({
         phase: 'ready',
@@ -548,7 +545,7 @@ export const runEmbeddingPipeline = async (
       logger.info('📇 Creating vector index...');
     }
 
-    const vectorIndexReady = await createVectorIndex();
+    const vectorIndexReady = await buildVectorIndex();
 
     onProgress({
       phase: 'ready',
