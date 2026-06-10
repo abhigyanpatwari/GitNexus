@@ -222,7 +222,12 @@ describe('computeReachingDefs — kill/gen fundamentals (hand-built)', () => {
     expect(render(r.facts).sort()).toEqual(['2:0->3:0:0', '3:1->3:2:0']);
   });
 
-  it('def+use in one statement (x += 1): the use sees PRIOR defs, not its own', () => {
+  it('def+use in one statement: the use sees prior defs AND the same-statement def', () => {
+    // StatementFacts carries no intra-statement order, so `x += 1`
+    // (read-then-write) and `if ((m = f()) && m.p)` (write-then-read) are
+    // indistinguishable — the sweep emits BOTH the prior def and the
+    // same-statement self-def (sound over-approximation; missing the
+    // assign-and-test idiom's def→use would be a taint false negative).
     const cfg = mkCfg(
       [{}, {}, { stmts: [stmt(10, [0]), stmt(11, [0], [0])] }],
       [
@@ -232,7 +237,7 @@ describe('computeReachingDefs — kill/gen fundamentals (hand-built)', () => {
       ['x'],
     );
     const r = computeReachingDefs(cfg);
-    expect(render(r.facts)).toEqual(['2:0->2:1:0']);
+    expect(render(r.facts).sort()).toEqual(['2:0->2:1:0', '2:1->2:1:0']);
   });
 });
 

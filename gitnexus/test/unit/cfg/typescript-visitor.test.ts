@@ -350,7 +350,14 @@ describe('TS/JS CfgVisitor — try/catch/finally (R10)', () => {
 
   it('non-empty catch is unchanged by the empty-catch synthesis (F2 regression guard)', () => {
     const cfg = cfgOf(`function f() { try { a(); } catch (e) { h(); } after(); }`);
-    expect(throwTargets(cfg).has(block(cfg, 'h();'))).toBe(true);
+    // The throw lands on the handler ENTRY — since M2 that is the catch-param
+    // binding block (a facts-only block in front of the body), which flows
+    // into the body. Assert the path, not block identity.
+    const handlerEntries = [...throwTargets(cfg)];
+    expect(handlerEntries.length).toBeGreaterThan(0);
+    for (const t of handlerEntries) {
+      expect(reaches(cfg, t, block(cfg, 'h();'))).toBe(true);
+    }
     expect(reaches(cfg, block(cfg, 'h();'), block(cfg, 'after();'))).toBe(true);
   });
 

@@ -74,8 +74,17 @@ export interface FunctionDefUse {
   readonly useCount: number;
 }
 
-/** def-site key: packs (blockIndex, stmtIndex) into one number. */
-const STMT_STRIDE = 1 << 16; // maxFunctionLines caps statements far below 65536
+/**
+ * def-site key: packs (blockIndex, stmtIndex) into one number. The stride is
+ * a per-BLOCK statement bound, and `maxFunctionLines` caps LINES, not
+ * statements — a minified one-line function coalesces arbitrarily many
+ * statements into one block, so an overflow would silently alias
+ * (block b, stmt STRIDE+k) with (block b+1, stmt k) and fabricate wrong-block
+ * facts. computeReachingDefs therefore range-checks up front and bails to a
+ * sound empty `truncated` result instead of ever letting a key alias.
+ * 2^21 statements per block × blocks ≤ 2^32 stays inside Number's 2^53.
+ */
+const STMT_STRIDE = 1 << 21;
 const defKey = (blockIndex: number, stmtIndex: number): number =>
   blockIndex * STMT_STRIDE + stmtIndex;
 
@@ -96,6 +105,16 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
 
   const blocks = cfg.blocks;
   const n = blocks.length;
+
+  // Key-aliasing guard (see STMT_STRIDE): a block with ≥ STRIDE statements
+  // cannot be keyed without aliasing into the next block's def sites, which
+  // would fabricate wrong-block facts — strictly worse than producing none.
+  // Bail to a sound empty `truncated` result (the emit path warns).
+  for (const b of blocks) {
+    if ((b.statements?.length ?? 0) >= STMT_STRIDE) {
+      return { status: 'truncated', bindings: cfg.bindings, facts: [], defCount: 0, useCount: 0 };
+    }
+  }
 
   // ── adjacency (sorted for deterministic merges) ─────────────────────────
   // A `throw` edge contributes IN(from) ∪ OUT(from) to its handler, not just
@@ -155,8 +174,6 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
   // ── fixpoint ────────────────────────────────────────────────────────────
   const inSets: Lattice[] = new Array(n).fill(EMPTY_LATTICE);
   const outSets: Lattice[] = new Array(n).fill(EMPTY_LATTICE);
-  const posInOrder = new Map<number, number>();
-  order.forEach((b, i) => posInOrder.set(b, i));
 
   const inWorklist = new Array(n).fill(true);
   let pending = n;
@@ -214,10 +231,24 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
     let reach: Lattice | null = null;
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i];
+      // A use's binding that the SAME statement also defines could be a
+      // read-then-write (`x += 1` — sees prior defs) OR a write-then-read
+      // (`if ((m = re.exec(s)) && m[1])` — sees the same-statement def).
+      // StatementFacts carries no intra-statement order, so emit BOTH: prior
+      // defs ∪ the same-statement def. Sound over-approximation — the extra
+      // self-fact on compound assignments is harmless; missing the
+      // assign-and-test def→use (the most common JS idiom) would be a taint
+      // false negative.
+      const sameStmtDefs = s.defs.length > 0 ? new Set(s.defs) : null;
       for (const u of s.uses) {
         const reaching = (reach ?? inSets[b.index]).get(u);
-        if (!reaching) continue;
-        for (const key of reaching) {
+        const selfKey = sameStmtDefs?.has(u) ? defKey(b.index, i) : undefined;
+        if (!reaching && selfKey === undefined) continue;
+        const keys =
+          selfKey !== undefined && !reaching?.has(selfKey)
+            ? [...(reaching ?? []), selfKey]
+            : [...(reaching ?? [])];
+        for (const key of keys) {
           if (facts.length >= maxFacts) {
             truncated = true;
             break outer;
@@ -226,7 +257,7 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
           const defStmt = key % STMT_STRIDE;
           facts.push({
             bindingIdx: u,
-            def: { blockIndex: defBlock, stmtIndex: defStmt, line: defLine.get(key) ?? 0 },
+            def: { blockIndex: defBlock, stmtIndex: defStmt, line: defLine.get(key) ?? s.line },
             use: { blockIndex: b.index, stmtIndex: i, line: s.line },
           });
         }

@@ -275,7 +275,9 @@ function measureScenario(scenario) {
   const rdMaxFacts = scenario.rdMaxFacts ?? 0;
   const rdSmall = measureReachingDefs(small.cfgs, REPS, rdMaxFacts);
   const rdLarge = measureReachingDefs(large.cfgs, REPS, rdMaxFacts);
-  const rdRatio = rdSmall.ms > 0 ? rdLarge.ms / rdSmall.ms / sizeRatio : 0;
+  // Clamp the denominator: a 0.000ms small-N median would otherwise yield
+  // ratio 0 and the gate would self-disable exactly when the solver is fast.
+  const rdRatio = rdLarge.ms / Math.max(rdSmall.ms, 0.001) / sizeRatio;
 
   return {
     scenario: scenario.name,

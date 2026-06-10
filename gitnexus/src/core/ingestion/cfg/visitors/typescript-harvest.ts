@@ -425,6 +425,25 @@ export class TsHarvester {
         }
         return;
       }
+      case 'class_declaration': {
+        // The class NAME is a def (prescan declared the binding) — without
+        // this case the default walk would record it as a bogus USE in plain
+        // JS (the name is an `identifier` there; in TS it's a type_identifier
+        // and would be silently skipped, losing the def either way). The body
+        // walk picks up field-initializer uses; methods are opaque nested fns.
+        const name = node.childForFieldName('name');
+        if (name) this.def(name, acc);
+        const body = node.childForFieldName('body');
+        if (body) this.walkValue(body, acc);
+        return;
+      }
+      case 'class': {
+        // Class EXPRESSION: its name (if any) binds only inside the class —
+        // not a def in the enclosing function. Walk only the body.
+        const body = node.childForFieldName('body');
+        if (body) this.walkValue(body, acc);
+        return;
+      }
       default:
         for (let i = 0; i < node.namedChildCount; i++) {
           const c = node.namedChild(i);

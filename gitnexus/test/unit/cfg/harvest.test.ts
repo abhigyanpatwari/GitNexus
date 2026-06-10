@@ -219,18 +219,34 @@ describe('TS/JS def/use harvest — harvest sites beyond visitSeq', () => {
     expect(forOfHead.statements!.some((f) => f.uses.includes(bindingIdx(cfg, 'list')))).toBe(true);
   });
 
-  it('catch param defines at statement index 0 of the handler entry block', () => {
+  it('catch param defines in its own facts-only block preceding the body', () => {
     const cfg = cfgOf(`function f() {
       try { risky(); } catch (e) { use(e); }
     }`);
     const e = bindingIdx(cfg, 'e');
     expect(cfg.bindings![e].kind).toBe('catch');
-    const handler = cfg.blocks.find((b) => b.text.includes('use(e)'));
-    const facts = handler!.statements!;
-    // def of e PRECEDES the body's use of e — index 0, so the in-order sweep
-    // gives `use(e)` a reaching def
-    expect([...facts[0].defs]).toEqual([e]);
-    expect(facts.findIndex((f) => f.uses.includes(e))).toBeGreaterThan(0);
+    // The param def gets a DEDICATED once-executed block in front of the body
+    // entry — NOT prepended into the body's entry block, which can be a loop
+    // header that would re-gen the def per iteration and falsely kill
+    // loop-carried redefinitions of the param.
+    const paramBlock = cfg.blocks.find(
+      (b) => b.text === '' && (b.statements ?? []).some((f) => f.defs.includes(e)),
+    );
+    expect(paramBlock).toBeDefined();
+    const body = cfg.blocks.find((b) => b.text.includes('use(e)'))!;
+    expect(cfg.edges.some((ed) => ed.from === paramBlock!.index && ed.to === body.index)).toBe(
+      true,
+    );
+  });
+
+  it('catch body starting with a loop: param def does NOT re-gen on the loop header', () => {
+    const cfg = cfgOf(`function f(c) {
+      try { risky(); } catch (e) { while (c) { e = fix(e); } sink(e); }
+    }`);
+    const e = bindingIdx(cfg, 'e');
+    const header = cfg.blocks.find((b) => b.text === '(c)' || b.text === 'c')!;
+    // the loop header carries NO def of e — only the dedicated param block does
+    expect((header.statements ?? []).some((f) => f.defs.includes(e))).toBe(false);
   });
 
   it('empty catch: param def lands on the synthetic handler block', () => {
@@ -366,5 +382,40 @@ describe('TS/JS def/use harvest — serialization', () => {
       for (const d of f.defs) (expect(d).toBeGreaterThanOrEqual(0), expect(d).toBeLessThan(n));
       for (const u of f.uses) (expect(u).toBeGreaterThanOrEqual(0), expect(u).toBeLessThan(n));
     }
+  });
+});
+
+describe('TS/JS def/use harvest — review-pass regressions (#2082)', () => {
+  it('class declarations harvest the name as a DEF (JS identifier and TS type_identifier)', () => {
+    const cfg = cfgOf(`function f() {
+      class A {}
+      return new A();
+    }`);
+    const a = bindingIdx(cfg, 'A');
+    expect(cfg.bindings![a].kind).toBe('class');
+    const facts = allFacts(cfg);
+    expect(facts.some((fa) => fa.defs.includes(a))).toBe(true);
+    // the `new A()` use resolves to the same binding
+    expect(facts.some((fa) => fa.uses.includes(a))).toBe(true);
+    // and the declaration statement records NO bogus use of A
+    const declFact = facts.find((fa) => fa.defs.includes(a));
+    expect(declFact!.uses).not.toContain(a);
+  });
+
+  it('write-then-read in one statement (assign-and-test idiom) forms the def→use fact', async () => {
+    const { computeReachingDefs } =
+      await import('../../../src/core/ingestion/cfg/reaching-defs.js');
+    const cfg = cfgOf(`function f(re, s) {
+      let m = null;
+      if ((m = re.exec(s)) && m) { sink(m); }
+    }`);
+    const m = bindingIdx(cfg, 'm');
+    const r = computeReachingDefs(cfg);
+    // the `m` read in the condition gets a fact from the SAME-statement
+    // assignment (write-then-read), not only from the dead `m = null` init
+    const condUses = r.facts.filter(
+      (fa) => fa.bindingIdx === m && fa.def.line === fa.use.line && fa.use.line === 3,
+    );
+    expect(condUses.length).toBeGreaterThan(0);
   });
 });

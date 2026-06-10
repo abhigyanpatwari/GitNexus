@@ -1677,9 +1677,14 @@ export class LocalBackend {
             )
           : await executeParameterized(
               repo.lbugPath,
+              // Same BasicBlock exclusion as detect_changes (#2082 U7): on a
+              // --pdg index a function-heavy file has far more BasicBlock rows
+              // than symbols, so an unfiltered LIMIT 3 would surface nameless
+              // substrate rows and displace the real symbols.
               `
               MATCH (n)
               WHERE n.filePath = $filePath
+                AND NOT n.id STARTS WITH 'BasicBlock:'
               RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               LIMIT 3
             `,
@@ -2922,20 +2927,20 @@ export class LocalBackend {
         queryParams[`hunkEnd${i}`] = hunk.endLine;
       });
 
-      // `n.name IS NOT NULL` excludes BasicBlock rows: on a --pdg index every
-      // edited function otherwise contributes N nameless BasicBlock
-      // pseudo-"symbols" (they carry filePath/start/end but the table has no
-      // name column), inflating changed_count and risk level with rows no
-      // consumer can act on (#2082 U7). Blocks are implementation substrate,
-      // not symbols — the owning Function row already represents the change.
-      // Filtering on the name column beats a label predicate here because
-      // `labels(n)[0]` is known to come back empty for several node types
-      // (see enrichCandidateLabels), and BasicBlock is the only line-bearing
-      // table without `name` (Community/Process lack it too but carry no
-      // startLine, so the existing filter already drops them).
+      // Exclude BasicBlock rows by id prefix: on a --pdg index every edited
+      // function otherwise contributes N nameless BasicBlock pseudo-"symbols"
+      // (they carry filePath/start/end but no name), inflating changed_count
+      // and risk level with rows no consumer can act on (#2082 U7). Blocks
+      // are implementation substrate, not symbols — the owning Function row
+      // already represents the change. The id prefix (`BasicBlock:<file>:…`,
+      // cfg/emit.ts basicBlockId) beats a label predicate (`labels(n)[0]` is
+      // known to come back empty for several node types — see
+      // enrichCandidateLabels) AND beats `n.name IS NOT NULL` (which would
+      // also drop legitimate symbols whose name loaded as NULL, e.g.
+      // quoted-empty CSV fields for anonymous constructs).
       const symbolQuery = `
         MATCH (n) WHERE n.filePath ENDS WITH $filePath
-          AND n.name IS NOT NULL
+          AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
           AND (${overlapConditions})
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,

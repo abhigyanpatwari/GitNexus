@@ -370,17 +370,20 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   const requested = resolvePdgConfig(options);
   if (!requested && !recorded) return false;
   if (!requested || !recorded) return true;
-  return (
-    requested.maxFunctionLines !== recorded.maxFunctionLines ||
-    requested.maxEdgesPerFunction !== recorded.maxEdgesPerFunction ||
-    // M2 (#2082): an M1-era stamp has NO maxReachingDefEdgesPerFunction —
-    // `4000 !== undefined` trips here, which is what makes an M1→M2 upgrade
-    // force the full writeback that populates REACHING_DEF rows without
-    // `--force`. The comparator is field-wise on purpose; new emit-affecting
-    // knobs MUST join it (a knob the comparator misses silently strands a
-    // stale projection).
-    requested.maxReachingDefEdgesPerFunction !== recorded.maxReachingDefEdgesPerFunction
-  );
+  // Structural comparison over the KEY UNION of both resolved records — not a
+  // hand-maintained field list. Both sides come fully resolved from
+  // resolvePdgConfig, so any new emit-affecting knob added there joins the
+  // comparison automatically (M1's hand-extended comparator was the trap this
+  // closes: a knob it missed would silently strand a stale projection). It is
+  // also what makes the M1→M2 upgrade work with zero extra code: an M1-era
+  // stamp lacks maxReachingDefEdgesPerFunction, so `4000 !== undefined` trips
+  // a full writeback that populates REACHING_DEF rows without `--force`.
+  const reqRecord = requested as Record<string, unknown>;
+  const recRecord = recorded as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(reqRecord), ...Object.keys(recRecord)])) {
+    if (reqRecord[key] !== recRecord[key]) return true;
+  }
+  return false;
 };
 
 export async function runFullAnalysis(

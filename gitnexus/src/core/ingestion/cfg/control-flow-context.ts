@@ -17,6 +17,7 @@
  * reaching-defs pass (a taint false negative). A parallel stack cannot express
  * that between-ness, which is why the frames live here.
  */
+import type { CfgBuilder } from './cfg-builder.js';
 import type { CfgEdgeKind } from './types.js';
 
 interface LoopFrame {
@@ -111,12 +112,17 @@ export class ControlFlowContext {
     return fins;
   }
 
-  /** Target block for a `break` (no finalizer info) — see {@link resolveBreak}. */
+  /**
+   * Target block for a `break` (no finalizer info) — see {@link resolveBreak}.
+   * Prefer `resolveBreak` + {@link wireJumpThroughFinalizers} in visitors: a
+   * target-only lookup silently loses finalizer threading (the M2 soundness
+   * fix). Kept for target-shape assertions in tests.
+   */
   breakTarget(label?: string): number | undefined {
     return this.resolveBreak(label)?.target;
   }
 
-  /** Target block for a `continue` (no finalizer info) — see {@link resolveContinue}. */
+  /** Target block for a `continue` — same caveat as {@link breakTarget}. */
   continueTarget(label?: string): number | undefined {
     return this.resolveContinue(label)?.target;
   }
@@ -135,5 +141,52 @@ export class ControlFlowContext {
       if (matches(f)) return { target: targetOf(f), finalizers: crossed };
     }
     return undefined;
+  }
+}
+
+/**
+ * Wire a jump from `from` to `target`, routing through the finallys it
+ * crosses (innermost first). The first leg keeps the bare jump `kind`
+ * (preserving the "kind ⟹ source-block terminator" invariant in types.ts);
+ * each finally's completion leg is registered as pending on its frame with the
+ * matching `finally-*` kind and wired by the owning try via
+ * {@link drainFinalizerPending} once the finally's exits are known.
+ *
+ * Language-agnostic on purpose (#2082 M2): the threading protocol encodes
+ * three subtle invariants every future language visitor needs identically —
+ * keeping it here means a new visitor cannot drift on any of them.
+ */
+export function wireJumpThroughFinalizers(
+  builder: CfgBuilder,
+  from: number,
+  finalizers: readonly FinalizerFrame[],
+  target: number,
+  kind: 'return' | 'break' | 'continue',
+): void {
+  if (finalizers.length === 0) {
+    builder.edge(from, target, kind);
+    return;
+  }
+  const completionKind = `finally-${kind}` as CfgEdgeKind;
+  builder.edge(from, finalizers[0].entry, kind);
+  for (let i = 0; i < finalizers.length; i++) {
+    const to = i + 1 < finalizers.length ? finalizers[i + 1].entry : target;
+    finalizers[i].pending.push({ to, kind: completionKind });
+  }
+}
+
+/**
+ * Wire a popped finalizer frame's pending completion legs from the finally's
+ * exit blocks. A finally that itself always jumps (`finally { return 2; }`)
+ * has no exits — its pending legs wire nowhere, matching JS's
+ * finally-override semantics.
+ */
+export function drainFinalizerPending(
+  builder: CfgBuilder,
+  frame: FinalizerFrame,
+  finallyExits: readonly number[],
+): void {
+  for (const p of frame.pending) {
+    builder.connect(finallyExits, p.to, p.kind);
   }
 }

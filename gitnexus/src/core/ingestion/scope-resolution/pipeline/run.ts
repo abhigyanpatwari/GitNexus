@@ -762,8 +762,9 @@ export function runScopeResolution(
         // M2 (#2082 U4): reaching definitions over the same validated CFGs.
         // In-memory facts are computed per function and dropped after the
         // bounded (defBlock, useBlock, binding) projection is persisted —
-        // M3 recomputes via the same pure solver in-phase (KTD8).
-        const t0 = performance.now();
+        // M3 recomputes via the same pure solver in-phase (KTD8). Timing is
+        // PROF-gated like every other checkpoint here (zero cost when off).
+        const t0 = PROF ? performance.now() : 0;
         const rd = emitFileReachingDefs(
           graph,
           wellFormed,
@@ -771,7 +772,7 @@ export function runScopeResolution(
             DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
           (message) => logger.warn(message), // unconditional — R7, both layers
         );
-        pdgMs += performance.now() - t0;
+        if (PROF) pdgMs += performance.now() - t0;
         rdEdges += rd.edges;
         rdDropped += rd.droppedEdges;
         rdFacts += rd.facts;

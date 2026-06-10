@@ -42,14 +42,19 @@ export const DEFAULT_MAX_CFG_EDGES_PER_FUNCTION = 5000;
 export const DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION = 4000;
 
 /**
- * Fact-materialization limit handed to {@link computeReachingDefs} on the
- * emit path (#2082 M2 U3/F3): facts are O(defs×uses) BY SPEC in merge-heavy
- * code, and the edge cap alone bounds the GRAPH, not the per-function memory
- * spike of materializing facts before dedup. 4× the edge cap leaves dedup
- * headroom. Scales with a custom edge cap; unlimited when the edge cap is 0.
+ * Fact-materialization headroom over the edge cap (#2082 M2 U3/F3): facts are
+ * O(defs×uses) BY SPEC in merge-heavy code, and the edge cap alone bounds the
+ * GRAPH, not the per-function memory spike of materializing facts before
+ * dedup. {@link emitFileReachingDefs} hands `edgeCap × this` to
+ * `computeReachingDefs` as `maxFacts` (unlimited when the edge cap is 0) —
+ * single source of truth; the DEFAULT constant below is derived, never the
+ * mechanism.
  */
+export const REACHING_DEF_FACTS_PER_EDGE_CAP = 4;
+
+/** Derived emit-path fact limit at the default edge cap (bench/doc anchor). */
 export const DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION =
-  4 * DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION;
+  REACHING_DEF_FACTS_PER_EDGE_CAP * DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION;
 
 export interface CfgEmitResult {
   blocks: number;
@@ -93,42 +98,62 @@ export const isEmitSafeCfg = (cfg: FunctionCfg | undefined | null): cfg is Funct
   ) {
     return false;
   }
-  const blockIndices = new Set<number>();
-  for (const b of cfg.blocks) {
-    if (!Number.isInteger(b?.index)) return false;
-    blockIndices.add(b.index);
+  // Contiguity (index === position), not just integer-ness: every consumer —
+  // this module's id templating AND the reaching-defs solver's
+  // position-indexed adjacency arrays — assumes blocks[i].index === i. A
+  // membership-only check would admit a compacted channel ({index:0},{index:5})
+  // whose edge 0→5 passes membership but indexes past the arrays downstream.
+  for (let i = 0; i < cfg.blocks.length; i++) {
+    if (cfg.blocks[i]?.index !== i) return false;
   }
-  if (!cfg.edges.every((e) => blockIndices.has(e?.from) && blockIndices.has(e?.to))) return false;
+  const n = cfg.blocks.length;
+  return cfg.edges.every(
+    (e) =>
+      Number.isInteger(e?.from) &&
+      Number.isInteger(e?.to) &&
+      e.from >= 0 &&
+      e.from < n &&
+      e.to >= 0 &&
+      e.to < n,
+  );
+};
 
-  // M2 (#2082 U1/U4): the binding table + statement facts join the
-  // REACHING_DEF id path (binding name/declLine/declColumn template into edge
-  // ids; statement defs/uses index into the table). A statement record whose
-  // index escapes the table would silently fabricate `undefined`-keyed edge
-  // ids, so indices are checked for RANGE, not just integer-ness. A channel
-  // with statements but NO binding table is malformed by construction.
+/**
+ * Whether a structurally-valid CFG's M2 statement facts are safe to feed to
+ * the reaching-defs solver + REACHING_DEF id templating (#2082 U1/U4): the
+ * binding table's name/declLine/declColumn template into edge ids, and
+ * statement def/use indices must stay IN RANGE of the table (an escaping
+ * index would fabricate `undefined`-keyed ids). Deliberately SEPARATE from
+ * {@link isEmitSafeCfg}: malformed facts must cost only the function's
+ * REACHING_DEF projection — degrading to M1 behavior (CFG emitted, no facts)
+ * — never the BasicBlock/CFG layer itself.
+ */
+export const hasEmitSafeFacts = (cfg: FunctionCfg): boolean => {
   const bindings = cfg.bindings;
-  if (bindings !== undefined) {
-    if (!Array.isArray(bindings)) return false;
-    for (const b of bindings) {
-      if (
-        typeof b?.name !== 'string' ||
-        !Number.isInteger(b.declLine) ||
-        !Number.isInteger(b.declColumn)
-      ) {
-        return false;
-      }
+  if (bindings === undefined) {
+    // Pre-M2 channel — statements must be absent too.
+    return cfg.blocks.every((b) => b.statements === undefined);
+  }
+  if (!Array.isArray(bindings)) return false;
+  for (const b of bindings) {
+    if (
+      typeof b?.name !== 'string' ||
+      !Number.isInteger(b.declLine) ||
+      !Number.isInteger(b.declColumn)
+    ) {
+      return false;
     }
   }
-  const bindingCount = bindings?.length ?? 0;
+  const bindingCount = bindings.length;
+  const inRange = (i: number): boolean => Number.isInteger(i) && i >= 0 && i < bindingCount;
   for (const b of cfg.blocks) {
     const stmts = b.statements;
     if (stmts === undefined) continue;
-    if (bindings === undefined || !Array.isArray(stmts)) return false;
+    if (!Array.isArray(stmts)) return false;
     for (const s of stmts) {
       if (!Number.isInteger(s?.line) || !Array.isArray(s.defs) || !Array.isArray(s.uses)) {
         return false;
       }
-      const inRange = (i: number): boolean => Number.isInteger(i) && i >= 0 && i < bindingCount;
       if (!s.defs.every(inRange) || !s.uses.every(inRange)) return false;
     }
   }
@@ -208,10 +233,10 @@ export interface ReachingDefEmitResult {
   cappedFunctions: number;
   /** Functions whose FACT materialization hit the solver's maxFacts limit. */
   truncatedFunctions: number;
+  /** Functions whose facts failed {@link hasEmitSafeFacts} (CFG kept, facts skipped). */
+  malformedFactFunctions: number;
   /** Total statement-level facts the solver produced (pre-dedup telemetry). */
   facts: number;
-  /** Aggregate solve+dedup time in ms (PROF support). */
-  solveMs: number;
 }
 
 /**
@@ -254,19 +279,26 @@ export function emitFileReachingDefs(
     droppedEdges: 0,
     cappedFunctions: 0,
     truncatedFunctions: 0,
+    malformedFactFunctions: 0,
     facts: 0,
-    solveMs: 0,
   };
   const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
-  const maxFacts = Number.isFinite(cap) ? (cap as number) * 4 : 0; // 0 ⇒ unlimited
+  const maxFacts = Number.isFinite(cap) ? (cap as number) * REACHING_DEF_FACTS_PER_EDGE_CAP : 0; // 0 ⇒ unlimited
 
   for (const cfg of cfgs) {
-    const t0 = performance.now();
-    const r = computeReachingDefs(cfg, { maxFacts });
-    if (r.status === 'no-facts') {
-      result.solveMs += performance.now() - t0;
+    // Graceful degradation: malformed M2 facts cost only this function's
+    // REACHING_DEF projection — its BasicBlock/CFG layer was already emitted.
+    if (!hasEmitSafeFacts(cfg)) {
+      result.malformedFactFunctions++;
+      onWarn?.(
+        `[reaching-defs] ${cfg.filePath}:${cfg.functionStartLine}: malformed ` +
+          `statement facts (bad binding table or out-of-range fact indices) — ` +
+          `REACHING_DEF skipped for this function; its CFG is unaffected`,
+      );
       continue;
     }
+    const r = computeReachingDefs(cfg, { maxFacts });
+    if (r.status === 'no-facts') continue;
     result.facts += r.facts.length;
 
     const { filePath, functionStartLine, functionStartColumn } = cfg;
@@ -283,9 +315,7 @@ export function emitFileReachingDefs(
     // deduped order (and therefore cap truncation) is deterministic.
     const seen = new Set<string>();
     const deduped: { defBlock: number; useBlock: number; bindingIdx: number }[] = [];
-    const factsPerBinding = new Map<number, number>();
     for (const f of r.facts) {
-      factsPerBinding.set(f.bindingIdx, (factsPerBinding.get(f.bindingIdx) ?? 0) + 1);
       const key = `${f.def.blockIndex}:${f.use.blockIndex}:${f.bindingIdx}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -295,7 +325,6 @@ export function emitFileReachingDefs(
         bindingIdx: f.bindingIdx,
       });
     }
-    result.solveMs += performance.now() - t0;
 
     let emittedForFn = 0;
     for (const edge of deduped) {
@@ -303,6 +332,12 @@ export function emitFileReachingDefs(
         const dropped = deduped.length - emittedForFn;
         result.droppedEdges += dropped;
         result.cappedFunctions++;
+        // Tallied lazily — cap overflow is the rare path; the common uncapped
+        // case must not pay a per-fact counting pass.
+        const factsPerBinding = new Map<number, number>();
+        for (const f of r.facts) {
+          factsPerBinding.set(f.bindingIdx, (factsPerBinding.get(f.bindingIdx) ?? 0) + 1);
+        }
         const top = [...factsPerBinding.entries()]
           .sort((a, b) => b[1] - a[1] || a[0] - b[0])
           .slice(0, 2)

@@ -105,20 +105,14 @@ export class CfgBuilder {
   /**
    * Attach a facts-only statement record to a block WITHOUT touching its text
    * or line span (#2082 M2 U1) — bench fingerprints and CFG snapshots include
-   * block text, so harvesting must never perturb it. `prepend` is for records
-   * that lexically precede the block's statements: a `catch (e)` param def must
-   * sit at statement index 0 of the handler entry block or an in-block
-   * `use(e)` at index 0 would see no reaching def in the in-order sweep.
+   * block text, so harvesting must never perturb it (ENTRY-block param defs
+   * are the canonical use; records that must precede a walked body get their
+   * own facts-only block instead, see the catch-param handling in visitTry).
    */
-  attachFacts(
-    index: number,
-    facts: StatementFacts,
-    position: 'append' | 'prepend' = 'append',
-  ): void {
+  attachFacts(index: number, facts: StatementFacts): void {
     const b = this.blocks[index];
     if (!b) return;
-    if (position === 'prepend') b.statements.unshift(facts);
-    else b.statements.push(facts);
+    b.statements.push(facts);
   }
 
   get blockCount(): number {

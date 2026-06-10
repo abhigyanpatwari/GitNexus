@@ -61,7 +61,7 @@ describe('pdgModeMismatch — M1→M2 stamp upgrade (#2082 M2, pure)', () => {
 });
 
 describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
-  it('the symbol-overlap filter (name IS NOT NULL) excludes exactly the BasicBlock rows', async () => {
+  it('the symbol-overlap id-prefix filter excludes exactly the BasicBlock rows', async () => {
     const repo = await setupMiniRepo();
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -72,22 +72,19 @@ describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
       const { lbugPath } = getStoragePaths(repo.dbPath);
       await adapter.initLbug(lbugPath);
       try {
-        // Counterfactual: WITHOUT the U7 name filter, line-bearing nameless
-        // rows exist on a pdg index (the noise detect_changes used to report).
-        const nameless = (await adapter.executeQuery(
-          `MATCH (n) WHERE n.name IS NULL
+        // Counterfactual: WITHOUT the U7 filter, line-bearing BasicBlock rows
+        // exist on a pdg index (the noise detect_changes used to report).
+        const blocks = (await adapter.executeQuery(
+          `MATCH (n) WHERE n.id STARTS WITH 'BasicBlock:'
              AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
            RETURN n.id AS id`,
         )) as Array<{ id: string }>;
-        expect(nameless.length).toBeGreaterThan(0);
-        // …and every one of them is a BasicBlock — the filter excludes exactly
-        // the substrate rows, never a real symbol.
-        for (const row of nameless) {
-          expect(String(row.id)).toMatch(/^BasicBlock:/);
-        }
-        // With the U7 filter (what detectChanges now runs): zero BasicBlocks.
+        expect(blocks.length).toBeGreaterThan(0);
+        // With the U7 filter (the exact predicate detectChanges now runs —
+        // also validates STARTS WITH against the real engine): no BasicBlocks,
+        // real symbols intact.
         const symbols = (await adapter.executeQuery(
-          `MATCH (n) WHERE n.name IS NOT NULL
+          `MATCH (n) WHERE NOT n.id STARTS WITH 'BasicBlock:'
              AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
            RETURN n.id AS id`,
         )) as Array<{ id: string }>;
