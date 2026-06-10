@@ -12,14 +12,14 @@
  *
  * Runs with REAL `worker_threads` + `createWorkerPool` over the production
  * pool / merge / graph wiring, under `workerPoolSize: 1` (matching the
- * conservative workaround that still failed in the issue). The custom worker
- * is an ESM module that statically imports the REAL built `clone-safety`
- * helper from `dist/` and applies the exact production `postResultCloneSafe`
- * pattern — so this exercises the actual helper across a real `postMessage`
- * boundary (the fake-worker doubles used by the unit suite bypass structured
- * clone entirely and can't reproduce the failure).
+ * conservative workaround that still failed in the issue). The GREEN worker is
+ * an ESM module that statically imports and calls the REAL built
+ * `postResultCloneSafe` from `dist/` — so this exercises the actual production
+ * delivery wiring across a real `postMessage` boundary (the fake-worker doubles
+ * used by the unit suite bypass structured clone entirely and can't reproduce
+ * the failure).
  *
- * Build prerequisite: the worker imports `dist/.../clone-safety.js`, so
+ * Build prerequisite: the worker imports `dist/.../post-result.js`, so
  * `node scripts/build.js` must run first (the `pretest:integration` step does
  * this; a stale `dist/` would test old behavior).
  */
@@ -32,11 +32,11 @@ import { pathToFileURL } from 'node:url';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 
-// file:// URL of the BUILT clone-safety helper, imported by the ESM test worker.
-const CLONE_SAFETY_URL = new URL(
-  '../../dist/core/ingestion/workers/clone-safety.js',
-  import.meta.url,
-).href;
+// file:// URL of the BUILT production result-delivery helper, imported by the
+// ESM test worker so it exercises the REAL postResultCloneSafe wiring (the
+// {type:'warning'} post + skippedPaths append), not a re-implementation.
+const POST_RESULT_URL = new URL('../../dist/core/ingestion/workers/post-result.js', import.meta.url)
+  .href;
 
 const ACCUMULATED_INIT = `{
   nodes: [], relationships: [], symbols: [], calls: [], assignments: [],
@@ -70,27 +70,20 @@ const SUB_BATCH_HANDLER = `
     return;
   }`;
 
-/** GREEN worker: applies the real production clone-safety net before delivery. */
+/**
+ * GREEN worker: delivers via the REAL production postResultCloneSafe, so this
+ * test covers the actual wiring (the {type:'warning'} post + skippedPaths
+ * append), not a re-implementation that could drift from production.
+ */
 const CLONE_SAFE_WORKER = `
 import { parentPort } from 'node:worker_threads';
-import { isDataCloneError, makeWorkerResultCloneSafe } from '${CLONE_SAFETY_URL}';
+import { postResultCloneSafe } from '${POST_RESULT_URL}';
 const accumulated = ${ACCUMULATED_INIT};
 parentPort.postMessage({ type: 'ready' });
 parentPort.on('message', (msg) => {
 ${SUB_BATCH_HANDLER}
   if (msg && msg.type === 'flush') {
-    try {
-      parentPort.postMessage({ type: 'result', data: accumulated });
-      return;
-    } catch (err) {
-      if (!isDataCloneError(err)) throw err;
-    }
-    const { skipped } = makeWorkerResultCloneSafe(accumulated, {
-      dropWholeElement: new Set(['parsedFiles']),
-      skipFields: new Set(['skippedPaths']),
-    });
-    accumulated.skippedPaths = skipped;
-    parentPort.postMessage({ type: 'result', data: accumulated });
+    postResultCloneSafe(accumulated);
   }
 });
 `;
@@ -194,7 +187,11 @@ describe('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
   it('RED control: without clone-safety, the same poison result aborts the parse phase', async () => {
     // Pre-fix behavior: the raw non-cloneable result throws DataCloneError in
     // the worker; under POOL_SIZE=1 the pool exhausts the slot's respawn
-    // budget and rejects. (This is the contract the GREEN worker repairs.)
-    await expect(runWith(writeWorker(RAW_WORKER))).rejects.toThrow();
+    // budget and rejects. The matcher is the specific contract — not a bare
+    // .toThrow() — so an unrelated failure (spawn error, stale dist) can't pass
+    // it and mask a broken RED→GREEN flip.
+    await expect(runWith(writeWorker(RAW_WORKER))).rejects.toThrow(
+      /circuit breaker|consecutive failures|respawn budget|could not be cloned/i,
+    );
   });
 });

@@ -1,0 +1,67 @@
+/**
+ * Worker → main result delivery with clone-safety (#2112).
+ *
+ * Extracted from `parse-worker.ts` into its own side-effect-free module so it
+ * can be imported and exercised directly (the parse worker is an entry module:
+ * importing it would construct the parser, post `ready`, and attach the real
+ * message handler). The integration test imports `postResultCloneSafe` from
+ * here to cover the production wiring end to end rather than re-implementing it.
+ */
+import { parentPort } from 'node:worker_threads';
+
+import { isDataCloneError, makeWorkerResultCloneSafe } from './clone-safety.js';
+import type { ParseWorkerResult } from './parse-worker.js';
+
+/**
+ * Deliver the accumulated result to the pool, surviving a non-cloneable value
+ * (#2112). Fast path: post as-is — on a healthy result this is the only thing
+ * that runs, so clone-safety adds zero overhead to normal runs. If structured
+ * clone rejects the payload (a function/symbol leaked into an extraction
+ * record — the reporter's case was a node `properties` value pointing at a
+ * native `toString`), rewrite the boundary-crossing arrays so the result is
+ * cloneable, record the affected paths on `result.skippedPaths`, warn the
+ * operator naming the offending field + file (so the still-unpinned leak is
+ * diagnosable from logs and fixable at source), and re-post.
+ *
+ * The recovery path is wrapped in its own try/catch so a throw inside the
+ * sanitizer (an over-deep record, a throwing getter) or a still-uncloneable
+ * re-post fails closed to a primitive-only `{type:'error'}` DELIBERATELY —
+ * rather than escaping to the message handler's catch by accident and
+ * re-arming, under `POOL_SIZE=1`, the worker-death cascade this net prevents.
+ */
+export function postResultCloneSafe(result: ParseWorkerResult): void {
+  try {
+    parentPort!.postMessage({ type: 'result', data: result });
+    return;
+  } catch (err) {
+    if (!isDataCloneError(err)) throw err;
+  }
+  try {
+    // `as unknown as Record<string, unknown>` is the standard widening for a
+    // no-index-signature interface (TS rejects a single-step `as`). The field
+    // sets are typed to `keyof ParseWorkerResult` so renaming a field is a
+    // compile error here, not a silent loss of the drop-whole / skip protection.
+    const { skipped } = makeWorkerResultCloneSafe(result as unknown as Record<string, unknown>, {
+      dropWholeElement: new Set<keyof ParseWorkerResult>(['parsedFiles']),
+      skipFields: new Set<keyof ParseWorkerResult>(['skippedPaths']),
+    });
+    if (skipped.length > 0) {
+      result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
+      const sample = skipped
+        .slice(0, 5)
+        .map((s) => `${s.path} (${s.reason})`)
+        .join('; ');
+      const more = skipped.length > 5 ? ` …and ${skipped.length - 5} more` : '';
+      if (parentPort) {
+        parentPort.postMessage({
+          type: 'warning',
+          message: `Sanitized ${skipped.length} file(s) with non-serializable parse output before delivery: ${sample}${more}`,
+        });
+      }
+    }
+    parentPort!.postMessage({ type: 'result', data: result });
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    parentPort!.postMessage({ type: 'error', error: e.message, errorStack: e.stack });
+  }
+}
