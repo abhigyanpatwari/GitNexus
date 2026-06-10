@@ -207,12 +207,18 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     };
   }, []);
 
-  // Invalidate any in-flight analyze/upload request and hand the caller a
-  // fresh controller. Aborting the previous controller is load-bearing: once a
-  // mode switch resets `uploading`, the `uploading || isLoading` re-entry
-  // guard no longer covers the stale request — only its aborted signal does.
-  const renewRequestController = (): AbortController => {
+  // Abort any in-flight analyze/upload request so its settlement can't drive
+  // state. Aborting is load-bearing: once a mode switch resets `uploading`,
+  // the `uploading || isLoading` re-entry guard no longer covers the stale
+  // request — only its aborted signal does.
+  const invalidateRequest = (): void => {
     requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+  };
+
+  // Invalidate the previous request and hand the caller a fresh controller.
+  const renewRequestController = (): AbortController => {
+    invalidateRequest();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     return controller;
@@ -231,8 +237,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     // ModeTabs fires onChange on every click, including the already-active
     // tab — never abort the user's own in-flight request for a no-op click.
     if (m === mode) return;
-    requestControllerRef.current?.abort();
-    requestControllerRef.current = null;
+    invalidateRequest();
     setMode(m);
     setGithubUrl('');
     setGitlabUrl('');
@@ -299,7 +304,8 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             : localPath.trim();
       trackJob(jobId, nameSource);
     } catch (err) {
-      if (controller.signal.aborted || !isMountedRef.current) return;
+      // Unmount aborts the controller, so this also covers the unmounted case.
+      if (controller.signal.aborted) return;
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
       setPhase('error');
     }
@@ -360,10 +366,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       const { jobId } = await uploadFolder(files, manifest, controller.signal);
       if (controller.signal.aborted) {
         // The abort raced the response: the server already created the job.
+        // (Unmount aborts the controller, so this also covers unmounted.)
         cancelStaleJob(jobId);
         return;
       }
-      if (!isMountedRef.current) return;
       setUploading(false);
       trackJob(jobId, folderName);
     } catch (err) {
@@ -371,7 +377,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       // when it lands during fetch, raw AbortError when it lands during the
       // response-body read — so branch on the closure controller's signal,
       // never on the error identity.
-      if (controller.signal.aborted || !isMountedRef.current) return;
+      if (controller.signal.aborted) return;
       setUploading(false);
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
       setPhase('error');
@@ -384,8 +390,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     // Defensive: no UI path can reach handleCancel while a request is in
     // flight (the cancel affordance renders only at phase === 'analyzing'),
     // but invalidate it anyway so the guard topology has no holes.
-    requestControllerRef.current?.abort();
-    requestControllerRef.current = null;
+    invalidateRequest();
     if (jobIdRef.current) {
       try {
         await cancelAnalyze(jobIdRef.current);

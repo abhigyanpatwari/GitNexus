@@ -37,13 +37,24 @@ function deferred<T>() {
 
 const JOB = { jobId: 'job-1', status: 'queued' };
 
+/** Gate uploadFolder on a deferred promise and expose the signal it received. */
+function mockUploadWith(d: { promise: Promise<typeof JOB> }) {
+  let captured: AbortSignal | undefined;
+  vi.mocked(uploadFolder).mockImplementation((_files, _manifest, signal) => {
+    captured = signal;
+    return d.promise;
+  });
+  return { signal: () => captured };
+}
+
 /** Render, switch to Local Folder mode, and fire a folder selection. */
-async function startUpload() {
-  render(<RepoAnalyzer variant="onboarding" onComplete={vi.fn()} />);
+function startUpload() {
+  const view = render(<RepoAnalyzer variant="onboarding" onComplete={vi.fn()} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
   fireEvent.change(screen.getByTestId('folder-upload-input'), {
     target: { files: [new File(['x'], 'a.ts')] },
   });
+  return view;
 }
 
 beforeEach(async () => {
@@ -56,17 +67,13 @@ beforeEach(async () => {
 describe('folder upload', () => {
   it('a mode switch mid-upload makes the resolution inert and cancels the job', async () => {
     const d = deferred<typeof JOB>();
-    let captured: AbortSignal | undefined;
-    vi.mocked(uploadFolder).mockImplementation((_files, _manifest, signal) => {
-      captured = signal;
-      return d.promise;
-    });
+    const upload = mockUploadWith(d);
 
-    await startUpload();
+    startUpload();
     fireEvent.click(screen.getByRole('tab', { name: 'GitHub URL' }));
 
     // The wire abort happened at mode-switch time, not at resolution time.
-    expect(captured?.aborted).toBe(true);
+    expect(upload.signal()?.aborted).toBe(true);
 
     await act(async () => {
       d.resolve(JOB);
@@ -86,7 +93,7 @@ describe('folder upload', () => {
     const d = deferred<typeof JOB>();
     vi.mocked(uploadFolder).mockReturnValue(d.promise);
 
-    await startUpload();
+    startUpload();
     fireEvent.click(screen.getByRole('tab', { name: 'GitHub URL' }));
     await act(async () => {
       d.reject(err);
@@ -99,16 +106,12 @@ describe('folder upload', () => {
 
   it('a same-tab click does not abort the in-flight upload', async () => {
     const d = deferred<typeof JOB>();
-    let captured: AbortSignal | undefined;
-    vi.mocked(uploadFolder).mockImplementation((_files, _manifest, signal) => {
-      captured = signal;
-      return d.promise;
-    });
+    const upload = mockUploadWith(d);
 
-    await startUpload();
+    startUpload();
     fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
 
-    expect(captured?.aborted).toBe(false);
+    expect(upload.signal()?.aborted).toBe(false);
     await act(async () => {
       d.resolve(JOB);
     });
@@ -119,20 +122,12 @@ describe('folder upload', () => {
 
   it('an unmount mid-upload makes the resolution inert', async () => {
     const d = deferred<typeof JOB>();
-    let captured: AbortSignal | undefined;
-    vi.mocked(uploadFolder).mockImplementation((_files, _manifest, signal) => {
-      captured = signal;
-      return d.promise;
-    });
+    const upload = mockUploadWith(d);
 
-    const { unmount } = render(<RepoAnalyzer variant="onboarding" onComplete={vi.fn()} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
-    fireEvent.change(screen.getByTestId('folder-upload-input'), {
-      target: { files: [new File(['x'], 'a.ts')] },
-    });
+    const { unmount } = startUpload();
     unmount();
 
-    expect(captured?.aborted).toBe(true);
+    expect(upload.signal()?.aborted).toBe(true);
     await act(async () => {
       d.resolve(JOB);
     });
@@ -144,7 +139,7 @@ describe('folder upload', () => {
     const d = deferred<typeof JOB>();
     vi.mocked(uploadFolder).mockReturnValue(d.promise);
 
-    await startUpload();
+    startUpload();
     await act(async () => {
       d.resolve(JOB);
     });
@@ -158,7 +153,7 @@ describe('folder upload', () => {
     const d = deferred<typeof JOB>();
     vi.mocked(uploadFolder).mockReturnValue(d.promise);
 
-    await startUpload();
+    startUpload();
     await act(async () => {
       d.reject(new Error('upload exploded'));
     });

@@ -9,6 +9,7 @@ import {
   ingestUpload,
   DEFAULT_INGEST_LIMITS,
 } from '../../src/server/upload-ingest.js';
+import { STAGING_PREFIX } from '../../src/server/upload-paths.js';
 
 // ── resolveContainedDest (pure sanitizer — the load-bearing control) ──────────
 
@@ -177,7 +178,7 @@ describe('ingestUpload', () => {
 async function countStaging(root: string): Promise<number> {
   try {
     const entries = await fs.readdir(root);
-    return entries.filter((e) => e.startsWith('.staging-')).length;
+    return entries.filter((e) => e.startsWith(STAGING_PREFIX)).length;
   } catch {
     return 0;
   }
