@@ -100,6 +100,7 @@ export const processMarkdown = (
         targetId: sectionId,
         confidence: 1.0,
         reason: 'markdown-heading',
+        source: 'heuristic',
       });
 
       sectionStack.push({ level, id: sectionId });
@@ -147,6 +148,7 @@ export const processMarkdown = (
           targetId: targetFileId,
           confidence: 0.8,
           reason: 'markdown-link',
+          source: 'heuristic',
         });
         totalLinks++;
       }

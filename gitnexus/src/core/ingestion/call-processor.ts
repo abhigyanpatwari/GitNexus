@@ -16,7 +16,6 @@ import {
   inferCallForm,
   extractReceiverName,
   extractReceiverNode,
-  CALL_EXPRESSION_TYPES,
   extractMixedChain,
   type MixedChainStep,
 } from './utils/call-analysis.js';
@@ -312,6 +311,19 @@ export const processCalls = async (
   importedReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  /**
+   * WI-1 (#166 P3 Mode A) — optional LSP candidate feeds.
+   *
+   * Mirrors `processCallsFromExtracted`'s 7th positional arg byte-for-byte.
+   * When `opts.lsp` is true, the active sequential emit site (`:623-652`)
+   * pushes a `CorrectionFeedItem` on each `global`-0.50 winner and a
+   * `RecallFeedItem` on every unresolved site, recording the callee
+   * identifier position (`nameNode.startPosition.{row,column}`).
+   *
+   * Default `analyze` (no `--lsp`) leaves `opts` undefined; every push
+   * is gated by `opts?.lsp`, so the hot path stays byte-identical.
+   */
+  opts?: ProcessCallsOpts,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -503,12 +515,14 @@ export const processCalls = async (
               graph.addRelationship({
                 id: relId, sourceId: fileId, targetId: nodeId,
                 type: 'DEFINES', confidence: 1.0, reason: '',
+                source: 'heuristic',
               });
               if (propEnclosingClassId) {
                 graph.addRelationship({
                   id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
                   sourceId: propEnclosingClassId, targetId: nodeId,
                   type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
+                  source: 'heuristic',
                 });
               }
             }
@@ -630,8 +644,45 @@ export const processCalls = async (
         receiverName,
       }, file.path, ctx, hints, widenCache);
 
-      if (!resolved) return;
+      if (!resolved) {
+        // WI-1 (#166 P3 Mode A) — push genuinely-unresolved site to recall
+        // feed. Mirrors processCallsFromExtracted (:1447-1457) byte-for-byte
+        // except we use `nameNode.startPosition.{row,column}` (always
+        // present here — the `!nameNode` guard above at :460 already
+        // returned) and `file.path`. The four earlier forEach early-returns
+        // (router skip/import :469, heritage :480, properties :514,
+        // isBuiltInName :522) correctly pre-filter non-call-targets, so
+        // this site is a real call target with no heuristic winner.
+        // Gated by opts?.lsp so default analyze stays byte-identical.
+        if (opts?.lsp && opts.recallFeed) {
+          opts.recallFeed.push({
+            sourceId,
+            calledName,
+            file: file.path,
+            line: nameNode.startPosition.row,
+            character: nameNode.startPosition.column,
+          });
+        }
+        return;
+      }
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
+
+      // WI-1 (#166 P3 Mode A) — push `global`-0.50 winner to correction
+      // feed. Mirrors processCallsFromExtracted (:1471-1480) byte-for-byte
+      // (addRelationship still runs in the default path; the push is
+      // additive and gated by opts?.lsp). The reconciler re-resolves it
+      // via LSP and either confirms (same target), corrects (different
+      // target), or refuses (non-callable / no node).
+      if (opts?.lsp && opts.correctionFeed && resolved.reason === 'global') {
+        opts.correctionFeed.push({
+          sourceId,
+          calledName,
+          oldTargetId: resolved.nodeId,
+          file: file.path,
+          line: nameNode.startPosition.row,
+          character: nameNode.startPosition.column,
+        });
+      }
 
       graph.addRelationship({
         id: relId,
@@ -640,6 +691,7 @@ export const processCalls = async (
         type: 'CALLS',
         confidence: resolved.confidence,
         reason: resolved.reason,
+        source: 'heuristic',
       });
     });
 
@@ -658,6 +710,7 @@ export const processCalls = async (
         type: 'ACCESSES',
         confidence: 1.0,
         reason: 'write',
+        source: 'heuristic',
       });
     }
   }
@@ -690,6 +743,15 @@ const CALLABLE_SYMBOL_TYPES = new Set([
   'Macro',
   'Delegate',
 ]);
+
+/**
+ * The set of symbol types that may be the target of a CALLS
+ * edge. Exported for the Mode A reconciler (WI-4b, KD-3):
+ * a mapped Location whose label is not in this set must NOT
+ * mint a CALLS relationship (the callee-label precondition,
+ * AC-4 / I-3).
+ */
+export { CALLABLE_SYMBOL_TYPES };
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
@@ -1165,6 +1227,7 @@ const makeAccessEmitter = (
       type: 'ACCESSES',
       confidence: 1.0,
       reason: 'read',
+      source: 'heuristic',
     });
   };
 };
@@ -1224,6 +1287,53 @@ const walkMixedChain = (
 };
 
 /**
+ * WI-2 — Mode A candidate feed (correction).
+ *
+ * A `global`-0.50 edge is the weakest heuristic resolution. Each entry captures
+ * the call site (source node + called name + callee-identifier position) and the
+ * old target id, so the reconciler can `textDocument/definition` at `line`/`character`
+ * and either confirm, correct, or refuse.
+ */
+export interface CorrectionFeedItem {
+  sourceId: string;
+  calledName: string;
+  /** Heuristic target id (the `global`-0.50 winner). Absent for ambiguous sites. */
+  oldTargetId?: string;
+  file: string;
+  /** 0-based line of the callee identifier (callNameNode.startPosition.row). */
+  line: number;
+  /** 0-based column of the callee identifier. */
+  character: number;
+}
+
+/**
+ * WI-2 — Mode A candidate feed (recall).
+ *
+ * Sites the heuristic dropped (ambiguous, no candidates, or filtered to non-callable)
+ * are recorded so the reconciler can re-resolve them via LSP and mint `lsp-recall` edges.
+ */
+export interface RecallFeedItem {
+  sourceId: string;
+  calledName: string;
+  file: string;
+  line: number;
+  character: number;
+}
+
+/**
+ * Optional behaviors gated behind `opts.lsp` so the default `analyze` (no flag)
+ * stays byte-identical. Feeds are only pushed to when `lsp:true` is passed.
+ */
+export interface ProcessCallsOpts {
+  /** When true, push candidate-feed entries (correction + recall). */
+  lsp?: boolean;
+  /** Sink for `global`-0.50 correction candidates. Required when `lsp:true` for that feed. */
+  correctionFeed?: CorrectionFeedItem[];
+  /** Sink for unresolved/ambiguous recall candidates. */
+  recallFeed?: RecallFeedItem[];
+}
+
+/**
  * Fast path: resolve pre-extracted call sites from workers.
  * No AST parsing — workers already extracted calledName + sourceId.
  */
@@ -1234,6 +1344,7 @@ export const processCallsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
   typeEnvBindings?: FileTypeEnvBindings[],
+  opts?: ProcessCallsOpts,
 ) => {
   const logVerbose = isVerboseIngestionEnabled();
   let totalCalls = 0;
@@ -1385,6 +1496,20 @@ export const processCallsFromExtracted = async (
             console.debug(`[call-resolution] FAILED: calledName="${effectiveCall.calledName}" filePath="${effectiveCall.filePath}" receiverTypeName="${effectiveCall.receiverTypeName ?? 'none'}" reason="${reason}" candidates="${tiered?.candidates.length ?? 0}"`);
           }
         }
+        // WI-2 — Mode A: push unresolved site to recall feed (gated by opts.lsp;
+        // feeds are only touched when the flag is on, so the default path stays
+        // byte-identical).
+        if (opts?.lsp && opts.recallFeed) {
+          opts.recallFeed.push({
+            sourceId: effectiveCall.sourceId,
+            calledName: effectiveCall.calledName,
+            file: effectiveCall.filePath,
+            // callee-identifier position; fall back to 0/0 when the worker did
+            // not capture a call.name node (older emitters, synthetic calls).
+            line: effectiveCall.line ?? 0,
+            character: effectiveCall.character ?? 0,
+          });
+        }
         continue;
       }
 
@@ -1395,6 +1520,20 @@ export const processCallsFromExtracted = async (
 
       resolvedCalls++;
 
+      // WI-2 — Mode A: push `global`-0.50 winner to correction feed. The reconciler
+      // re-resolves it via LSP and either confirms (same target), corrects
+      // (different target), or refuses (non-callable / no node).
+      if (opts?.lsp && opts.correctionFeed && resolved.reason === 'global') {
+        opts.correctionFeed.push({
+          sourceId: effectiveCall.sourceId,
+          calledName: effectiveCall.calledName,
+          oldTargetId: resolved.nodeId,
+          file: effectiveCall.filePath,
+          line: effectiveCall.line ?? 0,
+          character: effectiveCall.character ?? 0,
+        });
+      }
+
       const relId = generateId('CALLS', `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`);
       graph.addRelationship({
         id: relId,
@@ -1403,6 +1542,7 @@ export const processCallsFromExtracted = async (
         type: 'CALLS',
         confidence: resolved.confidence,
         reason: resolved.reason,
+        source: 'heuristic',
       });
     }
 
@@ -1472,6 +1612,7 @@ export const processAssignmentsFromExtracted = (
       type: 'ACCESSES',
       confidence: 1.0,
       reason: 'write',
+      source: 'heuristic',
     });
   }
 };
@@ -1654,6 +1795,7 @@ export const processRoutesFromExtracted = async (
         type: 'DEFINES',
         confidence: 1.0,
         reason: 'spring-route',
+        source: 'heuristic',
       });
 
       // Create CALLS edge (Route → Method)
@@ -1664,6 +1806,7 @@ export const processRoutesFromExtracted = async (
         type: 'CALLS',
         confidence: confidence,
         reason: 'spring-route',
+        source: 'heuristic',
       });
     } else {
       // Laravel routes: create CALLS edge from File to Method (no Route node)
@@ -1679,6 +1822,7 @@ export const processRoutesFromExtracted = async (
           type: 'CALLS',
           confidence: confidence * 0.8,
           reason: 'laravel-route',
+          source: 'heuristic',
         });
         continue;
       }
@@ -1691,6 +1835,7 @@ export const processRoutesFromExtracted = async (
         type: 'CALLS',
         confidence,
         reason: 'laravel-route',
+        source: 'heuristic',
       });
     }
   }
@@ -1744,6 +1889,7 @@ export const processExpoRoutesWithRepoId = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'expo-router-file',
+      source: 'heuristic',
     });
 
     routeRegistry.set(routeURL, filePath);
@@ -1802,6 +1948,7 @@ export const processNextjsRoutesWithRepoId = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'nextjs-app-router',
+      source: 'heuristic',
     });
 
     routeRegistry.set(routeURL, filePath);
@@ -1858,6 +2005,7 @@ export const processDecoratorRoutesWithRepoId = (
       type: 'DEFINES',
       confidence: 1.0,
       reason: 'express-route',
+      source: 'heuristic',
     });
 
     graph.addRelationship({
@@ -1867,6 +2015,7 @@ export const processDecoratorRoutesWithRepoId = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'express-route',
+      source: 'heuristic',
     });
   }
 };
@@ -1918,6 +2067,7 @@ export const processPHPRoutesWithRepoId = (
       type: 'DEFINES',
       confidence: 1.0,
       reason: 'php-file-route',
+      source: 'heuristic',
     });
 
     graph.addRelationship({
@@ -1927,6 +2077,7 @@ export const processPHPRoutesWithRepoId = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'php-file-route',
+      source: 'heuristic',
     });
   }
 };
@@ -1985,6 +2136,7 @@ export const processDecoratorRoutes = (
       type: 'DEFINES',
       confidence: 1.0,
       reason: 'express-route',
+      source: 'heuristic',
     });
 
     // Create HANDLES_ROUTE edge (File -> Route)
@@ -1995,6 +2147,7 @@ export const processDecoratorRoutes = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'express-route',
+      source: 'heuristic',
     });
   }
 
@@ -2062,6 +2215,7 @@ export const processPHPRoutes = (
       type: 'DEFINES',
       confidence: 1.0,
       reason: 'php-file-route',
+      source: 'heuristic',
     });
 
     // Create HANDLES_ROUTE edge (File -> Route)
@@ -2072,6 +2226,7 @@ export const processPHPRoutes = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'php-file-route',
+      source: 'heuristic',
     });
   }
 
@@ -2142,6 +2297,7 @@ export const processNextjsRoutes = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'nextjs-app-router',
+      source: 'heuristic',
     });
 
     routeRegistry.set(routeURL, filePath);
@@ -2199,6 +2355,7 @@ export const processORMQueriesFromExtracted = (
       type: 'QUERIES',
       confidence: 1.0,
       reason: query.operation,
+      source: 'heuristic',
     });
   }
 
@@ -2261,6 +2418,7 @@ export const processExpoRoutes = (
       type: 'HANDLES_ROUTE',
       confidence: 1.0,
       reason: 'expo-router-file',
+      source: 'heuristic',
     });
 
     routeRegistry.set(routeURL, filePath);
@@ -2490,6 +2648,7 @@ export const processNextjsFetchRoutes = (
           type: 'FETCHES',
           confidence: 0.9,
           reason,
+          source: 'heuristic',
         });
         if (isVerboseIngestionEnabled()) {
           console.debug(`[fetch-routes] Created FETCHES: ${sourceId} → ${routeNodeId}, reason=${reason}`);
@@ -2531,6 +2690,7 @@ export const processExpoRouterNavigations = (
           type: 'FETCHES',
           confidence: 0.85,
           reason: `expo-router:${nav.method.toLowerCase()}`,
+          source: 'heuristic',
         });
         if (isVerboseIngestionEnabled()) {
           console.debug(`[expo-nav] Created FETCHES: ${sourceId} → ${routeNodeId} via ${nav.method}`);
@@ -2719,6 +2879,7 @@ export const processToolDefsFromExtracted = async (
       type: 'HANDLES_TOOL',
       confidence: 1.0,
       reason: 'mcp-tool-decorator',
+      source: 'heuristic',
     });
 
     // Try to resolve the function and create CALLS edge (Tool → Function)
@@ -2733,6 +2894,7 @@ export const processToolDefsFromExtracted = async (
         type: 'CALLS',
         confidence,
         reason: 'mcp-tool-handler',
+        source: 'heuristic',
       });
     }
   }

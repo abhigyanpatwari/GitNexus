@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { processCallsFromExtracted, seedCrossFileReceiverTypes, extractConsumerAccessedKeys, processNextjsFetchRoutes } from '../../src/core/ingestion/call-processor.js';
+import {
+  processCalls,
+  processCallsFromExtracted,
+  seedCrossFileReceiverTypes,
+  extractConsumerAccessedKeys,
+  processNextjsFetchRoutes,
+  type CorrectionFeedItem,
+  type RecallFeedItem,
+} from '../../src/core/ingestion/call-processor.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import type { ExtractedCall, ExtractedFetchCall, FileConstructorBindings } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('processCallsFromExtracted', () => {
@@ -764,6 +773,416 @@ describe('processCallsFromExtracted', () => {
     // Multiple implementers, no overload hints -> ambiguous
     const rels = graph.relationships.filter(r => r.type === 'CALLS');
     expect(rels).toHaveLength(0);
+  });
+
+  // ---- WI-2 — Mode A candidate feed (correction + recall) ----
+
+  it('default path: feeds stay empty and CALLS counts are identical', async () => {
+    ctx.symbols.add('src/other.ts', 'uniqueFunc', 'Function:src/other.ts:uniqueFunc', 'Function');
+
+    // Mix of resolvable (global), unresolvable (no candidate), and same-file so
+    // the assertion isn't a single-edge happy path.
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/index.ts', calledName: 'uniqueFunc', sourceId: 'Function:src/index.ts:main', line: 10, character: 4 },
+      { filePath: 'src/index.ts', calledName: 'doesNotExist', sourceId: 'Function:src/index.ts:main', line: 20, character: 4 },
+    ];
+
+    const correctionFeed: import('../../src/core/ingestion/call-processor.js').CorrectionFeedItem[] = [];
+    const recallFeed: import('../../src/core/ingestion/call-processor.js').RecallFeedItem[] = [];
+    const opts = { lsp: false, correctionFeed, recallFeed };
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, undefined, opts);
+
+    const callsCount = graph.relationships.filter(r => r.type === 'CALLS').length;
+    expect(callsCount).toBe(1);
+    // Feeds must not be touched when opts.lsp is false.
+    expect(correctionFeed).toEqual([]);
+    expect(recallFeed).toEqual([]);
+  });
+
+  it('lsp:true — global-0.50 edges populate the correction feed', async () => {
+    ctx.symbols.add('src/other.ts', 'uniqueFunc', 'Function:src/other.ts:uniqueFunc', 'Function');
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/index.ts',
+      calledName: 'uniqueFunc',
+      sourceId: 'Function:src/index.ts:main',
+      line: 42,
+      character: 7,
+    }];
+
+    const correctionFeed: import('../../src/core/ingestion/call-processor.js').CorrectionFeedItem[] = [];
+    const recallFeed: import('../../src/core/ingestion/call-processor.js').RecallFeedItem[] = [];
+
+    await processCallsFromExtracted(
+      graph, calls, ctx, undefined, undefined, undefined,
+      { lsp: true, correctionFeed, recallFeed },
+    );
+
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].reason).toBe('global');
+    expect(rels[0].confidence).toBe(0.5);
+
+    expect(correctionFeed).toEqual([{
+      sourceId: 'Function:src/index.ts:main',
+      calledName: 'uniqueFunc',
+      oldTargetId: 'Function:src/other.ts:uniqueFunc',
+      file: 'src/index.ts',
+      line: 42,
+      character: 7,
+    }]);
+    expect(recallFeed).toEqual([]);
+  });
+
+  it('lsp:true — unresolved/ambiguous sites populate the recall feed', async () => {
+    // Two symbols named the same → ambiguous → recall feed.
+    ctx.symbols.add('src/a.ts', 'render', 'Function:src/a.ts:render', 'Function');
+    ctx.symbols.add('src/b.ts', 'render', 'Function:src/b.ts:render', 'Function');
+    // No candidate at all → recall feed.
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/index.ts', calledName: 'render', sourceId: 'Function:src/index.ts:main', line: 5, character: 3 },
+      { filePath: 'src/index.ts', calledName: 'ghost', sourceId: 'Function:src/index.ts:main', line: 8, character: 3 },
+    ];
+
+    const correctionFeed: import('../../src/core/ingestion/call-processor.js').CorrectionFeedItem[] = [];
+    const recallFeed: import('../../src/core/ingestion/call-processor.js').RecallFeedItem[] = [];
+
+    await processCallsFromExtracted(
+      graph, calls, ctx, undefined, undefined, undefined,
+      { lsp: true, correctionFeed, recallFeed },
+    );
+
+    expect(graph.relationships.filter(r => r.type === 'CALLS')).toHaveLength(0);
+    expect(correctionFeed).toEqual([]);
+    expect(recallFeed).toEqual([
+      { sourceId: 'Function:src/index.ts:main', calledName: 'render', file: 'src/index.ts', line: 5, character: 3 },
+      { sourceId: 'Function:src/index.ts:main', calledName: 'ghost',  file: 'src/index.ts', line: 8, character: 3 },
+    ]);
+  });
+
+  it('member-call a.b.c() records the `c` position, not the `a` position', async () => {
+    // We can\'t drive real tree-sitter here; instead assert that whatever
+    // line/character ExtractedCall carries is what the feed records.
+    // The worker (parse-worker.ts:2682) emits `callNameNode.startPosition`, which
+    // is the `c` identifier for `a.b.c()`. This test pins the contract.
+    ctx.symbols.add('src/other.ts', 'c', 'Function:src/other.ts:c', 'Function');
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/index.ts',
+      calledName: 'c',
+      callForm: 'member',
+      receiverName: 'a',
+      sourceId: 'Function:src/index.ts:main',
+      // Empirically the column of `c` in `a.b.c()` is the column of `c` itself,
+      // not of `a`. Worker passes callNameNode.startPosition through unchanged.
+      line: 100,
+      character: 8,
+    }];
+
+    const correctionFeed: import('../../src/core/ingestion/call-processor.js').CorrectionFeedItem[] = [];
+    const recallFeed: import('../../src/core/ingestion/call-processor.js').RecallFeedItem[] = [];
+
+    await processCallsFromExtracted(
+      graph, calls, ctx, undefined, undefined, undefined,
+      { lsp: true, correctionFeed, recallFeed },
+    );
+
+    expect(correctionFeed).toEqual([{
+      sourceId: 'Function:src/index.ts:main',
+      calledName: 'c',
+      oldTargetId: 'Function:src/other.ts:c',
+      file: 'src/index.ts',
+      line: 100,
+      character: 8,
+    }]);
+  });
+});
+
+describe('processCalls — Mode A candidate feeds (WI-1 / #166)', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  // AC-5: default analyze (opts undefined) is byte-identical; feeds stay empty.
+  // Drives the active sequential resolver on a real TypeScript file with a single
+  // call site and asserts (a) the CALLS edge exists and (b) the default path
+  // (no opts arg) does not error. Since the default path has no feed handles,
+  // the byte-identity invariant is that the call signature accepts a missing
+  // 10th arg without complaint — the gated `opts?.lsp && opts.<feed>` predicates
+  // short-circuit to falsy and no push ever runs.
+  it('default path (opts undefined) — identical CALLS counts, no error, signature accepts missing 10th arg', async () => {
+    ctx.symbols.add('src/utils.ts', 'format', 'Function:src/utils.ts:format', 'Function');
+    ctx.importMap.set('src/index.ts', new Set(['src/utils.ts']));
+
+    const files = [
+      {
+        path: 'src/index.ts',
+        content: 'import { format } from "./utils";\nexport function main() { format("hi"); }\n',
+      },
+    ];
+
+    // No opts arg → all gated push predicates (`opts?.lsp && opts.<feed>`) are falsy.
+    const heritage = await processCalls(graph, files, createASTCache(files.length), ctx);
+    expect(heritage).toEqual([]);
+
+    const callsEdges = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(callsEdges).toHaveLength(1);
+    // Graph-level default stamp is 'heuristic' (B1 integration contract);
+    // KD-7 serializer-side default only kicks in on the DB write path.
+    expect(callsEdges[0].source).toBe('heuristic');
+  });
+
+  // AC-1: a `global`-0.50 site populates `correctionFeed` with the callee
+  // identifier position when opts.lsp is true.
+  it('lsp:true — global-0.50 site populates the correction feed with callee-identifier position', async () => {
+    ctx.symbols.add('src/other.ts', 'uniqueFunc', 'Function:src/other.ts:uniqueFunc', 'Function');
+
+    const files = [
+      { path: 'src/caller.ts', content: 'export function main() { uniqueFunc(); }\n' },
+    ];
+    const cf: CorrectionFeedItem[] = [];
+    const rf: RecallFeedItem[] = [];
+
+    await processCalls(
+      graph, files, createASTCache(files.length), ctx,
+      undefined, undefined, undefined, undefined, undefined,
+      { lsp: true, correctionFeed: cf, recallFeed: rf },
+    );
+
+    const callsEdges = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(callsEdges).toHaveLength(1);
+    expect(callsEdges[0].reason).toBe('global');
+    expect(callsEdges[0].confidence).toBe(0.5);
+
+    expect(rf).toEqual([]);
+    expect(cf).toHaveLength(1);
+    const item = cf[0];
+    expect(item.sourceId).toBe('Function:src/caller.ts:main');
+    expect(item.calledName).toBe('uniqueFunc');
+    expect(item.oldTargetId).toBe('Function:src/other.ts:uniqueFunc');
+    expect(item.file).toBe('src/caller.ts');
+    // The `uniqueFunc` identifier starts on line 0 (zero-indexed), at the column
+    // immediately after `main() { ` — pins the callee-identifier position contract.
+    expect(item.line).toBe(0);
+    expect(typeof item.character).toBe('number');
+    expect(item.character).toBeGreaterThanOrEqual(0);
+  });
+
+  // AC-1 / I-2: an unresolved site populates `recallFeed` (no `oldTargetId`).
+  it('lsp:true — unresolved site populates the recall feed (no oldTargetId)', async () => {
+    const files = [
+      { path: 'src/caller.ts', content: 'export function main() { ghostCall(); }\n' },
+    ];
+    const cf: CorrectionFeedItem[] = [];
+    const rf: RecallFeedItem[] = [];
+
+    await processCalls(
+      graph, files, createASTCache(files.length), ctx,
+      undefined, undefined, undefined, undefined, undefined,
+      { lsp: true, correctionFeed: cf, recallFeed: rf },
+    );
+
+    expect(graph.relationships.filter(r => r.type === 'CALLS')).toHaveLength(0);
+    expect(cf).toEqual([]);
+    expect(rf).toHaveLength(1);
+    expect(rf[0].sourceId).toBe('Function:src/caller.ts:main');
+    expect(rf[0].calledName).toBe('ghostCall');
+    expect(rf[0].file).toBe('src/caller.ts');
+    // 'oldTargetId' is intentionally absent on recall items.
+    expect((rf[0] as any).oldTargetId).toBeUndefined();
+  });
+
+  // AC-2: a member call `a.b.c()` records the `.c` callee-identifier position.
+  // The capture parse-worker uses for the call.name is the `c` identifier
+  // (call-processor.ts:460-462), not the receiver `a`. The resolver falls
+  // through to a global lookup for `c` and finds it (we seeded it), so this
+  // site lands in the *correction* feed (reason: 'global', confidence: 0.5).
+  it('lsp:true — member call a.b.c() records the .c callee-identifier position, not the receiver', async () => {
+    ctx.symbols.add('src/other.ts', 'c', 'Function:src/other.ts:c', 'Function');
+
+    // Line 1 has the call: `  a.b.c();`
+    //   0123456789
+    //     a.b.c();
+    // So `c` is at column 6 of line 1 (NOT the column of `a` at col 2).
+    const files = [
+      {
+        path: 'src/caller.ts',
+        content: 'export function main() {\n  a.b.c();\n}\n',
+      },
+    ];
+    const cf: CorrectionFeedItem[] = [];
+    const rf: RecallFeedItem[] = [];
+
+    await processCalls(
+      graph, files, createASTCache(files.length), ctx,
+      undefined, undefined, undefined, undefined, undefined,
+      { lsp: true, correctionFeed: cf, recallFeed: rf },
+    );
+
+    // The call resolves globally → correction feed (AC-1 path).
+    expect(rf).toEqual([]);
+    expect(cf).toHaveLength(1);
+    expect(cf[0].calledName).toBe('c');
+    // Line 1 (the body line), not line 0 (the function signature).
+    expect(cf[0].line).toBe(1);
+    // The exact column of `c` in `  a.b.c();` — not the column of `a` (col 2).
+    expect(cf[0].character).toBe(6);
+  });
+
+  // AC-3: a router/builtin-dropped site emits no recall candidate.
+  // The TypeScript router classifies `console` as a built-in; `console.log`
+  // is therefore routed-and-dropped by `isBuiltInName` at :522 (the
+  // forEach early-return). No recall entry should be recorded.
+  it('lsp:true — router/builtin-dropped site emits no recall candidate', async () => {
+    const files = [
+      { path: 'src/caller.ts', content: 'export function main() { console.log("x"); }\n' },
+    ];
+    const cf: CorrectionFeedItem[] = [];
+    const rf: RecallFeedItem[] = [];
+
+    await processCalls(
+      graph, files, createASTCache(files.length), ctx,
+      undefined, undefined, undefined, undefined, undefined,
+      { lsp: true, correctionFeed: cf, recallFeed: rf },
+    );
+
+    expect(graph.relationships.filter(r => r.type === 'CALLS')).toHaveLength(0);
+    // Built-in name pre-filter must not push any feed entries.
+    expect(cf).toEqual([]);
+    expect(rf).toEqual([]);
+  });
+
+  // AC-5 / I-1: opts.lsp=false (or opts without lsp:true) must be a no-op
+  // on the feeds while preserving the CALLS count exactly.
+  it('lsp:false (or truthy opts without lsp) — feeds stay empty, CALLS count unchanged', async () => {
+    ctx.symbols.add('src/other.ts', 'uniqueFunc', 'Function:src/other.ts:uniqueFunc', 'Function');
+
+    const files = [
+      { path: 'src/caller.ts', content: 'export function main() { uniqueFunc(); }\n' },
+    ];
+    const cf: CorrectionFeedItem[] = [];
+    const rf: RecallFeedItem[] = [];
+
+    // Pass `lsp:false` explicitly. The push predicates short-circuit on
+    // `opts?.lsp === false`, so the function still emits the CALLS edge
+    // (the default behavior) but never touches the feed arrays.
+    await processCalls(
+      graph, files, createASTCache(files.length), ctx,
+      undefined, undefined, undefined, undefined, undefined,
+      { lsp: false, correctionFeed: cf, recallFeed: rf },
+    );
+
+    expect(graph.relationships.filter(r => r.type === 'CALLS')).toHaveLength(1);
+    expect(cf).toEqual([]);
+    expect(rf).toEqual([]);
+  });
+});
+
+describe('candidateLocationKey dedup (WI-1 / #166)', () => {
+  // AC-4: a call site reachable by both producers (`processCalls` + Angular
+  // post-pass) yields exactly one candidate after dedup.
+  // The dedup happens in `pipeline.ts` between the merge site and
+  // `withReconciliationSession`. We assert the *function* of the dedup
+  // (Map-keyed uniqueness by `candidateLocationKey`) by replaying the
+  // shape directly: two candidates with identical (sourceId, calledName,
+  // file, line, character) must collapse to one.
+  it('two producers reaching the same site collapse to one candidate', async () => {
+    const { candidateLocationKey } = await import(
+      '../../src/core/ingestion/mode-a-reconciler.js'
+    );
+    type Candidate = {
+      sourceId: string;
+      calledName: string;
+      oldTargetId?: string;
+      file: string;
+      line: number;
+      character: number;
+    };
+
+    const shared = {
+      sourceId: 'Function:src/a.ts:main',
+      calledName: 'foo',
+      file: 'src/a.ts',
+      line: 10,
+      character: 4,
+    };
+
+    const correction: Candidate = { ...shared, oldTargetId: 'Function:src/b.ts:foo' };
+    const recall: Candidate = { ...shared }; // no oldTargetId
+
+    // Simulate the pipeline merge order: correction first, then recall.
+    const candidates: Candidate[] = [correction, recall];
+
+    const deduped: Candidate[] = [];
+    const seen = new Set<string>();
+    for (const c of candidates) {
+      const k = candidateLocationKey(c);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      deduped.push(c);
+    }
+
+    expect(deduped).toHaveLength(1);
+    // First-writer wins: the correction shape (with oldTargetId) is kept,
+    // not the recall shape. This matters because the engine keys its
+    // confirmation pass on `oldTargetId`.
+    expect(deduped[0].oldTargetId).toBe('Function:src/b.ts:foo');
+  });
+
+  it('distinct sites are not collapsed by dedup', async () => {
+    const { candidateLocationKey } = await import(
+      '../../src/core/ingestion/mode-a-reconciler.js'
+    );
+    type Candidate = {
+      sourceId: string;
+      calledName: string;
+      oldTargetId?: string;
+      file: string;
+      line: number;
+      character: number;
+    };
+
+    const a: Candidate = {
+      sourceId: 'Function:src/a.ts:main',
+      calledName: 'foo',
+      file: 'src/a.ts',
+      line: 10, character: 4,
+    };
+    const b: Candidate = {
+      sourceId: 'Function:src/a.ts:main',
+      calledName: 'bar', // different calledName
+      file: 'src/a.ts',
+      line: 10, character: 4,
+    };
+    const c: Candidate = {
+      sourceId: 'Function:src/a.ts:main',
+      calledName: 'foo',
+      file: 'src/a.ts',
+      line: 11, character: 0, // different line
+    };
+    const d: Candidate = {
+      sourceId: 'Function:src/a.ts:main',
+      calledName: 'foo',
+      file: 'src/a.ts',
+      line: 10, character: 5, // different character
+    };
+
+    const all: Candidate[] = [a, b, c, d];
+    const deduped: Candidate[] = [];
+    const seen = new Set<string>();
+    for (const x of all) {
+      const k = candidateLocationKey(x);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      deduped.push(x);
+    }
+
+    expect(deduped).toHaveLength(4);
   });
 });
 

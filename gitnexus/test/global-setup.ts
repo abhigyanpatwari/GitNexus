@@ -47,6 +47,14 @@ export default async function setup({ provide }: GlobalSetupContext) {
   // Share the dbPath with all test files via inject('lbugDbPath')
   provide('lbugDbPath', dbPath);
 
+  // Fork-safe fallback. On vitest 4.x, `provide()` does not reliably reach
+  // `inject()` in the `lbug-db` sub-project's forks during a full-suite run
+  // (projects + globalSetup + inject interaction bug). globalSetup runs in
+  // the MAIN process before any fork is spawned, so an env var set here is
+  // inherited by every fork — a robust channel independent of provide/inject.
+  // See test/helpers/test-indexed-db.ts for the consuming fallback.
+  process.env.LBUG_DB_PATH = dbPath;
+
   // Teardown: remove temp directory after all tests complete
   return async () => {
     await tmpHandle.cleanup();

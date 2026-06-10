@@ -15,7 +15,7 @@
 import fs from 'fs/promises';
 import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
-import { KnowledgeGraph, GraphNode, NodeLabel } from '../graph/types.js';
+import { KnowledgeGraph, GraphNode } from '../graph/types.js';
 import { NodeTableName } from './schema.js';
 
 /** Flush buffered rows to disk every N rows */
@@ -443,16 +443,49 @@ export const streamAllCSVsToDisk = async (
   await Promise.all(allWriters.map(w => w.finish()));
 
   // --- Stream relationship CSV ---
+  // #159 P3 Mode A (WI-1): 7th column `source` is the near-irreversible
+  // edge provenance tag. lbug-adapter uses HEADER=true, so Kùzu binds CSV
+  // columns to CodeRelation properties BY NAME, not by position. The 7-col
+  // header `from,to,type,confidence,reason,step,source` must match the
+  // CodeRelation property names exactly; column ORDER is for human
+  // readability only. Kùzu rel-table-group COPY does NOT support an
+  // explicit property column-list — only the per-label from/to binding
+  // is allowed after the table name. The default 'heuristic' is applied
+  // here (serializer-side) per the design contract: callers never
+  // produce a NULL/undefined `source` into the DB.
   const relCsvPath = path.join(csvDir, 'relations.csv');
-  const relWriter = new BufferedCSVWriter(relCsvPath, 'from,to,type,confidence,reason,step');
+  const relWriter = new BufferedCSVWriter(relCsvPath, 'from,to,type,confidence,reason,step,source');
   for (const rel of graph.iterRelationships()) {
+    // Default 'heuristic' is the EdgeSource union member for pre-WI-1
+    // rows; see `graph/types.ts` for the source of truth.
+    //
+    // m5 (defense-in-depth): validate the EdgeSource union at
+    // the CSV boundary. A future caller that hands in a
+    // hand-typed relationship (or a stale pre-WI-1 row) cannot
+    // emit a `source` value outside the closed union. Unknown
+    // values are coerced to 'heuristic' per the existing
+    // default below.
+    const VALID_EDGE_SOURCES: ReadonlySet<string> = new Set([
+      'heuristic',
+      'lsp-confirmed',
+      'lsp-corrected',
+      'lsp-recall',
+    ]);
+    const rawSource = rel.source ?? 'heuristic';
+    const sourceValue = VALID_EDGE_SOURCES.has(rawSource)
+      ? rawSource
+      : 'heuristic';
+    // T1: `step` is optional on `GraphRelationship`; `??`
+    // handles the absent case the same way the `source`
+    // coercion does. The `(rel as any).step` cast is gone.
     await relWriter.addRow([
       escapeCSVField(rel.sourceId),
       escapeCSVField(rel.targetId),
       escapeCSVField(rel.type),
       escapeCSVNumber(rel.confidence, 1.0),
       escapeCSVField(rel.reason),
-      escapeCSVNumber((rel as any).step, 0),
+      escapeCSVNumber(rel.step ?? 0, 0),
+      escapeCSVField(sourceValue),
     ].join(','));
   }
   await relWriter.finish();

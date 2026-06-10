@@ -533,8 +533,17 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   type STRING,
   confidence DOUBLE,
   reason STRING,
-  step INT32
+  step INT32,
+  source STRING
 )`;
+
+// #159 P3 Mode A (WI-1): additive migration for the new `source` STRING
+// column on CodeRelation. Plain `ALTER TABLE ... ADD col TYPE` — Kùzu does
+// NOT support `IF NOT EXISTS` or `ADD COLUMN` here. The migration runner
+// in lbug-adapter.doInitLbug suppresses the "already has property" error
+// thrown on re-runs against an existing DB, keeping it idempotent.
+export const CODEREL_SOURCE_MIGRATION = `
+ALTER TABLE CodeRelation ADD source STRING`;
 
 // ============================================================================
 // EMBEDDING TABLE SCHEMA
@@ -651,6 +660,11 @@ export const SCHEMA_MIGRATIONS = [
   CONSTRUCTOR_SCHEMA_MIGRATION,
   TEMPLATE_SCHEMA_MIGRATION,
   MODULE_SCHEMA_MIGRATION,
+  // #159 P3 Mode A (WI-1): additive `source` column on CodeRelation.
+  // Default 'heuristic' is applied serializer-side so the fresh-DB DDL and
+  // the ALTER path both produce the same shape; runner suppresses
+  // "already has property" on re-runs against an existing DB.
+  CODEREL_SOURCE_MIGRATION,
 ];
 
 /** Schema version derived from table count — increments when tables are added/removed. */

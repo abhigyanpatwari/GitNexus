@@ -161,7 +161,26 @@ export interface GraphRelationship {
   reason: string,
   /** Step number for STEP_IN_PROCESS relationships (1-indexed) */
   step?: number,
+  /**
+   * Edge provenance tag (WI-1 / #159 P3 Mode A).
+   * Optional at the type level so every existing rel constructor stays
+   * valid; the CSV/COPY serializer in `streamAllCSVsToDisk` defaults
+   * missing values to `'heuristic'`. Persisted as the `source` column
+   * on the CodeRelation rel table.
+   *
+   * The union members are the SAME writers that mint edges — there
+   * is no widening to `string` anywhere on the write path.
+   */
+  source?: EdgeSource;
 }
+
+/**
+ * The four values the `source` column on a `GraphRelationship` can
+ * take. The `GraphRelationship.source` field references this union
+ * directly; the reconciler's writer re-uses the SAME members (no
+ * widening to `string`).
+ */
+export type EdgeSource = 'heuristic' | 'lsp-confirmed' | 'lsp-corrected' | 'lsp-recall';
 
 export interface KnowledgeGraph {
   /** Returns a full array copy — prefer iterNodes() for iteration */

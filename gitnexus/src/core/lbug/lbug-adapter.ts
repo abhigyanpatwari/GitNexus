@@ -275,6 +275,14 @@ export const loadGraphToLbug = async (
       const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
       await fs.writeFile(pairCsvPath, relHeader + '\n' + lines.join('\n'), 'utf-8');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
+      // #159 P3 Mode A (WI-1): the CSV header at L242 (now 7 cols,
+      // including `source`) is propagated into the per-pair CSV above
+      // (L276). With `HEADER=true`, Kùzu binds CSV header NAMES to
+      // CodeRelation column names — that's why the header order in
+      // csv-generator.ts:streamAllCSVsToDisk MUST match the rel column
+      // order in schema.ts:RELATION_SCHEMA. The 7th column `source` is
+      // the near-irreversible edge provenance tag; default 'heuristic'
+      // is applied serializer-side so every row has a non-NULL value.
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
       if (pairIdx % 5 === 0 || lines.length > 1000) {
@@ -351,21 +359,26 @@ const fallbackRelationshipInserts = async (
   for (let i = 1; i < validRelLines.length; i++) {
     const line = validRelLines[i];
     try {
-      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+      // #159 P3 Mode A (WI-1): 7th capture group = `source`. Defaults to
+      // 'heuristic' when the CSV row is from a pre-WI-1 run (the regex
+      // group is optional, so existing 6-column rows still match).
+      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)(?:,"([^"]*)")?/);
       if (!match) continue;
-      const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const [, fromId, toId, relType, confidenceStr, reason, stepStr, sourceStr] = match;
       const fromLabel = getNodeLabel(fromId);
       const toLabel = getNodeLabel(toId);
       if (!validTables.has(fromLabel) || !validTables.has(toLabel)) continue;
 
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
+      // Hard invariant: `source` is non-NULL — fallback to 'heuristic' if absent.
+      const source = (sourceStr && sourceStr.length > 0) ? sourceStr : 'heuristic';
 
       const esc = (s: string) => s.replace(/'/g, "''").replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
       await conn.query(`
         MATCH (a:${escapeLabel(fromLabel)} {id: '${esc(fromId)}' }),
               (b:${escapeLabel(toLabel)} {id: '${esc(toId)}' })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}}]->(b)
+        CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}, source: '${esc(source)}'}]->(b)
       `);
     } catch {
       // skip
@@ -591,7 +604,26 @@ export const executeWithReusedStatement = async (
     const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
     const stmt = await conn.prepare(cypher);
     if (!stmt.isSuccess()) {
-      const errMsg = await stmt.getErrorMessage();
+      // B1: Kùzu's PreparedStatement API has drifted between
+      // versions — `getErrorMessage` may be sync, async, or
+      // absent entirely on a future release. Mode A's
+      // CODEREL_SOURCE_MIGRATION runs under `--lsp`; if the
+      // migration fails the funnel must not abort the entire
+      // ingest with a TypeError. Best-effort error string:
+      // try the sync form, then async, then fall back to
+      // 'unknown error'. The outer `throw` (still below)
+      // surfaces a useful message to the operator.
+      let errMsg = 'unknown error';
+      try {
+        const maybe: any = stmt as any;
+        if (typeof maybe.getErrorMessage === 'function') {
+          const r = maybe.getErrorMessage();
+          errMsg = r && typeof (r as any).then === 'function' ? await (r as Promise<string>) : (r as string);
+        }
+      } catch {
+        // Swallow — Kùzu API may have drifted. The 'unknown
+        // error' fallback carries the operator through.
+      }
       throw new Error(`Prepare failed: ${errMsg}`);
     }
     try {

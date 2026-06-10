@@ -151,7 +151,19 @@ function normalizeLocationUri(uri: string, normalize: (p: string) => string): st
  * declaration file we have not indexed, and we should refuse
  * rather than guess".
  */
-function isUnindexablePath(relPath: string): boolean {
+/**
+ * Refuse-to-skip predicate for paths the spec calls out as
+ * "not a known file" (EdgeCase 3): `node_modules`, `.d.ts`,
+ * anything under `dist/`.
+ *
+ * Exported for sibling modules (e.g. the Mode A reconciler)
+ * that need to short-circuit before issuing a per-candidate
+ * request. The spec lists three patterns; we anchor them
+ * generously so a match means "this Location points at a
+ * generated / vendored / declaration file we have not
+ * indexed, and we should refuse rather than guess".
+ */
+export function isUnindexablePath(relPath: string): boolean {
   if (!relPath) return true;
   if (relPath === 'node_modules') return true;
   if (relPath.startsWith('node_modules/')) return true;

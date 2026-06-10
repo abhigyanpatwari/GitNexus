@@ -19,6 +19,7 @@ import {
   RELATION_SCHEMA,
   EMBEDDING_SCHEMA,
   CREATE_VECTOR_INDEX_QUERY,
+  SCHEMA_MIGRATIONS,
   // WI-1: Migration constants for backward compatibility
   FILE_SCHEMA_MIGRATION,
   FOLDER_SCHEMA_MIGRATION,
@@ -32,6 +33,7 @@ import {
   COMMUNITY_SCHEMA_MIGRATION,
   PROCESS_SCHEMA_MIGRATION,
   ROUTE_SCHEMA_MIGRATION,
+  CODEREL_SOURCE_MIGRATION,
 } from '../../src/core/lbug/schema.js';
 import { NodeProperties, RelationshipType } from '../../src/core/graph/types.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
@@ -352,6 +354,53 @@ describe('LadybugDB Schema', () => {
   describe('REL_TYPES extension (WI-1)', () => {
     it('includes CROSS_IMPORTS in REL_TYPES array', () => {
       // WI-1: REL_TYPES must include CROSS_IMPORTS for edge creation
+      expect(REL_TYPES).toContain('CROSS_IMPORTS');
+    });
+  });
+
+  // ─── #159 P3 Mode A (WI-1): source column on CodeRelation ─────────────
+
+  describe('RELATION_SCHEMA: source column (WI-1)', () => {
+    it('declares source STRING after step INT32', () => {
+      // WI-1: the 7th property of CodeRelation is `source STRING`.
+      // Kùzu binds COPY by header name with HEADER=true — the
+      // serializer writes `source` as the 7th CSV column, the COPY
+      // maps it to this column. Default 'heuristic' is applied
+      // serializer-side so every row is non-NULL.
+      expect(RELATION_SCHEMA).toContain('source STRING');
+      // Ordering: `source STRING` must appear AFTER `step INT32` in the
+      // DDL string so the schema declaration matches the CSV column order
+      // and the design contract. This would fail if the two columns were
+      // swapped or if either were absent.
+      expect(RELATION_SCHEMA.indexOf('source STRING')).toBeGreaterThan(
+        RELATION_SCHEMA.indexOf('step INT32'),
+      );
+    });
+
+    it('CODEREL_SOURCE_MIGRATION is a plain ADD source STRING (Kùzu-safe)', () => {
+      // Per feedback-kuzu-alter-table-no-if-not-exists.md: Kùzu's
+      // ALTER does NOT support `IF NOT EXISTS` or `ADD COLUMN`. The
+      // migration runner in lbug-adapter.doInitLbug swallows the
+      // "already has property" error on re-runs against an existing DB.
+      expect(CODEREL_SOURCE_MIGRATION).toContain('ALTER TABLE CodeRelation ADD source STRING');
+      expect(CODEREL_SOURCE_MIGRATION).not.toContain('IF NOT EXISTS');
+      expect(CODEREL_SOURCE_MIGRATION).not.toContain('ADD COLUMN');
+    });
+
+    it('SCHEMA_MIGRATIONS includes CODEREL_SOURCE_MIGRATION', () => {
+      // The runner iterates SCHEMA_MIGRATIONS in order — the new
+      // entry MUST be present, otherwise existing DBs never pick up
+      // the column on re-open.
+      expect(SCHEMA_MIGRATIONS).toContain(CODEREL_SOURCE_MIGRATION);
+    });
+
+    it('NODE/REL/SCHEMA_QUERIES counts unchanged (WI-1 invariant)', () => {
+      // WI-1 hard invariant: adding a column to an existing rel table
+      // does NOT change table counts. 28 node + 1 rel + 1 embedding.
+      expect(NODE_SCHEMA_QUERIES).toHaveLength(28);
+      expect(REL_SCHEMA_QUERIES).toHaveLength(1);
+      expect(SCHEMA_QUERIES).toHaveLength(30);
+      expect(NODE_TABLES).toHaveLength(28);
       expect(REL_TYPES).toContain('CROSS_IMPORTS');
     });
   });

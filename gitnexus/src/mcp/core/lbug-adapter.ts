@@ -215,8 +215,15 @@ const initPromises = new Map<string, Promise<void>>();
 export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
   const existing = pool.get(repoId);
   if (existing) {
-    existing.lastUsed = Date.now();
-    return;
+    const cached = dbCache.get(dbPath);
+    // If the dbCache was refreshed (e.g. core adapter reopened after a
+    // test lifecycle close), the existing pool entry is stale and must
+    // be recreated so its connections ride the current Database handle.
+    if (cached && existing.db === cached.db) {
+      existing.lastUsed = Date.now();
+      return;
+    }
+    closeOne(repoId);
   }
 
   // Deduplicate concurrent init calls for the same repoId —
@@ -349,10 +356,15 @@ export async function initLbugWithDb(
   // for the same dbPath reuse this Database instead of trying to open
   // a new one (which would fail with a file lock error).
   // closeOne() respects the external flag and skips db.close().
+  // If the cache already holds a stale (closed) external Database from a
+  // prior test lifecycle, replace it with the fresh one the caller provides.
   let shared = dbCache.get(dbPath);
   if (!shared) {
     shared = { db: existingDb, refCount: 0, ftsLoaded: false, external: true };
     dbCache.set(dbPath, shared);
+  } else if (shared.external && shared.db !== existingDb) {
+    shared.db = existingDb;
+    shared.ftsLoaded = false;
   }
   shared.refCount++;
 

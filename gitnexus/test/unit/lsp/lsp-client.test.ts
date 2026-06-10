@@ -280,6 +280,14 @@ function makeFixture(opts?: { maxRestarts?: number }): ClientFixture {
   );
   const client = new LspClient({
     maxRestarts: opts?.maxRestarts,
+    // Set workspaceRoot to `/` so the M7 path-validation
+    // guard (in `maybeDidOpenForDefinition`) accepts
+    // absolute `file://` URIs in the test fixture. The
+    // test sends URIs like `file:///workspace/src/foo.ts`
+    // — under a `/` root every absolute path is inside.
+    // The fake server does not actually read the file
+    // contents; the URI alone is logged.
+    workspaceRoot: '/',
     _inject: {
       spawn: () => ({ process: clientProcess, connection: clientConnection }),
     },

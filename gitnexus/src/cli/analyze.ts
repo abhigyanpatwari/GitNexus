@@ -55,6 +55,20 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
+  /**
+   * WI-5 (#159 P3 Mode A): when true, run the pipeline with the
+   * LSP reconciler enabled (CALLS-only, TS-only, confidence 0.70).
+   * The default `analyze` (no flag) is byte-identical — no server
+   * is started, no edges are mutated.
+   */
+  lsp?: boolean;
+  /**
+   * WI-5 (#159 P3 Mode A): when true, print every
+   * `{action, from→to, why}` tuple the reconciler would emit and
+   * write nothing. Implies `lsp: true`; the engine sees every
+   * decision but never mutates the graph.
+   */
+  lspDryRun?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -274,10 +288,21 @@ export const analyzeCommand = async (
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ─────────────────────────────────
+  // WI-5 (#159 P3 Mode A): thread `lsp` + `lspDryRun` through to
+  // `PipelineOptions.lsp`. The pipeline runs the reconciler over
+  // the heuristic CALLS feed ONLY when `options.lsp.enabled` is
+  // true; the default `analyze` (no flag) takes the byte-identical
+  // path. The pipeline prints the dry-run report or the summary
+  // line itself (single source of truth).
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
     const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
     const scaled = Math.round(progress.percent * 0.6);
     updateBar(scaled, phaseLabel);
+  }, {
+    lsp: {
+      enabled: options?.lsp === true || options?.lspDryRun === true,
+      dryRun: options?.lspDryRun === true,
+    },
   });
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────────

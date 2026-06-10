@@ -47,15 +47,36 @@ export const TYPESCRIPT_LANGUAGE_SERVER_BIN = 'typescript-language-server';
  * search, no `node_modules` anywhere up the tree).
  *
  * Pure fs.stat — never throws.
+ *
+ * S2 (security): when `workspaceRoot` is supplied, the
+ * walk is BOUNDED to that directory — we stop at
+ * `workspaceRoot` (inclusive). The pre-S2 code walked
+ * up to the filesystem root, which meant a parent
+ * directory of `process.cwd()` could supply an
+ * untrusted `node_modules/.bin/typescript-language-server`
+ * shim. Source 3 (npx) post-validates by re-resolving
+ * through `whichOnPath`; Source 1 had no equivalent
+ * guard. Bounding the walk to the workspace closes
+ * that gap. If the candidate is found but the resolved
+ * path escapes `workspaceRoot` via symlinks, the
+ * `realpathSync` post-check below rejects it.
  */
 function findNearestNodeModulesBin(
   binaryName: string,
   startDir: string = process.cwd(),
+  workspaceRoot?: string,
 ): string | null {
   // path.resolve normalizes and gives us an absolute anchor so
   // the parent-walk terminates at the filesystem root (parent
   // of '/' is '/', which we catch below).
   let dir = path.resolve(startDir);
+
+  // S2: bound the walk. When `workspaceRoot` is provided,
+  // resolve + normalize it once. The loop below stops
+  // BEFORE the parent-cross when `dir === rootAbs`.
+  const rootAbs = workspaceRoot
+    ? path.resolve(workspaceRoot)
+    : null;
 
   // Symlink-loop guard. Cheap, but worth the few bytes.
   const visited = new Set<string>();
@@ -65,11 +86,44 @@ function findNearestNodeModulesBin(
 
     const candidate = path.join(dir, 'node_modules', '.bin', binaryName);
     if (existsFile(candidate)) {
-      return candidate;
+      // S2 post-check: even if the candidate is lexically
+      // inside the workspace, a symlink could point
+      // outside. Resolve through realpathSync and re-test
+      // containment. Falls back to the lexical path on
+      // a non-resolvable target.
+      if (rootAbs !== null) {
+        let realCandidate: string;
+        try {
+          realCandidate = fs.realpathSync(candidate);
+        } catch {
+          realCandidate = candidate;
+        }
+        const rel = path.relative(rootAbs, realCandidate);
+        const inside =
+          rel !== '' &&
+          !rel.startsWith('..') &&
+          !path.isAbsolute(rel);
+        if (!inside) {
+          // Symlink escapes the workspace — refuse and
+          // keep walking to the parent to give a
+          // legitimate in-workspace binary a chance.
+          // We deliberately do NOT return the candidate.
+        } else {
+          return candidate;
+        }
+      } else {
+        return candidate;
+      }
     }
 
     const parent = path.dirname(dir);
     if (parent === dir) return null; // reached filesystem root
+    if (rootAbs !== null && dir === rootAbs) {
+      // Walked to the workspace boundary and didn't find
+      // a candidate above it. Refuse — do not look in
+      // untrusted parent directories.
+      return null;
+    }
     dir = parent;
   }
 }
@@ -266,18 +320,32 @@ export async function discoverServers(): Promise<DiscoveredServers> {
  * kept for forward-compatibility (e.g. if we ever swap to a
  * real async fs API) and to match the public `discoverServers`
  * contract.
+ *
+ * `opts.workspaceRoot` (optional) — when supplied, Source 1's
+ * parent walk is BOUNDED to that directory and any candidate
+ * whose realpath escapes the workspace is rejected. This is
+ * the S2 hardening: the pre-S2 walk could pick up untrusted
+ * `node_modules/.bin/typescript-language-server` shims in any
+ * parent directory of `process.cwd()`. Source 3 already
+ * post-validated; Source 1 did not.
  */
 export async function discoverOne(
   binaryName: string,
   opts: {
     cwd?: string;
     pathEnv?: string;
+    workspaceRoot?: string;
   } = {},
 ): Promise<DiscoveredServer | null> {
   const cwd = opts.cwd ?? process.cwd();
 
-  // Source 1: node_modules/.bin
-  const fromNodeModules = findNearestNodeModulesBin(binaryName, cwd);
+  // Source 1: node_modules/.bin (S2-bounded to workspaceRoot
+  // when supplied)
+  const fromNodeModules = findNearestNodeModulesBin(
+    binaryName,
+    cwd,
+    opts.workspaceRoot,
+  );
   if (fromNodeModules) {
     const result = finalize(fromNodeModules);
     if (result) return result;

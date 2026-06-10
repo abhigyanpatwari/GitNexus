@@ -219,6 +219,7 @@ export const processHeritage = async (
             type: relType,
             confidence: Math.sqrt(child.confidence * parent.confidence),
             reason: '',
+            source: 'heuristic',
           });
         }
       }
@@ -239,6 +240,7 @@ export const processHeritage = async (
             type: 'IMPLEMENTS',
             confidence: Math.sqrt(cls.confidence * iface.confidence),
             reason: '',
+            source: 'heuristic',
           });
         }
       }
@@ -259,6 +261,7 @@ export const processHeritage = async (
             type: 'IMPLEMENTS',
             confidence: Math.sqrt(strct.confidence * trait.confidence),
             reason: 'trait-impl',
+            source: 'heuristic',
           });
         }
       }
@@ -288,6 +291,7 @@ export const processHeritage = async (
             type: 'IMPLEMENTS',
             confidence: Math.sqrt(child.confidence * iface.confidence),
             reason: 'method-set',
+            source: 'heuristic',
           });
         }
       }
@@ -314,6 +318,7 @@ export const processHeritage = async (
             type: 'IMPLEMENTS',
             confidence: it.confidence,
             reason: 'cross-file-structural-match',
+            source: 'heuristic',
           });
         }
       }
@@ -332,6 +337,7 @@ export const processHeritage = async (
             type: 'COMPOSITION',
             confidence: Math.sqrt(owner.confidence * embedded.confidence),
             reason: 'anonymous-field',
+            source: 'heuristic',
           });
         }
       }
@@ -385,6 +391,7 @@ export const processHeritageFromExtracted = async (
           type: relType,
           confidence: Math.sqrt(child.confidence * parent.confidence),
           reason: '',
+          source: 'heuristic',
         });
       }
     } else if (h.kind === 'implements') {
@@ -399,6 +406,7 @@ export const processHeritageFromExtracted = async (
           type: 'IMPLEMENTS',
           confidence: Math.sqrt(cls.confidence * iface.confidence),
           reason: '',
+          source: 'heuristic',
         });
       }
     } else if (h.kind.startsWith('cross-file-implements|')) {
@@ -419,6 +427,7 @@ export const processHeritageFromExtracted = async (
           type: 'IMPLEMENTS',
           confidence,
           reason: 'cross-file-structural-match',
+          source: 'heuristic',
         });
       }
     } else if (h.kind === 'trait-impl' || h.kind === 'include' || h.kind === 'extend' || h.kind === 'prepend') {
@@ -433,6 +442,7 @@ export const processHeritageFromExtracted = async (
           type: 'IMPLEMENTS',
           confidence: Math.sqrt(strct.confidence * trait.confidence),
           reason: h.kind,
+          source: 'heuristic',
         });
       }
     } else if (h.kind === 'composition') {
@@ -457,6 +467,7 @@ export const processHeritageFromExtracted = async (
           type: 'COMPOSITION',
           confidence: Math.sqrt(owner.confidence * embedded.confidence),
           reason: 'anonymous-field',
+          source: 'heuristic',
         });
       }
     }

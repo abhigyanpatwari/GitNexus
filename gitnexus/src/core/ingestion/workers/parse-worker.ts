@@ -20,7 +20,7 @@ import { extractGinRoutes } from '../route-extractors/go.js';
 import { extractAngularRoutes, isAngularFile } from '../route-extractors/angular.js';
 import { extractAngularMetadata, type ExtractedAngularEdge } from '../extractors/angular-metadata.js';
 import { extractAngularCalls } from '../extractors/angular-calls.js';
-import { collectGoImplementsHeritage, collectGoCompositionHeritage, collectGoInterfaceMethods, collectGoImplementsCrossFile, type GoInterfaceMethodEntry, type GoCrossFileImplementsHeritageItem } from './go-relationships.js';
+import { collectGoImplementsHeritage, collectGoCompositionHeritage, collectGoInterfaceMethods, collectGoImplementsCrossFile, type GoInterfaceMethodEntry } from './go-relationships.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { AnnotationInfo } from '../annotation-extractor.js';
@@ -349,6 +349,16 @@ export interface ExtractedCall {
   receiverCallChain?: string[];
   /** Mixed chain of field and call expressions for complex receivers */
   receiverMixedChain?: Array<{ kind: 'field' | 'call'; name: string }>;
+  /**
+   * 0-based line of the callee identifier (`callNameNode.startPosition.row`).
+   * For `a.b.c()` this is the line of `c`, not the start of the call expression.
+   * Optional: when the worker did not capture a `call.name` node, the field is absent.
+   * Threaded into the Mode A candidate feed so LSP `textDocument/definition` can be
+   * issued at the callee identifier (member-call recall depends on this).
+   */
+  line?: number;
+  /** 0-based column of the callee identifier (`callNameNode.startPosition.column`). */
+  character?: number;
 }
 
 export interface ExtractedHeritage {
@@ -2688,6 +2698,10 @@ const processFileGroup = (
               ...(receiverName !== undefined ? { receiverName } : {}),
               ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
               ...(receiverCallChain !== undefined ? { receiverCallChain } : {}),
+              // WI-2: thread callee-identifier position (callNameNode), not the
+              // call-expression start — member-call recall depends on it.
+              line: callNameNode.startPosition.row,
+              character: callNameNode.startPosition.column,
             });
           }
         }

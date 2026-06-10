@@ -2556,7 +2556,7 @@ export class LocalBackend {
     const [handlerRows, ownershipRows, fetchesRows, annotationRows] = await Promise.all([
       // Query 1: reverse-CALLS (handler methods)
       executeParameterized(repo.id, `
-        MATCH (m:Method)-[c:CodeRelation {type: 'CALLS'}]->(s)
+        MATCH (m:Method|Function)-[c:CodeRelation {type: 'CALLS'}]->(s)
         WHERE s.id IN $expandedIds AND c.confidence >= $minConfidence
         MATCH (r:Route)-[rc:CodeRelation {type: 'CALLS'}]->(m)
         RETURN r.routePath AS path, r.httpMethod AS method,

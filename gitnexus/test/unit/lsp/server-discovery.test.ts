@@ -213,6 +213,85 @@ describe('server-discovery', () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     });
 
+    // ── S2: workspaceRoot bounds the parent walk ──────────────────
+    it('S2: stops the parent walk at workspaceRoot (rejects shim above the workspace)', async () => {
+      // Workspace root = `workspaceInner`. The untrusted shim
+      // lives in `workspaceOuter/node_modules/.bin/...` —
+      // OUTSIDE the workspace, but the parent walk would
+      // normally find it on its way to the filesystem root.
+      const workspaceOuter = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-sd-s2-outer-'));
+      const workspaceInner = path.join(workspaceOuter, 'project');
+      const nestedCwd = path.join(workspaceInner, 'src', 'core');
+      fs.mkdirSync(nestedCwd, { recursive: true });
+
+      // Untrusted shim — lexically above `workspaceInner`.
+      const shim = path.join(
+        workspaceOuter,
+        'node_modules',
+        '.bin',
+        TYPESCRIPT_LANGUAGE_SERVER_BIN,
+      );
+      stageBinary(shim);
+      registerSpawn(shim, () => 'evil-version\n');
+
+      // The bounded walk must NOT find the shim. It should
+      // fall through to PATH (also empty), and npx (also
+      // empty), so the final result is `null`.
+      const result = await discoverOne(TYPESCRIPT_LANGUAGE_SERVER_BIN, {
+        cwd: nestedCwd,
+        workspaceRoot: workspaceInner,
+      });
+      expect(result).toBeNull();
+
+      // Sanity: without the `workspaceRoot` bound, the same
+      // fixture WOULD find the shim — confirms the bound is
+      // the load-bearing change.
+      const resultUnbounded = await discoverOne(TYPESCRIPT_LANGUAGE_SERVER_BIN, {
+        cwd: nestedCwd,
+      });
+      expect(resultUnbounded?.path).toBe(shim);
+
+      fs.rmSync(workspaceOuter, { recursive: true, force: true });
+    });
+
+    it('S2: in-workspace binary is found even when one is staged above the workspace', async () => {
+      // Two `node_modules/.bin/...` stages: one above the
+      // workspace (untrusted), one inside (trusted). The
+      // bounded walk must find the in-workspace one and
+      // ignore the outer shim.
+      const workspaceOuter = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-sd-s2-2-outer-'));
+      const workspaceInner = path.join(workspaceOuter, 'project');
+      const nestedCwd = path.join(workspaceInner, 'src');
+      fs.mkdirSync(nestedCwd, { recursive: true });
+
+      const shim = path.join(
+        workspaceOuter,
+        'node_modules',
+        '.bin',
+        TYPESCRIPT_LANGUAGE_SERVER_BIN,
+      );
+      stageBinary(shim);
+      registerSpawn(shim, () => 'evil\n');
+
+      const trusted = path.join(
+        workspaceInner,
+        'node_modules',
+        '.bin',
+        TYPESCRIPT_LANGUAGE_SERVER_BIN,
+      );
+      stageBinary(trusted);
+      registerSpawn(trusted, () => '4.3.3\n');
+
+      const result = await discoverOne(TYPESCRIPT_LANGUAGE_SERVER_BIN, {
+        cwd: nestedCwd,
+        workspaceRoot: workspaceInner,
+      });
+      expect(result?.path).toBe(trusted);
+      expect(result?.version).toBe('4.3.3');
+
+      fs.rmSync(workspaceOuter, { recursive: true, force: true });
+    });
+
     // ── 2) PATH fallback ────────────────────────────────────────────
     it('falls back to PATH (which/where) when node_modules has nothing', async () => {
       const fakeBin = '/fake/bin/typescript-language-server';

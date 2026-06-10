@@ -78,8 +78,19 @@ export function withTestLbugDB(
   const timeout = options?.timeout ?? 30000;
 
   const setup = async () => {
-    // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject<'lbugDbPath'>('lbugDbPath');
+    // Get shared DB path from globalSetup (created once with full schema).
+    // `inject()` is unreliable for the `lbug-db` sub-project's forks in a
+    // full-suite run on vitest 4.x; fall back to the env var globalSetup sets
+    // in the main process (inherited by every fork). Either yields the SAME
+    // shared DB path. Fail loudly if neither is present (globalSetup skipped).
+    const dbPath = inject<'lbugDbPath'>('lbugDbPath') ?? process.env.LBUG_DB_PATH;
+    if (!dbPath) {
+      throw new Error(
+        '[test-indexed-db] lbugDbPath unavailable from both inject() and ' +
+          'process.env.LBUG_DB_PATH — globalSetup did not run or did not ' +
+          'provide the shared DB path.',
+      );
+    }
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');

@@ -75,6 +75,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { FORBIDDEN_LSP_TOKENS } from './lsp-no-write-tokens.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 // gitnexus/test/unit/lsp/ → gitnexus/ (3 levels up)
@@ -104,56 +105,33 @@ const LSP_FILES = [
  * the symbol) or `'call'` (a call site / cypher verb). We match
  * with word boundaries to avoid partial-string collisions
  * (e.g. `deleteFiles` must NOT match `\bdelete\b`).
+ *
+ * The call-side set is imported from the shared helper at
+ * `./lsp-no-write-tokens.ts` (the canonical list, also used
+ * by `mode-a-golden.test.ts`). The import-side set is
+ * unique to this test (the (e) static guard in
+ * `mode-a-golden.test.ts` checks imports against the
+ * reconciler file only; the per-(file, token) matrix here
+ * scans imports across every lsp/ file).
  */
 const FORBIDDEN: ReadonlyArray<{
   name: string;
   regex: RegExp;
   kind: 'import' | 'call';
 }> = [
-  // Write-API imports
+  // Write-API imports (lsp/ must never import these from
+  // lbug-adapter; the only sanctioned import is
+  // `executeParameterized`).
   { name: 'executeQuery (import)', regex: /\bimport\b[^\n;]*\bexecuteQuery\b/, kind: 'import' },
   { name: 'addNode (import)', regex: /\bimport\b[^\n;]*\baddNode\b/, kind: 'import' },
   { name: 'addRelationship (import)', regex: /\bimport\b[^\n;]*\baddRelationship\b/, kind: 'import' },
   { name: 'initLbug (import)', regex: /\bimport\b[^\n;]*\binitLbug\b/, kind: 'import' },
   { name: 'initLbugWithDb (import)', regex: /\bimport\b[^\n;]*\binitLbugWithDb\b/, kind: 'import' },
   { name: 'CYPHER_WRITE_RE (import)', regex: /\bimport\b[^\n;]*\bCYPHER_WRITE_RE\b/, kind: 'import' },
-  // Write-API call sites
-  { name: 'executeQuery()', regex: /\bexecuteQuery\s*\(/, kind: 'call' },
-  { name: 'addNode()', regex: /\baddNode\s*\(/, kind: 'call' },
-  { name: 'addRelationship()', regex: /\baddRelationship\s*\(/, kind: 'call' },
-  { name: 'initLbug()', regex: /\binitLbug\s*\(/, kind: 'call' },
-  { name: 'initLbugWithDb()', regex: /\binitLbugWithDb\s*\(/, kind: 'call' },
-  // Cypher write verbs — UPPERCASE ONLY, since lowercase
-  // `create` / `merge` / etc. collide with ordinary code words
-  // (`createInstance`, `setFoo`, …). Cypher is case-insensitive
-  // by spec, but the lsp/ modules never write cypher, so any
-  // UPPERCASE occurrence is a structural red flag. A future
-  // refactor that introduces, e.g., a `cypher.write` constant
-  // is caught here; a regular variable named `setFoo` is not.
-  //
-  // Each pattern is anchored on the cypher syntax that follows
-  // the verb:
-  //   CREATE   →  followed by `(` (node/rel pattern: CREATE (n:Node …))
-  //   MERGE    →  followed by `(` (MERGE (n:Node …))
-  //   SET      →  followed by uppercase identifier (SET n.prop = …)
-  //   DELETE   →  followed by uppercase identifier (DELETE n)
-  //   REMOVE   →  followed by `(` (REMOVE n:Label) or identifier
-  //   DROP     →  followed by `(` (DROP TABLE foo) or
-  //               UPPERCASE keyword (DROP INDEX foo)
-  //   ALTER    →  followed by `(` (ALTER TABLE …) or
-  //               UPPERCASE keyword (ALTER TABLE …)
-  //   COPY     →  followed by UPPERCASE (COPY foo FROM bar)
-  // A regular camelCase identifier like `createFoo` is not a
-  // cypher verb (it has lowercase tail) and is NOT matched.
-  { name: 'CREATE (cypher verb)', regex: /\bCREATE\s*\(/, kind: 'call' },
-  { name: 'MERGE (cypher verb)', regex: /\bMERGE\s*\(/, kind: 'call' },
-  { name: 'SET (cypher verb)', regex: /\bSET\s+[A-Z_]/, kind: 'call' },
-  { name: 'DELETE (cypher verb)', regex: /\bDELETE\s+[A-Z_]/, kind: 'call' },
-  { name: 'DETACH DELETE', regex: /\bDETACH\s+DELETE\b/, kind: 'call' },
-  { name: 'REMOVE (cypher verb)', regex: /\bREMOVE\s+[A-Z_(]/, kind: 'call' },
-  { name: 'DROP (cypher verb)', regex: /\bDROP\s+[A-Z_(]/, kind: 'call' },
-  { name: 'ALTER (cypher verb)', regex: /\bALTER\s+[A-Z_(]/, kind: 'call' },
-  { name: 'COPY (cypher verb)', regex: /\bCOPY\s+[A-Z_]/, kind: 'call' },
+  // Write-API call sites + Cypher write verbs — shared with
+  // `mode-a-golden.test.ts` via the helper. The list below
+  // is the canonical, single source of truth.
+  ...FORBIDDEN_LSP_TOKENS,
 ];
 
 /**
@@ -304,6 +282,333 @@ describe('WI-9 — no-write invariant (Invariant 1)', () => {
       throw new Error(
         `no-write invariant violations found in lsp/:\n${violations.join('\n')}\n` +
           `These violate Invariant 1 (no graph writes). The lsp/ module is read-only.`,
+      );
+    }
+    expect(violations).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AC-8 — reconciler no-write leg (B2)
+//
+// `mode-a-reconciler.ts` lives OUTSIDE `lsp/` (I-7) and is
+// therefore NOT covered by the WI-9 scan above.  Its job is to
+// mutate the *in-memory* graph (`graph.addRelationship`,
+// `graph.removeRelationship`) — those calls are the DESIGN and
+// MUST be allowed.
+//
+// What it MUST NOT do:
+//   (a) import any direct-DB writer from `lbug-adapter`:
+//       `executeQuery`, `initLbug`, `initLbugWithDb`, `addNode`
+//   (b) call those symbols at call-site level (bare, unqualified
+//       — not as a method on an object):
+//       `executeQuery(`, `initLbug(`, `initLbugWithDb(`, `addNode(`
+//   (c) embed raw Cypher WRITE verbs in string literals —
+//       the same UPPERCASE-verb patterns the lsp/ scan uses
+//       (`CREATE (`, `MERGE (`, `SET [A-Z_]`, etc.)
+//
+// Why a separate token set (not `FORBIDDEN_LSP_TOKENS`):
+//   `FORBIDDEN_LSP_TOKENS` bans `addRelationship (call)` outright
+//   — that is correct for lsp/ files which are READ-ONLY.  The
+//   reconciler legitimately calls `graph.addRelationship()` /
+//   `graph.removeRelationship()` — they are in-memory operations
+//   on a `KnowledgeGraph`, not DB writers.  Reusing the lsp/ set
+//   would produce a false-positive on every single engine call.
+//
+// Demonstration that the tests would FAIL if a DB writer were
+// added:  each `it` below applies a regex to the reconciler source;
+// the comment in each test spells out which literal string in a
+// hypothetical "bad" import or call-site would be caught.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('AC-8 — reconciler no-write leg (WI-9 extension)', () => {
+  const reconcilerPath = path.join(repoRoot, 'src', 'core', 'ingestion', 'mode-a-reconciler.ts');
+
+  // Read + strip once; reused by all children.
+  let raw: string;
+  let stripped: string;
+
+  // Vitest `beforeAll` is not available at describe-top-level scope
+  // here, but since `fs.readFileSync` is synchronous and cheap we
+  // simply read at describe-eval time (same pattern used by the
+  // per-lsp-file loop above).
+  try {
+    raw = fs.readFileSync(reconcilerPath, 'utf-8');
+    stripped = stripComments(raw);
+  } catch (e) {
+    // If the file doesn't exist the tests below will fail with a
+    // clear message — no need to swallow here.
+    raw = '';
+    stripped = '';
+  }
+
+  it('reconciler source file exists', () => {
+    expect(
+      fs.existsSync(reconcilerPath),
+      `mode-a-reconciler.ts not found at ${reconcilerPath}`,
+    ).toBe(true);
+    expect(raw.length, 'file is unexpectedly empty').toBeGreaterThan(0);
+  });
+
+  // ── (a) Import-side: no lbug-adapter DB-writer imports ──────────────────
+  //
+  // Pattern: any `import { … <symbol> … } from '…/lbug-adapter…'`.
+  // If someone added `import { executeQuery } from '../lbug/lbug-adapter.js'`
+  // the first regex below would match.
+
+  const RECONCILER_FORBIDDEN_IMPORTS: ReadonlyArray<{ name: string; regex: RegExp }> = [
+    {
+      name: 'executeQuery (import from lbug-adapter)',
+      // Catches: import { executeQuery } from '…/lbug-adapter…'
+      // Would fire on: import { executeQuery } from '../lbug/lbug-adapter.js'
+      regex: /\bimport\b[^\n;]*\bexecuteQuery\b[^\n;]*from\s*['"][^'"]*lbug-adapter[^'"]*['"]/,
+    },
+    {
+      name: 'initLbug (import from lbug-adapter)',
+      // Catches: import { initLbug } from '…/lbug-adapter…'
+      // Would fire on: import { initLbug } from '../lbug/lbug-adapter.js'
+      regex: /\bimport\b[^\n;]*\binitLbug\b[^\n;]*from\s*['"][^'"]*lbug-adapter[^'"]*['"]/,
+    },
+    {
+      name: 'initLbugWithDb (import from lbug-adapter)',
+      // Catches: import { initLbugWithDb } from '…/lbug-adapter…'
+      // Would fire on: import { initLbugWithDb } from '../lbug/lbug-adapter.js'
+      regex: /\bimport\b[^\n;]*\binitLbugWithDb\b[^\n;]*from\s*['"][^'"]*lbug-adapter[^'"]*['"]/,
+    },
+    {
+      name: 'addNode (import from lbug-adapter)',
+      // Catches: import { addNode } from '…/lbug-adapter…'
+      // Would fire on: import { addNode } from '../lbug/lbug-adapter.js'
+      regex: /\bimport\b[^\n;]*\baddNode\b[^\n;]*from\s*['"][^'"]*lbug-adapter[^'"]*['"]/,
+    },
+  ];
+
+  for (const token of RECONCILER_FORBIDDEN_IMPORTS) {
+    it(`does not import ${token.name}`, () => {
+      // We scan the RAW source (not comment-stripped) for imports —
+      // a real import cannot be inside a block comment.  Using raw
+      // avoids the (unlikely) edge case where comment-stripping alters
+      // an import line's whitespace and breaks the regex boundary.
+      const m = raw.match(token.regex);
+      if (m) {
+        const lineNum = raw.slice(0, m.index ?? 0).split('\n').length;
+        throw new Error(
+          `mode-a-reconciler.ts contains forbidden import "${token.name}" at line ${lineNum}: ${m[0].slice(0, 120)}`,
+        );
+      }
+      expect(m).toBeNull();
+    });
+  }
+
+  // ── (b) Call-site: no bare adapter DB-writer calls ──────────────────────
+  //
+  // These check for unqualified call-sites of the adapter writer symbols.
+  // They are distinct from the import check: an attacker could import the
+  // symbol under an alias, but the alias would still appear at the call
+  // site.  More importantly, a dynamic-import + destructure path
+  // (e.g. `const { executeQuery } = await import(…)`) would also be caught
+  // by the call-site regex since `executeQuery(` would still appear.
+  //
+  // NOTE: `addRelationship(` and `removeRelationship(` are NOT in this
+  // list — the reconciler legitimately calls `graph.addRelationship(...)` /
+  // `graph.removeRelationship(...)` and those are IN-MEMORY operations on
+  // the `KnowledgeGraph` interface, not lbug-adapter DB writes.
+
+  const RECONCILER_FORBIDDEN_CALLS: ReadonlyArray<{ name: string; regex: RegExp }> = [
+    {
+      name: 'executeQuery (call)',
+      // Catches: executeQuery(  (bare, unqualified)
+      // Would fire on: await executeQuery('MATCH …', params)
+      // Would NOT fire on: graph.executeQuery(…) — not that the graph
+      // interface even has such a method, but the word-boundary (\b)
+      // before `executeQuery` rules out any dotted form.
+      // Actually \bexecuteQuery\s*\( fires on `graph.executeQuery(`
+      // too because `.` is not a word char — but the reconciler has
+      // no such method on KnowledgeGraph, so this is safe.
+      regex: /\bexecuteQuery\s*\(/,
+    },
+    {
+      name: 'initLbug (call)',
+      // Catches: initLbug(  or  initLbug ()
+      // Would fire on: await initLbug(config)
+      regex: /\binitLbug\s*\(/,
+    },
+    {
+      name: 'initLbugWithDb (call)',
+      // Catches: initLbugWithDb(
+      // Would fire on: await initLbugWithDb(db, config)
+      regex: /\binitLbugWithDb\s*\(/,
+    },
+    {
+      name: 'addNode (call)',
+      // Catches: addNode(  — the bare function call form from lbug-adapter.
+      // Would fire on: addNode({ id: 'x', label: 'Fn', properties: {} })
+      // Does NOT fire on: graph.addNode(…) because `\b` in `\baddNode`
+      // matches a word boundary — but `.addNode` has `.` before it,
+      // and `.` is NOT a word char, so `\b` would STILL match there.
+      // To avoid false-positives on `graph.addNode(` (which the
+      // in-memory graph offers), we require there is NO `.` immediately
+      // before `addNode`:  we use a negative lookbehind (?<!\.)\baddNode\s*\(.
+      // The reconciler calls `graph.addRelationship` / `graph.removeRelationship`
+      // — it does NOT call `graph.addNode` anywhere (it only mutates edges).
+      // But we use the lookbehind for correctness: if a future caller
+      // does `graph.addNode(...)` that is in-memory and should be allowed.
+      regex: /(?<!\.)\baddNode\s*\(/,
+    },
+  ];
+
+  for (const token of RECONCILER_FORBIDDEN_CALLS) {
+    it(`does not call ${token.name}`, () => {
+      const m = stripped.match(token.regex);
+      if (m) {
+        const lineNum = stripped.slice(0, m.index ?? 0).split('\n').length;
+        throw new Error(
+          `mode-a-reconciler.ts contains forbidden call "${token.name}" at line ${lineNum}: ${m[0].slice(0, 120)}`,
+        );
+      }
+      expect(m).toBeNull();
+    });
+  }
+
+  // ── (c) Cypher write verbs in string literals ────────────────────────────
+  //
+  // After comment-stripping, any remaining UPPERCASE Cypher verb in a
+  // string is a structural red flag.  The reconciler has no business
+  // embedding Cypher write queries — it operates on the in-memory
+  // `KnowledgeGraph` API, not the DB.
+  //
+  // These are the SAME patterns as `FORBIDDEN_LSP_TOKENS` for Cypher verbs;
+  // they are reproduced here (not imported) to keep the reconciler token
+  // set self-contained and to document the design reason explicitly.
+
+  const RECONCILER_FORBIDDEN_CYPHER: ReadonlyArray<{ name: string; regex: RegExp }> = [
+    {
+      name: 'COPY (cypher write verb)',
+      // Catches: COPY [A-Z_] — Cypher bulk-copy syntax
+      // Would fire on: `COPY Person FROM …`
+      // Does NOT fire on the comment `// COPY serialization` (stripped).
+      regex: /\bCOPY\s+[A-Z_]/,
+    },
+    {
+      name: 'CREATE ( (cypher write verb)',
+      // Catches: CREATE (  — Cypher node/rel CREATE pattern
+      // Would fire on: `CREATE (n:Node { … })`
+      regex: /\bCREATE\s*\(/,
+    },
+    {
+      name: 'MERGE ( (cypher write verb)',
+      // Catches: MERGE (
+      // Would fire on: `MERGE (n:Node { … })`
+      regex: /\bMERGE\s*\(/,
+    },
+    {
+      name: 'SET [A-Z_] (cypher write verb)',
+      // Catches: SET followed by an uppercase identifier
+      // Would fire on: `SET n.prop = value`  (n is uppercase after trim, but
+      // the pattern requires an uppercase LETTER as the first char following SET).
+      // Actually `n` is lowercase — the pattern catches `SET N.prop`
+      // or `SET PROPERTY = …` which is the Cypher SET-clause shape.
+      regex: /\bSET\s+[A-Z_]/,
+    },
+    {
+      name: 'DELETE [A-Z_] (cypher write verb)',
+      // Catches: DELETE followed by uppercase identifier
+      // Would fire on: `DELETE N` or `DELETE rel`? (no — rel starts lowercase).
+      // The point: detects any `DELETE <UppercaseVar>` shape.
+      regex: /\bDELETE\s+[A-Z_]/,
+    },
+    {
+      name: 'DETACH DELETE (cypher write verb)',
+      // Catches: DETACH DELETE — the Cypher cascade-delete form
+      regex: /\bDETACH\s+DELETE\b/,
+    },
+  ];
+
+  for (const token of RECONCILER_FORBIDDEN_CYPHER) {
+    it(`does not contain ${token.name}`, () => {
+      const m = stripped.match(token.regex);
+      if (m) {
+        const lineNum = stripped.slice(0, m.index ?? 0).split('\n').length;
+        throw new Error(
+          `mode-a-reconciler.ts contains forbidden Cypher write verb "${token.name}" at line ${lineNum}: ${m[0].slice(0, 120)}`,
+        );
+      }
+      expect(m).toBeNull();
+    });
+  }
+
+  // ── Allowed: in-memory graph mutations ────────────────────────────────────
+  //
+  // Belt-and-braces: assert the ALLOWED in-memory calls DO appear so we
+  // know this test is scanning a non-trivial file (if the reconciler were
+  // refactored away from `addRelationship`, the test would still pass
+  // but would silently stop being a meaningful guard for the in-memory
+  // design).  This is a presence-check, not a ban.
+
+  it('contains graph.addRelationship( (in-memory write — allowed design)', () => {
+    // The reconciler MUST call graph.addRelationship.  If it doesn't,
+    // something significant has changed and this assertion flags the
+    // change explicitly rather than silently.
+    const m = stripped.match(/\bgraph\.addRelationship\s*\(/);
+    expect(
+      m,
+      'expected mode-a-reconciler.ts to contain graph.addRelationship( — ' +
+        'this is the designed in-memory write; if it has been removed, ' +
+        'update this test intentionally',
+    ).not.toBeNull();
+  });
+
+  it('contains graph.removeRelationship( (in-memory write — allowed design)', () => {
+    const m = stripped.match(/\bgraph\.removeRelationship\s*\(/);
+    expect(
+      m,
+      'expected mode-a-reconciler.ts to contain graph.removeRelationship( — ' +
+        'this is the designed in-memory write; if it has been removed, ' +
+        'update this test intentionally',
+    ).not.toBeNull();
+  });
+
+  // ── End-to-end summary ────────────────────────────────────────────────────
+  //
+  // A single-shot assertion that mirrors CI output.  Identical in intent
+  // to the WI-9 end-to-end above but scoped to the reconciler.
+
+  it('end-to-end: mode-a-reconciler.ts passes the full reconciler no-write scan', () => {
+    const violations: string[] = [];
+
+    // (a) import-side
+    for (const token of RECONCILER_FORBIDDEN_IMPORTS) {
+      const m = raw.match(token.regex);
+      if (m) {
+        const lineNum = raw.slice(0, m.index ?? 0).split('\n').length;
+        violations.push(`  - import  :${lineNum}  ${token.name}  →  ${m[0].slice(0, 80)}`);
+      }
+    }
+
+    // (b) call-site
+    for (const token of RECONCILER_FORBIDDEN_CALLS) {
+      const m = stripped.match(token.regex);
+      if (m) {
+        const lineNum = stripped.slice(0, m.index ?? 0).split('\n').length;
+        violations.push(`  - call    :${lineNum}  ${token.name}  →  ${m[0].slice(0, 80)}`);
+      }
+    }
+
+    // (c) cypher verbs
+    for (const token of RECONCILER_FORBIDDEN_CYPHER) {
+      const m = stripped.match(token.regex);
+      if (m) {
+        const lineNum = stripped.slice(0, m.index ?? 0).split('\n').length;
+        violations.push(`  - cypher  :${lineNum}  ${token.name}  →  ${m[0].slice(0, 80)}`);
+      }
+    }
+
+    if (violations.length > 0) {
+      throw new Error(
+        `AC-8 reconciler no-write violations in mode-a-reconciler.ts:\n${violations.join('\n')}\n` +
+          'The reconciler must use only the in-memory KnowledgeGraph API ' +
+          '(graph.addRelationship / graph.removeRelationship). ' +
+          'It must never import or call lbug-adapter DB writers directly.',
       );
     }
     expect(violations).toEqual([]);

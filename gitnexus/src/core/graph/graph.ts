@@ -12,6 +12,13 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
 
   const addRelationship = (relationship: GraphRelationship) => {
     if (!relationshipMap.has(relationship.id)) {
+      // Default-path stamp (WI-1 / #159 P3 Mode A): every relationship
+      // minted without an explicit `source` is treated as heuristic.
+      // Reconciler edges already carry `lsp-confirmed` / `lsp-corrected`
+      // / `lsp-recall` — those are preserved because `source` is set.
+      if (relationship.source === undefined) {
+        relationship.source = 'heuristic';
+      }
       relationshipMap.set(relationship.id, relationship);
     }
   };

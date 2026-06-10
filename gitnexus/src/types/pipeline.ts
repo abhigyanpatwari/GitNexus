@@ -25,6 +25,14 @@ export interface PipelineResult {
   totalFileCount: number;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
+  /**
+   * WI-5 (#159 P3 Mode A): the LSP reconciliation report — present
+   * iff `PipelineOptions.lsp.enabled` was true. Undefined for the
+   * default `analyze` (no flag) path. Carries the per-decision
+   * tuples (for the dry-run report), the aggregate counters, and
+   * the `skipped` cap count.
+   */
+  lspReport?: import('../core/ingestion/mode-a-reconciler.js').ReconciliationReport | null;
 }
 
 // Serializable version for Web Worker communication

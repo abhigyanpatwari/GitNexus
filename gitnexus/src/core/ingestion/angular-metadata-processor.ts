@@ -102,6 +102,7 @@ export const processAngularMetadataFromExtracted = async (
       type: relType,
       confidence: Math.sqrt(source.confidence * target.confidence),
       reason: `ng-module-${edge.edgeType.toLowerCase()}`,
+      source: 'heuristic',
     });
   }
   onProgress?.(total, total);

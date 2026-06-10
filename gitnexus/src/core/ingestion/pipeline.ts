@@ -7,7 +7,7 @@ import {
   processImportsFromExtracted,
   buildImportResolutionContext
 } from './import-processor.js';
-import { processCalls, processCallsFromExtracted, processRoutesFromExtracted, processORMQueriesFromExtracted, processExpoRoutesWithRepoId, processExpoRouterNavigations, processDecoratorRoutesWithRepoId, processPHPRoutesWithRepoId, processNextjsRoutesWithRepoId, processNextjsFetchRoutes, processNextjsMiddleware, processToolDefsFromExtracted } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processRoutesFromExtracted, processORMQueriesFromExtracted, processExpoRoutesWithRepoId, processExpoRouterNavigations, processDecoratorRoutesWithRepoId, processPHPRoutesWithRepoId, processNextjsRoutesWithRepoId, processNextjsFetchRoutes, processNextjsMiddleware, processToolDefsFromExtracted, type ProcessCallsOpts, type CorrectionFeedItem, type RecallFeedItem } from './call-processor.js';
 import type { ExtractedRoute, ExtractedExpoNav, ExtractedORMQuery, ExtractedDecoratorRoute, ExtractedFetchCall, ExtractedToolDef } from './workers/parse-worker.js';
 import type { CrossRepoRegistry } from './cross-repo-registry.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
@@ -16,6 +16,12 @@ import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
 import { extractDependencies } from './dependency-extractor.js';
+// WI-5 (#159 P3 Mode A): the reconciler is imported here — it lives at
+// `core/ingestion/mode-a-reconciler.ts` and mutates ONLY the in-memory
+// graph; it imports no direct-DB writer (I-7).
+import { withReconciliationSession, applyDecisions, reconcileDecisions, candidateLocationKey, type Candidate, type Location, type ReconciliationReport } from './mode-a-reconciler.js';
+import { mapLocationToNodeId } from './lsp/location-mapper.js';
+import { createInMemoryNodeQuery, type InMemoryNode } from './in-memory-node-query.js';
 import { writeManifest } from '../../storage/repo-manifest.js';
 import { createResolutionContext, type ResolutionContext } from './resolution-context.js';
 import { createASTCache } from './ast-cache.js';
@@ -48,6 +54,21 @@ export interface PipelineOptions {
    * omitted (the default), ingestion is single-repo and creates no external nodes.
    */
   crossRepoRegistry?: CrossRepoRegistry;
+  /**
+   * WI-5 (#159 P3 Mode A): when `enabled` is true, the pipeline runs the
+   * LSP reconciler over the heuristic CALLS feed AFTER all CALLS emission
+   * completes. When omitted (the default), the default `analyze` (no flag)
+   * is byte-identical — no server is started, the feeds are empty, the
+   * reconciler is not invoked.
+   *
+   * `dryRun: true` prints every decision tuple and writes nothing
+   * (AC-6 / KD-11). It is a child of `enabled` — when `dryRun` is true but
+   * `enabled` is false, the option is a no-op.
+   */
+  lsp?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
 }
 
 export const runPipelineFromRepo = async (
@@ -281,6 +302,21 @@ export const runPipelineFromRepo = async (
     // #31: Angular CALLS extracted in the sequential parsing pass (DI/template).
     const allSequentialCalls: import('./workers/parse-worker.js').ExtractedCall[] = [];
 
+    // WI-5 (#159 P3 Mode A): the candidate feed arrays. We pass them
+    // as sinks into `processCallsFromExtracted` ONLY when
+    // `options.lsp.enabled` is true; the default path leaves both
+    // arrays empty and the call processor never references them
+    // (the call processor checks `opts?.lsp` and `opts?.correctionFeed`
+    // / `opts?.recallFeed` before pushing). One pair of arrays is
+    // declared up front and SHARED across all chunks and the
+    // sequential-fallback re-resolution, so the reconciler sees a
+    // single merged feed.
+    const correctionFeed: CorrectionFeedItem[] = [];
+    const recallFeed: RecallFeedItem[] = [];
+    const lspFeedsOpt: ProcessCallsOpts | undefined = options?.lsp?.enabled
+      ? { lsp: true, correctionFeed, recallFeed }
+      : undefined;
+
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
         const chunkPaths = chunks[chunkIdx];
@@ -358,6 +394,8 @@ export const runPipelineFromRepo = async (
               });
             },
             chunkWorkerData.constructorBindings,
+            undefined, // typeEnvBindings — not used in the worker path
+            lspFeedsOpt,
           );
 
           await processRoutesFromExtracted(
@@ -451,7 +489,7 @@ export const runPipelineFromRepo = async (
         .map(p => ({ path: p, content: chunkContents.get(p)! }));
       astCache = createASTCache(chunkFiles.length);
       await processHeritage(graph, chunkFiles, astCache, ctx);
-      const rubyHeritage = await processCalls(graph, chunkFiles, astCache, ctx);
+      const rubyHeritage = await processCalls(graph, chunkFiles, astCache, ctx, undefined, undefined, undefined, undefined, undefined, lspFeedsOpt);
       if (rubyHeritage.length > 0) {
         await processHeritageFromExtracted(graph, rubyHeritage, ctx);
       }
@@ -490,7 +528,15 @@ export const runPipelineFromRepo = async (
     // Process Angular CALLS edges (#31 — DI token -> service, template -> method).
     // Runs after the sequential fallback so component/service symbols exist.
     if (allSequentialCalls.length > 0) {
-      await processCallsFromExtracted(graph, allSequentialCalls, ctx);
+      await processCallsFromExtracted(
+        graph,
+        allSequentialCalls,
+        ctx,
+        undefined, // onProgress
+        undefined, // constructorBindings
+        undefined, // typeEnvBindings
+        lspFeedsOpt,
+      );
     }
 
     // Process MCP tool definitions (@mcp.tool() decorators)
@@ -520,9 +566,15 @@ export const runPipelineFromRepo = async (
 
     // Process fetch() calls to create FETCHES edges to Route nodes
     if (allFetchCalls.length > 0 && nextjsRouteRegistry && nextjsRouteRegistry.size > 0) {
-      // Collect consumer file paths and read their contents for key extraction
+      // `allFileContents` was loaded above; filter it down to the
+      // consumer file set rather than re-issuing `readFileContents`
+      // for the same paths.
       const consumerPaths = [...new Set(allFetchCalls.map(c => c.filePath))];
-      const consumerContents = await readFileContents(repoPath, consumerPaths);
+      const consumerContents = new Map(
+        consumerPaths
+          .map(p => [p, allFileContents.get(p)] as const)
+          .filter((entry): entry is readonly [string, string] => entry[1] !== undefined),
+      );
       processNextjsFetchRoutes(graph, allFetchCalls, nextjsRouteRegistry, consumerContents);
     }
 
@@ -540,6 +592,231 @@ export const runPipelineFromRepo = async (
     importCtx.resolveCache.clear();
     (importCtx as any).suffixIndex = null;
     (importCtx as any).normalizedFileList = null;
+
+    // ── WI-5 (#159 P3 Mode A) — LSP reconciliation ────────────────────
+    // Runs AFTER every CALLS emitter has finished (the three
+    // `processCallsFromExtracted` paths above + the Angular
+    // sequential-fallback re-resolution) and BEFORE the
+    // community/process phases mutate the graph further. The
+    // reconciler mutates the in-memory graph in place; the
+    // downstream load-to-LadybugDB path (lbug-adapter) is the
+    // sole serialization surface, so the `source` column rides
+    // through the normal CSV→COPY path.
+    //
+    // Default `analyze` (no `opts.lsp`) hits the `else` branch —
+    // the array empty-checks short-circuit and no server is
+    // ever discovered or started. The default path is byte-
+    // identical.
+    // The engine no longer carries `serverVersion` on its
+    // report (the session has the authoritative value via
+    // `SessionMeta`); we attach it here so the
+    // observability print line keeps a single source of
+    // truth and the type system is happy.
+    type PipelineLspReport = ReconciliationReport & { serverVersion: string };
+    let lspReport: PipelineLspReport | null = null;
+    if (options?.lsp?.enabled) {
+      const lspStart = Date.now();
+      const dryRun = options.lsp.dryRun === true;
+
+      // Build the in-memory node adapter the mapper needs. We
+      // project the in-memory graph's nodes into the adapter's
+      // minimal shape (`InMemoryNode`). The adapter itself is
+      // read-only (KD-2); the reconciler mutates ONLY the
+      // in-memory `KnowledgeGraph` it was given.
+      const lspNodes: InMemoryNode[] = [];
+      graph.forEachNode((n) => {
+        // Every GraphNode carries a `properties` object by
+        // type contract; the typeof guards below normalize
+        // *missing* fields (the properties record is
+        // partial in practice) to the empty/zero defaults
+        // the adapter expects.
+        const props = n.properties;
+        lspNodes.push({
+          id: n.id,
+          name: typeof props.name === 'string' ? props.name : '',
+          startLine: typeof props.startLine === 'number' ? props.startLine : 0,
+          endLine: typeof props.endLine === 'number' ? props.endLine : 0,
+          label: n.label,
+          filePath: typeof props.filePath === 'string' ? props.filePath : '',
+        });
+      });
+      const inMemoryQuery = createInMemoryNodeQuery(lspNodes);
+
+      // Merge feeds into a single `Candidate[]` stream. The
+      // session funnel stable-sorts by
+      // (sourceId, calledName, line, character) and caps at
+      // 2000 — see `withReconciliationSession` (KD-9). Recall
+      // candidates lack `oldTargetId`; correction candidates
+      // carry it. We unify the two shapes here.
+      const candidates: Candidate[] = [];
+      for (const c of correctionFeed) {
+        candidates.push({
+          sourceId: c.sourceId,
+          calledName: c.calledName,
+          oldTargetId: c.oldTargetId,
+          file: c.file,
+          line: c.line,
+          character: c.character,
+        });
+      }
+      for (const r of recallFeed) {
+        candidates.push({
+          sourceId: r.sourceId,
+          calledName: r.calledName,
+          file: r.file,
+          line: r.line,
+          character: r.character,
+        });
+      }
+
+      // WI-1 (#166 P3 Mode A) — dedup merged stream by
+      // `candidateLocationKey`. The active `processCalls` (`:492`,
+      // wired this WI) and the Angular post-pass (`:531`) now
+      // share these feed arrays. When the same call site is
+      // reachable by both producers (e.g. an Angular component
+      // file that also falls into the sequential fallback), the
+      // session funnel would see the same candidate twice. The
+      // funnel sorts but does not dedup, so we dedup here once
+      // (O(n)) keyed on the canonical four-tuple the engine
+      // itself uses (`mode-a-reconciler.ts:1626`). First writer
+      // wins (Map iteration order is insertion order); the
+      // correction shape carries `oldTargetId` so a correction
+      // beats a recall when both arrive for the same site.
+      const dedupedCandidates: Candidate[] = [];
+      const seenKeys = new Set<string>();
+      for (const c of candidates) {
+        const k = candidateLocationKey(c);
+        if (seenKeys.has(k)) continue;
+        seenKeys.add(k);
+        dedupedCandidates.push(c);
+      }
+
+      // The session funnel is the single refuse path. The
+      // per-candidate `textDocument/definition` requests are
+      // issued inside it; the responses are collected into
+      // `locations` via the `handToEngine` seam. We then run
+      // the engine decision pass (`reconcileDecisions`) once,
+      // followed by `applyDecisions` (which is a no-op in
+      // dryRun).
+      const locations = new Map<string, Location[]>();
+
+      onProgress({
+        phase: 'parsing',
+        percent: 80,
+        message: dryRun ? 'LSP dry-run: resolving candidates...' : 'LSP reconciliation: resolving candidates...',
+        stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+      });
+
+      const sessionResult = await withReconciliationSession(
+        { id: ctx.repoId ?? 'default', repoPath },
+        dedupedCandidates,
+        async (selected, meta, skipped) => {
+          // The session's own per-candidate loop drives the
+          // `textDocument/definition` requests; the engine
+          // seam is `handToEngine`. The session has already
+          // populated `locations` by the time the work fn
+          // runs. We return the meta + skipped count so the
+          // outer code can report it.
+          return { meta, selectedCount: selected.length, skipped };
+        },
+        {
+          // The session calls this once per candidate with
+          // the normalized `Location[]` payload. We key on
+          // the canonical four-tuple so the engine can look
+          // it up later.
+          handToEngine: async (candidate, responseLocs) => {
+            // Use the SAME key helper the engine uses to look
+            // up the payload — keeps producer/consumer in sync
+            // if the key shape ever evolves.
+            locations.set(candidateLocationKey(candidate), responseLocs);
+          },
+        },
+      );
+
+      // `sessionResult` is the work fn's return value (or
+      // `null` on gate failure). The `meta` is lost on a
+      // gate failure, so we defensively default to an empty
+      // string for the server version. The `skipped` count
+      // is the session's real cap-rejection figure
+      // (`feed.length − selected.length`) — we thread it
+      // into the engine report so the summary line is
+      // truthful.
+      const serverVersion = sessionResult?.meta?.serverVersion ?? '';
+      const sessionSkipped = sessionResult?.skipped ?? 0;
+
+      // ── Engine decision pass (per-candidate) ────────────────────
+      // Replay every candidate through the decision table
+      // using the `locations` map the session populated.
+      // Candidates the session refused (no Location entry)
+      // fall through to the engine as `[]` → NO_NODE →
+      // keep/refuse per the decision table.
+      const reconcileReport = await reconcileDecisions(
+        graph,
+        dedupedCandidates,
+        locations,
+        {
+          mapLocationToNodeId: (loc, repoId) =>
+            mapLocationToNodeId(loc, repoId, { executeParameterized: inMemoryQuery }),
+          repoId: ctx.repoId ?? 'default',
+          skipped: sessionSkipped,
+        },
+      );
+
+      // ── Apply (skip every mutation in dryRun) ───────────────────
+      const applyResult = applyDecisions(graph, reconcileReport.decisions, { dryRun });
+
+      lspReport = {
+        decisions: applyResult.decisions,
+        confirmed: reconcileReport.confirmed,
+        corrected: reconcileReport.corrected,
+        recall: reconcileReport.recall,
+        refused: reconcileReport.refused,
+        skipped: reconcileReport.skipped,
+        serverVersion,
+      };
+
+      // ── Observability: dry-run report vs. summary line ──────────
+      if (dryRun) {
+        // AC-6: print every {action, from→to, why} tuple, write nothing.
+        //
+        // Security note: we print a TRUNCATED id (last
+        // colon-segment, plus a prefix length cap) so the
+        // full repo file paths in node ids never appear
+        // verbatim in CI logs. A full id is
+        // `Label:src/path/to/file.ts:Name:1` — the file
+        // path can include private module names, machine
+        // names from monorepos, etc. The truncated form
+        // is enough for a human to triage and keeps the
+        // log disclosure surface small.
+        for (const d of lspReport.decisions) {
+          const from = redactNodeId(d.from);
+          const to = d.to ? redactNodeId(d.to) : '(none)';
+          // m3: strip CR/LF from the formatted line so a
+          // node id that happens to contain a control
+          // char (theoretical — node ids are sanitized at
+          // construction, but defense-in-depth) cannot
+          // forge a log line. Same fix the `sanitizeUTF8`
+          // helper applies on the file-content side. The
+          // regex is applied to the WHOLE line so the
+          // structure of the line is preserved.
+          // eslint-disable-next-line no-console
+          console.log(
+            `  lsp-dry-run: ${d.action.padEnd(8)} ${from} -> ${to}  (${d.reason})`
+              .replace(/[\r\n]+/g, ' '),
+          );
+        }
+        // eslint-disable-next-line no-console
+        console.log(`  lsp-dry-run: ${lspReport.decisions.length} decision(s), 0 edges written`);
+      } else {
+        const lspElapsed = ((Date.now() - lspStart) / 1000).toFixed(1);
+        // eslint-disable-next-line no-console
+        console.log(
+          `  lsp: confirmed ${lspReport.confirmed}, corrected ${lspReport.corrected}, ` +
+          `recall +${lspReport.recall}, refused ${lspReport.refused}, ` +
+          `skipped(cap) ${lspReport.skipped}, server <${lspReport.serverVersion || 'unknown'}> (${lspElapsed}s)`,
+        );
+      }
+    }
 
     let communityResult: Awaited<ReturnType<typeof processCommunities>> | undefined;
     let processResult: Awaited<ReturnType<typeof processProcesses>> | undefined;
@@ -602,6 +879,7 @@ export const runPipelineFromRepo = async (
           targetId: membership.communityId,
           confidence: 1.0,
           reason: 'leiden-algorithm',
+          source: 'heuristic',
         });
       });
 
@@ -662,6 +940,7 @@ export const runPipelineFromRepo = async (
           confidence: 1.0,
           reason: 'trace-detection',
           step: step.step,
+          source: 'heuristic',
         });
       });
     }
@@ -681,12 +960,39 @@ export const runPipelineFromRepo = async (
 
     astCache.clear();
 
-    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
+    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult, lspReport };
   } catch (error) {
     cleanup();
     throw error;
   }
 };
+
+/**
+ * Redact a graph node id for log lines.
+ *
+ * Why: a full id is `Label:filePath:name[:overloadIndex]`
+ * — the file path can include private module names,
+ * monorepo layout, etc. We keep the label and the LAST
+ * colon-segment (typically `name[:overloadIndex]`) and
+ * abbreviate the dropped middle. The truncated form is
+ * enough for a human to triage and keeps the CI log
+ * disclosure surface small.
+ *
+ * Shape compatibility: the `analyze-lsp-mode-a.test.ts`
+ * regex is
+ * `/^  lsp-dry-run: (confirm|correct|add|keep|refuse)\s+\S+ -> .+?\s+\(.+\)$/`
+ * — `\S+` accepts any non-space output, so the truncation
+ * shape is compatible.
+ */
+export function redactNodeId(id: string): string {
+  const parts = id.split(':');
+  if (parts.length <= 2) return id; // `Label:name` — already short.
+  const label = parts[0];
+  const tail = parts[parts.length - 1];
+  const middle = parts.slice(1, -1).join(':');
+  const redacted = middle.length > 8 ? `${middle.slice(0, 4)}…${middle.slice(-3)}` : middle;
+  return `${label}:${redacted}:${tail}`;
+}
 
 /**
  * Topological sort of files by import dependencies.

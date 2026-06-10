@@ -134,7 +134,7 @@ function createImportEdgeHelpers(graph: KnowledgeGraph, importMap: ImportMap) {
     const targetId = generateId('File', resolvedPath);
     const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
     totalImportsResolved++;
-    graph.addRelationship({ id: relId, sourceId, targetId, type: 'IMPORTS', confidence: 1.0, reason: '' });
+    graph.addRelationship({ id: relId, sourceId, targetId, type: 'IMPORTS', confidence: 1.0, reason: '', source: 'heuristic' });
   };
 
   const addImportEdge = (filePath: string, resolvedPath: string) => {
@@ -281,6 +281,7 @@ function applyCrossRepoImport(
     type: 'CROSS_IMPORTS',
     confidence: 1.0,
     reason: 'cross-repo-import',
+    source: 'heuristic',
   });
   return true;
 }

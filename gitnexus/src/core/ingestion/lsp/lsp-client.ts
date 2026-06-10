@@ -33,8 +33,9 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, realpathSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as path from 'node:path';
 import {
   createMessageConnection,
   StreamMessageReader,
@@ -43,7 +44,7 @@ import {
   type MessageConnection,
 } from 'vscode-languageserver-protocol/node';
 
-import { discoverServers } from './server-discovery.js';
+import { discoverOne, TYPESCRIPT_LANGUAGE_SERVER_BIN } from './server-discovery.js';
 
 // ─── Public types ─────────────────────────────────────────────────────
 
@@ -556,11 +557,21 @@ export class LspClient {
       if (this.binaryOverride) {
         this.resolvedBinary = this.binaryOverride;
       } else {
-        const discovered = await discoverServers();
-        if (!discovered.typescript) {
+        // S2: bound the discovery walk to the workspace root.
+        // The pre-S2 call (`discoverServers()` with no
+        // workspace) walked up to the filesystem root and
+        // could pick up an untrusted
+        // `node_modules/.bin/typescript-language-server` shim
+        // in any parent directory of `process.cwd()`. We pass
+        // the client-owned `workspaceRoot` so Source 1 stops
+        // at the workspace boundary.
+        const discovered = await discoverOne(TYPESCRIPT_LANGUAGE_SERVER_BIN, {
+          workspaceRoot: this.workspaceRoot,
+        });
+        if (!discovered) {
           return false;
         }
-        this.resolvedBinary = discovered.typescript.path;
+        this.resolvedBinary = discovered.path;
       }
     }
 
@@ -783,10 +794,63 @@ export class LspClient {
     const uri = td.uri;
     if (this.openFiles.has(uri)) return;
 
+    // M7: refuse to read files outside the workspace root.
+    // A future emitter that hands us a URI from an
+    // untrusted source (e.g. a `definition` response
+    // pointing at `/etc/passwd`) MUST NOT be able to make
+    // us exfiltrate arbitrary file contents to the LSP
+    // server. The check is belt-and-braces: production
+    // emitters only ever pass paths the workspace
+    // contains, but the surface is well-defined enough
+    // that a guard here costs nothing.
+    let p: string;
+    try {
+      p = uri.startsWith('file://') ? fileUriToPath(uri) : uri;
+    } catch {
+      return;
+    }
+    const resolved = path.resolve(p);
+    const root = path.resolve(this.workspaceRoot);
+    // S1 (M7 hardening): resolve symlinks via `realpathSync`
+    // BEFORE the containment check. The lexical
+    // `path.relative(root, resolved)` check (M7) and the
+    // `readFileSync` later are two syscalls; a symlink swap
+    // in between could pass the lexical guard and then
+    // dereference to a file outside `root`. `realpathSync`
+    // makes the check robust against that TOCTOU class.
+    // The try/catch falls back to the lexical path on a
+    // non-existent target — we still run the lexical check
+    // so the same out-of-workspace paths are refused.
+    const realResolved = (() => {
+      try {
+        return realpathSync(resolved);
+      } catch {
+        return resolved;
+      }
+    })();
+    // `path.relative(root, realResolved)` returns a path
+    // starting with `..` whenever `realResolved` is OUTSIDE
+    // `root`. An empty relative path means
+    // `realResolved === root` (we still bail — opening the
+    // workspace root itself is the LSP server's job, not
+    // didOpen's). On Windows, `path.relative` can return
+    // an absolute path for cross-drive mismatches; we
+    // reject those too via `path.isAbsolute(rel)`.
+    const rel = path.relative(root, realResolved);
+    if (
+      rel === '' ||
+      rel.startsWith('..') ||
+      path.isAbsolute(rel)
+    ) {
+      // Outside (or equal to) the workspace — bail. The
+      // outer request will surface `null`; we don't read
+      // or send the file contents.
+      return;
+    }
+
     let content = '';
     try {
-      const p = uri.startsWith('file://') ? fileUriToPath(uri) : uri;
-      content = readFileSync(p, 'utf8');
+      content = readFileSync(realResolved, 'utf8');
     } catch {
       // Best-effort: keep content empty per spec.
     }

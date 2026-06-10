@@ -113,6 +113,7 @@ function integrateJclResults(
       targetId: jobId,
       confidence: 1.0,
       reason: 'jcl-job',
+      source: 'heuristic',
     });
 
     jobCount++;
@@ -155,6 +156,7 @@ function integrateJclResults(
         targetId: stepId,
         confidence: 1.0,
         reason: 'jcl-step',
+        source: 'heuristic',
       });
     }
 
@@ -169,6 +171,7 @@ function integrateJclResults(
           targetId: moduleId,
           confidence: 0.95,
           reason: 'jcl-exec-pgm',
+          source: 'heuristic',
         });
         programLinks++;
       }
@@ -185,6 +188,7 @@ function integrateJclResults(
           targetId: procModuleId,
           confidence: 0.9,
           reason: 'jcl-exec-proc',
+          source: 'heuristic',
         });
       }
     }
@@ -229,6 +233,7 @@ function integrateJclResults(
         targetId: datasetId,
         confidence: 0.85,
         reason: `jcl-dd:${dd.ddName}`,
+        source: 'heuristic',
       });
     }
   }
@@ -266,6 +271,7 @@ function integrateJclResults(
         targetId: moduleId,
         confidence: 0.9,
         reason: 'jcl-include',
+        source: 'heuristic',
       });
     }
   }

@@ -731,6 +731,7 @@ const processParsingSequential = async (
           type: memberEdgeType,
           confidence: 1.0,
           reason: '',
+          source: 'heuristic',
         });
       }
     });

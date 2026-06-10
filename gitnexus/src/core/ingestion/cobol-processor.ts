@@ -226,6 +226,7 @@ export const processCobol = (
         targetId: resolvedId,
         confidence: rel.reason === 'cobol-cancel-unresolved' ? 0.9 : 0.95,
         reason: resolvedReason,
+        source: 'heuristic',
       });
     } else if (rel.reason?.startsWith('cics-') && rel.reason.endsWith('-unresolved')) {
       // Replace unresolved CICS LINK/XCTL/LOAD with resolved edge
@@ -236,6 +237,7 @@ export const processCobol = (
         targetId: resolvedId,
         confidence: 0.95,
         reason: rel.reason.replace('-unresolved', ''),
+        source: 'heuristic',
       });
     }
 
@@ -336,6 +338,7 @@ function mapToGraph(
       targetId: moduleId,
       confidence: 1.0,
       reason: 'cobol-program-id',
+      source: 'heuristic',
     });
     moduleNodeIds.set(extracted.programName.toUpperCase(), moduleId);
   }
@@ -378,6 +381,7 @@ function mapToGraph(
       targetId: nestedModuleId,
       confidence: 1.0,
       reason: 'cobol-nested-program',
+      source: 'heuristic',
     });
     moduleNodeIds.set(prog.name.toUpperCase(), nestedModuleId);
     programModuleIds.set(prog.name.toUpperCase(), nestedModuleId);
@@ -414,6 +418,7 @@ function mapToGraph(
       targetId: secId,
       confidence: 1.0,
       reason: 'cobol-section',
+      source: 'heuristic',
     });
     sectionNodeIds.set(`${owningPgm ?? ''}:${sec.name.toUpperCase()}`, secId);
   }
@@ -449,6 +454,7 @@ function mapToGraph(
       targetId: paraId,
       confidence: 1.0,
       reason: 'cobol-paragraph',
+      source: 'heuristic',
     });
     paraNodeIds.set(`${owningPgmPara ?? ''}:${para.name.toUpperCase()}`, paraId);
   }
@@ -478,6 +484,7 @@ function mapToGraph(
       targetId: propId,
       confidence: 1.0,
       reason: 'cobol-data-item',
+      source: 'heuristic',
     });
   }
 
@@ -497,6 +504,7 @@ function mapToGraph(
         targetId: depFieldId,
         confidence: 1.0,
         reason: 'cobol-depends-on',
+        source: 'heuristic',
       });
     }
   }
@@ -534,6 +542,7 @@ function mapToGraph(
       targetId,
       confidence: 1.0,
       reason: 'cobol-perform',
+      source: 'heuristic',
     });
 
     // PERFORM THRU -> expanded CALLS edge to thru target
@@ -547,6 +556,7 @@ function mapToGraph(
           targetId: thruTargetId,
           confidence: 1.0,
           reason: 'cobol-perform-thru',
+          source: 'heuristic',
         });
       }
     }
@@ -577,6 +587,7 @@ function mapToGraph(
         targetId: generateId('CodeElement', `${filePath}:dynamic-call:${call.target}:L${call.line}`),
         confidence: 1.0,
         reason: 'cobol-dynamic-call',
+        source: 'heuristic',
       });
 
       // CALL USING parameters for dynamic call too
@@ -591,6 +602,7 @@ function mapToGraph(
               targetId: paramPropId,
               confidence: 0.9,
               reason: 'cobol-call-using',
+              source: 'heuristic',
             });
           }
         }
@@ -606,6 +618,7 @@ function mapToGraph(
             targetId: retPropId,
             confidence: 0.9,
             reason: 'cobol-call-returning',
+            source: 'heuristic',
           });
         }
       }
@@ -625,6 +638,7 @@ function mapToGraph(
       targetId,
       confidence: targetModuleId ? 0.95 : 0.5,
       reason: targetModuleId ? 'cobol-call' : 'cobol-call-unresolved',
+      source: 'heuristic',
     });
 
     // CALL USING parameters -> ACCESSES edges (data flow across programs)
@@ -639,6 +653,7 @@ function mapToGraph(
             targetId: paramPropId,
             confidence: 0.9,
             reason: 'cobol-call-using',
+            source: 'heuristic',
           });
         }
       }
@@ -654,6 +669,7 @@ function mapToGraph(
           targetId: retPropId,
           confidence: 0.9,
           reason: 'cobol-call-returning',
+          source: 'heuristic',
         });
       }
     }
@@ -670,6 +686,7 @@ function mapToGraph(
       targetId: targetFileId,
       confidence: 1.0,
       reason: 'cobol-copy',
+      source: 'heuristic',
     });
   }
 
@@ -696,6 +713,7 @@ function mapToGraph(
       targetId: sqlId,
       confidence: 1.0,
       reason: 'cobol-exec-sql',
+      source: 'heuristic',
     });
     // ACCESSES edges to tables
     for (const table of sql.tables) {
@@ -707,6 +725,7 @@ function mapToGraph(
         targetId: tableId,
         confidence: 0.9,
         reason: `sql-${sql.operation.toLowerCase()}`,
+        source: 'heuristic',
       });
     }
 
@@ -723,6 +742,7 @@ function mapToGraph(
         targetId: generateId('File', `<unresolved>:${includeTarget}`),
         confidence: 0.8,
         reason: 'sql-include',
+        source: 'heuristic',
       });
     }
   }
@@ -742,6 +762,7 @@ function mapToGraph(
             targetId: paramPropId,
             confidence: 1.0,
             reason: 'cobol-procedure-using',
+            source: 'heuristic',
           });
         }
       }
@@ -778,6 +799,7 @@ function mapToGraph(
       targetId: cicsId,
       confidence: 1.0,
       reason: 'cobol-exec-cics',
+      source: 'heuristic',
     });
     // LINK/XCTL -> cross-program CALLS (handles both literal and variable PROGRAM)
     if (cics.programName && ['LINK', 'XCTL', 'LOAD'].includes(cics.command)) {
@@ -798,6 +820,7 @@ function mapToGraph(
           type: 'CONTAINS', sourceId: cicsOwner,
           targetId: generateId('CodeElement', `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`),
           confidence: 1.0, reason: 'cics-dynamic-program',
+          source: 'heuristic',
         });
       } else {
         const cicsTargetModuleId = moduleNodeIds.get(cics.programName.toUpperCase());
@@ -809,6 +832,7 @@ function mapToGraph(
           type: 'CALLS', sourceId: cicsOwner, targetId,
           confidence: cicsTargetModuleId ? 0.95 : 0.5,
           reason: cicsTargetModuleId ? cicsReason : `${cicsReason}-unresolved`,
+          source: 'heuristic',
         });
       }
     }
@@ -824,6 +848,7 @@ function mapToGraph(
         id: generateId('ACCESSES', `${cicsId}->file->${cics.fileName}:L${cics.line}`),
         type: 'ACCESSES', sourceId: cicsId, targetId: fileRecordId,
         confidence: 0.9, reason,
+        source: 'heuristic',
       });
     }
 
@@ -839,6 +864,7 @@ function mapToGraph(
         id: generateId('ACCESSES', `${cicsId}->queue->${cics.queueName}:L${cics.line}`),
         type: 'ACCESSES', sourceId: cicsId, targetId: queueId,
         confidence: 0.85, reason: qReason,
+        source: 'heuristic',
       });
     }
 
@@ -852,6 +878,7 @@ function mapToGraph(
           type: 'CALLS', sourceId: cicsOwner, targetId: transNodeId,
           confidence: 0.8,
           reason: cmd === 'RETURN' ? 'cics-return-transid' : 'cics-start-transid',
+          source: 'heuristic',
         });
       }
     }
@@ -863,6 +890,7 @@ function mapToGraph(
         id: generateId('ACCESSES', `${cicsId}->map->${cics.mapName}:L${cics.line}`),
         type: 'ACCESSES', sourceId: cicsId, targetId: mapId,
         confidence: 0.85, reason: 'cics-map',
+        source: 'heuristic',
       });
     }
 
@@ -874,6 +902,7 @@ function mapToGraph(
           id: generateId('ACCESSES', `${cicsId}->into->${cics.intoField}:L${cics.line}`),
           type: 'ACCESSES', sourceId: cicsId, targetId: intoPropId,
           confidence: 0.9, reason: 'cics-receive-into',
+          source: 'heuristic',
         });
       }
     }
@@ -886,6 +915,7 @@ function mapToGraph(
           id: generateId('ACCESSES', `${cicsId}->from->${cics.fromField}:L${cics.line}`),
           type: 'ACCESSES', sourceId: cicsId, targetId: fromPropId,
           confidence: 0.9, reason: 'cics-send-from',
+          source: 'heuristic',
         });
       }
     }
@@ -898,6 +928,7 @@ function mapToGraph(
           id: generateId('CALLS', `${cicsOwner}->abend-label->${cics.labelName}:L${cics.line}`),
           type: 'CALLS', sourceId: cicsOwner, targetId: labelTargetId,
           confidence: 0.9, reason: 'cics-handle-abend',
+          source: 'heuristic',
         });
       }
     }
@@ -927,6 +958,7 @@ function mapToGraph(
       targetId: entryId,
       confidence: 1.0,
       reason: 'cobol-entry-point',
+      source: 'heuristic',
     });
     // Register in moduleNodeIds for cross-program resolution
     moduleNodeIds.set(entry.name.toUpperCase(), entryId);
@@ -948,6 +980,7 @@ function mapToGraph(
       targetId,
       confidence: 0.9,
       reason: 'cobol-error-handler',
+      source: 'heuristic',
     });
   }
 
@@ -965,6 +998,7 @@ function mapToGraph(
           targetId: targetPropId,
           confidence: 0.9,
           reason,
+          source: 'heuristic',
         });
       }
     }
@@ -979,6 +1013,7 @@ function mapToGraph(
           targetId: valuePropId,
           confidence: 0.9,
           reason: 'cobol-set-read',
+          source: 'heuristic',
         });
       }
     }
@@ -997,6 +1032,7 @@ function mapToGraph(
         targetId: inspFieldId,
         confidence: 0.9,
         reason: 'cobol-inspect-read',
+        source: 'heuristic',
       });
       // Write edge (if REPLACING or CONVERTING — modifies the field in-place)
       if (insp.form !== 'tallying') {
@@ -1007,6 +1043,7 @@ function mapToGraph(
           targetId: inspFieldId,
           confidence: 0.9,
           reason: 'cobol-inspect-write',
+          source: 'heuristic',
         });
       }
     }
@@ -1021,6 +1058,7 @@ function mapToGraph(
           targetId: counterPropId,
           confidence: 0.9,
           reason: 'cobol-inspect-tally',
+          source: 'heuristic',
         });
       }
     }
@@ -1038,6 +1076,7 @@ function mapToGraph(
         targetId: targetPropId,
         confidence: 0.9,
         reason: 'cobol-initialize',
+        source: 'heuristic',
       });
     }
   }
@@ -1069,6 +1108,7 @@ function mapToGraph(
       targetId: dliId,
       confidence: 1.0,
       reason: 'cobol-exec-dli',
+      source: 'heuristic',
     });
     // ACCESSES edge to IMS segment (like SQL table)
     if (dli.segmentName) {
@@ -1080,6 +1120,7 @@ function mapToGraph(
         targetId: segId,
         confidence: 0.9,
         reason: `dli-${dli.verb.toLowerCase()}`,
+        source: 'heuristic',
       });
     }
     // ACCESSES to INTO/FROM data areas
@@ -1093,6 +1134,7 @@ function mapToGraph(
           targetId: intoPropId,
           confidence: 0.9,
           reason: 'dli-into',
+          source: 'heuristic',
         });
       }
     }
@@ -1106,6 +1148,7 @@ function mapToGraph(
           targetId: fromPropId,
           confidence: 0.9,
           reason: 'dli-from',
+          source: 'heuristic',
         });
       }
     }
@@ -1125,6 +1168,7 @@ function mapToGraph(
         targetId: fromPropId,
         confidence: 0.9,
         reason: move.corresponding ? 'cobol-move-corresponding-read' : 'cobol-move-read',
+        source: 'heuristic',
       });
     }
 
@@ -1139,6 +1183,7 @@ function mapToGraph(
           targetId: toPropId,
           confidence: 0.9,
           reason: move.corresponding ? 'cobol-move-corresponding-write' : 'cobol-move-write',
+          source: 'heuristic',
         });
       }
     }
@@ -1167,6 +1212,7 @@ function mapToGraph(
       targetId: fdId,
       confidence: 1.0,
       reason: 'cobol-file-declaration',
+      source: 'heuristic',
     });
   }
 
@@ -1182,6 +1228,7 @@ function mapToGraph(
         targetId,
         confidence: 1.0,
         reason: 'cobol-goto',
+        source: 'heuristic',
       });
     }
   }
@@ -1199,6 +1246,7 @@ function mapToGraph(
         targetId: usingId,
         confidence: 0.85,
         reason: 'sort-using',
+        source: 'heuristic',
       });
     }
     for (const givingFile of sort.givingFiles) {
@@ -1210,6 +1258,7 @@ function mapToGraph(
         targetId: givingId,
         confidence: 0.85,
         reason: 'sort-giving',
+        source: 'heuristic',
       });
     }
   }
@@ -1226,6 +1275,7 @@ function mapToGraph(
         targetId: targetPropId,
         confidence: 0.9,
         reason: 'cobol-search',
+        source: 'heuristic',
       });
     }
   }
@@ -1250,6 +1300,7 @@ function mapToGraph(
         type: 'CONTAINS', sourceId: cancelOwner,
         targetId: generateId('CodeElement', `${filePath}:dynamic-cancel:${cancel.target}:L${cancel.line}`),
         confidence: 1.0, reason: 'cobol-dynamic-cancel',
+        source: 'heuristic',
       });
       continue;
     }
@@ -1264,6 +1315,7 @@ function mapToGraph(
       targetId,
       confidence: targetModuleId ? 0.9 : 0.5,
       reason: targetModuleId ? 'cobol-cancel' : 'cobol-cancel-unresolved',
+      source: 'heuristic',
     });
   }
 }

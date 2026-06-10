@@ -409,6 +409,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           type: 'OVERRIDES',
           confidence: resolution.confidence,
           reason: resolution.reason,
+          source: 'heuristic',
         });
         overrideEdges++;
       }
