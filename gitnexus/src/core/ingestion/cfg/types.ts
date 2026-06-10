@@ -22,18 +22,32 @@ export interface BasicBlockData {
   readonly kind: 'entry' | 'exit' | 'normal';
 }
 
-/** Why one block flows to another — drives the `reason` on the emitted CFG edge. */
+/**
+ * Why one block flows to another — drives the `reason` on the emitted CFG edge.
+ *
+ * Kind invariant (M2): a bare jump kind (`return`/`break`/`continue`) means the
+ * SOURCE block's terminator is that jump statement. A `finally-*` kind marks a
+ * COMPLETION edge out of a `finally` body's exit — the leg that resumes a jump
+ * which was re-routed through the finally (issue #2082 U2). Reusing the bare
+ * kinds on completion edges would silently break consumers that infer the
+ * source block's terminator from the kind, and a single generic kind would lose
+ * WHICH jump each completion edge completes when a shared finally has several
+ * pending targets.
+ */
 export type CfgEdgeKind =
   | 'seq' // straight-line fallthrough
   | 'cond-true' // branch taken (if/while/for condition true)
   | 'cond-false' // branch not taken / loop exit
   | 'loop-back' // back-edge to a loop header
-  | 'break' // break → loop/switch exit
-  | 'continue' // continue → loop header
-  | 'return' // return → function EXIT
+  | 'break' // break → loop/switch exit (or the finally it must cross)
+  | 'continue' // continue → loop header (or the finally it must cross)
+  | 'return' // return → function EXIT (or the finally it must cross)
   | 'throw' // throw → nearest handler / finally / EXIT
   | 'switch-case' // dispatch to a case
-  | 'fallthrough'; // switch case → next case (no break)
+  | 'fallthrough' // switch case → next case (no break)
+  | 'finally-return' // finally exit → resumed return target (EXIT / outer finally)
+  | 'finally-break' // finally exit → resumed break target
+  | 'finally-continue'; // finally exit → resumed continue target
 
 export interface CfgEdgeData {
   readonly from: number;

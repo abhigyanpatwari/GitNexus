@@ -493,3 +493,150 @@ describe('TS/JS CfgVisitor — AC1: 10-function fixture', () => {
     }
   });
 });
+
+describe('TS/JS CfgVisitor — early exits through finally (#2082 M2 U2)', () => {
+  const edges = (cfg: FunctionCfg) => cfg.edges;
+  const edgesFrom = (cfg: FunctionCfg, from: number) => cfg.edges.filter((e) => e.from === from);
+
+  it('return inside try-with-finally routes through finally; no direct try→EXIT return edge', () => {
+    const cfg = cfgOf(`function f() { try { return 1; } finally { cleanup(); } }`);
+    const ret = block(cfg, 'return 1');
+    const fin = block(cfg, 'cleanup()');
+    expect(edges(cfg)).toContainEqual({ from: ret, to: fin, kind: 'return' });
+    expect(edges(cfg)).toContainEqual({ from: fin, to: cfg.exitIndex, kind: 'finally-return' });
+    expect(edges(cfg)).not.toContainEqual({ from: ret, to: cfg.exitIndex, kind: 'return' });
+  });
+
+  it('break/continue crossing a finally thread through it with finally-* completion kinds', () => {
+    const cfg = cfgOf(`function f(xs) {
+      for (const x of xs) {
+        try { if (x) { break; } else { continue; } } finally { f1(); }
+      }
+    }`);
+    const fin = block(cfg, 'f1()');
+    const brk = block(cfg, 'break');
+    const cont = block(cfg, 'continue');
+    expect(edges(cfg)).toContainEqual({ from: brk, to: fin, kind: 'break' });
+    expect(edges(cfg)).toContainEqual({ from: cont, to: fin, kind: 'continue' });
+    const fromFin = edgesFrom(cfg, fin).map((e) => e.kind);
+    expect(fromFin).toContain('finally-break');
+    expect(fromFin).toContain('finally-continue');
+  });
+
+  it('nested finallys chain: return threads a() then b() then EXIT', () => {
+    const cfg = cfgOf(
+      `function f() { try { try { return; } finally { a(); } } finally { b(); } }`,
+    );
+    const ret = block(cfg, 'return');
+    const finA = block(cfg, 'a()');
+    const finB = block(cfg, 'b()');
+    expect(edges(cfg)).toContainEqual({ from: ret, to: finA, kind: 'return' });
+    expect(edges(cfg)).toContainEqual({ from: finA, to: finB, kind: 'finally-return' });
+    expect(edges(cfg)).toContainEqual({ from: finB, to: cfg.exitIndex, kind: 'finally-return' });
+  });
+
+  it('returns in try AND catch share one deduped finally-return completion edge', () => {
+    const cfg = cfgOf(`function f() {
+      try { return t(); } catch (e) { return c(); } finally { f1(); }
+    }`);
+    const fin = block(cfg, 'f1()');
+    const completions = edgesFrom(cfg, fin).filter((e) => e.kind === 'finally-return');
+    expect(completions).toEqual([{ from: fin, to: cfg.exitIndex, kind: 'finally-return' }]);
+    expect(edges(cfg)).toContainEqual({ from: block(cfg, 't()'), to: fin, kind: 'return' });
+    expect(edges(cfg)).toContainEqual({ from: block(cfg, 'c()'), to: fin, kind: 'return' });
+  });
+
+  it('return inside catch with NO finally keeps its direct edge to EXIT', () => {
+    const cfg = cfgOf(`function f() { try { t(); } catch (e) { return 1; } }`);
+    const ret = block(cfg, 'return 1');
+    expect(edges(cfg)).toContainEqual({ from: ret, to: cfg.exitIndex, kind: 'return' });
+    expect(edgeKinds(cfg).has('finally-return')).toBe(false);
+  });
+
+  it('normal completion still routes through finally exactly once', () => {
+    const cfg = cfgOf(`function f() { try { work(); } finally { fin(); } done(); }`);
+    const body = block(cfg, 'work()');
+    const fin = block(cfg, 'fin()');
+    const seqs = edges(cfg).filter((e) => e.from === body && e.to === fin && e.kind === 'seq');
+    expect(seqs).toHaveLength(1);
+    expect(reaches(cfg, fin, block(cfg, 'done()'))).toBe(true);
+  });
+
+  it('kind invariant: no bare jump edge originates from a finally exit block', () => {
+    const cfg = cfgOf(`function f(xs) {
+      for (const x of xs) { try { if (x) return 1; break; } finally { f1(); } }
+    }`);
+    const fin = block(cfg, 'f1()');
+    for (const e of edgesFrom(cfg, fin)) {
+      expect(['return', 'break', 'continue']).not.toContain(e.kind);
+    }
+  });
+
+  it('non-crossing break (loop wholly inside try) keeps its direct edge — no finally threading', () => {
+    const cfg = cfgOf(`function f(xs) {
+      try { for (const x of xs) { break; } post(); } finally { f1(); }
+    }`);
+    const brk = block(cfg, 'break');
+    const fin = block(cfg, 'f1()');
+    const brkEdges = edgesFrom(cfg, brk).filter((e) => e.kind === 'break');
+    expect(brkEdges).toHaveLength(1);
+    expect(brkEdges[0].to).not.toBe(fin);
+    // the break's continuation (post()) is reachable WITHOUT passing the finally
+    expect(reaches(cfg, brkEdges[0].to, block(cfg, 'post()'))).toBe(true);
+    expect(edgeKinds(cfg).has('finally-break')).toBe(false);
+    // normal try completion still routes through finally
+    expect(edges(cfg)).toContainEqual({
+      from: block(cfg, 'post()'),
+      to: fin,
+      kind: 'seq',
+    });
+  });
+
+  it('labeled break crossing the finally DOES thread', () => {
+    const cfg = cfgOf(`function f(xs) {
+      outer: for (const x of xs) {
+        try { break outer; } finally { f1(); }
+      }
+    }`);
+    const brk = block(cfg, 'break outer');
+    const fin = block(cfg, 'f1()');
+    expect(edges(cfg)).toContainEqual({ from: brk, to: fin, kind: 'break' });
+    expect(edgesFrom(cfg, fin).some((e) => e.kind === 'finally-break')).toBe(true);
+  });
+
+  it('empty finally: jump keeps its direct edge, no finally-* kinds, no throw', () => {
+    const cfg = cfgOf(`function f() { try { return 1; } finally {} }`);
+    const ret = block(cfg, 'return 1');
+    expect(edges(cfg)).toContainEqual({ from: ret, to: cfg.exitIndex, kind: 'return' });
+    expect(edgeKinds(cfg).has('finally-return')).toBe(false);
+  });
+
+  it('finally that itself returns: its return wins; no dangling completion edges', () => {
+    const cfg = cfgOf(`function f() { try { return 1; } finally { return 2; } }`);
+    const finRet = block(cfg, 'return 2');
+    expect(edges(cfg)).toContainEqual({ from: finRet, to: cfg.exitIndex, kind: 'return' });
+    // the pending completion had no finally exits to attach to
+    expect(edgeKinds(cfg).has('finally-return')).toBe(false);
+    // every edge endpoint is in range (no dangling)
+    for (const e of edges(cfg)) {
+      expect(e.to).toBeGreaterThanOrEqual(0);
+      expect(e.to).toBeLessThan(cfg.blocks.length);
+    }
+  });
+
+  it('single-exit invariant: EXIT reachable, all blocks have a path onward', () => {
+    const cfg = cfgOf(`function f(xs) {
+      outer: for (const x of xs) {
+        try {
+          try { if (x) { continue outer; } return g(x); } finally { a(); }
+        } finally { b(); }
+      }
+    }`);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    for (const b of cfg.blocks) {
+      if (b.index === cfg.exitIndex) continue;
+      if (!reachable(cfg, b.index)) continue; // unreachable blocks exempt
+      expect(reaches(cfg, b.index, cfg.exitIndex)).toBe(true);
+    }
+  });
+});

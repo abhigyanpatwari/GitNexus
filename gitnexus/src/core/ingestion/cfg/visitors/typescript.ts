@@ -18,23 +18,28 @@
  *  - `try/catch/finally` routes both normal completion AND a `throw` in the try
  *    through `finally` (the finally block post-dominates the try/catch); a
  *    `throw` with no catch propagates through finally to the enclosing handler.
+ *  - EARLY EXITS THROUGH FINALLY (#2082 M2 U2, closes the M1 soundness gap): a
+ *    `break`/`continue`/`return` whose jump CROSSES a `finally` is re-routed to
+ *    the finally entry (keeping its bare jump kind), and the finally's exits
+ *    gain a `finally-return`/`finally-break`/`finally-continue` completion edge
+ *    to the resumed target. Threading is TARGET-RELATIVE via finalizer frames
+ *    interleaved on the {@link ControlFlowContext} stack: only the finallys
+ *    lexically between the jump and its target thread (a `break` whose loop is
+ *    wholly inside the try keeps its direct edge — re-routing it would let a
+ *    finally redefinition falsely kill in-loop defs for reaching-defs). Nested
+ *    finallys chain inner→outer; finally-as-shared-join conflates exit paths
+ *    (sound over-approximation; duplication-per-exit-path was rejected). An
+ *    empty/comment-only finally pushes no frame — jumps keep direct edges.
  *  - labeled `break`/`continue` resolve against the labeled loop's frame.
  *
- * Known M1 limitations:
- *  - SOUNDNESS GAP (M2 blocker, not mere precision): a non-local jump
- *    (`break`/`continue`/`return`) out of a `try` that has a `finally` edges
- *    directly to its target rather than routing THROUGH the `finally` block
- *    first. A future taint/PDG pass will therefore MISS flow mediated by a
- *    `finally` on the early-exit path (e.g. a value the `finally` taints or
- *    sanitizes before the `return` reaches its target) — a false negative. The
- *    general fix duplicates `finally` per exit path; deferred past M1 and
- *    tracked for M2. Normal completion and `throw` DO route through `finally`.
+ * Known limitations:
  *  - A `break`/`continue` to a label on a non-loop/non-switch block, and the
  *    OUTER label of a doubly-labeled construct (`outer: inner: for (...)`), are
  *    not modeled. The jump is conservatively routed to the function EXIT (a
  *    sound over-approximation that keeps the graph single-exit — see visitBreak)
- *    rather than left as a dangling sink; only the precise labeled target is
- *    unmodeled. Single-labeled loops/switches resolve correctly.
+ *    rather than left as a dangling sink, and threads no finallys (target
+ *    unknown ⇒ crossed set unknown). Single-labeled loops/switches resolve
+ *    correctly, including across finallys.
  *
  * Block/edge accounting and reachability are pinned in
  * `test/unit/cfg/cfg-builder.test.ts` (core) and
@@ -42,9 +47,9 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { CfgBuilder } from '../cfg-builder.js';
-import { ControlFlowContext } from '../control-flow-context.js';
+import { ControlFlowContext, type FinalizerFrame } from '../control-flow-context.js';
 import type { TraversalResult } from '../traversal-result.js';
-import type { CfgVisitor, FunctionCfg } from '../types.js';
+import type { CfgEdgeKind, CfgVisitor, FunctionCfg } from '../types.js';
 
 /** TS/JS node types that own a CFG-bearing function body. */
 const TS_FUNCTION_TYPES = new Set([
@@ -198,8 +203,35 @@ class TsCfgWalk {
 
   private visitReturn(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
-    this.builder.edge(idx, this.builder.exitIndex, 'return');
+    // A return crosses EVERY active finally before reaching EXIT.
+    this.jumpVia(idx, this.cfc.finalizersForReturn(), this.builder.exitIndex, 'return');
     return { entry: idx, exits: [] };
+  }
+
+  /**
+   * Wire a jump from `from` to `target`, routing through the finallys it
+   * crosses (innermost first). The first leg keeps the bare jump `kind`
+   * (preserving the "kind ⟹ source-block terminator" invariant); each
+   * finally's completion leg is registered as pending on its frame with the
+   * matching `finally-*` kind and wired by the owning `visitTry` once the
+   * finally's exits are known to it (#2082 M2 U2 / KTD5).
+   */
+  private jumpVia(
+    from: number,
+    finalizers: readonly FinalizerFrame[],
+    target: number,
+    kind: 'return' | 'break' | 'continue',
+  ): void {
+    if (finalizers.length === 0) {
+      this.builder.edge(from, target, kind);
+      return;
+    }
+    const completionKind = `finally-${kind}` as CfgEdgeKind;
+    this.builder.edge(from, finalizers[0].entry, kind);
+    for (let i = 0; i < finalizers.length; i++) {
+      const to = i + 1 < finalizers.length ? finalizers[i + 1].entry : target;
+      finalizers[i].pending.push({ to, kind: completionKind });
+    }
   }
 
   private visitThrow(stmt: SyntaxNode): TraversalResult {
@@ -210,22 +242,25 @@ class TsCfgWalk {
 
   private visitBreak(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
-    const target = this.cfc.breakTarget(this.labelOf(stmt));
-    // An unresolved target — a label this M1 visitor doesn't model (a stacked
+    const res = this.cfc.resolveBreak(this.labelOf(stmt));
+    // An unresolved target — a label this visitor doesn't model (a stacked
     // outer label like `outer: inner: for`, or a labeled non-loop block) —
     // would otherwise leave this block with NO out-edge, stranding it and
     // breaking the single-exit invariant a downstream post-dominator / PDG pass
     // relies on. Conservatively route an unresolved jump to the function EXIT
-    // ("escapes the function"): sound over-approximation, keeps single-exit.
-    this.builder.edge(idx, target ?? this.builder.exitIndex, 'break');
+    // ("escapes the function"): sound over-approximation, keeps single-exit;
+    // no finallys thread (the target is unknown, so the crossed set is too).
+    if (res) this.jumpVia(idx, res.finalizers, res.target, 'break');
+    else this.builder.edge(idx, this.builder.exitIndex, 'break');
     return { entry: idx, exits: [] };
   }
 
   private visitContinue(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
-    const target = this.cfc.continueTarget(this.labelOf(stmt));
+    const res = this.cfc.resolveContinue(this.labelOf(stmt));
     // See visitBreak: an unresolved label routes to EXIT to preserve single-exit.
-    this.builder.edge(idx, target ?? this.builder.exitIndex, 'continue');
+    if (res) this.jumpVia(idx, res.finalizers, res.target, 'continue');
+    else this.builder.edge(idx, this.builder.exitIndex, 'continue');
     return { entry: idx, exits: [] };
   }
 
@@ -453,10 +488,19 @@ class TsCfgWalk {
     }
 
     // Build finally first so its entry is known as both a normal join and a
-    // handler target. The finally body runs in the OUTER handler context.
+    // handler target. The finally body runs in the OUTER handler context — and
+    // OUTSIDE this try's finalizer frame: a return inside the finally must not
+    // thread itself (it threads only outer finallys, matching JS semantics).
     const finallyRes = finallyClause
       ? this.visitSeq(this.statementsOf(this.bodyBlockOf(finallyClause) as SyntaxNode))
       : null;
+
+    // Finalizer frame for early-exit threading (#2082 M2 U2): active while the
+    // catch and protected bodies are walked, so a crossing `return`/`break`/
+    // `continue` inside either routes through the finally. An empty/comment-only
+    // finally (`finallyRes` null — the #2099-F2 empty-catch bug shape) pushes
+    // NO frame: it can define nothing, so jumps soundly keep direct edges.
+    const finFrame = finallyRes ? this.cfc.pushFinalizer(finallyRes.entry) : null;
 
     // A throw inside catch propagates to finally (if any), else the outer handler.
     let catchRes: SeqResult = null;
@@ -497,6 +541,18 @@ class TsCfgWalk {
     if (catchClause || finallyClause) {
       for (let b = protectedStart; b < this.builder.blockCount; b++) {
         this.builder.edge(b, tryHandler, 'throw');
+      }
+    }
+
+    // The finalizer frame closes once the protected/catch walks are done; any
+    // jumps that crossed it left their completion legs on `pending`, wired
+    // here from the finally's exits. A finally that itself always jumps
+    // (`finally { return 2; }`) has no exits — pending legs wire nowhere,
+    // matching JS's finally-override semantics.
+    if (finFrame && finallyRes) {
+      this.cfc.pop();
+      for (const p of finFrame.pending) {
+        this.builder.connect(finallyRes.exits, p.to, p.kind);
       }
     }
 
