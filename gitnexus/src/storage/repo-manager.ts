@@ -125,6 +125,19 @@ export interface IndexedRepo {
 }
 
 /**
+ * Per-branch index summary nested under a {@link RegistryEntry} (#2106).
+ * Records non-primary branches indexed for the same repo path so `list`,
+ * `status`, and `list_repos` can surface them without a second registry entry.
+ */
+export interface BranchSummary {
+  /** Git branch name this sub-index represents. */
+  branch: string;
+  indexedAt: string;
+  lastCommit: string;
+  stats?: RepoMeta['stats'];
+}
+
+/**
  * Shape of an entry in the global registry (~/.gitnexus/registry.json)
  */
 export interface RegistryEntry {
@@ -136,6 +149,18 @@ export interface RegistryEntry {
   /** See {@link RepoMeta.remoteUrl}. Mirrored from meta at register time. */
   remoteUrl?: string;
   stats?: RepoMeta['stats'];
+  /**
+   * Branch name owning the flat/primary index (#2106). Mirrors the flat
+   * `meta.branch`. Absent for legacy single-branch entries and non-git repos —
+   * additive and backward compatible.
+   */
+  branch?: string;
+  /**
+   * Non-primary branch indexes for this same path (#2106). Absent when only the
+   * primary branch is indexed, preserving the one-entry-per-path model and the
+   * legacy registry shape.
+   */
+  branches?: BranchSummary[];
 }
 
 const GITNEXUS_DIR = '.gitnexus';
@@ -500,6 +525,14 @@ export interface RegisterRepoOptions {
    * re-run the full pipeline.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Non-primary branch this run indexed (#2106). When set, the branch's
+   * summary is upserted into the entry's `branches[]` and the primary
+   * top-level fields are left untouched. When `undefined`, this is a
+   * primary/flat run that refreshes the top-level fields (and preserves any
+   * existing branch summaries).
+   */
+  branch?: string;
 }
 
 /**
@@ -665,15 +698,43 @@ export const registerRepo = async (
     }
   }
 
-  const entry: RegistryEntry = {
-    name,
-    path: resolved,
-    storagePath,
-    indexedAt: meta.indexedAt,
-    lastCommit: meta.lastCommit,
-    remoteUrl: meta.remoteUrl,
-    stats: meta.stats,
-  };
+  let entry: RegistryEntry;
+  if (opts?.branch) {
+    // Non-primary branch run (#2106): keep the primary's top-level fields and
+    // upsert this branch into branches[]. One entry per path is preserved.
+    const summary: BranchSummary = {
+      branch: opts.branch,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      stats: meta.stats,
+    };
+    const base: RegistryEntry = existing ?? {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      remoteUrl: meta.remoteUrl,
+      stats: meta.stats,
+    };
+    const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
+    branches.push(summary);
+    entry = { ...base, name, branches };
+  } else {
+    // Primary/flat run: refresh top-level fields, preserve any branch summaries
+    // already recorded for this path so a primary re-analyze does not drop them.
+    entry = {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      remoteUrl: meta.remoteUrl,
+      stats: meta.stats,
+      ...(meta.branch ? { branch: meta.branch } : {}),
+      ...(existing?.branches ? { branches: existing.branches } : {}),
+    };
+  }
 
   if (existingIdx >= 0) {
     entries[existingIdx] = entry;

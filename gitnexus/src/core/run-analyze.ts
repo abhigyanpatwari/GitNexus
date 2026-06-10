@@ -1057,6 +1057,10 @@ export async function runFullAnalysis(
     const projectName = await registerRepo(repoPath, meta, {
       name: options.registryName,
       allowDuplicateName: options.allowDuplicateName,
+      // Non-primary branch runs upsert into the entry's branches[]; the
+      // primary/flat run (placement.branch === undefined) refreshes the
+      // top-level fields (#2106).
+      branch: placement.branch,
     });
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.

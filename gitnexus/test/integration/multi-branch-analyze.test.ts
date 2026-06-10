@@ -2,8 +2,8 @@ import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { describe, it, expect } from 'vitest';
-import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { getStoragePaths, loadMeta, listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 /**
@@ -20,6 +20,23 @@ const commit = (cwd: string, message: string): void => {
 };
 
 describe('multi-branch analyze (#2106)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  beforeEach(async () => {
+    // Isolate the global registry so the full analyze runs below don't write
+    // to the developer's real ~/.gitnexus/registry.json.
+    tmpHome = await createTempDir('gitnexus-multibranch-home-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+  });
+
   it('indexes a second branch without overwriting the first', async () => {
     const tmp = await createTempDir('gitnexus-multibranch-');
     const repo = tmp.dbPath;
@@ -67,6 +84,15 @@ describe('multi-branch analyze (#2106)', () => {
       const branchMeta = await loadMeta(branchDir);
       expect(branchMeta?.branch).toBe('feature/x');
       expect(branchMeta?.lastCommit).toBe(featureCommit);
+
+      // The global registry keeps one entry per path: primary at top level,
+      // the feature branch nested under branches[] (#2106 U4).
+      const entries = await listRegisteredRepos();
+      const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo));
+      expect(entry).toBeDefined();
+      expect(entry?.branch).toBe('main');
+      expect(entry?.lastCommit).toBe(mainCommit);
+      expect(entry?.branches?.map((b) => b.branch)).toEqual(['feature/x']);
     } finally {
       await tmp.cleanup();
     }

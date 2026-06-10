@@ -524,6 +524,81 @@ describe('registerRepo name override + collision guard (#829)', () => {
   });
 });
 
+// ─── registerRepo branch nesting (#2106) ─────────────────────────────
+
+describe('registerRepo branch nesting (#2106)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const metaFor = (branch: string, lastCommit: string): RepoMeta => ({
+    repoPath: '',
+    lastCommit,
+    indexedAt: '2026-06-10T12:00:00.000Z',
+    branch,
+    stats: { files: 1, nodes: 1 },
+  });
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-branch-home-');
+    tmpRepo = await createTempDir('gitnexus-registry-branch-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('primary run records branch at top level and no branches[]', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main');
+    expect(entry.lastCommit).toBe('aaa1111');
+    expect(entry.branches).toBeUndefined();
+  });
+
+  it('branch run nests under branches[] without clobbering the primary', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(1); // one entry per path preserved
+    const [entry] = entries;
+    // Primary top-level fields untouched.
+    expect(entry.branch).toBe('main');
+    expect(entry.lastCommit).toBe('aaa1111');
+    // Branch summary nested.
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0]).toMatchObject({ branch: 'feature/x', lastCommit: 'bbb2222' });
+  });
+
+  it('re-registering the same branch updates in place (no duplicate)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'ccc3333'), { branch: 'feature/x' });
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0].lastCommit).toBe('ccc3333');
+  });
+
+  it('primary re-analyze preserves existing branch summaries', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    // Re-analyze the primary at a newer commit.
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa9999'));
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.lastCommit).toBe('aaa9999');
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0].branch).toBe('feature/x');
+  });
+});
+
 // ─── parseRepoNameFromUrl + getInferredRepoName (#979) ───────────────
 
 describe('parseRepoNameFromUrl', () => {
