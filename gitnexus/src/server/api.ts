@@ -344,9 +344,17 @@ const GRAPH_RELATIONSHIP_QUERY =
 
 const quoteNodeTable = (table: string): string => `\`${table.replace(/`/g, '``')}\``;
 
-const getNodeQuery = (table: string, includeContent: boolean): string => {
+export const getNodeQuery = (table: string, includeContent: boolean): string => {
   const tableLabel = quoteNodeTable(table);
 
+  if (table === 'BasicBlock') {
+    // Taint/PDG substrate (issue #2080) — BasicBlock has no name/content
+    // columns. Project only its declared columns: a default `n.name`
+    // projection raises a Ladybug "Cannot find property name" binder error
+    // (not matched by isIgnorableGraphQueryError), which would 500 the graph
+    // endpoint the moment BasicBlock joins NODE_TABLES, even on an empty table.
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.text AS text`;
+  }
   if (table === 'File') {
     return includeContent
       ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
@@ -376,10 +384,17 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
   id: row.id ?? row[0],
   label: table as GraphNode['label'],
   properties: {
-    name: row.name ?? row.label ?? row[1],
+    // `?? ''` keeps NodeProperties.name a `string` even for label rows that
+    // project no name/label column (BasicBlock — taint/PDG substrate #2080).
+    // Without it, BasicBlock rows carry name:undefined (masked by the cast
+    // below) and the web layer (Header search, circles/tree layout) derefs
+    // `.name` unguarded → TypeError once M1 emits blocks. `row.text` gives a
+    // BasicBlock a sensible fallback name before the empty-string floor.
+    name: row.name ?? row.label ?? row.text ?? row[1] ?? '',
     filePath: row.filePath ?? row[2],
     startLine: row.startLine,
     endLine: row.endLine,
+    text: row.text,
     content: includeContent ? row.content : undefined,
     responseKeys: row.responseKeys,
     errorKeys: row.errorKeys,

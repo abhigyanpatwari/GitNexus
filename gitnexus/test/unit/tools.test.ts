@@ -8,7 +8,11 @@
  * - Optional repo parameter is present on tools that need it
  */
 import { describe, it, expect } from 'vitest';
-import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
+import {
+  GITNEXUS_TOOLS,
+  LIST_REPOS_DEFAULT_LIMIT,
+  LIST_REPOS_MAX_LIMIT,
+} from '../../src/mcp/tools.js';
 
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
@@ -129,10 +133,34 @@ describe('GITNEXUS_TOOLS', () => {
     expect(detectTool.inputSchema.required).toEqual([]);
   });
 
-  it('list_repos tool has no parameters', () => {
+  it('list_repos tool exposes optional limit/offset pagination params', () => {
     const listTool = GITNEXUS_TOOLS.find((t) => t.name === 'list_repos')!;
-    expect(Object.keys(listTool.inputSchema.properties)).toHaveLength(0);
+    const props = listTool.inputSchema.properties;
+    expect(props.limit).toBeDefined();
+    expect(props.limit.type).toBe('integer');
+    expect(props.offset).toBeDefined();
+    expect(props.offset.type).toBe('integer');
+    // Pagination is opt-in: zero-arg callers must still be valid.
     expect(listTool.inputSchema.required).toEqual([]);
+    // No `repo` param on list_repos (it lists all repos).
+    expect(props.repo).toBeUndefined();
+    // Description must teach an LLM to page through every repository.
+    expect(listTool.description.toLowerCase()).toContain('paginat');
+    expect(listTool.description).toContain('nextOffset');
+    expect(listTool.description).toContain('hasMore');
+  });
+
+  it('list_repos schema bounds match the exported pagination constants', () => {
+    const listTool = GITNEXUS_TOOLS.find((t) => t.name === 'list_repos')!;
+    const { limit, offset } = listTool.inputSchema.properties;
+    expect(limit.minimum).toBe(1);
+    expect(limit.maximum).toBe(LIST_REPOS_MAX_LIMIT);
+    expect(limit.default).toBe(LIST_REPOS_DEFAULT_LIMIT);
+    expect(offset.minimum).toBe(0);
+    expect(offset.default).toBe(0);
+    // Sane, documented bounds (guards against accidental constant drift).
+    expect(LIST_REPOS_DEFAULT_LIMIT).toBeLessThanOrEqual(LIST_REPOS_MAX_LIMIT);
+    expect(LIST_REPOS_DEFAULT_LIMIT).toBeGreaterThan(0);
   });
 
   it('per-repo tools have optional repo parameter for backend selection', () => {

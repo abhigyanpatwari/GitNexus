@@ -414,22 +414,70 @@ describe('formatDetectChangesResult', () => {
 // ─── formatListReposResult ───────────────────────────────────────────
 
 describe('formatListReposResult', () => {
-  it('handles empty/null input', () => {
-    expect(formatListReposResult([])).toBe('No indexed repositories.');
-    expect(formatListReposResult(null)).toBe('No indexed repositories.');
+  it('handles an empty page (no pagination)', () => {
+    expect(formatListReposResult({ repositories: [] })).toBe('No indexed repositories.');
   });
 
-  it('formats repo list', () => {
-    const result = formatListReposResult([
-      {
-        name: 'my-project',
-        path: '/home/user/my-project',
-        indexedAt: '2024-01-01',
-        stats: { nodes: 100, edges: 200, processes: 10 },
-      },
-    ]);
+  it('formats a repo list (no pagination → no footer)', () => {
+    const result = formatListReposResult({
+      repositories: [
+        {
+          name: 'my-project',
+          path: '/home/user/my-project',
+          indexedAt: '2024-01-01',
+          lastCommit: 'abc1234',
+          stats: { nodes: 100, edges: 200, processes: 10 },
+        },
+      ],
+    });
     expect(result).toContain('Indexed repositories');
     expect(result).toContain('my-project');
     expect(result).toContain('100 symbols');
+    expect(result).not.toContain('Showing'); // no pagination → no footer
+  });
+
+  it('formats a paginated { repositories, pagination } result with a continuation footer', () => {
+    const result = formatListReposResult({
+      repositories: [
+        {
+          name: 'my-project',
+          path: '/home/user/my-project',
+          indexedAt: '2024-01-01',
+          lastCommit: 'abc1234',
+          stats: { nodes: 100, edges: 200, processes: 10 },
+        },
+      ],
+      pagination: { total: 437, limit: 50, offset: 0, returned: 1, hasMore: true, nextOffset: 50 },
+    });
+    expect(result).toContain('Indexed repositories');
+    expect(result).toContain('my-project');
+    expect(result).toContain('Showing 1 of 437');
+    expect(result).toContain('offset 50'); // continuation hint
+  });
+
+  it('formats the final page (hasMore false) without a continuation hint', () => {
+    const result = formatListReposResult({
+      repositories: [
+        {
+          name: 'only',
+          path: '/p/only',
+          indexedAt: '2024-01-01',
+          lastCommit: 'abc1234',
+          stats: {},
+        },
+      ],
+      pagination: { total: 1, limit: 50, offset: 0, returned: 1, hasMore: false },
+    });
+    expect(result).toContain('Showing 1 of 1');
+    expect(result).not.toContain('More available');
+  });
+
+  it('reports an empty page using pagination metadata', () => {
+    const result = formatListReposResult({
+      repositories: [],
+      pagination: { total: 437, limit: 50, offset: 1000, returned: 0, hasMore: false },
+    });
+    expect(result).toContain('No repositories on this page');
+    expect(result).toContain('437');
   });
 });

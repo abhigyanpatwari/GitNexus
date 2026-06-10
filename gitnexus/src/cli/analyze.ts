@@ -37,7 +37,7 @@ import {
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
-import { warnMissingOptionalGrammars } from './optional-grammars.js';
+import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
@@ -943,11 +943,13 @@ const analyzeCommandImpl = async (
   }
 
   // If the target repo contains files an optional grammar would parse but
-  // that grammar's native binding is absent, warn before analysis so users
-  // learn why those files end up unparsed instead of silently getting a
-  // degraded index.
+  // that grammar's native binding is absent (or disabled via
+  // GITNEXUS_SKIP_OPTIONAL_GRAMMARS), warn before analysis so users learn why
+  // those files end up unparsed instead of silently getting a degraded index.
+  // The extension set is derived from OPTIONAL_GRAMMARS so it can't drift.
   try {
-    const matches = await glob(['**/*.dart', '**/*.proto'], {
+    const optionalGlobs = getOptionalGrammarExtensions().map((e) => `**/*${e}`);
+    const matches = await glob(optionalGlobs, {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
       dot: false,

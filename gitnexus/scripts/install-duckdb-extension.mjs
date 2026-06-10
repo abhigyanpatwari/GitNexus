@@ -14,7 +14,7 @@ function parseLbugMaxDbSize(raw) {
   return Math.floor(parsed);
 }
 
-async function installDuckDbExtension(extensionName) {
+async function installDuckDbExtension(extensionName, verifyOnly = false) {
   if (!extensionName || !EXTENSION_NAME_PATTERN.test(extensionName)) {
     throw new Error(`Invalid DuckDB extension name: ${extensionName ?? '<missing>'}`);
   }
@@ -22,9 +22,11 @@ async function installDuckDbExtension(extensionName) {
   const require = createRequire(import.meta.url);
   const lbugModule = require('@ladybugdb/core');
   const lbug = lbugModule.default ?? lbugModule;
-  const lbugMaxDbSize = parseLbugMaxDbSize(
-    process.argv[3] ?? process.env.GITNEXUS_LBUG_MAX_DB_SIZE,
-  );
+  // argv[3] is the optional positional size; ignore it when it is actually a
+  // flag token (e.g. `--verify-only`) and fall back to the env default.
+  const sizeArg =
+    process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : undefined;
+  const lbugMaxDbSize = parseLbugMaxDbSize(sizeArg ?? process.env.GITNEXUS_LBUG_MAX_DB_SIZE);
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-ext-install-'));
   const dbPath = path.join(tmpDir, 'install.lbug');
@@ -34,7 +36,18 @@ async function installDuckDbExtension(extensionName) {
   try {
     db = new lbug.Database(dbPath, 0, false, false, lbugMaxDbSize);
     conn = new lbug.Connection(db);
-    await conn.query(`INSTALL ${extensionName}`);
+    if (verifyOnly) {
+      // Prove a previously-baked extension is resolvable by a FRESH process
+      // under the current HOME (the runtime `LOAD EXTENSION` path) — no INSTALL,
+      // no network. Used as a Docker build-time gate so a HOME/extension-dir
+      // mismatch fails the build instead of silently degrading search at runtime.
+      await conn.query(`LOAD EXTENSION ${extensionName}`);
+      console.log(
+        `[install-ext] LOAD-only verify OK for '${extensionName}' (HOME=${process.env.HOME})`,
+      );
+    } else {
+      await conn.query(`INSTALL ${extensionName}`);
+    }
   } finally {
     if (conn) await conn.close().catch(() => {});
     if (db) await db.close().catch(() => {});
@@ -42,7 +55,10 @@ async function installDuckDbExtension(extensionName) {
   }
 }
 
-installDuckDbExtension(process.argv[2] ?? process.env.GITNEXUS_LBUG_EXTENSION_NAME).catch((err) => {
+installDuckDbExtension(
+  process.argv[2] ?? process.env.GITNEXUS_LBUG_EXTENSION_NAME,
+  process.argv.includes('--verify-only'),
+).catch((err) => {
   console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
   process.exitCode = 1;
 });

@@ -51,12 +51,25 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
   openWorldHint: false,
 };
 
+/**
+ * Pagination bounds for the `list_repos` tool. Exported so the backend
+ * validation (`local-backend.ts`) and the schema below stay a single source of
+ * truth. `list_repos` is paginated to keep its response under MCP/LLM token
+ * truncation limits when many repos are indexed (#2119); the default page is
+ * small enough to render safely, and `LIST_REPOS_MAX_LIMIT` caps how much a
+ * caller can pull in one request.
+ */
+export const LIST_REPOS_DEFAULT_LIMIT = 50;
+export const LIST_REPOS_MAX_LIMIT = 200;
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
-    description: `List all indexed repositories available to GitNexus.
+    description: `List indexed repositories available to GitNexus (paginated).
 
-Returns each repo's name, path, indexed date, last commit, and stats.
+Returns a page of repositories — each with name, path, indexed date, last commit, and stats — plus a "pagination" object: { total, limit, offset, returned, hasMore, nextOffset }.
+
+PAGINATION: Results are paginated so a large registry is not truncated by MCP/LLM token limits. "limit" sets the page size (default ${LIST_REPOS_DEFAULT_LIMIT}, max ${LIST_REPOS_MAX_LIMIT}; values above the max are rejected, not capped). "offset" selects the start. To enumerate EVERY repository: when pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset, and repeat until hasMore is false. Repositories are returned in a stable order, so paging never skips or duplicates an entry while the registry is unchanged.
 
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
 AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
@@ -66,7 +79,22 @@ on other tools (query, context, impact, etc.) to target the correct one.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        limit: {
+          type: 'integer',
+          description: `Max repositories to return in this page (default: ${LIST_REPOS_DEFAULT_LIMIT}, min: 1, max: ${LIST_REPOS_MAX_LIMIT}). Values outside [1, ${LIST_REPOS_MAX_LIMIT}] are rejected.`,
+          default: LIST_REPOS_DEFAULT_LIMIT,
+          minimum: 1,
+          maximum: LIST_REPOS_MAX_LIMIT,
+        },
+        offset: {
+          type: 'integer',
+          description:
+            'Number of repositories to skip before this page (default: 0). Pass pagination.nextOffset from the previous response to fetch the next page.',
+          default: 0,
+          minimum: 0,
+        },
+      },
       required: [],
     },
   },

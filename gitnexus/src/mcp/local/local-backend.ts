@@ -51,6 +51,7 @@ import {
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
+import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from '../tools.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -175,6 +176,21 @@ const confidenceForRelType = (relType: string | undefined): number =>
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   logger.error({ context, err: msg }, 'GitNexus query failed');
+}
+
+/**
+ * A "missing table/label/relation" prepare error is benign for the query tool's
+ * best-effort enrichment: a repo analyzed without processes or communities simply
+ * has no `Process`/`Community` tables, so the `STEP_IN_PROCESS` / `MEMBER_OF`
+ * enrichment queries fail to prepare. That is a normal configuration, NOT a
+ * degraded result — it must not raise the `partial` flag (which callers would
+ * then learn to ignore). Real failures (timeouts, locks, native faults) do.
+ */
+function isBenignMissingTableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /does not exist|no such (table|label|rel)|unknown (table|label)|not (defined|found)/i.test(
+    msg,
+  );
 }
 
 const isReadOnlyDbError = (err: unknown): boolean => {
@@ -336,6 +352,84 @@ interface ImpactParams {
   limit?: number;
   offset?: number;
   summaryOnly?: boolean;
+}
+
+/**
+ * One repository entry as returned by {@link LocalBackend.listRepos} and in each
+ * `list_repos` page. Named so the `listRepos`/`listReposPage` return types read
+ * clearly instead of an opaque `Awaited<ReturnType<…>>` expression.
+ */
+export interface RepoListing {
+  name: string;
+  path: string;
+  indexedAt: string;
+  lastCommit: string;
+  remoteUrl?: string;
+  stats?: any;
+  staleness?: { commitsBehind: number; hint?: string };
+  siblings?: Array<{ name: string; path: string; lastCommit: string }>;
+}
+
+/** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
+export interface ListReposPagination {
+  /** Total repositories across all pages. */
+  total: number;
+  /** Effective page size used (equals the requested limit; out-of-range is rejected, not clamped). */
+  limit: number;
+  /** Offset this page started at. */
+  offset: number;
+  /** Number of repositories actually returned in this page. */
+  returned: number;
+  /** True when more repositories remain past this page. */
+  hasMore: boolean;
+  /** Offset to request next; present only when `hasMore` is true. */
+  nextOffset?: number;
+}
+
+/**
+ * Validate and normalise `list_repos` pagination arguments.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
+ *
+ * There is NO MCP-SDK-level enforcement of a tool's advertised `inputSchema`
+ * (the SDK validates only the JSON-RPC envelope), and `callTool` is reachable
+ * directly, so the backend is the real validation boundary. Malformed values —
+ * non-number, `NaN`, non-integer, `limit < 1`, `limit > maxLimit`, or
+ * `offset < 0` — are REJECTED with a clear error. `limit` is bounded but NOT
+ * silently clamped: an over-max value throws (symmetric with the other bounds)
+ * so a client never receives a smaller page than it asked for without knowing.
+ * An omitted value (only `undefined`) falls back to the default.
+ */
+export function parseListReposPagination(
+  params: { limit?: unknown; offset?: unknown } | null | undefined,
+  opts: { defaultLimit: number; maxLimit: number },
+): { limit: number; offset: number } {
+  const requireInt = (value: unknown, field: string, min: number, max?: number): number => {
+    const valid =
+      typeof value === 'number' &&
+      Number.isInteger(value) &&
+      value >= min &&
+      (max === undefined || value <= max);
+    if (!valid) {
+      const bound = max === undefined ? `>= ${min}` : `between ${min} and ${max}`;
+      throw new Error(
+        `list_repos: "${field}" must be an integer ${bound} (received ${JSON.stringify(value)})`,
+      );
+    }
+    return value;
+  };
+
+  let limit = opts.defaultLimit;
+  if (params?.limit !== undefined) {
+    limit = requireInt(params.limit, 'limit', 1, opts.maxLimit);
+  }
+
+  let offset = 0;
+  if (params?.offset !== undefined) {
+    offset = requireInt(params.offset, 'offset', 0);
+  }
+
+  return { limit, offset };
 }
 
 export class LocalBackend {
@@ -826,18 +920,7 @@ export class LocalBackend {
    *     that another clone of the same logical repo is registered).
    *   - `remoteUrl`: the canonical origin URL recorded at index time.
    */
-  async listRepos(): Promise<
-    Array<{
-      name: string;
-      path: string;
-      indexedAt: string;
-      lastCommit: string;
-      remoteUrl?: string;
-      stats?: any;
-      staleness?: { commitsBehind: number; hint?: string };
-      siblings?: Array<{ name: string; path: string; lastCommit: string }>;
-    }>
-  > {
+  async listRepos(): Promise<RepoListing[]> {
     await this.refreshRepos();
     const handles = [...this.repos.values()];
 
@@ -889,6 +972,58 @@ export class LocalBackend {
             : undefined,
       };
     });
+  }
+
+  /**
+   * Paginated view over {@link listRepos} for the `list_repos` MCP tool (#2119).
+   *
+   * `listRepos()` itself still returns the FULL array — its resource and CLI
+   * consumers (`gitnexus://repos`, `gitnexus://setup`, startup logs) need every
+   * entry, so pagination lives ONLY here, on the tool surface, to keep the
+   * response under MCP/LLM token-truncation limits.
+   *
+   * Determinism: a single registry snapshot is taken per call, then sorted by
+   * lower-cased name with the repository path as a tie-breaker. Sibling clones
+   * share a name but never a path (#2054), so `(name, path)` is a total order —
+   * paging never skips or duplicates an entry while the registry is unchanged.
+   * Codepoint comparison (not `localeCompare`) keeps page boundaries stable
+   * across machines/locales, matching the existing `refreshRepos` ordering.
+   */
+  async listReposPage(params?: { limit?: unknown; offset?: unknown } | null): Promise<{
+    repositories: RepoListing[];
+    pagination: ListReposPagination;
+  }> {
+    const { limit, offset } = parseListReposPagination(params, {
+      defaultLimit: LIST_REPOS_DEFAULT_LIMIT,
+      maxLimit: LIST_REPOS_MAX_LIMIT,
+    });
+
+    // One consistent snapshot per call (listRepos refreshes the registry once),
+    // sorted into a stable total order before slicing.
+    const all = await this.listRepos();
+    all.sort((a, b) => {
+      const an = a.name.toLowerCase();
+      const bn = b.name.toLowerCase();
+      if (an !== bn) return an < bn ? -1 : 1;
+      return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+    });
+
+    const total = all.length;
+    const repositories = all.slice(offset, offset + limit);
+    const returned = repositories.length;
+    const hasMore = offset + returned < total;
+
+    return {
+      repositories,
+      pagination: {
+        total,
+        limit,
+        offset,
+        returned,
+        hasMore,
+        ...(hasMore && { nextOffset: offset + returned }),
+      },
+    };
   }
 
   /**
@@ -952,7 +1087,10 @@ export class LocalBackend {
 
   async callTool(method: string, params: any): Promise<any> {
     if (method === 'list_repos') {
-      return this.listRepos();
+      // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
+      // callers; the tool wraps it in { repositories, pagination } and forwards
+      // the limit/offset args that this dispatch previously discarded.
+      return this.listReposPage(params);
     }
 
     if (method.startsWith('group_')) {
@@ -1112,6 +1250,112 @@ export class LocalBackend {
     >();
     const definitions: any[] = []; // standalone symbols not in any process
 
+    // Batch-fetch process participation, cohesion, and (optionally) content for
+    // ALL matched symbols in 2-3 graph queries instead of 2-3 *per symbol*. The
+    // previous per-symbol loop issued up to 3N sequential pool round-trips
+    // (searchLimit symbols × {STEP_IN_PROCESS, MEMBER_OF, content}); on a warm
+    // repo the IPC + query-setup overhead of those round-trips dominated query
+    // latency. Collapsing to `WHERE n.id IN $nodeIds` preserves identical output
+    // (the aggregation loop below is unchanged) while cutting the round-trips.
+    // Array params bind through the pool exactly as bm25Search's
+    // `WHERE n.id IN $nodeIds` already does. (Ported from gitnexus-enterprise
+    // PR #222 — N+1 → 2-3 batched queries.)
+    const nodeIds = merged.map(([, m]) => m.data?.nodeId).filter((id): id is string => !!id);
+
+    const processRowsByNode = new Map<string, any[]>();
+    const cohesionByNode = new Map<string, { cohesion: number; module?: string }>();
+    const contentByNode = new Map<string, string>();
+    // Set when a batched enrichment query throws a REAL failure (timeout, lock,
+    // native fault) — NOT the benign "no Process/Community table" case, which is
+    // a normal config (a repo analyzed without processes/communities) and must
+    // not raise a `partial` flag callers would learn to ignore. See
+    // isBenignMissingTableError + the response build below.
+    let enrichmentDegraded = false;
+
+    // Chunk the IN-list like the impact path (CHUNK_SIZE=100) so a large result
+    // set never builds an unbounded `IN` parameter. Default batch is
+    // processLimit*maxSymbolsPerProcess (≤ one chunk), but chunk for robustness.
+    const QUERY_CHUNK_SIZE = 100;
+    for (let i = 0; i < nodeIds.length; i += QUERY_CHUNK_SIZE) {
+      const ids = nodeIds.slice(i, i + QUERY_CHUNK_SIZE);
+
+      // Processes each symbol participates in. `n.id AS nodeId` is prepended as
+      // column 0 so rows from many symbols can be re-associated to their symbol.
+      try {
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          WHERE n.id IN $nodeIds
+          RETURN n.id AS nodeId, p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+        `,
+          { nodeIds: ids },
+        );
+        for (const row of rows) {
+          const nid = row.nodeId ?? row[0];
+          let list = processRowsByNode.get(nid);
+          if (!list) processRowsByNode.set(nid, (list = []));
+          list.push(row);
+        }
+      } catch (e) {
+        logQueryError('query:process-lookup', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+      }
+
+      // Cluster membership + cohesion. Keep the FIRST community row per node to
+      // mirror the prior per-symbol `LIMIT 1` (each symbol keeps ITS community,
+      // not one community for the whole batch).
+      try {
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+          WHERE n.id IN $nodeIds
+          RETURN n.id AS nodeId, c.cohesion AS cohesion, c.heuristicLabel AS module
+        `,
+          { nodeIds: ids },
+        );
+        for (const row of rows) {
+          const nid = row.nodeId ?? row[0];
+          if (!cohesionByNode.has(nid)) {
+            cohesionByNode.set(nid, {
+              cohesion: (row.cohesion ?? row[1]) || 0,
+              module: row.module ?? row[2],
+            });
+          }
+        }
+      } catch (e) {
+        logQueryError('query:cluster-info', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+      }
+
+      // Optionally fetch content for every matched symbol.
+      if (includeContent) {
+        try {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `
+            MATCH (n)
+            WHERE n.id IN $nodeIds
+            RETURN n.id AS nodeId, n.content AS content
+          `,
+            { nodeIds: ids },
+          );
+          for (const row of rows) {
+            const nid = row.nodeId ?? row[0];
+            contentByNode.set(nid, row.content ?? row[1]);
+          }
+        } catch (e) {
+          logQueryError('query:content-fetch', e);
+          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+        }
+      }
+    }
+
+    // Aggregation is unchanged from the per-symbol version — it now reads the
+    // pre-fetched maps instead of issuing a query per symbol. Iterating `merged`
+    // in the same (sorted) order preserves processMap insertion order, the
+    // definitions order, and the item.score association exactly.
     for (const [_, item] of merged) {
       const sym = item.data;
       if (!sym.nodeId) {
@@ -1124,61 +1368,11 @@ export class LocalBackend {
         continue;
       }
 
-      // Find processes this symbol participates in
-      let processRows: any[] = [];
-      try {
-        processRows = await executeParameterized(
-          repo.lbugPath,
-          `
-          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `,
-          { nodeId: sym.nodeId },
-        );
-      } catch (e) {
-        logQueryError('query:process-lookup', e);
-      }
-
-      // Get cluster membership + cohesion (cohesion used as internal ranking signal)
-      let cohesion = 0;
-      let module: string | undefined;
-      try {
-        const cohesionRows = await executeParameterized(
-          repo.lbugPath,
-          `
-          MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
-          LIMIT 1
-        `,
-          { nodeId: sym.nodeId },
-        );
-        if (cohesionRows.length > 0) {
-          cohesion = (cohesionRows[0].cohesion ?? cohesionRows[0][0]) || 0;
-          module = cohesionRows[0].module ?? cohesionRows[0][1];
-        }
-      } catch (e) {
-        logQueryError('query:cluster-info', e);
-      }
-
-      // Optionally fetch content
-      let content: string | undefined;
-      if (includeContent) {
-        try {
-          const contentRows = await executeParameterized(
-            repo.lbugPath,
-            `
-            MATCH (n {id: $nodeId})
-            RETURN n.content AS content
-          `,
-            { nodeId: sym.nodeId },
-          );
-          if (contentRows.length > 0) {
-            content = contentRows[0].content ?? contentRows[0][0];
-          }
-        } catch (e) {
-          logQueryError('query:content-fetch', e);
-        }
-      }
+      const processRows = processRowsByNode.get(sym.nodeId) ?? [];
+      const coh = cohesionByNode.get(sym.nodeId);
+      const cohesion = coh?.cohesion ?? 0;
+      const module = coh?.module;
+      const content = includeContent ? contentByNode.get(sym.nodeId) : undefined;
 
       const symbolEntry = {
         id: sym.nodeId,
@@ -1197,12 +1391,13 @@ export class LocalBackend {
       } else {
         // Add to each process it belongs to
         for (const row of processRows) {
-          const pid = row.pid ?? row[0];
-          const label = row.label ?? row[1];
-          const hLabel = row.heuristicLabel ?? row[2];
-          const pType = row.processType ?? row[3];
-          const stepCount = row.stepCount ?? row[4];
-          const step = row.step ?? row[5];
+          // Positional fallbacks shift +1 because `n.id AS nodeId` is column 0.
+          const pid = row.pid ?? row[1];
+          const label = row.label ?? row[2];
+          const hLabel = row.heuristicLabel ?? row[3];
+          const pType = row.processType ?? row[4];
+          const stepCount = row.stepCount ?? row[5];
+          const step = row.step ?? row[6];
 
           if (!processMap.has(pid)) {
             processMap.set(pid, {
@@ -1276,15 +1471,29 @@ export class LocalBackend {
     const timing = timer.summary();
     logQueryTiming(searchQuery, timing);
 
+    // Compose a single `warning` from all degraded conditions (FTS-missing
+    // and/or a real enrichment failure) so neither overwrites the other, and
+    // flag `partial` when enrichment was lost. Both are omitted on the clean
+    // path, leaving the success-path response shape byte-identical.
+    const warnings: string[] = [];
+    if (!ftsUsed) {
+      warnings.push(
+        'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
+      );
+    }
+    if (enrichmentDegraded) {
+      warnings.push(
+        'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
+      );
+    }
+
     return {
       processes,
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
-      ...(!ftsUsed && {
-        warning:
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
-      }),
+      ...(warnings.length > 0 && { warning: warnings.join(' ') }),
+      ...(enrichmentDegraded && { partial: true }),
     };
   }
 

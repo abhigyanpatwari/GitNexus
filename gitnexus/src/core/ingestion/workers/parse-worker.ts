@@ -4,7 +4,6 @@ import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
-import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
 // Explicit subpath import — see parser-loader.ts for rationale (#1013).
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
@@ -36,6 +35,19 @@ import type {
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
+// ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
+// The worker maintains its own grammar table (the guarded `_require`s below +
+// `languageMap`) and intentionally does NOT consult the runtime
+// `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out. It does not need to: the MAIN
+// THREAD's `parseableScanned` filter (pipeline-phases/parse-impl.ts, gated on
+// `parser-loader.isLanguageAvailable`, which honors the runtime opt-out and a
+// genuinely-absent binding alike) excludes files of an unavailable/opted-out
+// language BEFORE any chunk is dispatched, so the worker never receives them.
+// That main-thread filter is the single enforcement point. Any future change
+// that dispatches files to the worker WITHOUT first passing them through
+// `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
+// — routing this table through `parser-loader.getLanguageGrammar` so there is
+// one loader — is the deferred Tier-1 consolidation.)
 // tree-sitter-swift is an optionalDependency — may not be installed
 const _require = createRequire(import.meta.url);
 let Swift: TreeSitterLanguage | null = null;
@@ -53,6 +65,16 @@ try {
 let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
+} catch {}
+
+// tree-sitter-c is now vendored prebuild-only (#2116) and may be absent on a
+// toolchain-less / `--ignore-scripts` install. Guard it like Swift/Dart/Kotlin so
+// a missing binding cannot crash the worker at module-load (#2091/#2093); the
+// main-thread `isLanguageAvailable` filter keeps C files from being dispatched
+// here when the entry is absent.
+let C: TreeSitterLanguage | null = null;
+try {
+  C = _require('tree-sitter-c');
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
@@ -391,7 +413,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
   [SupportedLanguages.Python]: Python,
   [SupportedLanguages.Java]: Java,
-  [SupportedLanguages.C]: C,
+  ...(C ? { [SupportedLanguages.C]: C } : {}),
   [SupportedLanguages.CPlusPlus]: CPP,
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,

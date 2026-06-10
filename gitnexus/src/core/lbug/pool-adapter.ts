@@ -103,6 +103,19 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = 8;
 
+// Behavior-neutral RSS tracing for the FTS evict→reload memory repro
+// (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
+// in the pool init/close hot path: it writes ONLY to stderr (stdout is the MCP
+// JSON-RPC channel), and the GITNEXUS_POOL_RSS_TRACE gate makes it a no-op — one
+// env-var compare per call, nothing else — unless a harness explicitly enables it.
+function traceRss(event: 'init' | 'close', repoId: string): void {
+  if (process.env.GITNEXUS_POOL_RSS_TRACE !== '1') return;
+  const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+  process.stderr.write(
+    `[pool-rss] ${event} repo=${repoId} pool=${pool.size} dbCache=${dbCache.size} rssMB=${rssMb}\n`,
+  );
+}
+
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
 // Stdout-capture state lives in `gitnexus/src/mcp/stdio-capture.ts` — a leaf
@@ -240,6 +253,8 @@ function closeOne(repoId: string): void {
       // Isolate listener failures — teardown must complete.
     }
   }
+
+  traceRss('close', repoId);
 }
 
 /**
@@ -611,6 +626,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     closed: false,
   });
   ensureIdleTimer();
+  traceRss('init', repoId);
 }
 
 /**
@@ -673,6 +689,7 @@ export async function initLbugWithDb(
     closed: false,
   });
   ensureIdleTimer();
+  traceRss('init', repoId);
 }
 
 /**
