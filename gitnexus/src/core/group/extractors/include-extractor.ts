@@ -1,20 +1,20 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
 import Cpp from 'tree-sitter-cpp';
+import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
 
-// `tree-sitter-c` is vendored prebuild-only (#2116) and may be absent on a
-// toolchain-less / `--ignore-scripts` install. Load it via a guarded `_require`
-// rather than a top-level `import C from 'tree-sitter-c'`, which would throw
-// ERR_MODULE_NOT_FOUND at module-load and crash analyze (#2091/#2093). When the
+// `tree-sitter-c` is vendored (#2116), loaded from `vendor/` by absolute path
+// (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Load it
+// via a guarded call rather than a top-level `import C from 'tree-sitter-c'`,
+// which would throw ERR_MODULE_NOT_FOUND at module-load and crash analyze
+// (#2091/#2093). It may be absent on a platform without a prebuild; when the
 // binding is absent, `getLanguageForFile` returns null for `.c`/`.h` so C
 // include-extraction is skipped (C++ is unaffected — its binding always ships).
-const _require = createRequire(import.meta.url);
 let C: unknown = null;
 try {
-  C = _require('tree-sitter-c');
+  C = requireVendoredGrammar('tree-sitter-c');
 } catch {
   /* C grammar unavailable — C include extraction degrades to a no-op. */
 }

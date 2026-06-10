@@ -28,6 +28,10 @@ import {
   isLanguageAvailable,
   resolveLanguageKey,
 } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  VENDORED_GRAMMAR_PACKAGES,
+  vendoredGrammarDir,
+} from '../../src/core/tree-sitter/vendored-grammars.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -101,6 +105,13 @@ interface NodeTypeEntry {
 
 /** Resolve the on-disk directory of an installed package, or null if absent. */
 function resolvePackageDir(pkg: string): string | null {
+  // Vendored grammars (c/dart/proto/swift/kotlin) are NOT in node_modules — they
+  // load from vendor/ by absolute path (vendored-grammars.ts / #2111), so resolve
+  // their node-types.json from there rather than via _require.resolve.
+  if (VENDORED_GRAMMAR_PACKAGES.has(pkg)) {
+    const dir = vendoredGrammarDir(pkg);
+    return existsSync(dir) ? dir : null;
+  }
   try {
     return dirname(_require.resolve(`${pkg}/package.json`));
   } catch {
