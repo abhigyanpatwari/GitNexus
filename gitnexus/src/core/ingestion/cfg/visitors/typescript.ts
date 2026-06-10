@@ -464,6 +464,19 @@ class TsCfgWalk {
       if (finallyRes) this.handlers.push(finallyRes.entry);
       catchRes = this.visitSeq(this.statementsOf(this.bodyBlockOf(catchClause) as SyntaxNode));
       if (finallyRes) this.handlers.pop();
+      if (catchRes === null) {
+        // Empty (or comment-only) catch body — `catch {}`. The clause still
+        // CATCHES: handler semantics key off the syntactic clause, not the
+        // traversal result. Treating it as "no catch" sent the swallowed
+        // exception to the outer handler/EXIT and left post-try code
+        // unreachable when the body always throws — a hard false-negative
+        // for downstream taint. Synthesize one empty block spanning the
+        // clause (entry == sole exit) so exception flow lands in it and
+        // rejoins the normal continuation. Created BEFORE the protected
+        // region is walked, so it never receives a spurious throw edge.
+        const idx = this.builder.newBlock(startLineOf(catchClause), endLineOf(catchClause), '');
+        catchRes = { entry: idx, exits: [idx] };
+      }
     }
 
     // Handler for the try body: catch if present, else finally, else outer.

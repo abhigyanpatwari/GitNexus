@@ -196,8 +196,16 @@ describe('TS/JS CfgVisitor — loops', () => {
 
   it('for with increment keeps seq-to-increment and loop-back on the increment (F5 regression guard)', () => {
     const cfg = cfgOf(`function f() { for (let i = 0; i < 3; i++) { work(); } done(); }`);
-    expect(cfg.edges).toContainEqual({ from: block(cfg, 'work()'), to: block(cfg, 'i++'), kind: 'seq' });
-    expect(cfg.edges).toContainEqual({ from: block(cfg, 'i++'), to: block(cfg, 'i < 3'), kind: 'loop-back' });
+    expect(cfg.edges).toContainEqual({
+      from: block(cfg, 'work()'),
+      to: block(cfg, 'i++'),
+      kind: 'seq',
+    });
+    expect(cfg.edges).toContainEqual({
+      from: block(cfg, 'i++'),
+      to: block(cfg, 'i < 3'),
+      kind: 'loop-back',
+    });
   });
 
   it('empty body without increment keeps the genuine header self-loop', () => {
@@ -290,6 +298,65 @@ describe('TS/JS CfgVisitor — try/catch/finally (R10)', () => {
     const handler = block(cfg, 'handler(e);');
     expect(reaches(cfg, block(cfg, 'deep();'), handler)).toBe(true); // interior → handler
     expect(reaches(cfg, block(cfg, 'guardEntry();'), handler)).toBe(true);
+  });
+
+  // #2099 F2 — an empty `catch {}` still CATCHES. The synthesized catch block
+  // has empty text, so locate it as the target of a throw-kind edge.
+  const throwTargets = (cfg: FunctionCfg): Set<number> =>
+    new Set(cfg.edges.filter((e) => e.kind === 'throw').map((e) => e.to));
+
+  it('empty catch {} swallows: throw lands in the catch, after-code reachable, no escape to EXIT (#2099 F2)', () => {
+    const cfg = cfgOf(`function f() { try { throw new Error('x'); } catch {} after(); }`);
+    const targets = throwTargets(cfg);
+    expect(targets.has(cfg.exitIndex)).toBe(false); // swallowed — never escapes
+    expect(targets.size).toBe(1);
+    const synth = [...targets][0];
+    expect(cfg.blocks[synth].text).toBe('');
+    expect(cfg.blocks[synth].kind).toBe('normal');
+    expect(reaches(cfg, synth, block(cfg, 'after();'))).toBe(true);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('empty catch (e) {} with a binding behaves the same as catch {}', () => {
+    const cfg = cfgOf(`function f() { try { throw new Error('x'); } catch (e) {} after(); }`);
+    expect(throwTargets(cfg).has(cfg.exitIndex)).toBe(false);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('comment-only catch body counts as empty (comments are filtered)', () => {
+    const cfg = cfgOf(
+      `function f() { try { throw new Error('x'); } catch { /* ignore */ } after(); }`,
+    );
+    expect(throwTargets(cfg).has(cfg.exitIndex)).toBe(false);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('empty catch + finally: catch flows into finally, no spurious re-propagation past it', () => {
+    const cfg = cfgOf(`function f() {
+      try { throw new Error('x'); } catch {} finally { fin(); }
+      after();
+    }`);
+    const fin = block(cfg, 'fin();');
+    // The swallowing catch exists, so the no-catch re-propagation gate must
+    // not fire: finally's exit goes to the continuation, never throw→EXIT.
+    expect(
+      cfg.edges.some((e) => e.from === fin && e.to === cfg.exitIndex && e.kind === 'throw'),
+    ).toBe(false);
+    const synth = [...throwTargets(cfg)].filter((t) => t !== fin);
+    expect(synth.length).toBeGreaterThan(0);
+    expect(reaches(cfg, synth[0], fin)).toBe(true);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('non-empty catch is unchanged by the empty-catch synthesis (F2 regression guard)', () => {
+    const cfg = cfgOf(`function f() { try { a(); } catch (e) { h(); } after(); }`);
+    expect(throwTargets(cfg).has(block(cfg, 'h();'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'h();'), block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('empty try + empty catch does not crash; after-code reachable from ENTRY', () => {
+    const cfg = cfgOf(`function f() { try {} catch {} after(); }`);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
   });
 });
 
