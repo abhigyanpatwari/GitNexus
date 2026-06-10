@@ -413,12 +413,21 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         );
         const scanContent = (filePath: string, content: string): void => {
           wrapperCallRegex.lastIndex = 0;
+          // 1-based line number via a running newline counter: matches arrive in
+          // ascending index, so accumulate newlines incrementally instead of
+          // re-allocating `content.substring(0, match.index).split('\n')` on
+          // every match (#1852 review F12). Output is identical.
+          let line = 1;
+          let scanned = 0;
           let match;
           while ((match = wrapperCallRegex.exec(content)) !== null) {
+            for (; scanned < match.index; scanned++) {
+              if (content.charCodeAt(scanned) === 10 /* '\n' */) line++;
+            }
             allFetchCalls.push({
               filePath,
               fetchURL: match[1],
-              lineNumber: content.substring(0, match.index).split('\n').length,
+              lineNumber: line,
             });
           }
         };
