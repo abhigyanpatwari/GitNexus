@@ -101,6 +101,44 @@ ${SUB_BATCH_HANDLER}
 });
 `;
 
+/**
+ * GETTER worker: poison.ts's node carries an own-enumerable getter that THROWS.
+ * structuredClone invokes getters, so this surfaces a RangeError — NOT a
+ * DataCloneError — at the boundary. The net must still recover (route it into
+ * the sanitizer), not re-throw past it. Delivers via the real postResultCloneSafe.
+ */
+const GETTER_WORKER = `
+import { parentPort } from 'node:worker_threads';
+import { postResultCloneSafe } from '${POST_RESULT_URL}';
+const accumulated = ${ACCUMULATED_INIT};
+parentPort.postMessage({ type: 'ready' });
+parentPort.on('message', (msg) => {
+  if (msg && msg.type === 'sub-batch') {
+    for (const file of msg.files) {
+      const baseName = file.path.split('/').pop().replace(/\\.ts$/, '');
+      const properties = {
+        name: baseName, filePath: file.path, startLine: 1, endLine: 1,
+        language: 'typescript', isExported: true,
+      };
+      if (file.path.endsWith('poison.ts')) {
+        Object.defineProperty(properties, 'boom', {
+          enumerable: true,
+          get() { throw new RangeError('boom getter'); },
+        });
+      }
+      accumulated.nodes.push({ id: 'func:' + file.path, label: 'Function', properties });
+      accumulated.fileCount++;
+    }
+    parentPort.postMessage({ type: 'progress', filesProcessed: accumulated.fileCount });
+    parentPort.postMessage({ type: 'sub-batch-done' });
+    return;
+  }
+  if (msg && msg.type === 'flush') {
+    postResultCloneSafe(accumulated);
+  }
+});
+`;
+
 const FIXTURE_FILES = {
   'src/good_a.ts': 'export function good_a() { return 1; }\n',
   'src/poison.ts': 'export function poison() { return 2; }\n',
@@ -181,6 +219,19 @@ describe('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
     expect(names.has('good_c')).toBe(true);
     // The poison node is delivered with its legitimate data intact (only the
     // leaked native `toString` was stripped), so it still lands in the graph.
+    expect(names.has('poison')).toBe(true);
+  });
+
+  it('GREEN: a throwing getter (RangeError, not DataCloneError) is recovered, not re-thrown', async () => {
+    // structuredClone invokes getters; a throwing getter surfaces its own
+    // RangeError at the boundary. The net must route it into the sanitizer
+    // (which drops the offending property) rather than re-throwing past it and
+    // re-arming the POOL_SIZE=1 worker-death cascade. Without the fix this run
+    // rejects; with it, all files (incl. the sanitized poison node) are present.
+    const graph = await runWith(writeWorker(GETTER_WORKER));
+    const names = nodeNames(graph);
+    expect(names.has('good_a')).toBe(true);
+    expect(names.has('good_c')).toBe(true);
     expect(names.has('poison')).toBe(true);
   });
 

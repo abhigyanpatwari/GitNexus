@@ -9,7 +9,7 @@
  */
 import { parentPort } from 'node:worker_threads';
 
-import { isDataCloneError, makeWorkerResultCloneSafe } from './clone-safety.js';
+import { makeWorkerResultCloneSafe } from './clone-safety.js';
 import type { ParseWorkerResult } from './parse-worker.js';
 
 /**
@@ -23,18 +23,22 @@ import type { ParseWorkerResult } from './parse-worker.js';
  * operator naming the offending field + file (so the still-unpinned leak is
  * diagnosable from logs and fixable at source), and re-post.
  *
- * The recovery path is wrapped in its own try/catch so a throw inside the
- * sanitizer (an over-deep record, a throwing getter) or a still-uncloneable
- * re-post fails closed to a primitive-only `{type:'error'}` DELIBERATELY —
- * rather than escaping to the message handler's catch by accident and
- * re-arming, under `POOL_SIZE=1`, the worker-death cascade this net prevents.
+ * Recovery is attempted for ANY first-post failure, not only a `DataCloneError`.
+ * structuredClone invokes getters, and a getter that THROWS surfaces its own
+ * error (a `RangeError`, etc.) — NOT a `DataCloneError` (confirmed against a
+ * real MessageChannel). Gating recovery on `DataCloneError` let such a throw
+ * re-throw past the sanitizer and re-arm, under `POOL_SIZE=1`, the worker-death
+ * cascade this net prevents. The recovery path is wrapped in its own try/catch
+ * so a still-uncloneable re-post fails closed to a primitive-only
+ * `{type:'error'}` DELIBERATELY rather than escaping the worker.
  */
 export function postResultCloneSafe(result: ParseWorkerResult): void {
   try {
     parentPort!.postMessage({ type: 'result', data: result });
     return;
-  } catch (err) {
-    if (!isDataCloneError(err)) throw err;
+  } catch {
+    // Fall through to recovery on ANY failure (DataCloneError OR a throwing
+    // getter's own error). A healthy post returned above and never reaches here.
   }
   try {
     // `as unknown as Record<string, unknown>` is the standard widening for a
