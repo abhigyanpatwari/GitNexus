@@ -4,6 +4,7 @@ import {
   isStructuredCloneable,
   makeWorkerResultCloneSafe,
 } from '../../src/core/ingestion/workers/clone-safety.js';
+import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
 /**
  * #2112: the worker result boundary must survive a value the structured-clone
@@ -395,6 +396,52 @@ describe('clone-safety', () => {
       };
       const { skipped } = makeWorkerResultCloneSafe(result, opts);
       expect(skipped[0].path).toBe('top.c');
+    });
+  });
+
+  // C12 (#2112): contract — a representative ParseWorkerResult must be
+  // structured-cloneable. Typed as ParseWorkerResult so a NEW field added to
+  // the result shape forces this test to be updated (compile error until it is),
+  // and the runtime assert catches a field whose type becomes non-cloneable.
+  describe('ParseWorkerResult clone contract', () => {
+    it('a representative result is structured-cloneable', () => {
+      const result: ParseWorkerResult = {
+        nodes: [
+          {
+            id: 'func:src/a.ts#foo',
+            label: 'Function',
+            properties: {
+              name: 'foo',
+              filePath: 'src/a.ts',
+              startLine: 1,
+              endLine: 3,
+              language:
+                'typescript' as ParseWorkerResult['nodes'][number]['properties']['language'],
+              isExported: true,
+            },
+          },
+        ],
+        relationships: [],
+        symbols: [],
+        calls: [],
+        assignments: [],
+        routes: [],
+        fetchCalls: [],
+        fetchWrapperDefs: [],
+        decoratorRoutes: [],
+        routerIncludes: [],
+        routerImports: [],
+        routerModuleAliases: [],
+        toolDefs: [],
+        ormQueries: [],
+        constructorBindings: [],
+        fileScopeBindings: [],
+        parsedFiles: [],
+        skippedLanguages: { ada: 2 },
+        skippedPaths: [{ path: 'x.ts', reason: 'prior' }],
+        fileCount: 1,
+      };
+      expect(isStructuredCloneable(result)).toBe(true);
     });
   });
 });
