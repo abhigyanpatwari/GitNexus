@@ -41,4 +41,14 @@ describe('Configurable fetch wrapper consumer extraction', () => {
     );
     expect(thingsEdge).toBeDefined();
   });
+
+  it('does NOT match a configured bare name inside a longer non-ASCII identifier (#1852 review F10)', () => {
+    // Accented.tsx calls `cafédoRequest('/api/things')` — `doRequest` preceded by
+    // the non-ASCII letter `é`. The Unicode-aware lookbehind must reject it.
+    const edges = getRelationships(withConfig, 'FETCHES');
+    const spurious = edges.find(
+      (e) => e.sourceFilePath.includes('Accented') && e.target === '/api/things',
+    );
+    expect(spurious).toBeUndefined();
+  });
 });

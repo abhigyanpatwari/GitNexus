@@ -402,11 +402,14 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         // match the free call `get('/x')` but NOT a member access `client.get(`
         // (a `.get(` on an unrelated object), and `apiFetch` must not match
         // `myApiFetch`. Member-style wrappers are configured with the dot
-        // (`client.get`), where the `.` is part of the pattern.
+        // (`client.get`), where the `.` is part of the pattern. The `u` flag +
+        // Unicode property classes make the boundary cover non-ASCII identifier
+        // characters too — ASCII `\w` would let `caféget('/x')` match `get`
+        // (#1852 review F10).
         const alternation = [...wrapperNames].map(escapeRegex).join('|');
         const wrapperCallRegex = new RegExp(
-          `(?<![.\\w$])(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
-          'g',
+          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+          'gu',
         );
         const scanContent = (filePath: string, content: string): void => {
           wrapperCallRegex.lastIndex = 0;
