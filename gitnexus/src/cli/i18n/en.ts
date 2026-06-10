@@ -217,6 +217,7 @@ export const en = {
   'help.option.query.limit': 'Max processes to return (default: 5)',
   'help.option.content': 'Include full symbol source code',
   'help.option.repo.target': 'Target repository',
+  'help.option.branch': 'Scope to a specific branch index (multi-branch repos)',
   'help.option.context.uid': 'Direct symbol UID (zero-ambiguity lookup)',
   'help.option.context.file': 'File path to disambiguate common names',
   'help.option.impact.kind':

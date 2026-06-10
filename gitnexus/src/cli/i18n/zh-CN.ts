@@ -203,6 +203,7 @@ export const zhCN = {
   'help.option.query.limit': '最多返回的流程数（默认：5）',
   'help.option.content': '包含完整符号源码',
   'help.option.repo.target': '目标仓库',
+  'help.option.branch': '将查询限定到指定分支的索引（多分支仓库）',
   'help.option.context.uid': '直接符号 UID（零歧义查找）',
   'help.option.context.file': '用于消除常见名称歧义的文件路径',
   'help.option.impact.kind': '用于消除常见名称歧义的类型过滤（如 Function、Class、Method）',
