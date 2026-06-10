@@ -99,7 +99,9 @@ describe('ensureOnnxRuntimeCommonResolvable — resolve hook behaviour', () => {
     const res = resolve('onnxruntime-common', ctx, next) as { url: string; shortCircuit: boolean };
 
     expect(res.shortCircuit).toBe(true);
-    expect(res.url).toMatch(/^file:\/\/.*onnxruntime-common/); // gitnexus' own copy
+    // The real resolved onnxruntime-common in node_modules (require.resolve runs
+    // for real here) — not just any path containing the substring.
+    expect(res.url).toMatch(/^file:\/\/.*\/node_modules\/onnxruntime-common\/.*\.js$/);
   });
 
   it('never masks an unrelated resolution failure (other specifiers rethrow)', async () => {
