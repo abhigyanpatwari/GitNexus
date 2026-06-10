@@ -70,6 +70,7 @@ import {
 } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
+import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 
@@ -336,7 +337,14 @@ export async function runFullAnalysis(
   // a `branches/<slug>/` sub-directory. Explicit `--branch` is always honored;
   // otherwise auto-detect the checked-out branch (null for detached HEAD /
   // non-git → flat slot).
-  const checkedOutBranch = repoHasGit ? getCurrentBranch(repoPath) : null;
+  // Normalize the auto-detected branch the same way an explicit `--branch` is
+  // validated (#2106 R1): a git ref the branch-name rules forbid (backtick,
+  // `~ ^ : ? *`, leading `-`, `..`) becomes `null` → the flat slot, matching
+  // that a later `--branch <that-ref>` query would also be rejected. A normal
+  // ref passes through unchanged so index-time and query-time labels round-trip.
+  const checkedOutBranch = repoHasGit
+    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
+    : null;
   // Analyze indexes the working tree, not an arbitrary ref. An explicit
   // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
   // content (and Y's commit) into X's index slot, corrupting X (#2106). Refuse

@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -144,6 +144,32 @@ describe('multi-branch analyze (#2106)', () => {
       expect(flatMeta?.branch).toBe('main');
       expect(flatMeta?.lastCommit).toBe(mainCommit); // primary NOT overwritten
       expect(existsSync(getStoragePaths(repo, 'feature/y').lbugPath)).toBe(true);
+    } finally {
+      await tmp.cleanup();
+    }
+  }, 180_000);
+
+  it('an auto-detected branch the rules forbid lands on the flat slot (#2106 R1)', async () => {
+    const tmp = await createTempDir('gitnexus-multibranch-r1-');
+    const repo = tmp.dbPath;
+    try {
+      git(['init'], repo);
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+      git(['add', '-A'], repo);
+      commit(repo, 'a');
+      // A backtick is valid in a git ref but rejected by validateBranchName.
+      // execFileSync (no shell) so the backtick is not interpreted.
+      execFileSync('git', ['branch', '-M', 'feat`x'], { cwd: repo, stdio: 'pipe' });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+
+      // The forbidden ref was normalized to null → flat slot, no branch field,
+      // and no branches/ sub-directory created for an unqueryable slug.
+      const flat = getStoragePaths(repo);
+      expect(existsSync(flat.lbugPath)).toBe(true);
+      expect((await loadMeta(flat.storagePath))?.branch).toBeUndefined();
+      expect(existsSync(path.join(flat.storagePath, 'branches'))).toBe(false);
     } finally {
       await tmp.cleanup();
     }
