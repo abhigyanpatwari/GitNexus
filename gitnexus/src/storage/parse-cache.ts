@@ -202,6 +202,9 @@ export const slimParseWorkerResultsForCache = (
       assignments: [],
       constructorBindings: [],
       parsedFiles: [],
+      // #2112: a clone-safety skip list is per-run telemetry, not graph data —
+      // replay ignores it. Drop it so it doesn't bloat the cached shard.
+      skippedPaths: [],
     });
   }
   return slim;

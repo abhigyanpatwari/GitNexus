@@ -11,6 +11,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
+import { assertCloneable } from '../workers/clone-safety.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -182,7 +183,11 @@ export const kotlinProvider = defineLanguage({
   // so the main thread can restore them via `applyCaptureSideChannel` WITHOUT a
   // re-parse (#1983). Without this, companion/static dispatch emits no CALLS
   // edges on the worker path. See `kotlin/capture-side-channel.ts`.
-  collectCaptureSideChannel: collectKotlinCaptureSideChannel,
+  // `assertCloneable` is a runtime identity; it makes a future non-serializable
+  // value in the side-channel payload a compile error here, at the source, rather
+  // than a DataCloneError at the worker boundary (#2143).
+  collectCaptureSideChannel: (filePath) =>
+    assertCloneable(collectKotlinCaptureSideChannel(filePath)),
   interpretImport: interpretKotlinImport,
   interpretTypeBinding: interpretKotlinTypeBinding,
   bindingScopeFor: kotlinBindingScopeFor,

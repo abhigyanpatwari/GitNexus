@@ -25,6 +25,9 @@ import {
   deriveDefaultExportHocName,
 } from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import type { SkippedPath } from './clone-safety.js';
+import { postResultCloneSafe } from './post-result.js';
+import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
   ExtractedRouterInclude,
@@ -390,6 +393,15 @@ export interface ParseWorkerResult {
    */
   parsedFiles: ParsedFile[];
   skippedLanguages: Record<string, number>;
+  /**
+   * Files whose parse output carried a value the structured-clone algorithm
+   * couldn't serialize across the worker boundary (#2112). The clone-safety
+   * net stripped or dropped the offending value so the result could be
+   * delivered; these paths are surfaced to the operator so the (rare) data
+   * loss is visible. Optional for cache backward compatibility — older cache
+   * entries predate the field; consumers must guard with `?? []`.
+   */
+  skippedPaths?: SkippedPath[];
   fileCount: number;
 }
 
@@ -2337,40 +2349,8 @@ let accumulated: ParseWorkerResult = {
   fileCount: 0,
 };
 let cumulativeProcessed = 0;
-
-// Use a loop instead of push(...spread) to avoid hitting V8's argument limit
-// when merging large result sets (push(...arr) calls apply() under the hood
-// and blows the stack when arr has >~65k elements).
-const appendAll = <T>(target: T[], src: T[]) => {
-  for (let i = 0; i < src.length; i++) target.push(src[i]);
-};
-
-const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
-  appendAll(target.nodes, src.nodes);
-  appendAll(target.relationships, src.relationships);
-  appendAll(target.symbols, src.symbols);
-  appendAll(target.calls, src.calls);
-  appendAll(target.assignments, src.assignments);
-  appendAll(target.routes, src.routes);
-  appendAll(target.fetchCalls, src.fetchCalls);
-  appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
-  appendAll(target.decoratorRoutes, src.decoratorRoutes);
-  if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
-  if (src.routerImports) appendAll(target.routerImports, src.routerImports);
-  if (src.routerModuleAliases) {
-    target.routerModuleAliases ??= [];
-    appendAll(target.routerModuleAliases, src.routerModuleAliases);
-  }
-  appendAll(target.toolDefs, src.toolDefs);
-  appendAll(target.ormQueries, src.ormQueries);
-  appendAll(target.constructorBindings, src.constructorBindings);
-  appendAll(target.fileScopeBindings, src.fileScopeBindings);
-  appendAll(target.parsedFiles, src.parsedFiles);
-  for (const [lang, count] of Object.entries(src.skippedLanguages)) {
-    target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
-  }
-  target.fileCount += src.fileCount;
-};
+// `mergeResult` (+ its `appendAll`) lives in ./result-merge.ts (extracted so it
+// can be unit-tested without importing this entry module).
 
 // Signal the pool that worker-side initialization (parser imports, language
 // grammars, type-env setup, all helper modules) is complete and the message
@@ -2484,7 +2464,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
           accumulated.parsedFiles = [];
         }
       }
-      parentPort!.postMessage({ type: 'result', data: accumulated });
+      postResultCloneSafe(accumulated);
       // Reset for potential reuse
       accumulated = {
         nodes: [],

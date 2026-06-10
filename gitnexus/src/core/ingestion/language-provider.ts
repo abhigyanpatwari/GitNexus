@@ -187,6 +187,12 @@ interface LanguageProviderConfig {
    * `undefined` when no constraints exist / the node isn't a templated
    * function. Languages without SFINAE / concept semantics leave this
    * undefined and the disambiguation is a pass-through.
+   *
+   * Cloneability contract: the returned payload crosses the worker boundary
+   * via structured clone, so it MUST be structured-clone-safe (no functions,
+   * symbols, or tree-sitter `SyntaxNode`s — only plain data). Wrap the return
+   * with `assertCloneable` from `workers/clone-safety.ts` so a future leak is a
+   * compile error at the source instead of a runtime DataCloneError (#2143).
    */
   readonly extractTemplateConstraints?: (definitionNode: SyntaxNode) => unknown;
 
@@ -343,8 +349,12 @@ interface LanguageProviderConfig {
    * disk store WITHOUT a main-thread re-parse. The main thread restores them
    * via the matching `ScopeResolver.applyCaptureSideChannel` hook.
    *
-   * MUST return plain data (objects / arrays / primitives) so it round-trips
-   * through `JSON.stringify` + the parsedfile-store interning reviver.
+   * Cloneability contract: MUST return plain data (objects / arrays /
+   * primitives — no functions, symbols, or tree-sitter `SyntaxNode`s) so it
+   * survives BOTH the worker→main structured clone AND `JSON.stringify` + the
+   * parsedfile-store interning reviver. Wrap the return with `assertCloneable`
+   * from `workers/clone-safety.ts` so a future non-serializable leak is a
+   * compile error at the source instead of a runtime DataCloneError (#2143).
    *
    * Default: undefined (provider has no capture-time module-level side effects).
    */
