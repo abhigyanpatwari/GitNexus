@@ -119,6 +119,15 @@ describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
   const dockerfile = readFileSync(DOCKERFILE, 'utf-8');
   const copied = runtimeStageCopiedSources(dockerfile);
 
+  it('parses at least one runtime-stage COPY (guards against a vacuous pass)', () => {
+    // If the runtime `FROM` or the `/app/gitnexus/` source prefix ever stops
+    // matching, `copied` goes empty and the parity assertion below would pass
+    // vacuously (empty set ∩ anything = no uncovered assets). Fail loudly here.
+    expect(copied.length, 'runtime stage must contain COPY --from=builder lines').toBeGreaterThan(
+      0,
+    );
+  });
+
   it('copies hooks/ — resolve-invocation.ts require()s it at module load (#2130)', () => {
     // The exact regression: without this COPY, `gitnexus analyze` crashes inside
     // the image with `Cannot find module '../../hooks/claude/resolve-analyze-cmd.cjs'`.
