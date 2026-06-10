@@ -31,6 +31,7 @@ import { pathToFileURL } from 'node:url';
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 // file:// URL of the BUILT production result-delivery helper, imported by the
 // ESM test worker so it exercises the REAL postResultCloneSafe wiring (the
@@ -219,14 +220,30 @@ describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZ
   });
 
   it('GREEN: a non-cloneable result is sanitized and delivered; the run completes with all files', async () => {
-    const graph = await runWith(writeWorker(CLONE_SAFE_WORKER));
-    const names = nodeNames(graph);
-    // Survivors AND the sanitized poison file are all present — the run did not abort.
-    expect(names.has('good_a')).toBe(true);
-    expect(names.has('good_c')).toBe(true);
-    // The poison node is delivered with its legitimate data intact (only the
-    // leaked native `toString` was stripped), so it still lands in the graph.
-    expect(names.has('poison')).toBe(true);
+    // Capture the production telemetry (parsing-processor logs the per-file skip
+    // with its path + reason) so this asserts the REAL skippedPaths/warning
+    // wiring surfaced, not just that the graph ended up correct.
+    const cap = _captureLogger();
+    try {
+      const graph = await runWith(writeWorker(CLONE_SAFE_WORKER));
+      const names = nodeNames(graph);
+      // Survivors AND the sanitized poison file are all present — the run did not abort.
+      expect(names.has('good_a')).toBe(true);
+      expect(names.has('good_c')).toBe(true);
+      // The poison node is delivered with its legitimate data intact (only the
+      // leaked native `toString` was stripped), so it still lands in the graph.
+      expect(names.has('poison')).toBe(true);
+      // The clone-safety telemetry surfaced the offending file AND the exact
+      // stripped key path — the wiring this suite claims to cover.
+      const msgs = cap.records().map((r) => String(r.msg ?? ''));
+      const skipLine = msgs.find((m) => m.includes('poison.ts') && m.includes('properties.toString'));
+      expect(
+        skipLine,
+        `expected a sanitize warning naming poison.ts + properties.toString; saw: ${msgs.join(' | ')}`,
+      ).toBeDefined();
+    } finally {
+      cap.restore();
+    }
   });
 
   it('GREEN: a throwing getter (RangeError, not DataCloneError) is recovered, not re-thrown', async () => {
