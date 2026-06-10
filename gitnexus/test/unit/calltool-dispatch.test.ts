@@ -2180,3 +2180,52 @@ describe('cypher result formatting', () => {
     expect(result.error).toContain('Syntax error');
   });
 });
+
+// ─── resolveRepo branch scope (#2106) ────────────────────────────────
+
+describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
+  let backend: LocalBackend;
+
+  const BRANCH_ENTRY = {
+    name: 'multi',
+    path: path.join(os.tmpdir(), 'gnx-2106-multi'),
+    storagePath: path.join(os.tmpdir(), 'gnx-2106-multi', '.gitnexus'),
+    indexedAt: '2026-06-10T12:00:00Z',
+    lastCommit: 'mainsha',
+    branch: 'main',
+    branches: [{ branch: 'feature/x', indexedAt: '2026-06-10T13:00:00Z', lastCommit: 'featsha' }],
+    stats: { files: 1, nodes: 1 },
+  };
+
+  const flatLbug = path.join(BRANCH_ENTRY.storagePath, 'lbug');
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    (listRegisteredRepos as any).mockResolvedValue([BRANCH_ENTRY]);
+    await backend.init();
+  });
+
+  it('no branch param resolves the flat/primary lbug', async () => {
+    const handle = await backend.resolveRepo('multi');
+    expect(handle.lbugPath).toBe(flatLbug);
+  });
+
+  it('the primary branch name resolves the flat lbug', async () => {
+    const handle = await backend.resolveRepo('multi', 'main');
+    expect(handle.lbugPath).toBe(flatLbug);
+  });
+
+  it('an indexed non-primary branch resolves a branches/<slug> lbug', async () => {
+    const handle = await backend.resolveRepo('multi', 'feature/x');
+    expect(handle.lbugPath).not.toBe(flatLbug);
+    expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
+    expect(path.basename(handle.lbugPath)).toBe('lbug');
+    // The branch handle reports the branch's own commit, not the primary's.
+    expect(handle.lastCommit).toBe('featsha');
+  });
+
+  it('an un-indexed branch throws a clear error', async () => {
+    await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(/not indexed/i);
+  });
+});

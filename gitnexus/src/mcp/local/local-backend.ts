@@ -33,8 +33,10 @@ import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
   canonicalizePath,
+  getStoragePaths,
   RegistryAmbiguousTargetError,
   type RegistryEntry,
+  type BranchSummary,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
@@ -247,6 +249,10 @@ interface RepoHandle {
   lastCommit: string;
   remoteUrl?: string;
   stats?: RegistryEntry['stats'];
+  /** Primary/flat branch name, when known (#2106). */
+  branch?: string;
+  /** Non-primary branch indexes available for this repo (#2106). */
+  branches?: BranchSummary[];
 }
 
 /** Resolve symlinks for path comparison; falls back to path.resolve on error.
@@ -368,6 +374,10 @@ export interface RepoListing {
   stats?: any;
   staleness?: { commitsBehind: number; hint?: string };
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
+  /** Primary/flat branch name, when known (#2106). */
+  branch?: string;
+  /** Non-primary branch indexes available for this repo (#2106). */
+  branches?: Array<{ branch: string; indexedAt: string; lastCommit: string }>;
 }
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
@@ -547,6 +557,8 @@ export class LocalBackend {
         lastCommit: entry.lastCommit,
         remoteUrl: entry.remoteUrl,
         stats: entry.stats,
+        branch: entry.branch,
+        branches: entry.branches,
       };
 
       nextRepos.set(id, handle);
@@ -658,7 +670,7 @@ export class LocalBackend {
    * On a miss, re-reads the registry once in case a new repo was indexed
    * while the MCP server was running.
    */
-  async resolveRepo(repoParam?: string): Promise<RepoHandle> {
+  async resolveRepo(repoParam?: string, branch?: string): Promise<RepoHandle> {
     let refreshedAfterAmbiguity = false;
     let result: RepoHandle | null;
     try {
@@ -682,7 +694,7 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return result;
+      return this.applyBranchScope(result, branch);
     }
 
     // Miss — refresh registry and try once more (skip if already refreshed above)
@@ -692,7 +704,7 @@ export class LocalBackend {
     const retried = this.resolveRepoFromCache(repoParam);
     if (retried) {
       this.maybeWarnSiblingDrift(retried).catch(() => {});
-      return retried;
+      return this.applyBranchScope(retried, branch);
     }
 
     // Still no match — throw with helpful message
@@ -718,6 +730,42 @@ export class LocalBackend {
     }
     throw new Error(
       `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${labels.join(', ')}`,
+    );
+  }
+
+  /**
+   * Re-point a resolved repo handle at a specific branch index (#2106).
+   *
+   * - No `branch` (default) → the primary/flat handle, unchanged (backward
+   *   compatible: every existing caller passes no branch).
+   * - `branch` equal to the known primary → the flat handle.
+   * - `branch` matching an indexed non-primary branch → a handle whose
+   *   `lbugPath` points at `branches/<slug>/lbug`; the connection pool keys by
+   *   `lbugPath`, so this is the only change needed to scope every tool.
+   * - `branch` that was never indexed → a clear error (never a silently-empty
+   *   result against the wrong DB).
+   */
+  private applyBranchScope(handle: RepoHandle, branch?: string): RepoHandle {
+    if (!branch) return handle;
+    if (handle.branch && handle.branch === branch) return handle;
+    const summary = handle.branches?.find((b) => b.branch === branch);
+    if (summary) {
+      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+      return {
+        ...handle,
+        lbugPath,
+        indexedAt: summary.indexedAt,
+        lastCommit: summary.lastCommit,
+        stats: summary.stats,
+      };
+    }
+    const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
+      Boolean,
+    );
+    const available = indexed.length > 0 ? indexed.join(', ') : '(primary only)';
+    throw new Error(
+      `Branch "${branch}" is not indexed for "${handle.name}". ` +
+        `Indexed branches: ${available}. Run: gitnexus analyze --branch ${branch}`,
     );
   }
 
@@ -970,6 +1018,15 @@ export class LocalBackend {
                 lastCommit: s.lastCommit,
               }))
             : undefined,
+        branch: h.branch,
+        branches:
+          h.branches && h.branches.length > 0
+            ? h.branches.map((b) => ({
+                branch: b.branch,
+                indexedAt: b.indexedAt,
+                lastCommit: b.lastCommit,
+              }))
+            : undefined,
       };
     });
   }
@@ -1106,8 +1163,10 @@ export class LocalBackend {
       return this.callToolAtGroupRepo(method, p);
     }
 
-    // Resolve repo from optional param (re-reads registry on miss)
-    const repo = await this.resolveRepo((params as { repo?: string } | undefined)?.repo);
+    // Resolve repo from optional param (re-reads registry on miss). An optional
+    // `branch` param scopes the resolved handle to that branch's index (#2106).
+    const repoParams = params as { repo?: string; branch?: string } | undefined;
+    const repo = await this.resolveRepo(repoParams?.repo, repoParams?.branch);
 
     switch (method) {
       case 'query':
