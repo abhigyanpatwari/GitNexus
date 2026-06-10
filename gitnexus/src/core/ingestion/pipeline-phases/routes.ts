@@ -395,10 +395,15 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             : new Map<string, string>();
         // One alternation regex over every wrapper name per file — O(files), not
         // O(files × wrappers) (#1852 review F3). Names are escaped and grouped
-        // non-capturing so capture group 1 stays the URL.
+        // non-capturing so capture group 1 stays the URL. The left boundary is a
+        // negative lookbehind, not `\b`: a bare configured name like `get` must
+        // match the free call `get('/x')` but NOT a member access `client.get(`
+        // (a `.get(` on an unrelated object), and `apiFetch` must not match
+        // `myApiFetch`. Member-style wrappers are configured with the dot
+        // (`client.get`), where the `.` is part of the pattern.
         const alternation = [...wrapperNames].map(escapeRegex).join('|');
         const wrapperCallRegex = new RegExp(
-          `\\b(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+          `(?<![.\\w$])(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
           'g',
         );
         const scanContent = (filePath: string, content: string): void => {

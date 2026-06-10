@@ -213,6 +213,61 @@ describe('formatImpactResult', () => {
     expect(formatImpactResult({ error: 'bad request' })).toContain('Error: bad request');
   });
 
+  it('surfaces per-candidate blast radius for an ambiguous result, never the "isolated" headline (#2129)', () => {
+    const result = formatImpactResult({
+      status: 'ambiguous',
+      target: { name: 'classifyCard' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      maxImpactedCount: 3,
+      maxRisk: 'MEDIUM',
+      candidates: [
+        {
+          uid: 'Function:src/sync-logic.ts:classifyCard',
+          name: 'classifyCard',
+          kind: 'Function',
+          filePath: 'src/sync-logic.ts',
+          line: 1,
+          impactedCount: 3,
+          risk: 'MEDIUM',
+        },
+        {
+          uid: 'Function:src/ui-helpers.ts:classifyCard',
+          name: 'classifyCard',
+          kind: 'Function',
+          filePath: 'src/ui-helpers.ts',
+          line: 1,
+          impactedCount: 1,
+          risk: 'LOW',
+        },
+      ],
+    });
+    // Must NOT print the false-safe "isolated" headline.
+    expect(result).not.toContain('isolated');
+    expect(result).toContain('AMBIGUOUS');
+    expect(result).toContain('Max blast radius 3');
+    // Both candidates + their real counts are visible.
+    expect(result).toContain('src/sync-logic.ts');
+    expect(result).toContain('[3 upstream');
+    expect(result).toContain('--uid');
+  });
+
+  it('surfaces the lower-bound boundary note when epistemic is lower-bound (#1858)', () => {
+    const result = formatImpactResult({
+      target: { kind: 'Class', name: 'EmailLogger' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'LOW',
+      epistemic: 'lower-bound',
+      boundaries: ['Logger is an interface with 2 implementations; callers bind via DI.'],
+      byDepth: {},
+    });
+    expect(result).not.toContain('isolated');
+    expect(result.toLowerCase()).toContain('lower bound');
+    expect(result).toContain('Logger is an interface');
+  });
+
   it('returns error with suggestion when provided', () => {
     const result = formatImpactResult({
       error: 'Impact analysis failed',

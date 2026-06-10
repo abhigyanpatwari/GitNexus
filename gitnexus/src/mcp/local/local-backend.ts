@@ -3204,6 +3204,7 @@ export class LocalBackend {
                 minConfidence,
                 summaryOnly: true,
                 skipEpistemic: true,
+                skipEnrichment: true,
               },
             );
           } catch (e) {
@@ -3229,9 +3230,17 @@ export class LocalBackend {
       candidateSummaries.sort((a, b) => b.impactedCount - a.impactedCount);
       const maxImpactedCount = candidateSummaries.reduce((m, c) => Math.max(m, c.impactedCount), 0);
       const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-      const maxRisk = candidateSummaries.reduce((worst, c) => {
-        return RISK_ORDER.indexOf(c.risk) > RISK_ORDER.indexOf(worst) ? c.risk : worst;
-      }, 'LOW');
+      // If EVERY candidate probe failed (all 'UNKNOWN' — e.g. pool exhaustion
+      // under the fan-out), the worst real risk is genuinely unknown, not LOW.
+      // Reporting LOW here would re-introduce the false-safe signal. Only fall to
+      // the LOW seed when at least one candidate produced a real risk.
+      const anyKnownRisk = candidateSummaries.some((c) => RISK_ORDER.includes(c.risk));
+      const maxRisk = anyKnownRisk
+        ? candidateSummaries.reduce(
+            (worst, c) => (RISK_ORDER.indexOf(c.risk) > RISK_ORDER.indexOf(worst) ? c.risk : worst),
+            'LOW',
+          )
+        : 'UNKNOWN';
       const truncated = outcome.candidates.length > probed.length;
 
       return {
@@ -3375,11 +3384,16 @@ export class LocalBackend {
         if (consumers >= 1 || impls >= 2) {
           const label = (info.label || 'Interface').toLowerCase();
           const name = info.name || '(unnamed)';
+          const article = /^[aeiou]/.test(label) ? 'an' : 'a';
           const parts: string[] = [];
-          if (impls >= 1) parts.push(`${impls} implementation(s)`);
-          if (consumers >= 1) parts.push(`${consumers} interface-level consumer(s)`);
+          if (impls >= 1)
+            parts.push(`${impls} ${impls === 1 ? 'implementation' : 'implementations'}`);
+          if (consumers >= 1)
+            parts.push(
+              `${consumers} interface-level ${consumers === 1 ? 'consumer' : 'consumers'}`,
+            );
           boundaries.push(
-            `${name} is an ${label} with ${parts.join(' and ')}; callers that bind via the ${label} ` +
+            `${name} is ${article} ${label} with ${parts.join(' and ')}; callers that bind via the ${label} ` +
               `(e.g. a DI container or dynamic dispatch) are not traced to the concrete symbol — ` +
               `actual impact may be higher.`,
           );
@@ -3410,10 +3424,12 @@ export class LocalBackend {
       summaryOnly?: boolean;
       skipPerSymbolEnrichment?: boolean;
       skipEpistemic?: boolean;
+      skipEnrichment?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
     const skipPerSymbolEnrichment = opts.skipPerSymbolEnrichment ?? false;
+    const skipEnrichment = opts.skipEnrichment ?? false;
     const hasExplicitLimit = typeof opts.limit === 'number' && Number.isFinite(opts.limit);
     const paginationLimit = hasExplicitLimit
       ? Math.max(1, Math.min(Math.trunc(opts.limit!), 10000))
@@ -3432,6 +3448,15 @@ export class LocalBackend {
     const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
+
+    // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
+    // It depends only on symId/symType/symName (all known now) and touches no
+    // shared state, so its extra round-trip overlaps the traversal instead of
+    // adding to the serial path. `skipEpistemic` (ambiguous #2129 candidate
+    // probes, group fan-out) resolves to no field, preserving prior behavior.
+    const epistemicPromise: Promise<Record<string, unknown>> = opts.skipEpistemic
+      ? Promise.resolve({})
+      : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
 
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
@@ -3598,7 +3623,13 @@ export class LocalBackend {
     // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
     const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
 
-    if (impacted.length > 0) {
+    // `skipEnrichment` (ambiguous #2129 per-candidate probes) bypasses the
+    // process/module aggregation passes entirely — those probes need only the
+    // count + a count-based risk, so paying the bounded-but-real enrichment cost
+    // ~6× per ambiguous call is wasted. risk then derives from directCount /
+    // total only (processCount/moduleCount stay 0), an acceptable approximation
+    // for a disambiguation aid.
+    if (impacted.length > 0 && !skipEnrichment) {
       // ── Process enrichment: batched chunking (bounded by MAX_CHUNKS) ─
       // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
       // process + entry point info in 1 round-trip per chunk. Converted to
@@ -3865,14 +3896,9 @@ export class LocalBackend {
       byDepthCounts[Number(depth)] = items.length;
     }
 
-    // #1858 — flag the result as a lower bound when an interface / indirection
-    // boundary is on the path (callers binding via DI or dynamic dispatch are
-    // not traced to the concrete symbol). Additive: leaves impactedCount and
-    // every existing field untouched. Skipped for the bounded per-candidate
-    // probes of an ambiguous #2129 resolution, which only need count + risk.
-    const epistemic = opts.skipEpistemic
-      ? {}
-      : await this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
+    // #1858 — await the epistemic boundary probe kicked off alongside the BFS
+    // above. Additive: leaves impactedCount and every existing field untouched.
+    const epistemic = await epistemicPromise;
 
     const base = {
       target: {
@@ -4097,6 +4123,10 @@ export class LocalBackend {
         includeTests: opts.includeTests,
         minConfidence: opts.minConfidence,
         skipPerSymbolEnrichment: true,
+        // Group cross-repo fan-out consumes only byDepth (cross-impact.ts), not
+        // the #1858 epistemic/boundaries fields — computing them per neighbor is
+        // dead work on the highest-volume path, so suppress them here too.
+        skipEpistemic: true,
       });
     } catch {
       return null;
