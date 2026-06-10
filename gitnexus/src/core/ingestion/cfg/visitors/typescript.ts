@@ -344,11 +344,17 @@ class TsCfgWalk {
 
     if (body) {
       this.builder.edge(header, body.entry, 'cond-true');
-      this.builder.connect(body.exits, incrBlock, 'seq');
+      // With no increment clause the body's exits ARE the back-edge — carry
+      // the loop-back kind on them (mirroring visitWhile/visitForIn) instead
+      // of a phantom header→header self-loop that models a path which never
+      // executes the body. With an increment, the body falls through to the
+      // increment (`seq`) and the increment carries the loop-back (:338).
+      this.builder.connect(body.exits, incrBlock, incr ? 'seq' : 'loop-back');
     } else {
       this.builder.edge(header, incrBlock, 'cond-true');
+      // Empty body with no increment: the header genuinely re-tests itself.
+      if (!incr) this.builder.edge(header, header, 'loop-back');
     }
-    if (incrBlock === header) this.builder.edge(header, header, 'loop-back');
     this.builder.edge(header, loopExit, 'cond-false');
 
     let entry = header;

@@ -169,6 +169,43 @@ describe('TS/JS CfgVisitor — loops', () => {
     expect(edgeKinds(cfg).has('loop-back')).toBe(true);
     expect(reaches(cfg, block(cfg, 'use(k)'), block(cfg, 'done();'))).toBe(true);
   });
+
+  it('for without increment: body carries the loop-back, no phantom header self-loop (#2099 F5)', () => {
+    const cfg = cfgOf(`function f() { for (let i = 0; i < 3;) { i += 1; } done(); }`);
+    const header = block(cfg, 'i < 3');
+    const body = block(cfg, 'i += 1');
+    // The ONLY loop-back is the real back-edge body→header; a header→header
+    // self-loop would model a path that re-tests without running the body.
+    expect(cfg.edges.filter((e) => e.kind === 'loop-back')).toEqual([
+      { from: body, to: header, kind: 'loop-back' },
+    ]);
+    expect(cfg.edges.some((e) => e.from === header && e.to === header)).toBe(false);
+    expect(reachable(cfg, block(cfg, 'done();'))).toBe(true);
+  });
+
+  it('for(;;) with conditional break: loop-back on the body, break reaches the join (#2099 F5)', () => {
+    const cfg = cfgOf(`function f() { for (;;) { if (x) break; work(); } done(); }`);
+    const work = block(cfg, 'work()');
+    const loopBacks = cfg.edges.filter((e) => e.kind === 'loop-back');
+    expect(loopBacks).toEqual([expect.objectContaining({ from: work })]);
+    const header = loopBacks[0].to;
+    expect(cfg.edges.some((e) => e.from === header && e.to === header)).toBe(false);
+    expect(edgeKinds(cfg).has('break')).toBe(true);
+    expect(reachable(cfg, block(cfg, 'done();'))).toBe(true);
+  });
+
+  it('for with increment keeps seq-to-increment and loop-back on the increment (F5 regression guard)', () => {
+    const cfg = cfgOf(`function f() { for (let i = 0; i < 3; i++) { work(); } done(); }`);
+    expect(cfg.edges).toContainEqual({ from: block(cfg, 'work()'), to: block(cfg, 'i++'), kind: 'seq' });
+    expect(cfg.edges).toContainEqual({ from: block(cfg, 'i++'), to: block(cfg, 'i < 3'), kind: 'loop-back' });
+  });
+
+  it('empty body without increment keeps the genuine header self-loop', () => {
+    const cfg = cfgOf(`function f() { for (let i = 0; i < 3;) {} done(); }`);
+    const header = block(cfg, 'i < 3');
+    expect(cfg.edges).toContainEqual({ from: header, to: header, kind: 'loop-back' });
+    expect(reachable(cfg, block(cfg, 'done();'))).toBe(true);
+  });
 });
 
 describe('TS/JS CfgVisitor — switch', () => {
