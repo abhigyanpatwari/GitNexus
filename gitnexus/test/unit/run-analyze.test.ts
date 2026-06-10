@@ -82,6 +82,36 @@ describe('run-analyze module', () => {
   });
 });
 
+describe('primaryInversionWarning (#2106 R8)', () => {
+  it('warns when the default branch is not the flat-slot owner', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    const w = primaryInversionWarning('main', 'feature/x');
+    expect(w).toContain('default branch "main"');
+    expect(w).toContain('"feature/x" owns the flat slot');
+    expect(w).toContain('clean --branch feature/x');
+  });
+
+  it('does not warn when the default branch is null (no origin/HEAD)', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning(null, 'feature/x')).toBeUndefined();
+  });
+
+  it('does not warn when the default owns the flat slot', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning('main', 'main')).toBeUndefined();
+  });
+
+  it('trims both sides so trivial whitespace does not false-warn', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning(' main ', 'main')).toBeUndefined();
+  });
+
+  it('does not warn when there is no flat owner yet', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning('main', undefined)).toBeUndefined();
+  });
+});
+
 describe('deriveEmbeddingMode', () => {
   // Default `analyze` on a repo with existing embeddings: must preserve, must
   // NOT regenerate, must load the cache so phase 3.5 can re-insert vectors.

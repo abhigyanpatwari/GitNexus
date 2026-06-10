@@ -62,6 +62,7 @@ import {
 import {
   getCurrentCommit,
   getCurrentBranch,
+  getDefaultBranch,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -237,6 +238,27 @@ export const PHASE_LABELS: Record<string, string> = {
  * the {@link AnalyzeCallbacks} interface — it never writes to stdout/stderr
  * directly and never calls `process.exit()`.
  */
+/**
+ * Build the primary-inversion warning (#2106 R8), or `undefined` when there is
+ * nothing to warn about. Pure + exported for testing. Both inputs are trimmed
+ * (a diagnostic — a missed warning is low-harm; a false warning is the thing to
+ * avoid). `defaultBranch` is the repo's `origin/HEAD` branch (null when unset,
+ * e.g. fresh clones / CI), `flatOwner` is the branch that owns the flat slot.
+ */
+export const primaryInversionWarning = (
+  defaultBranch: string | null | undefined,
+  flatOwner: string | null | undefined,
+): string | undefined => {
+  const norm = (s: string | null | undefined): string | undefined => s?.trim() || undefined;
+  const d = norm(defaultBranch);
+  const o = norm(flatOwner);
+  if (!d || !o || d === o) return undefined;
+  return (
+    `Warning: the default branch "${d}" is not the primary index — "${o}" owns the flat slot. ` +
+    `Run \`gitnexus clean --branch ${o}\` then re-index on "${d}", or query it explicitly with \`--branch ${d}\`.`
+  );
+};
+
 export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
@@ -296,6 +318,21 @@ export async function runFullAnalysis(
   const metaDir = path.dirname(metaPath);
 
   const existingMeta = await loadMeta(metaDir);
+
+  // ── #2106 (R8): warn when the repo's default branch is not the primary ──
+  // A non-default branch can own the flat slot (it was indexed first). That
+  // index is still fully queryable via `--branch`, so this is an ergonomics
+  // wart, not data loss — we only warn (no risky relocation of a live DB).
+  if (repoHasGit) {
+    // Who owns the flat slot after this run? For a flat/primary run it is this
+    // run's resolved label (carrying an existing stamp forward); for a branch
+    // run the flat owner is unchanged, so read the flat meta.
+    const flatOwner = placement.branch
+      ? (await loadMeta(storagePath))?.branch
+      : (branchLabel ?? existingMeta?.branch);
+    const warning = primaryInversionWarning(getDefaultBranch(repoPath), flatOwner);
+    if (warning) log(warning);
+  }
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
