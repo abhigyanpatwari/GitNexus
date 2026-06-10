@@ -93,7 +93,11 @@ function containsNonCloneable(value: unknown, seen: WeakSet<object>, depth = 0):
   // Structured-clone-native containers carry no non-cloneable payload of their
   // own; their *contents* still need scanning (a Map value could be a fn).
   if (obj instanceof Date || obj instanceof RegExp) return false;
-  if (obj instanceof ArrayBuffer || ArrayBuffer.isView(obj)) return false;
+  // Buffers/views usually clone, but a DETACHED one is rejected by
+  // structuredClone — probe rather than wave it through. No byteLength
+  // heuristic: a legitimately empty `new Uint8Array(0)` also has byteLength 0
+  // yet clones fine, so a length check would false-positive.
+  if (obj instanceof ArrayBuffer || ArrayBuffer.isView(obj)) return !isStructuredCloneable(obj);
   seen.add(obj);
   if (Array.isArray(obj)) {
     for (let i = 0; i < obj.length; i++) {
@@ -123,7 +127,14 @@ function containsNonCloneable(value: unknown, seen: WeakSet<object>, depth = 0):
     return false;
   }
   for (const key of Object.keys(obj)) {
-    if (containsNonCloneable((obj as Record<string, unknown>)[key], seen, depth + 1)) return true;
+    let child: unknown;
+    try {
+      child = (obj as Record<string, unknown>)[key];
+    } catch {
+      // A getter that throws can't be serialized either — treat as non-cloneable.
+      return true;
+    }
+    if (containsNonCloneable(child, seen, depth + 1)) return true;
   }
   return false;
 }
@@ -158,7 +169,15 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
   const obj = value as object;
   if (ctx.seen.has(obj)) return value;
   if (obj instanceof Date || obj instanceof RegExp) return value;
-  if (obj instanceof ArrayBuffer || ArrayBuffer.isView(obj)) return value;
+  if (obj instanceof ArrayBuffer || ArrayBuffer.isView(obj)) {
+    // Keep a live buffer/view (even an empty one); drop a detached one, which
+    // structuredClone rejects. The probe is exact — no byteLength heuristic.
+    if (!isStructuredCloneable(obj)) {
+      ctx.stripped++;
+      return undefined;
+    }
+    return value;
+  }
   ctx.seen.add(obj);
   if (Array.isArray(obj)) {
     return obj.map((v) => stripNonCloneable(v, ctx, depth + 1));
@@ -187,7 +206,15 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
   }
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(obj)) {
-    out[key] = stripNonCloneable((obj as Record<string, unknown>)[key], ctx, depth + 1);
+    let child: unknown;
+    try {
+      child = (obj as Record<string, unknown>)[key];
+    } catch {
+      // A getter that throws is non-serializable — drop the property.
+      ctx.stripped++;
+      continue;
+    }
+    out[key] = stripNonCloneable(child, ctx, depth + 1);
   }
   return out;
 }

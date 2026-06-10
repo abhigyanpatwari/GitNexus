@@ -210,4 +210,63 @@ describe('clone-safety', () => {
       expect(result.nodes).toBe(nodes); // identity preserved, no needless copy
     });
   });
+
+  // U2 (#2112): two sanitizer-defeat vectors that previously let the re-post
+  // throw — a throwing getter and a detached ArrayBuffer/view.
+  describe('sanitizer-defeat hardening', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('drops a throwing getter and delivers the rest of the record', () => {
+      const el: Record<string, unknown> = { id: 'g', filePath: 'g.ts', name: 'keep' };
+      Object.defineProperty(el, 'boom', {
+        enumerable: true,
+        get() {
+          throw new Error('getter boom');
+        },
+      });
+      const result: Record<string, unknown> = {
+        nodes: [el],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      expect(() => makeWorkerResultCloneSafe(result, opts)).not.toThrow();
+      expect(isStructuredCloneable(result)).toBe(true);
+      const out = (result.nodes as Array<Record<string, unknown>>)[0];
+      expect(out.name).toBe('keep'); // legitimate data preserved
+      expect('boom' in out).toBe(false); // throwing getter stripped
+    });
+
+    it('drops a detached ArrayBuffer view and delivers the rest', () => {
+      const buf = new ArrayBuffer(8);
+      const view = new Uint8Array(buf);
+      structuredClone(buf, { transfer: [buf] }); // detaches buf → view is now detached
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'd', filePath: 'd.ts', data: view }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true);
+      expect((result.nodes as Array<Record<string, unknown>>)[0].data).toBeUndefined();
+      expect(skipped).toHaveLength(1);
+    });
+
+    it('does NOT drop a legitimately empty but live view (byteLength false-positive guard)', () => {
+      const nodes = [{ id: 'e', filePath: 'e.ts', data: new Uint8Array(0) }];
+      const result: Record<string, unknown> = {
+        nodes,
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(skipped).toEqual([]);
+      expect(result.nodes).toBe(nodes); // untouched — empty live view clones fine
+    });
+  });
 });
