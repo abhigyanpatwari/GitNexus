@@ -10,10 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs/promises';
-import {
-  registerRepo,
-  listRegisteredRepos,
-} from '../../src/storage/repo-manager.js';
+import { registerRepo, listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
