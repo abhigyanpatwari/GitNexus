@@ -96,12 +96,33 @@ interface SharedDB {
 }
 const dbCache = new Map<string, SharedDB>();
 
-/** Max repos in the pool (LRU eviction) */
-const MAX_POOL_SIZE = 5;
-/** Idle timeout before closing a repo's connections */
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-/** Max connections per repo (caps concurrent queries per repo) */
-const MAX_CONNS_PER_REPO = 8;
+/**
+ * Parse a positive integer from process.env, fall back to the default.
+ */
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const v = parseInt(raw, 10);
+  return isNaN(v) || v <= 0 ? defaultValue : v;
+}
+
+/**
+ * Max repos in the pool (LRU eviction).
+ * Env: GITNEXUS_MAX_POOL_SIZE
+ */
+const MAX_POOL_SIZE = envInt('GITNEXUS_MAX_POOL_SIZE', 3);
+/** Idle timeout before closing a repo's connections. Env: GITNEXUS_IDLE_TIMEOUT_MS */
+const IDLE_TIMEOUT_MS = envInt('GITNEXUS_IDLE_TIMEOUT_MS', 5 * 60 * 1000);
+/**
+ * Max connections per repo (caps concurrent queries per repo).
+ * Env: GITNEXUS_MAX_CONNS_PER_REPO
+ */
+const MAX_CONNS_PER_REPO = envInt('GITNEXUS_MAX_CONNS_PER_REPO', 2);
+/**
+ * Max concurrent initLbug calls.
+ * Env: GITNEXUS_INIT_CONCURRENCY
+ */
+const INIT_CONCURRENCY = envInt('GITNEXUS_INIT_CONCURRENCY', 1);
 
 // Behavior-neutral RSS tracing for the FTS evict→reload memory repro
 // (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
@@ -136,6 +157,30 @@ import { getActiveStdoutWrite, realStderrWrite } from '../../mcp/stdio-capture.j
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
 let preWarmActive = false;
+
+/** Global semaphore for initLbug. Bounds peak native allocation. */
+let activeInitCount = 0;
+const initWaiters: Array<() => void> = [];
+
+function acquireInitSlot(): Promise<void> {
+  if (activeInitCount < INIT_CONCURRENCY) {
+    activeInitCount++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    initWaiters.push(() => {
+      activeInitCount++;
+      resolve();
+    });
+  });
+}
+
+function releaseInitSlot(): void {
+  activeInitCount--;
+  if (activeInitCount < 0) activeInitCount = 0;
+  const next = initWaiters.shift();
+  if (next) next();
+}
 
 /**
  * Start the idle cleanup timer (runs every 60s)
@@ -508,7 +553,15 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
   const pending = initPromises.get(repoId);
   if (pending) return pending;
 
-  const promise = doInitLbug(repoId, dbPath);
+  // Serialize cold-start of different repos via the INIT_CONCURRENCY semaphore.
+  const promise = (async () => {
+    await acquireInitSlot();
+    try {
+      await doInitLbug(repoId, dbPath);
+    } finally {
+      releaseInitSlot();
+    }
+  })();
   initPromises.set(repoId, promise);
   try {
     await promise;
@@ -590,15 +643,15 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   shared.refCount++;
   const db = shared.db;
 
-  // Pre-create the full pool upfront so createConnection() (which silences
-  // stdout) is never called lazily during active query execution.
-  // Mark preWarmActive so the watchdog timer doesn't interfere.
+  // Pre-warm exactly 1 connection. Subsequent conns are lazily created in
+  // checkout() up to MAX_CONNS_PER_REPO. Cuts cold-start memory by ~165 MB
+  // × (MAX_CONNS_PER_REPO - 1) per repo for the common single-threaded
+  // query workload. Lazy expansion is safe because silenceStdout is
+  // reference-counted; see comment in checkout().
   preWarmActive = true;
   const available: lbug.Connection[] = [];
   try {
-    for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-      available.push(createConnection(db));
-    }
+    available.push(createConnection(db));
   } finally {
     preWarmActive = false;
   }
@@ -662,12 +715,12 @@ export async function initLbugWithDb(
   }
   shared.refCount++;
 
+  // Pre-warm 1 conn; checkout() lazily expands to MAX_CONNS_PER_REPO.
+  // Matches doInitLbug for consistency.
   const available: lbug.Connection[] = [];
   preWarmActive = true;
   try {
-    for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-      available.push(createConnection(existingDb));
-    }
+    available.push(createConnection(existingDb));
   } finally {
     preWarmActive = false;
   }
@@ -704,16 +757,19 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
     return Promise.resolve(entry.available.pop()!);
   }
 
-  // Pool was pre-warmed to MAX_CONNS_PER_REPO during init.  If we're here
-  // with fewer total connections, something leaked — surface the bug rather
-  // than silently creating a connection (which would silence stdout mid-query).
+  // Lazy expansion: doInitLbug pre-warms only 1 connection (down from
+  // MAX_CONNS_PER_REPO). Subsequent concurrent queries trigger on-demand
+  // connection creation up to the cap.
   const totalConns = entry.available.length + entry.checkedOut;
   if (totalConns < MAX_CONNS_PER_REPO) {
-    throw new Error(
-      `Connection pool integrity error: expected ${MAX_CONNS_PER_REPO} ` +
-        `connections but found ${totalConns} (${entry.available.length} available, ` +
-        `${entry.checkedOut} checked out)`,
-    );
+    preWarmActive = true;
+    try {
+      const conn = createConnection(entry.db);
+      entry.checkedOut++;
+      return Promise.resolve(conn);
+    } finally {
+      preWarmActive = false;
+    }
   }
 
   // At capacity — queue the caller with a timeout.

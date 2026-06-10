@@ -49,10 +49,17 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     });
 
     let symbolCount = 0;
+    let callsCount = 0;
     ctx.graph.forEachNode((n) => {
       if (n.label !== 'File') symbolCount++;
     });
-    const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+    ctx.graph.forEachRelationship((rel) => {
+      if (rel.type === 'CALLS') callsCount++;
+    });
+    const dynamicMaxProcesses = Math.max(20, Math.min(1500, Math.round(symbolCount / 10)));
+    // Sparse call graphs (Zig, C, systems languages) have short chains — lower threshold
+    // so 2-hop flows (A→B) are included. Dense graphs (JS/TS) keep minSteps=3.
+    const dynamicMinSteps = callsCount / Math.max(1, symbolCount) < 0.5 ? 2 : 3;
 
     const processResult = await processProcesses(
       ctx.graph,
@@ -66,7 +73,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
           stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
         });
       },
-      { maxProcesses: dynamicMaxProcesses, minSteps: 3 },
+      { maxProcesses: dynamicMaxProcesses, minSteps: dynamicMinSteps },
     );
 
     if (isDev) {
