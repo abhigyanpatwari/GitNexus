@@ -20,7 +20,7 @@ const CLONE_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
 // Rejecting anything else (including `..`, `/`, `\`, shell metacharacters)
 // guarantees getCloneDir(repoName) cannot escape CLONE_ROOT regardless of
 // how the caller derived repoName.
-const REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+export const REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
 /**
  * Extract the repository name from a git URL (HTTPS or SSH).

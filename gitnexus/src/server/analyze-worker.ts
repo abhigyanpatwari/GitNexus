@@ -21,26 +21,27 @@ interface StartMessage {
   options: AnalyzeOptions;
 }
 
-interface ProgressMessage {
+export interface ProgressMessage {
   type: 'progress';
   phase: string;
   percent: number;
   message: string;
 }
 
-interface CompleteMessage {
+export interface CompleteMessage {
   type: 'complete';
   // JSON-safe projection (no `pipelineResult` / live KnowledgeGraph). This
   // channel is default-JSON child_process IPC — see analyze-worker-ipc.ts.
   result: AnalyzeResultIpc;
 }
 
-interface ErrorMessage {
+export interface ErrorMessage {
   type: 'error';
   message: string;
 }
 
-type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
+/** Child → parent IPC messages. Shared with the parent-side launcher. */
+export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
 
 function send(msg: WorkerMessage) {
   process.send?.(msg);

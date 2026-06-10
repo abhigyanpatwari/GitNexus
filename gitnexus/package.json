@@ -59,6 +59,7 @@
     "@ladybugdb/core": "^0.17.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
+    "busboy": "^1.6.0",
     "cli-progress": "^3.12.0",
     "commander": "^14.0.3",
     "cors": "^2.8.5",
@@ -93,6 +94,7 @@
     "uuid": "^14.0.0"
   },
   "devDependencies": {
+    "@types/busboy": "^1.5.4",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",

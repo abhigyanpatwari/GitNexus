@@ -61,7 +61,12 @@
     "gitlabRepositoryUrl": "GitLab Repository URL",
     "gitlabSupported": "Supports GitLab.com and self-hosted GitLab instances.",
     "localFolderPath": "Local Folder Path",
-    "browseForFolder": "Browse for folder",
-    "hideBackground": "Hide (analysis continues in background)"
+    "hideBackground": "Hide (analysis continues in background)",
+    "upload": {
+      "button": "Upload a folder",
+      "uploading": "Uploading…",
+      "selected": "{{fileCount}} files ready ({{dropped}} skipped: .git, node_modules, build output)",
+      "empty": "No analyzable files found in that folder."
+    }
   }
 }

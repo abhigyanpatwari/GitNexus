@@ -16,7 +16,7 @@ jobs:
       # test-reports artifact (if: always()). The default-persisted token in
       # .git/config must not be capturable through that upload (zizmor
       # credential-persistence / artipacked audit). The job never pushes.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -80,7 +80,7 @@ jobs:
     steps:
       # persist-credentials: false — runs tests only, never pushes (zizmor
       # credential-persistence / artipacked audit).
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -106,7 +106,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -138,7 +138,7 @@ jobs:
       # from a tarball and never pushes back; the token in .git/config would
       # be at risk of leaking through any future artifact-upload step
       # (zizmor artipacked audit). Disable upfront.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -246,7 +246,7 @@ jobs:
       # and never pushes; the default-persisted token in .git/config would be at
       # risk of leaking through an artifact upload (zizmor credential-persistence
       # / artipacked audit). Mirrors the packaged-install-smoke job below.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
