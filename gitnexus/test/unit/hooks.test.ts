@@ -1005,6 +1005,53 @@ describe('PreToolUse augmentation filtering (integration)', () => {
         }
       },
     );
+
+    // #1913: the GITNEXUS_DEBUG contract is strict — ONLY '1' and 'true' enable
+    // diagnostics. Pin that non-canonical truthy-looking values ('0', 'false')
+    // are treated as OFF, so the skip stays silent. A truthy-gated reader would
+    // have emitted on these; this guards the unified strict gate (incl. the
+    // main() catch handler) across the claude/plugin copies.
+    for (const debugValue of ['0', 'false']) {
+      it.skipIf(process.platform === 'win32')(
+        `${label}: MCP-owner skip stays SILENT with GITNEXUS_DEBUG='${debugValue}' (strict contract)`,
+        () => {
+          const markerPath = path.join(
+            os.tmpdir(),
+            `gitnexus-hook-dbg-${debugValue}-${process.pid}-${label}`,
+          );
+          const lbugPath = path.join(gitNexusDir, 'lbug');
+          fs.writeFileSync(lbugPath, '');
+          fs.rmSync(markerPath, { force: true });
+          const binDir = createHookToolDir({
+            gitnexusMarkerPath: markerPath,
+            lsofOutput: '12345\n',
+            psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+          });
+          try {
+            const result = runHook(
+              hookPath,
+              {
+                hook_event_name: 'PreToolUse',
+                tool_name: 'Grep',
+                tool_input: { pattern: 'validateUser' },
+                cwd: tmpDir,
+              },
+              undefined,
+              { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: debugValue } },
+            );
+
+            expect(result.stdout.trim()).toBe('');
+            expect(result.stderr.trim()).toBe('');
+            expect(result.status).toBe(0);
+            expect(fs.existsSync(markerPath)).toBe(false);
+          } finally {
+            fs.rmSync(lbugPath, { force: true });
+            fs.rmSync(markerPath, { force: true });
+            fs.rmSync(binDir, { recursive: true, force: true });
+          }
+        },
+      );
+    }
   }
 });
 

@@ -352,7 +352,7 @@ function main() {
     const handler = handlers[input.hook_event_name || ''];
     if (handler) handler(input);
   } catch (err) {
-    if (process.env.GITNEXUS_DEBUG) {
+    if (isDebugEnabled()) {
       console.error('GitNexus antigravity hook error:', (err.message || '').slice(0, 200));
     }
   }
