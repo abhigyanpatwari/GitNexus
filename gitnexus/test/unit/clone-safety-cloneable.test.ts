@@ -20,7 +20,9 @@ describe('#2143: assertCloneable runtime identity', () => {
     const withMap = { m: new Map<string, number>([['a', 1]]) as ReadonlyMap<string, number> };
     expect(assertCloneable(withMap)).toBe(withMap);
 
-    expect(assertCloneable(undefined)).toBeUndefined();
+    // `X | undefined` (the real shape provider hooks return — collectFoo(): Foo | undefined).
+    const maybe: string | undefined = undefined;
+    expect(assertCloneable(maybe)).toBeUndefined();
 
     const nested = { a: { b: { c: [1, 2, 3] } } };
     expect(assertCloneable(nested)).toBe(nested);
@@ -58,11 +60,24 @@ describe('#2143: Cloneable<T> compile-time rejection (type-level)', () => {
     // @ts-expect-error — a symbol member is not Cloneable (tag resolves to never)
     assertCloneable(leakySym);
 
+    // R4 (#2135 tri-review): an `any`-typed member must NOT defeat the guard.
+    interface LeakyAny {
+      readonly name: string;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      readonly bag: any;
+    }
+    const leakyAny: LeakyAny = { name: 'x', bag: () => {} };
+    // @ts-expect-error — an `any` member resolves to never, so the payload is rejected
+    assertCloneable(leakyAny);
+
     // The guard must not be vacuous — these resolve to `never` at the type level.
     type FnIsNever = [Cloneable<() => void>] extends [never] ? true : false;
     type SymIsNever = [Cloneable<symbol>] extends [never] ? true : false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type AnyIsNever = [Cloneable<any>] extends [never] ? true : false;
     const fnIsNever: FnIsNever = true;
     const symIsNever: SymIsNever = true;
-    expect(fnIsNever && symIsNever).toBe(true);
+    const anyIsNever: AnyIsNever = true;
+    expect(fnIsNever && symIsNever && anyIsNever).toBe(true);
   });
 });
