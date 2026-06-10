@@ -14,6 +14,7 @@ import {
   REL_TABLE_NAME,
   SCHEMA_QUERIES,
   EMBEDDING_TABLE_NAME,
+  CREATE_VECTOR_INDEX_QUERY,
   STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
@@ -171,6 +172,11 @@ let currentDbPath: string | null = null;
 let currentDbReadOnly = false;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
+// In-process guard so a repeated createVectorIndex() within one connection
+// lifetime skips the DB round-trip (mirrors ensuredFTSIndexes). Reset wherever
+// vectorExtensionLoaded resets, so it can never stay true against a swapped or
+// closed connection.
+let vectorIndexEnsured = false;
 
 /**
  * In-process cache of FTS indexes observed against the current singleton
@@ -603,6 +609,7 @@ const resetOpenConnectionState = (): void => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  vectorIndexEnsured = false;
   ensuredFTSIndexes.clear();
 };
 
@@ -690,6 +697,7 @@ export const withLbugDb = async <T>(
         currentDbPath = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
+        vectorIndexEnsured = false;
         ensuredFTSIndexes.clear();
       });
       // Sleep outside the lock — no need to block others while waiting
@@ -716,6 +724,7 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
+    vectorIndexEnsured = false;
     ensuredFTSIndexes.clear();
   }
 
@@ -1671,6 +1680,7 @@ export const closeLbug = async (): Promise<void> => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  vectorIndexEnsured = false;
   ensuredFTSIndexes.clear();
 };
 
@@ -1934,6 +1944,50 @@ export const createFTSIndex = async (
       ensuredFTSIndexes.add(key);
       return;
     }
+    throw e;
+  }
+};
+
+/**
+ * Create the HNSW vector index on the CodeEmbedding table.
+ *
+ * MUST run via `conn.query()` (here through `queryAndDrain`), NOT through the
+ * prepared `executeQuery`/`conn.prepare()` path: `CALL CREATE_VECTOR_INDEX(...)`
+ * compiles to multiple statements, which LadybugDB cannot prepare — it fails
+ * with "Connection Exception: We do not support prepare multiple statements."
+ * Routing index creation through `executeQuery` (prepared) is exactly what
+ * broke vector-index creation during `analyze` (#2114; the singleton
+ * `executeQuery` was switched to the prepared path in #1655 while FTS index
+ * creation kept using `conn.query()`, which is why FTS survived and VECTOR did
+ * not). Mirrors `createFTSIndex` above.
+ *
+ * Returns `true` on success (or when the index already exists — idempotent so
+ * incremental re-runs don't spuriously downgrade to exact scan), `false` when
+ * the VECTOR extension is unavailable or the connection is read-only. Any other
+ * failure propagates so the caller can log it.
+ */
+export const createVectorIndex = async (): Promise<boolean> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  // Already built on this connection — skip the round-trip (mirrors createFTSIndex).
+  if (vectorIndexEnsured) return true;
+  if (!(await loadVectorExtension())) {
+    return false;
+  }
+  try {
+    await queryAndDrain(conn, CREATE_VECTOR_INDEX_QUERY);
+    vectorIndexEnsured = true;
+    return true;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Idempotent: a prior analyze already built the HNSW index.
+    if (msg.includes('already exists')) {
+      vectorIndexEnsured = true;
+      return true;
+    }
+    // Read-only DB (e.g. the MCP query pool): writable analyze owns creation.
+    if (isReadOnlyDbError(e)) return false;
     throw e;
   }
 };

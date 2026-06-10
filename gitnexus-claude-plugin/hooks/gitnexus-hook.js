@@ -110,10 +110,20 @@ function hasGitNexusServerOwner(gitNexusDir) {
   return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
 }
 
+/**
+ * Whether opt-in diagnostics should be written to the hook's stderr. Strict
+ * hook runners (e.g. Codex `PreToolUse`) validate hook output, so normal,
+ * non-error skip paths must stay silent unless the operator explicitly asks
+ * for diagnostics via GITNEXUS_DEBUG. See issue #1913.
+ */
+function isDebugEnabled() {
+  return process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+}
+
 function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf('[GitNexus]');
-  const debug = process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+  const debug = isDebugEnabled();
   if (debug && output.length > 0) {
     // Emit the FULL discarded prefix (everything before the marker, or all of
     // it when no marker is present) so suppressed diagnostics — LadybugDB lock
@@ -267,7 +277,12 @@ function handlePreToolUse(input) {
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
   if (hasGitNexusServerOwner(gitNexusDir)) {
-    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+    // Normal skip path: the MCP server owns the DB, so the CLI augment would
+    // contend on the lock. Stay silent for strict hook runners (issue #1913);
+    // surface the reason only when diagnostics are explicitly requested.
+    if (isDebugEnabled()) {
+      process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+    }
     return;
   }
 
@@ -366,7 +381,7 @@ function main() {
     const handler = handlers[input.hook_event_name || ''];
     if (handler) handler(input);
   } catch (err) {
-    if (process.env.GITNEXUS_DEBUG) {
+    if (isDebugEnabled()) {
       console.error('GitNexus hook error:', (err.message || '').slice(0, 200));
     }
   }

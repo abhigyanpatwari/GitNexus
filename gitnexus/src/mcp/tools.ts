@@ -611,3 +611,36 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
     },
   },
 ];
+
+/**
+ * Per-repo tools that accept an optional `branch` scope (#2106). Single source
+ * of truth: the schema property is injected here so it cannot drift from the
+ * server-side default in `local-backend.ts` (`resolveRepo(repo, branch)`).
+ * `list_repos` and the `group_*` tools are intentionally excluded — they are
+ * not single-repo, single-branch operations.
+ */
+const BRANCH_SCOPED_TOOLS = new Set([
+  'query',
+  'cypher',
+  'context',
+  'detect_changes',
+  'impact',
+  'rename',
+  'route_map',
+  'tool_map',
+  'shape_check',
+  'api_impact',
+]);
+
+for (const tool of GITNEXUS_TOOLS) {
+  if (!BRANCH_SCOPED_TOOLS.has(tool.name)) continue;
+  if (tool.inputSchema.properties.branch) continue;
+  // Optional — `required` is left unchanged so omitting `branch` keeps today's
+  // default/primary-branch behavior. Ignored in group mode (repo starts "@").
+  tool.inputSchema.properties.branch = {
+    type: 'string',
+    description:
+      'Optional: scope to a specific branch index (multi-branch repos, #2106). ' +
+      'Omit for the default/primary branch. Ignored in group mode.',
+  };
+}
