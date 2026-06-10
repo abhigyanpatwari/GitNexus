@@ -125,12 +125,33 @@ export const VALID_RELATION_TYPES = new Set([
   'OVERRIDES', // Legacy alias — dual-read for pre-rename indexes
   'METHOD_IMPLEMENTS',
   'ACCESSES',
+  // Emitted by emit-references.ts / scope-resolution/graph-bridge/edges.ts and
+  // already part of the default impact relTypes + context() incoming queries.
+  // It was missing from this allowlist, so `impact({relationTypes:['USES']})`
+  // silently filtered to [] and fell back to the full default traversal
+  // (#2129/#1858 review F5). No IMPACT_RELATION_CONFIDENCE floor → 0.5 fallback,
+  // matching the FETCHES / WRAPS / HANDLES_ROUTE precedent below.
+  'USES',
   'HANDLES_ROUTE',
   'FETCHES',
   'HANDLES_TOOL',
   'ENTRY_POINT_OF',
   'WRAPS',
 ]);
+
+/**
+ * Relation types the #1858 epistemic-boundary probe keys on. Kept as
+ * module-level `readonly` arrays (not Sets) because computeEpistemicBoundary
+ * binds them as Cypher query params (`r.type IN $heritage` / `IN $types`).
+ * The heritage set is exactly the IMPACT_RELATION_CONFIDENCE 0.85 tier —
+ * "statically verifiable, but the concrete binding past it is not".
+ */
+export const EPISTEMIC_HERITAGE_RELATION_TYPES: readonly string[] = [
+  'IMPLEMENTS',
+  'METHOD_IMPLEMENTS',
+  'EXTENDS',
+];
+export const EPISTEMIC_CONSUMER_RELATION_TYPES: readonly string[] = ['CALLS', 'USES', 'ACCESSES'];
 
 /**
  * Per-relation-type confidence floor for impact analysis.
@@ -3352,8 +3373,8 @@ export class LocalBackend {
     symType: string,
     symName: string,
   ): Promise<{ epistemic: 'exact' | 'lower-bound'; boundaries?: string[] }> {
-    const HERITAGE_TYPES = ['IMPLEMENTS', 'METHOD_IMPLEMENTS', 'EXTENDS'];
-    const CONSUMER_TYPES = ['CALLS', 'USES', 'ACCESSES'];
+    const HERITAGE_TYPES = EPISTEMIC_HERITAGE_RELATION_TYPES;
+    const CONSUMER_TYPES = EPISTEMIC_CONSUMER_RELATION_TYPES;
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.
@@ -3385,7 +3406,7 @@ export class LocalBackend {
       // `iface.id IN $ids` combined with `COUNT(DISTINCT ...)` + implicit
       // group-by returns no rows under the LadybugDB cypher subset, so query
       // each boundary node individually (boundary is small — capped at 25).
-      const countByType = async (types: string[]): Promise<Map<string, number>> => {
+      const countByType = async (types: readonly string[]): Promise<Map<string, number>> => {
         const m = new Map<string, number>();
         await Promise.all(
           ifaceIds.map(async (ifaceId) => {
