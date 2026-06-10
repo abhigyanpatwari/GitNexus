@@ -528,6 +528,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       loadVectorExtension: vi.fn().mockResolvedValue(false),
+      createVectorIndex: vi.fn().mockResolvedValue(false),
     }));
 
     const node = makeNode();
