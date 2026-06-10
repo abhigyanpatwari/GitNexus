@@ -133,6 +133,11 @@ withTestLbugDB('vector-index-creation', () => {
 
       await adapter.createVectorIndex();
       await expect(adapter.createVectorIndex()).resolves.toBe(true);
+
+      // No duplicate index created by the repeat call.
+      const rows = await adapter.executeQuery('CALL SHOW_INDEXES() RETURN *');
+      const matches = rows.filter((r: any) => r.index_name === 'code_embedding_idx');
+      expect(matches).toHaveLength(1);
     });
   });
 });

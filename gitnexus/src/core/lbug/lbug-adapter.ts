@@ -172,6 +172,11 @@ let currentDbPath: string | null = null;
 let currentDbReadOnly = false;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
+// In-process guard so a repeated createVectorIndex() within one connection
+// lifetime skips the DB round-trip (mirrors ensuredFTSIndexes). Reset wherever
+// vectorExtensionLoaded resets, so it can never stay true against a swapped or
+// closed connection.
+let vectorIndexEnsured = false;
 
 /**
  * In-process cache of FTS indexes observed against the current singleton
@@ -604,6 +609,7 @@ const resetOpenConnectionState = (): void => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  vectorIndexEnsured = false;
   ensuredFTSIndexes.clear();
 };
 
@@ -691,6 +697,7 @@ export const withLbugDb = async <T>(
         currentDbPath = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
+        vectorIndexEnsured = false;
         ensuredFTSIndexes.clear();
       });
       // Sleep outside the lock — no need to block others while waiting
@@ -717,6 +724,7 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
+    vectorIndexEnsured = false;
     ensuredFTSIndexes.clear();
   }
 
@@ -1672,6 +1680,7 @@ export const closeLbug = async (): Promise<void> => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  vectorIndexEnsured = false;
   ensuredFTSIndexes.clear();
 };
 
@@ -1961,16 +1970,22 @@ export const createVectorIndex = async (): Promise<boolean> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
+  // Already built on this connection — skip the round-trip (mirrors createFTSIndex).
+  if (vectorIndexEnsured) return true;
   if (!(await loadVectorExtension())) {
     return false;
   }
   try {
     await queryAndDrain(conn, CREATE_VECTOR_INDEX_QUERY);
+    vectorIndexEnsured = true;
     return true;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // Idempotent: a prior analyze already built the HNSW index.
-    if (msg.includes('already exists')) return true;
+    if (msg.includes('already exists')) {
+      vectorIndexEnsured = true;
+      return true;
+    }
     // Read-only DB (e.g. the MCP query pool): writable analyze owns creation.
     if (isReadOnlyDbError(e)) return false;
     throw e;
