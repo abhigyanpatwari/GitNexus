@@ -620,6 +620,14 @@ export interface AnalyzeOptions {
    * before being threaded into the generated AGENTS.md / CLAUDE.md content.
    */
   defaultBranch?: string;
+  /**
+   * Index-branch selector (#2106). From `--branch`. Distinct from
+   * `defaultBranch` (cosmetic base_ref): this routes the index to a per-branch
+   * slot. NOT sourced from `.gitnexusrc` — the `.gitnexusrc` `branch` key is an
+   * alias for `defaultBranch` and must not change index placement. Defaults to
+   * the checked-out branch inside `runFullAnalysis` when omitted.
+   */
+  branch?: string;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -757,6 +765,21 @@ const analyzeCommandImpl = async (
       cliError(`  ${err instanceof Error ? err.message : String(err)}\n`, {
         recoveryHint: 'default-branch-invalid',
       });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  // Validate the index-branch selector (#2106) the same way, so a malformed
+  // `--branch` exits before any expensive analysis starts. Capture the TRIMMED
+  // return so a whitespace-padded value (e.g. " feature" from shell completion)
+  // normalizes before the checked-out-branch mismatch guard and slug — otherwise
+  // it would false-reject on-branch or create a ghost index when detached.
+  if (cliOptions?.branch !== undefined) {
+    try {
+      cliOptions.branch = validateBranchName(cliOptions.branch, '--branch');
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
       process.exitCode = 1;
       return;
     }
@@ -1094,6 +1117,10 @@ const analyzeCommandImpl = async (
         // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
         // threaded into the generated regression-compare example (#243).
         defaultBranch: resolvedDefaultBranch,
+        // Index-branch selector (#2106). Read straight from the CLI flag (not
+        // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
+        // can never change index placement. Undefined → auto-detect in pipeline.
+        branch: cliOptions?.branch,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options.noStats` here returns
@@ -1131,14 +1158,20 @@ const analyzeCommandImpl = async (
       // preserving the rest of the block (incl. --skills community rows). No-op
       // when the value already matches, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the
+      // PRIMARY/flat index (#2106 R2). A non-primary branch's up-to-date
+      // analyze must not churn the committed AGENTS.md — this mirrors the
+      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
-      try {
-        const { refreshBaseRefLine } = await import('./ai-context.js');
-        baseRefRefreshed = (
-          await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
-        ).files;
-      } catch {
-        /* best-effort — never fail the fast path over a context refresh */
+      if (result.isPrimaryBranch !== false) {
+        try {
+          const { refreshBaseRefLine } = await import('./ai-context.js');
+          baseRefRefreshed = (
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+          ).files;
+        } catch {
+          /* best-effort — never fail the fast path over a context refresh */
+        }
       }
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);

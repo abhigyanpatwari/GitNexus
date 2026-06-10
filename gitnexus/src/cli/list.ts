@@ -38,6 +38,7 @@ export const listCommand = async () => {
     console.log(`    ${t('common.path')}:    ${entry.path}`);
     console.log(`    ${t('list.indexed')}: ${indexedDate}`);
     console.log(`    ${t('list.commit')}:  ${commitShort}`);
+    if (entry.branch) console.log(`    ${t('list.branch')}:  ${entry.branch}`);
     console.log(
       `    ${t('list.stats')}:   ${t('list.statsValue', {
         files: stats.files ?? 0,
@@ -47,6 +48,18 @@ export const listCommand = async () => {
     );
     if (stats.communities) console.log(`    ${t('list.clusters')}:   ${stats.communities}`);
     if (stats.processes) console.log(`    ${t('list.processes')}:  ${stats.processes}`);
+    // Per-branch indexes (#2106). Only rendered when extra branches were
+    // indexed for this path, so single-branch output is unchanged.
+    if (entry.branches && entry.branches.length > 0) {
+      console.log(`    ${t('list.branchIndexes')}:`);
+      for (const b of entry.branches) {
+        const bCommit = b.lastCommit?.slice(0, 7) || t('list.unknown');
+        const bIndexed = new Date(b.indexedAt).toLocaleString();
+        console.log(
+          `      ${t('list.branchLine', { branch: b.branch, commit: bCommit, indexed: bIndexed })}`,
+        );
+      }
+    }
     console.log('');
   }
 };

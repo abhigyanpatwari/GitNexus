@@ -1035,6 +1035,7 @@ const ROUTE_DECORATOR_NAMES = new Set([
   'PostMapping',
   'PutMapping',
   'DeleteMapping',
+  'PatchMapping',
 ]);
 
 // ============================================================================
@@ -2279,6 +2280,15 @@ const processFileGroup = (
         result.routerImports,
         (result.routerModuleAliases ??= []),
       );
+    }
+
+    // Language-specific decorator route extraction via provider hook.
+    // The provider's extractDecoratorRoutes walks the AST for framework-specific
+    // route patterns (e.g., Java Spring class-level prefix joining). Routes are
+    // appended to decoratorRoutes for the routes phase to emit as Route nodes.
+    if (provider.extractDecoratorRoutes) {
+      const frameworkRoutes = provider.extractDecoratorRoutes(tree, file.path, lineOffset);
+      for (const r of frameworkRoutes) result.decoratorRoutes.push(r);
     }
 
     // Vue: emit CALLS edges for components used in <template>
