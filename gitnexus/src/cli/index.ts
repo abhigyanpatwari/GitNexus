@@ -121,6 +121,25 @@ program
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
   .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
+  .option(
+    '--embeddings-baseurl <url>',
+    'OpenAI-compatible embeddings base URL including the /v1 suffix ' +
+      '(e.g. http://10.219.32.29:11434/v1 for Ollama). Overrides GITNEXUS_EMBEDDING_URL.',
+  )
+  .option(
+    '--embeddings-model <model>',
+    'Embedding model name (e.g. qwen3-embedding:8b). Overrides GITNEXUS_EMBEDDING_MODEL.',
+  )
+  .option(
+    '--embeddings-auth-token <token>',
+    'Bearer token for the embeddings endpoint (omit for unauthenticated servers like Ollama). ' +
+      'Overrides GITNEXUS_EMBEDDING_API_KEY.',
+  )
+  .option(
+    '--embeddings-dims <number>',
+    'Embedding vector dimensions (positive integer; e.g. 4096 for Qwen3-Embedding-8B). ' +
+      'Must match what the index was built with. Overrides GITNEXUS_EMBEDDING_DIMS.',
+  )
   .addHelpText('after', () => t('help.analyze.environment'))
   .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 

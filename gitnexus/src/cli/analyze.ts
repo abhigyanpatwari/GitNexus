@@ -560,6 +560,10 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_EMBEDDING_URL',
+  'GITNEXUS_EMBEDDING_MODEL',
+  'GITNEXUS_EMBEDDING_API_KEY',
+  'GITNEXUS_EMBEDDING_DIMS',
 ] as const;
 
 type AnalyzeEnvSnapshot = Record<(typeof ANALYZE_CLI_ENV_KEYS)[number], string | undefined>;
@@ -677,6 +681,14 @@ export interface AnalyzeOptions {
    * outside the built-in convention still produces `route_map` consumers.
    */
   fetchWrappers?: string[];
+  /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
+  embeddingsBaseurl?: string;
+  /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */
+  embeddingsModel?: string;
+  /** Bearer token for the embeddings endpoint. Overrides GITNEXUS_EMBEDDING_API_KEY. Never logged. */
+  embeddingsAuthToken?: string;
+  /** Embedding vector dimensions (positive integer string). Overrides GITNEXUS_EMBEDDING_DIMS. */
+  embeddingsDims?: string;
 }
 
 /**
@@ -956,6 +968,87 @@ const analyzeCommandImpl = async (
       return;
     }
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
+  }
+
+  // --- Custom HTTP embedding endpoint flags (override GITNEXUS_EMBEDDING_* env vars) ---
+  const anyHttpEmbedFlag =
+    options.embeddingsBaseurl !== undefined ||
+    options.embeddingsModel !== undefined ||
+    options.embeddingsAuthToken !== undefined ||
+    options.embeddingsDims !== undefined;
+
+  if (options.embeddingsBaseurl !== undefined) {
+    const url = options.embeddingsBaseurl.trim();
+    if (url.length === 0) {
+      cliError('  --embeddings-baseurl must not be empty.\n');
+      process.exitCode = 1;
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      cliError(`  --embeddings-baseurl is not a valid URL: "${url}".\n`);
+      process.exitCode = 1;
+      return;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      cliError('  --embeddings-baseurl must use http:// or https://.\n');
+      process.exitCode = 1;
+      return;
+    }
+    // http-client strips trailing slashes; store as given (trimmed).
+    process.env.GITNEXUS_EMBEDDING_URL = url;
+  }
+
+  if (options.embeddingsModel !== undefined) {
+    const model = options.embeddingsModel.trim();
+    if (model.length === 0) {
+      cliError('  --embeddings-model must not be empty.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_EMBEDDING_MODEL = model;
+  }
+
+  if (options.embeddingsAuthToken !== undefined) {
+    const token = options.embeddingsAuthToken.trim();
+    if (token.length === 0) {
+      cliError('  --embeddings-auth-token must not be empty.\n');
+      process.exitCode = 1;
+      return;
+    }
+    // Never log the token value.
+    process.env.GITNEXUS_EMBEDDING_API_KEY = token;
+  }
+
+  // Reuse the positive-integer validator already defined above.
+  if (!setPositiveEnv('--embeddings-dims', 'GITNEXUS_EMBEDDING_DIMS', options.embeddingsDims)) {
+    return;
+  }
+
+  // Helpful confirmation + UX guard. http-client.isHttpMode() requires BOTH
+  // URL and MODEL; warn if only one was supplied. Print the endpoint (URL is
+  // safe to show; token is not).
+  if (process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL) {
+    console.log(
+      `  Using custom embedding endpoint: ${process.env.GITNEXUS_EMBEDDING_URL} ` +
+        `(model: ${process.env.GITNEXUS_EMBEDDING_MODEL})\n`,
+    );
+  } else if (anyHttpEmbedFlag && (process.env.GITNEXUS_EMBEDDING_URL || process.env.GITNEXUS_EMBEDDING_MODEL)) {
+    console.log(
+      '  Note: custom HTTP embeddings require BOTH --embeddings-baseurl and --embeddings-model ' +
+        '(or the matching env vars). Falling back to local ONNX embeddings.\n',
+    );
+  }
+
+  // HTTP embedding flags only take effect during the embedding phase, which
+  // is gated by --embeddings. Warn rather than silently no-op.
+  if (anyHttpEmbedFlag && !embeddingsEnabled) {
+    console.log(
+      '  Note: --embeddings-* flags only apply when --embeddings is also passed; ' +
+        'no embeddings will be generated this run.\n',
+    );
   }
 
   if (options.repairFts && options.force) {
