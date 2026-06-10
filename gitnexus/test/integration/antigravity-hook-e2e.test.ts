@@ -26,6 +26,8 @@ import {
   runHook,
   parseHookOutput,
   createGitNexusPathEntry,
+  createHookToolDir,
+  hookEnv,
   envWithPath,
 } from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
@@ -358,6 +360,91 @@ describe('antigravity hook adapter e2e', () => {
       expect(parseHookOutput(result.stdout)).toBeNull();
     });
   });
+
+  // Issue #1913: when a GitNexus MCP server owns the repo DB, runAugment() must
+  // SKIP — silently by default so strict hook runners never see unexpected
+  // output, and surface the reason only under GITNEXUS_DEBUG=1. The Claude/Plugin
+  // copies are covered in test/unit/hooks.test.ts; the antigravity adapter shares
+  // the identical gated skip and is exercised here through the install pipeline
+  // (its lock/probe helpers only resolve from the install dir). A faked lsof/ps +
+  // an empty `lbug` lock force hasGitNexusServerOwner() => true; a marker-writing
+  // fake CLI proves augment never ran.
+  describe.skipIf(process.platform === 'win32')(
+    'AfterTool — augment skipped when MCP server owns the DB (#1913)',
+    () => {
+      const OWNER_PROBE = {
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      };
+
+      it('stays SILENT by default (no augment ran, no stderr noise, exit 0)', () => {
+        const markerPath = path.join(os.tmpdir(), `antigravity-skip-silent-${process.pid}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({ ...OWNER_PROBE, gitnexusMarkerPath: markerPath });
+        try {
+          const result = runHook(
+            installedHook,
+            {
+              hook_event_name: 'AfterTool',
+              tool_name: 'search_file_content',
+              tool_input: { pattern: 'validateUser' },
+              tool_response: { llmContent: '...' },
+              cwd: tmpDir,
+            },
+            tmpDir,
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
+          );
+
+          expect(result.status).toBe(0);
+          // Strict-runner contract: completely silent — empty stdout AND stderr
+          // (matches the unit suite's assertion strength for the claude/plugin copies).
+          expect(result.stdout.trim()).toBe('');
+          expect(result.stderr.trim()).toBe('');
+          // Marker absent ⇒ the CLI never ran (augment short-circuited at the owner
+          // check). The paired GITNEXUS_DEBUG=1 test below positively proves the skip
+          // was the owner path (it asserts the owner-skip diagnostic on stderr).
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      it('surfaces the skip reason on stderr only under GITNEXUS_DEBUG=1', () => {
+        const markerPath = path.join(os.tmpdir(), `antigravity-skip-debug-${process.pid}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({ ...OWNER_PROBE, gitnexusMarkerPath: markerPath });
+        try {
+          const result = runHook(
+            installedHook,
+            {
+              hook_event_name: 'AfterTool',
+              tool_name: 'search_file_content',
+              tool_input: { pattern: 'validateUser' },
+              tool_response: { llmContent: '...' },
+              cwd: tmpDir,
+            },
+            tmpDir,
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
+          );
+
+          expect(result.status).toBe(0);
+          expect(parseHookOutput(result.stdout)).toBeNull();
+          expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+    },
+  );
 
   describe('cwd validation', () => {
     it('rejects relative cwd silently', () => {
