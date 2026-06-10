@@ -17,8 +17,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import Parser from 'tree-sitter';
-import Kotlin from 'tree-sitter-kotlin';
+import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';
 import { emitKotlinScopeCaptures } from '../../../src/core/ingestion/languages/kotlin/captures.js';
+
+// Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
+const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 import { KOTLIN_QUERIES } from '../../../src/core/ingestion/tree-sitter-queries.js';
 import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
 import type { CaptureMatch } from 'gitnexus-shared';

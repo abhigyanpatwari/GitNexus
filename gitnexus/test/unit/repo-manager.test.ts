@@ -12,10 +12,14 @@ import { _captureLogger } from '../../src/core/logger.js';
 import {
   getStoragePath,
   getStoragePaths,
+  branchSlug,
+  resolveBranchPlacement,
+  saveMeta,
   ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
   registerRepo,
+  removeBranchIndex,
   listRegisteredRepos,
   resolveRegistryEntry,
   canonicalizePath,
@@ -61,6 +65,126 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+
+  // ─── #2106: branch-scoped paths ──────────────────────────────────────
+
+  it('no/empty branch returns the flat layout (byte-identical)', () => {
+    const flat = getStoragePaths('/home/user/project');
+    const explicitEmpty = getStoragePaths('/home/user/project', '');
+    expect(explicitEmpty.storagePath).toBe(flat.storagePath);
+    expect(explicitEmpty.lbugPath).toBe(flat.lbugPath);
+    expect(explicitEmpty.metaPath).toBe(flat.metaPath);
+    expect(path.basename(flat.lbugPath)).toBe('lbug');
+    expect(path.dirname(flat.lbugPath)).toBe(flat.storagePath);
+  });
+
+  it('a branch scopes lbug/meta under branches/<slug> but keeps storagePath flat', () => {
+    const flat = getStoragePaths('/home/user/project');
+    const branched = getStoragePaths('/home/user/project', 'feature/login');
+    // storagePath stays flat so shared content-addressed caches are shared.
+    expect(branched.storagePath).toBe(flat.storagePath);
+    const expectedDir = path.join(flat.storagePath, 'branches', branchSlug('feature/login'));
+    expect(path.dirname(branched.lbugPath)).toBe(expectedDir);
+    expect(path.dirname(branched.metaPath)).toBe(expectedDir);
+    expect(path.basename(branched.lbugPath)).toBe('lbug');
+    expect(path.basename(branched.metaPath)).toBe('meta.json');
+  });
+});
+
+// ─── branchSlug (#2106) ──────────────────────────────────────────────
+
+describe('branchSlug (#2106)', () => {
+  it('is deterministic for the same ref', () => {
+    expect(branchSlug('feature/x')).toBe(branchSlug('feature/x'));
+  });
+
+  it('avoids the feature/x vs feature_x collision', () => {
+    expect(branchSlug('feature/x')).not.toBe(branchSlug('feature_x'));
+  });
+
+  it('keeps a readable, filesystem-safe prefix', () => {
+    const slug = branchSlug('feature/login');
+    expect(slug.startsWith('feature_login-')).toBe(true);
+    // No path separators or unsafe characters.
+    expect(slug).not.toContain('/');
+    expect(/^[A-Za-z0-9._-]+$/.test(slug)).toBe(true);
+  });
+
+  it('contains adversarial / traversal branch names to a single safe segment', () => {
+    // branchSlug feeds getStoragePaths directly on the server path (the MCP
+    // `branch` param is NOT gated by validateBranchName), so containment must
+    // hold for hostile inputs. A `..` substring inside a longer name is
+    // harmless; only a standalone `..` segment traverses, and sanitizeRepoName
+    // collapses separators so that can never happen.
+    const base = path.join('/repo', '.gitnexus', 'branches');
+    for (const payload of ['../..', '../../etc/passwd', '..', '...', '/abs/path', 'x y']) {
+      const slug = branchSlug(payload);
+      expect(slug, payload).toMatch(/^[A-Za-z0-9._-]+$/);
+      expect(slug, payload).not.toContain('/');
+      // path.join keeps the result a direct child of the branches dir.
+      expect(path.dirname(path.join(base, slug)), payload).toBe(base);
+    }
+  });
+});
+
+// ─── resolveBranchPlacement (#2106 KTD2) ─────────────────────────────
+
+describe('resolveBranchPlacement (#2106)', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-branch-placement-');
+  });
+
+  afterEach(async () => {
+    await tmpRepo.cleanup();
+  });
+
+  const baseMeta = (branch?: string): RepoMeta => ({
+    repoPath: tmpRepo.dbPath,
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+    ...(branch ? { branch } : {}),
+  });
+
+  it('null label (detached HEAD / non-git) → flat', async () => {
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, null)).toEqual({});
+  });
+
+  it('fresh repo with no flat index → flat (claims primary)', async () => {
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'main')).toEqual({});
+  });
+
+  it('legacy flat index without a recorded branch → flat (adopts)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta());
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+
+  it('label equal to the recorded primary → flat', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta('main'));
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'main')).toEqual({});
+  });
+
+  it('non-primary checked-out branch → its own sub-directory', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta('main'));
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({ branch: 'feature' });
+  });
+
+  it('empty-string flatMeta.branch is not trusted → flat (R5)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, { ...baseMeta(), branch: '' });
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+
+  it('non-string flatMeta.branch (corrupt) is not trusted → flat (R5)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    // Simulate a hand-edited/corrupt meta where branch is a number.
+    await saveMeta(storagePath, { ...baseMeta(), branch: 42 as unknown as string });
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
   });
 });
 
@@ -427,6 +551,133 @@ describe('registerRepo name override + collision guard (#829)', () => {
       await parentA.cleanup();
       await parentB.cleanup();
     }
+  });
+});
+
+// ─── registerRepo branch nesting (#2106) ─────────────────────────────
+
+describe('registerRepo branch nesting (#2106)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const metaFor = (branch: string, lastCommit: string): RepoMeta => ({
+    repoPath: '',
+    lastCommit,
+    indexedAt: '2026-06-10T12:00:00.000Z',
+    branch,
+    stats: { files: 1, nodes: 1 },
+  });
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-branch-home-');
+    tmpRepo = await createTempDir('gitnexus-registry-branch-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('primary run records branch at top level and no branches[]', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main');
+    expect(entry.lastCommit).toBe('aaa1111');
+    expect(entry.branches).toBeUndefined();
+  });
+
+  it('branch run nests under branches[] without clobbering the primary', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(1); // one entry per path preserved
+    const [entry] = entries;
+    // Primary top-level fields untouched.
+    expect(entry.branch).toBe('main');
+    expect(entry.lastCommit).toBe('aaa1111');
+    // Branch summary nested.
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0]).toMatchObject({ branch: 'feature/x', lastCommit: 'bbb2222' });
+  });
+
+  it('re-registering the same branch updates in place (no duplicate)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'ccc3333'), { branch: 'feature/x' });
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0].lastCommit).toBe('ccc3333');
+  });
+
+  it('primary re-analyze preserves existing branch summaries', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    // Re-analyze the primary at a newer commit.
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa9999'));
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.lastCommit).toBe('aaa9999');
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0].branch).toBe('feature/x');
+  });
+
+  // ─── removeBranchIndex (#2106 R7) ──────────────────────────────────
+
+  it('removeBranchIndex drops a recorded branch summary, leaves the primary', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const removed = await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
+    expect(removed).toBe(true);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main'); // primary intact
+    expect(entry.lastCommit).toBe('aaa1111');
+    expect(entry.branches).toBeUndefined(); // empty branches[] dropped
+  });
+
+  it('removeBranchIndex returns false for an unknown branch (no crash)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    expect(await removeBranchIndex(tmpRepo.dbPath, 'nope')).toBe(false);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toHaveLength(1); // unchanged
+  });
+
+  it('removeBranchIndex returns false when the repo has no branch indexes', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    expect(await removeBranchIndex(tmpRepo.dbPath, 'feature/x')).toBe(false);
+  });
+
+  it('removeBranchIndex keeps other branch summaries when removing one', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+
+    await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/y']);
+  });
+
+  // ─── re-read-before-write merge (#2106 R9) ──────────────────────────
+
+  it('a branch run preserves the freshest top-level fields (alias survives)', async () => {
+    // A primary run set an alias; a later branch run must keep it (re-derives
+    // against the fresh snapshot, not a stale entry-time view).
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'), { name: 'my-alias' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.name).toBe('my-alias'); // top-level alias survived the branch run
+    expect(entry.branch).toBe('main');
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/x']);
   });
 });
 

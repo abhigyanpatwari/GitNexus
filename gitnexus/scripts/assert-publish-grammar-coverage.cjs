@@ -112,6 +112,24 @@ function findCoverageProblems({ grammars }) {
   return problems;
 }
 
+/**
+ * Stray local source-build outputs under `vendor/<name>/build/`. These would
+ * ship in the tarball (`files: ["vendor"]` overrides .gitignore/.npmignore) AND
+ * shadow the committed prebuilds — `node-gyp-build` resolves `build/Release`
+ * BEFORE `prebuilds/`, so a consumer on the publisher's platform would load the
+ * stray (possibly stale/wrong) binding instead of the curated prebuild. The
+ * build dir is gitignored and only appears if a maintainer source-built locally
+ * (e.g. on a no-prebuild platform); refuse to publish it. (#2144 review.)
+ */
+function findStrayBuildArtifacts(vendorDir) {
+  if (!fs.existsSync(vendorDir)) return [];
+  return fs
+    .readdirSync(vendorDir)
+    .filter((d) => /^tree-sitter-/.test(d))
+    .filter((d) => fs.existsSync(path.join(vendorDir, d, 'build')))
+    .map((d) => `vendor/${d}/build`);
+}
+
 function collectGrammars(vendorDir, shipsVendorSource) {
   if (!fs.existsSync(vendorDir)) return [];
   return fs
@@ -141,6 +159,18 @@ function main() {
     process.exit(1);
   }
 
+  const stray = findStrayBuildArtifacts(vendorDir);
+  if (stray.length > 0) {
+    console.error(
+      '[publish-guard] Refusing to publish — stray source-build output under vendor/ would\n' +
+        'ship and shadow the committed prebuilds (node-gyp-build loads build/Release before\n' +
+        'prebuilds/):',
+    );
+    for (const s of stray) console.error(`  - ${s}`);
+    console.error('\nFix: remove it before packing, e.g. `rm -rf gitnexus/vendor/*/build`.');
+    process.exit(1);
+  }
+
   const problems = findCoverageProblems({ grammars });
   if (problems.length > 0) {
     console.error('[publish-guard] Refusing to publish — a vendored grammar would ship unusable:');
@@ -163,6 +193,7 @@ if (require.main === module) main();
 
 module.exports = {
   findCoverageProblems,
+  findStrayBuildArtifacts,
   filesShipsVendorSource,
   isBuildableFromSource,
   sourceBuildSet,

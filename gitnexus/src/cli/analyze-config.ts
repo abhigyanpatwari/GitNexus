@@ -56,6 +56,7 @@ type ValueKind =
   | 'boolean'
   | 'boolean-negate'
   | 'string'
+  | 'string-array'
   | 'numeric-string'
   | 'embeddings'
   | 'branch';
@@ -99,6 +100,12 @@ const KEY_SPECS: Record<string, KeySpec> = {
   embeddingBatchSize: { target: 'embeddingBatchSize', kind: 'numeric-string' },
   embeddingSubBatchSize: { target: 'embeddingSubBatchSize', kind: 'numeric-string' },
   embeddingDevice: { target: 'embeddingDevice', kind: 'string' },
+  // #1589/#1852 residual — extra fetch-wrapper function names to treat as HTTP
+  // consumers. The auto-detector only flags functions that call the bare global
+  // `fetch()`; a wrapper built on axios / a custom client, or named outside the
+  // built-in convention set, is otherwise invisible to route_map consumers.
+  // Listing it here adds it to the cross-file consumer scan.
+  fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
 };
 
 /** Top-level container key for the nested form; not itself an `AnalyzeOptions` field. */
@@ -229,6 +236,41 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         );
       }
       return trimmed;
+    }
+    case 'string-array': {
+      // Generic shared validator — `source` already names the config key, so
+      // messages here stay key-agnostic (no fetch-wrapper coupling in the
+      // shared normalizer; #1589/#1852 review F7).
+      if (!Array.isArray(value)) {
+        throw new GitNexusRcError(`${source} must be an array of strings.`);
+      }
+      const names: string[] = [];
+      for (const item of value) {
+        if (typeof item !== 'string') {
+          throw new GitNexusRcError(`${source} entries must all be strings.`);
+        }
+        const trimmed = item.trim();
+        if (!trimmed) {
+          throw new GitNexusRcError(`${source} entries must not be empty.`);
+        }
+        assertNoHiddenChars(trimmed, source);
+        // Values may be interpolated into a RegExp downstream. Restrict to
+        // identifier / member-access shapes so a config value can never smuggle
+        // regex metacharacters into a consumer.
+        if (!/^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(trimmed)) {
+          throw new GitNexusRcError(
+            `${source} entry "${trimmed}" must be an identifier or member name ` +
+              `(letters, digits, _, $, . — e.g. "client.get").`,
+          );
+        }
+        names.push(trimmed);
+      }
+      if (names.length === 0) {
+        throw new GitNexusRcError(`${source} must list at least one string.`);
+      }
+      // De-duplicate and cap to a sane bound so a pathological config cannot
+      // blow up the consumer scan's alternation.
+      return Array.from(new Set(names)).slice(0, 100);
     }
     case 'numeric-string': {
       // Mirror Commander's contract: these options reach the existing CLI

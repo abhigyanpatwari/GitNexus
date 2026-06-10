@@ -30,17 +30,19 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import Rust from 'tree-sitter-rust';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
+// Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
 let Kotlin: unknown;
 try {
-  Kotlin = require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
 }
 
 let Dart: unknown;
 try {
-  Dart = require('tree-sitter-dart');
+  Dart = requireVendoredGrammar('tree-sitter-dart');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
   testParser.setLanguage(Dart as Parser.Language);
@@ -50,7 +52,7 @@ try {
 
 let Swift: unknown;
 try {
-  Swift = require('tree-sitter-swift');
+  Swift = requireVendoredGrammar('tree-sitter-swift');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
   testParser.setLanguage(Swift as Parser.Language);
@@ -2397,7 +2399,7 @@ describe('C++ MethodExtractor', () => {
       expect(result!.methods[1].visibility).toBe('public');
     });
 
-    it('suppresses = delete special members from extraction', () => {
+    it('retains = delete special members and marks them unavailable', () => {
       const tree = parseCPP(`
         class NonCopyable {
         public:
@@ -2409,11 +2411,12 @@ describe('C++ MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(1);
-      expect(result!.methods[0].name).toBe('doWork');
+      expect(result!.methods).toHaveLength(3);
+      expect(result!.methods.filter((method) => method.isDeleted)).toHaveLength(2);
+      expect(result!.methods.find((method) => method.name === 'doWork')?.isDeleted).toBeUndefined();
     });
 
-    it('suppresses = default special members from extraction', () => {
+    it('retains = default special members as callable', () => {
       const tree = parseCPP(`
         class Widget {
         public:
@@ -2425,8 +2428,9 @@ describe('C++ MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(1);
-      expect(result!.methods[0].name).toBe('paint');
+      expect(result!.methods).toHaveLength(3);
+      expect(result!.methods.map((method) => method.name)).toEqual(['Widget', '~Widget', 'paint']);
+      expect(result!.methods.every((method) => method.isDeleted !== true)).toBe(true);
     });
 
     it('does not suppress = 0 (pure virtual) as deleted/defaulted', () => {

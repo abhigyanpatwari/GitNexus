@@ -507,7 +507,13 @@ jobs:
             run(`git commit -m "chore(vendor): rebuild native prebuilds (${grammars})\n\nBuilt by ${process.env.RUN_URL}"`);
             const { owner, repo } = context.repo;
             const remote = `https://x-access-token:${process.env.GH_TOKEN}@github.com/${owner}/${repo}.git`;
-            run(`git push --force-with-lease "${remote}" "HEAD:${branch}"`);
+            // Plain --force, not --force-with-lease: the branch is ephemeral and
+            // unique per run (keyed by context.runId), written ONLY by this job, so
+            // there is no concurrent writer to protect against. --force-with-lease
+            // would compare against a remote-tracking ref this fresh checkout never
+            // fetched, so re-running the SAME run (branch already pushed by attempt
+            // 1) fails with "stale info" instead of overwriting.
+            run(`git push --force "${remote}" "HEAD:${branch}"`);
             const body = [
               `Rebuilt the vendored native prebuilds for: **${grammars}**.`,
               '',

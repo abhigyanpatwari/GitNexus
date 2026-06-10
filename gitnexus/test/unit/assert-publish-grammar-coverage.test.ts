@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 /**
  * Coverage for the publish guard `scripts/assert-publish-grammar-coverage.cjs`.
@@ -18,7 +21,8 @@ const requireCjs = createRequire(import.meta.url);
 const SCRIPT = fileURLToPath(
   new URL('../../scripts/assert-publish-grammar-coverage.cjs', import.meta.url),
 );
-const { findCoverageProblems, filesShipsVendorSource } = requireCjs(SCRIPT);
+const { findCoverageProblems, filesShipsVendorSource, findStrayBuildArtifacts } =
+  requireCjs(SCRIPT);
 
 describe('findCoverageProblems (pure decision core)', () => {
   it('passes when source ships, even with incomplete prebuilds (transitional state)', () => {
@@ -70,6 +74,43 @@ describe('filesShipsVendorSource', () => {
     ).toBe(false);
     expect(filesShipsVendorSource([])).toBe(false);
     expect(filesShipsVendorSource(undefined)).toBe(false);
+  });
+});
+
+describe('findStrayBuildArtifacts (stray vendor build dirs that would ship + shadow prebuilds)', () => {
+  const mkVendor = (): string => mkdtempSync(path.join(tmpdir(), 'vguard-'));
+
+  it('returns [] when no grammar has a build/ dir', () => {
+    const dir = mkVendor();
+    try {
+      mkdirSync(path.join(dir, 'tree-sitter-y', 'prebuilds', 'linux-x64'), { recursive: true });
+      writeFileSync(path.join(dir, 'tree-sitter-y', 'prebuilds', 'linux-x64', 'y.node'), '');
+      expect(findStrayBuildArtifacts(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a grammar that carries a stray build/ output (would shadow the prebuild)', () => {
+    const dir = mkVendor();
+    try {
+      mkdirSync(path.join(dir, 'tree-sitter-x', 'build', 'Release'), { recursive: true });
+      mkdirSync(path.join(dir, 'tree-sitter-y', 'prebuilds'), { recursive: true });
+      expect(findStrayBuildArtifacts(dir)).toEqual(['vendor/tree-sitter-x/build']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores non-grammar dirs and a missing vendor dir', () => {
+    const dir = mkVendor();
+    try {
+      mkdirSync(path.join(dir, 'leiden', 'build'), { recursive: true }); // not tree-sitter-*
+      expect(findStrayBuildArtifacts(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(findStrayBuildArtifacts(path.join(tmpdir(), 'vguard-does-not-exist'))).toEqual([]);
   });
 });
 
