@@ -38,13 +38,20 @@
  * no separate hook module, and no `data` marshalling.
  *
  * ## Safety
- * Best-effort and idempotent. On Node < 22.15 `registerHooks` is absent and this
- * is a graceful no-op (embeddings then resolve onnxruntime-common exactly as
- * before — fine on hoisted layouts). Any failure is swallowed. The hook is
- * installed lazily, only on the local-embedding code path, so it never affects
- * analysis, the parse workers, or HTTP embedding mode; and it only ever touches
- * the exact `onnxruntime-common` specifier on failure, so it cannot mask an
- * unrelated resolution error.
+ * Best-effort and idempotent. The hook is installed lazily, only on the
+ * local-embedding code path (after parsing), so it is never registered during
+ * analysis, in the parse workers, or in HTTP embedding mode. Once installed it
+ * is process-global: its resolve closure runs for every subsequent module
+ * resolution, but it passes all of them through untouched and only substitutes a
+ * result for the exact `onnxruntime-common` specifier when that specifier is
+ * genuinely absent — so it cannot mask an unrelated resolution error, and the
+ * per-resolution cost is a single string comparison.
+ *
+ * `module.registerHooks` is marked `@experimental` and requires Node >= 22.15
+ * (the gitnexus engines floor is >= 22.0.0). On older runtimes it is absent and
+ * this is a graceful no-op: embeddings then resolve onnxruntime-common exactly
+ * as before — fine on hoisted layouts. Any failure during installation is
+ * swallowed.
  */
 import { registerHooks, createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
