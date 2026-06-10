@@ -525,5 +525,26 @@ export function makeWorkerResultCloneSafe(
     if (out) result[field] = out;
   }
 
+  // Final safety gate. The loop above only rewrites ARRAY fields, so a future
+  // non-array result sink (a nested object / Map) — or an array field whose own
+  // non-index property the element loop didn't reach — could still hold a
+  // non-cloneable value and throw on the re-post. Make "the returned result is
+  // structured-cloneable" a hard postcondition: strip any remaining offending
+  // field in place. Failure-path-only and a no-op once the result is already
+  // clean (the per-field probe short-circuits every clean field).
+  if (!isStructuredCloneable(result)) {
+    for (const field of Object.keys(result)) {
+      if (options.skipFields?.has(field)) continue;
+      if (isStructuredCloneable(result[field])) continue;
+      const ctx: StripCtx = { stripped: 0, seen: new Map(), keys: [] };
+      result[field] = stripNonCloneable(result[field], ctx);
+      const at = ctx.keys.slice(0, 3).join(', ');
+      skipped.push({
+        path: '(result)',
+        reason: `stripped ${ctx.stripped} non-serializable value(s) from ${field}${at ? `: ${at}` : ''}`,
+      });
+    }
+  }
+
   return { skipped };
 }

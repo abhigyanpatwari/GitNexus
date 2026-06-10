@@ -383,6 +383,45 @@ describe('clone-safety', () => {
     });
   });
 
+  // R3 (#2135 tri-review): the per-field loop rewrites ARRAY fields only. A
+  // final isStructuredCloneable(result) gate strips any remaining non-array
+  // field so "the result is cloneable after this call" is a hard postcondition
+  // regardless of future result-shape changes.
+  describe('non-array field safety gate', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('strips a non-cloneable value carried on a non-ARRAY result field', () => {
+      const result: Record<string, unknown> = {
+        nodes: [],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 0,
+        summary: { kept: 1, build: () => {} }, // non-array field, non-cloneable
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true);
+      expect((result.summary as { kept: number; build?: unknown }).kept).toBe(1);
+      expect((result.summary as { build?: unknown }).build).toBeUndefined();
+      expect(skipped.some((s) => s.reason.includes('summary'))).toBe(true);
+    });
+
+    it('is a no-op when the array loop already made the result cloneable', () => {
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'a', filePath: 'a.ts', leak: () => {} }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true);
+      // Only the array-element strip was recorded; the gate added no '(result)' entry.
+      expect(skipped.every((s) => s.path !== '(result)')).toBe(true);
+    });
+  });
+
   // U3 (#2112): a DAG-aliased record (the same subobject reached via two paths)
   // carrying a non-cloneable must be stripped-and-KEPT, not over-dropped — the
   // old shared-WeakSet returned the un-stripped original on revisit, failing the
