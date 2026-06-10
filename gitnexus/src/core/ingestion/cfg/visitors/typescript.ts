@@ -50,6 +50,7 @@ import { CfgBuilder } from '../cfg-builder.js';
 import { ControlFlowContext, type FinalizerFrame } from '../control-flow-context.js';
 import type { TraversalResult } from '../traversal-result.js';
 import type { CfgEdgeKind, CfgVisitor, FunctionCfg } from '../types.js';
+import { TsHarvester } from './typescript-harvest.js';
 
 /** TS/JS node types that own a CFG-bearing function body. */
 const TS_FUNCTION_TYPES = new Set([
@@ -108,7 +109,12 @@ class TsCfgWalk {
   /** Label awaiting the loop/switch it immediately precedes (labeled_statement). */
   private pendingLabel: string | undefined;
 
-  constructor(private readonly builder: CfgBuilder) {}
+  constructor(
+    private readonly builder: CfgBuilder,
+    /** Def/use fact extractor (#2082 M2 U1) — phase-2 only; its scope tree is
+     *  already complete, so any walk order resolves names correctly. */
+    private readonly harvest: TsHarvester,
+  ) {}
 
   /** Statements of a block node, ignoring comments. */
   private statementsOf(block: SyntaxNode): SyntaxNode[] {
@@ -146,13 +152,19 @@ class TsCfgWalk {
       } else {
         // Simple statement — coalesce into the current straight-line block.
         if (openSimple === undefined) {
-          const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
+          const idx = this.builder.newBlock(
+            startLineOf(stmt),
+            endLineOf(stmt),
+            stmt.text,
+            'normal',
+            this.harvest.facts(stmt),
+          );
           if (entry === undefined) entry = idx;
           else this.builder.connect(dangling, idx, 'seq');
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text);
+          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
         }
       }
     }
@@ -197,12 +209,26 @@ class TsCfgWalk {
   }
 
   private visitSimple(stmt: SyntaxNode): TraversalResult {
-    const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
+    const idx = this.builder.newBlock(
+      startLineOf(stmt),
+      endLineOf(stmt),
+      stmt.text,
+      'normal',
+      this.harvest.facts(stmt),
+    );
     return { entry: idx, exits: [idx] };
   }
 
   private visitReturn(stmt: SyntaxNode): TraversalResult {
-    const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
+    // Harvest the argument expression's uses — `return x` blocks live in this
+    // dedicated handler, not visitSeq, and were a silently-missed site once.
+    const idx = this.builder.newBlock(
+      startLineOf(stmt),
+      endLineOf(stmt),
+      stmt.text,
+      'normal',
+      this.harvest.facts(stmt),
+    );
     // A return crosses EVERY active finally before reaching EXIT.
     this.jumpVia(idx, this.cfc.finalizersForReturn(), this.builder.exitIndex, 'return');
     return { entry: idx, exits: [] };
@@ -235,7 +261,13 @@ class TsCfgWalk {
   }
 
   private visitThrow(stmt: SyntaxNode): TraversalResult {
-    const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
+    const idx = this.builder.newBlock(
+      startLineOf(stmt),
+      endLineOf(stmt),
+      stmt.text,
+      'normal',
+      this.harvest.facts(stmt),
+    );
     this.builder.edge(idx, this.currentHandler(), 'throw');
     return { entry: idx, exits: [] };
   }
@@ -279,7 +311,13 @@ class TsCfgWalk {
 
   private visitIf(stmt: SyntaxNode): TraversalResult {
     const cond = stmt.childForFieldName('condition') ?? stmt;
-    const condBlock = this.builder.newBlock(startLineOf(stmt), endLineOf(cond), cond.text);
+    const condBlock = this.builder.newBlock(
+      startLineOf(stmt),
+      endLineOf(cond),
+      cond.text,
+      'normal',
+      this.harvest.facts(cond),
+    );
 
     const exits: number[] = [];
 
@@ -320,7 +358,13 @@ class TsCfgWalk {
   private visitWhile(stmt: SyntaxNode): TraversalResult {
     const label = this.takeLabel();
     const cond = stmt.childForFieldName('condition') ?? stmt;
-    const header = this.builder.newBlock(startLineOf(stmt), endLineOf(cond), cond.text);
+    const header = this.builder.newBlock(
+      startLineOf(stmt),
+      endLineOf(cond),
+      cond.text,
+      'normal',
+      this.harvest.facts(cond),
+    );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
     this.cfc.pushLoop(header, loopExit, label);
@@ -340,7 +384,13 @@ class TsCfgWalk {
   private visitDoWhile(stmt: SyntaxNode): TraversalResult {
     const label = this.takeLabel();
     const cond = stmt.childForFieldName('condition') ?? stmt;
-    const condBlock = this.builder.newBlock(startLineOf(cond), endLineOf(cond), cond.text);
+    const condBlock = this.builder.newBlock(
+      startLineOf(cond),
+      endLineOf(cond),
+      cond.text,
+      'normal',
+      this.harvest.facts(cond),
+    );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
     this.cfc.pushLoop(condBlock, loopExit, label);
@@ -364,12 +414,20 @@ class TsCfgWalk {
       startLineOf(stmt),
       cond ? endLineOf(cond) : startLineOf(stmt),
       cond ? cond.text : 'for(;;)',
+      'normal',
+      cond ? this.harvest.facts(cond) : undefined,
     );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
     let incrBlock = header;
     if (incr) {
-      incrBlock = this.builder.newBlock(startLineOf(incr), endLineOf(incr), incr.text);
+      incrBlock = this.builder.newBlock(
+        startLineOf(incr),
+        endLineOf(incr),
+        incr.text,
+        'normal',
+        this.harvest.facts(incr),
+      );
       this.builder.edge(incrBlock, header, 'loop-back');
     }
 
@@ -394,7 +452,13 @@ class TsCfgWalk {
 
     let entry = header;
     if (init) {
-      const initBlock = this.builder.newBlock(startLineOf(init), endLineOf(init), init.text);
+      const initBlock = this.builder.newBlock(
+        startLineOf(init),
+        endLineOf(init),
+        init.text,
+        'normal',
+        this.harvest.facts(init),
+      );
       this.builder.edge(initBlock, header, 'seq');
       entry = initBlock;
     }
@@ -403,10 +467,14 @@ class TsCfgWalk {
 
   private visitForIn(stmt: SyntaxNode): TraversalResult {
     const label = this.takeLabel();
+    // Header text is SYNTHESIZED, so facts come from the left/right AST nodes
+    // directly (the loop variable is a def, the iterated expression a use).
     const header = this.builder.newBlock(
       startLineOf(stmt),
       startLineOf(stmt),
       this.forInHeaderText(stmt),
+      'normal',
+      this.harvest.forInHeadFacts(stmt),
     );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
@@ -433,7 +501,13 @@ class TsCfgWalk {
   private visitSwitch(stmt: SyntaxNode): TraversalResult {
     const label = this.takeLabel();
     const value = stmt.childForFieldName('value') ?? stmt;
-    const dispatch = this.builder.newBlock(startLineOf(stmt), endLineOf(value), value.text);
+    const dispatch = this.builder.newBlock(
+      startLineOf(stmt),
+      endLineOf(value),
+      value.text,
+      'normal',
+      this.harvest.facts(value),
+    );
     const switchExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
     this.cfc.pushSwitch(switchExit, label);
@@ -441,6 +515,15 @@ class TsCfgWalk {
     const cases = body
       ? body.namedChildren.filter((c) => c.type === 'switch_case' || c.type === 'switch_default')
       : [];
+
+    // `case x:` test expressions live in no block (caseStatements filters the
+    // value node out) — harvest their uses onto the dispatch block, one record
+    // per case in source order (a sound over-approximation of JS's in-order
+    // case evaluation).
+    for (const c of cases) {
+      const caseValue = c.childForFieldName('value');
+      if (caseValue) this.builder.attachFacts(dispatch, this.harvest.facts(caseValue));
+    }
 
     const caseResults = cases.map((c) => this.visitSeq(this.caseStatements(c)));
     const hasDefault = cases.some((c) => c.type === 'switch_default');
@@ -521,6 +604,12 @@ class TsCfgWalk {
         const idx = this.builder.newBlock(startLineOf(catchClause), endLineOf(catchClause), '');
         catchRes = { entry: idx, exits: [idx] };
       }
+      // `catch (e)` has no header block — the param def fact PREPENDS onto the
+      // handler entry (it lexically precedes the body, and the body was walked
+      // first, so appending would put the def AFTER the body's facts and an
+      // in-block `use(e)` at statement index 0 would see no reaching def).
+      const paramFacts = this.harvest.catchParamFacts(catchClause);
+      if (paramFacts) this.builder.attachFacts(catchRes.entry, paramFacts, 'prepend');
     }
 
     // Handler for the try body: catch if present, else finally, else outer.
@@ -605,23 +694,39 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
   const body = fnNode.childForFieldName('body');
   if (!body) return undefined; // overload signature / abstract method — no body
 
+  // Phase-1 declaration pre-scan (#2082 M2 U1) — must complete before any
+  // facts are extracted; the CFG walk below is not source-order.
+  const harvest = new TsHarvester(fnNode);
+
+  // Parameters define at ENTRY (facts only — never touch the entry block's
+  // text or span: bench fingerprints and CFG snapshots include block text).
+  const paramFacts = harvest.paramFacts();
+  if (paramFacts) builder.attachFacts(builder.entryIndex, paramFacts);
+
   if (body.type !== 'statement_block') {
     // Expression-bodied arrow: `() => expr` — one block whose value is returned.
-    const blk = builder.newBlock(startLineOf(body), endLineOf(body), body.text);
+    // Lives outside the walk class, so it harvests explicitly.
+    const blk = builder.newBlock(
+      startLineOf(body),
+      endLineOf(body),
+      body.text,
+      'normal',
+      harvest.facts(body),
+    );
     builder.edge(builder.entryIndex, blk, 'seq');
     builder.edge(blk, builder.exitIndex, 'return');
-    return builder.finish();
+    return builder.finish(harvest.table());
   }
 
-  const walk = new TsCfgWalk(builder);
+  const walk = new TsCfgWalk(builder, harvest);
   const res = walk.visitSeq(body.namedChildren.filter((c) => c.type !== 'comment'));
   if (!res) {
     builder.edge(builder.entryIndex, builder.exitIndex, 'seq'); // empty body
-    return builder.finish();
+    return builder.finish(harvest.table());
   }
   builder.edge(builder.entryIndex, res.entry, 'seq');
   builder.connect(res.exits, builder.exitIndex, 'seq'); // normal fall-off → EXIT
-  return builder.finish();
+  return builder.finish(harvest.table());
 }
 
 /** Whether a node is a TS/JS function this visitor builds a CFG for. */

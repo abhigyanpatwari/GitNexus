@@ -94,6 +94,16 @@ describe('U3 — CFG side-channel JSON round-trip (no AST leakage, no field loss
       for (const b of c.blocks) expect(typeof b.text).toBe('string');
       for (const e of c.edges) expect(typeof e.from).toBe('number');
     }
+    // M2 (#2082 U1): the binding table + statement facts must survive the
+    // boundary — a future cache-slimming field list that drops them would
+    // silently break reaching-defs (the #2038 mergeChunkResults lesson).
+    for (const c of round) {
+      expect(Array.isArray(c.bindings)).toBe(true);
+      expect(c.blocks.every((b: { statements?: unknown }) => Array.isArray(b.statements))).toBe(
+        true,
+      );
+    }
+    expect(round.some((c: { bindings: unknown[] }) => c.bindings.length > 0)).toBe(true);
   });
 });
 

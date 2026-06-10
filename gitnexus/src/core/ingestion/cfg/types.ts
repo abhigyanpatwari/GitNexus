@@ -11,6 +11,51 @@
  * array of them is what rides on `ParsedFile.cfgSideChannel`.
  */
 
+/**
+ * One distinct declared variable (binding) within a function (#2082 M2 U1).
+ *
+ * Statement facts reference bindings by integer index into
+ * {@link FunctionCfg.bindings} — names appear once per binding instead of once
+ * per occurrence (measured ~4× smaller serialized payload than named records).
+ * Distinct bindings of the same name (shadowing) get distinct entries, which is
+ * what keeps an inner `let x` from falsely killing the outer `x`'s definitions
+ * in the reaching-defs solver. NOTE: no field here may be named `nodeId` — the
+ * durable parsedfile-store reviver dedups objects keyed on that field name.
+ */
+export interface BindingEntry {
+  /** Source-level variable name (what the persisted edge's `reason` carries). */
+  readonly name: string;
+  /**
+   * 1-based line/0-based column of the canonical declaration site — `var`
+   * multi-declarations canonicalize to the FIRST declaration in source order.
+   * Both 0 for synthetic bindings.
+   */
+  readonly declLine: number;
+  readonly declColumn: number;
+  /** How the binding was introduced (param/catch matter to the M3 taint pass). */
+  readonly kind: 'var' | 'let' | 'const' | 'param' | 'catch' | 'function' | 'class' | 'module';
+  /**
+   * True when the name has no in-function declaration site (implicit global,
+   * import, or a variable captured from an enclosing function) — keyed
+   * `name@module` in edge ids instead of `name:line:col`.
+   */
+  readonly synthetic?: boolean;
+}
+
+/**
+ * Def/use facts for one harvested statement (or construct header), in
+ * execution order within its block (#2082 M2 U1). `defs`/`uses` are indices
+ * into {@link FunctionCfg.bindings}. A compound assignment / update expression
+ * lists its binding in BOTH. Self-describing — `line` is carried here, never
+ * inferred from the block's text fragments (facts-only records exist, e.g.
+ * params on ENTRY and catch params).
+ */
+export interface StatementFacts {
+  readonly line: number;
+  readonly defs: readonly number[];
+  readonly uses: readonly number[];
+}
+
 /** A basic block: a maximal straight-line run of statements between leaders. */
 export interface BasicBlockData {
   /** Block index within its function. The synthetic ENTRY is always 0. */
@@ -20,6 +65,12 @@ export interface BasicBlockData {
   /** Source snippet for the block (empty for synthetic ENTRY/EXIT). */
   readonly text: string;
   readonly kind: 'entry' | 'exit' | 'normal';
+  /**
+   * Per-statement def/use facts in execution order (#2082 M2 U1). Present only
+   * when the producing visitor harvests (TS/JS under `--pdg`); absent on
+   * hand-built or pre-M2 CFGs — the reaching-defs solver reports `no-facts`.
+   */
+  readonly statements?: readonly StatementFacts[];
 }
 
 /**
@@ -74,6 +125,11 @@ export interface FunctionCfg {
   readonly exitIndex: number;
   readonly blocks: readonly BasicBlockData[];
   readonly edges: readonly CfgEdgeData[];
+  /**
+   * The function's binding table (#2082 M2 U1) — referenced by index from
+   * {@link BasicBlockData.statements}. Present iff statement facts are.
+   */
+  readonly bindings?: readonly BindingEntry[];
 }
 
 /**

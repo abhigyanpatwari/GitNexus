@@ -12,7 +12,14 @@
  * hand-built block sequences, which is how the classic CFG hazards are pinned
  * before the tree-sitter visitor (U2) drives it.
  */
-import type { BasicBlockData, CfgEdgeData, CfgEdgeKind, FunctionCfg } from './types.js';
+import type {
+  BasicBlockData,
+  BindingEntry,
+  CfgEdgeData,
+  CfgEdgeKind,
+  FunctionCfg,
+  StatementFacts,
+} from './types.js';
 
 interface MutableBlock {
   startLine: number;
@@ -26,6 +33,13 @@ interface MutableBlock {
    */
   textParts: string[];
   kind: BasicBlockData['kind'];
+  /**
+   * Per-statement def/use facts in execution order (#2082 M2 U1). Parallel to
+   * the statements that accrued to this block — but self-describing (each
+   * record carries its line): facts-only attaches (ENTRY params, catch params)
+   * mean fact index ≠ text-fragment index.
+   */
+  statements: StatementFacts[];
 }
 
 export class CfgBuilder {
@@ -54,8 +68,15 @@ export class CfgBuilder {
     endLine: number,
     text: string,
     kind: BasicBlockData['kind'] = 'normal',
+    facts?: StatementFacts,
   ): number {
-    this.blocks.push({ startLine, endLine, textParts: text ? [text] : [], kind });
+    this.blocks.push({
+      startLine,
+      endLine,
+      textParts: text ? [text] : [],
+      kind,
+      statements: facts ? [facts] : [],
+    });
     return this.blocks.length - 1;
   }
 
@@ -73,11 +94,27 @@ export class CfgBuilder {
   }
 
   /** Extend a block's end line as more statements accrue to it. */
-  extendBlock(index: number, endLine: number, appendText?: string): void {
+  extendBlock(index: number, endLine: number, appendText?: string, facts?: StatementFacts): void {
     const b = this.blocks[index];
     if (!b) return;
     if (endLine > b.endLine) b.endLine = endLine;
     if (appendText) b.textParts.push(appendText);
+    if (facts) b.statements.push(facts);
+  }
+
+  /**
+   * Attach a facts-only statement record to a block WITHOUT touching its text
+   * or line span (#2082 M2 U1) — bench fingerprints and CFG snapshots include
+   * block text, so harvesting must never perturb it. `prepend` is for records
+   * that lexically precede the block's statements: a `catch (e)` param def must
+   * sit at statement index 0 of the handler entry block or an in-block
+   * `use(e)` at index 0 would see no reaching def in the in-order sweep.
+   */
+  attachFacts(index: number, facts: StatementFacts, position: 'append' | 'prepend' = 'append'): void {
+    const b = this.blocks[index];
+    if (!b) return;
+    if (position === 'prepend') b.statements.unshift(facts);
+    else b.statements.push(facts);
   }
 
   get blockCount(): number {
@@ -85,8 +122,14 @@ export class CfgBuilder {
   }
 
   /** Produce the serializable CFG. Caller is responsible for having wired the
-   *  function's dangling exits to {@link exitIndex} before calling. */
-  finish(): FunctionCfg {
+   *  function's dangling exits to {@link exitIndex} before calling.
+   *
+   *  Pass `bindings` (the function's binding table, possibly empty) to emit
+   *  statement facts (#2082 M2 U1) — every block then carries a `statements`
+   *  array. Omit it (hand-built test CFGs, pre-M2 producers) and both fields
+   *  are absent, which the reaching-defs solver reports as `no-facts`. */
+  finish(bindings?: readonly BindingEntry[]): FunctionCfg {
+    const withFacts = bindings !== undefined;
     return {
       filePath: this.filePath,
       functionStartLine: this.functionStartLine,
@@ -100,8 +143,10 @@ export class CfgBuilder {
         endLine: b.endLine,
         text: b.textParts.join('\n'),
         kind: b.kind,
+        ...(withFacts ? { statements: b.statements } : {}),
       })),
       edges: [...this.edges],
+      ...(withFacts ? { bindings } : {}),
     };
   }
 }
