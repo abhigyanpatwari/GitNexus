@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isDataCloneError,
   isStructuredCloneable,
   makeWorkerResultCloneSafe,
   type SkippedPath,
@@ -29,27 +28,6 @@ describe('clone-safety', () => {
     });
   });
 
-  describe('isDataCloneError', () => {
-    it('matches the DataCloneError postMessage throws', () => {
-      // Reproduce the EXACT failure the issue reported.
-      let caught: unknown;
-      try {
-        const bad: Record<string, unknown> = {};
-        bad.toString = Object.prototype.toString; // own native function value
-        structuredClone(bad);
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(Error);
-      expect((caught as Error).message).toContain('could not be cloned');
-      expect(isDataCloneError(caught)).toBe(true);
-    });
-
-    it('does not match unrelated errors', () => {
-      expect(isDataCloneError(new TypeError('nope'))).toBe(false);
-      expect(isDataCloneError('a string')).toBe(false);
-    });
-  });
 
   describe('makeWorkerResultCloneSafe', () => {
     const opts = {

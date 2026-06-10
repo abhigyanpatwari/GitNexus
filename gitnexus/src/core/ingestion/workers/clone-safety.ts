@@ -50,17 +50,6 @@ export function isStructuredCloneable(value: unknown): boolean {
   }
 }
 
-/**
- * True iff `err` is the `DataCloneError` `postMessage` throws on a
- * non-serializable payload. Matches by name (the error is a `DOMException`
- * named `DataCloneError` in Node) with a message fallback for robustness.
- */
-export function isDataCloneError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  if (err.name === 'DataCloneError') return true;
-  return typeof err.message === 'string' && err.message.includes('could not be cloned');
-}
-
 // ── Compile-time boundary guard (#2143) ─────────────────────────────────────
 // The runtime net above is the production backstop; this is its compile-time
 // complement. The worker result is plain data EXCEPT a few `unknown`-typed
