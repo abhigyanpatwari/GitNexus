@@ -16,7 +16,7 @@
  * container, so impact("EmailLogger", upstream) finds no direct caller — but
  * must flag that the true blast radius is higher.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { it, expect, beforeAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
