@@ -21,9 +21,10 @@ import { fileURLToPath } from 'node:url';
  * compiled code `require()`s AT MODULE LOAD, then asserts each one is covered by
  * a runtime-stage `COPY --from=builder`. It is deliberately scoped to
  * `require`/`createRequire` (hard module resolution — a missing target throws):
- * assets reached via `fs.access`/`fs.readFile`/`new URL(...)` (e.g. `web/`,
- * `skills/`) degrade gracefully when absent and are intentionally not copied, so
- * they are out of scope here.
+ * an asset reached only via `fs.access`/`fs.readFile`/`new URL(...)` (e.g. `web/`)
+ * degrades gracefully when absent and is intentionally not copied, so it is out of
+ * scope here. `skills/` is also fs-accessed but IS shipped (covered by its own
+ * `it('copies skills/…')` below), because the CLI must stay fully usable.
  */
 
 const UNIT_DIR = path.dirname(fileURLToPath(import.meta.url));
