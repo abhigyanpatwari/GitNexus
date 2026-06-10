@@ -34,7 +34,7 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import { emitFileCfgs, DEFAULT_MAX_CFG_EDGES_PER_FUNCTION } from '../../cfg/emit.js';
+import { emitFileCfgs, isEmitSafeCfg, DEFAULT_MAX_CFG_EDGES_PER_FUNCTION } from '../../cfg/emit.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
@@ -709,18 +709,49 @@ export function runScopeResolution(
       // shard that slipped the version gate) must skip emission, not throw a
       // TypeError mid-graph-build and abort scope-resolution for the language.
       if (!Array.isArray(cfgs) || cfgs.length === 0) continue;
-      const emitted = emitFileCfgs(
-        graph,
-        cfgs as readonly FunctionCfg[],
-        input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
-        // Log cap-overflow drops UNCONDITIONALLY (not via input.onWarn, which is
-        // gated behind the semantic-model validator and silent in production) so
-        // the per-function edge cap never truncates the CFG silently (R6/KTD6).
-        (message) => logger.warn(message),
-      );
-      cfgBlocks += emitted.blocks;
-      cfgEdges += emitted.edges;
-      cfgDroppedEdges += emitted.droppedEdges;
+      try {
+        // Per-element emit-safety filter (mirrors the parsedfile-store
+        // reviver's POLICY: valid elements in a mixed array still emit; junk
+        // is warned and skipped). isEmitSafeCfg lives in cfg/emit.ts next to
+        // the id templating it defends — see its doc for why anchor-field and
+        // endpoint-membership checks are load-bearing. Runs INSIDE the try so
+        // even a predicate-time throw (e.g. a hostile getter) is isolated.
+        const wellFormed = (cfgs as readonly (FunctionCfg | undefined | null)[]).filter(
+          isEmitSafeCfg,
+        );
+        if (wellFormed.length < cfgs.length) {
+          logger.warn(
+            `[cfg] ${pf.filePath}: skipped ${cfgs.length - wellFormed.length} malformed ` +
+              `cfgSideChannel element(s) (bad shape, missing id-anchor fields, or edge ` +
+              `endpoints matching no block) — CFG for those functions omitted`,
+          );
+        }
+        if (wellFormed.length === 0) continue;
+        const emitted = emitFileCfgs(
+          graph,
+          wellFormed,
+          input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+          // Log cap-overflow drops UNCONDITIONALLY (not via input.onWarn, which is
+          // gated behind the semantic-model validator and silent in production) so
+          // the per-function edge cap never truncates the CFG silently (R6/KTD6).
+          (message) => logger.warn(message),
+        );
+        cfgBlocks += emitted.blocks;
+        cfgEdges += emitted.edges;
+        cfgDroppedEdges += emitted.droppedEdges;
+      } catch (err) {
+        // Last-resort isolation, mirroring the worker-side per-file try/catch:
+        // a shape the predicate misses must cost this one file's CFG, not
+        // abort the language's whole scope-resolution pass mid-graph-build.
+        // NOTE a mid-emit throw can leave this file's already-inserted
+        // BasicBlock nodes in the graph (addNode is not transactional) —
+        // orphaned but inert; the predicate keeps every JSON-representable
+        // bad shape from reaching this path at all.
+        logger.warn(
+          `[cfg] ${pf.filePath}: CFG emission failed (${err instanceof Error ? err.message : String(err)}) — ` +
+            `this file's CFG is partial or absent`,
+        );
+      }
     }
     if (cfgBlocks > 0) {
       logger.debug(
