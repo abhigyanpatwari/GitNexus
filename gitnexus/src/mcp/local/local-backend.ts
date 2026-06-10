@@ -3478,6 +3478,20 @@ export class LocalBackend {
       limit?: number;
       offset?: number;
       summaryOnly?: boolean;
+      // Enrichment/annotation suppression flags (#1858/#2129 review F6). Each
+      // suppresses a distinct sub-phase; they compose, and the real call sites are:
+      //   - full impact()/context(): none set.
+      //   - group cross-repo fan-out (impactByUid): skipPerSymbolEnrichment +
+      //     skipEpistemic — the fan-out consumes only byDepth.
+      //   - ambiguous #2129 per-candidate probe: skipEpistemic + skipEnrichment —
+      //     needs only count + a count-based risk.
+      // skipPerSymbolEnrichment: drop the post-pagination per-symbol
+      //   STEP_IN_PROCESS pass (keeps byDepth).
+      // skipEpistemic: skip the #1858 interface/indirection boundary probe.
+      // skipEnrichment: skip the process/module aggregation passes entirely;
+      //   risk then derives from directCount/total only. NOTE: this also makes
+      //   skipPerSymbolEnrichment a no-op (affectedProcesses stays empty), which
+      //   is why the ambiguous probe sets only the two flags above.
       skipPerSymbolEnrichment?: boolean;
       skipEpistemic?: boolean;
       skipEnrichment?: boolean;
