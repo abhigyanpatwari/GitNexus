@@ -281,6 +281,54 @@ function requiredExternalAssets(): RequireScan {
   return { assets, unresolvedComputed };
 }
 
+/**
+ * Hand-written shipped assets the runtime image executes directly (hook and
+ * installer `.cjs`/`.mjs`), derived from the runtime COPY set minus dependency/
+ * data roots (`node_modules`, `vendor`, `dist`, `skills`, `package.json`).
+ * Unlike `src/**` these are not compiled, so they require siblings at their OWN
+ * package-relative location.
+ */
+function shippedAssetFiles(copiedSources: string[]): string[] {
+  const SKIP = new Set(['dist', 'node_modules', 'vendor', 'skills', 'web', 'package.json']);
+  const out: string[] = [];
+  const walk = (absDir: string, relDir: string): void => {
+    for (const e of readdirSync(absDir, { withFileTypes: true })) {
+      const abs = path.join(absDir, e.name);
+      const rel = relDir ? `${relDir}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(abs, rel);
+      else if (/\.(cjs|mjs|js)$/.test(e.name)) out.push(rel);
+    }
+  };
+  for (const entry of new Set(copiedSources)) {
+    if (SKIP.has(entry)) continue;
+    if (/\.(cjs|mjs|js)$/.test(entry)) {
+      out.push(entry); // a single shipped script (e.g. scripts/install-duckdb-extension.mjs)
+    } else {
+      walk(path.join(GITNEXUS_ROOT, entry), entry); // a directory of shipped assets (e.g. hooks)
+    }
+  }
+  return out;
+}
+
+/**
+ * Relative `require()`s of shipped `.cjs`/`.mjs` assets, resolved against the
+ * asset's OWN package-relative dir (not the `dist` mapping). Coverage is checked
+ * by COPY prefix, never on-disk existence: `hooks/antigravity/*.cjs` does
+ * `require('./hook-lock.cjs')`, which resolves to `hooks/antigravity/hook-lock.cjs`
+ * — a path that need not physically exist but IS covered by the whole-`hooks` COPY.
+ */
+function shippedAssetRequiredAssets(copiedSources: string[]): { asset: string; source: string }[] {
+  const found: { asset: string; source: string }[] = [];
+  for (const rel of shippedAssetFiles(copiedSources)) {
+    const baseDir = path.posix.dirname(rel);
+    const content = stripComments(readFileSync(path.join(GITNEXUS_ROOT, rel), 'utf-8'));
+    for (const m of content.matchAll(/\brequire\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g)) {
+      found.push({ asset: path.posix.normalize(path.posix.join(baseDir, m[1])), source: rel });
+    }
+  }
+  return found;
+}
+
 describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
   const dockerfile = readFileSync(DOCKERFILE, 'utf-8');
   const copied = runtimeStageCopiedSources(dockerfile);
@@ -376,5 +424,22 @@ describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
     const inFn = scanContent('cli/widget.ts', 'function f(pkg) {\n  return require(pkg);\n}\n');
     expect(inFn.unresolvedComputed).toEqual([]);
     expect(inFn.assets).toEqual([]);
+  });
+
+  it('covers sibling requires of shipped .cjs/.mjs assets (coverage, not existence)', () => {
+    const shipped = shippedAssetRequiredAssets(copied);
+    // Sanity: the hand-written hook .cjs sibling requires are actually scanned
+    // (e.g. gitnexus-hook.cjs → ./hook-lock.cjs); guards against a silent no-op.
+    expect(shipped.length).toBeGreaterThan(0);
+    const uncovered = shipped.filter(({ asset }) => !isCovered(asset, copied));
+    expect(
+      uncovered,
+      `Shipped .cjs/.mjs assets require siblings not COPY'd into the image:\n` +
+        uncovered.map((u) => `  - ${u.asset}  (required by ${u.source})`).join('\n'),
+    ).toEqual([]);
+    // The antigravity hook's `require('./hook-lock.cjs')` resolves to a path that
+    // does NOT physically exist (hook-lock.cjs lives under hooks/claude), yet is
+    // covered by the whole-`hooks` COPY — coverage-check, not existence-check.
+    expect(isCovered('hooks/antigravity/hook-lock.cjs', copied)).toBe(true);
   });
 });
