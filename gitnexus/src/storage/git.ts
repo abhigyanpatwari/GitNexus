@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { statSync } from 'fs';
 import path from 'path';
 
@@ -289,6 +289,56 @@ export const getDefaultBranch = (repoPath: string): string | null => {
     return ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref;
   } catch {
     return null;
+  }
+};
+
+/**
+ * Name of the currently checked-out branch, or `null` when HEAD is detached
+ * (CI checkouts, `git checkout <sha>`), the directory is not a git worktree, or
+ * git is unavailable.
+ *
+ * `git rev-parse --abbrev-ref HEAD` prints the literal `HEAD` for a detached
+ * checkout. We map that (and empty output) to `null` so callers fall back to the
+ * flat/default index rather than ever creating a branch literally named
+ * "HEAD" (#2106).
+ */
+export const getCurrentBranch = (repoPath: string): string | null => {
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: repoPath,
+      // Suppress stderr -- see getCurrentCommit comment and #1172.
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+    if (!branch || branch === 'HEAD') return null;
+    return branch;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Resolve a git ref (branch name, tag, or revision) to its commit SHA, or `''`
+ * when it cannot be resolved (unknown ref, not a git repo, git unavailable).
+ *
+ * Used by branch-aware staleness (#2106) to find the tip of a branch that may
+ * not be the one currently checked out. The `^{commit}` peel makes annotated
+ * tags resolve to the commit they point at. Uses `execFileSync` (no shell) so a
+ * caller-supplied ref can never be interpreted as a shell command.
+ */
+export const resolveRefToCommit = (repoPath: string, ref: string): string => {
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return '';
   }
 };
 
