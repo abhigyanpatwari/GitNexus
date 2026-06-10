@@ -428,29 +428,36 @@ describe('gitnexus-antigravity-hook adapter', () => {
       'utf-8',
     );
 
-    const { stdout, stderr } = runAdapter(
-      adapter,
-      {
-        hook_event_name: 'AfterTool',
-        tool_name: 'run_shell_command',
-        tool_input: { command: 'git commit -m "x"' },
-        tool_response: { llmContent: '[committed]' },
-        cwd: workdir,
-      },
-      workdir,
-      // Force a deterministic invocation mode: the emitted analyze command
-      // varies by what's installed on each CI runner (gitnexus/pnpm/npx), and
-      // only the `gitnexus` mode yields the bare `gitnexus analyze` form.
-      { GITNEXUS_INVOCATION: 'gitnexus' },
-    );
+    const input = {
+      hook_event_name: 'AfterTool',
+      tool_name: 'run_shell_command',
+      tool_input: { command: 'git commit -m "x"' },
+      tool_response: { llmContent: '[committed]' },
+      cwd: workdir,
+    };
+    // Force a deterministic invocation mode: the emitted analyze command varies
+    // by what's installed on each CI runner (gitnexus/pnpm/npx); only the
+    // `gitnexus` mode yields the bare `gitnexus analyze` form.
+    const { stdout, stderr } = runAdapter(adapter, input, workdir, {
+      GITNEXUS_INVOCATION: 'gitnexus',
+      GITNEXUS_DEBUG: '',
+    });
 
-    // Hint surfaces both via the agent-visible channel and stderr (terminal).
-    expect(stderr).toMatch(/\[GitNexus\] index is stale/);
-    expect(stderr).toMatch(/gitnexus analyze/);
-
+    // #1913: by default the hint reaches the agent via additionalContext (stdout
+    // JSON) but is NOT mirrored to stderr, so strict hook runners stay clean.
     const parsed = JSON.parse(stdout);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('AfterTool');
     expect(parsed.hookSpecificOutput.additionalContext).toMatch(/index is stale/);
+    expect(parsed.hookSpecificOutput.additionalContext).toMatch(/gitnexus analyze/);
+    expect(stderr).not.toMatch(/\[GitNexus\] index is stale/);
+
+    // The terminal mirror remains available under GITNEXUS_DEBUG=1.
+    const debug = runAdapter(adapter, input, workdir, {
+      GITNEXUS_INVOCATION: 'gitnexus',
+      GITNEXUS_DEBUG: '1',
+    });
+    expect(debug.stderr).toMatch(/\[GitNexus\] index is stale/);
+    expect(debug.stderr).toMatch(/gitnexus analyze/);
   });
 
   it('AfterTool skips augment when the tool failed', async () => {
