@@ -2391,25 +2391,35 @@ function postResultCloneSafe(result: ParseWorkerResult): void {
   } catch (err) {
     if (!isDataCloneError(err)) throw err;
   }
-  const { skipped } = makeWorkerResultCloneSafe(result as unknown as Record<string, unknown>, {
-    dropWholeElement: new Set(['parsedFiles']),
-    skipFields: new Set(['skippedPaths']),
-  });
-  if (skipped.length > 0) {
-    result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
-    const sample = skipped
-      .slice(0, 5)
-      .map((s) => `${s.path} (${s.reason})`)
-      .join('; ');
-    const more = skipped.length > 5 ? ` …and ${skipped.length - 5} more` : '';
-    if (parentPort) {
-      parentPort.postMessage({
-        type: 'warning',
-        message: `Sanitized ${skipped.length} file(s) with non-serializable parse output before delivery: ${sample}${more}`,
-      });
+  // Recovery path. Wrapped in its own try/catch so a throw inside the sanitizer
+  // (an over-deep record, a throwing getter) or a still-uncloneable re-post
+  // fails closed to a primitive-only `{type:'error'}` DELIBERATELY — rather than
+  // escaping to the message handler's catch by accident and re-arming, under
+  // `POOL_SIZE=1`, the worker-death cascade this net exists to prevent.
+  try {
+    const { skipped } = makeWorkerResultCloneSafe(result as unknown as Record<string, unknown>, {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    });
+    if (skipped.length > 0) {
+      result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
+      const sample = skipped
+        .slice(0, 5)
+        .map((s) => `${s.path} (${s.reason})`)
+        .join('; ');
+      const more = skipped.length > 5 ? ` …and ${skipped.length - 5} more` : '';
+      if (parentPort) {
+        parentPort.postMessage({
+          type: 'warning',
+          message: `Sanitized ${skipped.length} file(s) with non-serializable parse output before delivery: ${sample}${more}`,
+        });
+      }
     }
+    parentPort!.postMessage({ type: 'result', data: result });
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    parentPort!.postMessage({ type: 'error', error: e.message, errorStack: e.stack });
   }
-  parentPort!.postMessage({ type: 'result', data: result });
 }
 
 // Signal the pool that worker-side initialization (parser imports, language

@@ -165,4 +165,49 @@ describe('clone-safety', () => {
       expect(result.skippedPaths).toBe(before); // untouched
     });
   });
+
+  // U1 (#2112): the sanitizer must not recurse to a stack overflow on a deeply
+  // nested record — an over-deep subtree is bounded (treated non-cloneable) and
+  // the result is salvaged rather than the sanitizer throwing and re-arming the
+  // cascade it exists to prevent.
+  describe('bounded recursion depth', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    // Build a plain-object chain `{ child: { child: { … } } }` of the given
+    // depth with a non-cloneable function at the bottom.
+    const deepChainWithFn = (depth: number): Record<string, unknown> => {
+      let node: Record<string, unknown> = { leaked: () => 1 };
+      for (let i = 0; i < depth; i++) node = { child: node };
+      return node;
+    };
+
+    it('salvages a deeply-nested non-cloneable record without throwing RangeError', () => {
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'deep', filePath: 'deep.ts', tree: deepChainWithFn(5000) }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      // Must not throw (no RangeError escaping the sanitizer)...
+      expect(() => makeWorkerResultCloneSafe(result, opts)).not.toThrow();
+      // ...and the rewritten result is deliverable across postMessage.
+      expect(isStructuredCloneable(result)).toBe(true);
+    });
+
+    it('a shallow result is unaffected by the depth bound', () => {
+      const nodes = [{ id: 'n', properties: { filePath: 'a.ts', name: 'ok' } }];
+      const result: Record<string, unknown> = {
+        nodes,
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(skipped).toEqual([]);
+      expect(result.nodes).toBe(nodes); // identity preserved, no needless copy
+    });
+  });
 });
