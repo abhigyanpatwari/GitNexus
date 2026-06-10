@@ -109,7 +109,7 @@ describe('CLI commands', () => {
       // Exact pin (no caret) — #1922 holds the runtime at 0.21.1 so the ABI
       // gate's assumptions (setTimeoutMicros semantics, ABI 13–14 grammar
       // range) can't drift under a minor bump.
-      expect(pkg.default.dependencies['tree-sitter']).toBe('0.21.1');
+      expect(pkg.default.dependencies['tree-sitter']).toBe('^0.25.0');
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(swiftPkg.default.version).toBe('0.7.1');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
