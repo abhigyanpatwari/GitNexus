@@ -695,7 +695,7 @@ function buildPythonRepoContext(
     const src = readFile(rel);
     if (!src) continue;
     if (!src.includes('include_router')) continue;
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as any);
     const tree = parseSource(parser, src);
     if (!tree) continue;
 

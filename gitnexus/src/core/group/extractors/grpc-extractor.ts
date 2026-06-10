@@ -476,7 +476,7 @@ export class GrpcExtractor implements ContractExtractor {
       if (!content) continue;
       let detections: GrpcDetection[] = [];
       try {
-        parser.setLanguage(plugin.language);
+        parser.setLanguage(plugin.language as any);
         const tree = parseSourceSafe(parser, content);
         detections = plugin.scan(tree);
       } catch {

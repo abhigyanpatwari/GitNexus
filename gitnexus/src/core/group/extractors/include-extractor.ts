@@ -506,7 +506,7 @@ export class IncludeExtractor implements ContractExtractor {
       let query = queryCache.get(lang);
       if (!query) {
         try {
-          query = new Parser.Query(lang, INCLUDE_QUERY_SRC);
+          query = new Parser.Query(lang as any, INCLUDE_QUERY_SRC);
           queryCache.set(lang, query);
         } catch {
           continue;
@@ -519,7 +519,7 @@ export class IncludeExtractor implements ContractExtractor {
       let rawIncludes: string[];
       let extractionSource: 'tree_sitter' | 'regex_fallback';
       try {
-        parser.setLanguage(lang);
+        parser.setLanguage(lang as any);
         const tree = parseSourceSafe(parser, content);
         let matches: Parser.QueryMatch[];
         try {

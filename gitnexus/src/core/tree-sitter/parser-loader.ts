@@ -375,7 +375,7 @@ export const loadLanguage = async (
   filePath?: string,
 ): Promise<void> => {
   const parser = await loadParser();
-  parser.setLanguage(getLanguageGrammar(language, filePath));
+  parser.setLanguage(getLanguageGrammar(language, filePath) as any);
 };
 
 export const createParserForLanguage = async (
@@ -383,6 +383,6 @@ export const createParserForLanguage = async (
   filePath?: string,
 ): Promise<Parser> => {
   const parser = new Parser();
-  parser.setLanguage(getLanguageGrammar(language, filePath));
+  parser.setLanguage(getLanguageGrammar(language, filePath) as any);
   return parser;
 };

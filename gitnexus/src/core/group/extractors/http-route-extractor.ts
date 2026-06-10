@@ -221,7 +221,7 @@ export class HttpRouteExtractor implements ContractExtractor {
         return null;
       }
       try {
-        parser.setLanguage(plugin.language);
+        parser.setLanguage(plugin.language as any);
         const tree = parseSourceSafe(parser, content);
         const input = { filePath: rel, tree };
         const item = { plugin, input, repoContext };

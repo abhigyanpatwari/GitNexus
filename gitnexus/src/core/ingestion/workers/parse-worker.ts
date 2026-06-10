@@ -33,7 +33,7 @@ import type {
 } from '../route-extractors/fastapi-router-bindings.js';
 
 /** Language grammar type accepted by Parser.setLanguage(). */
-type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
+type TreeSitterLanguage = any; // tree-sitter 0.25 Language type is stricter; grammar packages export a narrower shape — intentional broaden
 
 // ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
 // The worker maintains its own grammar table (the guarded `_require`s below +

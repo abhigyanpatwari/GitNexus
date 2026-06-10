@@ -97,7 +97,7 @@ export function compilePatterns<TMeta>(bundle: LanguagePatterns<TMeta>): Compile
   const compiled: CompiledPattern<TMeta>[] = [];
   for (const spec of bundle.patterns) {
     try {
-      const query = new Parser.Query(bundle.language, spec.query);
+      const query = new Parser.Query(bundle.language as any, spec.query);
       compiled.push({ query, meta: spec.meta });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -155,7 +155,7 @@ export function scanFile<TMeta>(
 ): ScanMatch<TMeta>[] {
   let tree: Parser.Tree;
   try {
-    parser.setLanguage(plugin.language);
+    parser.setLanguage(plugin.language as any);
     tree = parseSourceSafe(parser, content);
   } catch {
     return [];
