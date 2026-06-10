@@ -1,0 +1,98 @@
+/**
+ * Make `@huggingface/transformers`' phantom `onnxruntime-common` import
+ * resolvable under strict package-manager layouts (#307, #2069).
+ *
+ * ## Why
+ * transformers' shipped `dist/transformers.node.mjs` does a bare
+ * `import 'onnxruntime-common'`, but transformers' `package.json` never declares
+ * onnxruntime-common (it lists onnxruntime-node / onnxruntime-web / sharp). With
+ * npm's flat `node_modules` — or pnpm with hoisting — the package is hoisted to
+ * a directory on transformers' resolution path and the import resolves by
+ * accident. Under pnpm's isolated store (and therefore `pnpm dlx` / `pnpx`), a
+ * package only sees its *declared* deps, so the import dies with
+ * `ERR_MODULE_NOT_FOUND` before `analyze --embeddings` can run.
+ *
+ * Declaring onnxruntime-common in gitnexus' own dependencies (#2074) does NOT
+ * fix this under pnpm: Node resolves the bare specifier from *transformers'*
+ * module scope, not ours, and overrides/resolutions can only re-version an
+ * existing edge, never add the missing one.
+ *
+ * ## What this does
+ * Install a synchronous, in-thread ESM resolution hook (`module.registerHooks`,
+ * Node >= 22.15) that redirects `onnxruntime-common` to the copy gitnexus itself
+ * depends on — but only when the default resolver fails. onnxruntime-common is a
+ * direct gitnexus dependency (a stable, pure-JS package whose `Tensor` surface
+ * is unchanged across 1.24–1.26), version-aligned with the onnxruntime-node
+ * transformers loads, so it is always resolvable from gitnexus' own scope
+ * regardless of how the consumer's package manager linked things. On working
+ * layouts the default resolver succeeds first and the hook never fires, so
+ * behaviour is unchanged.
+ *
+ * `registerHooks` (synchronous, in-thread) is preferred over the older
+ * `module.register` (async, off-thread, now deprecated — DEP0205, removed in
+ * Node 26): the redirect is a one-line conditional that needs no worker thread,
+ * no separate hook module, and no `data` marshalling.
+ *
+ * ## Safety
+ * Best-effort and idempotent. On Node < 22.15 `registerHooks` is absent and this
+ * is a graceful no-op (embeddings then resolve onnxruntime-common exactly as
+ * before — fine on hoisted layouts). Any failure is swallowed. The hook is
+ * installed lazily, only on the local-embedding code path, so it never affects
+ * analysis, the parse workers, or HTTP embedding mode; and it only ever touches
+ * the exact `onnxruntime-common` specifier on failure, so it cannot mask an
+ * unrelated resolution error.
+ */
+import { registerHooks, createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import { logger } from '../logger.js';
+
+let attempted = false;
+
+/**
+ * Idempotently install the onnxruntime-common resolution fallback. Call once
+ * immediately before the dynamic `import('@huggingface/transformers')` on the
+ * local-embedding path.
+ */
+export const ensureOnnxRuntimeCommonResolvable = (): void => {
+  if (attempted) return;
+  // Mark attempted up-front: a failed attempt must not retry on every
+  // initEmbedder() call, and the hook is process-global — once is enough.
+  attempted = true;
+
+  try {
+    // Node < 22.15 (the gitnexus engines floor is >= 22.0.0): no synchronous
+    // hooks API. Degrade gracefully — the import still works on hoisted layouts.
+    if (typeof registerHooks !== 'function') return;
+
+    const require = createRequire(import.meta.url);
+    // Resolve from gitnexus' own scope — onnxruntime-common is a direct
+    // dependency, so this succeeds under npm and pnpm-strict alike.
+    const redirectUrl = pathToFileURL(require.resolve('onnxruntime-common')).href;
+
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (specifier !== 'onnxruntime-common') return nextResolve(specifier, context);
+        // Honour a real, package-manager-provided copy when one is on the path
+        // (npm / hoisted pnpm); only substitute ours when resolution fails.
+        try {
+          return nextResolve(specifier, context);
+        } catch {
+          return { url: redirectUrl, shortCircuit: true };
+        }
+      },
+    });
+    logger.debug({ redirectUrl }, 'Installed onnxruntime-common resolution fallback (#307)');
+  } catch (err) {
+    // Never block embeddings on the fallback. On layouts where the package
+    // manager already resolves onnxruntime-common this is unnecessary anyway.
+    logger.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      'onnxruntime-common resolution fallback not installed',
+    );
+  }
+};
+
+/** Test-only: reset the one-shot guard so installation can be re-exercised. */
+export const __resetOnnxRuntimeCommonResolverForTests = (): void => {
+  attempted = false;
+};
