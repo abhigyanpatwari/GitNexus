@@ -182,6 +182,11 @@ describe('runEmbeddingPipeline incremental filter', () => {
   let queryCalls: string[];
   let stmtCalls: Array<{ cypher: string; params: Array<Record<string, any>> }>;
   let progressUpdates: EmbeddingProgress[];
+  // Spy for the adapter's createVectorIndex (the pipeline delegates index
+  // creation to it via conn.query — see #2114). Captured so tests can assert
+  // it was invoked instead of asserting CREATE_VECTOR_INDEX flowed through the
+  // injected (prepared) executeQuery, which it must NOT.
+  let vectorIndexMock: ReturnType<typeof vi.fn>;
 
   // Helper node
   const makeNode = (overrides: Partial<EmbeddableNode> = {}): EmbeddableNode => ({
@@ -215,9 +220,12 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
 
-    // Mock loadVectorExtension (avoids needing the native lbug module)
+    // Mock the adapter (avoids needing the native lbug module). The pipeline
+    // imports both loadVectorExtension and createVectorIndex from here.
+    vectorIndexMock = vi.fn().mockResolvedValue(true);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       loadVectorExtension: vi.fn().mockResolvedValue(true),
+      createVectorIndex: vectorIndexMock,
     }));
   };
 
@@ -347,6 +355,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       loadVectorExtension: vi.fn().mockResolvedValue(true),
+      createVectorIndex: vi.fn().mockResolvedValue(true),
     }));
 
     const executeQuery = vi.fn().mockImplementation(async (cypher: string) => {
@@ -486,7 +495,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const { runEmbeddingPipeline } =
       await import('../../src/core/embeddings/embedding-pipeline.js');
 
-    await runEmbeddingPipeline(
+    const result = await runEmbeddingPipeline(
       executeQuery,
       executeWithReusedStatement,
       onProgress,
@@ -496,9 +505,13 @@ describe('runEmbeddingPipeline incremental filter', () => {
       existingEmbeddings,
     );
 
-    // The CREATE_VECTOR_INDEX query should have been called via executeQuery
-    const vectorIndexCalls = queryCalls.filter((c) => c.includes('CREATE_VECTOR_INDEX'));
-    expect(vectorIndexCalls.length).toBeGreaterThanOrEqual(1);
+    // Index creation must go through the adapter's createVectorIndex (conn.query),
+    // NOT the injected/prepared executeQuery — CALL CREATE_VECTOR_INDEX cannot be
+    // prepared (#2114). It must still run on the zero-nodes-to-embed branch.
+    expect(vectorIndexMock).toHaveBeenCalled();
+    expect(queryCalls.some((c) => c.includes('CREATE_VECTOR_INDEX'))).toBe(false);
+    expect(result.vectorIndexReady).toBe(true);
+    expect(result.semanticMode).toBe('vector-index');
   });
 
   it('stores embeddings with exact-scan fallback when VECTOR is unavailable', async () => {
@@ -546,6 +559,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       loadVectorExtension: vi.fn().mockResolvedValue(true),
+      createVectorIndex: vi.fn().mockResolvedValue(true),
     }));
 
     const node = makeNode({
@@ -600,6 +614,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       loadVectorExtension: vi.fn().mockResolvedValue(true),
+      createVectorIndex: vi.fn().mockResolvedValue(true),
     }));
 
     const node = makeNode({
