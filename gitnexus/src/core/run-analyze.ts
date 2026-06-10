@@ -184,6 +184,13 @@ export interface AnalyzeResult {
    * the persisted meta surface the degraded state instead of reporting healthy.
    */
   ftsSkipped?: boolean;
+  /**
+   * True when the index this run produced/validated is the primary/flat slot
+   * (#2106 R2). `false` for a non-primary branch index. Lets the CLI skip
+   * repo-root AGENTS.md/CLAUDE.md refreshes (e.g. the base_ref fast-path) for a
+   * branch analyze, mirroring the in-pipeline `if (!placement.branch)` gate.
+   */
+  isPrimaryBranch?: boolean;
 }
 
 /**
@@ -527,6 +534,7 @@ export async function runFullAnalysis(
           repoPath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
+          isPrimaryBranch: !placement.branch,
         };
       }
     }
@@ -1241,6 +1249,7 @@ export async function runFullAnalysis(
       stats: meta.stats,
       pipelineResult,
       ftsSkipped: !ftsAvailable,
+      isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
     // Ensure LadybugDB is closed even on error. Stop the driver first
