@@ -328,3 +328,56 @@ describe('deriveEmbeddingCap', () => {
     expect(deriveEmbeddingCap(15_000, 10_000).skipForCap).toBe(true);
   });
 });
+
+describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
+  const DEFAULTS = { maxFunctionLines: 2000, maxEdgesPerFunction: 5000 };
+
+  it('resolvePdgConfig: pdg-off run resolves to undefined (the meta field is omitted)', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    expect(resolvePdgConfig({})).toBeUndefined();
+    expect(resolvePdgConfig({ pdg: false })).toBeUndefined();
+  });
+
+  it('resolvePdgConfig: caps resolve to their defaults; 0 = unlimited is preserved', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    expect(resolvePdgConfig({ pdg: true })).toEqual(DEFAULTS);
+    expect(
+      resolvePdgConfig({ pdg: true, pdgMaxFunctionLines: 0, pdgMaxEdgesPerFunction: 0 }),
+    ).toEqual({ maxFunctionLines: 0, maxEdgesPerFunction: 0 });
+  });
+
+  it('legacy meta (no recorded stamp) + plain run → no mismatch', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(pdgModeMismatch(undefined, {})).toBe(false);
+  });
+
+  it('legacy meta + --pdg run → mismatch (the P1 trigger)', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(pdgModeMismatch(undefined, { pdg: true })).toBe(true);
+  });
+
+  it('recorded stamp + plain run → mismatch (zombie-cleanup direction)', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(pdgModeMismatch(DEFAULTS, {})).toBe(true);
+  });
+
+  it('explicit defaults compare equal to absent caps (KTD5 normalization)', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true })).toBe(false);
+    expect(
+      pdgModeMismatch(DEFAULTS, {
+        pdg: true,
+        pdgMaxFunctionLines: 2000,
+        pdgMaxEdgesPerFunction: 5000,
+      }),
+    ).toBe(false);
+  });
+
+  it('a cap change while pdg stays on → mismatch (persisted edges differ)', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxEdgesPerFunction: 1 })).toBe(true);
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxFunctionLines: 500 })).toBe(true);
+    // 0 = unlimited differs from the 2000-line default, too.
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxFunctionLines: 0 })).toBe(true);
+  });
+});
