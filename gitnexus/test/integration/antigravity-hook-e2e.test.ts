@@ -103,7 +103,10 @@ afterAll(async () => {
 
 describe('antigravity hook adapter e2e', () => {
   describe('AfterTool — stale-index hint after git mutations', () => {
-    it('emits the hint via both additionalContext and stderr after a successful git commit', () => {
+    // #1913: by default the hint reaches the agent via additionalContext (stdout
+    // JSON) but is NOT mirrored to stderr, so strict hook runners see no
+    // unexpected output on this normal (non-error) path.
+    it('emits the hint via additionalContext and stays silent on stderr by default', () => {
       fs.writeFileSync(
         path.join(gitNexusDir, 'meta.json'),
         JSON.stringify({ lastCommit: 'a'.repeat(40), stats: {} }),
@@ -119,7 +122,7 @@ describe('antigravity hook adapter e2e', () => {
           cwd: tmpDir,
         },
         tmpDir,
-        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx', GITNEXUS_DEBUG: '' } },
       );
 
       const output = parseHookOutput(result.stdout);
@@ -127,9 +130,33 @@ describe('antigravity hook adapter e2e', () => {
       expect(output!.hookEventName).toBe('AfterTool');
       expect(output!.additionalContext).toContain('index is stale');
       expect(output!.additionalContext).toContain('npx gitnexus@latest analyze');
+      // Strict-runner contract: the hint is NOT mirrored to stderr by default.
+      expect(result.stderr).not.toContain('[GitNexus] index is stale');
+    });
 
-      // Mirror to stderr so terminal users see the hint even when the agent
-      // discards additionalContext
+    // #1913: the terminal-mirror remains available for operators who opt in.
+    it('mirrors the hint to stderr for terminal users only under GITNEXUS_DEBUG=1', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'a'.repeat(40), stats: {} }),
+      );
+
+      const result = runHook(
+        installedHook,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_response: { llmContent: '[committed]' },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx', GITNEXUS_DEBUG: '1' } },
+      );
+
+      const output = parseHookOutput(result.stdout);
+      expect(output).not.toBeNull();
+      expect(output!.additionalContext).toContain('index is stale');
       expect(result.stderr).toContain('[GitNexus] index is stale');
     });
 
