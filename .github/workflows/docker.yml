@@ -101,7 +101,7 @@ jobs:
       # When triggered by workflow_call the caller passes the RC tag as an input;
       # we check out that tag so the Dockerfile and package.json match the built image.
       # For tag-push events github.ref is already the tag ref — no override needed.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.tag || github.ref }}
 
