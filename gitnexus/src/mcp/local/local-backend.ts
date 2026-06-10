@@ -902,7 +902,12 @@ export class LocalBackend {
 
       this.lastStalenessCheck.set(poolKey, now);
       try {
-        const metaPath = path.join(repo.storagePath, 'meta.json');
+        // Read the meta.json that sits next to THIS handle's lbug. For the
+        // flat/primary handle this is `<storagePath>/meta.json` (unchanged);
+        // for a branch handle it is `<storagePath>/branches/<slug>/meta.json`.
+        // Reading the flat meta for a branch handle would compare the branch
+        // index's indexedAt against the primary's and thrash the pool (#2106).
+        const metaPath = path.join(path.dirname(repo.lbugPath), 'meta.json');
         const metaRaw = await fs.readFile(metaPath, 'utf-8');
         const meta = JSON.parse(metaRaw);
         if (meta.indexedAt && meta.indexedAt !== repo.indexedAt) {
