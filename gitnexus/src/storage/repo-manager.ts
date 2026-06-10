@@ -8,11 +8,21 @@
 
 import fs from 'fs/promises';
 import { realpathSync } from 'fs';
-import { createHash } from 'crypto';
 import path from 'path';
 import os from 'os';
-import { getInferredRepoName, resolveRepoIdentityRoot, sanitizeRepoName } from './git.js';
+import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { logger } from '../core/logger.js';
+import {
+  branchSlug,
+  BRANCHES_DIR,
+  resolveBranchPlacement,
+  type BranchSummary,
+} from './branch-index.js';
+
+// Re-export the #2106 branch primitives (extracted to branch-index.ts, R10) so
+// existing `repo-manager` import sites and tests keep working unchanged.
+export { branchSlug, resolveBranchPlacement };
+export type { BranchSummary };
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -133,19 +143,6 @@ export interface IndexedRepo {
 }
 
 /**
- * Per-branch index summary nested under a {@link RegistryEntry} (#2106).
- * Records non-primary branches indexed for the same repo path so `list`,
- * `status`, and `list_repos` can surface them without a second registry entry.
- */
-export interface BranchSummary {
-  /** Git branch name this sub-index represents. */
-  branch: string;
-  indexedAt: string;
-  lastCommit: string;
-  stats?: RepoMeta['stats'];
-}
-
-/**
  * Shape of an entry in the global registry (~/.gitnexus/registry.json)
  */
 export interface RegistryEntry {
@@ -184,26 +181,6 @@ export const getStoragePath = (repoPath: string): string => {
 };
 
 /**
- * Branch-index sub-directory name, relative to the flat `.gitnexus` storage.
- */
-const BRANCHES_DIR = 'branches';
-
-/**
- * Filesystem-safe slug for a git branch ref (#2106).
- *
- * `sanitizeRepoName` alone is lossy — it maps `/`→`_`, so `feature/x` and
- * `feature_x` would collide into the same directory. We append a short
- * sha256 of the RAW ref (mirroring `assignRepoId`'s digest fallback) so two
- * distinct refs can never share a branch directory, while keeping the human
- * prefix readable.
- */
-export const branchSlug = (rawRef: string): string => {
-  const safe = sanitizeRepoName(rawRef);
-  const hash = createHash('sha256').update(rawRef).digest('hex').slice(0, 8);
-  return `${safe}-${hash}`;
-};
-
-/**
  * Get paths to key storage files.
  *
  * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
@@ -220,45 +197,6 @@ export const getStoragePaths = (repoPath: string, branch?: string) => {
     lbugPath: path.join(baseDir, 'lbug'),
     metaPath: path.join(baseDir, 'meta.json'),
   };
-};
-
-/**
- * Decide where a freshly-analyzed branch's index lives: the flat (primary)
- * slot or a per-branch sub-directory (#2106 KTD2).
- *
- * Returns `{}` for the flat/primary placement (byte-identical layout) or
- * `{ branch }` for a `branches/<slug>/` sub-directory. The flat slot is owned
- * by the FIRST branch indexed, recorded as `branch` in the flat `meta.json`;
- * a different checked-out branch then auto-routes to its own sub-directory so
- * it never overwrites the primary index.
- *
- * `label` is the resolved index-branch (explicit `--branch`, else the
- * checked-out branch, else `null`). A `null` label — detached HEAD, non-git
- * folder, or CI checkout — always maps to the flat slot.
- */
-export const resolveBranchPlacement = async (
-  repoPath: string,
-  label: string | null,
-): Promise<{ branch?: string }> => {
-  // Detached HEAD / non-git / no label → flat (CI-safe, byte-identical).
-  if (!label) return {};
-  const { storagePath } = getStoragePaths(repoPath);
-  const flatMeta = await loadMeta(storagePath);
-  // The flat slot's owner is authoritative ONLY when it is a non-empty string.
-  // A corrupt/hand-edited meta (empty string, or a non-string value that slips
-  // past JSON typing) must not be trusted to route the real primary into a
-  // sub-directory (#2106 review R5).
-  const owner =
-    flatMeta && typeof flatMeta.branch === 'string' && flatMeta.branch.length > 0
-      ? flatMeta.branch
-      : undefined;
-  // Fresh repo (no flat index) or legacy/unstamped flat index (no recorded
-  // owner): the current label claims/adopts the flat slot. The legacy case
-  // preserves today's overwrite-in-place behavior until the slot is stamped.
-  if (!owner) return {};
-  // Flat slot is owned. Same branch → flat; otherwise this branch gets its own
-  // sub-directory.
-  return owner === label ? {} : { branch: label };
 };
 
 /**
