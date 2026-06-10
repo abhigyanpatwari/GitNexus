@@ -24,6 +24,14 @@ program
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
+  .command('uninstall')
+  .description(
+    'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
+  )
+  .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
+  .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
+
+program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')

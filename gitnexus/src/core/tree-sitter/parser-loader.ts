@@ -121,25 +121,26 @@ const SOURCES: Record<string, GrammarSource> = {
       'Vue parsing piggybacks on `tree-sitter-typescript`. Check the install and native binding.',
   },
 
-  // tree-sitter-c is a required dependency, but its native binding has
-  // historically been ABI-incompatible with the bundled tree-sitter@0.21.1
-  // runtime on some platforms (#1242, #858). Loading it through the
-  // optional machinery turns a would-be segfault into a clean degradation
-  // while preserving every other language's analysis. Severity is pinned
-  // to `error` because the package is in `dependencies`: a failure here
-  // is always an install/platform problem the user needs to see, never an
-  // expected "user opted out" condition like Swift/Dart/Kotlin.
+  // tree-sitter-c is a core grammar, vendored prebuild-only (under
+  // gitnexus/vendor/tree-sitter-c) with GitNexus-built prebuilds for every
+  // supported platform-arch — upstream ships only 4/6 (#2116) and C is a
+  // required grammar whose source build hard-fails install on a toolchain-less
+  // ARM host. Loading through the optional machinery turns a would-be ABI
+  // segfault (#1242, #858) into a clean degradation while preserving every
+  // other language's analysis. Severity stays `error` because C is not a
+  // user-opt-out grammar like Swift/Dart/Kotlin: a failure here is always an
+  // install/platform problem the user needs to see.
   [SupportedLanguages.C]: {
     load: () => _require('tree-sitter-c'),
     optional: true,
     severity: 'error',
     unavailableNote:
-      'C parsing disabled: `tree-sitter-c` could not be loaded. ' +
-      'This package is in `dependencies` and prebuilds ship for all supported ' +
-      'platforms (win32/darwin/linux x64+arm64, Node 18/20/22), so this ' +
-      'usually indicates a corrupted install, an unsupported Node version, ' +
-      'or a native ABI mismatch with the bundled tree-sitter runtime. ' +
-      'Try `npm rebuild tree-sitter-c` or reinstalling, then re-run analyze. ' +
+      'C parsing disabled: vendored `tree-sitter-c` (under ' +
+      '`gitnexus/vendor/tree-sitter-c`) could not be loaded. GitNexus ships ' +
+      'prebuilt binaries for all supported platforms (win32/darwin/linux ' +
+      'x64+arm64, N-API), so this usually indicates a corrupted install or a ' +
+      'native ABI mismatch with the bundled tree-sitter@0.21.1 runtime. ' +
+      'Try reinstalling, then re-run analyze. ' +
       `If the failure persists, file details at ${ISSUES_URL}/1242.`,
   },
 
@@ -170,8 +171,10 @@ const SOURCES: Record<string, GrammarSource> = {
     optional: true,
     userSkippable: true,
     unavailableNote:
-      'Kotlin parsing disabled: `tree-sitter-kotlin` is an optionalDependency ' +
-      'and is not installed (or its native binding failed to build).',
+      'Kotlin parsing disabled: vendored `tree-sitter-kotlin` (under ' +
+      '`gitnexus/vendor/tree-sitter-kotlin`) failed to load. ' +
+      'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
+      `See ${ISSUES_URL}/2107.`,
   },
 };
 

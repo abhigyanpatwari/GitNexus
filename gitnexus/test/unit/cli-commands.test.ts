@@ -84,7 +84,24 @@ describe('CLI commands', () => {
       expect(pkg.default.files).toContain('vendor');
     });
 
-    it('keeps vendored Swift runtime with prebuilds and hoisted activation script', async () => {
+    it('declares node-gyp-build/node-addon-api as regular dependencies (runtime-load contract)', async () => {
+      // Every vendored grammar's index.js does `require("node-gyp-build")` at
+      // runtime to load even a prebuilt .node, so node-gyp-build must always be
+      // present. They were optionalDependencies (surviving --omit=optional only
+      // via tree-sitter's transitive edge); promote them so the contract is
+      // explicit and robust to a future tree-sitter change.
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const deps = pkg.default.dependencies ?? {};
+      const optional = (pkg.default as { optionalDependencies?: Record<string, string> })
+        .optionalDependencies;
+      expect(deps['node-gyp-build']).toBeDefined();
+      expect(deps['node-addon-api']).toBeDefined();
+      // No grammar/native-build entries linger in optionalDependencies.
+      expect(optional?.['node-gyp-build']).toBeUndefined();
+      expect(optional?.['node-addon-api']).toBeUndefined();
+    });
+
+    it('keeps vendored Swift runtime with vendored source + GitNexus-built prebuilds and hoisted activation script', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const swiftPkg = await import('../../vendor/tree-sitter-swift/package.json', {
         with: { type: 'json' },
@@ -93,21 +110,57 @@ describe('CLI commands', () => {
       // gate's assumptions (setTimeoutMicros semantics, ABI 13–14 grammar
       // range) can't drift under a minor bump.
       expect(pkg.default.dependencies['tree-sitter']).toBe('0.21.1');
-      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-swift.cjs');
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(swiftPkg.default.version).toBe('0.7.1');
+      // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(swiftPkg.default.scripts?.install).toBeUndefined();
       expect(swiftPkg.default.dependencies).toBeUndefined();
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
+      // Swift is now unified with Dart/Proto/Kotlin/C: the grammar SOURCE is
+      // vendored so build-tree-sitter-grammars.cjs can source-build the binding
+      // when no committed prebuild matches (e.g. CI before prebuilds land).
+      const bindingGyp = await fs.readFile(
+        path.join(REPO_ROOT, 'gitnexus/vendor/tree-sitter-swift/binding.gyp'),
+        'utf8',
+      );
+      expect(bindingGyp).toContain('tree_sitter_swift_binding');
+      expect(bindingGyp).toContain('src/parser.c');
+      await expect(
+        fs.stat(path.join(REPO_ROOT, 'gitnexus/vendor/tree-sitter-swift/src/parser.c')),
+      ).resolves.toBeDefined();
     });
 
-    it('declares tree-sitter-kotlin as an optionalDependency probed at postinstall (#2107)', async () => {
+    it('keeps vendored Kotlin runtime with GitNexus-built prebuilds and hoisted activation script (#2107)', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const kotlinPkg = await import('../../vendor/tree-sitter-kotlin/package.json', {
+        with: { type: 'json' },
+      });
       const optional = pkg.default.optionalDependencies ?? {};
-      // Kotlin is a third-party npm optionalDependency (not vendored), so npm
-      // skips it when its source-only native build soft-fails — the gitnexus
-      // install still succeeds.
-      expect(optional['tree-sitter-kotlin']).toBeDefined();
-      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-kotlin.cjs');
+      // Kotlin is now VENDORED (like Swift/Dart/Proto), not a third-party npm
+      // optionalDependency. Its prebuilds are GitNexus-cross-built (upstream
+      // ships source only) and materialized into node_modules/ at postinstall.
+      expect(optional['tree-sitter-kotlin']).toBeUndefined();
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
+      expect(kotlinPkg.default.version).toBe('0.3.8');
+      // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
+      expect(kotlinPkg.default.scripts?.install).toBeUndefined();
+      expect(kotlinPkg.default.dependencies).toBeUndefined();
+      expect(kotlinPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
+    });
+
+    it('vendors tree-sitter-c prebuild-only at the 0.21.4 ABI pin instead of an npm dependency (#2116/#1242)', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const cPkg = await import('../../vendor/tree-sitter-c/package.json', {
+        with: { type: 'json' },
+      });
+      // c is a REQUIRED grammar that hard-fails install on toolchain-less ARM
+      // (upstream ships 4/6). Vendored with GitNexus-built prebuilds for all 6,
+      // held at 0.21.4 for ABI safety (#1242) — so it is NOT an npm dependency.
+      expect(pkg.default.dependencies['tree-sitter-c']).toBeUndefined();
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
+      expect(cPkg.default.version).toBe('0.21.4');
+      expect(cPkg.default.scripts?.install).toBeUndefined();
+      expect(cPkg.default.dependencies).toBeUndefined();
     });
   });
 

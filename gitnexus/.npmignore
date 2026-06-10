@@ -13,6 +13,26 @@ node_modules/
 vendor/**/node_modules
 vendor/**/build
 
+# ── Lean publish (FUTURE optimization — NOT done here) ─────────────────────────
+# Once the build-tree-sitter-prebuilds workflow has committed 6/6 prebuilds for
+# EVERY vendored grammar (c, dart, proto, kotlin, swift), the ~50 MB of generated
+# source (parser.c etc.) can be dropped from the tarball — node-gyp-build never
+# needs the source when a prebuild matches.
+#
+# IMPORTANT: this CANNOT be done from this file. package.json's `files: ["vendor"]`
+# allow-list OVERRIDES .npmignore for the vendor/ subtree (verified: an active
+# `vendor/**/src/parser.c` line here does NOT exclude it from `npm pack`). To slim
+# the tarball, narrow the `files` field instead — replace the blanket "vendor"
+# with the non-source subpaths only (vendor/**/prebuilds/**,
+# vendor/**/bindings/node/index.*, vendor/**/src/node-types.json,
+# vendor/**/package.json, vendor/**/LICENSE, vendor/**/README.md).
+#
+# Whatever the mechanism, the prepack guard
+# (scripts/assert-publish-grammar-coverage.cjs, also `npm run
+# assert-publish-coverage`) inspects the EFFECTIVE `npm pack` file list and FAILS
+# the publish whenever a grammar with <6 prebuilds loses a source-build input — so
+# the slim can never silently ship a dead grammar. Do not bypass it.
+
 # Package lock (consumers use their own)
 package-lock.json
 
