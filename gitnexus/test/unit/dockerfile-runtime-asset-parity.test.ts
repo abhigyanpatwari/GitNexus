@@ -43,7 +43,10 @@ const toPosix = (p: string): string => p.split(path.sep).join('/');
  */
 function runtimeStageCopiedSources(dockerfile: string): string[] {
   const lines = dockerfile.split('\n');
-  const runtimeStart = lines.findIndex((l) => /^FROM\s.*\bAS\s+runtime\b/.test(l));
+  // `i` flag: Docker accepts lowercase `as`, so a future reformat to
+  // `FROM … as runtime` must not silently lose the stage (which would empty the
+  // copied set and trip the named assertions below).
+  const runtimeStart = lines.findIndex((l) => /^FROM\s.*\bAS\s+runtime\b/i.test(l));
   expect(runtimeStart, 'Dockerfile.cli must declare a `... AS runtime` stage').toBeGreaterThan(-1);
   const sources: string[] = [];
   for (const line of lines.slice(runtimeStart)) {
