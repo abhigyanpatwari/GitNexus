@@ -2468,10 +2468,21 @@ export class LocalBackend {
     // below, mirroring how _runImpactBFS overlaps it with the BFS. It is awaited
     // at result assembly. (It cannot start earlier — `symKind` is only computed
     // on this line, after the incoming/outgoing round-trips.)
+    //
+    // #1858 review F3 — pass an interface-preserving type, NOT `symKind`.
+    // `symKind` collapses a single-resolved Interface to 'Class' (resolvedLabel
+    // is '' on the single-candidate path), which would skip computeEpistemicBoundary's
+    // `symType === 'Interface'` self-boundary branch and under-report a leaf
+    // interface as 'exact'. `enrichCandidateLabels` runs BEFORE the single-candidate
+    // early return and patches `sym.type` from '' to 'Interface' (LadybugDB returns
+    // '' for labels()[0] on Interface/Class), so `sym.type` is the reliable signal
+    // here — mirroring impact()'s `resolvedLabel || symbol.type` derivation. Do not
+    // "fix" enrichment ordering; F3 depends on enrichment-before-early-return.
+    const epistemicSymType = (resolvedLabel || sym.type || symKind || '') as string;
     const epistemicPromise = this.computeEpistemicBoundary(
       repo,
       symId,
-      (symKind as string) || '',
+      epistemicSymType,
       (sym.name || sym[1]) as string,
     );
 

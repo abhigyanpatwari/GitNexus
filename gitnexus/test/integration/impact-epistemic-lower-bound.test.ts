@@ -90,6 +90,16 @@ withTestLbugDB(
       expect(result.status).toBe('found');
       expect(result.epistemic).toBe('lower-bound');
     });
+
+    it('context() on a leaf interface itself is lower-bound (#1858 review F3)', async () => {
+      // Logger is a leaf interface — it implements/extends nothing, so the only
+      // boundary signal is computeEpistemicBoundary's symType==='Interface'
+      // self-branch. Before the F3 fix, context() collapsed symKind to 'Class'
+      // and this returned 'exact'.
+      const result = await backend.callTool('context', { name: 'Logger' });
+      expect(result.status).toBe('found');
+      expect(result.epistemic).toBe('lower-bound');
+    });
   },
   {
     seed: SEED,
