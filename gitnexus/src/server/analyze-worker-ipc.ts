@@ -35,20 +35,30 @@ import type { AnalyzeResult } from '../core/run-analyze.js';
 
 /**
  * The JSON-safe subset of `AnalyzeResult` that crosses the analyze-worker IPC
- * boundary. Typed as `Omit<…, 'pipelineResult'>` so that if a future,
- * non-serializable field is added to `AnalyzeResult`, `projectAnalyzeResultForIpc`
- * fails to compile until that field is deliberately handled here.
+ * boundary. A `Pick` allowlist — NOT `Omit<…, 'pipelineResult'>`. With `Pick`
+ * the allowlist IS the type, so the projection is exhaustive by construction:
+ * `projectAnalyzeResultForIpc`'s return literal must name exactly these keys
+ * (omitting one is a compile error), and a new field added to `AnalyzeResult`
+ * is simply absent from the wire until it is *deliberately* added here. `Omit`
+ * couldn't give that guarantee — it kept every other field, including OPTIONAL
+ * ones (e.g. `isPrimaryBranch?`), so an optional non-serializable field could be
+ * advertised by the type yet silently dropped by the runtime allowlist.
+ *
+ * `isPrimaryBranch` is intentionally excluded: the parent (`api.ts`) reads only
+ * `repoName`, and nothing consumes `isPrimaryBranch` across this fork (its CLI
+ * consumer calls `runFullAnalysis` in-process). Add a field here only when a
+ * server-side IPC consumer actually needs it — and only if it is JSON-safe.
  */
-export type AnalyzeResultIpc = Omit<AnalyzeResult, 'pipelineResult'>;
+export type AnalyzeResultIpc = Pick<
+  AnalyzeResult,
+  'repoName' | 'repoPath' | 'stats' | 'alreadyUpToDate' | 'ftsRepairedOnly' | 'ftsSkipped'
+>;
 
 /**
- * Project an `AnalyzeResult` down to the JSON-safe scalar fields the parent
- * consumes, dropping `pipelineResult` (the live `KnowledgeGraph`).
- *
- * Deliberately an explicit allowlist rather than a `{ pipelineResult, ...rest }`
- * denylist: a future non-scalar field added to `AnalyzeResult` must be added
- * here on purpose, so this boundary can never silently start carrying a new
- * non-serializable value.
+ * Project an `AnalyzeResult` down to the JSON-safe fields the parent consumes,
+ * dropping `pipelineResult` (the live `KnowledgeGraph`) and any other field not
+ * in the `AnalyzeResultIpc` allowlist. The return literal is exhaustive over
+ * `AnalyzeResultIpc` (a missing key is a compile error).
  */
 export function projectAnalyzeResultForIpc(result: AnalyzeResult): AnalyzeResultIpc {
   return {
