@@ -196,6 +196,23 @@ export const dispatchChunkParse = async (
     logger.warn(`  Skipped unsupported languages: ${summary}`);
   }
 
+  // Clone-safety telemetry (#2112): files whose parse output carried a value
+  // the structured-clone algorithm couldn't serialize across the worker
+  // boundary. The worker sanitized/dropped the offending value so the run
+  // could complete; surface the (rare) data loss so it's visible and the
+  // offending extractor can be fixed at source.
+  const skippedPaths: string[] = [];
+  for (const result of chunkResults) {
+    for (const entry of result.skippedPaths ?? []) skippedPaths.push(entry.path);
+  }
+  if (skippedPaths.length > 0) {
+    const shown = skippedPaths.slice(0, 10).join(', ');
+    const more = skippedPaths.length > 10 ? ` …and ${skippedPaths.length - 10} more` : '';
+    logger.warn(
+      `  Sanitized ${skippedPaths.length} file(s) with non-serializable parse output: ${shown}${more}`,
+    );
+  }
+
   onFileProgress?.(total, total, 'done');
   return chunkResults;
 };

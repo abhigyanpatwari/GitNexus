@@ -25,6 +25,7 @@ import {
   deriveDefaultExportHocName,
 } from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { type SkippedPath, isDataCloneError, makeWorkerResultCloneSafe } from './clone-safety.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
   ExtractedRouterInclude,
@@ -389,6 +390,15 @@ export interface ParseWorkerResult {
    */
   parsedFiles: ParsedFile[];
   skippedLanguages: Record<string, number>;
+  /**
+   * Files whose parse output carried a value the structured-clone algorithm
+   * couldn't serialize across the worker boundary (#2112). The clone-safety
+   * net stripped or dropped the offending value so the result could be
+   * delivered; these paths are surfaced to the operator so the (rare) data
+   * loss is visible. Optional for cache backward compatibility — older cache
+   * entries predate the field; consumers must guard with `?? []`.
+   */
+  skippedPaths?: SkippedPath[];
   fileCount: number;
 }
 
@@ -2355,8 +2365,52 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
+  if (src.skippedPaths && src.skippedPaths.length > 0) {
+    (target.skippedPaths ??= []).push(...src.skippedPaths);
+  }
   target.fileCount += src.fileCount;
 };
+
+/**
+ * Deliver the accumulated result to the pool, surviving a non-cloneable value
+ * (#2112). Fast path: post as-is — on a healthy result this is the only thing
+ * that runs, so clone-safety adds zero overhead to normal runs. If structured
+ * clone rejects the payload (a function/symbol leaked into an extraction
+ * record — the reporter's case was a node `properties` value pointing at a
+ * native `toString`), rewrite the boundary-crossing arrays so the result is
+ * cloneable, record the affected paths on `result.skippedPaths`, warn the
+ * operator naming the offending field + file (so the still-unpinned leak is
+ * diagnosable from logs and fixable at source), and re-post. A payload that is
+ * STILL uncloneable after sanitizing re-throws to the message handler's catch,
+ * which degrades to the existing primitive-only `{type:'error'}` report.
+ */
+function postResultCloneSafe(result: ParseWorkerResult): void {
+  try {
+    parentPort!.postMessage({ type: 'result', data: result });
+    return;
+  } catch (err) {
+    if (!isDataCloneError(err)) throw err;
+  }
+  const { skipped } = makeWorkerResultCloneSafe(result as unknown as Record<string, unknown>, {
+    dropWholeElement: new Set(['parsedFiles']),
+    skipFields: new Set(['skippedPaths']),
+  });
+  if (skipped.length > 0) {
+    result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
+    const sample = skipped
+      .slice(0, 5)
+      .map((s) => `${s.path} (${s.reason})`)
+      .join('; ');
+    const more = skipped.length > 5 ? ` …and ${skipped.length - 5} more` : '';
+    if (parentPort) {
+      parentPort.postMessage({
+        type: 'warning',
+        message: `Sanitized ${skipped.length} file(s) with non-serializable parse output before delivery: ${sample}${more}`,
+      });
+    }
+  }
+  parentPort!.postMessage({ type: 'result', data: result });
+}
 
 // Signal the pool that worker-side initialization (parser imports, language
 // grammars, type-env setup, all helper modules) is complete and the message
@@ -2470,7 +2524,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
           accumulated.parsedFiles = [];
         }
       }
-      parentPort!.postMessage({ type: 'result', data: accumulated });
+      postResultCloneSafe(accumulated);
       // Reset for potential reuse
       accumulated = {
         nodes: [],
