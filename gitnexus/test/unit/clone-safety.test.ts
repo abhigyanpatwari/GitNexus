@@ -324,4 +324,35 @@ describe('clone-safety', () => {
       expect(out.bad).toBeUndefined(); // function value stripped to undefined
     });
   });
+
+  // U4 (#2112): single-pass scan rebuilds only the dirty array (from the first
+  // dirty element on), and leaves every clean array untouched by identity.
+  describe('single-pass identity preservation', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('reassigns only the dirty field; clean fields keep identity', () => {
+      const cleanSymbols = [{ id: 's', filePath: 's.ts' }];
+      const cleanPrefix = { id: 'n0', properties: { filePath: 'n0.ts' } };
+      const dirtyNodes = [
+        cleanPrefix,
+        { id: 'n1', properties: { filePath: 'n1.ts', bad: () => 1 } },
+      ];
+      const result: Record<string, unknown> = {
+        nodes: dirtyNodes,
+        symbols: cleanSymbols,
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 2,
+      };
+      makeWorkerResultCloneSafe(result, opts);
+      expect(result.symbols).toBe(cleanSymbols); // clean field untouched (identity)
+      expect(result.nodes).not.toBe(dirtyNodes); // dirty field rebuilt
+      const outNodes = result.nodes as Array<Record<string, unknown>>;
+      expect(outNodes[0]).toBe(cleanPrefix); // clean prefix copied by reference
+      expect(isStructuredCloneable(result)).toBe(true);
+    });
+  });
 });

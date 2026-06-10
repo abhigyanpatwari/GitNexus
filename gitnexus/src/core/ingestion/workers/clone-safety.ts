@@ -301,15 +301,21 @@ export function makeWorkerResultCloneSafe<T extends Record<string, unknown>>(
     if (options.skipFields?.has(field)) continue;
     const value = result[field];
     if (!Array.isArray(value)) continue;
-    if (!containsNonCloneable(value, new WeakSet())) continue;
 
     const dropWhole = options.dropWholeElement.has(field);
-    const out: unknown[] = [];
-    for (const element of value) {
+    // Single pass: scan each element once. `out` is built lazily — only once a
+    // dirty element appears — by copying the clean prefix, so a fully-clean
+    // array is never rebuilt and keeps its referential identity (no field
+    // reassignment). Each element seeds its own depth-0 scan (independent
+    // subtree).
+    let out: unknown[] | null = null;
+    for (let i = 0; i < value.length; i++) {
+      const element = value[i];
       if (!containsNonCloneable(element, new WeakSet())) {
-        out.push(element);
+        if (out) out.push(element);
         continue;
       }
+      if (!out) out = value.slice(0, i); // first dirty element: copy clean prefix
       const path = findFilePath(element, pathKeys) ?? '(unknown)';
       if (dropWhole) {
         skipped.push({ path, reason: `dropped non-serializable ${field} entry` });
@@ -329,7 +335,7 @@ export function makeWorkerResultCloneSafe<T extends Record<string, unknown>>(
         skipped.push({ path, reason: `dropped unsalvageable ${field} entry` });
       }
     }
-    (result as Record<string, unknown>)[field] = out;
+    if (out) (result as Record<string, unknown>)[field] = out;
   }
 
   return { skipped };
