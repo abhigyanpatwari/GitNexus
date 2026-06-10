@@ -13,6 +13,17 @@ import { makeWorkerResultCloneSafe } from './clone-safety.js';
 import type { ParseWorkerResult } from './parse-worker.js';
 
 /**
+ * Strict mode (opt-in via `GITNEXUS_STRICT_CLONE=1`, inherited by workers). When
+ * on, a clone failure THROWS with the offending key path instead of silently
+ * sanitizing + delivering — so a leak introduced by a future provider/extractor
+ * change fails LOUDLY (in CI / dev) at its origin rather than being quietly
+ * stripped in production. The silent-recovery behavior is exactly what hid the
+ * original #2112 leak; strict mode removes the silence where we want loudness.
+ * Off in production, where the net's job is to keep the run alive.
+ */
+const STRICT_CLONE = process.env.GITNEXUS_STRICT_CLONE === '1';
+
+/**
  * Deliver the accumulated result to the pool, surviving a non-cloneable value
  * (#2112). Fast path: post as-is — on a healthy result this is the only thing
  * that runs, so clone-safety adds zero overhead to normal runs. If structured
@@ -50,6 +61,15 @@ export function postResultCloneSafe(result: ParseWorkerResult): void {
       skipFields: new Set<keyof ParseWorkerResult>(['skippedPaths']),
     });
     if (skipped.length > 0) {
+      if (STRICT_CLONE) {
+        // Surface the leak loudly with its exact key path(s) instead of
+        // delivering a sanitized result. Routes to the catch below → a
+        // primitive-only {type:'error'} the pool reports, failing CI.
+        const detail = skipped.map((s) => `${s.path}: ${s.reason}`).join('; ');
+        throw new Error(
+          `GITNEXUS_STRICT_CLONE: worker result was not structured-cloneable — ${detail}`,
+        );
+      }
       result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
       const sample = skipped
         .slice(0, 5)

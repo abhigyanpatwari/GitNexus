@@ -156,7 +156,14 @@ const nodeNames = (graph: ReturnType<typeof createKnowledgeGraph>): Set<string> 
   return names;
 };
 
-describe('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
+// These cases deliberately inject non-cloneable values, so they're meaningless
+// under a global GITNEXUS_STRICT_CLONE=1 run (strict turns the sanitize into a
+// throw). Skip the whole suite there — a global strict lane's value is running
+// the REAL-extractor integration tests under strict, not this synthetic one.
+// The strict-mode case below sets the flag itself (self-contained).
+const STRICT = process.env.GITNEXUS_STRICT_CLONE === '1';
+
+describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
   let tempDir: string;
   let repoDir: string;
 
@@ -233,6 +240,23 @@ describe('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
     expect(names.has('good_a')).toBe(true);
     expect(names.has('good_c')).toBe(true);
     expect(names.has('poison')).toBe(true);
+  });
+
+  it('strict mode (GITNEXUS_STRICT_CLONE=1) surfaces the leak loudly with the key path, not silent sanitize', async () => {
+    // The spawned worker inherits process.env, so postResultCloneSafe runs in
+    // strict mode: instead of sanitizing + delivering, it THROWS with the exact
+    // offending key path → the run rejects (a real future extractor leak would
+    // fail CI loudly at its origin instead of being silently stripped in prod).
+    const prev = process.env.GITNEXUS_STRICT_CLONE;
+    process.env.GITNEXUS_STRICT_CLONE = '1';
+    try {
+      await expect(runWith(writeWorker(CLONE_SAFE_WORKER))).rejects.toThrow(
+        /STRICT_CLONE|not structured-cloneable|properties\.toString/i,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_STRICT_CLONE;
+      else process.env.GITNEXUS_STRICT_CLONE = prev;
+    }
   });
 
   it('RED control: without clone-safety, the same poison result aborts the parse phase', async () => {
