@@ -143,6 +143,19 @@ export function assertCloneable<T>(value: T extends Cloneable<T> ? T : Cloneable
 const MAX_CLONE_DEPTH = 200;
 
 /**
+ * True iff `key` is a canonical array-index string (`"0"`, `"1"`, … `< 2^32-1`)
+ * — i.e. one of the slots the numeric index loop already visits. Everything
+ * else returned by `Object.keys(array)` is a NON-index own-enumerable property
+ * (`arr.meta = …`), which the structured-clone algorithm ALSO serializes (and
+ * throws on if non-cloneable). The array branches of `containsNonCloneable` and
+ * `stripNonCloneable` use this to scan those extra keys in lockstep.
+ */
+function isArrayIndexKey(key: string): boolean {
+  const n = Number(key);
+  return Number.isInteger(n) && n >= 0 && n < 4294967295 && String(n) === key;
+}
+
+/**
  * Non-allocating scan: returns true on the FIRST value structured-clone would
  * reject. Used to decide whether an array (or element) needs rewriting at all,
  * so clean arrays keep their referential identity and pay no copy cost.
@@ -169,6 +182,19 @@ function containsNonCloneable(value: unknown, seen: WeakSet<object>, depth = 0):
   if (Array.isArray(obj)) {
     for (let i = 0; i < obj.length; i++) {
       if (containsNonCloneable(obj[i], seen, depth + 1)) return true;
+    }
+    // structuredClone also serializes an array's NON-index own-enumerable
+    // properties and throws on a non-cloneable one — scan them too (lockstep
+    // with stripNonCloneable's array branch; see isArrayIndexKey).
+    for (const key of Object.keys(obj)) {
+      if (isArrayIndexKey(key)) continue;
+      let child: unknown;
+      try {
+        child = (obj as unknown as Record<string, unknown>)[key];
+      } catch {
+        return true; // a throwing getter can't be serialized either
+      }
+      if (containsNonCloneable(child, seen, depth + 1)) return true;
     }
     return false;
   }
@@ -281,6 +307,26 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0, path = ''):
     ctx.seen.set(obj, out);
     for (let i = 0; i < obj.length; i++)
       out.push(stripNonCloneable(obj[i], ctx, depth + 1, `${path}[${i}]`));
+    // Carry NON-index own-enumerable props through the same strip (lockstep
+    // with containsNonCloneable): structuredClone serializes them, so a
+    // non-cloneable one must be stripped rather than left to throw on re-post.
+    for (const key of Object.keys(obj)) {
+      if (isArrayIndexKey(key)) continue;
+      const childPath = `${path}.${key}`;
+      let child: unknown;
+      try {
+        child = (obj as unknown as Record<string, unknown>)[key];
+      } catch {
+        recordStrip(ctx, childPath);
+        continue;
+      }
+      (out as unknown as Record<string, unknown>)[key] = stripNonCloneable(
+        child,
+        ctx,
+        depth + 1,
+        childPath,
+      );
+    }
     return out;
   }
   if (obj instanceof Map) {

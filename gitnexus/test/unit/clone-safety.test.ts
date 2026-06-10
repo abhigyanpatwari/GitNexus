@@ -274,6 +274,53 @@ describe('clone-safety', () => {
     });
   });
 
+  // R1 (#2135 tri-review): structuredClone serializes an array's NON-index
+  // own-enumerable properties and throws on a non-cloneable one. The index-only
+  // scan used to wave such an array through (`skipped: []`), leaving the result
+  // non-cloneable so the re-post threw and fail-closed → re-arming the cascade.
+  describe('array non-index own-enumerable properties', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('strips a non-index function property off a nested array and delivers the record', () => {
+      const tags: unknown[] & { meta?: unknown } = [1, 2, 3];
+      tags.meta = () => {}; // non-index own prop carrying a function
+      // sanity: this is the exact shape structuredClone rejects
+      expect(isStructuredCloneable({ tags })).toBe(false);
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'a', filePath: 'a.ts', tags }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true); // net no longer defeated
+      expect(skipped.length).toBeGreaterThan(0);
+      const outTags = (result.nodes as Array<{ tags: unknown[] & { meta?: unknown } }>)[0].tags;
+      expect(Array.from(outTags)).toEqual([1, 2, 3]); // indexed elements preserved
+      expect(outTags.meta).toBeUndefined(); // the function was stripped
+    });
+
+    it('carries a CLONEABLE non-index property through the strip', () => {
+      const tags: unknown[] & { note?: unknown; bad?: unknown } = [1];
+      tags.note = 'keep'; // cloneable non-index prop — must survive
+      tags.bad = () => {}; // forces the array dirty
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'b', filePath: 'b.ts', tags }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true);
+      const outTags = (result.nodes as Array<{ tags: { note?: unknown; bad?: unknown } }>)[0].tags;
+      expect(outTags.note).toBe('keep'); // data prop carried onto the stripped copy
+      expect(outTags.bad).toBeUndefined();
+    });
+  });
+
   // U3 (#2112): a DAG-aliased record (the same subobject reached via two paths)
   // carrying a non-cloneable must be stripped-and-KEPT, not over-dropped — the
   // old shared-WeakSet returned the un-stripped original on revisit, failing the
