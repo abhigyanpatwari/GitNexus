@@ -1081,7 +1081,13 @@ export const listRegisteredRepos = async (opts?: {
       if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
         // Index genuinely removed — safe to prune
       } else {
-        // Not provably absent — keep entry to prevent mass registry wipe
+        // Not provably absent — keep entry to prevent mass registry wipe.
+        // Warn so an I/O storm becomes observable instead of silently
+        // keeping (or, pre-fix, silently wiping) entries.
+        logger.warn(
+          { name: entry.name, storagePath: entry.storagePath, code: err?.code },
+          'Keeping registry entry despite fs.access failure (not provably absent); not pruning to avoid mass registry wipe.',
+        );
         valid.push(entry);
       }
     }
