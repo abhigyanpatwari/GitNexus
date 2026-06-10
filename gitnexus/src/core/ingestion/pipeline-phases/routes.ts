@@ -374,9 +374,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // built-in convention — still produce route_map consumers; without them it
     // silently falls back to `consumers: []`. Configured names alone are enough
     // to run the scan even when nothing was auto-detected.
-    const configuredWrappers = (ctx.options?.fetchWrappers ?? [])
-      .map((n) => (typeof n === 'string' ? n.trim() : ''))
-      .filter((n) => n.length > 0);
+    // Configured names are already validated/trimmed/de-duped/capped by
+    // analyze-config.ts — trusted as-is (#1589/#1852 review F9, dropped the
+    // redundant re-trim/re-filter). The single filter below guards only the
+    // auto-detected `functionName`s, which have no shape guarantee.
+    const configuredWrappers = ctx.options?.fetchWrappers ?? [];
     const wrapperNames = new Set<string>(
       [...(allFetchWrapperDefs ?? []).map((d) => d.functionName), ...configuredWrappers].filter(
         (n): n is string => typeof n === 'string' && n.trim().length > 0,
