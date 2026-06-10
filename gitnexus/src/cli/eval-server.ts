@@ -205,6 +205,12 @@ export function formatImpactResult(result: any): string {
           `[${c.impactedCount ?? 0} ${direction}, risk ${c.risk ?? 'UNKNOWN'}]  (uid: ${c.uid})`,
       );
     }
+    // #2129 review F1 — a failed per-candidate probe makes the max a lower bound.
+    if (result.partialProbe) {
+      lines.push(
+        '  ⚠️  One or more candidate probes failed — max blast radius / risk are lower bounds.',
+      );
+    }
     return lines.join('\n');
   }
 

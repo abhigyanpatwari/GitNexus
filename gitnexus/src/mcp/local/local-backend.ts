@@ -3181,6 +3181,12 @@ export class LocalBackend {
       // never read as "safe to refactor". Candidates arrive sorted by score.
       const AMBIGUOUS_MAX_CANDIDATES = 6;
       const probed = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
+      // `partialProbe` is intentionally a SECOND incompleteness flag, distinct
+      // from the traversal-interrupted `partial` flag used elsewhere: it means
+      // one or more per-candidate probes threw, so maxRisk / maxImpactedCount
+      // are lower bounds over the probes that succeeded (a failed candidate must
+      // not be masked by a benign sibling success).
+      let probeFailed = false;
       const candidateSummaries = await Promise.all(
         probed.map(async (c) => {
           const cType = c.type || '';
@@ -3208,6 +3214,7 @@ export class LocalBackend {
               },
             );
           } catch (e) {
+            probeFailed = true;
             logQueryError('impact:ambiguous-candidate', e);
           }
           return {
@@ -3260,6 +3267,7 @@ export class LocalBackend {
         risk: 'UNKNOWN',
         maxImpactedCount,
         maxRisk,
+        ...(probeFailed ? { partialProbe: true } : {}),
         ...(truncated && { candidatesTruncated: true }),
         candidates: candidateSummaries,
       };

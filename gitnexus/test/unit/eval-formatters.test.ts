@@ -251,6 +251,46 @@ describe('formatImpactResult', () => {
     expect(result).toContain('src/sync-logic.ts');
     expect(result).toContain('[3 upstream');
     expect(result).toContain('--uid');
+    // No probe failed here → no lower-bound warning.
+    expect(result).not.toContain('candidate probes failed');
+  });
+
+  it('warns that the max is a lower bound when a candidate probe failed (#2129 review F1)', () => {
+    const result = formatImpactResult({
+      status: 'ambiguous',
+      target: { name: 'classifyCard' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      maxImpactedCount: 2,
+      maxRisk: 'LOW',
+      partialProbe: true,
+      candidates: [
+        {
+          uid: 'A',
+          name: 'classifyCard',
+          kind: 'Function',
+          filePath: 'src/a.ts',
+          line: 1,
+          impactedCount: 2,
+          risk: 'LOW',
+        },
+        {
+          uid: 'B',
+          name: 'classifyCard',
+          kind: 'Function',
+          filePath: 'src/b.ts',
+          line: 1,
+          impactedCount: 0,
+          risk: 'UNKNOWN',
+        },
+      ],
+    });
+    expect(result).not.toContain('isolated');
+    expect(result).toContain('candidate probes failed');
+    expect(result).toContain('lower bound');
+    // The honest max is still shown.
+    expect(result).toContain('Max blast radius 2');
   });
 
   it('surfaces the lower-bound boundary note when epistemic is lower-bound (#1858)', () => {
