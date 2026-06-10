@@ -2494,6 +2494,17 @@ export class LocalBackend {
       }
     }
 
+    // #1858 — same epistemic boundary signal as impact(): when this symbol sits
+    // behind an interface / indirection boundary, callers binding via DI or
+    // dynamic dispatch are not reflected in `incoming`, so the view is a lower
+    // bound. Additive; never suppresses a field.
+    const epistemic = await this.computeEpistemicBoundary(
+      repo,
+      symId,
+      (symKind as string) || '',
+      (sym.name || sym[1]) as string,
+    );
+
     return {
       status: 'found',
       symbol: {
@@ -2506,6 +2517,7 @@ export class LocalBackend {
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
+      ...epistemic,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
       ...(typedPropertyRows.length > 0
@@ -3158,21 +3170,89 @@ export class LocalBackend {
     }
 
     if (outcome.kind === 'ambiguous') {
+      // #2129 — a bare name that collides with several symbols must NOT report a
+      // bare `impactedCount: 0`. The real blast radius lives under whichever
+      // candidate the caller meant; a flat zero here is precisely the silent
+      // under-report the "run impact before editing" workflow exists to prevent
+      // (the dropped caller calls a *different* same-name node, so it never shows
+      // up against the one the resolver happened to pick). Run a bounded,
+      // summary-only BFS per candidate so each one's true count + risk is
+      // visible, and surface the maximum at the top level so the headline can
+      // never read as "safe to refactor". Candidates arrive sorted by score.
+      const AMBIGUOUS_MAX_CANDIDATES = 6;
+      const probed = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
+      const candidateSummaries = await Promise.all(
+        probed.map(async (c) => {
+          const cType = c.type || '';
+          const cRelTypes =
+            (cType === 'Class' || cType === 'Interface') &&
+            !hasExplicitRelationTypes &&
+            !relationTypes.includes('ACCESSES')
+              ? [...relationTypes, 'ACCESSES']
+              : relationTypes;
+          let summary: any = null;
+          try {
+            summary = await this._runImpactBFS(
+              repo,
+              { id: c.id, name: c.name, filePath: c.filePath },
+              cType,
+              direction,
+              {
+                maxDepth,
+                relationTypes: cRelTypes,
+                includeTests,
+                minConfidence,
+                summaryOnly: true,
+                skipEpistemic: true,
+              },
+            );
+          } catch (e) {
+            logQueryError('impact:ambiguous-candidate', e);
+          }
+          return {
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+            impactedCount: summary?.impactedCount ?? 0,
+            risk: summary?.risk ?? 'UNKNOWN',
+            direct: summary?.summary?.direct ?? 0,
+          };
+        }),
+      );
+
+      // Rank by blast radius so the most-impactful interpretation is first, and
+      // hoist the maximum count/risk to the top level so the response cannot be
+      // misread as "no impact".
+      candidateSummaries.sort((a, b) => b.impactedCount - a.impactedCount);
+      const maxImpactedCount = candidateSummaries.reduce((m, c) => Math.max(m, c.impactedCount), 0);
+      const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+      const maxRisk = candidateSummaries.reduce((worst, c) => {
+        return RISK_ORDER.indexOf(c.risk) > RISK_ORDER.indexOf(worst) ? c.risk : worst;
+      }, 'LOW');
+      const truncated = outcome.candidates.length > probed.length;
+
       return {
         status: 'ambiguous',
-        message: `Found ${outcome.candidates.length} symbols matching '${target}'. Use target_uid, file_path, or kind to disambiguate.`,
+        message:
+          `Found ${outcome.candidates.length} symbols matching '${target}'. Blast radius differs per ` +
+          `candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). Disambiguate with target_uid ` +
+          `(or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
+        // `impactedCount` stays 0 and `risk` stays UNKNOWN — there is no single
+        // resolved symbol, and UNKNOWN must NOT read as "safe to refactor". The
+        // real blast radius is surfaced per-candidate plus `maxImpactedCount` /
+        // `maxRisk` so a real caller can never hide behind the ambiguous zero
+        // (#2129).
         impactedCount: 0,
         risk: 'UNKNOWN',
-        candidates: outcome.candidates.map((c) => ({
-          uid: c.id,
-          name: c.name,
-          kind: c.type,
-          filePath: c.filePath,
-          line: c.startLine,
-          score: Number(c.score.toFixed(2)),
-        })),
+        maxImpactedCount,
+        maxRisk,
+        ...(truncated && { candidatesTruncated: true }),
+        candidates: candidateSummaries,
       };
     }
 
@@ -3202,6 +3282,117 @@ export class LocalBackend {
   }
 
   /**
+   * #1858 — epistemic lower-bound detection.
+   *
+   * impact()/context() traverse only edges materialized in the graph. When the
+   * queried symbol sits on an interface / abstract boundary, callers that bind
+   * to the interface via DI, a container, or dynamic dispatch — rather than
+   * naming the concrete symbol — are not traced. The reported count is then a
+   * lower bound, not an exact figure. Instead of returning a confident count
+   * that silently omits those callers, annotate the result with
+   * `epistemic: 'lower-bound'` plus a human-readable boundary note. A fully
+   * resolved leaf with no indirection stays `epistemic: 'exact'`.
+   *
+   * Aligns with the numeric confidence model rather than the long-deleted
+   * TIER_CONFIDENCE enum: the heritage/indirection edges this keys on
+   * (IMPLEMENTS / METHOD_IMPLEMENTS / EXTENDS) carry the 0.85
+   * `IMPACT_RELATION_CONFIDENCE` floor — "statically verifiable, but the
+   * concrete binding past it is not".
+   *
+   * Never throws: on query error it returns 'exact', so it can only add signal,
+   * never suppress a result.
+   */
+  private async computeEpistemicBoundary(
+    repo: RepoHandle,
+    symId: string,
+    symType: string,
+    symName: string,
+  ): Promise<{ epistemic: 'exact' | 'lower-bound'; boundaries?: string[] }> {
+    const HERITAGE_TYPES = ['IMPLEMENTS', 'METHOD_IMPLEMENTS', 'EXTENDS'];
+    const CONSUMER_TYPES = ['CALLS', 'USES', 'ACCESSES'];
+    try {
+      // Discover the interface / abstract supertypes on the target's boundary.
+      // If the target is itself an interface, it is its own boundary node.
+      const boundary = new Map<string, { name: string; label: string }>();
+      if (symType === 'Interface') {
+        boundary.set(symId, { name: symName || '', label: 'Interface' });
+      }
+      const ifaceRows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (x)-[r:CodeRelation]->(iface)
+         WHERE x.id = $symId AND r.type IN $heritage
+         RETURN DISTINCT iface.id AS id, iface.name AS name, labels(iface)[0] AS label
+         LIMIT 25`,
+        { symId, heritage: HERITAGE_TYPES },
+      ).catch(() => []);
+      for (const r of ifaceRows) {
+        const id = (r.id ?? r[0]) as string;
+        if (id && !boundary.has(id)) {
+          boundary.set(id, {
+            name: (r.name ?? r[1] ?? '') as string,
+            label: (r.label ?? r[2] ?? 'Interface') as string,
+          });
+        }
+      }
+      if (boundary.size === 0) return { epistemic: 'exact' };
+
+      const ifaceIds = Array.from(boundary.keys());
+      // Count per interface id with scalar equality. A parameterized
+      // `iface.id IN $ids` combined with `COUNT(DISTINCT ...)` + implicit
+      // group-by returns no rows under the LadybugDB cypher subset, so query
+      // each boundary node individually (boundary is small — capped at 25).
+      const countByType = async (types: string[]): Promise<Map<string, number>> => {
+        const m = new Map<string, number>();
+        await Promise.all(
+          ifaceIds.map(async (ifaceId) => {
+            const rows = await executeParameterized(
+              repo.lbugPath,
+              `MATCH (other)-[r:CodeRelation]->(iface)
+               WHERE iface.id = $ifaceId AND r.type IN $types
+               RETURN COUNT(DISTINCT other.id) AS cnt`,
+              { ifaceId, types },
+            ).catch(() => []);
+            const cnt =
+              rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
+            m.set(ifaceId, cnt);
+          }),
+        );
+        return m;
+      };
+      const [implCounts, consumerCounts] = await Promise.all([
+        countByType(HERITAGE_TYPES),
+        countByType(CONSUMER_TYPES),
+      ]);
+
+      const boundaries: string[] = [];
+      for (const [id, info] of boundary) {
+        const impls = implCounts.get(id) ?? 0;
+        const consumers = consumerCounts.get(id) ?? 0;
+        // Flag only a genuine indirection risk: an interface that is actually
+        // consumed (callers bind to it) or that has multiple implementations
+        // (runtime dispatch is ambiguous). A concrete type implementing an
+        // interface nothing references is fully traced → stays exact.
+        if (consumers >= 1 || impls >= 2) {
+          const label = (info.label || 'Interface').toLowerCase();
+          const name = info.name || '(unnamed)';
+          const parts: string[] = [];
+          if (impls >= 1) parts.push(`${impls} implementation(s)`);
+          if (consumers >= 1) parts.push(`${consumers} interface-level consumer(s)`);
+          boundaries.push(
+            `${name} is an ${label} with ${parts.join(' and ')}; callers that bind via the ${label} ` +
+              `(e.g. a DI container or dynamic dispatch) are not traced to the concrete symbol — ` +
+              `actual impact may be higher.`,
+          );
+        }
+      }
+      if (boundaries.length === 0) return { epistemic: 'exact' };
+      return { epistemic: 'lower-bound', boundaries };
+    } catch {
+      return { epistemic: 'exact' };
+    }
+  }
+
+  /**
    * Shared BFS traversal for impact analysis (name-resolved or UID-resolved symbol).
    */
   private async _runImpactBFS(
@@ -3218,6 +3409,7 @@ export class LocalBackend {
       offset?: number;
       summaryOnly?: boolean;
       skipPerSymbolEnrichment?: boolean;
+      skipEpistemic?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
@@ -3673,6 +3865,15 @@ export class LocalBackend {
       byDepthCounts[Number(depth)] = items.length;
     }
 
+    // #1858 — flag the result as a lower bound when an interface / indirection
+    // boundary is on the path (callers binding via DI or dynamic dispatch are
+    // not traced to the concrete symbol). Additive: leaves impactedCount and
+    // every existing field untouched. Skipped for the bounded per-candidate
+    // probes of an ambiguous #2129 resolution, which only need count + risk.
+    const epistemic = opts.skipEpistemic
+      ? {}
+      : await this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
+
     const base = {
       target: {
         id: symId,
@@ -3683,6 +3884,7 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      ...epistemic,
       ...(!traversalComplete && { partial: true }),
       summary: {
         direct: directCount,
