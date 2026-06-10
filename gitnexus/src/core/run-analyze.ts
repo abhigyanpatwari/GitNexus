@@ -35,6 +35,7 @@ import {
 } from './lbug/wal-checkpoint-driver.js';
 import {
   getStoragePaths,
+  resolveBranchPlacement,
   saveMeta,
   loadMeta,
   ensureGitNexusIgnored,
@@ -60,6 +61,7 @@ import {
 } from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
+  getCurrentBranch,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -122,6 +124,16 @@ export interface AnalyzeOptions {
    * "main" fallback for non-CLI callers (e.g. the server analyze worker).
    */
   defaultBranch?: string;
+  /**
+   * Index-branch selector (#2106). Distinct from `defaultBranch` (which only
+   * affects generated AGENTS.md/CLAUDE.md base_ref text). When set, this run is
+   * labelled as that branch and routed to a per-branch index slot unless it is
+   * the primary branch. When `undefined`, the branch is auto-detected from the
+   * checked-out HEAD (the flat/primary slot for the first-indexed branch, a
+   * `branches/<slug>/` sub-directory otherwise). Detached HEAD / non-git always
+   * maps to the flat slot.
+   */
+  branch?: string;
   /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
@@ -242,7 +254,10 @@ export async function runFullAnalysis(
   // worker-side reset is needed (see safe-parse.ts ParseTimeoutError contract).
   resetDegradedParseCounter();
 
-  const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
+  // (parse-cache, parsedfile-store) and the kuzu-migration cleanup live there
+  // and are shared across branches (#2106 KTD7).
+  const { storagePath } = getStoragePaths(repoPath);
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -252,7 +267,23 @@ export async function runFullAnalysis(
 
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
-  const existingMeta = await loadMeta(storagePath);
+
+  // ── #2106: resolve which branch slot this run writes to ───────────────
+  // `branchLabel` is the branch identity recorded in meta.json (incl. the
+  // primary). `placement.branch` is undefined for the flat/primary slot (the
+  // lbug/meta paths stay byte-identical to single-branch behavior) and set for
+  // a `branches/<slug>/` sub-directory. Explicit `--branch` is always honored;
+  // otherwise auto-detect the checked-out branch (null for detached HEAD /
+  // non-git → flat slot).
+  const branchLabel = options.branch ?? (repoHasGit ? getCurrentBranch(repoPath) : null);
+  const placement = await resolveBranchPlacement(repoPath, branchLabel);
+  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
+  // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
+  // slot, `branches/<slug>/` otherwise). loadMeta/saveMeta operate on it so
+  // each branch keeps its own lastCommit / fileHashes / incremental dirty flag.
+  const metaDir = path.dirname(metaPath);
+
+  const existingMeta = await loadMeta(metaDir);
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
@@ -553,8 +584,8 @@ export async function runFullAnalysis(
         } unchanged file rows preserved)`,
     );
     // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
-    // success at the meta-save step.
-    await saveMeta(storagePath, {
+    // success at the meta-save step. Scoped to this branch's meta.json.
+    await saveMeta(metaDir, {
       ...existingMeta!,
       incrementalInProgress: {
         startedAt: Date.now(),
@@ -938,6 +969,11 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      // Branch identity this index represents (#2106). Recorded for the flat
+      // slot too (so resolveBranchPlacement knows which branch owns it) but
+      // omitted entirely when undefined — detached HEAD / non-git stays
+      // byte-identical to single-branch output (JSON.stringify drops undefined).
+      branch: branchLabel ?? undefined,
       // Captured here (not at registration) so it travels with the
       // on-disk meta.json — sibling-clone fingerprinting works for
       // out-of-tree consumers (group-status, future tooling) without
@@ -978,7 +1014,7 @@ export async function runFullAnalysis(
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
     };
-    await saveMeta(storagePath, meta);
+    await saveMeta(metaDir, meta);
 
     // Persist the incremental parse cache for the next run. Wraps in
     // try/catch so a cache-write failure never breaks an otherwise
@@ -1037,29 +1073,34 @@ export async function runFullAnalysis(
       aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
     }
 
-    try {
-      await generateAIContextFiles(
-        repoPath,
-        storagePath,
-        projectName,
-        {
-          files: pipelineResult.totalFileCount,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          clusters: aggregatedClusterCount,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-        undefined,
-        {
-          skipAgentsMd: options.skipAgentsMd,
-          skipSkills: options.skipSkills,
-          noStats: options.noStats,
-          defaultBranch: options.defaultBranch,
-        },
-      );
-    } catch {
-      // Best-effort — don't fail the entire analysis for context file issues
+    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
+    // skills) for the primary/flat index (#2106). A non-primary branch analyze
+    // must not churn the repo's committed AGENTS.md with branch-specific stats.
+    if (!placement.branch) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            clusters: aggregatedClusterCount,
+            processes: pipelineResult.processResult?.stats.totalProcesses,
+          },
+          undefined,
+          {
+            skipAgentsMd: options.skipAgentsMd,
+            skipSkills: options.skipSkills,
+            noStats: options.noStats,
+            defaultBranch: options.defaultBranch,
+          },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
