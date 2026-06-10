@@ -69,16 +69,17 @@ function reaches(adj: Map<string, string[]>, from: string, to: string): boolean 
   return seen.has(to);
 }
 
-describe('U7 — AC1: 10-function fixture CFG snapshot', () => {
+describe('U7 — AC1: ten-functions fixture CFG snapshot', () => {
   it('matches the committed CFG node/edge set', () => {
     const cfgs = cfgsOfFile('ten-functions.ts');
-    expect(cfgs).toHaveLength(10);
+    // 10 M1 functions + 2 M2 additions (early-exit finally, shadowing — #2082 U5)
+    expect(cfgs).toHaveLength(12);
     expect(cfgs.map(serialize)).toMatchSnapshot();
   });
 });
 
 describe('U7 — AC2: every BasicBlock reachable from its function ENTRY', () => {
-  it('holds for all ten functions (no dead code in the fixture)', () => {
+  it('holds for all fixture functions (no dead code in the fixture)', () => {
     const cfgs = cfgsOfFile('ten-functions.ts');
     const { graph, nodeIds, rels } = recordingGraph();
     emitFileCfgs(graph, cfgs);

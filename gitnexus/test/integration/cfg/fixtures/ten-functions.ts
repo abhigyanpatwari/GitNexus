@@ -95,6 +95,32 @@ export function withNested(xs: number[]): void {
   end();
 }
 
+// M2 additions (#2082 U5): an early-exit-through-finally and a shadowing case —
+// the two reaching-defs acceptance shapes the original ten functions lacked.
+// Their CFG topology exercises U2's finally threading; their facts pin R4/R9.
+
+export function withEarlyExitFinally(flag: boolean): number {
+  let val = 1;
+  try {
+    if (flag) {
+      return probe(val);
+    }
+    work();
+  } finally {
+    val = 2;
+  }
+  return val;
+}
+
+export function withShadowing(): void {
+  let s = 1;
+  {
+    let s = 2;
+    use(s);
+  }
+  done2(s);
+}
+
 declare function a(): void;
 declare function b(): void;
 declare function c(): void;
@@ -113,3 +139,5 @@ declare function after(): void;
 declare function p(): void;
 declare function q(): void;
 declare function end(): void;
+declare function probe(n: number): number;
+declare function done2(n: number): void;

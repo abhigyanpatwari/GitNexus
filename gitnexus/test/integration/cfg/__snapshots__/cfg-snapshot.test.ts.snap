@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`U7 — AC1: 10-function fixture CFG snapshot > matches the committed CFG node/edge set 1`] = `
+exports[`U7 — AC1: ten-functions fixture CFG snapshot > matches the committed CFG node/edge set 1`] = `
 [
   {
     "blocks": 3,
@@ -149,6 +149,39 @@ exports[`U7 — AC1: 10-function fixture CFG snapshot > matches the committed CF
     "entry": 0,
     "exit": 1,
     "startLine": 87,
+  },
+  {
+    "blocks": 8,
+    "edges": [
+      "0->2:seq",
+      "2->4:seq",
+      "3->1:finally-return",
+      "3->1:throw",
+      "3->7:seq",
+      "4->3:throw",
+      "4->5:cond-true",
+      "4->6:seq",
+      "5->3:return",
+      "5->3:throw",
+      "6->3:seq",
+      "6->3:throw",
+      "7->1:return",
+    ],
+    "entry": 0,
+    "exit": 1,
+    "startLine": 102,
+  },
+  {
+    "blocks": 5,
+    "edges": [
+      "0->2:seq",
+      "2->3:seq",
+      "3->4:seq",
+      "4->1:seq",
+    ],
+    "entry": 0,
+    "exit": 1,
+    "startLine": 115,
   },
 ]
 `;
