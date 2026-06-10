@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
+import { requireVendoredGrammar } from './vendored-grammars.js';
 const _require = createRequire(import.meta.url);
 
 /**
@@ -131,7 +132,7 @@ const SOURCES: Record<string, GrammarSource> = {
   // user-opt-out grammar like Swift/Dart/Kotlin: a failure here is always an
   // install/platform problem the user needs to see.
   [SupportedLanguages.C]: {
-    load: () => _require('tree-sitter-c'),
+    load: () => requireVendoredGrammar('tree-sitter-c'),
     optional: true,
     severity: 'error',
     unavailableNote:
@@ -147,7 +148,7 @@ const SOURCES: Record<string, GrammarSource> = {
   // optionalDependencies — may be absent on platforms without prebuilds
   // or when users skip optional installs.
   [SupportedLanguages.Swift]: {
-    load: () => _require('tree-sitter-swift'),
+    load: () => requireVendoredGrammar('tree-sitter-swift'),
     optional: true,
     userSkippable: true,
     unavailableNote:
@@ -157,7 +158,7 @@ const SOURCES: Record<string, GrammarSource> = {
       `See ${ISSUES_URL}/1130.`,
   },
   [SupportedLanguages.Dart]: {
-    load: () => _require('tree-sitter-dart'),
+    load: () => requireVendoredGrammar('tree-sitter-dart'),
     optional: true,
     userSkippable: true,
     unavailableNote:
@@ -167,7 +168,7 @@ const SOURCES: Record<string, GrammarSource> = {
       `See ${ISSUES_URL}/1125.`,
   },
   [SupportedLanguages.Kotlin]: {
-    load: () => _require('tree-sitter-kotlin'),
+    load: () => requireVendoredGrammar('tree-sitter-kotlin'),
     optional: true,
     userSkippable: true,
     unavailableNote:

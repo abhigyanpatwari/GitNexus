@@ -52,12 +52,164 @@ describe('run-analyze module', () => {
       );
 
       expect(result.alreadyUpToDate).toBe(true);
+      // A flat/primary index reports isPrimaryBranch true (#2106 R2).
+      expect(result.isPrimaryBranch).toBe(true);
       await expect(
         fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
       ).resolves.toBe('*\n');
     } finally {
       await tmpRepo.cleanup();
     }
+  });
+
+  it('reports isPrimaryBranch false for an up-to-date non-primary branch (#2106 R2)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-nonprimary-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git checkout -b feature/x', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      const commit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      // Flat slot owned by main; feature/x has its own up-to-date branch index.
+      const flat = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(flat.storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'main',
+      });
+      const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+      await saveMeta(path.dirname(branch.metaPath), {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'feature/x',
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.isPrimaryBranch).toBe(false);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('rejects --branch that does not match the checked-out branch (#2106)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-branch-mismatch-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      // Checked out on main, but labelling the snapshot as feature/x would write
+      // main's tree into feature/x's slot — must be refused before any indexing.
+      await expect(
+        runFullAnalysis(tmpRepo.dbPath, { branch: 'feature/x' }, { onProgress: () => {} }),
+      ).rejects.toThrow(/does not match the checked-out branch/);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+});
+
+describe('collectBranchCacheKeys (#2106 R6)', () => {
+  const writeMeta = async (dir: string, cacheKeys: unknown) => {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ cacheKeys }));
+  };
+
+  it('collects sibling branch keys, excluding the current run dir', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a', 'b']); // flat
+      await writeMeta(path.join(storagePath, 'branches', 'feat'), ['c']);
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      // Excluding the flat dir → only the branch's keys.
+      const r1 = await collectBranchCacheKeys(storagePath, storagePath);
+      expect([...r1.keys].sort()).toEqual(['c']);
+      expect(r1.complete).toBe(true);
+      // Excluding the branch dir → only the flat keys.
+      const r2 = await collectBranchCacheKeys(
+        storagePath,
+        path.join(storagePath, 'branches', 'feat'),
+      );
+      expect([...r2.keys].sort()).toEqual(['a', 'b']);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('single-branch (flat only) excluded → empty (byte-identical prune)', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-solo-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a', 'b']);
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      const r = await collectBranchCacheKeys(storagePath, storagePath);
+      expect(r.keys.size).toBe(0);
+      expect(r.complete).toBe(true);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('a corrupt sibling meta sets complete=false (fail-safe retention)', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-corrupt-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a']);
+      const branchDir = path.join(storagePath, 'branches', 'feat');
+      await fs.mkdir(branchDir, { recursive: true });
+      await fs.writeFile(path.join(branchDir, 'meta.json'), '{ not valid json');
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      const r = await collectBranchCacheKeys(storagePath, storagePath);
+      expect(r.complete).toBe(false);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+});
+
+describe('primaryInversionWarning (#2106 R8)', () => {
+  it('warns when the default branch is not the flat-slot owner', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    const w = primaryInversionWarning('main', 'feature/x');
+    expect(w).toContain('default branch "main"');
+    expect(w).toContain('"feature/x" owns the flat slot');
+    expect(w).toContain('clean --branch feature/x');
+  });
+
+  it('does not warn when the default branch is null (no origin/HEAD)', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning(null, 'feature/x')).toBeUndefined();
+  });
+
+  it('does not warn when the default owns the flat slot', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning('main', 'main')).toBeUndefined();
+  });
+
+  it('trims both sides so trivial whitespace does not false-warn', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning(' main ', 'main')).toBeUndefined();
+  });
+
+  it('does not warn when there is no flat owner yet', async () => {
+    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
+    expect(primaryInversionWarning('main', undefined)).toBeUndefined();
   });
 });
 

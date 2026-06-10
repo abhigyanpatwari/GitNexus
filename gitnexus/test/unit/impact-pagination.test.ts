@@ -56,6 +56,11 @@ function setupMultiDepthHub(d1Count: number, d2Count: number) {
     const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
     if (query.includes('STEP_IN_PROCESS')) return [];
     if (query.includes('MEMBER_OF')) return [];
+    // The #1858 epistemic-boundary probe (computeEpistemicBoundary) runs
+    // concurrently with the BFS and also matches `r.type IN`, but targets the
+    // `iface` alias. Return empty so it stays `epistemic: 'exact'` and does not
+    // consume a depth slot from the frontier counter below.
+    if (query.includes('iface')) return [];
     if (query.includes('r.type IN')) {
       depth++;
       const count = depth === 1 ? d1Count : depth === 2 ? d2Count : 0;
@@ -82,6 +87,9 @@ function setupHubSymbol(count: number) {
     const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
     if (query.includes('STEP_IN_PROCESS')) return [];
     if (query.includes('MEMBER_OF')) return [];
+    // See setupMultiDepthHub — keep the #1858 epistemic probe from matching the
+    // `r.type IN` caller branch below.
+    if (query.includes('iface')) return [];
     if (query.includes('r.type IN')) {
       const res: any[] = [];
       for (let i = 0; i < count; i++) {

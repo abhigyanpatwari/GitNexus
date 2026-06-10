@@ -1,15 +1,13 @@
 /**
  * Optional grammar availability check.
  *
- * tree-sitter-dart, tree-sitter-proto, and tree-sitter-swift are vendored
- * under vendor/ and materialized into node_modules/ at postinstall. Dart
- * and Proto are built from source with node-gyp; Swift ships platform
- * prebuilds activated via node-gyp-build. tree-sitter-kotlin is a declared
- * optionalDependency (not vendored). All can be skipped via
+ * tree-sitter-dart, -proto, -swift, and -kotlin are vendored under vendor/ and
+ * loaded from there by absolute path (NEVER copied into node_modules — see
+ * core/tree-sitter/vendored-grammars.ts / #2111). Each ships committed platform
+ * prebuilds activated via node-gyp-build. All can be skipped via
  * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
- * soft-fail when the toolchain is missing (Dart/Proto), when no prebuild
- * matches the host platform (Swift), or when the optional install was
- * skipped or its native build failed (Kotlin).
+ * soft-fail when no prebuild matches the host platform (and a source build was
+ * unavailable / not attempted).
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
@@ -17,17 +15,15 @@
  * support is unavailable instead of silently getting a degraded index.
  */
 
-import { createRequire } from 'module';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isGrammarRuntimeSkipped } from '../core/tree-sitter/parser-loader.js';
+import { requireVendoredGrammar } from '../core/tree-sitter/vendored-grammars.js';
 import { cliWarn } from './cli-message.js';
-
-const _require = createRequire(import.meta.url);
 
 interface OptionalGrammar {
   /** Display name in warnings */
   name: string;
-  /** Module name to require.resolve */
+  /** Vendored grammar package name (directory under vendor/) */
   pkg: string;
   /** File extensions this grammar parses */
   extensions: string[];
@@ -109,7 +105,7 @@ export function detectMissingOptionalGrammars(): MissingGrammar[] {
       continue;
     }
     try {
-      _require(g.pkg);
+      requireVendoredGrammar(g.pkg);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       const msg = err instanceof Error ? err.message : String(err);

@@ -23,15 +23,18 @@ import Python from 'tree-sitter-python';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import Cpp from 'tree-sitter-cpp';
-import C from 'tree-sitter-c';
 import Ruby from 'tree-sitter-ruby';
-import Dart from 'tree-sitter-dart';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+
+// Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
+const C = requireVendoredGrammar('tree-sitter-c');
+const Dart = requireVendoredGrammar('tree-sitter-dart');
 
 let Kotlin: unknown;
 try {
-  Kotlin = require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
-  // Kotlin grammar may not be installed
+  // Kotlin grammar may not have a prebuild for this platform
 }
 
 const parser = new Parser();
