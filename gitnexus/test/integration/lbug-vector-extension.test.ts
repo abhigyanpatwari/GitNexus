@@ -134,15 +134,53 @@ withTestLbugDB('vector-index-creation', () => {
       await adapter.createVectorIndex();
       await expect(adapter.createVectorIndex()).resolves.toBe(true);
     });
+  });
+});
 
-    it('regression: the prepared executeQuery path cannot create the index (#2114 root cause)', async () => {
-      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-      const { CREATE_VECTOR_INDEX_QUERY } = await import('../../src/core/lbug/schema.js');
-
-      // executeQuery -> executePrepared -> conn.prepare(): rejects the
-      // multi-statement CREATE_VECTOR_INDEX procedure. This is exactly why
-      // createVectorIndex must use conn.query() instead.
-      await expect(adapter.executeQuery(CREATE_VECTOR_INDEX_QUERY)).rejects.toThrow();
+/**
+ * Regression for the #2114 root cause: the prepared `executeQuery` path cannot
+ * create the index. This lives in its OWN suite (a fresh, index-free DB) on
+ * purpose — in the `vector-index-creation` suite above the index already exists
+ * by the time this would run, so `conn.prepare()` fails with "index already
+ * exists" instead of the multi-statement rejection we want to pin. With no index
+ * present, `CALL CREATE_VECTOR_INDEX(...)` (which compiles to multiple
+ * statements) is rejected by `conn.prepare()` with "We do not support prepare
+ * multiple statements" — the exact failure that silently downgraded analyze to
+ * exact-scan, and why `createVectorIndex` must use `conn.query()` instead.
+ */
+withTestLbugDB('vector-index-prepare-rejects', () => {
+  let vectorAvailable = false;
+  let skipWarned = false;
+  beforeAll(async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const { resolveAnalyzeInstallPolicy } = await import('../../src/core/lbug/extension-loader.js');
+    vectorAvailable = await adapter.loadVectorExtension(undefined, {
+      policy: resolveAnalyzeInstallPolicy(),
     });
+  });
+  beforeEach((ctx) => {
+    if (!vectorAvailable) {
+      if (!skipWarned) {
+        skipWarned = true;
+        console.warn(
+          '[withTestLbugDB(vector-index-prepare-rejects)] Skipping — the LadybugDB VECTOR ' +
+            'extension is unavailable (unsupported platform or could not be installed).',
+        );
+      }
+      ctx.skip();
+    }
+  });
+
+  it('the prepared executeQuery path rejects CREATE_VECTOR_INDEX (#2114 root cause)', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const { CREATE_VECTOR_INDEX_QUERY } = await import('../../src/core/lbug/schema.js');
+
+    // executeQuery -> executePrepared -> conn.prepare(): the multi-statement
+    // CREATE_VECTOR_INDEX procedure cannot be prepared. Anchored to the specific
+    // error so the test can only pass for the #2114 reason — not for an
+    // unrelated throw (e.g. a missing table or an already-existing index).
+    await expect(adapter.executeQuery(CREATE_VECTOR_INDEX_QUERY)).rejects.toThrow(
+      /prepare multiple statements/i,
+    );
   });
 });
