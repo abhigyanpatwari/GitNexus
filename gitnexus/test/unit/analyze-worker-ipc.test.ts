@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 
 import { projectAnalyzeResultForIpc } from '../../src/server/analyze-worker-ipc.js';
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 
 /**
  * An `AnalyzeResult` whose `pipelineResult` is hostile to JSON in all three
@@ -65,5 +66,38 @@ describe('#2112: analyze-worker IPC projection', () => {
     // TypeError in the worker, get caught, and mis-report this success as a
     // failure. This assertion documents why the projection exists.
     expect(() => JSON.stringify(hostileResult())).toThrow(TypeError);
+  });
+
+  it('drops a REAL KnowledgeGraph from pipelineResult — the payload stays tiny (graph not materialized)', () => {
+    // The synthetic cases above use a hand-built hostile object; this uses the
+    // real createKnowledgeGraph the server path actually puts in pipelineResult,
+    // whose nodes/relationships getters would materialize the whole graph into
+    // arrays under JSON.stringify. The projection must drop it entirely.
+    const graph = createKnowledgeGraph();
+    for (let i = 0; i < 50; i++) {
+      graph.addNode({ id: `n${i}`, label: 'Function', properties: { name: `n${i}`, filePath: 'x.ts' } });
+    }
+    graph.addRelationship({ id: 'n0->n1', source: 'n0', target: 'n1', type: 'CALLS' });
+    const result: AnalyzeResult = {
+      repoName: 'demo',
+      repoPath: '/r',
+      stats: { nodes: 50, edges: 1 },
+      pipelineResult: {
+        graph,
+        repoPath: '/r',
+        totalFileCount: 50,
+        resolutionOutcomes: [],
+        usedWorkerPool: true,
+      },
+    };
+    const projected = projectAnalyzeResultForIpc(result);
+    expect('pipelineResult' in projected).toBe(false);
+    const json = JSON.stringify(projected);
+    // A materialized 50-node graph would be thousands of bytes; the projection
+    // is just the scalar fields, so this stays small.
+    expect(json.length).toBeLessThan(300);
+    const rt = JSON.parse(json);
+    expect(rt.repoName).toBe('demo');
+    expect(rt.stats.nodes).toBe(50);
   });
 });
