@@ -22,15 +22,12 @@
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
-
-/** HTTP method mapping for Spring shortcut annotations. */
-const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
-  GetMapping: 'GET',
-  PostMapping: 'POST',
-  PutMapping: 'PUT',
-  DeleteMapping: 'DELETE',
-  PatchMapping: 'PATCH',
-};
+import {
+  METHOD_ANNOTATION_TO_HTTP,
+  isRouteMemberKey,
+  findEnclosingClass,
+  unquoteSpringLiteral,
+} from './spring-shared.js';
 
 /**
  * Single predicate-free tree-sitter query that captures all route annotations
@@ -77,36 +74,6 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
 `,
 );
 
-/** Strip surrounding quotes from a tree-sitter string_literal node text. */
-function unquote(text: string): string {
-  // string_literal includes the quotes: "foo" → extract inner string_fragment
-  // But in matches, @value captures the full string_literal node; extract text
-  // by stripping first/last character (the quote marks).
-  if (
-    (text.startsWith('"') && text.endsWith('"')) ||
-    (text.startsWith("'") && text.endsWith("'"))
-  ) {
-    return text.slice(1, -1);
-  }
-  return text;
-}
-
-/** Only `path` or `value` keys carry a route — skip `produces`, `consumes`, etc. */
-function isRouteKey(keyNode: Parser.SyntaxNode | undefined): boolean {
-  if (!keyNode) return true; // positional = always a route
-  return keyNode.text === 'path' || keyNode.text === 'value';
-}
-
-/** Walk up from a method node to its enclosing class_declaration. */
-function findEnclosingClass(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  let cur: Parser.SyntaxNode | null = node.parent;
-  while (cur) {
-    if (cur.type === 'class_declaration') return cur;
-    cur = cur.parent;
-  }
-  return null;
-}
-
 /**
  * Extract Spring route annotations from a parsed Java file.
  *
@@ -141,8 +108,9 @@ export function extractSpringRoutes(
     if (!annNode || !node || !valueNode) continue;
 
     if (node.type === 'class_declaration' && annNode.text === 'RequestMapping') {
-      if (!isRouteKey(keyNode)) continue;
-      prefixByClassId.set(node.id, unquote(valueNode.text));
+      if (!isRouteMemberKey(keyNode)) continue;
+      const prefix = unquoteSpringLiteral(valueNode.text);
+      if (prefix !== null) prefixByClassId.set(node.id, prefix);
     }
   }
 
@@ -165,9 +133,10 @@ export function extractSpringRoutes(
     const ann = annNode.text;
     const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
     if (!httpMethod) continue; // skip @RequestMapping on methods (ambiguous verb)
-    if (!isRouteKey(keyNode)) continue;
+    if (!isRouteMemberKey(keyNode)) continue;
 
-    const routePath = unquote(valueNode.text);
+    const routePath = unquoteSpringLiteral(valueNode.text);
+    if (routePath === null) continue;
     const enclosingClass = findEnclosingClass(node);
     const classPrefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
 
