@@ -1052,7 +1052,14 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 
 /**
  * List all registered repos from the global registry.
- * Optionally validates that each entry's .gitnexus/ still exists.
+ *
+ * With `validate: true`, prunes only entries whose index is *provably* gone
+ * (fs.access on .gitnexus/meta.json fails with ENOENT or ENOTDIR) and persists
+ * the result. Entries that are merely "not provably absent" — any other
+ * fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are KEPT, so a transient
+ * I/O storm cannot wipe the registry. A kept entry is therefore "not confirmed
+ * present," not "confirmed present"; downstream DB opens are independently and
+ * lazily guarded.
  */
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
@@ -1066,8 +1073,30 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await fs.access(path.join(entry.storagePath, 'meta.json'));
       valid.push(entry);
-    } catch {
-      // Index no longer exists — skip
+    } catch (err: any) {
+      // Prune ONLY when the index is provably gone: ENOENT (file absent) or
+      // ENOTDIR (a path component is no longer a directory). Every other
+      // fs.access failure keeps the entry, because the file may well still
+      // exist and we must not wipe the registry on a transient I/O storm
+      // (EIO/EAGAIN/EBUSY under swap pressure, NFS hiccups, etc.).
+      //
+      // Note: some kept codes are NOT necessarily transient — EACCES, for
+      // example, can be permanent (a chmod'd directory). Keeping is still the
+      // correct conservative choice: a stale-but-kept entry is harmless (DB
+      // opens are lazily guarded) and removable via `gitnexus remove`, whereas
+      // an over-eager prune destroys data. When in doubt, keep.
+      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+        // Index genuinely removed — safe to prune
+      } else {
+        // Not provably absent — keep entry to prevent mass registry wipe.
+        // Warn so an I/O storm becomes observable instead of silently
+        // keeping (or, pre-fix, silently wiping) entries.
+        logger.warn(
+          { name: entry.name, storagePath: entry.storagePath, code: err?.code },
+          'Keeping registry entry despite fs.access failure (not provably absent); not pruning to avoid mass registry wipe.',
+        );
+        valid.push(entry);
+      }
     }
   }
 
