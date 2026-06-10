@@ -78,6 +78,9 @@ describe('#2143: Cloneable<T> compile-time rejection (type-level)', () => {
     const fnIsNever: FnIsNever = true;
     const symIsNever: SymIsNever = true;
     const anyIsNever: AnyIsNever = true;
-    expect(fnIsNever && symIsNever && anyIsNever).toBe(true);
+    // Array equality (not `&&`) so this isn't a trivial-always-true conditional;
+    // the real assertions are the `: …IsNever = true` annotations above, which
+    // fail to compile if any guard regresses.
+    expect([fnIsNever, symIsNever, anyIsNever]).toEqual([true, true, true]);
   });
 });

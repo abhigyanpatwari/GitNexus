@@ -32,6 +32,13 @@ describe('#2143: worker-boundary payload types are Cloneable', () => {
     const cppSideChannel: IsCloneable<CppCaptureSideChannel> = true;
     const cSideChannel: IsCloneable<CCaptureSideChannel> = true;
     const kotlinSideChannel: IsCloneable<KotlinCaptureSideChannel> = true;
-    expect(cppConstraint && cppSideChannel && cSideChannel && kotlinSideChannel).toBe(true);
+    // Array equality (not `&&`) so this isn't a trivial-always-true conditional;
+    // the real assertions are the `: IsCloneable<…> = true` annotations above.
+    expect([cppConstraint, cppSideChannel, cSideChannel, kotlinSideChannel]).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
   });
 });
