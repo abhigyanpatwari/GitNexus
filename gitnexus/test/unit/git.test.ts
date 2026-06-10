@@ -11,6 +11,7 @@ import {
   parseRepoNameFromUrl,
   sanitizeRepoName,
   getDefaultBranch,
+  getCurrentBranch,
 } from '../../src/storage/git.js';
 
 // Mock child_process.execSync
@@ -97,6 +98,39 @@ describe('git utilities', () => {
     it('returns null on empty output', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
       expect(getDefaultBranch('/project')).toBeNull();
+    });
+  });
+
+  describe('getCurrentBranch (#2106)', () => {
+    it('returns the checked-out branch name', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('feature/login\n'));
+      expect(getCurrentBranch('/project')).toBe('feature/login');
+      expect(mockExecSync).toHaveBeenCalledWith(
+        'git rev-parse --abbrev-ref HEAD',
+        expect.objectContaining({ cwd: '/project', windowsHide: true }),
+      );
+    });
+
+    it('returns null for a detached HEAD (literal "HEAD")', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('HEAD\n'));
+      expect(getCurrentBranch('/ci-checkout')).toBeNull();
+    });
+
+    it('returns null when not a git repo (git throws)', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('fatal: not a git repository');
+      });
+      expect(getCurrentBranch('/not-a-repo')).toBeNull();
+    });
+
+    it('returns null on empty output', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
+      expect(getCurrentBranch('/project')).toBeNull();
+    });
+
+    it('preserves a slash in the branch name (slugging happens elsewhere)', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('release/1.2\n'));
+      expect(getCurrentBranch('/project')).toBe('release/1.2');
     });
   });
 

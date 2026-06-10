@@ -73,6 +73,12 @@ function buildIncludeCapture(node: SyntaxNode, pathNode: SyntaxNode): CaptureMat
  */
 export function splitCppUsingDecl(node: SyntaxNode): CaptureMatch | null {
   if (node.type !== 'using_declaration') return null;
+  // A class-scope `using Base::member;` changes the derived class's member
+  // lookup set; it is not a namespace import. The C++ member-lookup sidecar
+  // captures it separately, so suppress import decomposition here.
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'class_specifier' || parent.type === 'struct_specifier') return null;
+  }
 
   // Check for "namespace" keyword among anonymous children
   let hasNamespaceKeyword = false;

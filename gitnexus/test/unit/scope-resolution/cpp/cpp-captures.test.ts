@@ -439,6 +439,35 @@ describe('emitCppScopeCaptures — arity enrichment', () => {
     expect(defaulted?.['@declaration.is-deleted']).toBeUndefined();
   });
 
+  it('tags deleted free operators', () => {
+    const deleted = findMatch(
+      'struct S {}; bool operator==(const S&, const S&) = delete;',
+      (tags) => tags.includes('@declaration.is-deleted'),
+    );
+
+    expect(deleted?.['@declaration.name'].text).toBe('operator==');
+    expect(deleted?.['@declaration.is-deleted'].text).toBe('true');
+  });
+
+  it('tags deleted pointer-return free functions', () => {
+    const deleted = findMatch('int* lookup(int) = delete;', (tags) =>
+      tags.includes('@declaration.is-deleted'),
+    );
+
+    expect(deleted?.['@declaration.name'].text).toBe('lookup');
+    expect(deleted?.['@declaration.is-deleted'].text).toBe('true');
+  });
+
+  it('does not borrow a deleted initializer from another declarator', () => {
+    const declarations = allMatches('void f(int), g = delete(new int);', (tags) =>
+      tags.includes('@declaration.function'),
+    );
+    const f = declarations.find((match) => match['@declaration.name']?.text === 'f');
+
+    expect(f).toBeDefined();
+    expect(f?.['@declaration.is-deleted']).toBeUndefined();
+  });
+
   it('preserves deleted-callable metadata in parsed local definitions', () => {
     const parsed = extractParsedFile(
       cppProvider,

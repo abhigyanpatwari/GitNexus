@@ -4,7 +4,6 @@ import {
   findEnclosingClassDef,
 } from '../../scope-resolution/scope/walkers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import {
   populateClassOwnedMembers,
   tagNamespacePrefixes,
@@ -42,6 +41,11 @@ import {
   clearCppUserDefinedConversions,
   populateCppUserDefinedConversions,
 } from './user-defined-conversions.js';
+import {
+  buildCppMemberLookupMro,
+  clearCppMemberLookupState,
+  resolveCppReceiverMember,
+} from './member-lookup.js';
 
 /**
  * Per-pass memo of the augmented `#include`-resolution file set
@@ -104,6 +108,7 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppAdlState();
     clearCppInlineNamespaces();
     clearCppUserDefinedConversions();
+    clearCppMemberLookupState();
     return scanCppHeaderFiles(repoPath);
   },
 
@@ -137,8 +142,7 @@ export const cppScopeResolver: ScopeResolver = {
   // `'unknown'` keeps the candidate, preserving "degrade not lie".
   constraintCompatibility: cppConstraintCompatibility,
 
-  buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+  buildMro: buildCppMemberLookupMro,
 
   // Worker-boundary restore (see `ScopeResolver.applyCaptureSideChannel`).
   // `emitCppScopeCaptures` records per-file ADL call-site arg shapes
@@ -261,6 +265,7 @@ export const cppScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   // Enable receiver-bound explicit-`this` fallback only for C++.
   resolveThisViaEnclosingClass: true,
+  resolveReceiverMember: resolveCppReceiverMember,
   // The `isFileLocalDef` hook on the global free-call fallback names
   // file-local linkage historically, but semantically gates "logically
   // invisible cross-file" defs. C++ extends this to also reject class-

@@ -35,6 +35,7 @@ import {
   mroPhase,
   communitiesPhase,
   processesPhase,
+  PhaseRegistry,
   type ScopeResolutionOutput,
   type PipelinePhase,
   type CommunitiesOutput,
@@ -128,6 +129,15 @@ export interface PipelineOptions {
    * `process.env` state across invocations. When undefined, the env var decides.
    */
   keepLocalValueSymbols?: boolean;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers, threaded
+   * from `.gitnexusrc` `fetchWrappers` via `AnalyzeOptions` (#1589/#1852
+   * residual). The routes phase unions these with the auto-detected `fetch()`
+   * wrappers when scanning for `route_map` consumers, so a wrapper named outside
+   * the built-in convention (or built on axios / a custom client) is still
+   * traced. Empty/undefined leaves behavior unchanged.
+   */
+  fetchWrappers?: readonly string[];
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
@@ -142,28 +152,36 @@ export interface PipelineOptions {
  *     → mro → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
- * object, and add it to the appropriate position in this array.
+ * object, and `.register()` it at the appropriate position below. Opt-in
+ * phases pass an `enabledWhen` predicate (issue #2080 phase-registry seam) —
+ * the legacy `if (!skipGraphPhases)` guard is now expressed that way on the
+ * three graph phases, with no change in behaviour.
+ *
+ * Exported for the parity test (`pipeline-phase-registry.test.ts`), which
+ * asserts the produced list is byte-identical to the legacy array for every
+ * options combination.
  */
-function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
-  const phases: PipelinePhase[] = [
-    scanPhase,
-    structurePhase,
-    markdownPhase,
-    cobolPhase,
-    parsePhase,
-    routesPhase,
-    toolsPhase,
-    ormPhase,
-    crossFilePhase,
-    scopeResolutionPhase,
-    pruneLocalSymbolsPhase,
-  ];
-
-  if (!options?.skipGraphPhases) {
-    phases.push(mroPhase, communitiesPhase, processesPhase);
-  }
-
-  return phases;
+export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
+  return (
+    new PhaseRegistry<PipelineOptions>()
+      .register(scanPhase)
+      .register(structurePhase)
+      .register(markdownPhase)
+      .register(cobolPhase)
+      .register(parsePhase)
+      .register(routesPhase)
+      .register(toolsPhase)
+      .register(ormPhase)
+      .register(crossFilePhase)
+      .register(scopeResolutionPhase)
+      .register(pruneLocalSymbolsPhase)
+      .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      // Normalize a missing options object once here so phase predicates above
+      // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
+      .build(options ?? {})
+  );
 }
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────

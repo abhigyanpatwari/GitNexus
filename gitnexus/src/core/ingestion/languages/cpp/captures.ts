@@ -20,6 +20,7 @@ import { markCppDependentBase, markCppDependentPackBase } from './two-phase-look
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
+import { captureCppMemberLookupFacts } from './member-lookup.js';
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -162,7 +163,7 @@ export function emitCppScopeCaptures(
             'true',
           );
         }
-        if (hasDeletedMethodClause(fnNode)) {
+        if (hasDeletedMethodClause(fnNode, grouped['@declaration.name']?.text)) {
           grouped['@declaration.is-deleted'] = syntheticCapture(
             '@declaration.is-deleted',
             fnNode,
@@ -471,6 +472,7 @@ export function emitCppScopeCaptures(
   // and the resolver can suppress unqualified-call binding to those
   // bases per ISO C++ two-phase lookup.
   detectCppDependentBases(tree.rootNode, filePath);
+  captureCppMemberLookupFacts(tree.rootNode, filePath);
 
   return out;
 }
@@ -1690,7 +1692,13 @@ function extractDeclaratorLeafName(node: SyntaxNode): string | null {
   let cur: SyntaxNode = node;
   let safety = 16;
   while (safety-- > 0) {
-    if (cur.type === 'identifier' || cur.type === 'type_identifier') return cur.text;
+    if (
+      cur.type === 'identifier' ||
+      cur.type === 'type_identifier' ||
+      cur.type === 'operator_name'
+    ) {
+      return cur.text;
+    }
     // Common wrapper nodes — follow the 'declarator' field when present.
     const next =
       cur.childForFieldName('declarator') ??
@@ -1718,7 +1726,7 @@ function hasExplicitSpecifier(node: SyntaxNode): boolean {
   return /\bexplicit\b/.test(node.text.slice(0, 128));
 }
 
-function hasDeletedMethodClause(node: SyntaxNode): boolean {
+function hasDeletedMethodClause(node: SyntaxNode, callableName: string | undefined): boolean {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child?.type === 'delete_method_clause') return true;
@@ -1727,7 +1735,9 @@ function hasDeletedMethodClause(node: SyntaxNode): boolean {
     // members use the dedicated `delete_method_clause`.
     if (
       child?.type === 'init_declarator' &&
-      child.childForFieldName('value')?.type === 'delete_expression'
+      child.childForFieldName('value')?.type === 'delete_expression' &&
+      callableName !== undefined &&
+      extractDeclaratorLeafName(child.childForFieldName('declarator') ?? child) === callableName
     ) {
       return true;
     }

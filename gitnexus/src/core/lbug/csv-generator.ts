@@ -305,6 +305,13 @@ export const streamAllCSVsToDisk = async (
     'id,name,filePath,description',
   );
 
+  // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
+  // blocks are identified by id + source span. Emitted by no phase yet.
+  const basicBlockWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'basicblock.csv'),
+    'id,filePath,startLine,endLine,text',
+  );
+
   // Multi-language node types share the same CSV shape (no isExported column)
   const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
   const MULTI_LANG_TYPES = [
@@ -478,6 +485,17 @@ export const streamAllCSVsToDisk = async (
           ].join(','),
         );
         break;
+      case 'BasicBlock':
+        await basicBlockWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(node.properties.filePath || ''),
+            escapeCSVNumber(node.properties.startLine, -1),
+            escapeCSVNumber(node.properties.endLine, -1),
+            escapeCSVField(node.properties.text || ''),
+          ].join(','),
+        );
+        break;
       default: {
         // Code element nodes (Function, Class, Interface, CodeElement)
         const writer = codeWriterMap[node.label];
@@ -535,6 +553,7 @@ export const streamAllCSVsToDisk = async (
     sectionWriter,
     routeWriter,
     toolWriter,
+    basicBlockWriter,
     ...multiLangWriters.values(),
   ];
   await Promise.all(allWriters.map((w) => w.finish()));
@@ -571,6 +590,7 @@ export const streamAllCSVsToDisk = async (
     ['Section' as NodeTableName, sectionWriter],
     ['Route' as NodeTableName, routeWriter],
     ['Tool' as NodeTableName, toolWriter],
+    ['BasicBlock' as NodeTableName, basicBlockWriter],
     ...Array.from(multiLangWriters.entries()).map(
       ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],
     ),

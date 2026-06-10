@@ -37,7 +37,7 @@ import {
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
-import { warnMissingOptionalGrammars } from './optional-grammars.js';
+import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
@@ -620,6 +620,14 @@ export interface AnalyzeOptions {
    * before being threaded into the generated AGENTS.md / CLAUDE.md content.
    */
   defaultBranch?: string;
+  /**
+   * Index-branch selector (#2106). From `--branch`. Distinct from
+   * `defaultBranch` (cosmetic base_ref): this routes the index to a per-branch
+   * slot. NOT sourced from `.gitnexusrc` — the `.gitnexusrc` `branch` key is an
+   * alias for `defaultBranch` and must not change index placement. Defaults to
+   * the checked-out branch inside `runFullAnalysis` when omitted.
+   */
+  branch?: string;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -655,6 +663,14 @@ export interface AnalyzeOptions {
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
   embeddingDevice?: string;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers (#1589/#1852
+   * residual). Supplied via `.gitnexusrc` `fetchWrappers: [...]`. Threaded into
+   * the routes phase, where the cross-file consumer scan unions them with the
+   * auto-detected `fetch()` wrappers so a custom/axios-based wrapper named
+   * outside the built-in convention still produces `route_map` consumers.
+   */
+  fetchWrappers?: string[];
 }
 
 /**
@@ -757,6 +773,21 @@ const analyzeCommandImpl = async (
       cliError(`  ${err instanceof Error ? err.message : String(err)}\n`, {
         recoveryHint: 'default-branch-invalid',
       });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  // Validate the index-branch selector (#2106) the same way, so a malformed
+  // `--branch` exits before any expensive analysis starts. Capture the TRIMMED
+  // return so a whitespace-padded value (e.g. " feature" from shell completion)
+  // normalizes before the checked-out-branch mismatch guard and slug — otherwise
+  // it would false-reject on-branch or create a ghost index when detached.
+  if (cliOptions?.branch !== undefined) {
+    try {
+      cliOptions.branch = validateBranchName(cliOptions.branch, '--branch');
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
       process.exitCode = 1;
       return;
     }
@@ -943,11 +974,13 @@ const analyzeCommandImpl = async (
   }
 
   // If the target repo contains files an optional grammar would parse but
-  // that grammar's native binding is absent, warn before analysis so users
-  // learn why those files end up unparsed instead of silently getting a
-  // degraded index.
+  // that grammar's native binding is absent (or disabled via
+  // GITNEXUS_SKIP_OPTIONAL_GRAMMARS), warn before analysis so users learn why
+  // those files end up unparsed instead of silently getting a degraded index.
+  // The extension set is derived from OPTIONAL_GRAMMARS so it can't drift.
   try {
-    const matches = await glob(['**/*.dart', '**/*.proto'], {
+    const optionalGlobs = getOptionalGrammarExtensions().map((e) => `**/*${e}`);
+    const matches = await glob(optionalGlobs, {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
       dot: false,
@@ -1092,6 +1125,10 @@ const analyzeCommandImpl = async (
         // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
         // threaded into the generated regression-compare example (#243).
         defaultBranch: resolvedDefaultBranch,
+        // Index-branch selector (#2106). Read straight from the CLI flag (not
+        // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
+        // can never change index placement. Undefined → auto-detect in pipeline.
+        branch: cliOptions?.branch,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options.noStats` here returns
@@ -1108,6 +1145,9 @@ const analyzeCommandImpl = async (
         // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
         // env / auto-formula fallback inside the pipeline.
         workerPoolSize,
+        // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
+        // forwarded to the routes phase consumer scan.
+        fetchWrappers: options.fetchWrappers,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -1129,14 +1169,20 @@ const analyzeCommandImpl = async (
       // preserving the rest of the block (incl. --skills community rows). No-op
       // when the value already matches, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the
+      // PRIMARY/flat index (#2106 R2). A non-primary branch's up-to-date
+      // analyze must not churn the committed AGENTS.md — this mirrors the
+      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
-      try {
-        const { refreshBaseRefLine } = await import('./ai-context.js');
-        baseRefRefreshed = (
-          await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
-        ).files;
-      } catch {
-        /* best-effort — never fail the fast path over a context refresh */
+      if (result.isPrimaryBranch !== false) {
+        try {
+          const { refreshBaseRefLine } = await import('./ai-context.js');
+          baseRefRefreshed = (
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+          ).files;
+        } catch {
+          /* best-effort — never fail the fast path over a context refresh */
+        }
       }
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
