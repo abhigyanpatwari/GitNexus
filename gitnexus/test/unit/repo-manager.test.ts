@@ -172,6 +172,19 @@ describe('resolveBranchPlacement (#2106)', () => {
     await saveMeta(storagePath, baseMeta('main'));
     expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({ branch: 'feature' });
   });
+
+  it('empty-string flatMeta.branch is not trusted → flat (R5)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, { ...baseMeta(), branch: '' });
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+
+  it('non-string flatMeta.branch (corrupt) is not trusted → flat (R5)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    // Simulate a hand-edited/corrupt meta where branch is a number.
+    await saveMeta(storagePath, { ...baseMeta(), branch: 42 as unknown as string });
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
 });
 
 // ─── GitNexus ignore rules (#1233) ─────────────────────────────────────

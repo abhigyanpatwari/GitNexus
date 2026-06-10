@@ -236,13 +236,21 @@ export const resolveBranchPlacement = async (
   if (!label) return {};
   const { storagePath } = getStoragePaths(repoPath);
   const flatMeta = await loadMeta(storagePath);
-  // Fresh repo (no flat index) or legacy flat index (no recorded branch): the
-  // current label claims/adopts the flat slot. The legacy case preserves
-  // today's overwrite-in-place behavior until the slot is stamped.
-  if (!flatMeta || !flatMeta.branch) return {};
-  // Flat slot is owned by flatMeta.branch. Same branch → flat; otherwise this
-  // branch gets its own sub-directory.
-  return flatMeta.branch === label ? {} : { branch: label };
+  // The flat slot's owner is authoritative ONLY when it is a non-empty string.
+  // A corrupt/hand-edited meta (empty string, or a non-string value that slips
+  // past JSON typing) must not be trusted to route the real primary into a
+  // sub-directory (#2106 review R5).
+  const owner =
+    flatMeta && typeof flatMeta.branch === 'string' && flatMeta.branch.length > 0
+      ? flatMeta.branch
+      : undefined;
+  // Fresh repo (no flat index) or legacy/unstamped flat index (no recorded
+  // owner): the current label claims/adopts the flat slot. The legacy case
+  // preserves today's overwrite-in-place behavior until the slot is stamped.
+  if (!owner) return {};
+  // Flat slot is owned. Same branch → flat; otherwise this branch gets its own
+  // sub-directory.
+  return owner === label ? {} : { branch: label };
 };
 
 /**
