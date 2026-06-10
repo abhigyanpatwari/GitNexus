@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { planWikiProviderReadiness } from '../../src/core/wiki/provider-readiness.js';
+import * as localCliClient from '../../src/core/wiki/local-cli-client.js';
 
 describe('wiki provider readiness planning', () => {
   it('marks saved HTTP provider config ready without exposing secret material', () => {
@@ -57,6 +58,51 @@ describe('wiki provider readiness planning', () => {
       source: 'saved-config',
       reason: 'local-cli-provider-not-server-ready',
     });
+  });
+
+  it('treats local CLI providers as ready for explicit CLI execution when the binary is available', () => {
+    const detectSpy = vi
+      .spyOn(localCliClient, 'detectLocalCLI')
+      .mockReturnValue('codex');
+
+    const status = planWikiProviderReadiness({
+      config: {
+        provider: 'codex',
+        codexModel: 'gpt-5',
+      },
+      env: {},
+      mode: 'cli',
+    });
+
+    expect(status).toEqual({
+      ready: true,
+      provider: 'codex',
+      source: 'saved-config',
+    });
+    expect(detectSpy).toHaveBeenCalledWith('codex');
+  });
+
+  it('reports local CLI execution as not ready when the configured CLI is unavailable', () => {
+    const detectSpy = vi
+      .spyOn(localCliClient, 'detectLocalCLI')
+      .mockReturnValue(null);
+
+    const status = planWikiProviderReadiness({
+      config: {
+        provider: 'claude',
+        claudeModel: 'claude-sonnet-4-6',
+      },
+      env: {},
+      mode: 'cli',
+    });
+
+    expect(status).toEqual({
+      ready: false,
+      provider: 'claude',
+      source: 'saved-config',
+      reason: 'local-cli-not-available',
+    });
+    expect(detectSpy).toHaveBeenCalledWith('claude');
   });
 
   it('reports missing HTTP provider credentials without guessing readiness', () => {

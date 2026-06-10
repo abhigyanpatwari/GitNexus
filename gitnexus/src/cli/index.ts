@@ -181,9 +181,13 @@ program
 
 program
   .command('wiki-refresh [path]')
-  .description('Plan a manual wiki refresh without mutating output')
+  .description('Plan or execute a bounded wiki refresh using existing provider config')
   .option('-r, --repo <name>', 'Target registered repository')
   .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .option(
+    '--execute',
+    'Run the existing wiki generator when prerequisites are satisfied, without prompting or writing config',
+  )
   .option(
     '--create-if-missing',
     'Allow the plan to recommend creating a wiki when no wiki metadata exists',

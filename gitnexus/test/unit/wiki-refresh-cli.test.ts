@@ -5,7 +5,9 @@ const listRegisteredReposMock = vi.fn();
 const loadCLIConfigMock = vi.fn();
 const checkStalenessAsyncMock = vi.fn();
 const readWikiAutoRefreshMetaMock = vi.fn();
+const runWikiAutoRefreshMock = vi.fn();
 const writeSyncMock = vi.fn();
+const detectLocalCLIMock = vi.fn();
 
 vi.mock('node:fs', () => ({
   writeSync: writeSyncMock,
@@ -34,8 +36,13 @@ vi.mock('../../src/core/wiki/auto-refresh.js', async () => {
   return {
     ...actual,
     readWikiAutoRefreshMeta: readWikiAutoRefreshMetaMock,
+    runWikiAutoRefresh: runWikiAutoRefreshMock,
   };
 });
+
+vi.mock('../../src/core/wiki/local-cli-client.js', () => ({
+  detectLocalCLI: detectLocalCLIMock,
+}));
 
 describe('wiki-refresh CLI command', () => {
   beforeEach(() => {
@@ -45,7 +52,9 @@ describe('wiki-refresh CLI command', () => {
     loadCLIConfigMock.mockReset();
     checkStalenessAsyncMock.mockReset();
     readWikiAutoRefreshMetaMock.mockReset();
+    runWikiAutoRefreshMock.mockReset();
     writeSyncMock.mockReset();
+    detectLocalCLIMock.mockReset();
 
     findRepoMock.mockResolvedValue({
       repoPath: 'C:\\repo',
@@ -66,6 +75,11 @@ describe('wiki-refresh CLI command', () => {
       apiKey: 'sk-secret',
       baseUrl: 'https://api.openai.com/v1',
     });
+    detectLocalCLIMock.mockReturnValue(null);
+    runWikiAutoRefreshMock.mockImplementation(async (options) => ({
+      ...(actualPlan(options) as object),
+      durationMs: 0,
+    }));
   });
 
   it('prints a manual refresh plan without exposing provider secrets', async () => {
@@ -85,12 +99,43 @@ describe('wiki-refresh CLI command', () => {
     expect(output).toContain('- Runs LLM provider: no');
     expect(output).toContain('## Execution Boundary');
     expect(output).toContain('- Mode: planning-only');
-    expect(output).toContain('- Provider execution enabled: no');
-    expect(output).toContain('- Output mutation enabled: no');
+    expect(output).toContain('- Provider execution enabled by requested mode: no');
+    expect(output).toContain('- Output mutation enabled by requested mode: no');
     expect(output).toContain('- Config writes enabled: no');
     expect(output).toContain('gitnexus wiki "C:\\repo"');
     expect(output).not.toContain('sk-secret');
     expect(output).not.toContain('api.openai.com');
+  });
+
+  it('uses CLI provider readiness for dry-run planning', async () => {
+    loadCLIConfigMock.mockResolvedValue({
+      provider: 'codex',
+      codexModel: 'gpt-5',
+    });
+    detectLocalCLIMock.mockReturnValue('codex');
+
+    const { wikiRefreshCommand } = await import('../../src/cli/wiki-refresh.js');
+
+    await wikiRefreshCommand(undefined, { format: 'json' });
+
+    expect(detectLocalCLIMock).toHaveBeenCalledWith('codex');
+    const output: string = writeSyncMock.mock.calls[0][1];
+    const parsed = JSON.parse(output);
+    expect(parsed.plan.status).toBe('dry-run');
+    expect(parsed.plan.provider).toMatchObject({
+      ready: true,
+      provider: 'codex',
+      source: 'saved-config',
+    });
+    expect(parsed.plan.shouldRunGenerator).toBe(false);
+    expect(parsed.plan.willMutateOutput).toBe(false);
+    expect(parsed.plan.willRunLLM).toBe(false);
+    expect(parsed.execution_boundary).toMatchObject({
+      mode: 'planning-only',
+      provider_execution_enabled: false,
+      output_mutation_enabled: false,
+      config_writes_enabled: false,
+    });
   });
 
   it('writes JSON with no recommended command when the graph is stale', async () => {
@@ -159,4 +204,96 @@ describe('wiki-refresh CLI command', () => {
     expect(parsed.plan.status).toBe('dry-run');
     expect(parsed.recommended_command).toBe('gitnexus wiki "C:\\demo"');
   });
+
+  it('can execute a bounded local refresh workflow when explicit execution is requested', async () => {
+    runWikiAutoRefreshMock.mockImplementation(async (options) => ({
+      ...(actualPlan(options) as object),
+      status: 'complete',
+      reason: 'refreshed',
+      durationMs: 42,
+      wikiRun: {
+        mode: 'incremental',
+        pagesGenerated: 3,
+        failedModules: ['Search'],
+      },
+      messages: ['Wiki auto-refresh completed'],
+    }));
+
+    const { wikiRefreshCommand } = await import('../../src/cli/wiki-refresh.js');
+
+    await wikiRefreshCommand(undefined, { format: 'json', execute: true });
+
+    expect(runWikiAutoRefreshMock).toHaveBeenCalledTimes(1);
+    expect(runWikiAutoRefreshMock.mock.calls[0][0]).toMatchObject({
+      dryRun: false,
+      mutateOutput: true,
+    });
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    const parsed = JSON.parse(output);
+    expect(parsed.plan.status).toBe('complete');
+    expect(parsed.plan.reason).toBe('refreshed');
+    expect(parsed.execution_boundary).toMatchObject({
+      mode: 'explicit-cli-execution',
+      provider_execution_enabled: true,
+      output_mutation_enabled: true,
+      config_writes_enabled: false,
+    });
+    expect(parsed.execution).toMatchObject({
+      requested: true,
+      performed: true,
+      status: 'completed',
+      duration_ms: 42,
+      mode: 'incremental',
+      pages_generated: 3,
+      failed_modules: ['Search'],
+    });
+    expect(parsed.recommended_command).toBeUndefined();
+  });
 });
+
+function actualPlan(options: {
+  graphFreshness: { isFresh: boolean };
+  wikiMeta: { exists: boolean; valid?: boolean };
+  provider: { ready: boolean };
+  dryRun?: boolean;
+  mutateOutput?: boolean;
+  createIfMissing?: boolean;
+}) {
+  if (!options.graphFreshness.isFresh) {
+    return {
+      status: 'skipped',
+      reason: 'graph-not-fresh',
+      shouldRunGenerator: false,
+      willMutateOutput: false,
+      willRunLLM: false,
+      dryRun: options.dryRun ?? true,
+      messages: [],
+      graphFreshness: options.graphFreshness,
+      wikiMeta: options.wikiMeta,
+      provider: options.provider,
+    };
+  }
+
+  return {
+    status:
+      options.dryRun === false && options.mutateOutput === true && options.provider.ready
+        ? 'ready'
+        : 'dry-run',
+    reason:
+      options.dryRun === false && options.mutateOutput === true && options.provider.ready
+        ? 'ready'
+        : 'dry-run',
+    shouldRunGenerator:
+      options.dryRun === false && options.mutateOutput === true && options.provider.ready,
+    willMutateOutput:
+      options.dryRun === false && options.mutateOutput === true && options.provider.ready,
+    willRunLLM:
+      options.dryRun === false && options.mutateOutput === true && options.provider.ready,
+    dryRun: options.dryRun ?? true,
+    messages: [],
+    graphFreshness: options.graphFreshness,
+    wikiMeta: options.wikiMeta,
+    provider: options.provider,
+  };
+}

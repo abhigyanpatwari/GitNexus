@@ -84,4 +84,51 @@ describe('impact-for-ranges markdown renderer', () => {
     expect(markdown).toContain('LoginFlow (2/5)');
     expect(markdown).toContain('src/app.ts:2-4');
   });
+
+  it('renders missing range change_type as unknown', () => {
+    const report: ImpactForRangesReport = {
+      schema_version: 'impact-for-ranges.v1alpha1',
+      repo: {
+        name: 'gitnexus-local-features',
+        indexed_commit: 'abc123',
+      },
+      summary: {
+        input_ranges: 1,
+        matched_symbols: 1,
+        unmatched_ranges: 0,
+        deleted_symbols: 0,
+        symbols_with_processes: 0,
+        unmapped_symbols: 1,
+        unknown_symbols: 0,
+        affected_processes: 0,
+      },
+      symbols: [],
+      unmapped_symbols: [
+        {
+          id: 'Function:src/app.ts:mapped',
+          name: 'mapped',
+          type: 'Function',
+          filePath: 'src/app.ts',
+          change_types: [],
+          matched_ranges: [
+            {
+              filePath: 'src/app.ts',
+              startLine: 2,
+              endLine: 4,
+              side: 'new',
+            },
+          ],
+        },
+      ],
+      unknown_symbols: [],
+      unmatched_ranges: [],
+      affected_processes: [],
+      caveats: [],
+    };
+
+    const markdown = renderImpactForRangesMarkdown(report);
+
+    expect(markdown).toContain('`src/app.ts:2-4` (unknown new)');
+    expect(markdown).not.toContain('`src/app.ts:2-4` (modified new)');
+  });
 });

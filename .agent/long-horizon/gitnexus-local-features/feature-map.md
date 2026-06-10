@@ -52,7 +52,7 @@ Supporting evidence:
 | Order | Feature | Research Depth | Disposition | Implementation Status | Gate |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Auto-Reindexing | Decision-grade completed for first slice | `local V1 complete` | Approved first slice implemented, verified, and snapshotted | Broaden only through selected-task packet and lane classification |
-| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices and mutation/provider readiness | `local V1 complete plus readiness boundary` | Core status/dry-run-first planner/runner, read-only server status endpoint plus provider-readiness status, local manual-refresh planner CLI, and explicit planning-only execution boundary implemented and verified | Full mutation/provider execution remains red-lane/deferred |
+| 2 | Auto-Updating Code Wiki | Medium plus source analysis completed for first slices and mutation/provider readiness | `local V1 complete plus first writable CLI slice` | Core status/dry-run-first planner/runner, read-only server status endpoint plus provider-readiness status, local manual-refresh planner CLI, explicit planning-only execution boundary, and bounded local `wiki-refresh --execute` workflow implemented and verified | Background/server-side mutation, provider automation, and unattended generation remain deferred |
 | 3 | Multi-Repo Support Improvements | Readiness completed for first docs slice | `local docs slice complete` | README tool-surface reconciliation implemented, verified, and snapshotted | Unified graph expansion is red/major-architecture unless explicitly selected by the human operator |
 | 4 | PR Impact / Blast Radius | Medium readiness refreshed plus no-write range/deletion primitives | `local V1 complete plus follow-on primitives` | Report core, thin local CLI wrapper, read-only MCP exposure, new-side changed/unmatched range evidence, old-side deleted-symbol evidence, `symbols-for-ranges`, `impact-for-symbols`, and the composed `impact-for-ranges` direct-process surface implemented and verified | GitHub automation, provider compare semantics, and historical/base graph indexes deferred |
 | 5 | Auto Regression Forensics | Light scoping completed for first slice | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and extended to accept either classic `pr-impact` or explicit-range `impact-for-ranges` evidence | CI/artifact/bisect automation deferred |
@@ -84,6 +84,176 @@ Task 1 Auto-Reindexing
 
 Task 7 OCaml Support remains parallel/deferred and should not be mixed into Tasks 1-6.
 ```
+
+## End-to-End Delivery Map
+
+This section is the product-flow map for the branch. It intentionally omits execution stop conditions; those remain canonical in `implement.md`. The purpose here is to show how the features connect from platform base to real operator usage.
+
+| Phase | Purpose | Included features/surfaces | Current status | End state |
+| --- | --- | --- | --- | --- |
+| 1. Graph freshness and runtime foundation | Make the graph trustworthy enough for all higher layers. | Task 1 Auto-Reindexing, host vs Podman route clarity, Podman-first indexing/embedding model, stale-index detection and refresh planning. | Largely complete locally. | Graph freshness is known, inspectable, and usable as a dependency signal for later features. |
+| 2. Safe maintenance and operator control | Give operators safe read/plan surfaces before broader automation. | Task 2 Auto-Updating Code Wiki local V1, Task 3 first multi-repo reconciliation slice, wiki status/readiness/manual refresh planning, group and tool-surface clarity. | Partially complete locally. | Maintenance actions are explainable and inspectable, and later features are not built on stale multi-repo assumptions. |
+| 3. Impact intelligence layer | Turn changed code or explicit ranges into graph-backed impact evidence. | Task 4 classic `pr-impact`, `symbols-for-ranges`, `impact-for-symbols`, `impact-for-ranges`, deterministic JSON/Markdown reporting, changed/unmatched/deleted evidence. | Strong local V1 complete. | GitNexus can produce trustworthy local impact evidence in both classic diff-owned and operator-owned explicit-range lanes. |
+| 4. Downstream consumer features | Use impact evidence to produce operator-facing outputs. | Task 5 Auto Regression Forensics, Task 6 End-to-End Test Generation, dual intake from classic `pr-impact` or explicit-range `impact-for-ranges`, generated API-smoke and narrow generated-spec outputs. | Strong local V1 complete. | Downstream tools consume accepted evidence modes honestly and produce deterministic, useful outputs. |
+| 5. Usage hardening and repeated workflow | Move from locally implemented features to repeatable operator workflow. | Broader generated-test execution, browser-backed validation, stronger runtime/API-smoke paths, wiki mutation shape, GitHub/CI operational flow if later selected. | Not complete. | At least one full operator journey can be run repeatedly without hidden manual gaps. |
+| 6. Advanced expansion lanes | Hold deeper or wider expansion work outside the main near-term workflow. | Richer multi-repo behavior, deeper PR/GitHub automation, wiki/provider automation, historical/base-graph PR semantics, deeper OCaml semantics. | Deferred. | Expansion work becomes deliberate follow-on projects rather than accidental drift. |
+
+## Operator Journey Map
+
+The minimum meaningful end-to-end operator journey for this branch is:
+
+```text
+fresh graph/index state
+  -> maintenance/readiness visibility
+  -> impact evidence
+  -> downstream consumer
+  -> operator-visible output
+  -> verification and repeatability
+```
+
+Mapped to current features:
+
+| Journey step | Primary feature lane | Current state |
+| --- | --- | --- |
+| Fresh graph/index state | Task 1 Auto-Reindexing | Implemented locally |
+| Maintenance/readiness visibility | Task 2 Code Wiki, Task 3 Multi-Repo | Partially implemented locally |
+| Impact evidence | Task 4 PR Impact / Blast Radius | Implemented locally |
+| Downstream consumer | Task 5 Regression Forensics, Task 6 E2E Test Generation | Implemented locally |
+| Operator-visible output | Task 2 reports, Task 4 reports, Task 5 reports, Task 6 proposals/specs | Implemented locally, but not fully hardened for repeated operational use |
+| Verification and repeatability | Focused tests, fixtures, build, diff hygiene, selected runtime checks | Strong for local slices; weaker for live operational workflow |
+
+## Completion Model
+
+Do not treat completion as a single percentage. Track it across four separate lenses:
+
+| Lens | Question | Current reading |
+| --- | --- | --- |
+| Feature implementation completion | Is the local capability built? | Strong across Tasks 1, 2, 4, 5, 6, and 7; lighter on Task 3 beyond docs reconciliation. |
+| Verification completion | Is it tested at the right depth for the current slice? | Strong focused verification and build hygiene for implemented local slices; weaker on broader runtime/browser/provider/CI usage. |
+| Operator-usage completion | Can a real operator use the feature coherently? | Partial. Inputs/outputs exist, but some workflows still end at planning/status rather than full execution. |
+| Workflow completion | Can multiple features be chained into a repeatable end-to-end path? | Partial. The local chain exists conceptually, but the repeated-usage/hardening layer is not yet complete. |
+
+## Cross-Cutting Operational Threads
+
+These threads cut across the feature lanes and are part of the true end-to-end picture.
+
+| Thread | What it covers | Current reading |
+| --- | --- | --- |
+| Control and documentation | `prompt.md`, `plans.md`, `implement.md`, `documentation.md`, and this `feature-map.md` as the durable control surface. | Strong. The branch has a coherent long-horizon control model. |
+| Verification and evidence | Focused tests, fixture/golden checks, build hygiene, diff hygiene, and selected runtime checks. | Strong for local slices, partial for repeated live workflow. |
+| Runtime and route ownership | `gitnexus` host route, `gitnexus-podman` container route, Podman-first embeddings/indexing shape. | Clear enough for current local work. |
+| Operator policy boundaries | Mutation vs read-only behavior, provider readiness, GitHub/CI expansion boundaries, external-write boundaries. | Explicitly understood, but not yet converted into the next usable writable workflows. |
+| Promotion and repeatability | What it would take to move from branch-local capability to repeatable operator workflow. | Not complete; this is the main remaining end-to-end gap. |
+
+## End-to-End Completion Criteria
+
+The branch should only be treated as end-to-end complete when at least one meaningful operator workflow can be run cleanly across the full chain:
+
+```text
+repository freshness known
+  -> maintenance/readiness state visible
+  -> impact evidence produced
+  -> downstream consumer uses that evidence
+  -> operator receives a useful output
+  -> verification is repeatable
+```
+
+Minimum criteria:
+
+- graph freshness is explicit rather than assumed
+- the chosen operator workflow does not end at an undocumented manual gap
+- outputs are deterministic enough to verify and explain
+- the workflow is documented well enough to repeat on the same branch without rediscovery
+- the verification surface covers the real workflow boundary, not only internal helpers
+
+## End-to-End Review
+
+### What is already mapped well
+
+- Foundation through consumer flow is now clear:
+  - Task 1 provides freshness.
+  - Tasks 2 and 3 provide operator-facing maintenance/readiness context.
+  - Task 4 provides the impact intelligence layer.
+  - Tasks 5 and 6 consume impact evidence.
+- Task 7 is correctly separated as a language-expansion lane rather than being mixed into the main operator workflow.
+- The current control docs already support this branch model cleanly:
+  - `plans.md` controls selected-task flow.
+  - `implement.md` controls execution discipline.
+  - `documentation.md` records checkpoint truth.
+
+### What was missing before this review
+
+- A clear operator-journey chain from graph freshness to repeated usage.
+- A distinction between local feature completion and actual workflow usability.
+- An explicit “usage hardening” phase to explain why the branch feels advanced locally but not yet fully operational.
+- A dedicated expansion phase so deferred work is treated as deliberate follow-on scope rather than unfinished noise.
+
+### Remaining end-to-end gaps
+
+| Gap area | Why it matters |
+| --- | --- |
+| Wiki mutation/provider execution shape | Task 2 now has a first explicit writable local CLI workflow, but broader unattended/server/provider automation remains unresolved. |
+| Broader generated-test execution | Task 6 can plan and render narrow outputs, but repeated value improves once execution/validation paths are clearer. |
+| Browser-backed and runtime-backed validation | Current verification is strong for deterministic local slices but lighter for live operator workflow. |
+| GitHub PR ingestion/comments/checks | Task 4 remains local/report-first; true GitHub-facing PR workflow is still a separate expansion lane. |
+| CI/workflow integration | Repeated operational usage usually needs CI or automation boundaries, which are still deferred. |
+| Historical/base-graph richer PR semantics | Current explicit-range lane is honest and useful, but not yet equivalent to a richer historical blast-radius model. |
+| Deeper multi-repo behavior | Task 3 currently clarifies surfaces rather than extending runtime behavior. |
+| Deeper OCaml semantics | Task 7 local V1 exists, but production-grade language depth remains separate expansion work. |
+
+## Recommended Next End-to-End Sequence
+
+From this point, prefer bigger vertical slices that advance real usage rather than additional isolated primitives.
+
+1. Task 2 wiki usage-hardening:
+   define the first truly usable wiki workflow beyond planning/status.
+2. Task 6 executable-output hardening:
+   strengthen generated outputs from planning artifacts toward repeatable practical use.
+3. Task 5 usage-oriented regression-forensics refinement:
+   improve how an operator consumes and trusts the output.
+4. Task 4 GitHub-facing PR impact expansion:
+   only after the local report and downstream consumer lanes are mature enough.
+5. Task 3 deeper multi-repo behavior:
+   only when a concrete downstream workflow requires more than current surface reconciliation.
+6. Task 7 deeper OCaml semantics:
+   keep this as a separate expansion track rather than mixing it into the main operator workflow.
+
+## Autonomous Project Workflow
+
+This section turns the end-to-end map into the default autonomous project route.
+
+Default top-level execution chain:
+
+```text
+Task 2 Wiki Usage-Hardening
+  -> Task 6 Executable-Output Hardening
+  -> Task 5 Usage-Oriented Regression-Forensics Refinement
+  -> Task 4 GitHub-Facing PR Impact Expansion
+  -> Task 3 Deeper Multi-Repo Behavior
+  -> Task 7 Deeper OCaml Semantics
+```
+
+Autonomous continuation rule:
+
+- Finish one top-level slice, verify it, checkpoint it, and then continue to the next slice in this chain.
+- Do not reopen earlier primitive lanes unless the current slice proves they are missing a required dependency.
+- Only reorder the chain when fresh source/runtime/research evidence materially changes the dependency shape or value order.
+
+Current selected next slice:
+
+- `Task 2 Wiki Usage-Hardening`
+
+Why this slice starts the autonomous chain:
+
+- It is the biggest remaining gap in the operator journey between “safe planning surface” and “repeatable usable workflow.”
+- It is a more direct path to end-to-end usability than expanding Task 4 or Task 7 first.
+- It should clarify the practical promotion model for later executable-output and operational workflow slices.
+
+Implementation-readiness note:
+
+- The project is now mapped not only as a feature flow, but as a remaining implementation chain.
+- The detailed top-level implementation packets for this chain live in `plans.md`.
+- The intended operating model from here is: complete one top-level slice, verify, checkpoint, advance baton, continue.
 
 ## Feature Detail Map
 

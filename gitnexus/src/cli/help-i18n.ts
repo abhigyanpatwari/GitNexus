@@ -97,6 +97,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'wiki|--lang <lang>': 'help.option.wiki.lang',
   'wiki-refresh|-r, --repo <name>': 'help.option.repo.target',
   'wiki-refresh|-f, --format <format>': 'help.option.wikiRefresh.format',
+  'wiki-refresh|--execute': 'help.option.wikiRefresh.execute',
   'wiki-refresh|--create-if-missing': 'help.option.wikiRefresh.createIfMissing',
   'publish|--id <owner/repo>': 'help.option.publish.id',
   'publish|--skip-git': 'help.option.skipGit',

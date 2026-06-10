@@ -122,7 +122,7 @@ export const zhCN = {
   'help.command.remove.description':
     '删除已注册仓库的 GitNexus 索引（按别名、名称或绝对路径）。与 `clean` 不同，不要求位于仓库内；未知目标会幂等处理。',
   'help.command.wiki.description': '从知识图谱生成仓库 Wiki',
-  'help.command.wikiRefresh.description': '规划手动 Wiki 刷新，不修改输出',
+  'help.command.wikiRefresh.description': '使用现有 Provider 配置规划或执行受限的 Wiki 刷新',
   'help.command.augment.description': '使用知识图谱上下文增强搜索模式（供 hooks 使用）',
   'help.command.publish.description':
     '通知 understand-quickly 注册表该仓库已有新的 GitNexus 索引。需显式启用：要求 UNDERSTAND_QUICKLY_TOKEN（对 looptech-ai/understand-quickly 具备 `Repository dispatches: write` 的细粒度 PAT）。无 token 时不执行。参见 https://github.com/looptech-ai/understand-quickly。',
@@ -204,6 +204,8 @@ export const zhCN = {
   'help.option.wiki.review': '分组后停止，以便在生成页面前审查模块结构',
   'help.option.wiki.lang': '生成文档的输出语言（如 english、chinese、spanish、japanese）',
   'help.option.wikiRefresh.format': '输出格式：markdown 或 json',
+  'help.option.wikiRefresh.execute':
+    '在满足前提条件时运行现有 Wiki 生成器，不进行交互提示，也不写入配置',
   'help.option.wikiRefresh.createIfMissing':
     '当 Wiki metadata 不存在时，允许计划建议创建 Wiki',
   'help.option.publish.id': '覆盖注册表 id（默认使用 origin remote）',

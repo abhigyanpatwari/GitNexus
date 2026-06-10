@@ -237,6 +237,14 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--gist');
   });
 
+  it('wiki-refresh help exposes the execute flag for the bounded writable workflow', () => {
+    const result = runHelp('wiki-refresh');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--execute');
+    expect(result.stdout).toContain('--create-if-missing');
+  });
+
   it('publish help names the registry, the token env var, and the opt-out behaviour', () => {
     const result = runHelp('publish');
 

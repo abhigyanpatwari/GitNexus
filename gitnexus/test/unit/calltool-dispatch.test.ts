@@ -1671,6 +1671,59 @@ describe('LocalBackend.callTool', () => {
     ]);
   });
 
+  it('returns all-unmatched range evidence without requiring matched symbols', async () => {
+    (executeParameterized as any).mockImplementation(
+      (_repoId: string, cypher: string) => {
+        if (cypher.includes('RETURN s.id AS id, s.name AS name')) {
+          throw new Error('direct symbol impact should not run for all-unmatched ranges');
+        }
+        if (cypher.includes('RETURN s.id AS sid, p.id AS pid')) {
+          throw new Error('process membership should not run for all-unmatched ranges');
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('impact_for_ranges', {
+      ranges: [
+        {
+          filePath: 'src/comments.ts',
+          startLine: 2,
+          endLine: 4,
+          side: 'new',
+          change_type: 'modified',
+        },
+      ],
+    });
+
+    expect(result.schema_version).toBe('impact-for-ranges.v1alpha1');
+    expect(result.summary).toEqual({
+      input_ranges: 1,
+      matched_symbols: 0,
+      unmatched_ranges: 1,
+      deleted_symbols: 0,
+      symbols_with_processes: 0,
+      unmapped_symbols: 0,
+      unknown_symbols: 0,
+      affected_processes: 0,
+    });
+    expect(result.symbols).toEqual([]);
+    expect(result.unmapped_symbols).toEqual([]);
+    expect(result.unknown_symbols).toEqual([]);
+    expect(result.affected_processes).toEqual([]);
+    expect(result.unmatched_ranges).toEqual([
+      {
+        filePath: 'src/comments.ts',
+        startLine: 2,
+        endLine: 4,
+        reason: 'No indexed symbol overlapped this changed range',
+      },
+    ]);
+    expect(result.caveats).toContain(
+      'Direct process membership only; no caller traversal or risk scoring is included.',
+    );
+  });
+
   it('dispatches rename tool', async () => {
     (executeParameterized as any)
       .mockResolvedValueOnce([

@@ -63,6 +63,10 @@ GitNexus routing on this workstation:
 
 - `gitnexus` is the host/npm CLI and host-local index route.
 - `gitnexus-podman` is the explicit Podman-backed runtime/index route.
+- `gitnexus-podman-local-features` is the isolated local-features Podman runtime/index route for this branch.
+- For this workstream's Codex GitNexus MCP promotion, use `http://127.0.0.1:5747/api/mcp` as the target for the existing `[mcp_servers.gitnexus]` identity only after the local-features backend is healthy and verified.
+- Keep `http://127.0.0.1:4747/api/mcp` as the preserved standard-runtime fallback, not the intended active Codex MCP route once local-features promotion is completed.
+- Detailed route procedure and rollback live in `.agent/long-horizon/gitnexus-local-features/gitnexus-local-features-mcp-route-note.md`.
 - `gitnexus-host` was quarantined as a redundant compatibility helper; do not use it in new workflow.
 - Do not treat bare `gitnexus` as the Podman route.
 - When the host index has multiple repositories, pass `--repo gitnexus-local-features` for graph queries when needed.

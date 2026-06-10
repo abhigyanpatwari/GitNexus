@@ -10,14 +10,19 @@ import {
 import {
   planWikiAutoRefresh,
   readWikiAutoRefreshMeta,
+  runWikiAutoRefresh,
   type WikiAutoRefreshPlan,
+  type WikiAutoRefreshResult,
 } from '../core/wiki/auto-refresh.js';
 import { planWikiProviderReadiness } from '../core/wiki/provider-readiness.js';
+import { resolveLLMConfig } from '../core/wiki/llm-client.js';
+import { WikiGenerator } from '../core/wiki/generator.js';
 
 export interface WikiRefreshCommandOptions {
   repo?: string;
   format?: string;
   createIfMissing?: boolean;
+  execute?: boolean;
 }
 
 interface WikiRefreshTarget {
@@ -34,18 +39,31 @@ interface WikiRefreshPlanReport {
     path: string;
     storagePath: string;
   };
-  plan: WikiAutoRefreshPlan;
+  plan: WikiAutoRefreshPlan | WikiAutoRefreshResult;
   execution_boundary: WikiRefreshExecutionBoundary;
+  execution: WikiRefreshExecutionSummary;
   recommended_command?: string;
   caveats: string[];
 }
 
 interface WikiRefreshExecutionBoundary {
-  mode: 'planning-only';
-  provider_execution_enabled: false;
-  output_mutation_enabled: false;
+  mode: 'planning-only' | 'explicit-cli-execution';
+  activation: 'report-only' | 'explicit-execute-flag';
+  provider_execution_enabled: boolean;
+  output_mutation_enabled: boolean;
   config_writes_enabled: false;
   required_human_decisions: string[];
+}
+
+interface WikiRefreshExecutionSummary {
+  requested: boolean;
+  performed: boolean;
+  status: 'not-requested' | 'completed' | 'failed' | 'skipped';
+  duration_ms?: number;
+  mode?: 'full' | 'incremental' | 'up-to-date';
+  pages_generated?: number;
+  failed_modules?: string[];
+  error_message?: string;
 }
 
 function output(data: string): void {
@@ -93,25 +111,41 @@ async function resolveTarget(
   };
 }
 
-function buildCaveats(plan: WikiAutoRefreshPlan): string[] {
-  const caveats = [
-    'This command does not run the wiki generator, invoke an LLM provider, or mutate wiki output.',
-  ];
+function buildCaveats(plan: WikiAutoRefreshPlan | WikiAutoRefreshResult, execute: boolean): string[] {
+  const caveats = execute
+    ? [
+        'Execution uses existing environment or saved provider configuration only; it never prompts for setup or writes config.',
+      ]
+    : [
+        'This command does not run the wiki generator, invoke an LLM provider, or mutate wiki output.',
+      ];
 
-  if (plan.status !== 'dry-run') {
+  if (!execute && plan.status !== 'dry-run') {
     caveats.push('No manual refresh command is recommended until the reported prerequisite is fixed.');
   }
 
-  if (plan.reason === 'dry-run') {
+  if (!execute && plan.reason === 'dry-run') {
     caveats.push('Run the recommended command manually to perform the existing GitNexus wiki workflow.');
   }
 
   return caveats;
 }
 
-function buildExecutionBoundary(): WikiRefreshExecutionBoundary {
+function buildExecutionBoundary(execute: boolean): WikiRefreshExecutionBoundary {
+  if (execute) {
+    return {
+      mode: 'explicit-cli-execution',
+      activation: 'explicit-execute-flag',
+      provider_execution_enabled: true,
+      output_mutation_enabled: true,
+      config_writes_enabled: false,
+      required_human_decisions: [],
+    };
+  }
+
   return {
     mode: 'planning-only',
+    activation: 'report-only',
     provider_execution_enabled: false,
     output_mutation_enabled: false,
     config_writes_enabled: false,
@@ -123,11 +157,57 @@ function buildExecutionBoundary(): WikiRefreshExecutionBoundary {
   };
 }
 
+function buildExecutionSummary(
+  execute: boolean,
+  plan: WikiAutoRefreshPlan | WikiAutoRefreshResult,
+): WikiRefreshExecutionSummary {
+  if (!execute) {
+    return {
+      requested: false,
+      performed: false,
+      status: 'not-requested',
+    };
+  }
+
+  const result = plan as WikiAutoRefreshResult;
+  const wikiRun = result.wikiRun;
+  if (result.status === 'complete') {
+    return {
+      requested: true,
+      performed: true,
+      status: 'completed',
+      duration_ms: result.durationMs,
+      mode: wikiRun?.mode,
+      pages_generated: wikiRun?.pagesGenerated,
+      failed_modules: wikiRun?.failedModules,
+    };
+  }
+
+  if (result.status === 'failed') {
+    return {
+      requested: true,
+      performed: true,
+      status: 'failed',
+      duration_ms: result.durationMs,
+      error_message: result.errorMessage,
+      failed_modules: wikiRun?.failedModules,
+    };
+  }
+
+  return {
+    requested: true,
+    performed: false,
+    status: 'skipped',
+    duration_ms: result.durationMs,
+  };
+}
+
 function buildReport(
   target: WikiRefreshTarget,
-  plan: WikiAutoRefreshPlan,
+  plan: WikiAutoRefreshPlan | WikiAutoRefreshResult,
+  execute: boolean,
 ): WikiRefreshPlanReport {
-  const recommendedCommand = plan.status === 'dry-run'
+  const recommendedCommand = !execute && plan.status === 'dry-run'
     ? renderRecommendedCommand(target.path)
     : undefined;
 
@@ -139,9 +219,10 @@ function buildReport(
       storagePath: target.storagePath,
     },
     plan,
-    execution_boundary: buildExecutionBoundary(),
+    execution_boundary: buildExecutionBoundary(execute),
+    execution: buildExecutionSummary(execute, plan),
     recommended_command: recommendedCommand,
-    caveats: buildCaveats(plan),
+    caveats: buildCaveats(plan, execute),
   };
 }
 
@@ -173,14 +254,45 @@ export function renderWikiRefreshPlanMarkdown(report: WikiRefreshPlanReport): st
     '## Execution Boundary',
     '',
     `- Mode: ${report.execution_boundary.mode}`,
-    `- Provider execution enabled: ${report.execution_boundary.provider_execution_enabled ? 'yes' : 'no'}`,
-    `- Output mutation enabled: ${report.execution_boundary.output_mutation_enabled ? 'yes' : 'no'}`,
+    `- Activation: ${report.execution_boundary.activation}`,
+    `- Provider execution enabled by requested mode: ${report.execution_boundary.provider_execution_enabled ? 'yes' : 'no'}`,
+    `- Output mutation enabled by requested mode: ${report.execution_boundary.output_mutation_enabled ? 'yes' : 'no'}`,
     `- Config writes enabled: ${report.execution_boundary.config_writes_enabled ? 'yes' : 'no'}`,
-    '',
-    'Required before mutation:',
-    '',
-    ...report.execution_boundary.required_human_decisions.map((decision) => `- ${decision}`),
   );
+
+  if (report.execution_boundary.required_human_decisions.length > 0) {
+    lines.push(
+      '',
+      'Required before mutation:',
+      '',
+      ...report.execution_boundary.required_human_decisions.map((decision) => `- ${decision}`),
+    );
+  }
+
+  if (report.execution.requested) {
+    lines.push(
+      '',
+      '## Execution Result',
+      '',
+      `- Status: ${report.execution.status}`,
+      `- Performed: ${report.execution.performed ? 'yes' : 'no'}`,
+    );
+    if (report.execution.mode) {
+      lines.push(`- Generator mode: ${report.execution.mode}`);
+    }
+    if (report.execution.pages_generated !== undefined) {
+      lines.push(`- Pages generated: ${report.execution.pages_generated}`);
+    }
+    if (report.execution.duration_ms !== undefined) {
+      lines.push(`- Duration ms: ${report.execution.duration_ms}`);
+    }
+    if (report.execution.failed_modules && report.execution.failed_modules.length > 0) {
+      lines.push(`- Failed modules: ${report.execution.failed_modules.join(', ')}`);
+    }
+    if (report.execution.error_message) {
+      lines.push(`- Error: ${report.execution.error_message}`);
+    }
+  }
 
   if (report.recommended_command) {
     lines.push('', '## Manual Refresh Command', '', `\`${report.recommended_command}\``);
@@ -202,10 +314,12 @@ export async function wikiRefreshCommand(
   const target = await resolveTarget(inputPath, options);
   const staleness = await checkStalenessAsync(target.path, target.lastCommit);
   const wikiMeta = await readWikiAutoRefreshMeta(target.storagePath);
+  const config = await loadCLIConfig();
   const provider = planWikiProviderReadiness({
-    config: await loadCLIConfig(),
+    config,
+    mode: 'cli',
   });
-  const plan = planWikiAutoRefresh({
+  const baseInputs = {
     graphFreshness: {
       isFresh: !staleness.isStale,
       indexedCommit: target.lastCommit,
@@ -214,16 +328,39 @@ export async function wikiRefreshCommand(
     },
     wikiMeta,
     provider,
-    dryRun: true,
-    mutateOutput: false,
     createIfMissing: options.createIfMissing,
-  });
+  };
 
-  const report = buildReport(target, plan);
+  const plan = options.execute
+    ? await runWikiAutoRefresh({
+        ...baseInputs,
+        dryRun: false,
+        mutateOutput: true,
+        runGenerator: async () => {
+          const llmConfig = await resolveLLMConfig();
+          const generator = new WikiGenerator(
+            target.path,
+            target.storagePath,
+            path.join(target.storagePath, 'lbug'),
+            llmConfig,
+          );
+          return generator.run();
+        },
+      })
+    : planWikiAutoRefresh({
+        ...baseInputs,
+        dryRun: true,
+        mutateOutput: false,
+      });
+
+  const report = buildReport(target, plan, Boolean(options.execute));
   if ((options.format ?? 'markdown').toLowerCase() === 'json') {
     output(JSON.stringify(report, null, 2));
-    return;
+  } else {
+    output(renderWikiRefreshPlanMarkdown(report));
   }
 
-  output(renderWikiRefreshPlanMarkdown(report));
+  if (options.execute && report.execution.status !== 'completed') {
+    process.exitCode = 1;
+  }
 }

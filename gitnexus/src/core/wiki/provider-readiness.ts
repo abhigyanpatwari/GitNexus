@@ -1,10 +1,13 @@
 import type { CLIConfig } from '../../storage/repo-manager.js';
 import { validateLLMBaseUrl } from './llm-client.js';
 import type { WikiAutoRefreshProviderStatus } from './auto-refresh.js';
+import { detectCursorCLI } from './cursor-client.js';
+import { detectLocalCLI } from './local-cli-client.js';
 
 export interface WikiProviderReadinessOptions {
   config: CLIConfig;
   env?: Record<string, string | undefined>;
+  mode?: 'server' | 'cli';
 }
 
 const LOCAL_PROVIDERS = new Set(['cursor', 'claude', 'codex']);
@@ -17,9 +20,28 @@ export const planWikiProviderReadiness = (
 ): WikiAutoRefreshProviderStatus => {
   const env = options.env ?? process.env;
   const config = options.config;
+  const mode = options.mode ?? 'server';
   const provider = config.provider ?? 'openai';
 
   if (LOCAL_PROVIDERS.has(provider)) {
+    if (mode === 'cli') {
+      const available =
+        provider === 'cursor' ? detectCursorCLI() : detectLocalCLI(provider as 'claude' | 'codex');
+      if (available) {
+        return {
+          ready: true,
+          provider,
+          source: sourceForConfiguredProvider(config),
+        };
+      }
+      return {
+        ready: false,
+        provider,
+        source: sourceForConfiguredProvider(config),
+        reason: 'local-cli-not-available',
+      };
+    }
+
     return {
       ready: false,
       provider,

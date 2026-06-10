@@ -40,6 +40,7 @@ Created: 2026-06-05
 - Current execution tranche: Task 1 Auto-Reindexing, Task 2 Auto-Updating Code Wiki planner/runner plus read-only status endpoint, Task 3 Multi-Repo Support Improvements, Task 4 PR Impact / Blast Radius, Task 5 Auto Regression Forensics, Task 6 E2E Test Generation proposal/report core plus thin CLI wrapper, and Task 7 OCaml experimental support have completed their first local slices.
 - 2026-06-08T10:47+01:00 post-tranche consolidation decision: the latest Task 4 range/deletion follow-ons and Task 2 wiki execution-boundary follow-on are complete. The next selected task is `Worktree Verification / Checkpoint Packet`, a green-lane consolidation task to review the accumulated WIP, rerun the right verification set, and prepare a clean checkpoint recommendation before selecting another feature expansion.
 - 2026-06-08T10:53+01:00 worktree verification decision: focused touched-slice tests, build, and whitespace checks passed. `NO_NEXT_TASK_SELECTED` for feature expansion until a new selected-task packet names the next feature scope; checkpoint commit/review is recommended before broadening.
+- 2026-06-09T08:58+01:00 execution decision: the user approved Ultraplan and the first Task 2 Wiki Usage-Hardening slice is now implemented but uncheckpointed. `gitnexus wiki-refresh` keeps planning-only mode as the default and now also supports an explicit local `--execute` path that uses existing non-interactive provider configuration without prompts or config writes. The next baton target after checkpoint remains `Task 6 Executable-Output Hardening`.
 - 2026-06-08T15:19+01:00 checkpoint decision: commit `2a38a6db` (`checkpoint: local feature tranche through wiki-refresh and diff evidence`) closed the dirty-tree boundary. The next selected task is `Task 4 symbols-for-ranges primitive`.
 - WIP boundary resolved: checkpoint commit `568e24de` (`checkpoint local features through task 4 readiness`) was created on 2026-06-06T12:17+01:00. Task 4 report-core commit `25873c96` (`feat: add pr impact report core`), CLI wrapper commit `39d77845` (`feat: add pr impact cli command`), and local read-only MCP exposure are complete. GitHub ingestion, PR comments/checks, token automation, web UI, and remediation remain deferred to future Goals.
 
@@ -48,7 +49,7 @@ Created: 2026-06-05
 | Order | Feature | Research depth | Disposition | Current implementation status |
 | --- | --- | --- | --- | --- |
 | 1 | Auto-Reindexing | `decision-grade completed for first slice` | `local V1 complete` | Approved slice implemented, verified, and snapshotted |
-| 2 | Auto-Updating Code Wiki | `medium completed for first slices plus mutation/provider readiness` | `local V1 complete plus readiness boundary` | Core status/dry-run-first planner/runner, read-only server status endpoint, non-secret provider-readiness status, manual-refresh planner CLI, and explicit planning-only execution boundary implemented and verified |
+| 2 | Auto-Updating Code Wiki | `medium completed for first slices plus mutation/provider readiness` | `local V1 complete plus first writable CLI slice` | Core status/dry-run-first planner/runner, read-only server status endpoint, non-secret provider-readiness status, manual-refresh planner CLI, explicit planning-only execution boundary, and bounded local `wiki-refresh --execute` workflow implemented and verified |
 | 3 | Multi-Repo Support Improvements | `light scoping completed for first docs slice` | `local docs slice complete` | README tool-surface reconciliation implemented and verified; no unified graph expansion |
 | 4 | PR Impact / Blast Radius | `medium completed for local MCP slice plus no-write range/deletion primitives` | `local V1 complete plus follow-on primitives` | Report core, thin local CLI wrapper, read-only local MCP `pr_impact`, new-side changed/unmatched range evidence, and local old-side deletion evidence implemented and verified; GitHub automation and historical/provider base-graph semantics deferred |
 | 5 | Auto Regression Forensics | `light scoping completed for first slice` | `local V1 complete` | Report core and thin local CLI wrapper implemented, verified, and committed |
@@ -58,6 +59,27 @@ Created: 2026-06-05
 ## Next Task Queue
 
 This section controls the next Goal selection after the completed local V1 tranche. It does not start implementation by itself.
+
+## Project Completion Sequence
+
+This is the default autonomous project sequence from the current local V1 base toward a genuinely repeatable end-to-end workflow. Unless a later decision supersedes it, Codex should continue through these top-level slices in order, one at a time, carrying the baton forward after each checkpointed completion.
+
+| Order | Top-level slice | Purpose | Completion outcome |
+| --- | --- | --- | --- |
+| 1 | Task 2 Wiki Usage-Hardening | Convert Task 2 from planning/readiness-only into the first truly usable writable wiki workflow. | A bounded local wiki-refresh workflow that is operator-usable, explicitly controlled, and repeatably verifiable. |
+| 2 | Task 6 Executable-Output Hardening | Move Task 6 from planning/rendering into stronger repeatable practical use. | Generated test outputs are clearer to run, verify, and trust in a repeated workflow. |
+| 3 | Task 5 Usage-Oriented Regression-Forensics Refinement | Improve how operators consume and trust regression forensics outputs in practice. | Regression-forensics becomes a more directly usable operational consumer of impact evidence. |
+| 4 | Task 4 GitHub-Facing PR Impact Expansion | Extend Task 4 from local/report-first usage toward a GitHub-oriented workflow, if still justified after Tasks 2, 5, and 6. | PR impact workflow gains broader operational reach beyond local closed-world usage. |
+| 5 | Task 3 Deeper Multi-Repo Behavior | Broaden multi-repo behavior only when a concrete downstream workflow requires it. | Multi-repo capabilities move beyond docs reconciliation into operational value. |
+| 6 | Task 7 Deeper OCaml Semantics | Expand OCaml support only after the main operator workflow is materially stronger. | OCaml evolves from experimental local V1 into a deeper language-expansion track. |
+
+Autonomous continuation rule:
+
+- After each completed top-level slice, continue to the next slice in this sequence if:
+  - the current slice is checkpointed,
+  - the next slice remains consistent with `feature-map.md`,
+  - and no new evidence has moved the next slice into a red-lane boundary.
+- If new evidence materially changes the order, update this section, `feature-map.md`, and `documentation.md` together before continuing.
 
 Historical note:
 
@@ -99,9 +121,9 @@ Board activation note:
 
 | Slot | Packet | Status | Notes |
 | --- | --- | --- | --- |
-| Active | `NO_NEXT_TASK_SELECTED` | Current baton | Checkpoint commit `8544ab82` closed the completed tranche. No next feature-sized packet has been selected yet. |
-| Ready 1 | Next approved feature-sized slice | Pending selection | Choose the next vertical task only after a fresh priority decision or recommendation pass. |
-| Ready 2 | Task 4 parity revisit | Explicitly deferred | Revisit only if a future packet deliberately funds real parity work between `pr-impact` and the explicit-range lane. |
+| Active | Task 2 Wiki Usage-Hardening | Selected next top-level slice | First hardening lane toward a genuinely repeatable operator workflow. |
+| Ready 1 | Task 6 Executable-Output Hardening | Sequenced next | Continue here after Task 2 if the selected-task packet remains defensible. |
+| Ready 2 | Task 5 Usage-Oriented Regression-Forensics Refinement | Sequenced next | Continue here after Task 6 if no higher-priority evidence supersedes it. |
 | Deferred / Red | GitHub posting/check automation; provider execution; historical/base-graph architecture; CI/workflow mutation; secrets/tokens | Deferred | Never move red-lane work into a ready slot without explicit human-operator direction. |
 
 Board selection rule:
@@ -113,11 +135,235 @@ Board selection rule:
 
 Default recommendation:
 
-- Active packet is now `NO_NEXT_TASK_SELECTED`.
-- Recommended immediate action is to choose the next feature-sized slice before any new source edits begin.
+- Active packet is now `Task 2 Wiki Usage-Hardening`.
+- Recommended immediate action is to shape and execute the Task 2 selected-task packet rather than opening a new unrelated lane.
 - Task 4 coexistence/parity research is complete for the current run; keep `pr-impact` and the explicit-range lane separate unless a later packet explicitly funds true parity work.
 - Do not add more generated API-smoke routes or more Task 4 convergence work until a new top-level packet is selected.
-- If the human operator chooses another priority, create a selected-task packet for that task before source edits.
+- If the human operator chooses another priority, update the project completion sequence and selected-task packet before source edits.
+
+### Task 2 Wiki Usage-Hardening - Next Top-Level Slice
+
+Selected task:
+
+- Convert Task 2 from planning/readiness-only into the first genuinely repeatable operator wiki workflow.
+
+Outcome:
+
+- A bounded local wiki-refresh workflow that moves beyond readiness/status-only behavior while still remaining explicit, testable, and operator-controlled.
+
+Scope:
+
+- Define and implement the first safe writable local wiki workflow if it can stay inside green/amber repo-local boundaries.
+- Keep the workflow explicit about:
+  - what is refreshed,
+  - when mutation happens,
+  - what prerequisites are required,
+  - what gets reported before and after execution,
+  - and how the operator can verify the result.
+
+Likely focus areas:
+
+- local writable refresh policy
+- exact output mutation shape
+- preflight/report-before-write behavior
+- post-write verification/reporting
+- interaction with graph freshness and provider-readiness
+
+Verification surface:
+
+- focused Task 2 CLI/core tests
+- any adjacent wiki planner/provider/readiness tests affected by the slice
+- `npm run build`
+- `git diff --check`
+- updated checkpoint note in `documentation.md`
+
+Why this is first:
+
+- It is the clearest remaining gap between “implemented locally” and “operator-usable end to end.”
+- It directly advances the end-to-end workflow rather than adding another internal primitive.
+- It should clarify later decisions around Task 6 execution hardening and broader operational promotion.
+
+### Task 6 Executable-Output Hardening - Sequenced Top-Level Slice
+
+Selected task:
+
+- Convert Task 6 from proposal/rendering-only local V1 into a more repeatable practical workflow for generated outputs.
+
+Outcome:
+
+- Generated Task 6 outputs are easier to run, verify, and trust as a repeated local operator workflow.
+
+Scope:
+
+- Strengthen the path from generated proposal/spec output to practical use.
+- Improve operator clarity around:
+  - what was generated,
+  - what assumptions it depends on,
+  - what evidence mode drove it,
+  - what should be run next,
+  - and how success should be verified.
+- Prefer strengthening deterministic output/reporting, execution guidance, and verification boundaries before broadening into CI or GitHub automation.
+
+Likely focus areas:
+
+- generated output metadata/provenance
+- execution/readiness guidance in output surfaces
+- clearer distinction between mocked UI specs, API-smoke specs, and broader executable outputs
+- post-generation verification/reporting shape
+
+Verification surface:
+
+- focused Task 6 CLI/report/renderer tests
+- adjacent generated-spec and API-smoke tests affected by the slice
+- `npm run build`
+- `git diff --check`
+- updated checkpoint note in `documentation.md`
+
+### Task 5 Usage-Oriented Regression-Forensics Refinement - Sequenced Top-Level Slice
+
+Selected task:
+
+- Refine Task 5 so regression-forensics is more directly usable and trustworthy for an operator consuming it in practice.
+
+Outcome:
+
+- Regression-forensics outputs become easier to interpret, compare, and act on without overstating confidence.
+
+Scope:
+
+- Improve report usability over accepted evidence inputs.
+- Keep the workflow explicit about:
+  - evidence mode,
+  - confidence/caveat signaling,
+  - candidate-cause ranking,
+  - and what follow-up checks an operator should perform next.
+- Do not broaden into CI automation, live bisect, GitHub remediation, or token-bearing execution in this slice.
+
+Likely focus areas:
+
+- report readability and ranking clarity
+- stronger caveat/provenance surfacing
+- clearer operational next-step guidance
+- deterministic comparison between classic `pr-impact` evidence and explicit-range evidence
+
+Verification surface:
+
+- focused Task 5 CLI/report tests
+- adjacent Task 4/5 consumer tests touched by the slice
+- `npm run build`
+- `git diff --check`
+- updated checkpoint note in `documentation.md`
+
+### Task 4 GitHub-Facing PR Impact Expansion - Sequenced Top-Level Slice
+
+Selected task:
+
+- Expand Task 4 from local/report-first usage toward a broader PR workflow once downstream local consumers are better hardened.
+
+Outcome:
+
+- PR impact moves closer to a practical PR-oriented workflow without collapsing the distinction between local report generation and external GitHub automation.
+
+Scope:
+
+- Build the next justified Task 4 expansion after Tasks 2, 6, and 5.
+- Prioritize PR-oriented workflow value that remains compatible with current report-first architecture.
+- Keep coexistence between classic `pr-impact` and the explicit-range lane unless a later slice deliberately funds parity convergence.
+
+Likely focus areas:
+
+- richer local PR-oriented report shape
+- safer ingestion/compare boundaries
+- stronger report packaging for downstream PR workflow use
+- explicit separation between local evidence generation and external GitHub posting/check behavior
+
+Verification surface:
+
+- focused Task 4 CLI/report/backend tests
+- adjacent Task 4 consumer tests
+- `npm run build`
+- `git diff --check`
+- updated checkpoint note in `documentation.md`
+
+### Task 3 Deeper Multi-Repo Behavior - Sequenced Top-Level Slice
+
+Selected task:
+
+- Extend Task 3 beyond docs reconciliation only when a concrete downstream workflow requires deeper multi-repo operational behavior.
+
+Outcome:
+
+- Multi-repo behavior gains direct operational value rather than remaining only a documentation/clarity lane.
+
+Scope:
+
+- Advance the smallest justified runtime or workflow slice that materially improves multi-repo use.
+- Keep the slice tied to a real downstream consumer requirement, not speculative architecture expansion.
+- Do not broaden into a unified cross-repo graph redesign unless that is explicitly reselected later.
+
+Likely focus areas:
+
+- clearer repo/group targeting behavior in downstream workflows
+- operational status/readiness improvements for group-aware usage
+- documentation/runtime alignment where it materially changes operator workflow
+
+Verification surface:
+
+- focused group/multi-repo tests relevant to the selected slice
+- adjacent CLI/MCP/resource tests if touched
+- `npm run build`
+- `git diff --check`
+- updated checkpoint note in `documentation.md`
+
+### Task 7 Deeper OCaml Semantics - Sequenced Top-Level Slice
+
+Selected task:
+
+- Evolve Task 7 from experimental local V1 support into the next justified deeper OCaml behavior slice.
+
+Outcome:
+
+- OCaml support advances beyond the current experimental V1 only where the new semantics are well-bounded and testable.
+
+Scope:
+
+- Choose the next concrete OCaml semantic improvement after the main operator workflow slices are stronger.
+- Keep the slice bounded to one meaningful semantic improvement rather than a broad language-expansion rewrite.
+- Treat Dune/PPX/module-resolution/production classification as separate follow-on concerns unless one is deliberately chosen as the next exact scope.
+
+Likely focus areas:
+
+- one deeper module-system behavior
+- improved query/impact usefulness for OCaml symbols
+- stronger fixture-backed semantics for the selected depth increase
+
+Verification surface:
+
+- focused OCaml parser/query/impact tests relevant to the selected slice
+- adjacent language-registry/provider tests if touched
+- `npm run build`
+- `git diff --check`
+- updated checkpoint note in `documentation.md`
+
+## Project Is Implementation-Ready When
+
+For this workstream, “ready to implement end to end” means:
+
+- the remaining top-level slices are ordered,
+- each slice has a defined purpose and outcome,
+- each slice has a bounded scope,
+- each slice has an expected verification surface,
+- the active slice is selected,
+- and the baton to the next slice is already named.
+
+The project now uses this standard:
+
+- Active: Task 2 Wiki Usage-Hardening
+- Next: Task 6 Executable-Output Hardening
+- Then: Task 5 Usage-Oriented Regression-Forensics Refinement
+- Then: Task 4 GitHub-Facing PR Impact Expansion
+- Then: Task 3 Deeper Multi-Repo Behavior
+- Then: Task 7 Deeper OCaml Semantics
 
 ### Task 4 `symbols-for-ranges` Primitive - 2026-06-08
 

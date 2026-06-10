@@ -122,7 +122,8 @@ export const en = {
   'help.command.remove.description':
     'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',
   'help.command.wiki.description': 'Generate repository wiki from knowledge graph',
-  'help.command.wikiRefresh.description': 'Plan a manual wiki refresh without mutating output',
+  'help.command.wikiRefresh.description':
+    'Plan or execute a bounded wiki refresh using existing provider config',
   'help.command.augment.description':
     'Augment a search pattern with knowledge graph context (used by hooks)',
   'help.command.publish.description':
@@ -223,6 +224,8 @@ export const en = {
   'help.option.wiki.lang':
     'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
   'help.option.wikiRefresh.format': 'Output format: markdown or json',
+  'help.option.wikiRefresh.execute':
+    'Run the existing wiki generator when prerequisites are satisfied, without prompting or writing config',
   'help.option.wikiRefresh.createIfMissing':
     'Allow the plan to recommend creating a wiki when no wiki metadata exists',
   'help.option.publish.id': 'Override the registry id (defaults to the origin remote)',

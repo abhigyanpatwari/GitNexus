@@ -73,7 +73,7 @@ const pushTable = (lines: string[], headers: string[], rows: string[][]): void =
 const summarizeRanges = (ranges: ImpactForRangesMatchedRange[]): string =>
   ranges
     .map((range) => {
-      const change = range.change_type ?? 'modified';
+      const change = range.change_type ?? 'unknown';
       const side = range.side ? ` ${range.side}` : '';
       return `\`${range.filePath}:${range.startLine}-${range.endLine}\` (${change}${side})`;
     })

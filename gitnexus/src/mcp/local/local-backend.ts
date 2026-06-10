@@ -3198,6 +3198,40 @@ export class LocalBackend {
       return { error: 'ranges array must contain at least one valid range object.' };
     }
 
+    const caveats = [
+      'Direct process membership only; no caller traversal or risk scoring is included.',
+      'No API impact or graph-derived test signal is included in this composed surface.',
+    ];
+    const deletedCount = mapped.symbols.filter((symbol) =>
+      symbol.matched_ranges.some((range) => range.change_type === 'deleted'),
+    ).length;
+
+    if (mapped.symbols.length === 0) {
+      return {
+        schema_version: 'impact-for-ranges.v1alpha1',
+        repo: {
+          name: repo.name,
+          indexed_commit: repo.lastCommit,
+        },
+        summary: {
+          input_ranges: mapped.input_ranges.length,
+          matched_symbols: 0,
+          unmatched_ranges: mapped.unmatched_ranges.length,
+          deleted_symbols: 0,
+          symbols_with_processes: 0,
+          unmapped_symbols: 0,
+          unknown_symbols: 0,
+          affected_processes: 0,
+        },
+        symbols: [],
+        unmapped_symbols: [],
+        unknown_symbols: [],
+        unmatched_ranges: mapped.unmatched_ranges,
+        affected_processes: [],
+        caveats,
+      };
+    }
+
     const direct = await this.resolveDirectProcessImpact(
       repo,
       mapped.symbols.map((symbol) => ({
@@ -3234,10 +3268,6 @@ export class LocalBackend {
         change_types: changeTypesFor(item.id),
       }));
 
-    const deletedCount = mapped.symbols.filter((symbol) =>
-      symbol.matched_ranges.some((range) => range.change_type === 'deleted'),
-    ).length;
-
     return {
       schema_version: 'impact-for-ranges.v1alpha1',
       repo: {
@@ -3259,10 +3289,7 @@ export class LocalBackend {
       unknown_symbols: decorateWithRanges(direct.unknownSymbols),
       unmatched_ranges: mapped.unmatched_ranges,
       affected_processes: direct.affectedProcesses,
-      caveats: [
-        'Direct process membership only; no caller traversal or risk scoring is included.',
-        'No API impact or graph-derived test signal is included in this composed surface.',
-      ],
+      caveats,
     };
   }
 
