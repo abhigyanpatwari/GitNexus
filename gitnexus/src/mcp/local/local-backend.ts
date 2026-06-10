@@ -2922,8 +2922,20 @@ export class LocalBackend {
         queryParams[`hunkEnd${i}`] = hunk.endLine;
       });
 
+      // `n.name IS NOT NULL` excludes BasicBlock rows: on a --pdg index every
+      // edited function otherwise contributes N nameless BasicBlock
+      // pseudo-"symbols" (they carry filePath/start/end but the table has no
+      // name column), inflating changed_count and risk level with rows no
+      // consumer can act on (#2082 U7). Blocks are implementation substrate,
+      // not symbols — the owning Function row already represents the change.
+      // Filtering on the name column beats a label predicate here because
+      // `labels(n)[0]` is known to come back empty for several node types
+      // (see enrichCandidateLabels), and BasicBlock is the only line-bearing
+      // table without `name` (Community/Process lack it too but carry no
+      // startLine, so the existing filter already drops them).
       const symbolQuery = `
         MATCH (n) WHERE n.filePath ENDS WITH $filePath
+          AND n.name IS NOT NULL
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
           AND (${overlapConditions})
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
