@@ -1052,7 +1052,14 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 
 /**
  * List all registered repos from the global registry.
- * Optionally validates that each entry's .gitnexus/ still exists.
+ *
+ * With `validate: true`, prunes only entries whose index is *provably* gone
+ * (fs.access on .gitnexus/meta.json fails with ENOENT or ENOTDIR) and persists
+ * the result. Entries that are merely "not provably absent" — any other
+ * fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are KEPT, so a transient
+ * I/O storm cannot wipe the registry. A kept entry is therefore "not confirmed
+ * present," not "confirmed present"; downstream DB opens are independently and
+ * lazily guarded.
  */
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
