@@ -27,6 +27,7 @@ import {
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SkippedPath } from './clone-safety.js';
 import { postResultCloneSafe } from './post-result.js';
+import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
   ExtractedRouterInclude,
@@ -2344,43 +2345,8 @@ let accumulated: ParseWorkerResult = {
   fileCount: 0,
 };
 let cumulativeProcessed = 0;
-
-// Use a loop instead of push(...spread) to avoid hitting V8's argument limit
-// when merging large result sets (push(...arr) calls apply() under the hood
-// and blows the stack when arr has >~65k elements).
-const appendAll = <T>(target: T[], src: T[]) => {
-  for (let i = 0; i < src.length; i++) target.push(src[i]);
-};
-
-const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
-  appendAll(target.nodes, src.nodes);
-  appendAll(target.relationships, src.relationships);
-  appendAll(target.symbols, src.symbols);
-  appendAll(target.calls, src.calls);
-  appendAll(target.assignments, src.assignments);
-  appendAll(target.routes, src.routes);
-  appendAll(target.fetchCalls, src.fetchCalls);
-  appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
-  appendAll(target.decoratorRoutes, src.decoratorRoutes);
-  if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
-  if (src.routerImports) appendAll(target.routerImports, src.routerImports);
-  if (src.routerModuleAliases) {
-    target.routerModuleAliases ??= [];
-    appendAll(target.routerModuleAliases, src.routerModuleAliases);
-  }
-  appendAll(target.toolDefs, src.toolDefs);
-  appendAll(target.ormQueries, src.ormQueries);
-  appendAll(target.constructorBindings, src.constructorBindings);
-  appendAll(target.fileScopeBindings, src.fileScopeBindings);
-  appendAll(target.parsedFiles, src.parsedFiles);
-  for (const [lang, count] of Object.entries(src.skippedLanguages)) {
-    target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
-  }
-  if (src.skippedPaths && src.skippedPaths.length > 0) {
-    (target.skippedPaths ??= []).push(...src.skippedPaths);
-  }
-  target.fileCount += src.fileCount;
-};
+// `mergeResult` (+ its `appendAll`) lives in ./result-merge.ts (extracted so it
+// can be unit-tested without importing this entry module).
 
 // Signal the pool that worker-side initialization (parser imports, language
 // grammars, type-env setup, all helper modules) is complete and the message

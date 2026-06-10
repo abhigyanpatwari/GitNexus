@@ -400,6 +400,43 @@ describe('clone-safety', () => {
     });
   });
 
+  // R12 (#2135 tri-review): the "dropped unsalvageable" branch — a dirty element
+  // whose stripped copy is STILL not structured-cloneable must be dropped (not
+  // delivered), so the re-post can't throw. Triggered here with a non-plain
+  // member that the strip-time probe sees as clean but that turns non-cloneable
+  // on the final post-strip verification (a stateful getter).
+  describe('unsalvageable element drop', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('drops an element that is still non-cloneable after stripping', () => {
+      let reads = 0;
+      class Blob {}
+      const blob = new Blob();
+      Object.defineProperty(blob, 'data', {
+        enumerable: true,
+        // Clean on the strip-time probe (kept by reference), a function on the
+        // post-strip verification probe → the cleaned element is unsalvageable.
+        get() {
+          reads++;
+          return reads === 1 ? 'ok' : () => {};
+        },
+      });
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'x', filePath: 'x.ts', leak: () => {}, blob }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true); // run survives
+      expect((result.nodes as unknown[]).length).toBe(0); // unsalvageable element dropped
+      expect(skipped.some((s) => s.reason.includes('unsalvageable'))).toBe(true);
+    });
+  });
+
   // U3 (#2112): a DAG-aliased record (the same subobject reached via two paths)
   // carrying a non-cloneable must be stripped-and-KEPT, not over-dropped — the
   // old shared-WeakSet returned the un-stripped original on revisit, failing the
