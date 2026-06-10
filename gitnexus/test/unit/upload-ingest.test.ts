@@ -140,8 +140,10 @@ describe('ingestUpload', () => {
       status: 400,
     });
     // The staging dir created by this call must not survive the rejection —
-    // the isolated root makes this exact (no concurrent test can add entries).
-    expect(await countStaging(root)).toBe(0);
+    // the isolated root makes this exact (no concurrent test can add entries),
+    // and a missing/broken root throws rather than passing vacuously.
+    const entries = await fs.readdir(root);
+    expect(entries.filter((e) => e.startsWith(STAGING_PREFIX))).toEqual([]);
   });
 
   it('rejects a file part that arrives before the manifest', async () => {
@@ -174,12 +176,3 @@ describe('ingestUpload', () => {
     expect(DEFAULT_INGEST_LIMITS.maxFiles).toBe(20000);
   });
 });
-
-async function countStaging(root: string): Promise<number> {
-  try {
-    const entries = await fs.readdir(root);
-    return entries.filter((e) => e.startsWith(STAGING_PREFIX)).length;
-  } catch {
-    return 0;
-  }
-}

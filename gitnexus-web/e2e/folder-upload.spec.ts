@@ -76,7 +76,8 @@ test('switching modes mid-upload aborts it and never shows progress', async ({ p
   // The client-side AbortController kills the POST at mode-switch time; that
   // surfaces as a failed request (net::ERR_ABORTED), not as a response.
   page.on('requestfailed', (req) => {
-    if (req.url().includes('/api/analyze/upload')) uploadAborted = true;
+    if (req.url().includes('/api/analyze/upload') && /ABORTED/.test(req.failure()?.errorText ?? ''))
+      uploadAborted = true;
   });
   await page.route(`${BACKEND_URL}/api/analyze/upload`, async (route) => {
     await uploadGate;

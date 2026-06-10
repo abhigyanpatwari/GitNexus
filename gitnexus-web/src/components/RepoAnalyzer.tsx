@@ -193,14 +193,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const requestControllerRef = useRef<AbortController | null>(null);
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
-  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    // Set true on every mount (not just the initial ref value) so the guard is
-    // correct under React StrictMode's mount→unmount→mount double-invoke.
-    isMountedRef.current = true;
     return () => {
-      isMountedRef.current = false;
       sseControllerRef.current?.abort();
       requestControllerRef.current?.abort();
       if (completeTimerRef.current) clearTimeout(completeTimerRef.current);
@@ -224,12 +219,16 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     return controller;
   };
 
-  // A request that resolved after invalidation has still created a server-side
+  // An upload that resolved after invalidation has still created a server-side
   // job; cancel it so the single analyze slot isn't held for the job's full
-  // duration. Skip when a live tracking session already owns the id (URL
-  // analyzes dedup-alias: a same-URL resubmit returns the same jobId).
-  const cancelStaleJob = (jobId: string): void => {
-    if (jobIdRef.current === jobId) return;
+  // duration. Upload-path only: every upload owns a fresh job (the server
+  // stages each upload into a unique dir, never dedup-aliasing), whereas URL
+  // analyzes dedup-alias by repo — the returned jobId may belong to a job
+  // another session (or this user's own resubmit) is actively watching, so
+  // cancelling on that path could kill a live analysis. A stale URL job is
+  // left to finish: a same-URL resubmit re-attaches to it via dedup, and the
+  // server's job timeout/TTL sweep bounds the slot occupancy.
+  const cancelStaleUploadJob = (jobId: string): void => {
     void cancelAnalyze(jobId).catch(() => {});
   };
 
@@ -291,10 +290,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             ? { url: gitlabUrl.trim() }
             : { path: localPath.trim() };
       const { jobId } = await startAnalyze(request);
-      if (controller.signal.aborted) {
-        cancelStaleJob(jobId);
-        return;
-      }
+      // Stale resolution: return without cancelling — URL jobIds may be
+      // dedup-aliased to a job another session owns (see cancelStaleUploadJob).
+      if (controller.signal.aborted) return;
 
       const nameSource =
         mode === 'github'
@@ -314,9 +312,8 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // Drive an already-created analysis job through the SSE progress stream to
   // completion. Shared by the path/URL analyze flow and the folder-upload flow.
   const trackJob = (jobId: string, fallbackNameSource: string | null) => {
-    // The component may have unmounted while an upload POST was in flight; don't
-    // open an SSE stream nothing will ever abort.
-    if (!isMountedRef.current) return;
+    // Callers reach here only with a live (non-aborted) request controller, so
+    // the component is mounted — unmount aborts the controller.
     jobIdRef.current = jobId;
     setPhase('analyzing');
     const controller = streamAnalyzeProgress(
@@ -367,7 +364,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       if (controller.signal.aborted) {
         // The abort raced the response: the server already created the job.
         // (Unmount aborts the controller, so this also covers unmounted.)
-        cancelStaleJob(jobId);
+        cancelStaleUploadJob(jobId);
         return;
       }
       setUploading(false);
@@ -376,7 +373,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       // An abort surfaces in two shapes — BackendError('Request aborted')
       // when it lands during fetch, raw AbortError when it lands during the
       // response-body read — so branch on the closure controller's signal,
-      // never on the error identity.
+      // never on the error identity. In the second shape the server may have
+      // already launched a job whose id we never learn; that orphan is bounded
+      // by the server's job timeout and terminal-job TTL sweep.
       if (controller.signal.aborted) return;
       setUploading(false);
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));

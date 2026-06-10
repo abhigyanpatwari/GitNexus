@@ -164,7 +164,7 @@ describe('folder upload', () => {
 });
 
 describe('URL analyze', () => {
-  async function startGithubAnalyze() {
+  function startGithubAnalyze() {
     render(<RepoAnalyzer variant="onboarding" onComplete={vi.fn()} />);
     fireEvent.change(screen.getByRole('textbox'), {
       target: { value: 'https://github.com/owner/repo' },
@@ -172,25 +172,27 @@ describe('URL analyze', () => {
     fireEvent.click(screen.getByRole('button', { name: /Analyze Repository/ }));
   }
 
-  it('a mode switch mid-analyze makes the resolution inert and cancels the job', async () => {
-    const d = deferred<{ jobId: string; status: string }>();
+  it('a mode switch mid-analyze makes the resolution inert without cancelling', async () => {
+    const d = deferred<typeof JOB>();
     vi.mocked(startAnalyze).mockReturnValue(d.promise);
 
-    await startGithubAnalyze();
+    startGithubAnalyze();
     fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
     await act(async () => {
       d.resolve({ jobId: 'job-2', status: 'queued' });
     });
 
     expect(streamAnalyzeProgress).not.toHaveBeenCalled();
-    expect(cancelAnalyze).toHaveBeenCalledWith('job-2');
+    // No cancel on the URL path: the jobId may be dedup-aliased to a job
+    // another session owns, so cancelling could kill a live analysis.
+    expect(cancelAnalyze).not.toHaveBeenCalled();
   });
 
   it('a stale rejection is silent', async () => {
-    const d = deferred<{ jobId: string; status: string }>();
+    const d = deferred<typeof JOB>();
     vi.mocked(startAnalyze).mockReturnValue(d.promise);
 
-    await startGithubAnalyze();
+    startGithubAnalyze();
     fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
     await act(async () => {
       d.reject(new Error('analyze exploded'));
@@ -201,10 +203,10 @@ describe('URL analyze', () => {
   });
 
   it('the happy path still tracks the job', async () => {
-    const d = deferred<{ jobId: string; status: string }>();
+    const d = deferred<typeof JOB>();
     vi.mocked(startAnalyze).mockReturnValue(d.promise);
 
-    await startGithubAnalyze();
+    startGithubAnalyze();
     await act(async () => {
       d.resolve({ jobId: 'job-3', status: 'queued' });
     });
