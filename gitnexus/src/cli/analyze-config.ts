@@ -85,6 +85,7 @@ const KEY_SPECS: Record<string, KeySpec> = {
   skipContextFiles: { target: 'skipAgentsMd', kind: 'boolean' },
   skipAiContext: { target: 'skipAgentsMd', kind: 'boolean' },
   skipSkills: { target: 'skipSkills', kind: 'boolean' },
+  pdg: { target: 'pdg', kind: 'boolean' },
   indexOnly: { target: 'indexOnly', kind: 'boolean' },
   stats: { target: 'stats', kind: 'boolean' },
   noStats: { target: 'stats', kind: 'boolean-negate' },

@@ -98,16 +98,18 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
-   * Crash-recovery dirty flag. Written to meta.json BEFORE any
-   * destructive DB mutation in an incremental run; cleared on success
-   * by overwriting meta.json. If a run crashes between, the next run
-   * sees the flag and forces a full rebuild — the cheapest path back
-   * to a known-good index.
+   * Crash-recovery dirty flag — a generic marker written to meta.json
+   * BEFORE any destructive DB mutation by BOTH writeback branches
+   * (incremental since its introduction; full rebuilds over an existing
+   * meta since #2099 F1); cleared on success by overwriting meta.json.
+   * If a run crashes between, the next run sees the flag and forces a
+   * full rebuild — the cheapest path back to a known-good index.
    */
   incrementalInProgress?: {
-    /** When the incremental run started (epoch ms). */
+    /** When the run started (epoch ms). */
     startedAt: number;
-    /** Number of files in the writable set, for diagnostic logs. */
+    /** Number of files in the writable set, for diagnostic logs.
+     *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
   };
   /**
@@ -127,6 +129,28 @@ export interface RepoMeta {
    * branch's still-live shards. Additive/optional; absent in legacy metas.
    */
   cacheKeys?: string[];
+  /**
+   * The effective `--pdg` configuration this index's DB rows were built
+   * under (#2099 F1). Presence ≡ the BasicBlock/CFG layer exists in the DB;
+   * ABSENT ≡ pdg-off — which covers every legacy meta, since `--pdg`
+   * shipped opt-in. Caps are recorded RESOLVED (defaults applied) so an
+   * explicit-default run compares equal to a default run. run-analyze
+   * compares this against the requested options and forces a full
+   * writeback on any mismatch — the incremental path only persists
+   * changed-file nodes and would otherwise silently drop (or strand) the
+   * CFG layer on a mode flip. Additive/optional, no
+   * INCREMENTAL_SCHEMA_VERSION bump (a bump would force a one-time full
+   * rebuild for every user). NOTE the removal mechanism is load-bearing:
+   * the end-of-run meta is a fresh object literal, NOT a spread of the
+   * prior meta, so omitting this field on a pdg-off run is what clears
+   * the stamp after an on→off flip.
+   */
+  pdg?: {
+    /** Worker-side per-function source-line cap, resolved (0 = unlimited). */
+    maxFunctionLines: number;
+    /** Emit-side per-function CFG edge cap, resolved (0 = unlimited). */
+    maxEdgesPerFunction: number;
+  };
 }
 
 /**

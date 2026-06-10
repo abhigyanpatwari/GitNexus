@@ -35,6 +35,7 @@ import type { MethodExtractor } from './method-types.js';
 import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
+import type { CfgVisitor } from './cfg/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
@@ -359,6 +360,17 @@ interface LanguageProviderConfig {
    * Default: undefined (provider has no capture-time module-level side effects).
    */
   readonly collectCaptureSideChannel?: (filePath: string) => unknown;
+
+  /**
+   * Per-language control-flow-graph builder (#2081 M1, PDG/taint substrate).
+   * Invoked IN THE PARSE WORKER (where the AST lives) for each function node,
+   * gated on the `--pdg` opt-in; the resulting per-function CFGs are serialized
+   * onto `ParsedFile.cfgSideChannel` and emitted as BasicBlock nodes + CFG
+   * edges during scope-resolution. `TNode` is `SyntaxNode` for the tree-sitter
+   * languages. Default: undefined (language has no CFG support yet — TS/JS are
+   * the M1 set).
+   */
+  readonly cfgVisitor?: CfgVisitor<SyntaxNode>;
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.

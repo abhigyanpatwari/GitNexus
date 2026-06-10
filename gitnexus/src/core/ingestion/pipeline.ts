@@ -51,6 +51,29 @@ export interface PipelineOptions {
    */
   skipGraphPhases?: boolean;
   /**
+   * Build the control-flow-graph / PDG substrate (#2081 M1, opt-in via `--pdg`).
+   * Off by default: workers skip all CFG work and emit no `cfgSideChannel`, and
+   * scope-resolution emits no BasicBlock nodes or CFG edges — so the default
+   * graph is byte-identical to a pre-#2081 run. Folded into the parse-cache key
+   * so a pdg-off warm cache is not reused on a `--pdg` run.
+   */
+  pdg?: boolean;
+  /**
+   * Per-function source-line cap for worker-side CFG construction.
+   * `undefined` ⇒ the worker applies `DEFAULT_PDG_MAX_FUNCTION_LINES`; `0` ⇒ no
+   * cap (unlimited). Bounds the cost of a pathological mega-function; over-cap
+   * functions are skipped (no CFG emitted for them). No CLI flag in M1 —
+   * programmatic / server analyze-worker path only.
+   */
+  pdgMaxFunctionLines?: number;
+  /**
+   * Per-function CFG edge cap for the scope-resolution emit step.
+   * `undefined` ⇒ `DEFAULT_MAX_CFG_EDGES_PER_FUNCTION`; `0` ⇒ no cap (unlimited).
+   * Over-cap functions stop at the cap and log a structured drop warning (no
+   * silent truncation). No CLI flag in M1 — programmatic / server path only.
+   */
+  pdgMaxEdgesPerFunction?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to

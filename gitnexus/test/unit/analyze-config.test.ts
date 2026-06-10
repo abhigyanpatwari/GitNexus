@@ -75,6 +75,17 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     });
   });
 
+  it('normalizes the pdg opt-in (#2081) and rejects a non-boolean value', async () => {
+    await writeRc(JSON.stringify({ pdg: true }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ pdg: true });
+
+    await writeRc(JSON.stringify({ pdg: false }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ pdg: false });
+
+    await writeRc(JSON.stringify({ pdg: 'yes' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a boolean/);
+  });
+
   it('parses the nested analyze form', async () => {
     await writeRc(JSON.stringify({ analyze: { defaultBranch: 'master', skipSkills: true } }));
     expect(loadAnalyzeConfig(dir)).toEqual({ defaultBranch: 'master', skipSkills: true });

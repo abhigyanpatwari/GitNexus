@@ -703,6 +703,8 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
+**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
+
 ---
 
 ## Tool Examples

@@ -266,6 +266,16 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: CFG construction time / disk / memory guards (#2081 M1)
+        # Build-free: asserts collectFunctionCfgs output is unchanged
+        # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
+        # retained heap all stay sub-quadratic for the straight-line /
+        # many-functions / branchy scenarios. Catches an O(n^2) re-regression in
+        # the per-function CFG builder (e.g. an extendBlock concat chain) and a
+        # memory/disk blow-up. --expose-gc enables the retained-heap measurement.
+        run: node --expose-gc --import tsx bench/cfg/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         env:
           GITNEXUS_BENCH: '1'

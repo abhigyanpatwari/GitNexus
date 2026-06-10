@@ -42,7 +42,10 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
   INCREMENTAL_SCHEMA_VERSION,
+  type RepoMeta,
 } from '../storage/repo-manager.js';
+import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
+import { DEFAULT_MAX_CFG_EDGES_PER_FUNCTION } from './ingestion/cfg/emit.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
   extractChangedSubgraph,
@@ -119,6 +122,19 @@ export interface AnalyzeOptions {
   noStats?: boolean;
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
+  /**
+   * Build the CFG/PDG substrate (#2081 M1). Forwarded to `PipelineOptions.pdg`,
+   * which threads to BOTH the worker (CFG build, via workerData) AND
+   * scope-resolution (BasicBlock/CFG emit gate). Off by default.
+   */
+  pdg?: boolean;
+  /** Per-function source-line cap for worker-side CFG construction (#2081 M1).
+   *  Forwarded to `PipelineOptions.pdgMaxFunctionLines`. No CLI flag in M1 —
+   *  programmatic / server analyze-worker path only; the worker applies
+   *  `DEFAULT_PDG_MAX_FUNCTION_LINES` when unset. */
+  pdgMaxFunctionLines?: number;
+  /** Per-function CFG edge cap. Forwarded to `PipelineOptions.pdgMaxEdgesPerFunction`. */
+  pdgMaxEdgesPerFunction?: number;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -313,6 +329,41 @@ export const collectBranchCacheKeys = async (
   return { keys, complete };
 };
 
+/**
+ * Resolve the requested `--pdg` configuration to the shape recorded in
+ * `RepoMeta.pdg`, or `undefined` for a pdg-off run. Caps resolve to their
+ * defaults so an explicit-default run compares equal to a default run
+ * (`0` = unlimited is preserved as `0`). Pure + exported for testing.
+ */
+type PdgOptions = Pick<AnalyzeOptions, 'pdg' | 'pdgMaxFunctionLines' | 'pdgMaxEdgesPerFunction'>;
+
+export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
+  options.pdg === true
+    ? {
+        maxFunctionLines: options.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+        maxEdgesPerFunction: options.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+      }
+    : undefined;
+
+/**
+ * Whether the requested `--pdg` configuration differs from the one the
+ * existing index's DB rows were built under (#2099 F1). An absent recorded
+ * stamp means pdg-off (every legacy meta — `--pdg` shipped opt-in). Any
+ * mismatch means the incremental writeback (which only persists changed-file
+ * nodes) cannot produce a coherent index: off→on would silently drop the
+ * freshly built CFG layer, on→off would strand zombie BasicBlocks — so the
+ * caller forces a full writeback. Pure + exported for testing.
+ */
+export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions): boolean => {
+  const requested = resolvePdgConfig(options);
+  if (!requested && !recorded) return false;
+  if (!requested || !recorded) return true;
+  return (
+    requested.maxFunctionLines !== recorded.maxFunctionLines ||
+    requested.maxEdgesPerFunction !== recorded.maxEdgesPerFunction
+  );
+};
+
 export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
@@ -473,13 +524,39 @@ export async function runFullAnalysis(
   // back to a known-good index is to wipe + rebuild from scratch.
   if (existingMeta?.incrementalInProgress) {
     log(
-      'Previous incremental run did not complete cleanly (incrementalInProgress flag set); ' +
+      // "analyze run", not "incremental run" — since #2099 F1 the flag is a
+      // generic dirty marker written by BOTH writeback branches.
+      'Previous analyze run did not complete cleanly (incrementalInProgress flag set); ' +
         'forcing full rebuild to restore a known-good index.',
     );
     options = { ...options, force: true };
     // Reload meta after clearing the flag in-memory; we still want fileHashes
     // for the post-rebuild meta carry-over, but force=true ensures the
     // rebuild path executes.
+  }
+
+  // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
+  // The incremental writeback persists only changed-file nodes, so a pdg
+  // config differing from the one the DB rows were built under cannot be
+  // reconciled incrementally: off→on silently drops the freshly built CFG
+  // layer ("Incremental: changed=0", zero BasicBlock rows), on→off strands
+  // zombie blocks for unchanged files. MUST sit before the alreadyUpToDate
+  // fast path below — a clean-tree flip would otherwise early-return without
+  // running the pipeline at all. The notice is deliberately NOT gated on
+  // options.force: --skills implies force with no message of its own, and a
+  // mode change deserves a diagnostic regardless of why a rebuild happens.
+  if (existingMeta && pdgModeMismatch(existingMeta.pdg, options)) {
+    const pdgOn = options.pdg === true;
+    const capsOnly = !!existingMeta.pdg && pdgOn; // both-on can only mismatch via caps
+    const was = existingMeta.pdg ? 'with --pdg' : 'without --pdg';
+    const now = pdgOn ? 'with --pdg' : 'without --pdg';
+    log(
+      `pdg mode changed (index built ${was}, this run is ${now}` +
+        `${capsOnly ? ', but with different caps' : ''}); forcing a full ` +
+        `rebuild so the CFG layer is ${pdgOn ? 'fully persisted' : 'fully removed'}. ` +
+        `Tip: set \`pdg: ${pdgOn}\` in .gitnexusrc to pin the mode across runs.`,
+    );
+    options = { ...options, force: true };
   }
 
   // ── Early-return: already up to date ──────────────────────────────
@@ -648,6 +725,11 @@ export async function runFullAnalysis(
     {
       parseCache,
       workerPoolSize: options.workerPoolSize,
+      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+      // build gate (workerData.pdg) and the scope-resolution emit gate.
+      pdg: options.pdg === true,
+      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
       fetchWrappers: options.fetchWrappers,
     },
   );
@@ -706,6 +788,19 @@ export async function runFullAnalysis(
     });
   } else {
     // Full rebuild path: wipe DB files first.
+    // Set the dirty flag BEFORE the wipe whenever a prior meta exists,
+    // mirroring the incremental branch above (#2099 F1, KTD2b). Without it a
+    // full rebuild crashing between the wipe and the end-of-run saveMeta
+    // leaves a meta that vouches for a DB it no longer matches — the next
+    // clean-tree run's fast path would certify a destroyed DB (or, after a
+    // pdg flip, certify zombie/missing BasicBlock rows indefinitely).
+    // toWriteCount: 0 is the full-path sentinel (no incremental write set).
+    if (existingMeta) {
+      await saveMeta(metaDir, {
+        ...existingMeta,
+        incrementalInProgress: { startedAt: Date.now(), toWriteCount: 0 },
+      });
+    }
     await closeLbug();
     const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
     for (const f of lbugFiles) {
@@ -1133,6 +1228,12 @@ export async function runFullAnalysis(
       // so a sibling branch's prune can union it and not evict our shards.
       cacheKeys: [...parseCache.usedKeys],
       incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
+      // The effective pdg config this run's DB rows were built under
+      // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh
+      // literal (no spread of existingMeta), so omission is what CLEARS the
+      // stamp after an on→off flip; the next pdgModeMismatch then compares
+      // off==off and incremental eligibility is restored.
+      pdg: resolvePdgConfig(options),
     };
     await saveMeta(metaDir, meta);
 

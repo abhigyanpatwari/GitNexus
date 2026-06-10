@@ -600,6 +600,12 @@ export interface AnalyzeOptions {
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
   /**
+   * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
+   * default. Threaded to both the worker (CFG build) and scope-resolution
+   * (BasicBlock/CFG emit).
+   */
+  pdg?: boolean;
+  /**
    * Stats inclusion in AGENTS.md and CLAUDE.md.
    *
    * Commander.js represents `--no-stats` as `stats: boolean` (default
@@ -1122,6 +1128,8 @@ const analyzeCommandImpl = async (
         skipGit: options.skipGit,
         skipAgentsMd,
         skipSkills,
+        // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
+        pdg: options.pdg === true,
         // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
         // threaded into the generated regression-compare example (#243).
         defaultBranch: resolvedDefaultBranch,

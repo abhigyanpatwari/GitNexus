@@ -232,6 +232,15 @@ export interface WorkerPoolOptions {
    * `undefined` ⇒ no durable write.
    */
   durableParsedFileStoragePath?: string;
+  /**
+   * CFG/PDG opt-in (#2081 M1). Baked into every spawned worker's `workerData`
+   * (like the store paths above); when `true`, workers build a per-function
+   * control-flow graph from the tree-sitter AST and attach it to
+   * `ParsedFile.cfgSideChannel`. `undefined`/`false` ⇒ no CFG work.
+   */
+  pdg?: boolean;
+  /** Per-function source-line cap for worker-side CFG construction (0 ⇒ no cap). */
+  pdgMaxFunctionLines?: number;
 }
 
 export class WorkerPoolDispatchError extends Error {
@@ -890,9 +899,12 @@ export const createWorkerPool = (
   // signature is unchanged so the zero-arg test factories keep working.
   const parsedFileStoreStoragePath = options?.parsedFileStoreStoragePath;
   const durableParsedFileStoragePath = options?.durableParsedFileStoragePath;
+  // CFG/PDG opt-in (#2081 M1) — carried in workerData alongside the store paths.
+  const pdg = options?.pdg === true;
+  const pdgMaxFunctionLines = options?.pdgMaxFunctionLines;
   const workerStoreData =
-    parsedFileStoreStoragePath || durableParsedFileStoragePath
-      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath }
+    parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg
+      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
       : undefined;
   const spawnWorker =
     options?.workerFactory ??

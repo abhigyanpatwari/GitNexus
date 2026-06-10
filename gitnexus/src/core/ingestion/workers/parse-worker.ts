@@ -130,6 +130,7 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
+import { collectFunctionCfgs, DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -154,6 +155,19 @@ const DURABLE_PARSED_FILE_STORAGE_PATH: string | undefined = (
   workerData as { durableParsedFileStoragePath?: string } | undefined
 )?.durableParsedFileStoragePath;
 let shardSeq = 0;
+
+// ── PDG/CFG opt-in (#2081 M1) ───────────────────────────────────────────────
+// Read ONCE at worker init from `workerData` (the worker never sees
+// PipelineOptions — config arrives via the pool factory's `workerData`, see
+// KTD7 / U5). When `pdg` is set, the worker builds a per-function control-flow
+// graph from the tree-sitter AST (where it lives) and serializes it onto
+// `ParsedFile.cfgSideChannel`. Off ⇒ no CFG work and no field — the default for
+// every run today. `pdgMaxFunctionLines` bounds per-function CFG cost
+// (0/undefined ⇒ no cap; see collectFunctionCfgs).
+const PDG_ENABLED: boolean = (workerData as { pdg?: boolean } | undefined)?.pdg === true;
+const PDG_MAX_FUNCTION_LINES: number =
+  (workerData as { pdgMaxFunctionLines?: number } | undefined)?.pdgMaxFunctionLines ??
+  DEFAULT_PDG_MAX_FUNCTION_LINES;
 
 // ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
 // When GITNEXUS_WORKER_BOOTSTRAP=1 (or --verbose sets GITNEXUS_VERBOSE), each
@@ -1233,9 +1247,38 @@ const processFileGroup = (
       // copy — scopes/defs are carried by reference) to attach the field rather
       // than mutate the frozen object.
       const sideChannel = provider.collectCaptureSideChannel?.(file.path);
-      result.parsedFiles.push(
-        sideChannel !== undefined ? { ...parsedFile, captureSideChannel: sideChannel } : parsedFile,
-      );
+      let withChannels =
+        sideChannel !== undefined ? { ...parsedFile, captureSideChannel: sideChannel } : parsedFile;
+
+      // CFG side-channel (#2081 M1): build the per-function control-flow graph
+      // here, where the tree-sitter AST is still in hand, and attach it as plain
+      // serializable data. Only on a --pdg run and only for languages with a
+      // cfgVisitor (TS/JS in M1). The same disk-store/warm-cache machinery that
+      // carries captureSideChannel carries this — its coherence rests on the
+      // SCHEMA_BUMP + the pdg-folded chunk-hash key (see parse-cache.ts).
+      if (PDG_ENABLED && provider.cfgVisitor) {
+        // Isolate the CFG build per file: a throw here (an unexpected tree-sitter
+        // node shape, a deep-nesting stack overflow) must NOT propagate — it
+        // would escape processFileGroup to the language-group catch, which treats
+        // any throw as "parser unavailable" and silently drops EVERY remaining
+        // file in the group. Skip CFG for this one file; parsing + scope
+        // resolution proceed unaffected (CFG is a strictly-additive opt-in).
+        try {
+          const { cfgs } = collectFunctionCfgs(
+            tree.rootNode,
+            provider.cfgVisitor,
+            file.path,
+            PDG_MAX_FUNCTION_LINES,
+          );
+          if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
+        } catch (err) {
+          const message = `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`;
+          if (parentPort) parentPort.postMessage({ type: 'warning', message });
+          else logger.warn(message);
+        }
+      }
+
+      result.parsedFiles.push(withChannels);
     }
 
     // Build per-file type environment + constructor bindings in a single AST walk.
