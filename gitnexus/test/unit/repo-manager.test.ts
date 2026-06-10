@@ -12,6 +12,9 @@ import { _captureLogger } from '../../src/core/logger.js';
 import {
   getStoragePath,
   getStoragePaths,
+  branchSlug,
+  resolveBranchPlacement,
+  saveMeta,
   ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
@@ -61,6 +64,97 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+
+  // ─── #2106: branch-scoped paths ──────────────────────────────────────
+
+  it('no/empty branch returns the flat layout (byte-identical)', () => {
+    const flat = getStoragePaths('/home/user/project');
+    const explicitEmpty = getStoragePaths('/home/user/project', '');
+    expect(explicitEmpty.storagePath).toBe(flat.storagePath);
+    expect(explicitEmpty.lbugPath).toBe(flat.lbugPath);
+    expect(explicitEmpty.metaPath).toBe(flat.metaPath);
+    expect(path.basename(flat.lbugPath)).toBe('lbug');
+    expect(path.dirname(flat.lbugPath)).toBe(flat.storagePath);
+  });
+
+  it('a branch scopes lbug/meta under branches/<slug> but keeps storagePath flat', () => {
+    const flat = getStoragePaths('/home/user/project');
+    const branched = getStoragePaths('/home/user/project', 'feature/login');
+    // storagePath stays flat so shared content-addressed caches are shared.
+    expect(branched.storagePath).toBe(flat.storagePath);
+    const expectedDir = path.join(flat.storagePath, 'branches', branchSlug('feature/login'));
+    expect(path.dirname(branched.lbugPath)).toBe(expectedDir);
+    expect(path.dirname(branched.metaPath)).toBe(expectedDir);
+    expect(path.basename(branched.lbugPath)).toBe('lbug');
+    expect(path.basename(branched.metaPath)).toBe('meta.json');
+  });
+});
+
+// ─── branchSlug (#2106) ──────────────────────────────────────────────
+
+describe('branchSlug (#2106)', () => {
+  it('is deterministic for the same ref', () => {
+    expect(branchSlug('feature/x')).toBe(branchSlug('feature/x'));
+  });
+
+  it('avoids the feature/x vs feature_x collision', () => {
+    expect(branchSlug('feature/x')).not.toBe(branchSlug('feature_x'));
+  });
+
+  it('keeps a readable, filesystem-safe prefix', () => {
+    const slug = branchSlug('feature/login');
+    expect(slug.startsWith('feature_login-')).toBe(true);
+    // No path separators or unsafe characters.
+    expect(slug).not.toContain('/');
+    expect(/^[A-Za-z0-9._-]+$/.test(slug)).toBe(true);
+  });
+});
+
+// ─── resolveBranchPlacement (#2106 KTD2) ─────────────────────────────
+
+describe('resolveBranchPlacement (#2106)', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-branch-placement-');
+  });
+
+  afterEach(async () => {
+    await tmpRepo.cleanup();
+  });
+
+  const baseMeta = (branch?: string): RepoMeta => ({
+    repoPath: tmpRepo.dbPath,
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+    ...(branch ? { branch } : {}),
+  });
+
+  it('null label (detached HEAD / non-git) → flat', async () => {
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, null)).toEqual({});
+  });
+
+  it('fresh repo with no flat index → flat (claims primary)', async () => {
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'main')).toEqual({});
+  });
+
+  it('legacy flat index without a recorded branch → flat (adopts)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta());
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+
+  it('label equal to the recorded primary → flat', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta('main'));
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'main')).toEqual({});
+  });
+
+  it('non-primary checked-out branch → its own sub-directory', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta('main'));
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({ branch: 'feature' });
   });
 });
 

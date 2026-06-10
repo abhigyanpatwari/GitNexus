@@ -8,9 +8,10 @@
 
 import fs from 'fs/promises';
 import { realpathSync } from 'fs';
+import { createHash } from 'crypto';
 import path from 'path';
 import os from 'os';
-import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { getInferredRepoName, resolveRepoIdentityRoot, sanitizeRepoName } from './git.js';
 import { logger } from '../core/logger.js';
 
 /**
@@ -99,6 +100,15 @@ export interface RepoMeta {
     /** Number of files in the writable set, for diagnostic logs. */
     toWriteCount: number;
   };
+  /**
+   * Name of the git branch this index represents (#2106). Absent for the
+   * default/legacy single-branch case so the flat `meta.json` stays
+   * byte-identical to pre-multi-branch output. When present in the FLAT
+   * `meta.json`, it records which branch "owns" the flat slot (the first
+   * branch indexed); per-branch indexes under `branches/<slug>/` always carry
+   * their own `branch`.
+   */
+  branch?: string;
 }
 
 /**
@@ -141,15 +151,73 @@ export const getStoragePath = (repoPath: string): string => {
 };
 
 /**
- * Get paths to key storage files
+ * Branch-index sub-directory name, relative to the flat `.gitnexus` storage.
  */
-export const getStoragePaths = (repoPath: string) => {
+const BRANCHES_DIR = 'branches';
+
+/**
+ * Filesystem-safe slug for a git branch ref (#2106).
+ *
+ * `sanitizeRepoName` alone is lossy — it maps `/`→`_`, so `feature/x` and
+ * `feature_x` would collide into the same directory. We append a short
+ * sha256 of the RAW ref (mirroring `assignRepoId`'s digest fallback) so two
+ * distinct refs can never share a branch directory, while keeping the human
+ * prefix readable.
+ */
+export const branchSlug = (rawRef: string): string => {
+  const safe = sanitizeRepoName(rawRef);
+  const hash = createHash('sha256').update(rawRef).digest('hex').slice(0, 8);
+  return `${safe}-${hash}`;
+};
+
+/**
+ * Get paths to key storage files.
+ *
+ * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
+ * caches (`parse-cache/`, `parsedfile-store/`) live there and are shared
+ * across branches (#2106 KTD7). When `branch` is provided, only `lbugPath` and
+ * `metaPath` are scoped under `branches/<slug>/`; the flat call (no `branch`)
+ * returns byte-identical paths to the pre-multi-branch behavior.
+ */
+export const getStoragePaths = (repoPath: string, branch?: string) => {
   const storagePath = getStoragePath(repoPath);
+  const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(storagePath, 'lbug'),
-    metaPath: path.join(storagePath, 'meta.json'),
+    lbugPath: path.join(baseDir, 'lbug'),
+    metaPath: path.join(baseDir, 'meta.json'),
   };
+};
+
+/**
+ * Decide where a freshly-analyzed branch's index lives: the flat (primary)
+ * slot or a per-branch sub-directory (#2106 KTD2).
+ *
+ * Returns `{}` for the flat/primary placement (byte-identical layout) or
+ * `{ branch }` for a `branches/<slug>/` sub-directory. The flat slot is owned
+ * by the FIRST branch indexed, recorded as `branch` in the flat `meta.json`;
+ * a different checked-out branch then auto-routes to its own sub-directory so
+ * it never overwrites the primary index.
+ *
+ * `label` is the resolved index-branch (explicit `--branch`, else the
+ * checked-out branch, else `null`). A `null` label — detached HEAD, non-git
+ * folder, or CI checkout — always maps to the flat slot.
+ */
+export const resolveBranchPlacement = async (
+  repoPath: string,
+  label: string | null,
+): Promise<{ branch?: string }> => {
+  // Detached HEAD / non-git / no label → flat (CI-safe, byte-identical).
+  if (!label) return {};
+  const { storagePath } = getStoragePaths(repoPath);
+  const flatMeta = await loadMeta(storagePath);
+  // Fresh repo (no flat index) or legacy flat index (no recorded branch): the
+  // current label claims/adopts the flat slot. The legacy case preserves
+  // today's overwrite-in-place behavior until the slot is stamped.
+  if (!flatMeta || !flatMeta.branch) return {};
+  // Flat slot is owned by flatMeta.branch. Same branch → flat; otherwise this
+  // branch gets its own sub-directory.
+  return flatMeta.branch === label ? {} : { branch: label };
 };
 
 /**
