@@ -61,6 +61,73 @@ export function isDataCloneError(err: unknown): boolean {
   return typeof err.message === 'string' && err.message.includes('could not be cloned');
 }
 
+// ── Compile-time boundary guard (#2143) ─────────────────────────────────────
+// The runtime net above is the production backstop; this is its compile-time
+// complement. The worker result is plain data EXCEPT a few `unknown`-typed
+// sinks (a node's `properties` bag, the provider `extractTemplateConstraints` /
+// `collectCaptureSideChannel` hook returns). `unknown` lets a non-serializable
+// value (a function, a leaked tree-sitter `SyntaxNode`, …) pass with no
+// compile-time guard — that is the structural hole #2112 leaked through. Typing
+// those producers as `Cloneable<T>` turns such a leak into a compile error at
+// the source site instead of a runtime DataCloneError far downstream.
+
+/** The leaf values the structured-clone algorithm copies verbatim. */
+type CloneablePrimitive = undefined | null | boolean | number | bigint | string;
+
+/**
+ * Maps `T` to itself when every value reachable from it is structured-clone
+ * safe, and to a type containing `never` at the first offending property
+ * otherwise. A function or symbol — the values `postMessage` rejects — becomes
+ * `never`, so a struct carrying one is no longer assignable to its own
+ * `Cloneable<T>` and `assertCloneable` rejects it, naming the bad key.
+ *
+ * Implemented as a homomorphic mapped type (`{ [K in keyof T]: … }`) so it
+ * preserves `interface` shapes and `readonly` modifiers and works WITHOUT
+ * requiring the payload types to carry an index signature — sidestepping the
+ * "closed interface is not assignable to a recursive index-signature type" wall
+ * that blocked the value-typed-`Cloneable` approach (#2143). `Map`/`Set`/array
+ * containers recurse into their element types; `Date`/`RegExp` are clone-safe
+ * leaves.
+ */
+export type Cloneable<T> = T extends CloneablePrimitive | Date | RegExp
+  ? T
+  : T extends (...args: never[]) => unknown
+    ? never
+    : T extends symbol
+      ? never
+      : T extends ReadonlyMap<infer K, infer V>
+        ? ReadonlyMap<Cloneable<K>, Cloneable<V>>
+        : T extends ReadonlySet<infer U>
+          ? ReadonlySet<Cloneable<U>>
+          : T extends readonly (infer U)[]
+            ? T extends unknown[]
+              ? Cloneable<U>[]
+              : readonly Cloneable<U>[]
+            : T extends object
+              ? { [K in keyof T]: Cloneable<T[K]> }
+              : never;
+
+/**
+ * Identity at runtime (zero cost — returns its argument unchanged); a
+ * compile-time assertion that `value` is structured-clone safe. Wrap a
+ * producer that feeds an `unknown` worker-result sink:
+ *
+ *   collectCaptureSideChannel: (filePath) => assertCloneable(collectFoo(filePath))
+ *
+ * If `collectFoo`'s return type ever gains a non-cloneable member (a function, a
+ * `SyntaxNode`, …) the call fails to compile, pointing at the offending key.
+ *
+ * The parameter is a conditional type rather than an `extends Cloneable<T>`
+ * constraint because a self-referential constraint (`T extends Cloneable<T>`)
+ * is a "circular constraint" error in TypeScript. For a clone-safe `T` the
+ * parameter resolves to `T` (call type-checks as a plain identity); for an
+ * unsafe `T` it resolves to `Cloneable<T>` (which has `never` at the bad key),
+ * so the argument is rejected.
+ */
+export function assertCloneable<T>(value: T extends Cloneable<T> ? T : Cloneable<T>): T {
+  return value as T;
+}
+
 /**
  * Recursion cap for the module's own traversal. An over-deep subtree is treated
  * as non-cloneable rather than recursing to a stack overflow — without this, a
