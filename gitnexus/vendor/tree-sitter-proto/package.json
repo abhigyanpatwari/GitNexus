@@ -5,7 +5,7 @@
   "repository": "https://github.com/coder3101/tree-sitter-proto",
   "license": "MIT",
   "main": "bindings/node",
-  "_vendoredBy": "gitnexus — materialized to node_modules/ by materialize-vendor-grammars.cjs; native build via build-tree-sitter-proto.cjs. Do NOT re-add dependencies or an install script (#836, #1728).",
+  "_vendoredBy": "gitnexus — loaded from vendor/ by absolute path at runtime (vendored-grammars.ts) — NEVER copied to node_modules (#2111); native build via build-tree-sitter-grammars.cjs. Do NOT re-add dependencies or an install script (#836, #1728).",
   "peerDependencies": {
     "tree-sitter": ">=0.21.0"
   }

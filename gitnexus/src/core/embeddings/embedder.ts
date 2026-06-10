@@ -28,6 +28,7 @@ import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
 import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
+import { ensureOnnxRuntimeCommonResolvable } from './onnxruntime-common-resolver.js';
 import { logger } from '../logger.js';
 
 /**
@@ -179,6 +180,9 @@ export const initEmbedder = async (
     try {
       // Lazy-load transformers.js only after the runtime guard has passed, so
       // unsupported platforms never reach the native ONNX import (#1515).
+      // Under pnpm-strict / `pnpm dlx`, transformers' phantom `onnxruntime-common`
+      // import is unresolvable; register the fallback resolver first (#307).
+      ensureOnnxRuntimeCommonResolvable();
       const { pipeline, env } = await import('@huggingface/transformers');
 
       // Configure transformers.js environment

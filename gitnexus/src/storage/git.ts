@@ -293,6 +293,33 @@ export const getDefaultBranch = (repoPath: string): string | null => {
 };
 
 /**
+ * Name of the currently checked-out branch, or `null` when HEAD is detached
+ * (CI checkouts, `git checkout <sha>`), the directory is not a git worktree, or
+ * git is unavailable.
+ *
+ * `git rev-parse --abbrev-ref HEAD` prints the literal `HEAD` for a detached
+ * checkout. We map that (and empty output) to `null` so callers fall back to the
+ * flat/default index rather than ever creating a branch literally named
+ * "HEAD" (#2106).
+ */
+export const getCurrentBranch = (repoPath: string): string | null => {
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: repoPath,
+      // Suppress stderr -- see getCurrentCommit comment and #1172.
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+    if (!branch || branch === 'HEAD') return null;
+    return branch;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Sanitize a repository name to prevent argument injection and ensure
  * cross-platform filesystem compatibility.
  *

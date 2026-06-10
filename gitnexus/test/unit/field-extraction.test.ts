@@ -19,20 +19,23 @@ import Go from 'tree-sitter-go';
 import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
 import CSharp from 'tree-sitter-c-sharp';
-import Dart from 'tree-sitter-dart';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+
+// Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
+const Dart = requireVendoredGrammar('tree-sitter-dart');
 
 let Kotlin: unknown;
 try {
-  Kotlin = require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
-  // Kotlin grammar may not be installed
+  // Kotlin grammar may not have a prebuild for this platform
 }
 
 let Swift: unknown;
 try {
-  Swift = require('tree-sitter-swift');
+  Swift = requireVendoredGrammar('tree-sitter-swift');
 } catch {
-  // Swift grammar is an optional dependency; may not be installed
+  // Swift grammar may not have a prebuild for this platform
 }
 import { csharpConfig as csharpFieldConfig } from '../../src/core/ingestion/field-extractors/configs/csharp.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';

@@ -173,6 +173,19 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('per-repo tools have an optional branch scope param (#2106); group/list tools do not', () => {
+    for (const tool of GITNEXUS_TOOLS) {
+      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) {
+        expect(tool.inputSchema.properties.branch).toBeUndefined();
+        continue;
+      }
+      expect(tool.inputSchema.properties.branch, tool.name).toBeDefined();
+      expect(tool.inputSchema.properties.branch.type).toBe('string');
+      // Optional — omitting it keeps the default/primary-branch behavior.
+      expect(tool.inputSchema.required).not.toContain('branch');
+    }
+  });
+
   it('group tools without backend repo param omit repo property', () => {
     for (const name of ['group_list', 'group_sync'] as const) {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;

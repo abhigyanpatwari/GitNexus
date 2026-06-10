@@ -74,13 +74,19 @@ describe('CLI commands', () => {
   });
 
   describe('optional parser dependencies', () => {
-    it('materializes vendored grammars at postinstall instead of file: optionalDependencies (#1728)', async () => {
+    it('loads vendored grammars from vendor/ — never file: optionalDependencies (#1728) nor a node_modules copy (#2111)', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const optional = pkg.default.optionalDependencies ?? {};
       expect(optional['tree-sitter-dart']).toBeUndefined();
       expect(optional['tree-sitter-proto']).toBeUndefined();
       expect(optional['tree-sitter-swift']).toBeUndefined();
-      expect(pkg.default.scripts.postinstall).toContain('materialize-vendor-grammars.cjs');
+      // #2111: the grammars MUST NOT be copied into node_modules at install — an
+      // undeclared node_modules package is "extraneous" to every subsequent
+      // npm/npx reify, which prunes/relocates it (Windows EPERM symlink + silent
+      // deletion on the 2nd run). They are loaded from vendor/ by absolute path
+      // (vendored-grammars.ts), so postinstall no longer materializes anything.
+      expect(pkg.default.scripts.postinstall).not.toContain('materialize-vendor-grammars.cjs');
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(pkg.default.files).toContain('vendor');
     });
 
@@ -138,7 +144,7 @@ describe('CLI commands', () => {
       const optional = pkg.default.optionalDependencies ?? {};
       // Kotlin is now VENDORED (like Swift/Dart/Proto), not a third-party npm
       // optionalDependency. Its prebuilds are GitNexus-cross-built (upstream
-      // ships source only) and materialized into node_modules/ at postinstall.
+      // ships source only) and loaded from vendor/ by absolute path (#2111).
       expect(optional['tree-sitter-kotlin']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(kotlinPkg.default.version).toBe('0.3.8');
