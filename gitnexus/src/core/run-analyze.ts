@@ -982,10 +982,13 @@ export async function runFullAnalysis(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       // Branch identity this index represents (#2106). Recorded for the flat
-      // slot too (so resolveBranchPlacement knows which branch owns it) but
-      // omitted entirely when undefined — detached HEAD / non-git stays
-      // byte-identical to single-branch output (JSON.stringify drops undefined).
-      branch: branchLabel ?? undefined,
+      // slot too (so resolveBranchPlacement knows which branch owns it). When
+      // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
+      // existing stamp rather than stripping it — otherwise a detached re-index
+      // of the primary (e.g. CI's `actions/checkout` default) would un-claim the
+      // flat slot and let the next branch analyze overwrite the primary index.
+      // Stays absent only when never stamped (fresh detached/non-git repo).
+      branch: branchLabel ?? existingMeta?.branch,
       // Captured here (not at registration) so it travels with the
       // on-disk meta.json — sibling-clone fingerprinting works for
       // out-of-tree consumers (group-status, future tooling) without

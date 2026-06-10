@@ -708,14 +708,21 @@ export const registerRepo = async (
       lastCommit: meta.lastCommit,
       stats: meta.stats,
     };
+    // When the registry entry is missing (lost/rebuilt registry.json) but this
+    // is a non-primary branch run, reconstruct the primary top-level fields from
+    // the FLAT meta.json rather than from this branch's meta — otherwise the
+    // primary slot would be labelled with the feature branch's commit/stats and
+    // `--branch <primary>` could never resolve (#2106 review).
+    const flatMeta = existing ? null : await loadMeta(storagePath);
     const base: RegistryEntry = existing ?? {
       name,
       path: resolved,
       storagePath,
-      indexedAt: meta.indexedAt,
-      lastCommit: meta.lastCommit,
-      remoteUrl: meta.remoteUrl,
-      stats: meta.stats,
+      indexedAt: flatMeta?.indexedAt ?? meta.indexedAt,
+      lastCommit: flatMeta?.lastCommit ?? meta.lastCommit,
+      remoteUrl: flatMeta?.remoteUrl ?? meta.remoteUrl,
+      stats: flatMeta?.stats ?? meta.stats,
+      ...(flatMeta?.branch ? { branch: flatMeta.branch } : {}),
     };
     const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
     branches.push(summary);

@@ -771,10 +771,13 @@ const analyzeCommandImpl = async (
   }
 
   // Validate the index-branch selector (#2106) the same way, so a malformed
-  // `--branch` exits before any expensive analysis starts.
+  // `--branch` exits before any expensive analysis starts. Capture the TRIMMED
+  // return so a whitespace-padded value (e.g. " feature" from shell completion)
+  // normalizes before the checked-out-branch mismatch guard and slug — otherwise
+  // it would false-reject on-branch or create a ghost index when detached.
   if (cliOptions?.branch !== undefined) {
     try {
-      validateBranchName(cliOptions.branch, '--branch');
+      cliOptions.branch = validateBranchName(cliOptions.branch, '--branch');
     } catch (err) {
       cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
       process.exitCode = 1;

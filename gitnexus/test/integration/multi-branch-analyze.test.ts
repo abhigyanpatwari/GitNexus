@@ -97,4 +97,43 @@ describe('multi-branch analyze (#2106)', () => {
       await tmp.cleanup();
     }
   }, 180_000);
+
+  it('a detached-HEAD re-analyze preserves the primary stamp (no later overwrite)', async () => {
+    const tmp = await createTempDir('gitnexus-multibranch-detached-');
+    const repo = tmp.dbPath;
+    try {
+      git(['init'], repo);
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+      git(['add', '-A'], repo);
+      commit(repo, 'a');
+      git(['branch', '-M', 'main'], repo);
+      const mainCommit = git(['rev-parse', 'HEAD'], repo);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const flat = getStoragePaths(repo);
+      expect((await loadMeta(flat.storagePath))?.branch).toBe('main');
+
+      // Detach HEAD (what CI's actions/checkout does) and force a rebuild of the
+      // flat/primary index. The primary stamp must NOT be stripped.
+      git(['checkout', mainCommit], repo); // detached
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+      expect((await loadMeta(flat.storagePath))?.branch).toBe('main');
+
+      // Now a feature analyze must still route to a sub-dir (the stamp survived),
+      // leaving the primary index intact rather than claiming the flat slot.
+      git(['checkout', '-b', 'feature/y'], repo);
+      await fs.writeFile(path.join(repo, 'b.ts'), 'export const b = 2;\n');
+      git(['add', '-A'], repo);
+      commit(repo, 'b');
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+
+      const flatMeta = await loadMeta(flat.storagePath);
+      expect(flatMeta?.branch).toBe('main');
+      expect(flatMeta?.lastCommit).toBe(mainCommit); // primary NOT overwritten
+      expect(existsSync(getStoragePaths(repo, 'feature/y').lbugPath)).toBe(true);
+    } finally {
+      await tmp.cleanup();
+    }
+  }, 180_000);
 });
