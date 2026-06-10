@@ -269,4 +269,59 @@ describe('clone-safety', () => {
       expect(result.nodes).toBe(nodes); // untouched — empty live view clones fine
     });
   });
+
+  // U3 (#2112): a DAG-aliased record (the same subobject reached via two paths)
+  // carrying a non-cloneable must be stripped-and-KEPT, not over-dropped — the
+  // old shared-WeakSet returned the un-stripped original on revisit, failing the
+  // last-resort guard and dropping the whole record.
+  describe('DAG-aliased records (memoized strip copies)', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('keeps a DAG element whose shared subobject carries a non-cloneable value', () => {
+      const shared: Record<string, unknown> = { tag: 's', leaked: () => 1 };
+      const el: Record<string, unknown> = {
+        id: 'dag',
+        filePath: 'dag.ts',
+        left: shared,
+        right: shared,
+      };
+      const result: Record<string, unknown> = {
+        nodes: [el],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(isStructuredCloneable(result)).toBe(true);
+      const out = (result.nodes as Array<Record<string, unknown>>)[0];
+      // Record is KEPT (stripped), not dropped as "unsalvageable".
+      expect(out).toBeDefined();
+      expect(skipped[0].reason).toContain('stripped');
+      const left = out.left as Record<string, unknown>;
+      const right = out.right as Record<string, unknown>;
+      expect(left.tag).toBe('s'); // legitimate data preserved
+      expect(left.leaked).toBeUndefined(); // function value stripped to undefined
+      // DAG shape preserved — the two aliases resolve to the SAME stripped copy.
+      expect(left).toBe(right);
+    });
+
+    it('terminates on a self-referential (cyclic) record', () => {
+      const cyc: Record<string, unknown> = { id: 'c', filePath: 'c.ts', bad: () => 1 };
+      cyc.self = cyc;
+      const result: Record<string, unknown> = {
+        nodes: [cyc],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      expect(() => makeWorkerResultCloneSafe(result, opts)).not.toThrow();
+      expect(isStructuredCloneable(result)).toBe(true);
+      const out = (result.nodes as Array<Record<string, unknown>>)[0];
+      expect(out.self).toBe(out); // cycle preserved against the stripped copy
+      expect(out.bad).toBeUndefined(); // function value stripped to undefined
+    });
+  });
 });

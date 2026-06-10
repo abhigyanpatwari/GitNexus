@@ -139,10 +139,16 @@ function containsNonCloneable(value: unknown, seen: WeakSet<object>, depth = 0):
   return false;
 }
 
-/** Counter carried through a strip pass so the caller can report what was lost. */
+/**
+ * State carried through a strip pass. `stripped` counts dropped values for the
+ * skip report; `seen` memoizes each visited object to its stripped COPY (not a
+ * bare visited-set) so a DAG-aliased subtree — the same object reached via two
+ * paths — is sanitized once and shared, never over-dropped, and cycles
+ * terminate by returning the in-progress copy.
+ */
 interface StripCtx {
   stripped: number;
-  seen: WeakSet<object>;
+  seen: Map<object, unknown>;
 }
 
 /**
@@ -167,29 +173,46 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
     return undefined;
   }
   const obj = value as object;
-  if (ctx.seen.has(obj)) return value;
-  if (obj instanceof Date || obj instanceof RegExp) return value;
+  // Memoized? Return the SAME stripped copy (preserves DAG shape; terminates
+  // cycles by returning the in-progress copy inserted before recursing below).
+  if (ctx.seen.has(obj)) return ctx.seen.get(obj);
+  // Leaf-like values: returned by reference, but still memoize the decision so
+  // a second alias resolves identically.
+  if (obj instanceof Date || obj instanceof RegExp) {
+    ctx.seen.set(obj, value);
+    return value;
+  }
   if (obj instanceof ArrayBuffer || ArrayBuffer.isView(obj)) {
     // Keep a live buffer/view (even an empty one); drop a detached one, which
     // structuredClone rejects. The probe is exact — no byteLength heuristic.
     if (!isStructuredCloneable(obj)) {
       ctx.stripped++;
+      ctx.seen.set(obj, undefined);
       return undefined;
     }
+    ctx.seen.set(obj, value);
     return value;
   }
-  ctx.seen.add(obj);
+  // Containers: allocate the empty copy, memoize it BEFORE recursing, then fill
+  // — so a cycle/alias that re-enters gets this in-progress copy.
   if (Array.isArray(obj)) {
-    return obj.map((v) => stripNonCloneable(v, ctx, depth + 1));
+    const out: unknown[] = [];
+    ctx.seen.set(obj, out);
+    for (const v of obj) out.push(stripNonCloneable(v, ctx, depth + 1));
+    return out;
   }
   if (obj instanceof Map) {
+    // Scope limit (acceptable): object keys aren't identity-preserved across
+    // stripping. Parse-result Maps are primitive-keyed, so this never bites.
     const out = new Map();
+    ctx.seen.set(obj, out);
     for (const [k, v] of obj)
       out.set(stripNonCloneable(k, ctx, depth + 1), stripNonCloneable(v, ctx, depth + 1));
     return out;
   }
   if (obj instanceof Set) {
     const out = new Set();
+    ctx.seen.set(obj, out);
     for (const v of obj) out.add(stripNonCloneable(v, ctx, depth + 1));
     return out;
   }
@@ -197,14 +220,17 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
   if (proto !== Object.prototype && proto !== null) {
     // Non-plain object that the probe already flagged as non-cloneable and
     // that we can't safely reconstruct (Promise, WeakMap, class instance with
-    // internal slots). Drop it whole.
+    // internal slots). Drop it whole — memoize the decision so aliases agree.
     if (!isStructuredCloneable(obj)) {
       ctx.stripped++;
+      ctx.seen.set(obj, undefined);
       return undefined;
     }
+    ctx.seen.set(obj, value);
     return value;
   }
   const out: Record<string, unknown> = {};
+  ctx.seen.set(obj, out);
   for (const key of Object.keys(obj)) {
     let child: unknown;
     try {
@@ -289,7 +315,7 @@ export function makeWorkerResultCloneSafe<T extends Record<string, unknown>>(
         skipped.push({ path, reason: `dropped non-serializable ${field} entry` });
         continue;
       }
-      const ctx: StripCtx = { stripped: 0, seen: new WeakSet() };
+      const ctx: StripCtx = { stripped: 0, seen: new Map() };
       const cleaned = stripNonCloneable(element, ctx);
       // Last-resort guard: if stripping functions/symbols still left something
       // structured-clone rejects, drop the element rather than re-throw.
