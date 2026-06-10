@@ -122,17 +122,31 @@ describe('U3 — parse-cache key folds the --pdg flag (R4, #2038-class guard)', 
     expect(computeChunkHash(entries, false)).toBe(computeChunkHash(entries, { pdg: false }));
   });
 
-  it('the cap budgets are folded into the key — a different maxFunctionLines/edges re-dispatches', () => {
-    // Guards the #2038-class trap for the caps: a warm chunk built under one cap
-    // must NOT be served to a --pdg run with a different cap (the emitted CFG
-    // differs). Different cap value ⇒ different key.
+  it('the worker-side line cap is folded into the key — a different maxFunctionLines re-dispatches', () => {
+    // Guards the #2038-class trap for the WORKER-visible cap: a warm chunk
+    // built under one maxFunctionLines must NOT be served to a --pdg run with
+    // a different cap (the cached cfgSideChannel differs — the worker skips
+    // different functions). Different cap value ⇒ different key.
     const base = computeChunkHash(entries, { pdg: true });
     expect(computeChunkHash(entries, { pdg: true, maxFunctionLines: 500 })).not.toBe(base);
-    expect(computeChunkHash(entries, { pdg: true, maxEdgesPerFunction: 100 })).not.toBe(base);
     // Same cap values ⇒ same key (deterministic, order-independent).
     const reordered = [...entries].reverse();
     expect(computeChunkHash(entries, { pdg: true, maxFunctionLines: 500 })).toBe(
       computeChunkHash(reordered, { pdg: true, maxFunctionLines: 500 }),
     );
+  });
+
+  it('the EMIT-time edge cap does NOT perturb the key — cached worker output is identical across it (#2099 F3)', () => {
+    // pdgMaxEdgesPerFunction is applied in scope-resolution on the main
+    // thread; the worker never sees it, so the cached shard is byte-identical
+    // across cap values. Folding it in (a prior review round did) only forced
+    // a spurious full re-parse + durable-store rewrite on every cap change.
+    const base = computeChunkHash(entries, { pdg: true });
+    expect(
+      computeChunkHash(entries, {
+        pdg: true,
+        maxEdgesPerFunction: 100,
+      } as Parameters<typeof computeChunkHash>[1]),
+    ).toBe(base);
   });
 });

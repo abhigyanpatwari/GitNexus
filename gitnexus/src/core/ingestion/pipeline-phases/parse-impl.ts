@@ -36,6 +36,7 @@ import {
   restoreDurableParsedFileShard,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
+import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
 import type { WorkerExtractedData } from '../parsing-processor.js';
 import {
   processRoutesFromExtracted,
@@ -743,11 +744,16 @@ export async function runChunkedParseAndResolve(
         }));
         chunkHash = computeChunkHash(
           entries,
+          // Only worker-visible pdg config participates in the key —
+          // pdgMaxEdgesPerFunction is emit-time-only and deliberately
+          // excluded (see PdgCacheKey in parse-cache.ts; #2099 F3). The line
+          // cap is RESOLVED to the worker's default before folding so an
+          // explicit-default run shares the default run's keys (the worker
+          // output is byte-identical either way).
           options?.pdg === true
             ? {
                 pdg: true,
-                maxFunctionLines: options?.pdgMaxFunctionLines,
-                maxEdgesPerFunction: options?.pdgMaxEdgesPerFunction,
+                maxFunctionLines: options?.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
               }
             : false,
         );
