@@ -59,6 +59,27 @@ describe('run-analyze module', () => {
       await tmpRepo.cleanup();
     }
   });
+
+  it('rejects --branch that does not match the checked-out branch (#2106)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-branch-mismatch-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      // Checked out on main, but labelling the snapshot as feature/x would write
+      // main's tree into feature/x's slot — must be refused before any indexing.
+      await expect(
+        runFullAnalysis(tmpRepo.dbPath, { branch: 'feature/x' }, { onProgress: () => {} }),
+      ).rejects.toThrow(/does not match the checked-out branch/);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
 });
 
 describe('deriveEmbeddingMode', () => {

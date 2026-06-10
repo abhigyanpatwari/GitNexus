@@ -2228,4 +2228,31 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
   it('an un-indexed branch throws a clear error', async () => {
     await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(/not indexed/i);
   });
+
+  it('a legacy entry with no top-level branch still routes an indexed branch', async () => {
+    // Pre-#2106 entries have no `branch` field; branch routing must still work
+    // off branches[] alone.
+    (listRegisteredRepos as any).mockResolvedValue([{ ...BRANCH_ENTRY, branch: undefined }]);
+    await backend.init();
+    const handle = await backend.resolveRepo('multi', 'feature/x');
+    expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
+  });
+
+  it('callTool threads the branch param through resolveRepo (un-indexed branch errors)', async () => {
+    // If callTool dropped `branch` from repoParams, this would resolve the flat
+    // handle and NOT throw — so the rejection proves the param is threaded.
+    await expect(backend.callTool('query', { repo: 'multi', branch: 'nope' })).rejects.toThrow(
+      /not indexed/i,
+    );
+  });
+
+  it('callTool resolves an indexed branch without error', async () => {
+    const res = await backend.callTool('query', {
+      query: 'auth',
+      repo: 'multi',
+      branch: 'feature/x',
+    });
+    expect(res).toBeDefined();
+    expect(res).not.toHaveProperty('error');
+  });
 });

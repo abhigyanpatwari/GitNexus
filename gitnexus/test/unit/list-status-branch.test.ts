@@ -140,4 +140,32 @@ describe('status branch rendering (#2106)', () => {
     expect(out).toContain('Branch: feature/z');
     expect(out).toContain('up-to-date');
   });
+
+  it('shows detached HEAD and compares against the flat index', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue(null); // detached
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+
+    await statusCommand();
+    const out = output();
+    expect(out).toContain('(detached HEAD)');
+    expect(out).toContain('up-to-date');
+  });
+
+  it('reports stale when the branch index is behind the branch tip', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue('feature/z');
+    (getCurrentCommit as any).mockReturnValue('newsha99'); // moved past the index
+    (loadMeta as any).mockResolvedValue({
+      repoPath: '/repo',
+      lastCommit: 'oldsha00',
+      indexedAt: '2026-06-10T14:00:00.000Z',
+      branch: 'feature/z',
+    });
+
+    await statusCommand();
+    const out = output();
+    expect(out).toContain('Branch: feature/z');
+    expect(out).toContain('stale');
+  });
 });

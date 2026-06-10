@@ -1,4 +1,4 @@
-import { execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 import { statSync } from 'fs';
 import path from 'path';
 
@@ -316,29 +316,6 @@ export const getCurrentBranch = (repoPath: string): string | null => {
     return branch;
   } catch {
     return null;
-  }
-};
-
-/**
- * Resolve a git ref (branch name, tag, or revision) to its commit SHA, or `''`
- * when it cannot be resolved (unknown ref, not a git repo, git unavailable).
- *
- * Used by branch-aware staleness (#2106) to find the tip of a branch that may
- * not be the one currently checked out. The `^{commit}` peel makes annotated
- * tags resolve to the commit they point at. Uses `execFileSync` (no shell) so a
- * caller-supplied ref can never be interpreted as a shell command.
- */
-export const resolveRefToCommit = (repoPath: string, ref: string): string => {
-  try {
-    return execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], {
-      cwd: repoPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
-      .toString()
-      .trim();
-  } catch {
-    return '';
   }
 };
 

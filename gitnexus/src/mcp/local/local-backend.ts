@@ -377,7 +377,7 @@ export interface RepoListing {
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
   /** Non-primary branch indexes available for this repo (#2106). */
-  branches?: Array<{ branch: string; indexedAt: string; lastCommit: string }>;
+  branches?: Array<Omit<BranchSummary, 'stats'>>;
 }
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
@@ -448,6 +448,12 @@ export class LocalBackend {
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  // Last meta.indexedAt observed for an open pool, keyed by lbugPath. Keyed by
+  // pool (not stored on the handle) because branch handles are produced fresh
+  // by applyBranchScope on every resolveRepo call, so mutating the handle would
+  // not persist across calls and the staleness check would reinit forever
+  // (#2106).
+  private lastObservedIndexedAt: Map<string, string> = new Map();
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -588,6 +594,7 @@ export class LocalBackend {
       if (liveLbugPaths.has(prev.lbugPath)) continue;
       this.initializedRepos.delete(prev.lbugPath);
       this.lastStalenessCheck.delete(prev.lbugPath);
+      this.lastObservedIndexedAt.delete(prev.lbugPath);
       this.reinitPromises.delete(prev.lbugPath);
       closeLbug(prev.lbugPath).catch(() => {});
     }
@@ -910,7 +917,11 @@ export class LocalBackend {
         const metaPath = path.join(path.dirname(repo.lbugPath), 'meta.json');
         const metaRaw = await fs.readFile(metaPath, 'utf-8');
         const meta = JSON.parse(metaRaw);
-        if (meta.indexedAt && meta.indexedAt !== repo.indexedAt) {
+        // Compare against the last indexedAt OBSERVED for this pool (keyed by
+        // lbugPath), not the handle's — branch handles are fresh spreads so a
+        // handle mutation would not persist and would reinit on every check.
+        const observed = this.lastObservedIndexedAt.get(poolKey) ?? repo.indexedAt;
+        if (meta.indexedAt && meta.indexedAt !== observed) {
           // Index was rebuilt — close stale connection and re-init.
           // Wrap in reinitPromises to prevent TOCTOU race where concurrent
           // callers both detect staleness and double-close the pool.
@@ -918,7 +929,7 @@ export class LocalBackend {
             try {
               await closeLbug(poolKey);
               this.initializedRepos.delete(poolKey);
-              repo.indexedAt = meta.indexedAt;
+              this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
               await initLbug(poolKey, repo.lbugPath);
               this.initializedRepos.add(poolKey);
             } finally {
@@ -938,6 +949,7 @@ export class LocalBackend {
     try {
       await initLbug(poolKey, repo.lbugPath);
       this.initializedRepos.add(poolKey);
+      this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);

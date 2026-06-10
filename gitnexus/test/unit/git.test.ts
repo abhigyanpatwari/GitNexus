@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -12,17 +12,14 @@ import {
   sanitizeRepoName,
   getDefaultBranch,
   getCurrentBranch,
-  resolveRefToCommit,
 } from '../../src/storage/git.js';
 
-// Mock child_process.execSync / execFileSync
+// Mock child_process.execSync
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
-  execFileSync: vi.fn(),
 }));
 
 const mockExecSync = vi.mocked(execSync);
-const mockExecFileSync = vi.mocked(execFileSync);
 
 describe('git utilities', () => {
   beforeEach(() => {
@@ -134,25 +131,6 @@ describe('git utilities', () => {
     it('preserves a slash in the branch name (slugging happens elsewhere)', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('release/1.2\n'));
       expect(getCurrentBranch('/project')).toBe('release/1.2');
-    });
-  });
-
-  describe('resolveRefToCommit (#2106)', () => {
-    it('resolves a ref to its commit SHA without invoking a shell', () => {
-      mockExecFileSync.mockReturnValueOnce(Buffer.from('deadbeef\n'));
-      expect(resolveRefToCommit('/project', 'feature/x')).toBe('deadbeef');
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        'git',
-        ['rev-parse', '--verify', 'feature/x^{commit}'],
-        expect.objectContaining({ cwd: '/project', windowsHide: true }),
-      );
-    });
-
-    it('returns empty string for an unknown ref (git throws)', () => {
-      mockExecFileSync.mockImplementationOnce(() => {
-        throw new Error('fatal: Needed a single revision');
-      });
-      expect(resolveRefToCommit('/project', 'nope')).toBe('');
     });
   });
 

@@ -275,7 +275,19 @@ export async function runFullAnalysis(
   // a `branches/<slug>/` sub-directory. Explicit `--branch` is always honored;
   // otherwise auto-detect the checked-out branch (null for detached HEAD /
   // non-git → flat slot).
-  const branchLabel = options.branch ?? (repoHasGit ? getCurrentBranch(repoPath) : null);
+  const checkedOutBranch = repoHasGit ? getCurrentBranch(repoPath) : null;
+  // Analyze indexes the working tree, not an arbitrary ref. An explicit
+  // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
+  // content (and Y's commit) into X's index slot, corrupting X (#2106). Refuse
+  // the mismatch. Detached HEAD / non-git (checkedOutBranch === null) still
+  // allow an explicit label so CI checkouts can name their snapshot.
+  if (options.branch && checkedOutBranch && options.branch !== checkedOutBranch) {
+    throw new Error(
+      `--branch "${options.branch}" does not match the checked-out branch "${checkedOutBranch}". ` +
+        `Check out "${options.branch}" before indexing it, or omit --branch to index the current branch.`,
+    );
+  }
+  const branchLabel = options.branch ?? checkedOutBranch;
   const placement = await resolveBranchPlacement(repoPath, branchLabel);
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
   // Directory that owns this run's meta.json (flat `.gitnexus` for the primary

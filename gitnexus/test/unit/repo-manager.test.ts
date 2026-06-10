@@ -109,6 +109,22 @@ describe('branchSlug (#2106)', () => {
     expect(slug).not.toContain('/');
     expect(/^[A-Za-z0-9._-]+$/.test(slug)).toBe(true);
   });
+
+  it('contains adversarial / traversal branch names to a single safe segment', () => {
+    // branchSlug feeds getStoragePaths directly on the server path (the MCP
+    // `branch` param is NOT gated by validateBranchName), so containment must
+    // hold for hostile inputs. A `..` substring inside a longer name is
+    // harmless; only a standalone `..` segment traverses, and sanitizeRepoName
+    // collapses separators so that can never happen.
+    const base = path.join('/repo', '.gitnexus', 'branches');
+    for (const payload of ['../..', '../../etc/passwd', '..', '...', '/abs/path', 'x y']) {
+      const slug = branchSlug(payload);
+      expect(slug, payload).toMatch(/^[A-Za-z0-9._-]+$/);
+      expect(slug, payload).not.toContain('/');
+      // path.join keeps the result a direct child of the branches dir.
+      expect(path.dirname(path.join(base, slug)), payload).toBe(base);
+    }
+  });
 });
 
 // ─── resolveBranchPlacement (#2106 KTD2) ─────────────────────────────
