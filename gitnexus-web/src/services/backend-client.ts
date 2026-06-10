@@ -283,12 +283,11 @@ const fetchWithTimeout = async (
 ): Promise<Response> => {
   // Merge the external caller signal (if any) with an
   // `AbortSignal.timeout()` so a timer-fired abort produces a
-  // `DOMException` with `name === 'TimeoutError'` — which
-  // `resilientFetch` correctly classifies as terminal-network (no
-  // retry, no breaker hit). A manual `AbortController.abort()` would
-  // produce `name === 'AbortError'` and route through the
-  // retryable-network branch, which mis-penalizes the breaker for
-  // user-side network slowness.
+  // `DOMException` with `name === 'TimeoutError'`. Both shapes are
+  // breaker-safe: `resilientFetch` classifies TimeoutError AND a manual
+  // `AbortController.abort()`'s AbortError as terminal-network (no
+  // retry, breaker-neutral via recordNeutral), so caller-driven
+  // cancellation never penalizes the breaker.
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const externalSignal = init.signal;
   const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
@@ -768,6 +767,7 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
 export const uploadFolder = async (
   files: File[],
   manifest: string[],
+  signal?: AbortSignal,
 ): Promise<{ jobId: string; status: string }> => {
   const form = new FormData();
   // Manifest MUST precede the file parts (the server enforces this).
@@ -776,7 +776,7 @@ export const uploadFolder = async (
 
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze/upload`,
-    { method: 'POST', body: form },
+    { method: 'POST', body: form, signal },
     5 * 60_000, // up to 5 min for large repos
   );
   await assertOk(response);

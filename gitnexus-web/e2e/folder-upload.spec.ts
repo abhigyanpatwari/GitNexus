@@ -64,3 +64,48 @@ test('uploading a folder posts a multipart upload and starts analysis', async ({
   await expect.poll(() => uploadContentType).toContain('multipart/form-data');
   await expect(page.locator('[data-testid="upload-folder"]')).toBeHidden({ timeout: 10_000 });
 });
+
+test('switching modes mid-upload aborts it and never shows progress', async ({ page }) => {
+  // Hold the upload response until the test releases it, so the mode switch
+  // happens while the POST is in flight (the review 4470339833 repro).
+  let releaseUpload!: () => void;
+  const uploadGate = new Promise<void>((res) => (releaseUpload = res));
+  let uploadAborted = false;
+  let progressOpened = false;
+
+  // The client-side AbortController kills the POST at mode-switch time; that
+  // surfaces as a failed request (net::ERR_ABORTED), not as a response.
+  page.on('requestfailed', (req) => {
+    if (req.url().includes('/api/analyze/upload')) uploadAborted = true;
+  });
+  await page.route(`${BACKEND_URL}/api/analyze/upload`, async (route) => {
+    await uploadGate;
+    await route.fulfill({ json: { jobId: 'job-stale', status: 'analyzing' } }).catch(() => {}); // the request may already be gone — that's the point
+  });
+  await page.route(`${BACKEND_URL}/api/analyze/job-stale/progress`, (route) => {
+    progressOpened = true;
+    return route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+      body: 'event: complete\ndata: {"repoName":"myrepo"}\n\n',
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('tab', { name: 'Local Folder' })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('tab', { name: 'Local Folder' }).click();
+  await page.locator('[data-testid="folder-upload-input"]').setInputFiles(fixtureDir);
+  await expect(page.locator('[data-testid="upload-progress"]')).toBeVisible();
+
+  // Switch back to GitHub while the upload POST is still pending, then let
+  // the (now-stale) route handler finish.
+  await page.getByRole('tab', { name: 'GitHub URL' }).click();
+  await expect.poll(() => uploadAborted, { timeout: 10_000 }).toBe(true);
+  releaseUpload();
+
+  // The GitHub form stays clean (no error, immediately usable), and no SSE
+  // progress stream is ever opened by the stale upload.
+  await expect(page.getByPlaceholder('https://github.com/owner/repo')).toBeEditable();
+  await expect(page.locator('[data-testid="upload-progress"]')).toBeHidden();
+  expect(progressOpened).toBe(false);
+});
