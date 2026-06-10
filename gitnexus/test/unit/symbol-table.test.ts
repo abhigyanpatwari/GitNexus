@@ -142,6 +142,24 @@ describe('SymbolTable', () => {
     });
   });
 
+  describe('callable availability metadata', () => {
+    it('preserves isDeleted in file, callable, and owner indexes', () => {
+      table.add('src/example.cpp', 'choose', 'func:choose:int', 'Function', {
+        parameterTypes: ['int'],
+        isDeleted: true,
+      });
+      table.add('src/example.cpp', 'touch', 'method:touch:double', 'Method', {
+        ownerId: 'class:Widget',
+        parameterTypes: ['double'],
+        isDeleted: true,
+      });
+
+      expect(table.lookupExactAll('src/example.cpp', 'choose')[0]?.isDeleted).toBe(true);
+      expect(table.lookupCallableByName('choose')[0]?.isDeleted).toBe(true);
+      expect(model.methods.lookupAllByOwner('class:Widget', 'touch')[0]?.isDeleted).toBe(true);
+    });
+  });
+
   describe('Property exclusion from callable index', () => {
     it('Property with ownerId is NOT in callable index', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property', {

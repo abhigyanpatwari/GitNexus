@@ -104,6 +104,7 @@ export const mergeChunkResults = (
         templateArguments: sym.templateArguments,
         ownerId: sym.ownerId,
         qualifiedName: sym.qualifiedName,
+        isDeleted: sym.isDeleted,
       });
     }
     if (exportedTypeMap) {

@@ -131,6 +131,7 @@ export interface AddMetadata {
   templateArguments?: string[];
   ownerId?: string;
   qualifiedName?: string;
+  isDeleted?: boolean;
 }
 
 /**
@@ -285,6 +286,7 @@ export const createSymbolTable = (): InternalSymbolTable => {
         ? { templateArguments: metadata.templateArguments }
         : {}),
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
+      ...(metadata?.isDeleted === true ? { isDeleted: true } : {}),
     };
 
     // A. File Index — unconditional.

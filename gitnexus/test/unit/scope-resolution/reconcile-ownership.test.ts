@@ -212,6 +212,62 @@ describe('reconcileOwnership', () => {
     expect(model.methods.lookupAllByOwner('def:User', 'save')).toHaveLength(1);
   });
 
+  it('preserves deleted-callable metadata when the worker def is already registered', () => {
+    const model = createSemanticModel();
+    model.symbols.add('models.cpp', 'touch', 'Method:models.cpp:Gadget.touch', 'Method', {
+      ownerId: 'def:Gadget',
+      qualifiedName: 'Gadget.touch',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['double'],
+    });
+    const deleted = {
+      ...mkMethod({
+        nodeId: 'def:models.cpp#3:2:Method:touch',
+        filePath: 'models.cpp',
+        name: 'touch',
+        ownerId: 'def:Gadget',
+      }),
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['double'],
+      isDeleted: true,
+    };
+
+    const stats = reconcileOwnership([mkFile('models.cpp', [deleted])], model);
+    const registered = model.methods.lookupAllByOwner('def:Gadget', 'touch');
+
+    expect(stats.skippedAlreadyPresent).toBe(1);
+    expect(registered).toHaveLength(1);
+    expect(registered[0].isDeleted).toBe(true);
+  });
+
+  it('preserves deleted metadata for unowned free-function overloads', () => {
+    const model = createSemanticModel();
+    model.symbols.add('helpers.cpp', 'choose', 'Function:helpers.cpp:choose#int', 'Function', {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['int'],
+    });
+    const deleted: SymbolDefinition = {
+      nodeId: 'def:helpers.cpp#4:0:Function:choose',
+      filePath: 'helpers.cpp',
+      type: 'Function',
+      qualifiedName: 'choose',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['int'],
+      isDeleted: true,
+    };
+
+    const stats = reconcileOwnership([mkFile('helpers.cpp', [deleted])], model);
+    const registered = model.symbols.lookupCallableByName('choose');
+
+    expect(stats.skippedAlreadyPresent).toBe(1);
+    expect(registered).toHaveLength(1);
+    expect(registered[0].isDeleted).toBe(true);
+  });
+
   it('registers nested class-like types (Class/Enum/Interface) into TypeRegistry by owner', () => {
     const model = createSemanticModel();
     const inner: SymbolDefinition = {

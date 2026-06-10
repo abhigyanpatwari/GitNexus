@@ -2399,7 +2399,7 @@ describe('C++ MethodExtractor', () => {
       expect(result!.methods[1].visibility).toBe('public');
     });
 
-    it('suppresses = delete special members from extraction', () => {
+    it('retains = delete special members and marks them unavailable', () => {
       const tree = parseCPP(`
         class NonCopyable {
         public:
@@ -2411,11 +2411,12 @@ describe('C++ MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(1);
-      expect(result!.methods[0].name).toBe('doWork');
+      expect(result!.methods).toHaveLength(3);
+      expect(result!.methods.filter((method) => method.isDeleted)).toHaveLength(2);
+      expect(result!.methods.find((method) => method.name === 'doWork')?.isDeleted).toBeUndefined();
     });
 
-    it('suppresses = default special members from extraction', () => {
+    it('retains = default special members as callable', () => {
       const tree = parseCPP(`
         class Widget {
         public:
@@ -2427,8 +2428,9 @@ describe('C++ MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(1);
-      expect(result!.methods[0].name).toBe('paint');
+      expect(result!.methods).toHaveLength(3);
+      expect(result!.methods.map((method) => method.name)).toEqual(['Widget', '~Widget', 'paint']);
+      expect(result!.methods.every((method) => method.isDeleted !== true)).toBe(true);
     });
 
     it('does not suppress = 0 (pure virtual) as deleted/defaulted', () => {

@@ -84,13 +84,41 @@ export function reconcileOwnership(
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       const ownerId = (def as { ownerId?: string }).ownerId;
-      if (ownerId === undefined) continue;
       const simple = simpleQualifiedName(def);
       if (simple === undefined) continue;
 
       if (def.type === 'Method' || def.type === 'Function' || def.type === 'Constructor') {
+        if (ownerId === undefined) {
+          if (def.isDeleted !== true) continue;
+          const existingDef = model.symbols
+            .lookupExactAll(def.filePath, simple)
+            .find((candidate) => callableSignatureMatches(candidate, def));
+          if (existingDef !== undefined) {
+            existingDef.isDeleted = true;
+            skippedAlreadyPresent++;
+            continue;
+          }
+          model.symbols.add(def.filePath, simple, def.nodeId, def.type, {
+            parameterCount: def.parameterCount,
+            requiredParameterCount: def.requiredParameterCount,
+            parameterTypes: def.parameterTypes,
+            parameterTypeClasses: def.parameterTypeClasses,
+            returnType: def.returnType,
+            qualifiedName: def.qualifiedName,
+            isDeleted: true,
+          });
+          continue;
+        }
         const existing = model.methods.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        const existingDef = existing.find(
+          (candidate) =>
+            candidate.nodeId === def.nodeId ||
+            (def.isDeleted === true && callableSignatureMatches(candidate, def)),
+        );
+        if (existingDef !== undefined) {
+          if (def.isDeleted === true) {
+            existingDef.isDeleted = true;
+          }
           skippedAlreadyPresent++;
           continue;
         }
@@ -122,6 +150,24 @@ export function reconcileOwnership(
   }
 
   return { methodsRegistered, fieldsRegistered, nestedTypesRegistered, skippedAlreadyPresent };
+}
+
+function callableSignatureMatches(
+  left: ParsedFile['localDefs'][number],
+  right: ParsedFile['localDefs'][number],
+): boolean {
+  if (left.filePath !== right.filePath) return false;
+  if (left.parameterCount !== right.parameterCount) return false;
+  if (left.requiredParameterCount !== right.requiredParameterCount) return false;
+  const leftTypes = left.parameterTypes;
+  const rightTypes = right.parameterTypes;
+  if (leftTypes === undefined || rightTypes === undefined) {
+    return leftTypes === rightTypes;
+  }
+  return (
+    leftTypes.length === rightTypes.length &&
+    leftTypes.every((parameterType, index) => parameterType === rightTypes[index])
+  );
 }
 
 /**
