@@ -34,7 +34,13 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import { emitFileCfgs, isEmitSafeCfg, DEFAULT_MAX_CFG_EDGES_PER_FUNCTION } from '../../cfg/emit.js';
+import {
+  emitFileCfgs,
+  emitFileReachingDefs,
+  isEmitSafeCfg,
+  DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+} from '../../cfg/emit.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
@@ -264,6 +270,9 @@ interface RunScopeResolutionInput {
   /** Per-function CFG edge cap. `undefined` ⇒ {@link DEFAULT_MAX_CFG_EDGES_PER_FUNCTION};
    *  `0` ⇒ no cap (unlimited). */
   readonly pdgMaxEdgesPerFunction?: number;
+  /** Per-function REACHING_DEF edge cap (#2082 M2). `undefined` ⇒
+   *  {@link DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION}; `0` ⇒ no cap. */
+  readonly pdgMaxReachingDefEdgesPerFunction?: number;
   /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
@@ -698,10 +707,20 @@ export function runScopeResolution(
   // disk store is cleared right after this orchestrator returns, see phase.ts).
   // A post-`mro` phase would read empty data (KTD1). Off by default ⇒ zero
   // BasicBlock/CFG nodes/edges and a byte-identical graph.
+  // Accumulated M2 reaching-defs time (solve + dedup + REACHING_DEF emit),
+  // reported as the PROF `pdg=` segment. It is a SUBSET of `emit=` — the M1
+  // CFG emit and the M2 solve interleave per file, so a separate checkpoint
+  // pair can't bracket them; without this accumulator the M2 cost would
+  // silently disappear into `emit=` and field regressions would be invisible.
+  let pdgMs = 0;
   if (input.pdg === true) {
     let cfgBlocks = 0;
     let cfgEdges = 0;
     let cfgDroppedEdges = 0;
+    let rdEdges = 0;
+    let rdDropped = 0;
+    let rdFacts = 0;
+    let rdTruncated = 0;
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
@@ -739,6 +758,24 @@ export function runScopeResolution(
         cfgBlocks += emitted.blocks;
         cfgEdges += emitted.edges;
         cfgDroppedEdges += emitted.droppedEdges;
+
+        // M2 (#2082 U4): reaching definitions over the same validated CFGs.
+        // In-memory facts are computed per function and dropped after the
+        // bounded (defBlock, useBlock, binding) projection is persisted —
+        // M3 recomputes via the same pure solver in-phase (KTD8).
+        const t0 = performance.now();
+        const rd = emitFileReachingDefs(
+          graph,
+          wellFormed,
+          input.pdgMaxReachingDefEdgesPerFunction ??
+            DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+          (message) => logger.warn(message), // unconditional — R7, both layers
+        );
+        pdgMs += performance.now() - t0;
+        rdEdges += rd.edges;
+        rdDropped += rd.droppedEdges;
+        rdFacts += rd.facts;
+        rdTruncated += rd.truncatedFunctions;
       } catch (err) {
         // Last-resort isolation, mirroring the worker-side per-file try/catch:
         // a shape the predicate misses must cost this one file's CFG, not
@@ -757,7 +794,10 @@ export function runScopeResolution(
       logger.debug(
         `[scope-resolution] CFG emit (lang=${provider.language}): ` +
           `${cfgBlocks} BasicBlock nodes, ${cfgEdges} CFG edges` +
-          (cfgDroppedEdges > 0 ? `, ${cfgDroppedEdges} edges dropped (per-function cap)` : ''),
+          (cfgDroppedEdges > 0 ? `, ${cfgDroppedEdges} edges dropped (per-function cap)` : '') +
+          `; ${rdEdges} REACHING_DEF edges (${rdFacts} facts)` +
+          (rdDropped > 0 ? `, ${rdDropped} REACHING_DEF edges dropped (per-function cap)` : '') +
+          (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : ''),
       );
     }
   }
@@ -771,6 +811,8 @@ export function runScopeResolution(
         ` propagate=${ns(tFinalize, tPropagate).toFixed(0)}ms` +
         ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
+        // pdg ⊆ emit: the M2 reaching-defs share of the emit bucket (#2082 U4).
+        (input.pdg === true ? ` pdg=${pdgMs.toFixed(0)}ms` : '') +
         ` total=${ns(tStart, tEnd).toFixed(0)}ms` +
         ` (${parsedFiles.length} files)`,
     );

@@ -150,6 +150,14 @@ export interface RepoMeta {
     maxFunctionLines: number;
     /** Emit-side per-function CFG edge cap, resolved (0 = unlimited). */
     maxEdgesPerFunction: number;
+    /**
+     * Emit-side per-function REACHING_DEF edge cap, resolved (0 = unlimited;
+     * #2082 M2). ABSENT on an M1-era stamp — which is exactly what makes
+     * `pdgModeMismatch` trip on the first M2 run over an M1 index and force
+     * the full writeback that populates REACHING_DEF rows. Optional in the
+     * type for that reason; resolved (always present) on every M2+ write.
+     */
+    maxReachingDefEdgesPerFunction?: number;
   };
 }
 

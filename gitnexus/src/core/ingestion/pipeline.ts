@@ -74,6 +74,15 @@ export interface PipelineOptions {
    */
   pdgMaxEdgesPerFunction?: number;
   /**
+   * Per-function REACHING_DEF edge cap for the scope-resolution emit step
+   * (#2082 M2). `undefined` ⇒ `DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION`
+   * (4000); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the
+   * parse-cache chunk key (the worker never sees it); recorded in
+   * `RepoMeta.pdg` so a cap change forces a full writeback. No CLI flag —
+   * programmatic / server path only, like the M1 caps.
+   */
+  pdgMaxReachingDefEdgesPerFunction?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to

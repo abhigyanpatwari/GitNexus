@@ -34,6 +34,32 @@ async function countBasicBlocks(repoPath: string): Promise<number> {
   }
 }
 
+describe('pdgModeMismatch — M1→M2 stamp upgrade (#2082 M2, pure)', () => {
+  it('an M1-era stamp (no REACHING_DEF cap) mismatches an M2 request — upgrade forces full writeback', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    const m1Stamp = { maxFunctionLines: 2000, maxEdgesPerFunction: 5000 };
+    // default M2 request resolves maxReachingDefEdgesPerFunction=4000 ≠ undefined
+    expect(pdgModeMismatch(m1Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('an identical resolved M2 config compares equal (steady state keeps incremental)', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true })).toBe(false);
+  });
+
+  it('a REACHING_DEF cap change alone trips the mismatch', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxReachingDefEdgesPerFunction: 100 })).toBe(
+      true,
+    );
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxReachingDefEdgesPerFunction: 4000 })).toBe(
+      false, // explicit default ≡ default (resolution before comparison)
+    );
+  });
+});
+
 describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
   it('off→on flip forces a full writeback that persists the CFG layer; on→off removes it', async () => {
     const repo = await setupMiniRepo();
@@ -57,7 +83,11 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
       expect(logs.some((m) => m.includes('pdg mode changed'))).toBe(true);
       expect(await countBasicBlocks(repo.dbPath)).toBeGreaterThan(0);
       const stamped = await loadMeta(storagePath);
-      expect(stamped!.pdg).toEqual({ maxFunctionLines: 2000, maxEdgesPerFunction: 5000 });
+      expect(stamped!.pdg).toEqual({
+        maxFunctionLines: 2000,
+        maxEdgesPerFunction: 5000,
+        maxReachingDefEdgesPerFunction: 4000,
+      });
       expect(stamped!.incrementalInProgress).toBeUndefined(); // cleared on success
 
       // 3. Steady state: a second identical --pdg run takes the fast path —
@@ -105,6 +135,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
       expect((await loadMeta(storagePath))!.pdg).toEqual({
         maxFunctionLines: 2000,
         maxEdgesPerFunction: 1,
+        maxReachingDefEdgesPerFunction: 4000,
       });
       // The CFG layer survives a rebuild under a tighter edge cap (blocks are
       // never capped, only edges).

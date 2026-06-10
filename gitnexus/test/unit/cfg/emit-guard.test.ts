@@ -191,3 +191,125 @@ describe('cfgSideChannel emit guard (#2099 F4)', () => {
     expect(warns()).toHaveLength(0);
   });
 });
+
+describe('#2082 M2 — statement-fact emit guard (isEmitSafeCfg extension)', () => {
+  let cap: ReturnType<typeof _captureLogger>;
+  beforeEach(() => {
+    cap = _captureLogger();
+  });
+  afterEach(() => {
+    cap.restore();
+  });
+  const warns = (): string[] =>
+    cap
+      .records()
+      .filter((r) => r.level >= 40)
+      .map((r) => String(r.msg));
+
+  const rdEdges = (graph: KnowledgeGraph): number => {
+    let n = 0;
+    graph.forEachRelationship((r) => {
+      if (r.type === 'REACHING_DEF') n++;
+    });
+    return n;
+  };
+  const cfgEdgeCount = (graph: KnowledgeGraph): number => {
+    let n = 0;
+    graph.forEachRelationship((r) => {
+      if (r.type === 'CFG') n++;
+    });
+    return n;
+  };
+
+  /** Valid facts-bearing CFG: def at stmt 0 reaches the use at stmt 1. */
+  const factCfg = (blocks?: unknown): unknown => ({
+    ...validCfg,
+    bindings: [{ name: 'x', declLine: 1, declColumn: 0, kind: 'let' }],
+    blocks: blocks ?? [
+      { index: 0, startLine: 1, endLine: 1, text: '', kind: 'entry', statements: [] },
+      {
+        index: 1,
+        startLine: 3,
+        endLine: 3,
+        text: '',
+        kind: 'exit',
+        statements: [
+          { line: 2, defs: [0], uses: [] },
+          { line: 3, defs: [], uses: [0] },
+        ],
+      },
+    ],
+  });
+
+  it('a well-formed facts-bearing CFG passes the guard and emits REACHING_DEF', () => {
+    const graph = emitWith([factCfg()]);
+    expect(rdEdges(graph)).toBeGreaterThan(0);
+    expect(warns()).toHaveLength(0);
+  });
+
+  it('an OUT-OF-RANGE binding index is rejected per element (would template undefined into ids)', () => {
+    const bad = factCfg([
+      { index: 0, startLine: 1, endLine: 1, text: '', kind: 'entry', statements: [] },
+      {
+        index: 1,
+        startLine: 3,
+        endLine: 3,
+        text: '',
+        kind: 'exit',
+        statements: [{ line: 2, defs: [7], uses: [0] }], // 7 escapes the 1-entry table
+      },
+    ]);
+    const graph = emitWith([bad, validCfg]);
+    // the malformed element is skipped with a warn; the valid sibling emits CFG
+    expect(rdEdges(graph)).toBe(0);
+    expect(cfgEdgeCount(graph)).toBeGreaterThan(0);
+    expect(warns().some((m) => m.includes('malformed'))).toBe(true);
+  });
+
+  it('statements WITHOUT a binding table are rejected (malformed by construction)', () => {
+    const noTable = {
+      ...(factCfg() as Record<string, unknown>),
+      bindings: undefined,
+    };
+    const graph = emitWith([noTable]);
+    expect(rdEdges(graph)).toBe(0);
+    expect(warns().some((m) => m.includes('malformed'))).toBe(true);
+  });
+
+  it('non-integer statement line / non-array defs are rejected per element', () => {
+    const badLine = factCfg([
+      {
+        index: 0,
+        startLine: 1,
+        endLine: 1,
+        text: '',
+        kind: 'entry',
+        statements: [{ line: 'x', defs: [], uses: [] }],
+      },
+      { index: 1, startLine: 3, endLine: 3, text: '', kind: 'exit', statements: [] },
+    ]);
+    const badDefs = factCfg([
+      {
+        index: 0,
+        startLine: 1,
+        endLine: 1,
+        text: '',
+        kind: 'entry',
+        statements: [{ line: 2, defs: 'nope', uses: [] }],
+      },
+      { index: 1, startLine: 3, endLine: 3, text: '', kind: 'exit', statements: [] },
+    ]);
+    for (const bad of [badLine, badDefs]) {
+      const graph = emitWith([bad]);
+      expect(rdEdges(graph)).toBe(0);
+    }
+    expect(warns().some((m) => m.includes('malformed'))).toBe(true);
+  });
+
+  it('a pre-M2 channel (no bindings, no statements) still passes — CFG emits, REACHING_DEF skips', () => {
+    const graph = emitWith([validCfg]);
+    expect(cfgEdgeCount(graph)).toBeGreaterThan(0);
+    expect(rdEdges(graph)).toBe(0);
+    expect(warns()).toHaveLength(0);
+  });
+});

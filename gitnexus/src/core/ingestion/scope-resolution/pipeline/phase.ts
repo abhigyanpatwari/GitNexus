@@ -353,6 +353,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           // CFG/PDG emission (#2081 M1) — opt-in; off ⇒ byte-identical graph.
           pdg: ctx.options?.pdg === true,
           pdgMaxEdgesPerFunction: ctx.options?.pdgMaxEdgesPerFunction,
+          pdgMaxReachingDefEdgesPerFunction: ctx.options?.pdgMaxReachingDefEdgesPerFunction,
           recordResolutionOutcome: (outcome) => {
             resolutionOutcomes.push(outcome);
           },

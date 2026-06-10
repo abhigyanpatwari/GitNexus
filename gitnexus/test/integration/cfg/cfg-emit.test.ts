@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import { collectFunctionCfgs } from '../../../src/core/ingestion/cfg/collect.js';
-import { emitFileCfgs } from '../../../src/core/ingestion/cfg/emit.js';
+import { emitFileCfgs, emitFileReachingDefs } from '../../../src/core/ingestion/cfg/emit.js';
 import { getProvider } from '../../../src/core/ingestion/languages/index.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import type { CfgVisitor, FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
@@ -177,5 +177,164 @@ describe('U4 — flag-off / empty input emits nothing', () => {
     expect(rels).toHaveLength(0);
     expect(r.blocks).toBe(0);
     expect(r.edges).toBe(0);
+  });
+});
+
+describe('U4 (#2082 M2) — emitFileReachingDefs', () => {
+  it('persists deduped (blockPair, binding) edges with reason = plain variable name', () => {
+    const cfgs = cfgsOf(
+      `function f(a) {
+        let x = a;
+        x = x + 1;
+        return sink(x);
+      }`,
+      'src/rd.ts',
+    );
+    const { graph, rels } = recordingGraph();
+    const r = emitFileReachingDefs(graph, cfgs);
+    expect(r.edges).toBe(rels.length);
+    expect(rels.length).toBeGreaterThan(0);
+    for (const e of rels) {
+      expect(e.type).toBe('REACHING_DEF');
+      expect(e.sourceId).toMatch(/^BasicBlock:src\/rd\.ts:\d+:\d+:\d+$/);
+      expect(e.targetId).toMatch(/^BasicBlock:src\/rd\.ts:\d+:\d+:\d+$/);
+    }
+    // reason carries the plain source-level name (M0/S1 verdict)
+    const reasons = new Set(rels.map((e) => e.reason));
+    expect(reasons.has('x')).toBe(true);
+    expect(reasons.has('a')).toBe(true);
+  });
+
+  it('same block pair, two bindings → two distinct edges (id collision-proofing)', () => {
+    const cfgs = cfgsOf(`function f(a, b) { const c = a + b; use(c); }`, 'two.ts');
+    const { graph, rels } = recordingGraph();
+    emitFileReachingDefs(graph, cfgs);
+    const ids = rels.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // a and b both flow ENTRY→body: same block pair, distinct edges by binding
+    const entryToBody = rels.filter((e) => e.reason === 'a' || e.reason === 'b');
+    expect(entryToBody.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('N statement-level facts on one (blockPair, binding) collapse to ONE edge', () => {
+    // x defined once, used three times in the same straight-line block: three
+    // facts, one persisted edge (the persisted columns cannot distinguish).
+    const cfgs = cfgsOf(
+      `function f() {
+        let x = seed();
+        a(x); b(x); c(x);
+      }`,
+      'dedup.ts',
+    );
+    const { graph, rels } = recordingGraph();
+    const r = emitFileReachingDefs(graph, cfgs);
+    const xEdges = rels.filter((e) => e.reason === 'x');
+    expect(xEdges).toHaveLength(1); // self-pair within the single body block
+    expect(r.facts).toBeGreaterThan(rels.length); // facts > deduped edges
+  });
+
+  it('per-function edge cap: truncates deterministically, warns with top bindings (R7)', () => {
+    const cfgs = cfgsOf(
+      `function f(p, q) {
+        let x = p;
+        if (p) { x = q; } else { x = p + q; }
+        s1(x); s2(p); s3(q);
+      }`,
+      'cap.ts',
+    );
+    const full = recordingGraph();
+    const rFull = emitFileReachingDefs(full.graph, cfgs);
+    expect(rFull.edges).toBeGreaterThan(2);
+
+    const capped = recordingGraph();
+    const onWarn = vi.fn();
+    const r = emitFileReachingDefs(capped.graph, cfgs, 2, onWarn);
+    expect(capped.rels).toHaveLength(2);
+    // NOTE: not comparable to rFull.edges — the cap also scales maxFacts (4×),
+    // so the capped run may dedup fewer facts. Within-run consistency only:
+    expect(r.droppedEdges).toBeGreaterThan(0);
+    expect(r.cappedFunctions).toBe(1);
+    // cap=2 also tightens maxFacts (8) below this function's fact count, so
+    // BOTH R7 layers may warn — assert on the edge-cap warn specifically.
+    const capWarns = onWarn.mock.calls
+      .map((c) => c[0] as string)
+      .filter((m) => m.includes('REACHING_DEF edge cap'));
+    expect(capWarns).toHaveLength(1);
+    expect(capWarns[0]).toContain('top bindings');
+    // deterministic truncation: same prefix on a second run
+    const again = recordingGraph();
+    emitFileReachingDefs(again.graph, cfgs, 2, vi.fn());
+    expect(again.rels.map((e) => e.id)).toEqual(capped.rels.map((e) => e.id));
+  });
+
+  it('cap of 0 means unlimited (no warn)', () => {
+    const cfgs = cfgsOf(`function f(a) { use(a); }`, 'u.ts');
+    const { graph, rels } = recordingGraph();
+    const onWarn = vi.fn();
+    emitFileReachingDefs(graph, cfgs, 0, onWarn);
+    expect(rels.length).toBeGreaterThan(0);
+    expect(onWarn).not.toHaveBeenCalled();
+  });
+
+  it('fact-layer truncation warns even when the edge cap is never reached (R7 both layers)', () => {
+    // 3 parallel arms defining x + several later uses → facts >> deduped edges.
+    // Cap edges generously but squeeze maxFacts via a tiny edge cap × 4? No —
+    // maxFacts derives from the edge cap (4×). Use a cap that bounds facts
+    // below the fact count while edges stay under it: cap=3 ⇒ maxFacts=12.
+    const cfgs = cfgsOf(
+      `function f(c) {
+        let x = 0;
+        if (c === 1) { x = 1; } else if (c === 2) { x = 2; } else { x = 3; }
+        u1(x); u2(x); u3(x); u4(x); u5(x);
+      }`,
+      'trunc.ts',
+    );
+    const probe = recordingGraph();
+    const rProbe = emitFileReachingDefs(probe.graph, cfgs);
+    expect(rProbe.facts).toBeGreaterThan(12); // 3 defs × 5 uses of x alone = 15+
+
+    const { graph } = recordingGraph();
+    const onWarn = vi.fn();
+    const r = emitFileReachingDefs(graph, cfgs, 1000, onWarn);
+    // edge cap (1000) never reached…
+    expect(r.cappedFunctions).toBe(0);
+    // …but with cap=3 ⇒ maxFacts=12 < total facts, truncation warns:
+    const tight = recordingGraph();
+    const onWarnTight = vi.fn();
+    const rTight = emitFileReachingDefs(tight.graph, cfgs, 3, onWarnTight);
+    expect(rTight.truncatedFunctions).toBe(1);
+    const messages = onWarnTight.mock.calls.map((c) => c[0] as string);
+    expect(messages.some((m) => m.includes('fact materialization'))).toBe(true);
+  });
+
+  it('no-facts CFGs (pre-M2 side channel) emit nothing and do not throw', () => {
+    const bare = {
+      filePath: 'old.ts',
+      functionStartLine: 1,
+      functionEndLine: 2,
+      functionStartColumn: 0,
+      entryIndex: 0,
+      exitIndex: 1,
+      blocks: [
+        { index: 0, startLine: 1, endLine: 1, text: '', kind: 'entry' },
+        { index: 1, startLine: 2, endLine: 2, text: '', kind: 'exit' },
+      ],
+      edges: [{ from: 0, to: 1, kind: 'seq' }],
+    } as unknown as FunctionCfg;
+    const { graph, rels } = recordingGraph();
+    const r = emitFileReachingDefs(graph, [bare]);
+    expect(rels).toHaveLength(0);
+    expect(r.edges).toBe(0);
+  });
+
+  it('emitting the same function twice is idempotent by id (first-writer-wins safe)', () => {
+    const cfgs = cfgsOf(`function f(a) { return a; }`, 'i.ts');
+    const { graph, rels } = recordingGraph();
+    emitFileReachingDefs(graph, cfgs);
+    const firstIds = rels.map((e) => e.id);
+    emitFileReachingDefs(graph, cfgs);
+    // ids deterministic ⇒ the second pass produces the SAME ids (the real
+    // KnowledgeGraph would no-op them; the recorder shows them duplicated)
+    expect(rels.slice(firstIds.length).map((e) => e.id)).toEqual(firstIds);
   });
 });

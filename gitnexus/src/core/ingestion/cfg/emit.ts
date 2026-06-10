@@ -20,7 +20,8 @@
  */
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
-import type { FunctionCfg } from './types.js';
+import { computeReachingDefs } from './reaching-defs.js';
+import type { BindingEntry, FunctionCfg } from './types.js';
 
 /**
  * Default per-function CFG edge cap. A pathological generated function could
@@ -30,6 +31,25 @@ import type { FunctionCfg } from './types.js';
  * default.
  */
 export const DEFAULT_MAX_CFG_EDGES_PER_FUNCTION = 5000;
+
+/**
+ * Default per-function REACHING_DEF edge cap (#2082 M2 KTD9). 4000 mirrors
+ * Joern's per-method `maxNumberOfDefinitions` — the closest production prior
+ * art — but truncates-and-warns instead of silently skipping the function.
+ * Counts (defBlock, useBlock, binding) DEDUPED edges, not statement-level
+ * facts. `0` ⇒ unlimited; `undefined` ⇒ this default.
+ */
+export const DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION = 4000;
+
+/**
+ * Fact-materialization limit handed to {@link computeReachingDefs} on the
+ * emit path (#2082 M2 U3/F3): facts are O(defs×uses) BY SPEC in merge-heavy
+ * code, and the edge cap alone bounds the GRAPH, not the per-function memory
+ * spike of materializing facts before dedup. 4× the edge cap leaves dedup
+ * headroom. Scales with a custom edge cap; unlimited when the edge cap is 0.
+ */
+export const DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION =
+  4 * DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION;
 
 export interface CfgEmitResult {
   blocks: number;
@@ -78,7 +98,41 @@ export const isEmitSafeCfg = (cfg: FunctionCfg | undefined | null): cfg is Funct
     if (!Number.isInteger(b?.index)) return false;
     blockIndices.add(b.index);
   }
-  return cfg.edges.every((e) => blockIndices.has(e?.from) && blockIndices.has(e?.to));
+  if (!cfg.edges.every((e) => blockIndices.has(e?.from) && blockIndices.has(e?.to))) return false;
+
+  // M2 (#2082 U1/U4): the binding table + statement facts join the
+  // REACHING_DEF id path (binding name/declLine/declColumn template into edge
+  // ids; statement defs/uses index into the table). A statement record whose
+  // index escapes the table would silently fabricate `undefined`-keyed edge
+  // ids, so indices are checked for RANGE, not just integer-ness. A channel
+  // with statements but NO binding table is malformed by construction.
+  const bindings = cfg.bindings;
+  if (bindings !== undefined) {
+    if (!Array.isArray(bindings)) return false;
+    for (const b of bindings) {
+      if (
+        typeof b?.name !== 'string' ||
+        !Number.isInteger(b.declLine) ||
+        !Number.isInteger(b.declColumn)
+      ) {
+        return false;
+      }
+    }
+  }
+  const bindingCount = bindings?.length ?? 0;
+  for (const b of cfg.blocks) {
+    const stmts = b.statements;
+    if (stmts === undefined) continue;
+    if (bindings === undefined || !Array.isArray(stmts)) return false;
+    for (const s of stmts) {
+      if (!Number.isInteger(s?.line) || !Array.isArray(s.defs) || !Array.isArray(s.uses)) {
+        return false;
+      }
+      const inRange = (i: number): boolean => Number.isInteger(i) && i >= 0 && i < bindingCount;
+      if (!s.defs.every(inRange) || !s.uses.every(inRange)) return false;
+    }
+  }
+  return true;
 };
 
 /**
@@ -137,6 +191,143 @@ export function emitFileCfgs(
         targetId,
         confidence: 1.0,
         reason: e.kind, // CfgEdgeKind (seq/cond-true/loop-back/…) — queryable
+      });
+      result.edges++;
+      emittedForFn++;
+    }
+  }
+
+  return result;
+}
+
+export interface ReachingDefEmitResult {
+  /** Deduped (defBlock, useBlock, binding) edges persisted. */
+  edges: number;
+  /** Deduped edges dropped by the per-function edge cap. */
+  droppedEdges: number;
+  cappedFunctions: number;
+  /** Functions whose FACT materialization hit the solver's maxFacts limit. */
+  truncatedFunctions: number;
+  /** Total statement-level facts the solver produced (pre-dedup telemetry). */
+  facts: number;
+  /** Aggregate solve+dedup time in ms (PROF support). */
+  solveMs: number;
+}
+
+/**
+ * Stable identity for a binding inside edge ids (#2082 M2 KTD3/KTD9):
+ * `name:declLine:declCol` for declared bindings, `name@module` for synthetic
+ * ones. Distinct same-name bindings never share a key; identifier characters
+ * cannot contain the id separators.
+ */
+const bindingKey = (b: BindingEntry): string =>
+  b.synthetic ? `${b.name}@module` : `${b.name}:${b.declLine}:${b.declColumn}`;
+
+/**
+ * Compute reaching definitions per function and persist the bounded
+ * REACHING_DEF projection (#2082 M2 U4).
+ *
+ * Facts are DEDUPED to (defBlock, useBlock, binding) before budgeting — the
+ * persisted columns (`from,to,type,confidence,reason,step`; relationship ids
+ * are in-memory-only, the CodeRelation table has no id column) cannot
+ * distinguish finer rows, so statement-indexed ids would only manufacture
+ * byte-identical duplicate rows that burn budget. Statement granularity lives
+ * in the in-memory {@link computeReachingDefs} result, which the M3 taint
+ * engine recomputes on demand — the budget here governs only this projection
+ * and can never drop a taint fact.
+ *
+ * R7 (no silent truncation) covers BOTH layers: the per-function edge cap AND
+ * the solver's fact-materialization limit (which can fire without the edge
+ * cap ever being reached, since dedup is many-to-one) each produce one
+ * unconditional `onWarn`. The edge-cap warn names the top bindings by fact
+ * count — overflow is almost always one variable, which is exactly the datum
+ * M3 tuning wants.
+ */
+export function emitFileReachingDefs(
+  graph: KnowledgeGraph,
+  cfgs: readonly FunctionCfg[],
+  maxEdgesPerFunction: number = DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+  onWarn?: (message: string) => void,
+): ReachingDefEmitResult {
+  const result: ReachingDefEmitResult = {
+    edges: 0,
+    droppedEdges: 0,
+    cappedFunctions: 0,
+    truncatedFunctions: 0,
+    facts: 0,
+    solveMs: 0,
+  };
+  const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
+  const maxFacts = Number.isFinite(cap) ? (cap as number) * 4 : 0; // 0 ⇒ unlimited
+
+  for (const cfg of cfgs) {
+    const t0 = performance.now();
+    const r = computeReachingDefs(cfg, { maxFacts });
+    if (r.status === 'no-facts') {
+      result.solveMs += performance.now() - t0;
+      continue;
+    }
+    result.facts += r.facts.length;
+
+    const { filePath, functionStartLine, functionStartColumn } = cfg;
+    if (r.status === 'truncated') {
+      result.truncatedFunctions++;
+      onWarn?.(
+        `[reaching-defs] ${filePath}:${functionStartLine}: fact materialization ` +
+          `limit (${maxFacts}) reached — facts beyond it were not computed; ` +
+          `the persisted REACHING_DEF projection for this function is sparse`,
+      );
+    }
+
+    // Dedup to (defBlock, useBlock, binding) — facts arrive sorted, so the
+    // deduped order (and therefore cap truncation) is deterministic.
+    const seen = new Set<string>();
+    const deduped: { defBlock: number; useBlock: number; bindingIdx: number }[] = [];
+    const factsPerBinding = new Map<number, number>();
+    for (const f of r.facts) {
+      factsPerBinding.set(f.bindingIdx, (factsPerBinding.get(f.bindingIdx) ?? 0) + 1);
+      const key = `${f.def.blockIndex}:${f.use.blockIndex}:${f.bindingIdx}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push({ defBlock: f.def.blockIndex, useBlock: f.use.blockIndex, bindingIdx: f.bindingIdx });
+    }
+    result.solveMs += performance.now() - t0;
+
+    let emittedForFn = 0;
+    for (const edge of deduped) {
+      if (emittedForFn >= cap) {
+        const dropped = deduped.length - emittedForFn;
+        result.droppedEdges += dropped;
+        result.cappedFunctions++;
+        const top = [...factsPerBinding.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+          .slice(0, 2)
+          .map(([idx, count]) => `${r.bindings[idx]?.name ?? `#${idx}`}(${count} facts)`)
+          .join(', ');
+        onWarn?.(
+          `[reaching-defs] ${filePath}:${functionStartLine}: per-function ` +
+            `REACHING_DEF edge cap (${maxEdgesPerFunction}) reached — dropped ` +
+            `${dropped} of ${deduped.length} edges; top bindings: ${top}`,
+        );
+        break;
+      }
+      const binding = r.bindings[edge.bindingIdx];
+      const sourceId = basicBlockId(filePath, functionStartLine, functionStartColumn, edge.defBlock);
+      const targetId = basicBlockId(filePath, functionStartLine, functionStartColumn, edge.useBlock);
+      graph.addRelationship({
+        // Single function anchor — the two block ids share it, so templating
+        // it once halves the id size (ids are in-memory-only but ~4000 of
+        // them per capped function is real transient heap).
+        id: generateId(
+          'REACHING_DEF',
+          `${filePath}:${functionStartLine}:${functionStartColumn}:` +
+            `${edge.defBlock}->${edge.useBlock}:${bindingKey(binding)}`,
+        ),
+        type: 'REACHING_DEF',
+        sourceId,
+        targetId,
+        confidence: 1.0,
+        reason: binding.name, // plain source-level name (M0/S1 verdict) — queryable
       });
       result.edges++;
       emittedForFn++;
