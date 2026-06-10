@@ -62,6 +62,7 @@ export async function queryCommand(
   queryText: string,
   options?: {
     repo?: string;
+    branch?: string;
     context?: string;
     goal?: string;
     limit?: string;
@@ -81,6 +82,7 @@ export async function queryCommand(
     limit: options?.limit ? parseInt(options.limit) : undefined,
     include_content: options?.content ?? false,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(result);
 }
@@ -89,6 +91,7 @@ export async function contextCommand(
   name: string,
   options?: {
     repo?: string;
+    branch?: string;
     file?: string;
     uid?: string;
     content?: boolean;
@@ -111,6 +114,7 @@ export async function contextCommand(
     file_path: options?.file,
     include_content: options?.content ?? false,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(result);
 }
@@ -120,6 +124,7 @@ export async function impactCommand(
   options?: {
     direction?: string;
     repo?: string;
+    branch?: string;
     uid?: string;
     file?: string;
     kind?: string;
@@ -165,6 +170,7 @@ export async function impactCommand(
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
+      branch: options?.branch,
       limit: parsedLimit,
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
@@ -188,6 +194,7 @@ export async function cypherCommand(
   query: string,
   options?: {
     repo?: string;
+    branch?: string;
   },
 ): Promise<void> {
   if (!query?.trim()) {
@@ -199,6 +206,7 @@ export async function cypherCommand(
   const result = await backend.callTool('cypher', {
     query,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(result);
 }
@@ -207,12 +215,14 @@ export async function detectChangesCommand(options?: {
   scope?: string;
   baseRef?: string;
   repo?: string;
+  branch?: string;
 }): Promise<void> {
   const backend = await getBackend();
   const result = await backend.callTool('detect_changes', {
     scope: options?.scope || 'unstaged',
     base_ref: options?.baseRef,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(formatDetectChangesResult(result));
 }

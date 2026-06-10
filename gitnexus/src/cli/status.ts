@@ -4,8 +4,9 @@
  * Shows the indexing status of the current repository.
  */
 
-import { findRepo, getStoragePaths, hasKuzuIndex } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import path from 'path';
+import { findRepo, getStoragePaths, loadMeta, hasKuzuIndex } from '../storage/repo-manager.js';
+import { getCurrentCommit, getCurrentBranch, isGitRepo, getGitRoot } from '../storage/git.js';
 import { t } from './i18n/index.js';
 
 export const statusCommand = async () => {
@@ -32,11 +33,34 @@ export const statusCommand = async () => {
   }
 
   const currentCommit = getCurrentCommit(repo.repoPath);
-  const isUpToDate = currentCommit === repo.meta.lastCommit;
+  const currentBranch = getCurrentBranch(repo.repoPath);
+
+  // Pick the index matching the checked-out branch (#2106). The flat index
+  // belongs to the primary branch (repo.meta.branch); when the current branch
+  // differs and has its own index, report that one. Legacy/no-branch metas and
+  // detached HEAD fall through to the flat index (unchanged behavior).
+  let activeMeta = repo.meta;
+  let currentBranchIndexed = true;
+  if (currentBranch && repo.meta.branch && currentBranch !== repo.meta.branch) {
+    const { metaPath } = getStoragePaths(repo.repoPath, currentBranch);
+    const branchMeta = await loadMeta(path.dirname(metaPath));
+    if (branchMeta) activeMeta = branchMeta;
+    else currentBranchIndexed = false;
+  }
 
   console.log(`${t('status.repository')}: ${repo.repoPath}`);
-  console.log(`${t('status.indexed')}: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
-  console.log(`${t('status.indexedCommit')}: ${repo.meta.lastCommit?.slice(0, 7)}`);
+  console.log(`${t('status.branch')}: ${currentBranch ?? t('status.detached')}`);
+
+  if (!currentBranchIndexed) {
+    console.log(
+      `${t('status.status')}: ${t('status.branchNotIndexed', { primary: repo.meta.branch ?? '' })}`,
+    );
+    return;
+  }
+
+  const isUpToDate = currentCommit === activeMeta.lastCommit;
+  console.log(`${t('status.indexed')}: ${new Date(activeMeta.indexedAt).toLocaleString()}`);
+  console.log(`${t('status.indexedCommit')}: ${activeMeta.lastCommit?.slice(0, 7)}`);
   console.log(`${t('status.currentCommit')}: ${currentCommit?.slice(0, 7)}`);
   console.log(`${t('status.status')}: ${isUpToDate ? t('status.upToDate') : t('status.stale')}`);
 };

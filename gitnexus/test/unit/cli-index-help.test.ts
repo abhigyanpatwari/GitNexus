@@ -220,6 +220,14 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--repo <name>');
   });
 
+  it('query-family commands expose the --branch scope flag (#2106)', () => {
+    for (const cmd of ['query', 'context', 'impact', 'cypher', 'detect-changes']) {
+      const result = runHelp(cmd);
+      expect(result.status, cmd).toBe(0);
+      expect(result.stdout, cmd).toContain('--branch <name>');
+    }
+  });
+
   it('wiki help shows provider, review, and verbose flags', () => {
     const result = runHelp('wiki');
 
