@@ -103,7 +103,8 @@ export class TsHarvester {
     this.scopeByNode.set(fnNode.id, this.root);
     this.declareParams(fnNode);
     const body = fnNode.childForFieldName('body');
-    if (body) this.prescan(body, body.type === 'statement_block' ? this.openScope(body) : this.root);
+    if (body)
+      this.prescan(body, body.type === 'statement_block' ? this.openScope(body) : this.root);
   }
 
   /** The completed binding table — pass to `CfgBuilder.finish`. */

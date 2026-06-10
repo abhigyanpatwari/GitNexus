@@ -524,9 +524,7 @@ describe('TS/JS CfgVisitor — early exits through finally (#2082 M2 U2)', () =>
   });
 
   it('nested finallys chain: return threads a() then b() then EXIT', () => {
-    const cfg = cfgOf(
-      `function f() { try { try { return; } finally { a(); } } finally { b(); } }`,
-    );
+    const cfg = cfgOf(`function f() { try { try { return; } finally { a(); } } finally { b(); } }`);
     const ret = block(cfg, 'return');
     const finA = block(cfg, 'a()');
     const finB = block(cfg, 'b()');

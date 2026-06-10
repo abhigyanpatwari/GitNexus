@@ -52,9 +52,7 @@ function allFacts(cfg: FunctionCfg): StatementFacts[] {
 
 /** Binding indices of every entry named `name`. */
 function bindingIdxs(cfg: FunctionCfg, name: string): number[] {
-  return (cfg.bindings ?? [])
-    .map((b, i) => (b.name === name ? i : -1))
-    .filter((i) => i >= 0);
+  return (cfg.bindings ?? []).map((b, i) => (b.name === name ? i : -1)).filter((i) => i >= 0);
 }
 
 /** The single binding index for `name` (throws when shadowed/ambiguous). */
@@ -365,8 +363,8 @@ describe('TS/JS def/use harvest — serialization', () => {
     }`);
     const n = cfg.bindings!.length;
     for (const f of allFacts(cfg)) {
-      for (const d of f.defs) expect(d).toBeGreaterThanOrEqual(0), expect(d).toBeLessThan(n);
-      for (const u of f.uses) expect(u).toBeGreaterThanOrEqual(0), expect(u).toBeLessThan(n);
+      for (const d of f.defs) (expect(d).toBeGreaterThanOrEqual(0), expect(d).toBeLessThan(n));
+      for (const u of f.uses) (expect(u).toBeGreaterThanOrEqual(0), expect(u).toBeLessThan(n));
     }
   });
 });

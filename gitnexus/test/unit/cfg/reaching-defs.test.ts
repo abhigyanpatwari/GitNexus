@@ -145,7 +145,13 @@ describe('computeReachingDefs — kill/gen fundamentals (hand-built)', () => {
   it('loop back-edge: pre-loop def AND loop-carried redef both reach the header use', () => {
     // 0→2(def x)→3(use x = header)→4(def x, body)→3(back); 3→1(exit)
     const cfg = mkCfg(
-      [{}, {}, { stmts: [stmt(10, [0])] }, { stmts: [stmt(20, [], [0])] }, { stmts: [stmt(30, [0])] }],
+      [
+        {},
+        {},
+        { stmts: [stmt(10, [0])] },
+        { stmts: [stmt(20, [], [0])] },
+        { stmts: [stmt(30, [0])] },
+      ],
       [
         [0, 2],
         [2, 3],
@@ -178,7 +184,13 @@ describe('computeReachingDefs — kill/gen fundamentals (hand-built)', () => {
   it('unreachable block: its defs reach nothing; reachable uses see only reachable defs', () => {
     // 2(def x)→3(use x); 4 is DISCONNECTED and also defs x
     const cfg = mkCfg(
-      [{}, {}, { stmts: [stmt(10, [0])] }, { stmts: [stmt(20, [], [0])] }, { stmts: [stmt(30, [0])] }],
+      [
+        {},
+        {},
+        { stmts: [stmt(10, [0])] },
+        { stmts: [stmt(20, [], [0])] },
+        { stmts: [stmt(30, [0])] },
+      ],
       [
         [0, 2],
         [2, 3],
@@ -193,7 +205,12 @@ describe('computeReachingDefs — kill/gen fundamentals (hand-built)', () => {
   it('intra-block sweep: a use BEFORE the same-block def sees the incoming def', () => {
     // 2: def x. 3: use x (stmt0); def x (stmt1); use x (stmt2)
     const cfg = mkCfg(
-      [{}, {}, { stmts: [stmt(10, [0])] }, { stmts: [stmt(20, [], [0]), stmt(21, [0]), stmt(22, [], [0])] }],
+      [
+        {},
+        {},
+        { stmts: [stmt(10, [0])] },
+        { stmts: [stmt(20, [], [0]), stmt(21, [0]), stmt(22, [], [0])] },
+      ],
       [
         [0, 2],
         [2, 3],
@@ -275,7 +292,9 @@ describe('computeReachingDefs — determinism and convergence', () => {
     const r = computeReachingDefs(cfg);
     // every header use sees both the init def and the innermost redef
     for (const useBlock of [3, 4, 5]) {
-      const defs = r.facts.filter((f) => f.use.blockIndex === useBlock).map((f) => f.def.blockIndex);
+      const defs = r.facts
+        .filter((f) => f.use.blockIndex === useBlock)
+        .map((f) => f.def.blockIndex);
       expect(new Set(defs)).toEqual(new Set([2, 6]));
     }
   });

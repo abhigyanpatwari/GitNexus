@@ -289,7 +289,11 @@ export function emitFileReachingDefs(
       const key = `${f.def.blockIndex}:${f.use.blockIndex}:${f.bindingIdx}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      deduped.push({ defBlock: f.def.blockIndex, useBlock: f.use.blockIndex, bindingIdx: f.bindingIdx });
+      deduped.push({
+        defBlock: f.def.blockIndex,
+        useBlock: f.use.blockIndex,
+        bindingIdx: f.bindingIdx,
+      });
     }
     result.solveMs += performance.now() - t0;
 
@@ -312,8 +316,18 @@ export function emitFileReachingDefs(
         break;
       }
       const binding = r.bindings[edge.bindingIdx];
-      const sourceId = basicBlockId(filePath, functionStartLine, functionStartColumn, edge.defBlock);
-      const targetId = basicBlockId(filePath, functionStartLine, functionStartColumn, edge.useBlock);
+      const sourceId = basicBlockId(
+        filePath,
+        functionStartLine,
+        functionStartColumn,
+        edge.defBlock,
+      );
+      const targetId = basicBlockId(
+        filePath,
+        functionStartLine,
+        functionStartColumn,
+        edge.useBlock,
+      );
       graph.addRelationship({
         // Single function anchor — the two block ids share it, so templating
         // it once halves the id size (ids are in-memory-only but ~4000 of

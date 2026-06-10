@@ -95,6 +95,13 @@ describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
         for (const row of symbols) {
           expect(String(row.id)).not.toMatch(/^BasicBlock:/);
         }
+        // DB-level smoke for the M2 projection itself: REACHING_DEF rows
+        // persisted with the variable name in `reason` (plan Validation).
+        const rd = (await adapter.executeQuery(
+          `MATCH (:BasicBlock)-[r:CodeRelation {type: 'REACHING_DEF'}]->(:BasicBlock)
+           RETURN count(r) AS c`,
+        )) as Array<{ c: number | bigint }>;
+        expect(Number(rd[0]?.c ?? 0)).toBeGreaterThan(0);
       } finally {
         await adapter.closeLbug();
       }

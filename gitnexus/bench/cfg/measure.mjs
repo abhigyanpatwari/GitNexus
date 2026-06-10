@@ -45,9 +45,7 @@ import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import { collectFunctionCfgs } from '../../src/core/ingestion/cfg/collect.ts';
 import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.ts';
-import {
-  DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
-} from '../../src/core/ingestion/cfg/emit.ts';
+import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../../src/core/ingestion/cfg/emit.ts';
 import { createTypeScriptCfgVisitor } from '../../src/core/ingestion/cfg/visitors/typescript.ts';
 import { getTreeSitterBufferSize } from '../../src/core/ingestion/constants.ts';
 

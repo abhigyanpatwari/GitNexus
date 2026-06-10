@@ -91,9 +91,7 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
       // VALUES must be intact — and no aliasing may merge the two files'
       // distinct fact arrays into wrong shapes.
       expect(cfg.bindings).toEqual(factCfg.bindings);
-      expect(cfg.blocks.map((b) => b.statements)).toEqual(
-        factCfg.blocks.map((b) => b.statements),
-      );
+      expect(cfg.blocks.map((b) => b.statements)).toEqual(factCfg.blocks.map((b) => b.statements));
     }
   });
 

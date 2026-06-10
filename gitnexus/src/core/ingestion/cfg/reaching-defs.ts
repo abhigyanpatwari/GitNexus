@@ -89,10 +89,7 @@ const EMPTY_LATTICE: Lattice = new Map();
  * Compute reaching definitions for one function. See the module doc for the
  * purity/determinism/sharing contract.
  */
-export function computeReachingDefs(
-  cfg: FunctionCfg,
-  limits?: ReachingDefsLimits,
-): FunctionDefUse {
+export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimits): FunctionDefUse {
   if (!cfg.bindings) {
     return { status: 'no-facts', bindings: [], facts: [], defCount: 0, useCount: 0 };
   }

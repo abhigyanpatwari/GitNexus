@@ -110,7 +110,11 @@ export class CfgBuilder {
    * sit at statement index 0 of the handler entry block or an in-block
    * `use(e)` at index 0 would see no reaching def in the in-order sweep.
    */
-  attachFacts(index: number, facts: StatementFacts, position: 'append' | 'prepend' = 'append'): void {
+  attachFacts(
+    index: number,
+    facts: StatementFacts,
+    position: 'append' | 'prepend' = 'append',
+  ): void {
     const b = this.blocks[index];
     if (!b) return;
     if (position === 'prepend') b.statements.unshift(facts);
