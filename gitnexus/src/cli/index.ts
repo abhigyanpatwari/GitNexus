@@ -141,6 +141,25 @@ program
       'Must match what the index was built with. Overrides GITNEXUS_EMBEDDING_DIMS.',
   )
   .addHelpText('after', () => t('help.analyze.environment'))
+  .hook('preAction', function (this: Command) {
+    // Set GITNEXUS_EMBEDDING_* env vars from CLI flags BEFORE lazy-importing
+    // analyze.ts, because schema.ts reads EMBEDDING_DIMS at module-load time
+    // via a static-import chain (analyze.ts → run-analyze.ts → schema.ts).
+    // Waiting until analyzeCommandImpl to set them is too late.
+    const opts = this.opts();
+    if (opts['embeddingsBaseurl'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_URL = String(opts['embeddingsBaseurl']).trim();
+    }
+    if (opts['embeddingsModel'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_MODEL = String(opts['embeddingsModel']).trim();
+    }
+    if (opts['embeddingsAuthToken'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_API_KEY = String(opts['embeddingsAuthToken']).trim();
+    }
+    if (opts['embeddingsDims'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_DIMS = String(opts['embeddingsDims']);
+    }
+  })
   .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
