@@ -34,6 +34,7 @@ import {
   cleanupOldKuzuFiles,
   canonicalizePath,
   getStoragePaths,
+  loadMeta,
   RegistryAmbiguousTargetError,
   type RegistryEntry,
   type BranchSummary,
@@ -752,7 +753,7 @@ export class LocalBackend {
    * - `branch` that was never indexed → a clear error (never a silently-empty
    *   result against the wrong DB).
    */
-  private applyBranchScope(handle: RepoHandle, branch?: string): RepoHandle {
+  private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
     if (handle.branch && handle.branch === branch) return handle;
     const summary = handle.branches?.find((b) => b.branch === branch);
@@ -765,6 +766,15 @@ export class LocalBackend {
         lastCommit: summary.lastCommit,
         stats: summary.stats,
       };
+    }
+    // Legacy entry (pre-#2106): the registry has no recorded primary `branch`,
+    // so a `--branch <primary>` request misses the checks above. Read the flat
+    // meta.json (next to the flat handle's lbug) to learn the primary and serve
+    // the flat handle only when it actually matches — never serve flat for an
+    // arbitrary unindexed branch (#2106 R4).
+    if (!handle.branch) {
+      const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+      if (flatMeta?.branch && flatMeta.branch === branch) return handle;
     }
     const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
       Boolean,

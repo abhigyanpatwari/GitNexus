@@ -2238,6 +2238,30 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
   });
 
+  it('a legacy entry resolves --branch <primary> via the flat meta (#2106 R4)', async () => {
+    // Pre-#2106 flat index: registry entry has no `branch`/`branches`, but the
+    // flat meta.json records the primary. `--branch <primary>` must resolve to
+    // the flat handle (read from meta), while an unindexed branch still errors.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2106-legacy-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'abc', indexedAt: 'now', branch: 'main' }),
+    );
+    try {
+      (listRegisteredRepos as any).mockResolvedValue([
+        { name: 'legacy', path: dir, storagePath, indexedAt: 'now', lastCommit: 'abc' },
+      ]);
+      await backend.init();
+      const handle = await backend.resolveRepo('legacy', 'main');
+      expect(handle.lbugPath).toBe(path.join(storagePath, 'lbug'));
+      await expect(backend.resolveRepo('legacy', 'feature')).rejects.toThrow(/not indexed/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('callTool threads the branch param through resolveRepo (un-indexed branch errors)', async () => {
     // If callTool dropped `branch` from repoParams, this would resolve the flat
     // handle and NOT throw — so the rejection proves the param is threaded.
