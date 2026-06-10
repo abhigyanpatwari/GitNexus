@@ -98,11 +98,19 @@ export const ensureOnnxRuntimeCommonResolvable = (): void => {
       resolve(specifier, context, nextResolve) {
         if (specifier !== 'onnxruntime-common') return nextResolve(specifier, context);
         // Honour a real, package-manager-provided copy when one is on the path
-        // (npm / hoisted pnpm); only substitute ours when resolution fails.
+        // (npm / hoisted pnpm); only substitute ours when the specifier is
+        // genuinely absent.
         try {
           return nextResolve(specifier, context);
-        } catch {
-          return { url: redirectUrl, shortCircuit: true };
+        } catch (err) {
+          // The phantom import surfaces as ERR_MODULE_NOT_FOUND (or, for a
+          // present-but-exports-broken copy, ERR_PACKAGE_PATH_NOT_EXPORTED).
+          // Rethrow anything else so a genuinely broken install is not masked.
+          const code = (err as { code?: string } | null | undefined)?.code;
+          if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+            return { url: redirectUrl, shortCircuit: true };
+          }
+          throw err;
         }
       },
     });

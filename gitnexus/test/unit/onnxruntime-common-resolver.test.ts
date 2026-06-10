@@ -100,4 +100,18 @@ describe('ensureOnnxRuntimeCommonResolvable — resolve hook behaviour', () => {
 
     expect(() => resolve('some-other-package', ctx, next)).toThrow(err);
   });
+
+  it('rethrows when onnxruntime-common fails for a non-absence reason', async () => {
+    const resolve = await captureResolve();
+    // A present-but-otherwise-broken resolution (not a missing package) must
+    // surface, not be silently papered over with gitnexus' copy.
+    const err = Object.assign(new Error('bad specifier'), {
+      code: 'ERR_INVALID_MODULE_SPECIFIER',
+    });
+    const next = vi.fn(() => {
+      throw err;
+    });
+
+    expect(() => resolve('onnxruntime-common', ctx, next)).toThrow(err);
+  });
 });
