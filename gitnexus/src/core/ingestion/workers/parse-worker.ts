@@ -11,7 +11,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
-import { createRequire } from 'node:module';
+import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
 import {
@@ -39,8 +39,8 @@ import type {
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
 // ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
-// The worker maintains its own grammar table (the guarded `_require`s below +
-// `languageMap`) and intentionally does NOT consult the runtime
+// The worker maintains its own grammar table (the guarded vendored-grammar
+// loads below + `languageMap`) and intentionally does NOT consult the runtime
 // `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out. It does not need to: the MAIN
 // THREAD's `parseableScanned` filter (pipeline-phases/parse-impl.ts, gated on
 // `parser-loader.isLanguageAvailable`, which honors the runtime opt-out and a
@@ -51,33 +51,29 @@ type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 // `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
 // — routing this table through `parser-loader.getLanguageGrammar` so there is
 // one loader — is the deferred Tier-1 consolidation.)
-// tree-sitter-swift is an optionalDependency — may not be installed
-const _require = createRequire(import.meta.url);
+// Swift/Dart/Kotlin/C are vendored grammars loaded from `vendor/` by absolute
+// path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
+// may be absent on a platform without a prebuild or a toolchain-less /
+// `--ignore-scripts` install, so every load is guarded so a missing binding
+// cannot crash the worker at module-load (#2091/#2093, #2116).
 let Swift: TreeSitterLanguage | null = null;
 try {
-  Swift = _require('tree-sitter-swift');
+  Swift = requireVendoredGrammar('tree-sitter-swift') as TreeSitterLanguage;
 } catch {}
 
-// tree-sitter-dart is an optionalDependency — may not be installed
 let Dart: TreeSitterLanguage | null = null;
 try {
-  Dart = _require('tree-sitter-dart');
+  Dart = requireVendoredGrammar('tree-sitter-dart') as TreeSitterLanguage;
 } catch {}
 
-// tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: TreeSitterLanguage | null = null;
 try {
-  Kotlin = _require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin') as TreeSitterLanguage;
 } catch {}
 
-// tree-sitter-c is now vendored prebuild-only (#2116) and may be absent on a
-// toolchain-less / `--ignore-scripts` install. Guard it like Swift/Dart/Kotlin so
-// a missing binding cannot crash the worker at module-load (#2091/#2093); the
-// main-thread `isLanguageAvailable` filter keeps C files from being dispatched
-// here when the entry is absent.
 let C: TreeSitterLanguage | null = null;
 try {
-  C = _require('tree-sitter-c');
+  C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {

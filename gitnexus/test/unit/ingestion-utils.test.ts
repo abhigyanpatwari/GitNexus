@@ -16,10 +16,13 @@ import {
   TREE_SITTER_MAX_BUFFER,
 } from '../../src/core/ingestion/constants.js';
 import Parser from 'tree-sitter';
-import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
 import Python from 'tree-sitter-python';
 import TypeScript from 'tree-sitter-typescript';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+
+// Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
+const C = requireVendoredGrammar('tree-sitter-c');
 
 describe('getLanguageFromFilename', () => {
   describe('TypeScript', () => {

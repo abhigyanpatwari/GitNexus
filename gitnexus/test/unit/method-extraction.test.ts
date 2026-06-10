@@ -30,17 +30,19 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import Rust from 'tree-sitter-rust';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
+// Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
 let Kotlin: unknown;
 try {
-  Kotlin = require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
 }
 
 let Dart: unknown;
 try {
-  Dart = require('tree-sitter-dart');
+  Dart = requireVendoredGrammar('tree-sitter-dart');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
   testParser.setLanguage(Dart as Parser.Language);
@@ -50,7 +52,7 @@ try {
 
 let Swift: unknown;
 try {
-  Swift = require('tree-sitter-swift');
+  Swift = requireVendoredGrammar('tree-sitter-swift');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
   testParser.setLanguage(Swift as Parser.Language);
