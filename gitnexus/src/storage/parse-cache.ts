@@ -158,8 +158,12 @@ export const computeChunkHash = (
   const sorted = [...entries].sort((a, b) => (a.filePath < b.filePath ? -1 : 1));
   const joined = sorted.map((e) => `${e.filePath}:${e.contentHash}`).join('\n');
   const opts: PdgCacheKey = typeof pdg === 'boolean' ? { pdg } : pdg;
-  // pdg-off path keeps its pre-#2081 keys verbatim, so existing warm caches
-  // survive this change untouched.
+  // pdg-off path keeps its pre-#2081 chunk-KEY format verbatim. Note this does
+  // NOT mean caches survive the M1 upgrade: SCHEMA_BUMP 4→5 changed
+  // PARSE_CACHE_VERSION, and both loadParseCache (below) and the durable
+  // parsedfile-store index hard-invalidate on it — every user pays one full
+  // cold re-parse on upgrade regardless of --pdg. Keeping the key format
+  // stable only means no SECOND invalidation class is introduced here.
   if (!opts.pdg) return sha256Hex(joined);
   // Fold the FULL --pdg configuration into the key — not just the boolean, but
   // the budgets that change the emitted CFG (`maxFunctionLines` decides which
