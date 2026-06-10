@@ -508,7 +508,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     // Index creation must go through the adapter's createVectorIndex (conn.query),
     // NOT the injected/prepared executeQuery — CALL CREATE_VECTOR_INDEX cannot be
     // prepared (#2114). It must still run on the zero-nodes-to-embed branch.
-    expect(vectorIndexMock).toHaveBeenCalled();
+    expect(vectorIndexMock).toHaveBeenCalledTimes(1);
     expect(queryCalls.some((c) => c.includes('CREATE_VECTOR_INDEX'))).toBe(false);
     expect(result.vectorIndexReady).toBe(true);
     expect(result.semanticMode).toBe('vector-index');
