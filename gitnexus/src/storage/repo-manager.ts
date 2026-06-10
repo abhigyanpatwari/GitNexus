@@ -1067,13 +1067,21 @@ export const listRegisteredRepos = async (opts?: {
       await fs.access(path.join(entry.storagePath, 'meta.json'));
       valid.push(entry);
     } catch (err: any) {
-      // Only prune on genuine absence (ENOENT) or structural removal (ENOTDIR).
-      // Transient I/O errors (EIO, EAGAIN, EBUSY, EACCES) must NOT prune —
-      // the file exists but the syscall failed due to temporary conditions.
+      // Prune ONLY when the index is provably gone: ENOENT (file absent) or
+      // ENOTDIR (a path component is no longer a directory). Every other
+      // fs.access failure keeps the entry, because the file may well still
+      // exist and we must not wipe the registry on a transient I/O storm
+      // (EIO/EAGAIN/EBUSY under swap pressure, NFS hiccups, etc.).
+      //
+      // Note: some kept codes are NOT necessarily transient — EACCES, for
+      // example, can be permanent (a chmod'd directory). Keeping is still the
+      // correct conservative choice: a stale-but-kept entry is harmless (DB
+      // opens are lazily guarded) and removable via `gitnexus remove`, whereas
+      // an over-eager prune destroys data. When in doubt, keep.
       if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
         // Index genuinely removed — safe to prune
       } else {
-        // Transient or unexpected error — keep entry to prevent mass registry wipe
+        // Not provably absent — keep entry to prevent mass registry wipe
         valid.push(entry);
       }
     }
