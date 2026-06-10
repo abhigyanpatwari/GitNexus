@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,29 +25,50 @@ import {
 
 const SRC_ROOT = fileURLToPath(new URL('../../src', import.meta.url));
 
-/** All `.ts` files under src/, recursively. */
-function srcFiles(): string[] {
-  return readdirSync(SRC_ROOT, { recursive: true, encoding: 'utf8' })
-    .filter((p) => p.endsWith('.ts'))
-    .map((p) => path.join(SRC_ROOT, p));
+const TEST_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+/**
+ * All `.ts` files we police: every file under src/, plus test/ EXCEPT
+ * test/fixtures/ (fixtures are arbitrary sample code to be analyzed, not our
+ * code). A reintroduced bare load can defeat the fix from test/ too, so the
+ * guard must cover it — not just src/.
+ */
+function policedFiles(): string[] {
+  const self = fileURLToPath(import.meta.url);
+  const under = (root: string) =>
+    readdirSync(root, { recursive: true, encoding: 'utf8' })
+      .filter((p) => p.endsWith('.ts'))
+      .map((p) => path.join(root, p));
+  return [
+    ...under(SRC_ROOT),
+    ...under(TEST_ROOT).filter((p) => !p.includes(`${path.sep}fixtures${path.sep}`)),
+    // This guard file itself holds the bad-load patterns as regex-probe fixtures.
+  ].filter((p) => p !== self);
 }
 
 /**
- * A bare ESM/CJS load of a vendored grammar package, ignoring matches that sit
- * inside a `//` or `*` comment (several query.ts files mention the bad pattern
- * in prose, e.g. "`import Dart from 'tree-sitter-dart'` would throw").
+ * A bare ESM/CJS load of a vendored grammar package in real code. Covers every
+ * node_modules-forcing form — static `import … from`, side-effect `import 'x'`,
+ * dynamic `import('x')`, `require('x')`, `require.resolve('x')` — with single,
+ * double, OR backtick quotes, and an optional `/subpath`. Skips matches inside a
+ * leading-`//` or `*` comment (several query.ts files mention the bad pattern in
+ * prose, e.g. "`import Dart from 'tree-sitter-dart'` would throw"). Biased toward
+ * over-matching: a missed real load defeats the guard, a flagged trailing-comment
+ * mention only costs a glance.
  */
 function bareVendoredLoadLines(file: string): string[] {
   const names = [...VENDORED_GRAMMAR_PACKAGES].join('|');
-  const re = new RegExp(`(?:from|require\\(|require\\.resolve\\()\\s*['"](?:${names})['"]`);
+  // prefix: `from`, `import(`, `import ` (side-effect), `require(`, `require.resolve(`
+  const re = new RegExp(
+    `(?:from|import|require\\(|require\\.resolve\\()\\s*\\(?\\s*['"\\\`](?:${names})(?:/[^'"\\\`]*)?['"\\\`]`,
+  );
   const hits: string[] = [];
   for (const raw of readFileSync(file, 'utf8').split('\n')) {
     const m = re.exec(raw);
     if (!m) continue;
-    const before = raw.slice(0, m.index);
     const trimmed = raw.trimStart();
-    const isComment = trimmed.startsWith('//') || trimmed.startsWith('*') || before.includes('//');
-    if (!isComment) hits.push(raw.trim());
+    const isComment = trimmed.startsWith('//') || trimmed.startsWith('*');
+    if (!isComment) hits.push(`${path.basename(file)}: ${raw.trim()}`);
   }
   return hits;
 }
@@ -70,16 +91,41 @@ describe('vendored grammars load from vendor/ (#2111)', () => {
     }
   });
 
-  it('no src file bare-imports/requires a vendored grammar (would force a node_modules copy back)', () => {
-    const offenders: string[] = [];
-    for (const file of srcFiles()) {
-      for (const line of bareVendoredLoadLines(file)) {
-        offenders.push(`${path.relative(SRC_ROOT, file)}: ${line}`);
-      }
-    }
+  it('no src/test file bare-imports/requires a vendored grammar (would force a node_modules copy back)', () => {
+    const offenders = policedFiles().flatMap(bareVendoredLoadLines);
     expect(
       offenders,
       `Use requireVendoredGrammar(...) instead of a bare specifier:\n${offenders.join('\n')}`,
     ).toEqual([]);
+  });
+
+  it('guard regex catches every node_modules-forcing load form (and ignores prose mentions)', () => {
+    // Sanity-check the guard itself so the adversarial bypasses (#2144 review)
+    // stay closed: static/side-effect/dynamic/subpath/backtick all flagged,
+    // requireVendoredGrammar + leading-comment prose ignored.
+    const tmp = path.join(fileURLToPath(new URL('.', import.meta.url)), `__guard_probe__.ts.txt`);
+    const caught = [
+      `import C from 'tree-sitter-c';`,
+      `import 'tree-sitter-dart';`,
+      `await import('tree-sitter-kotlin');`,
+      `const x = require('tree-sitter-swift');`,
+      `require.resolve('tree-sitter-proto');`,
+      'const y = require(`tree-sitter-c`);',
+      `import Node from 'tree-sitter-c/bindings/node';`,
+    ];
+    const ignored = [
+      `// import C from 'tree-sitter-c' would throw`,
+      ` * mentions 'tree-sitter-dart' in a block comment`,
+      `requireVendoredGrammar('tree-sitter-c');`,
+      `import Cpp from 'tree-sitter-cpp';`, // not a vendored grammar
+    ];
+    writeFileSync(tmp, [...caught, ...ignored].join('\n'));
+    try {
+      const flagged = bareVendoredLoadLines(tmp).map((l) => l.split(': ').slice(1).join(': '));
+      for (const c of caught) expect(flagged, `should flag: ${c}`).toContain(c);
+      for (const i of ignored) expect(flagged, `should NOT flag: ${i}`).not.toContain(i);
+    } finally {
+      rmSync(tmp, { force: true });
+    }
   });
 });
