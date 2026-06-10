@@ -75,6 +75,16 @@ COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
 # Without this copy, `gitnexus analyze` inside the image crashes with
 # MODULE_NOT_FOUND before it does any work (#2130). Mirror what npm ships.
 COPY --from=builder --chown=node:node /app/gitnexus/hooks ./gitnexus/hooks
+# `skills/` is likewise a published runtime asset (in package.json `files`): the
+# CLI reads the bundled SKILL.md templates from `<pkg>/skills/` to drive
+# `gitnexus analyze --skills` (ai-context skill generation) and `gitnexus
+# setup`/`uninstall` (installing skills into editor configs). These reads
+# degrade SILENTLY when the dir is absent — `--skills` writes minimal
+# placeholder content, `setup` installs zero skills — so the image must ship it
+# to be fully usable as a CLI. (The web UI bundle `web/`, also in `files`, is
+# deliberately NOT shipped here: this builder never builds gitnexus-web, so the
+# image is API-only; the UI is the separate Dockerfile.web image / hosted app.)
+COPY --from=builder --chown=node:node /app/gitnexus/skills ./gitnexus/skills
 
 # Expose the `gitnexus` binary on PATH so the documented Docker workflow
 # (`docker compose exec gitnexus-server gitnexus index /workspace/<repo>`)

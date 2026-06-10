@@ -117,6 +117,15 @@ describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
     expect(copied).toContain('hooks');
   });
 
+  it('copies skills/ — CLI reads the bundled SKILL.md templates at runtime', () => {
+    // Degradation class (not a crash): `gitnexus analyze --skills` (ai-context.ts)
+    // and `gitnexus setup`/`uninstall` read `<pkg>/skills/*.md`. Absent, they
+    // silently emit placeholder content / install nothing. The image ships it to
+    // stay fully usable as a CLI. `web/` (also in `files`) is intentionally NOT
+    // shipped — this image never builds gitnexus-web, so it is API-only.
+    expect(copied).toContain('skills');
+  });
+
   it('sanity-checks the require scanner actually sees the hooks dependency', () => {
     const assets = requiredExternalAssets().map((a) => a.asset);
     expect(assets).toContain('hooks/claude/resolve-analyze-cmd.cjs');
