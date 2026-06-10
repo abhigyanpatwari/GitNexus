@@ -201,12 +201,18 @@ export const dispatchChunkParse = async (
   // boundary. The worker sanitized/dropped the offending value so the run
   // could complete; surface the (rare) data loss so it's visible and the
   // offending extractor can be fixed at source.
-  const skippedPaths: string[] = [];
+  const skippedPaths: Array<{ path: string; reason: string }> = [];
   for (const result of chunkResults) {
-    for (const entry of result.skippedPaths ?? []) skippedPaths.push(entry.path);
+    for (const entry of result.skippedPaths ?? []) skippedPaths.push(entry);
   }
   if (skippedPaths.length > 0) {
-    const shown = skippedPaths.slice(0, 10).join(', ');
+    // Keep the per-file reason ("stripped N value(s) from nodes" /
+    // "dropped non-serializable parsedFiles entry") — it distinguishes a
+    // recoverable strip from a whole-record drop, which a path-only line loses.
+    const shown = skippedPaths
+      .slice(0, 10)
+      .map((e) => `${e.path} (${e.reason})`)
+      .join(', ');
     const more = skippedPaths.length > 10 ? ` …and ${skippedPaths.length - 10} more` : '';
     logger.warn(
       `  Sanitized ${skippedPaths.length} file(s) with non-serializable parse output: ${shown}${more}`,
