@@ -69,7 +69,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vercel/node": "^5.8.8",
     "@vitejs/plugin-react": "^5.1.4",
-    "@vitest/coverage-v8": "^4.1.5",
+    "@vitest/coverage-v8": "^4.1.8",
     "jsdom": "^29.1.1",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.4.5",
