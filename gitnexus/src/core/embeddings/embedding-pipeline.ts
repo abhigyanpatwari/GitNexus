@@ -36,13 +36,8 @@ import {
 } from './types.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
-import {
-  EMBEDDING_TABLE_NAME,
-  EMBEDDING_INDEX_NAME,
-  CREATE_VECTOR_INDEX_QUERY,
-  STALE_HASH_SENTINEL,
-} from '../lbug/schema.js';
-import { loadVectorExtension } from '../lbug/lbug-adapter.js';
+import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
+import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
@@ -215,24 +210,36 @@ export const batchInsertEmbeddings = async (
 };
 
 /**
- * Create the vector index for semantic search
-
- * Now indexes the separate CodeEmbedding table.
- * Delegates extension loading to lbug-adapter's loadVectorExtension(),
- * which owns the VECTOR extension lifecycle and state tracking.
-
+ * Create the vector index for semantic search (indexes the CodeEmbedding table).
+ *
+ * Keeps the embedding-specific extension-install policy gate here
+ * (ensureVectorExtensionAvailable → resolveEmbeddingInstallPolicy, default
+ * `auto` for the analyze write path), then delegates the actual
+ * `CALL CREATE_VECTOR_INDEX(...)` to the adapter, which runs it through the
+ * unprepared `conn.query()` path. It must NOT go through the injected
+ * `executeQuery` (prepared `conn.prepare()`): LadybugDB cannot prepare that
+ * procedure and fails with "We do not support prepare multiple statements" —
+ * the silent degrade in #2114.
  */
-const createVectorIndex = async (
-  executeQuery: (cypher: string) => Promise<any[]>,
-): Promise<boolean> => {
+const buildVectorIndex = async (): Promise<boolean> => {
+  // This pre-check applies the embedding-specific install policy
+  // (resolveEmbeddingInstallPolicy, default `auto` for analyze) before reaching
+  // the adapter. The adapter's createVectorIndex() calls loadVectorExtension()
+  // again, but that's a no-op here: once this gate loads VECTOR the module-level
+  // `vectorExtensionLoaded` flag is set, so the adapter's second call
+  // short-circuits without re-resolving the policy — no double install.
   if (!(await ensureVectorExtensionAvailable())) return false;
   try {
-    await executeQuery(CREATE_VECTOR_INDEX_QUERY);
-    return true;
+    return await createVectorIndex();
   } catch (error) {
-    if (isDev) {
-      logger.warn({ error }, 'Vector index creation warning:');
-    }
+    // Surface this even outside dev: it silently downgrades a user-requested
+    // feature (semantic search) to exact scan. Log under `err` so pino's
+    // standard serializer captures the message/stack — logging under `error`
+    // serialized an Error to `{}` (the empty `{"error":{}}` reported in #2114).
+    logger.warn(
+      { err: error },
+      'Vector index creation failed; semantic search will use exact-scan fallback',
+    );
     return false;
   }
 };
@@ -383,7 +390,7 @@ export const runEmbeddingPipeline = async (
       // Ensure the vector index exists even when no new nodes need embedding.
       // A prior crash or first-time incremental run may have left CodeEmbedding
       // rows without ever reaching index creation.
-      const vectorIndexReady = await createVectorIndex(executeQuery);
+      const vectorIndexReady = await buildVectorIndex();
 
       onProgress({
         phase: 'ready',
@@ -544,7 +551,7 @@ export const runEmbeddingPipeline = async (
       logger.info('📇 Creating vector index...');
     }
 
-    const vectorIndexReady = await createVectorIndex(executeQuery);
+    const vectorIndexReady = await buildVectorIndex();
 
     onProgress({
       phase: 'ready',
