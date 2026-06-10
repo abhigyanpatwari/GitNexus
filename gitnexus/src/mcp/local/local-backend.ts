@@ -3907,6 +3907,8 @@ export class LocalBackend {
         return this.groupList(params);
       case 'group_sync':
         return this.groupSync(params);
+      case 'group_trace':
+        return this.getGroupService().groupTrace(params);
       default:
         throw new Error(
           `Unknown group tool: ${method}. Removed tools: use repo "@<groupName>" on impact, query, or context (optional "/<memberPath>"), or MCP resources.`,
