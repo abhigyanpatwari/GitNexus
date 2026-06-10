@@ -248,22 +248,34 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
 /** Keys checked (top-level and one level deep) to attribute a record to a file. */
 const DEFAULT_PATH_KEYS = ['filePath', 'path', 'file'] as const;
 
+/** Read a path key off a child object (one level deep); never throws. */
+function pathFromChild(child: unknown, pathKeys: readonly string[]): string | undefined {
+  if (child === null || typeof child !== 'object') return undefined;
+  const crec = child as Record<string, unknown>;
+  for (const pk of pathKeys) {
+    if (typeof crec[pk] === 'string') return crec[pk] as string;
+  }
+  return undefined;
+}
+
 /** Best-effort source-path extraction for reporting; never throws. */
 function findFilePath(element: unknown, pathKeys: readonly string[]): string | undefined {
   if (element === null || typeof element !== 'object') return undefined;
   const rec = element as Record<string, unknown>;
+  // Top level first — a ParsedFile carries `filePath` here.
   for (const key of pathKeys) {
     if (typeof rec[key] === 'string') return rec[key] as string;
   }
-  // One level deep — ParsedNode carries its path at `properties.filePath`.
+  // Known child next — a ParsedNode carries its path at `properties.filePath`.
+  // Prefer it over the generic sweep so attribution is deterministic when a
+  // sibling child also happens to carry a path-like key.
+  const fromProps = pathFromChild(rec.properties, pathKeys);
+  if (fromProps !== undefined) return fromProps;
+  // Generic one-level sweep as the fallback for other shapes.
   for (const key of Object.keys(rec)) {
-    const child = rec[key];
-    if (child !== null && typeof child === 'object') {
-      const crec = child as Record<string, unknown>;
-      for (const pk of pathKeys) {
-        if (typeof crec[pk] === 'string') return crec[pk] as string;
-      }
-    }
+    if (key === 'properties') continue; // already checked above
+    const fromChild = pathFromChild(rec[key], pathKeys);
+    if (fromChild !== undefined) return fromChild;
   }
   return undefined;
 }

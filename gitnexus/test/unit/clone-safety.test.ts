@@ -355,4 +355,43 @@ describe('clone-safety', () => {
       expect(isStructuredCloneable(result)).toBe(true);
     });
   });
+
+  // U7 (#2112): a ParsedNode is attributed to properties.filePath even when a
+  // sibling child also carries a path-like key — the generic sweep alone could
+  // return the wrong sibling's path.
+  describe('findFilePath attribution (via skip reporting)', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('prefers properties.filePath over a sibling child path key', () => {
+      const result: Record<string, unknown> = {
+        nodes: [
+          {
+            id: 'n',
+            meta: { file: 'sibling-wrong.ts' }, // sibling child with a path-like key, declared first
+            properties: { filePath: 'right.ts', bad: () => 1 },
+          },
+        ],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(skipped).toHaveLength(1);
+      expect(skipped[0].path).toBe('right.ts'); // not 'sibling-wrong.ts'
+    });
+
+    it('uses a top-level filePath when present', () => {
+      const result: Record<string, unknown> = {
+        parsedFiles: [{ filePath: 'top.c', captureSideChannel: { leaked: () => 1 } }],
+        nodes: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      const { skipped } = makeWorkerResultCloneSafe(result, opts);
+      expect(skipped[0].path).toBe('top.c');
+    });
+  });
 });
