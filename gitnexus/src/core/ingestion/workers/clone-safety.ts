@@ -290,8 +290,8 @@ export interface MakeCloneSafeOptions {
  *
  * Call this ONLY after a real `DataCloneError` on the fast-path post.
  */
-export function makeWorkerResultCloneSafe<T extends Record<string, unknown>>(
-  result: T,
+export function makeWorkerResultCloneSafe(
+  result: Record<string, unknown>,
   options: MakeCloneSafeOptions,
 ): { skipped: SkippedPath[] } {
   const pathKeys = options.pathKeys ?? DEFAULT_PATH_KEYS;
@@ -335,7 +335,7 @@ export function makeWorkerResultCloneSafe<T extends Record<string, unknown>>(
         skipped.push({ path, reason: `dropped unsalvageable ${field} entry` });
       }
     }
-    if (out) (result as Record<string, unknown>)[field] = out;
+    if (out) result[field] = out;
   }
 
   return { skipped };

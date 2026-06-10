@@ -2397,9 +2397,13 @@ function postResultCloneSafe(result: ParseWorkerResult): void {
   // escaping to the message handler's catch by accident and re-arming, under
   // `POOL_SIZE=1`, the worker-death cascade this net exists to prevent.
   try {
+    // `as unknown as Record<string, unknown>` is the standard widening for a
+    // no-index-signature interface (TS rejects a single-step `as`). The field
+    // sets are typed to `keyof ParseWorkerResult` so renaming a field is a
+    // compile error here, not a silent loss of the drop-whole / skip protection.
     const { skipped } = makeWorkerResultCloneSafe(result as unknown as Record<string, unknown>, {
-      dropWholeElement: new Set(['parsedFiles']),
-      skipFields: new Set(['skippedPaths']),
+      dropWholeElement: new Set<keyof ParseWorkerResult>(['parsedFiles']),
+      skipFields: new Set<keyof ParseWorkerResult>(['skippedPaths']),
     });
     if (skipped.length > 0) {
       result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
