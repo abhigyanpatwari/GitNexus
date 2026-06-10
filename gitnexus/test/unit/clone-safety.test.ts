@@ -3,6 +3,7 @@ import {
   isDataCloneError,
   isStructuredCloneable,
   makeWorkerResultCloneSafe,
+  type SkippedPath,
 } from '../../src/core/ingestion/workers/clone-safety.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
@@ -318,6 +319,67 @@ describe('clone-safety', () => {
       const outTags = (result.nodes as Array<{ tags: { note?: unknown; bad?: unknown } }>)[0].tags;
       expect(outTags.note).toBe('keep'); // data prop carried onto the stripped copy
       expect(outTags.bad).toBeUndefined();
+    });
+  });
+
+  // R2 (#2135 tri-review): a throw DURING the sanitizer's own structural
+  // enumeration (a throwing getter on a path-less element reached by
+  // findFilePath, or a Proxy structural trap reached by instanceof/Object.keys)
+  // used to escape makeWorkerResultCloneSafe to the fail-closed {type:'error'},
+  // re-arming the cascade. findFilePath now reads defensively, and each element's
+  // sanitize is wrapped to drop-on-throw.
+  describe('sanitizer-internal throw is contained (drop-on-throw)', () => {
+    const opts = {
+      dropWholeElement: new Set(['parsedFiles']),
+      skipFields: new Set(['skippedPaths']),
+    };
+
+    it('a throwing getter at a non-path key on a PATH-LESS element does not escape', () => {
+      // No top-level path key → findFilePath falls to its generic sweep and
+      // (pre-fix) read the throwing getter, throwing out of the sanitizer.
+      const el: Record<string, unknown> = { id: 'p', name: 'keep' };
+      Object.defineProperty(el, 'boom', {
+        enumerable: true,
+        get() {
+          throw new RangeError('boom');
+        },
+      });
+      const result: Record<string, unknown> = {
+        nodes: [el],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 1,
+      };
+      expect(() => makeWorkerResultCloneSafe(result, opts)).not.toThrow();
+      expect(isStructuredCloneable(result)).toBe(true);
+      const out = (result.nodes as Array<Record<string, unknown>>)[0];
+      expect(out.name).toBe('keep'); // legitimate data delivered
+      expect('boom' in out).toBe(false); // throwing getter stripped, not escaped
+    });
+
+    it('a Proxy with a throwing structural trap is dropped, clean siblings survive', () => {
+      const trap = new Proxy(
+        { id: 'b' },
+        {
+          getPrototypeOf() {
+            throw new Error('structural trap');
+          },
+        },
+      );
+      const result: Record<string, unknown> = {
+        nodes: [{ id: 'a', filePath: 'a.ts' }, trap, { id: 'c', filePath: 'c.ts' }],
+        parsedFiles: [],
+        skippedLanguages: {},
+        fileCount: 3,
+      };
+      let skipped: SkippedPath[] = [];
+      expect(() => {
+        skipped = makeWorkerResultCloneSafe(result, opts).skipped;
+      }).not.toThrow();
+      expect(isStructuredCloneable(result)).toBe(true);
+      const ids = (result.nodes as Array<{ id: string }>).map((n) => n.id);
+      expect(ids).toEqual(['a', 'c']); // trap element dropped, siblings preserved
+      expect(skipped.some((s) => s.reason.includes('sanitizer error'))).toBe(true);
     });
   });
 

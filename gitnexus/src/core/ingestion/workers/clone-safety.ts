@@ -380,33 +380,54 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0, path = ''):
 /** Keys checked (top-level and one level deep) to attribute a record to a file. */
 const DEFAULT_PATH_KEYS = ['filePath', 'path', 'file'] as const;
 
+/** Read `obj[key]`, returning undefined if the access throws (throwing getter / Proxy trap). */
+function safeGet(obj: Record<string, unknown>, key: string): unknown {
+  try {
+    return obj[key];
+  } catch {
+    return undefined;
+  }
+}
+
 /** Read a path key off a child object (one level deep); never throws. */
 function pathFromChild(child: unknown, pathKeys: readonly string[]): string | undefined {
   if (child === null || typeof child !== 'object') return undefined;
   const crec = child as Record<string, unknown>;
   for (const pk of pathKeys) {
-    if (typeof crec[pk] === 'string') return crec[pk] as string;
+    const v = safeGet(crec, pk);
+    if (typeof v === 'string') return v;
   }
   return undefined;
 }
 
-/** Best-effort source-path extraction for reporting; never throws. */
+/**
+ * Best-effort source-path extraction for reporting; never throws. Reads are
+ * defensive (a throwing getter / Proxy trap on a path-attribution key must not
+ * escape and abandon the sanitize — it would re-arm the fail-closed cascade).
+ */
 function findFilePath(element: unknown, pathKeys: readonly string[]): string | undefined {
   if (element === null || typeof element !== 'object') return undefined;
   const rec = element as Record<string, unknown>;
   // Top level first — a ParsedFile carries `filePath` here.
   for (const key of pathKeys) {
-    if (typeof rec[key] === 'string') return rec[key] as string;
+    const v = safeGet(rec, key);
+    if (typeof v === 'string') return v;
   }
   // Known child next — a ParsedNode carries its path at `properties.filePath`.
   // Prefer it over the generic sweep so attribution is deterministic when a
   // sibling child also happens to carry a path-like key.
-  const fromProps = pathFromChild(rec.properties, pathKeys);
+  const fromProps = pathFromChild(safeGet(rec, 'properties'), pathKeys);
   if (fromProps !== undefined) return fromProps;
   // Generic one-level sweep as the fallback for other shapes.
-  for (const key of Object.keys(rec)) {
+  let keys: string[];
+  try {
+    keys = Object.keys(rec);
+  } catch {
+    return undefined; // a Proxy ownKeys trap that throws — give up on attribution
+  }
+  for (const key of keys) {
     if (key === 'properties') continue; // already checked above
-    const fromChild = pathFromChild(rec[key], pathKeys);
+    const fromChild = pathFromChild(safeGet(rec, key), pathKeys);
     if (fromChild !== undefined) return fromChild;
   }
   return undefined;
@@ -432,7 +453,9 @@ export interface MakeCloneSafeOptions {
  * non-cloneable value are rewritten; everything else keeps referential
  * identity. Returns the list of affected file paths for reporting.
  *
- * Call this ONLY after a real `DataCloneError` on the fast-path post.
+ * Call this after ANY failure of the fast-path post — a `DataCloneError`, OR a
+ * throwing getter's own error surfaced by structuredClone (the caller in
+ * `post-result.ts` recovers on any throw, not only `DataCloneError`).
  */
 export function makeWorkerResultCloneSafe(
   result: Record<string, unknown>,
@@ -447,40 +470,56 @@ export function makeWorkerResultCloneSafe(
     if (!Array.isArray(value)) continue;
 
     const dropWhole = options.dropWholeElement.has(field);
-    // Single pass: scan each element once. `out` is built lazily — only once a
-    // dirty element appears — by copying the clean prefix, so a fully-clean
-    // array is never rebuilt and keeps its referential identity (no field
-    // reassignment). Each element seeds its own depth-0 scan (independent
-    // subtree).
+    // `out` is built lazily — only once a dirty element appears — by copying the
+    // clean prefix, so a fully-clean array is never rebuilt and keeps its
+    // referential identity (no field reassignment). A dirty element is scanned
+    // (containsNonCloneable) and then stripped (stripNonCloneable): two passes,
+    // deliberately. The non-allocating pre-scan is exactly what lets CLEAN
+    // elements stay by reference (zero-copy) — replacing it with an
+    // always-allocating strip would regress that. This whole path is
+    // failure-path-only (the fast post already threw), so the second pass over
+    // the rare dirty element is acceptable.
     let out: unknown[] | null = null;
     for (let i = 0; i < value.length; i++) {
       const element = value[i];
-      if (!containsNonCloneable(element, new WeakSet())) {
-        if (out) out.push(element);
-        continue;
-      }
-      if (!out) out = value.slice(0, i); // first dirty element: copy clean prefix
-      const path = findFilePath(element, pathKeys) ?? '(unknown)';
-      if (dropWhole) {
-        skipped.push({ path, reason: `dropped non-serializable ${field} entry` });
-        continue;
-      }
-      const ctx: StripCtx = { stripped: 0, seen: new Map(), keys: [] };
-      const cleaned = stripNonCloneable(element, ctx);
-      // Last-resort guard: if stripping functions/symbols still left something
-      // structured-clone rejects, drop the element rather than re-throw.
-      if (isStructuredCloneable(cleaned)) {
-        out.push(cleaned);
-        // Name the offending key path(s) so the leak is locatable from the log
-        // (e.g. "from nodes: properties.toString") — not just the array field.
-        const at = ctx.keys.slice(0, 3).join(', ');
-        const more = ctx.keys.length > 3 ? `, …+${ctx.keys.length - 3}` : '';
-        skipped.push({
-          path,
-          reason: `stripped ${ctx.stripped} non-serializable value(s) from ${field}: ${at}${more}`,
-        });
-      } else {
-        skipped.push({ path, reason: `dropped unsalvageable ${field} entry` });
+      try {
+        if (!containsNonCloneable(element, new WeakSet())) {
+          if (out) out.push(element);
+          continue;
+        }
+        if (!out) out = value.slice(0, i); // first dirty element: copy clean prefix
+        const path = findFilePath(element, pathKeys) ?? '(unknown)';
+        if (dropWhole) {
+          skipped.push({ path, reason: `dropped non-serializable ${field} entry` });
+          continue;
+        }
+        const ctx: StripCtx = { stripped: 0, seen: new Map(), keys: [] };
+        const cleaned = stripNonCloneable(element, ctx);
+        // Last-resort guard: if stripping functions/symbols still left something
+        // structured-clone rejects, drop the element rather than re-throw.
+        if (isStructuredCloneable(cleaned)) {
+          out.push(cleaned);
+          // Name the offending key path(s) so the leak is locatable from the log
+          // (e.g. "from nodes: properties.toString") — not just the array field.
+          const at = ctx.keys.slice(0, 3).join(', ');
+          const more = ctx.keys.length > 3 ? `, …+${ctx.keys.length - 3}` : '';
+          skipped.push({
+            path,
+            reason: `stripped ${ctx.stripped} non-serializable value(s) from ${field}: ${at}${more}`,
+          });
+        } else {
+          skipped.push({ path, reason: `dropped unsalvageable ${field} entry` });
+        }
+      } catch {
+        // A throw DURING this element's scan/strip — a Proxy with a throwing
+        // `getPrototypeOf`/`ownKeys` trap reached by Object.getPrototypeOf /
+        // Object.keys, or any other structural-enumeration throw. Drop the
+        // element rather than let the throw escape to postResultCloneSafe's
+        // fail-closed {type:'error'} (which under POOL_SIZE=1 re-arms the
+        // cascade this net prevents). One pathological element can't sink the
+        // whole result.
+        if (!out) out = value.slice(0, i);
+        skipped.push({ path: '(unknown)', reason: `dropped ${field} entry (sanitizer error)` });
       }
     }
     if (out) result[field] = out;
