@@ -194,8 +194,13 @@ export function formatImpactResult(result: any): string {
   // mirroring formatContextResult, so the real impact under whichever symbol the
   // caller meant is visible on the text surface, not just in the JSON.
   if (result.status === 'ambiguous') {
+    // #2129 review F11 — report the FULL match count (`totalCandidates`), not the
+    // truncated `candidates[]` length; note when the candidate list is capped.
+    const shown = result.candidates?.length ?? 0;
+    const total = result.totalCandidates ?? shown;
+    const countPhrase = total > shown ? `${total} symbols (showing ${shown})` : `${total} symbols`;
     const lines = [
-      `${target?.name || '?'}: AMBIGUOUS — ${result.candidates?.length ?? 0} symbols share this name. ` +
+      `${target?.name || '?'}: AMBIGUOUS — ${countPhrase} share this name. ` +
         `Max blast radius ${result.maxImpactedCount ?? 0} (${result.maxRisk ?? 'UNKNOWN'} risk). ` +
         `Disambiguate with --uid for one authoritative result:`,
     ];

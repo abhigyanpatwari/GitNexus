@@ -3253,11 +3253,18 @@ export class LocalBackend {
       return {
         status: 'ambiguous',
         message:
-          `Found ${outcome.candidates.length} symbols matching '${target}'. Blast radius differs per ` +
-          `candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). Disambiguate with target_uid ` +
-          `(or file_path/kind) for a single authoritative result.`,
+          `Found ${outcome.candidates.length} symbols matching '${target}'` +
+          (truncated
+            ? ` (showing ${candidateSummaries.length} of ${outcome.candidates.length})`
+            : '') +
+          `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). ` +
+          `Disambiguate with target_uid (or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
+        // Full match count — `candidates[]` is truncated to AMBIGUOUS_MAX_CANDIDATES,
+        // so consumers (CLI formatter) need this to report "N of M" honestly (#2129
+        // review F11; the CLI previously read the truncated array length).
+        totalCandidates: outcome.candidates.length,
         // `impactedCount` stays 0 and `risk` stays UNKNOWN — there is no single
         // resolved symbol, and UNKNOWN must NOT read as "safe to refactor". The
         // real blast radius is surfaced per-candidate plus `maxImpactedCount` /
