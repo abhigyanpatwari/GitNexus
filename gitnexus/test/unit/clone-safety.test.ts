@@ -95,6 +95,9 @@ describe('clone-safety', () => {
       expect(skipped).toHaveLength(1);
       expect(skipped[0].path).toBe('pkg/bad.cpp');
       expect(skipped[0].reason).toContain('nodes');
+      // The reason names the exact offending key path — what lets the leak be
+      // located from a single log line, not just the array field.
+      expect(skipped[0].reason).toContain('properties.toString');
     });
 
     it('does not touch a result whose only "exotic" value is a clean Map (the refuted Map hypothesis)', () => {

@@ -149,6 +149,19 @@ function containsNonCloneable(value: unknown, seen: WeakSet<object>, depth = 0):
 interface StripCtx {
   stripped: number;
   seen: Map<object, unknown>;
+  /**
+   * Dotted key paths (relative to the element root) of every value that was
+   * stripped/dropped — e.g. `properties.toString`, `meta.data[3]`. Surfaced in
+   * the skip reason so the offending property is named precisely, which is what
+   * lets a still-unpinned leak be located from a single log line (#2112).
+   */
+  keys: string[];
+}
+
+/** Record a strip at `path` (root → `(root)`); keeps the count + key path in sync. */
+function recordStrip(ctx: StripCtx, path: string): void {
+  ctx.stripped++;
+  ctx.keys.push(path === '' ? '(root)' : path);
 }
 
 /**
@@ -156,12 +169,13 @@ interface StripCtx {
  * `undefined` (which clones fine). Preserves primitives, arrays, plain
  * objects, and the structured-clone-native containers (Date, RegExp, Map,
  * Set, ArrayBuffer, TypedArray). Rebuilds only what it must — clean leaves are
- * returned by reference.
+ * returned by reference. `path` is the dotted key path of `value` (for the
+ * diagnostic record).
  */
-function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
+function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0, path = ''): unknown {
   const t = typeof value;
   if (t === 'function' || t === 'symbol') {
-    ctx.stripped++;
+    recordStrip(ctx, path);
     return undefined;
   }
   if (value === null || t !== 'object') return value;
@@ -169,7 +183,7 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
   // `undefined` (itself cloneable, and a legal property value / array element)
   // rather than overflowing the stack.
   if (depth >= MAX_CLONE_DEPTH) {
-    ctx.stripped++;
+    recordStrip(ctx, path);
     return undefined;
   }
   const obj = value as object;
@@ -186,7 +200,7 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
     // Keep a live buffer/view (even an empty one); drop a detached one, which
     // structuredClone rejects. The probe is exact — no byteLength heuristic.
     if (!isStructuredCloneable(obj)) {
-      ctx.stripped++;
+      recordStrip(ctx, path);
       ctx.seen.set(obj, undefined);
       return undefined;
     }
@@ -198,7 +212,8 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
   if (Array.isArray(obj)) {
     const out: unknown[] = [];
     ctx.seen.set(obj, out);
-    for (const v of obj) out.push(stripNonCloneable(v, ctx, depth + 1));
+    for (let i = 0; i < obj.length; i++)
+      out.push(stripNonCloneable(obj[i], ctx, depth + 1, `${path}[${i}]`));
     return out;
   }
   if (obj instanceof Map) {
@@ -207,13 +222,16 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
     const out = new Map();
     ctx.seen.set(obj, out);
     for (const [k, v] of obj)
-      out.set(stripNonCloneable(k, ctx, depth + 1), stripNonCloneable(v, ctx, depth + 1));
+      out.set(
+        stripNonCloneable(k, ctx, depth + 1, `${path}<key>`),
+        stripNonCloneable(v, ctx, depth + 1, `${path}<map>`),
+      );
     return out;
   }
   if (obj instanceof Set) {
     const out = new Set();
     ctx.seen.set(obj, out);
-    for (const v of obj) out.add(stripNonCloneable(v, ctx, depth + 1));
+    for (const v of obj) out.add(stripNonCloneable(v, ctx, depth + 1, `${path}<set>`));
     return out;
   }
   const proto = Object.getPrototypeOf(obj);
@@ -222,7 +240,7 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
     // that we can't safely reconstruct (Promise, WeakMap, class instance with
     // internal slots). Drop it whole — memoize the decision so aliases agree.
     if (!isStructuredCloneable(obj)) {
-      ctx.stripped++;
+      recordStrip(ctx, path);
       ctx.seen.set(obj, undefined);
       return undefined;
     }
@@ -232,15 +250,16 @@ function stripNonCloneable(value: unknown, ctx: StripCtx, depth = 0): unknown {
   const out: Record<string, unknown> = {};
   ctx.seen.set(obj, out);
   for (const key of Object.keys(obj)) {
+    const childPath = path === '' ? key : `${path}.${key}`;
     let child: unknown;
     try {
       child = (obj as Record<string, unknown>)[key];
     } catch {
       // A getter that throws is non-serializable — drop the property.
-      ctx.stripped++;
+      recordStrip(ctx, childPath);
       continue;
     }
-    out[key] = stripNonCloneable(child, ctx, depth + 1);
+    out[key] = stripNonCloneable(child, ctx, depth + 1, childPath);
   }
   return out;
 }
@@ -333,15 +352,19 @@ export function makeWorkerResultCloneSafe(
         skipped.push({ path, reason: `dropped non-serializable ${field} entry` });
         continue;
       }
-      const ctx: StripCtx = { stripped: 0, seen: new Map() };
+      const ctx: StripCtx = { stripped: 0, seen: new Map(), keys: [] };
       const cleaned = stripNonCloneable(element, ctx);
       // Last-resort guard: if stripping functions/symbols still left something
       // structured-clone rejects, drop the element rather than re-throw.
       if (isStructuredCloneable(cleaned)) {
         out.push(cleaned);
+        // Name the offending key path(s) so the leak is locatable from the log
+        // (e.g. "from nodes: properties.toString") — not just the array field.
+        const at = ctx.keys.slice(0, 3).join(', ');
+        const more = ctx.keys.length > 3 ? `, …+${ctx.keys.length - 3}` : '';
         skipped.push({
           path,
-          reason: `stripped ${ctx.stripped} non-serializable value(s) from ${field}`,
+          reason: `stripped ${ctx.stripped} non-serializable value(s) from ${field}: ${at}${more}`,
         });
       } else {
         skipped.push({ path, reason: `dropped unsalvageable ${field} entry` });
