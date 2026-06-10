@@ -222,6 +222,12 @@ export const batchInsertEmbeddings = async (
  * the silent degrade in #2114.
  */
 const buildVectorIndex = async (): Promise<boolean> => {
+  // This pre-check applies the embedding-specific install policy
+  // (resolveEmbeddingInstallPolicy, default `auto` for analyze) before reaching
+  // the adapter. The adapter's createVectorIndex() calls loadVectorExtension()
+  // again, but that's a no-op here: once this gate loads VECTOR the module-level
+  // `vectorExtensionLoaded` flag is set, so the adapter's second call
+  // short-circuits without re-resolving the policy — no double install.
   if (!(await ensureVectorExtensionAvailable())) return false;
   try {
     return await createVectorIndex();
