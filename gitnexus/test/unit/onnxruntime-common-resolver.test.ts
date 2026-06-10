@@ -13,16 +13,18 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const RESOLVER = '../../src/core/embeddings/onnxruntime-common-resolver.js';
 
-/** (Re)load the resolver with a chosen `registerHooks` mocked into node:module. */
+/**
+ * (Re)load the resolver with a chosen `registerHooks` mocked into node:module.
+ * `vi.resetModules()` + the fresh `import()` re-initialises the module-level
+ * one-shot guard, so each test gets a pristine resolver with no shared state.
+ */
 async function loadResolver(registerHooks: unknown) {
   vi.resetModules();
   vi.doMock('node:module', async (importOriginal) => {
     const orig = await importOriginal<typeof import('node:module')>();
     return { ...orig, registerHooks };
   });
-  const mod = await import(RESOLVER);
-  mod.__resetOnnxRuntimeCommonResolverForTests();
-  return mod;
+  return import(RESOLVER);
 }
 
 const ctx = { conditions: [], importAttributes: {} } as never;

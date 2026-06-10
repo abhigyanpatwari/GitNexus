@@ -124,8 +124,3 @@ export const ensureOnnxRuntimeCommonResolvable = (): void => {
     );
   }
 };
-
-/** Test-only: reset the one-shot guard so installation can be re-exercised. */
-export const __resetOnnxRuntimeCommonResolverForTests = (): void => {
-  attempted = false;
-};
