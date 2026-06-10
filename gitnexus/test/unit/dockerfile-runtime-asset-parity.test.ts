@@ -94,6 +94,24 @@ const REQUIRE_SPEC_RE =
   /(?:\b_?require\s*\(|createRequire\([\s\S]*?\)\s*\()\s*['"](\.[^'"]+)['"]\s*\)/g;
 
 /**
+ * Strip `//` line comments so a commented-out relative require (e.g. a
+ * doc-comment showing `require('../../web/x')`) cannot spuriously trip the
+ * parity guard. Block comments are deliberately NOT stripped: a naive block
+ * strip pairs a slash-star that appears inside a string or glob literal (such
+ * as a `node_modules` glob) with a distant closing delimiter and mangles real
+ * code. The require specifiers this guard matches are relative paths starting
+ * with `.` and never contain `//`, so line stripping is loss-free for them
+ * (verified: the real-tree scanner output is byte-identical with and without
+ * this strip).
+ */
+function stripLineComments(content: string): string {
+  return content
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+    .join('\n');
+}
+
+/**
  * Every out-of-`dist` asset that compiled `dist/**` require()s at module load,
  * as `{ asset, source }` (source = `src/...` file that triggers it).
  * `src/<rel>.ts` compiles to `dist/<rel>.js`, so a specifier resolved against
@@ -104,7 +122,7 @@ function requiredExternalAssets(): { asset: string; source: string }[] {
   for (const file of listSourceFiles(SRC_DIR)) {
     const relUnderSrc = toPosix(path.relative(SRC_DIR, file));
     const distDir = path.posix.join('dist', path.posix.dirname(relUnderSrc));
-    const content = readFileSync(file, 'utf-8');
+    const content = stripLineComments(readFileSync(file, 'utf-8'));
     for (const match of content.matchAll(REQUIRE_SPEC_RE)) {
       const spec = match[1];
       const resolved = path.posix.normalize(path.posix.join(distDir, spec));
@@ -122,7 +140,7 @@ describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
   it('parses at least one runtime-stage COPY (guards against a vacuous pass)', () => {
     // If the runtime `FROM` or the `/app/gitnexus/` source prefix ever stops
     // matching, `copied` goes empty and the parity assertion below would pass
-    // vacuously (empty set ∩ anything = no uncovered assets). Fail loudly here.
+    // vacuously (an empty copied set yields zero uncovered assets). Fail loud.
     expect(copied.length, 'runtime stage must contain COPY --from=builder lines').toBeGreaterThan(
       0,
     );
