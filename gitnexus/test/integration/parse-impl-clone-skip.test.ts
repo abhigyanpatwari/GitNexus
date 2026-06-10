@@ -236,7 +236,9 @@ describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZ
       // The clone-safety telemetry surfaced the offending file AND the exact
       // stripped key path — the wiring this suite claims to cover.
       const msgs = cap.records().map((r) => String(r.msg ?? ''));
-      const skipLine = msgs.find((m) => m.includes('poison.ts') && m.includes('properties.toString'));
+      const skipLine = msgs.find(
+        (m) => m.includes('poison.ts') && m.includes('properties.toString'),
+      );
       expect(
         skipLine,
         `expected a sanitize warning naming poison.ts + properties.toString; saw: ${msgs.join(' | ')}`,

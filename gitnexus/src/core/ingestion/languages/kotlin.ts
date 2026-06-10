@@ -186,7 +186,8 @@ export const kotlinProvider = defineLanguage({
   // `assertCloneable` is a runtime identity; it makes a future non-serializable
   // value in the side-channel payload a compile error here, at the source, rather
   // than a DataCloneError at the worker boundary (#2143).
-  collectCaptureSideChannel: (filePath) => assertCloneable(collectKotlinCaptureSideChannel(filePath)),
+  collectCaptureSideChannel: (filePath) =>
+    assertCloneable(collectKotlinCaptureSideChannel(filePath)),
   interpretImport: interpretKotlinImport,
   interpretTypeBinding: interpretKotlinTypeBinding,
   bindingScopeFor: kotlinBindingScopeFor,

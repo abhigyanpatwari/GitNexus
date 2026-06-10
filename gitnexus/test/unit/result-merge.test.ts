@@ -35,8 +35,16 @@ function emptyResult(): ParseWorkerResult {
 describe('mergeResult', () => {
   it('unions skippedPaths across sub-batch results, initializing the target when absent', () => {
     const target = emptyResult(); // no skippedPaths on the target (the `??=` path)
-    mergeResult(target, { ...emptyResult(), skippedPaths: [{ path: 'a.ts', reason: 'r1' }], fileCount: 1 });
-    mergeResult(target, { ...emptyResult(), skippedPaths: [{ path: 'b.ts', reason: 'r2' }], fileCount: 1 });
+    mergeResult(target, {
+      ...emptyResult(),
+      skippedPaths: [{ path: 'a.ts', reason: 'r1' }],
+      fileCount: 1,
+    });
+    mergeResult(target, {
+      ...emptyResult(),
+      skippedPaths: [{ path: 'b.ts', reason: 'r2' }],
+      fileCount: 1,
+    });
     expect(target.skippedPaths).toEqual([
       { path: 'a.ts', reason: 'r1' },
       { path: 'b.ts', reason: 'r2' },
@@ -54,7 +62,9 @@ describe('mergeResult', () => {
     const target = { ...emptyResult(), skippedLanguages: { rust: 1 } };
     mergeResult(target, {
       ...emptyResult(),
-      nodes: [{ id: 'n', label: 'Function', properties: { name: 'n' } }] as ParseWorkerResult['nodes'],
+      nodes: [
+        { id: 'n', label: 'Function', properties: { name: 'n' } },
+      ] as ParseWorkerResult['nodes'],
       skippedLanguages: { rust: 2, go: 1 },
     });
     expect(target.skippedLanguages).toEqual({ rust: 3, go: 1 });

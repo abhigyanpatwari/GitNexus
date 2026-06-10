@@ -412,7 +412,8 @@ export const cProvider = defineLanguage({
   // `assertCloneable` is a runtime identity; it makes a future non-serializable
   // value in the side-channel payload a compile error here, at the source, rather
   // than a DataCloneError at the worker boundary (#2143).
-  collectCaptureSideChannel: (filePath) => assertCloneable(collectCStaticLinkageSideChannel(filePath)),
+  collectCaptureSideChannel: (filePath) =>
+    assertCloneable(collectCStaticLinkageSideChannel(filePath)),
   interpretImport: interpretCImport,
   interpretTypeBinding: interpretCTypeBinding,
   bindingScopeFor: cBindingScopeFor,

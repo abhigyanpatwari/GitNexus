@@ -81,25 +81,26 @@ type CloneablePrimitive = undefined | null | boolean | number | bigint | string;
 /** True iff `T` is `any` (the canonical `IsAny` probe: only `any` satisfies `0 extends 1 & T`). */
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
-export type Cloneable<T> = IsAny<T> extends true
-  ? never // an `any`-typed member defeats the guard — reject it like `unknown` (both → never)
-  : T extends CloneablePrimitive | Date | RegExp
-    ? T
-    : T extends (...args: never[]) => unknown
-      ? never
-    : T extends symbol
-      ? never
-      : T extends ReadonlyMap<infer K, infer V>
-        ? ReadonlyMap<Cloneable<K>, Cloneable<V>>
-        : T extends ReadonlySet<infer U>
-          ? ReadonlySet<Cloneable<U>>
-          : T extends readonly (infer U)[]
-            ? T extends unknown[]
-              ? Cloneable<U>[]
-              : readonly Cloneable<U>[]
-            : T extends object
-              ? { [K in keyof T]: Cloneable<T[K]> }
-              : never;
+export type Cloneable<T> =
+  IsAny<T> extends true
+    ? never // an `any`-typed member defeats the guard — reject it like `unknown` (both → never)
+    : T extends CloneablePrimitive | Date | RegExp
+      ? T
+      : T extends (...args: never[]) => unknown
+        ? never
+        : T extends symbol
+          ? never
+          : T extends ReadonlyMap<infer K, infer V>
+            ? ReadonlyMap<Cloneable<K>, Cloneable<V>>
+            : T extends ReadonlySet<infer U>
+              ? ReadonlySet<Cloneable<U>>
+              : T extends readonly (infer U)[]
+                ? T extends unknown[]
+                  ? Cloneable<U>[]
+                  : readonly Cloneable<U>[]
+                : T extends object
+                  ? { [K in keyof T]: Cloneable<T[K]> }
+                  : never;
 
 /**
  * Identity at runtime (zero cost — returns its argument unchanged); a

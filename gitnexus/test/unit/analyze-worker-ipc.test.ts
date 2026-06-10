@@ -75,7 +75,11 @@ describe('#2112: analyze-worker IPC projection', () => {
     // arrays under JSON.stringify. The projection must drop it entirely.
     const graph = createKnowledgeGraph();
     for (let i = 0; i < 50; i++) {
-      graph.addNode({ id: `n${i}`, label: 'Function', properties: { name: `n${i}`, filePath: 'x.ts' } });
+      graph.addNode({
+        id: `n${i}`,
+        label: 'Function',
+        properties: { name: `n${i}`, filePath: 'x.ts' },
+      });
     }
     graph.addRelationship({ id: 'n0->n1', source: 'n0', target: 'n1', type: 'CALLS' });
     const result: AnalyzeResult = {

@@ -28,7 +28,6 @@ describe('clone-safety', () => {
     });
   });
 
-
   describe('makeWorkerResultCloneSafe', () => {
     const opts = {
       dropWholeElement: new Set(['parsedFiles']),
