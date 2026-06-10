@@ -151,12 +151,12 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
 
   it('rejects a fetchWrappers entry with regex / non-identifier characters', async () => {
     await writeRc(JSON.stringify({ fetchWrappers: ['do(.*)Request'] }));
-    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a function or member name/);
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be an identifier or member name/);
   });
 
   it('rejects an empty fetchWrappers array', async () => {
     await writeRc(JSON.stringify({ fetchWrappers: [] }));
-    expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one wrapper name/);
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one string/);
   });
 
   // ── validateBranchName ─────────────────────────────────────────────

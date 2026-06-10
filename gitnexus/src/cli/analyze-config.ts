@@ -238,10 +238,11 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
       return trimmed;
     }
     case 'string-array': {
+      // Generic shared validator — `source` already names the config key, so
+      // messages here stay key-agnostic (no fetch-wrapper coupling in the
+      // shared normalizer; #1589/#1852 review F7).
       if (!Array.isArray(value)) {
-        throw new GitNexusRcError(
-          `${source} must be an array of strings (fetch-wrapper function names).`,
-        );
+        throw new GitNexusRcError(`${source} must be an array of strings.`);
       }
       const names: string[] = [];
       for (const item of value) {
@@ -253,19 +254,19 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
           throw new GitNexusRcError(`${source} entries must not be empty.`);
         }
         assertNoHiddenChars(trimmed, source);
-        // Wrapper names are interpolated into a RegExp in the routes phase.
-        // Restrict to identifier / member-access shapes so a config value can
-        // never smuggle regex metacharacters into the consumer scan.
+        // Values may be interpolated into a RegExp downstream. Restrict to
+        // identifier / member-access shapes so a config value can never smuggle
+        // regex metacharacters into a consumer.
         if (!/^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(trimmed)) {
           throw new GitNexusRcError(
-            `${source} entry "${trimmed}" must be a function or member name ` +
-              `(letters, digits, _, $, . — e.g. "apiClient.get").`,
+            `${source} entry "${trimmed}" must be an identifier or member name ` +
+              `(letters, digits, _, $, . — e.g. "client.get").`,
           );
         }
         names.push(trimmed);
       }
       if (names.length === 0) {
-        throw new GitNexusRcError(`${source} must list at least one wrapper name.`);
+        throw new GitNexusRcError(`${source} must list at least one string.`);
       }
       // De-duplicate and cap to a sane bound so a pathological config cannot
       // blow up the consumer scan's alternation.
