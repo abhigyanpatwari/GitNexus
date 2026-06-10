@@ -2462,6 +2462,19 @@ export class LocalBackend {
     const symKind = isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2];
     const isMethodLike =
       symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
+
+    // #1858 review F2 — start the epistemic boundary probe here (right after
+    // `symKind` is known) so it runs CONCURRENTLY with the methodMetadata fetch
+    // below, mirroring how _runImpactBFS overlaps it with the BFS. It is awaited
+    // at result assembly. (It cannot start earlier — `symKind` is only computed
+    // on this line, after the incoming/outgoing round-trips.)
+    const epistemicPromise = this.computeEpistemicBoundary(
+      repo,
+      symId,
+      (symKind as string) || '',
+      (sym.name || sym[1]) as string,
+    );
+
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -2497,13 +2510,9 @@ export class LocalBackend {
     // #1858 — same epistemic boundary signal as impact(): when this symbol sits
     // behind an interface / indirection boundary, callers binding via DI or
     // dynamic dispatch are not reflected in `incoming`, so the view is a lower
-    // bound. Additive; never suppresses a field.
-    const epistemic = await this.computeEpistemicBoundary(
-      repo,
-      symId,
-      (symKind as string) || '',
-      (sym.name || sym[1]) as string,
-    );
+    // bound. Additive; never suppresses a field. Resolved from the probe started
+    // above (concurrent with methodMetadata).
+    const epistemic = await epistemicPromise;
 
     return {
       status: 'found',
