@@ -29,7 +29,12 @@
 
 import { installGlobalStdoutSentinel } from '../mcp/stdio-context.js';
 
-export const mcpCommand = async () => {
+export const mcpCommand = async (options?: {
+  http?: boolean;
+  port?: string;
+  host?: string;
+  authToken?: string;
+}) => {
   // Install the global stdout sentinel as the very first thing — before
   // ANY other module loads. The static-import closure above is leaf-only
   // (stdio-context → stdio-capture, zero non-`node:` deps), so this is
@@ -78,6 +83,20 @@ export const mcpCommand = async () => {
       { repoCount: repos.length, repos: repos.map((r) => r.name) },
       'GitNexus: MCP server starting',
     );
+  }
+
+  // 根据选项决定启动模式：HTTP 服务器或 stdio（默认）
+  if (options?.http) {
+    // 动态导入 HTTP 传输模块（保持静态导入闭包为叶子节点）
+    // http-transport.ts 间接引入 express/cors/SDK HTTP 传输，
+    // 必须在 sentinel 安装后才能加载
+    const { startMcpHttpServer } = await import('../mcp/http-transport.js');
+    await startMcpHttpServer(backend, {
+      port: Number(options.port ?? 3000),
+      host: options.host ?? '0.0.0.0',
+      authToken: options.authToken,
+    });
+    return;
   }
 
   // Start MCP server (serves all repos, discovers new ones lazily)

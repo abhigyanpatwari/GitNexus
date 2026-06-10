@@ -122,7 +122,21 @@ program
 
 program
   .command('mcp')
-  .description('Start MCP server (stdio) — serves all indexed repos')
+  .description(
+    'Start MCP server. Default: stdio. Use --http for a remote HTTP server ' +
+      '(Streamable HTTP at POST /mcp + legacy SSE at GET /sse, POST /messages).',
+  )
+  .option('--http', 'Serve MCP over HTTP instead of stdio (for remote clients)')
+  .option('-p, --port <port>', 'HTTP port (only with --http). Default: 3000', '3000')
+  .option(
+    '--host <host>',
+    'HTTP bind address (only with --http). Default: 0.0.0.0 (all interfaces). Use 127.0.0.1 for loopback only.',
+    '0.0.0.0',
+  )
+  .option(
+    '--auth-token <token>',
+    'Require this bearer token in the Authorization header (only with --http). If omitted, no auth (warn on non-loopback bind).',
+  )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program
