@@ -1,7 +1,8 @@
 import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
-// `tree-sitter-kotlin` is an optionalDependency that may be absent on a default
-// install (or fail its native build). Loaded lazily + guarded via parser-loader
+// `tree-sitter-kotlin` is a vendored grammar (loaded from vendor/ by absolute
+// path, never node_modules — vendored-grammars.ts / #2111) that may be absent on
+// a platform without a matching prebuild. Loaded lazily + guarded via parser-loader
 // rather than statically imported: this module is pulled onto the main thread
 // eagerly by the scope-resolution registry and the language-provider index, so
 // a top-level `import Kotlin from 'tree-sitter-kotlin'` would throw

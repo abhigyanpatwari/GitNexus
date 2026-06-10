@@ -23,6 +23,9 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
  * (which loads ABI 13–14).
  */
 
+// Only for `tree-sitter` (a real npm dependency) in the smoke-test below;
+// the vendored grammar goes through requireVendoredGrammar (never a bare
+// `_require('tree-sitter-proto')`, which would force a node_modules copy — #2111).
 const _require = createRequire(import.meta.url);
 let ProtoGrammar: unknown = null;
 try {
