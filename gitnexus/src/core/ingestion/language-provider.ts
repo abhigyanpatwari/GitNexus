@@ -36,6 +36,8 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
+import type Parser from 'tree-sitter';
+import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -235,6 +237,22 @@ interface LanguageProviderConfig {
    *  When true, the worker extracts routes via the language's route extraction logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
+
+  /**
+   * Extract decorator-style route annotations from a parsed file.
+   *
+   * When defined, the parse worker calls this after per-file capture processing
+   * to extract framework route definitions that require AST-level analysis beyond
+   * generic `@decorator` captures (e.g., Java Spring class-level prefix joining,
+   * multi-class handling). The returned routes are appended to `decoratorRoutes`.
+   *
+   * Default: undefined (no language-specific decorator route extraction).
+   */
+  readonly extractDecoratorRoutes?: (
+    tree: Parser.Tree,
+    filePath: string,
+    lineOffset: number,
+  ) => ExtractedDecoratorRoute[];
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.
