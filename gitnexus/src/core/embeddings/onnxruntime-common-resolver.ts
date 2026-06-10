@@ -19,12 +19,16 @@
  *
  * ## What this does
  * Install a synchronous, in-thread ESM resolution hook (`module.registerHooks`,
- * Node >= 22.15) that redirects `onnxruntime-common` to the copy gitnexus itself
- * depends on — but only when the default resolver fails. onnxruntime-common is a
- * direct gitnexus dependency (a stable, pure-JS package whose `Tensor` surface
- * is unchanged across 1.24–1.26), version-aligned with the onnxruntime-node
- * transformers loads, so it is always resolvable from gitnexus' own scope
- * regardless of how the consumer's package manager linked things. On working
+ * Node >= 22.15) that redirects `onnxruntime-common` to a copy gitnexus can
+ * resolve — but only when the default resolver fails. The redirect target is
+ * preferentially the `onnxruntime-common` that `onnxruntime-node` (the native
+ * binding transformers actually loads) itself depends on, so the redirected copy
+ * is version-matched to that binding even under `pnpm dlx` — where gitnexus'
+ * npm-style `overrides` block does NOT apply, because it is honoured only from a
+ * root manifest and gitnexus is a transitive dependency there. It falls back to
+ * gitnexus' own direct `onnxruntime-common` dependency when that chain can't be
+ * walked. onnxruntime-common is a stable, pure-JS package whose `Tensor` surface
+ * is unchanged across 1.24–1.26, so either target is API-compatible. On working
  * layouts the default resolver succeeds first and the hook never fires, so
  * behaviour is unchanged.
  *
@@ -49,6 +53,30 @@ import { logger } from '../logger.js';
 let attempted = false;
 
 /**
+ * Compute the file: URL the hook redirects `onnxruntime-common` to.
+ *
+ * Prefer the copy `onnxruntime-node` (the native binding transformers loads)
+ * depends on, so the redirected module is version-matched to the binding even
+ * under `pnpm dlx`, where transformers keeps its own pinned onnxruntime-node.
+ * The walk resolves transformers' MAIN entry — NOT `@huggingface/transformers/
+ * package.json`, which transformers' `exports` map blocks
+ * (`ERR_PACKAGE_PATH_NOT_EXPORTED`) — then onnxruntime-node, then its
+ * onnxruntime-common. Falls back to gitnexus' own direct dependency (always
+ * resolvable from our scope) when any step fails.
+ */
+const resolveOnnxRuntimeCommonUrl = (): string => {
+  const require = createRequire(import.meta.url);
+  try {
+    const transformersMain = require.resolve('@huggingface/transformers');
+    const ortNodePkg = createRequire(transformersMain).resolve('onnxruntime-node/package.json');
+    const common = createRequire(ortNodePkg).resolve('onnxruntime-common');
+    return pathToFileURL(common).href;
+  } catch {
+    return pathToFileURL(require.resolve('onnxruntime-common')).href;
+  }
+};
+
+/**
  * Idempotently install the onnxruntime-common resolution fallback. Call once
  * immediately before the dynamic `import('@huggingface/transformers')` on the
  * local-embedding path.
@@ -64,10 +92,7 @@ export const ensureOnnxRuntimeCommonResolvable = (): void => {
     // hooks API. Degrade gracefully — the import still works on hoisted layouts.
     if (typeof registerHooks !== 'function') return;
 
-    const require = createRequire(import.meta.url);
-    // Resolve from gitnexus' own scope — onnxruntime-common is a direct
-    // dependency, so this succeeds under npm and pnpm-strict alike.
-    const redirectUrl = pathToFileURL(require.resolve('onnxruntime-common')).href;
+    const redirectUrl = resolveOnnxRuntimeCommonUrl();
 
     registerHooks({
       resolve(specifier, context, nextResolve) {
