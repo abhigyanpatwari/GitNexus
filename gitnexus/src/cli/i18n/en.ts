@@ -112,7 +112,8 @@ export const en = {
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   'help.command.serve.description': 'Start local HTTP server for web UI connection',
-  'help.command.mcp.description': 'Start MCP server (stdio) — serves all indexed repos',
+  'help.command.mcp.description':
+    'Start MCP server. Default: stdio. Use --http for a remote HTTP server (Streamable HTTP at POST /mcp + legacy SSE at GET /sse, POST /messages).',
   'help.command.list.description': 'List all indexed repositories',
   'help.command.status.description': 'Show index status for current repo',
   'help.command.doctor.description':

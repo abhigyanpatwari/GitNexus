@@ -113,7 +113,8 @@ export const zhCN = {
   'help.command.analyze.description': '索引仓库（完整分析）',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
-  'help.command.mcp.description': '启动 MCP 服务器（stdio）— 提供所有已索引仓库',
+  'help.command.mcp.description':
+    '启动 MCP 服务器。默认为 stdio。使用 --http 启动远程 HTTP 服务器（Streamable HTTP: POST /mcp + 遗留 SSE: GET /sse, POST /messages）。',
   'help.command.list.description': '列出所有已索引仓库',
   'help.command.status.description': '显示当前仓库的索引状态',
   'help.command.doctor.description': '显示运行平台能力和嵌入配置',
