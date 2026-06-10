@@ -9,13 +9,14 @@
  * validates the prebuilds — so even an imperfect re-vendor can never silently
  * ship: its PR's CI goes red.
  *
- * ABI awareness is load-bearing. Every grammar is pinned to tree-sitter@0.21.1
- * (LANGUAGE_VERSION 13–14, the #1922 gate). Most upstream grammar releases target
- * a newer tree-sitter, so a blind "bump to latest" would pull an ABI-incompatible
- * parser and open doomed PRs. This monitor fetches the candidate source, reads its
- * parser.c `#define LANGUAGE_VERSION`, and only re-vendors when it is 13 or 14;
- * incompatible updates are reported (and surfaced as a workflow notice), not
- * applied.
+ * ABI awareness is load-bearing. The COMPATIBLE_ABI set is read from the
+ * runtime's ABI range (see RUNTIME_ABI_RANGES in check-tree-sitter-upgrade-
+ * readiness.py). Most upstream grammar releases target a newer tree-sitter,
+ * so a blind "bump to latest" would pull an ABI-incompatible parser and open
+ * doomed PRs. This monitor fetches the candidate source, reads its parser.c
+ * `#define LANGUAGE_VERSION`, and only re-vendors when it is in the compatible
+ * set; incompatible updates are reported (and surfaced as a workflow notice),
+ * not applied.
  *
  * Usage:
  *   node update-vendored-grammars.mjs            # detect only → JSON report on stdout
@@ -36,7 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const VENDOR = path.join(REPO_ROOT, 'gitnexus', 'vendor');
 
-const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION range
+const COMPATIBLE_ABI = new Set([13, 14, 15]); // tree-sitter@^0.25.0 LANGUAGE_VERSION range (ABI 13-15)
 
 // Source-of-origin per grammar. npm grammars resolve `latest` via the registry;
 // github grammars (no usable npm release) track the default branch HEAD. A `hold`

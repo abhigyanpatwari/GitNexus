@@ -6,9 +6,9 @@
   "license": "MIT",
   "main": "bindings/node/index.js",
   "types": "bindings/node/index.d.ts",
-  "_vendoredBy": "gitnexus - runtime package derived from tree-sitter-c@0.21.4 (tree-sitter/tree-sitter-c). HELD at 0.21.4 for ABI compatibility with the bundled tree-sitter@0.21.1 runtime (#1242/#858) — do not bump without the runtime upgrade. Vendored because upstream ships native prebuilds for only 4 of 6 platforms (no linux-arm64/win32-arm64, #2116), and tree-sitter-c is a REQUIRED grammar whose source build hard-fails `npm install` on a toolchain-less ARM host. GitNexus cross-builds all six prebuilds via .github/workflows/build-tree-sitter-prebuilds.yml; the C source (binding.gyp + src/) is ALSO vendored so build-tree-sitter-c.cjs can source-build the binding on a toolchain host when no prebuild matches (e.g. CI before prebuilds land). Copied to node_modules/ by materialize-vendor-grammars.cjs (no scripts.install here — #836/#1728).",
+  "_vendoredBy": "gitnexus - runtime package derived from tree-sitter-c@0.21.4 (tree-sitter/tree-sitter-c). HELD at 0.21.4: tree-sitter-c@0.23.x prebuilds segfault on Windows under the tree-sitter@0.21 ABI (#1242/#858). Vendored because upstream ships native prebuilds for only 4 of 6 platforms (no linux-arm64/win32-arm64, #2116), and tree-sitter-c is a REQUIRED grammar whose source build hard-fails `npm install` on a toolchain-less ARM host. GitNexus cross-builds all six prebuilds via .github/workflows/build-tree-sitter-prebuilds.yml; the C source (binding.gyp + src/) is ALSO vendored so build-tree-sitter-c.cjs can source-build the binding on a toolchain host when no prebuild matches (e.g. CI before prebuilds land). Copied to node_modules/ by materialize-vendor-grammars.cjs (no scripts.install here — #836/#1728).",
   "peerDependencies": {
-    "tree-sitter": "^0.21.0"
+    "tree-sitter": "^0.21.0 || ^0.25.0"
   },
   "peerDependenciesMeta": {
     "tree-sitter": {

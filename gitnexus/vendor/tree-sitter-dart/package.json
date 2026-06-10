@@ -8,7 +8,7 @@
   "types": "bindings/node",
   "_vendoredBy": "gitnexus - pinned to UserNobody14/tree-sitter-dart commit 80e23c07b64494f7e21090bb3450223ef0b192f4. Copied to node_modules/ by materialize-vendor-grammars.cjs; native build via build-tree-sitter-dart.cjs (#1728, #836).",
   "peerDependencies": {
-    "tree-sitter": "^0.21.0"
+    "tree-sitter": "^0.21.0 || ^0.25.0"
   },
   "peerDependenciesMeta": {
     "tree_sitter": {

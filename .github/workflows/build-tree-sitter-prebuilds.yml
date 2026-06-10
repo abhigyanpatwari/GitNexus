@@ -361,15 +361,16 @@ jobs:
           cd "$probe"
           # Pin tree-sitter to the repo's exact runtime peer so an ABI mismatch
           # fails HERE, not in a user's install (mirrors the #1922 ABI gate).
-          # NOT --ignore-scripts: tree-sitter@0.21.1's tarball ships prebuilds for
+          # NOT --ignore-scripts: tree-sitter@0.25.0's tarball ships prebuilds for
           # the common tuples but NOT linux-arm64 / win32-arm64, so on the arm64
           # runners node-gyp-build must source-build the runtime — give it node-gyp
           # + node-addon-api to do so. Where tree-sitter ships a prebuild (x64,
           # darwin-arm64) node-gyp-build uses it and nothing compiles. The grammar
           # .node we built is still loaded as a prebuild; only the runtime peer may
           # compile. The grammar-vs-runtime ABI check still fires at setLanguage.
+          TS_VERSION=$(node -e "console.log(require('${GITHUB_WORKSPACE}/gitnexus/package.json').dependencies['tree-sitter'])")
           npm install --no-audit --no-fund \
-            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.21.1
+            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 "tree-sitter@${TS_VERSION}"
           # The node script is single-quoted on purpose — its ${...} are JS
           # template literals read from the environment, not shell expansions.
           # shellcheck disable=SC2016
