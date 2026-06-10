@@ -49,7 +49,11 @@ function runtimeStageCopiedSources(dockerfile: string): string[] {
   const runtimeStart = lines.findIndex((l) => /^FROM\s.*\bAS\s+runtime\b/i.test(l));
   expect(runtimeStart, 'Dockerfile.cli must declare a `... AS runtime` stage').toBeGreaterThan(-1);
   const sources: string[] = [];
-  for (const line of lines.slice(runtimeStart)) {
+  // Scan only the runtime stage: start after its FROM and stop at the next
+  // stage boundary, so COPY lines from any stage added AFTER runtime are never
+  // misattributed to it.
+  for (const line of lines.slice(runtimeStart + 1)) {
+    if (/^FROM\b/.test(line)) break;
     if (!/^COPY\s+--from=builder\b/.test(line)) continue;
     // The source operand is the `/app/gitnexus/<path>` token (the dest is
     // `./gitnexus/<path>`). There is exactly one per COPY line here.
