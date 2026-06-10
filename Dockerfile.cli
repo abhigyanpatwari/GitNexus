@@ -68,23 +68,6 @@ COPY --from=builder --chown=node:node /app/gitnexus/node_modules ./gitnexus/node
 COPY --from=builder --chown=node:node /app/gitnexus/package.json ./gitnexus/package.json
 COPY --from=builder --chown=node:node /app/gitnexus/scripts/install-duckdb-extension.mjs ./gitnexus/scripts/install-duckdb-extension.mjs
 COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
-# `hooks/` is a published runtime asset (in package.json `files`), not just a
-# dev/CI directory: dist/cli/resolve-invocation.js does
-# `require('../../hooks/claude/resolve-analyze-cmd.cjs')` at module load — the
-# single source of truth for the npm-11 npx-crash invocation decision (#1939).
-# Without this copy, `gitnexus analyze` inside the image crashes with
-# MODULE_NOT_FOUND before it does any work (#2130). Mirror what npm ships.
-COPY --from=builder --chown=node:node /app/gitnexus/hooks ./gitnexus/hooks
-# `skills/` is likewise a published runtime asset (in package.json `files`): the
-# CLI reads the bundled SKILL.md templates from `<pkg>/skills/` to drive
-# `gitnexus analyze --skills` (ai-context skill generation) and `gitnexus
-# setup`/`uninstall` (installing skills into editor configs). These reads
-# degrade SILENTLY when the dir is absent — `--skills` writes minimal
-# placeholder content, `setup` installs zero skills — so the image must ship it
-# to be fully usable as a CLI. (The web UI bundle `web/`, also in `files`, is
-# deliberately NOT shipped here: this builder never builds gitnexus-web, so the
-# image is API-only; the UI is the separate Dockerfile.web image / hosted app.)
-COPY --from=builder --chown=node:node /app/gitnexus/skills ./gitnexus/skills
 
 # Expose the `gitnexus` binary on PATH so the documented Docker workflow
 # (`docker compose exec gitnexus-server gitnexus index /workspace/<repo>`)
@@ -116,6 +99,22 @@ ENV HOME=/home/node \
     GITNEXUS_LBUG_MAX_DB_SIZE=17179869184
 RUN su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts" \
  && su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts --verify-only"
+
+# Published runtime assets (in package.json `files`). Placed AFTER the DuckDB
+# FTS-extension RUN above so editing hook/skill content does not invalidate that
+# network-fetching cache layer; they have no input dependency on it.
+# `hooks/`: dist/cli/resolve-invocation.js does
+# `require('../../hooks/claude/resolve-analyze-cmd.cjs')` at module load — the
+# single source of truth for the npm-11 npx-crash invocation decision (#1939).
+# Without it, `gitnexus analyze` inside the image crashes with MODULE_NOT_FOUND
+# before it does any work (#2130). `skills/`: the CLI reads the bundled SKILL.md
+# templates from `<pkg>/skills/` for `gitnexus analyze --skills` and `gitnexus
+# setup`/`uninstall`; absent, those degrade silently (placeholder content / zero
+# skills installed). (The web UI bundle `web/`, also in `files`, is deliberately
+# NOT shipped: this builder never builds gitnexus-web, so the image is API-only;
+# the UI is the separate Dockerfile.web image / hosted app.)
+COPY --from=builder --chown=node:node /app/gitnexus/hooks ./gitnexus/hooks
+COPY --from=builder --chown=node:node /app/gitnexus/skills ./gitnexus/skills
 
 USER node
 
