@@ -40,6 +40,16 @@
  *    rather than left as a dangling sink, and threads no finallys (target
  *    unknown ⇒ crossed set unknown). Single-labeled loops/switches resolve
  *    correctly, including across finallys.
+ *  - Exceptional flow stays the sound over-approximation: EVERY protected-region
+ *    block edges to the handler (an exception may fire mid-block), which
+ *    over-supplies reaching-defs facts into `catch` — extra facts, never false
+ *    kills. Per-leader throw precision is deliberately deferred (M3 decides).
+ *  - Def/use harvest scope (#2082 M2, see typescript-harvest.ts for the full
+ *    v1 semantics table): member/property writes are not scalar defs; nested
+ *    function bodies are opaque in BOTH directions (writes to and reads of
+ *    captured outer variables are invisible — callback flows are M4 territory);
+ *    `case x:` test uses attach to the switch dispatch block (sound
+ *    over-approximation of in-order case evaluation).
  *
  * Block/edge accounting and reachability are pinned in
  * `test/unit/cfg/cfg-builder.test.ts` (core) and

@@ -44,6 +44,10 @@ import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import { collectFunctionCfgs } from '../../src/core/ingestion/cfg/collect.ts';
+import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.ts';
+import {
+  DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+} from '../../src/core/ingestion/cfg/emit.ts';
 import { createTypeScriptCfgVisitor } from '../../src/core/ingestion/cfg/visitors/typescript.ts';
 import { getTreeSitterBufferSize } from '../../src/core/ingestion/constants.ts';
 
@@ -102,6 +106,43 @@ const SCENARIOS = [
       return s + '}\n';
     },
   },
+  {
+    name: 'dense-bindings',
+    // #2082 M2: N bindings live across ~N blocks inside one loop — bindings ×
+    // blocks scale JOINTLY, the discriminator for solver-lattice quadratics.
+    // The overlay design (KTD2: sets shared by reference, OUT spine-copied
+    // only on gen) is expected to scale ~linearly-with-a-spine-copy here
+    // (normalized ratio low single digits); the regression this scenario
+    // exists to catch is the repo's recurring per-item-rescan shape — a
+    // per-use scan over all defs (O(n³) here) blows the ratio past ~16.
+    // rd time is the gated metric (rd_scaling_budget).
+    rdMaxFacts: 0, // measure the algorithm, not the cap
+    gen: (n) => {
+      let s = 'function f(c: number) {\n';
+      for (let i = 0; i < n; i++) s += `  let v${i} = ${i};\n`;
+      s += '  while (c > 0) {\n';
+      for (let i = 0; i < n; i++) s += `    if (c > ${i}) { v${i} = v${(i + 1) % n} + 1; }\n`;
+      return s + '    c = c - 1;\n  }\n  return v0;\n}\n';
+    },
+  },
+  {
+    name: 'fact-fanout',
+    // #2082 M2: N parallel case-arm defs of one variable + N later uses —
+    // facts are O(defs×uses) BY SPEC, so a linearity ratio gate is the wrong
+    // shape. The gate here is BOUNDEDNESS: with the production fact limit
+    // engaged, the materialized fact count stays FLAT (== limit) as N grows
+    // past it (facts_large_max), and rd time stays bounded. An unbounded
+    // materialization regression (losing the maxFacts early-stop) shows as
+    // facts_large exploding quadratically.
+    rdMaxFacts: DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+    gen: (n) => {
+      let s = 'function f(c: number) {\n  let x = 0;\n  switch (c) {\n';
+      for (let i = 0; i < n; i++) s += `    case ${i}: x = ${i}; break;\n`;
+      s += '  }\n';
+      for (let i = 0; i < n; i++) s += `  u${i}(x);\n`;
+      return s + '}\n';
+    },
+  },
 ];
 
 const SMALL = 500;
@@ -130,6 +171,7 @@ function measureCollect(src, file, reps) {
   }
   return {
     ms: median(samples),
+    cfgs: out.cfgs,
     blockCount: out.cfgs.reduce((a, c) => a + c.blocks.length, 0),
     // DISK growth: utf8 byte size of the serialized cfgSideChannel — exactly
     // what a --pdg run writes onto every ParsedFile shard in the durable store
@@ -138,6 +180,25 @@ function measureCollect(src, file, reps) {
     // CFG duplicates text and bloats warm-cache shards at scale.
     diskBytes: Buffer.byteLength(JSON.stringify(out.cfgs), 'utf8'),
   };
+}
+
+// ---- reaching-defs solve cost (#2082 M2) ----
+
+// Times computeReachingDefs over a scenario's collected CFGs (the exact work
+// the scope-resolution emit loop adds per file on a --pdg run). `maxFacts`
+// mirrors the per-scenario production posture: 0 (unlimited) measures the
+// algorithm; the production default exercises the boundedness contract.
+function measureReachingDefs(cfgs, reps, maxFacts) {
+  for (const c of cfgs) computeReachingDefs(c, { maxFacts }); // warm JIT
+  const samples = [];
+  let facts = 0;
+  for (let i = 0; i < reps; i++) {
+    const start = process.hrtime.bigint();
+    facts = 0;
+    for (const c of cfgs) facts += computeReachingDefs(c, { maxFacts }).facts.length;
+    samples.push(Number(process.hrtime.bigint() - start) / 1e6);
+  }
+  return { ms: median(samples), facts };
 }
 
 // ---- memory growth: retained heap of the cfgSideChannel payload ----
@@ -169,10 +230,17 @@ function retainedHeapBytes(src, file) {
 
 function canonicalizeCfg(cfg) {
   const blocks = cfg.blocks
-    .map((b) => `B|${b.index}|${b.startLine}-${b.endLine}|${b.kind}|${b.text}`)
+    .map(
+      (b) =>
+        `B|${b.index}|${b.startLine}-${b.endLine}|${b.kind}|${b.text}|` +
+        // #2082 M2: statement facts join the canon so harvest drift (lost
+        // defs/uses, changed binding resolution) trips the fingerprint gate.
+        JSON.stringify(b.statements ?? null),
+    )
     .sort();
   const edges = cfg.edges.map((e) => `E|${e.from}->${e.to}|${e.kind}`).sort();
-  return `${cfg.functionStartLine}:${cfg.functionStartColumn}\n${blocks.join('\n')}\n${edges.join('\n')}`;
+  const bindings = JSON.stringify(cfg.bindings ?? null);
+  return `${cfg.functionStartLine}:${cfg.functionStartColumn}\n${bindings}\n${blocks.join('\n')}\n${edges.join('\n')}`;
 }
 
 function fingerprint(scenario) {
@@ -205,6 +273,12 @@ function measureScenario(scenario) {
       ? heapLarge / heapSmall / sizeRatio
       : null;
 
+  // #2082 M2: reaching-defs solve cost over the same CFGs.
+  const rdMaxFacts = scenario.rdMaxFacts ?? 0;
+  const rdSmall = measureReachingDefs(small.cfgs, REPS, rdMaxFacts);
+  const rdLarge = measureReachingDefs(large.cfgs, REPS, rdMaxFacts);
+  const rdRatio = rdSmall.ms > 0 ? rdLarge.ms / rdSmall.ms / sizeRatio : 0;
+
   return {
     scenario: scenario.name,
     elapsed_ms_small: Number(small.ms.toFixed(3)),
@@ -218,6 +292,11 @@ function measureScenario(scenario) {
     heap_ratio: heapRatio === null ? null : Number(heapRatio.toFixed(3)),
     blocks_small: small.blockCount,
     blocks_large: large.blockCount,
+    rd_ms_small: Number(rdSmall.ms.toFixed(3)),
+    rd_ms_large: Number(rdLarge.ms.toFixed(3)),
+    rd_scaling_ratio: Number(rdRatio.toFixed(3)),
+    facts_small: rdSmall.facts,
+    facts_large: rdLarge.facts,
     ...fingerprint(scenario),
   };
 }
@@ -265,6 +344,27 @@ if (!CHECK) {
       failures.push(
         `${r.scenario}: cfgSideChannel disk-bytes ratio ${r.disk_bytes_ratio} >= budget ` +
           `${base.disk_bytes_budget} (bytes ${r.disk_bytes_small}->${r.disk_bytes_large})`,
+      );
+    }
+    // #2082 M2 gates — rd solve-time scaling, fact-count boundedness, and an
+    // ABSOLUTE side-channel size ceiling (a ratio gate is blind to a
+    // constant-factor encoding bloat like named records vs indexed facts).
+    if (base.rd_scaling_budget !== undefined && r.rd_scaling_ratio >= base.rd_scaling_budget) {
+      failures.push(
+        `${r.scenario}: reaching-defs scaling ratio ${r.rd_scaling_ratio} >= budget ` +
+          `${base.rd_scaling_budget} (ms ${r.rd_ms_small}->${r.rd_ms_large})`,
+      );
+    }
+    if (base.facts_large_max !== undefined && r.facts_large > base.facts_large_max) {
+      failures.push(
+        `${r.scenario}: fact materialization ${r.facts_large} > bound ${base.facts_large_max} ` +
+          `(the maxFacts early-stop is the boundedness contract)`,
+      );
+    }
+    if (base.disk_bytes_large_max !== undefined && r.disk_bytes_large > base.disk_bytes_large_max) {
+      failures.push(
+        `${r.scenario}: cfgSideChannel absolute size ${r.disk_bytes_large} > ceiling ` +
+          `${base.disk_bytes_large_max} bytes (constant-factor encoding bloat)`,
       );
     }
     // Heap gate only when measured (--expose-gc present) AND a budget exists.
