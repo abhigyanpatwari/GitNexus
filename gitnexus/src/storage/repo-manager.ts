@@ -12,6 +12,17 @@ import path from 'path';
 import os from 'os';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { logger } from '../core/logger.js';
+import {
+  branchSlug,
+  BRANCHES_DIR,
+  resolveBranchPlacement,
+  type BranchSummary,
+} from './branch-index.js';
+
+// Re-export the #2106 branch primitives (extracted to branch-index.ts, R10) so
+// existing `repo-manager` import sites and tests keep working unchanged.
+export { branchSlug, resolveBranchPlacement };
+export type { BranchSummary };
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -99,6 +110,23 @@ export interface RepoMeta {
     /** Number of files in the writable set, for diagnostic logs. */
     toWriteCount: number;
   };
+  /**
+   * Name of the git branch this index represents (#2106). Absent for the
+   * default/legacy single-branch case so the flat `meta.json` stays
+   * byte-identical to pre-multi-branch output. When present in the FLAT
+   * `meta.json`, it records which branch "owns" the flat slot (the first
+   * branch indexed); per-branch indexes under `branches/<slug>/` always carry
+   * their own `branch`.
+   */
+  branch?: string;
+  /**
+   * The parse-cache chunk keys this branch's index needs (#2106 R6). The
+   * parse-cache and durable parsedfile store live ONCE at the repo root and are
+   * shared across branches; recording each branch's live chunk keys lets the
+   * prune step union them so re-analyzing one branch doesn't evict another
+   * branch's still-live shards. Additive/optional; absent in legacy metas.
+   */
+  cacheKeys?: string[];
 }
 
 /**
@@ -126,6 +154,18 @@ export interface RegistryEntry {
   /** See {@link RepoMeta.remoteUrl}. Mirrored from meta at register time. */
   remoteUrl?: string;
   stats?: RepoMeta['stats'];
+  /**
+   * Branch name owning the flat/primary index (#2106). Mirrors the flat
+   * `meta.branch`. Absent for legacy single-branch entries and non-git repos —
+   * additive and backward compatible.
+   */
+  branch?: string;
+  /**
+   * Non-primary branch indexes for this same path (#2106). Absent when only the
+   * primary branch is indexed, preserving the one-entry-per-path model and the
+   * legacy registry shape.
+   */
+  branches?: BranchSummary[];
 }
 
 const GITNEXUS_DIR = '.gitnexus';
@@ -141,14 +181,21 @@ export const getStoragePath = (repoPath: string): string => {
 };
 
 /**
- * Get paths to key storage files
+ * Get paths to key storage files.
+ *
+ * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
+ * caches (`parse-cache/`, `parsedfile-store/`) live there and are shared
+ * across branches (#2106 KTD7). When `branch` is provided, only `lbugPath` and
+ * `metaPath` are scoped under `branches/<slug>/`; the flat call (no `branch`)
+ * returns byte-identical paths to the pre-multi-branch behavior.
  */
-export const getStoragePaths = (repoPath: string) => {
+export const getStoragePaths = (repoPath: string, branch?: string) => {
   const storagePath = getStoragePath(repoPath);
+  const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(storagePath, 'lbug'),
-    metaPath: path.join(storagePath, 'meta.json'),
+    lbugPath: path.join(baseDir, 'lbug'),
+    metaPath: path.join(baseDir, 'meta.json'),
   };
 };
 
@@ -399,7 +446,13 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  // Atomic tmp+rename (mirrors saveMeta): a crash mid-write can never leave a
+  // truncated/half-written registry.json that the next load would treat as
+  // empty and silently drop every registered repo (#2106 R9).
+  const target = getGlobalRegistryPath();
+  const tmp = `${target}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf-8');
+  await fs.rename(tmp, target);
 };
 
 /**
@@ -432,6 +485,14 @@ export interface RegisterRepoOptions {
    * re-run the full pipeline.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Non-primary branch this run indexed (#2106). When set, the branch's
+   * summary is upserted into the entry's `branches[]` and the primary
+   * top-level fields are left untouched. When `undefined`, this is a
+   * primary/flat run that refreshes the top-level fields (and preserves any
+   * existing branch summaries).
+   */
+  branch?: string;
 }
 
 /**
@@ -597,23 +658,87 @@ export const registerRepo = async (
     }
   }
 
-  const entry: RegistryEntry = {
-    name,
-    path: resolved,
-    storagePath,
-    indexedAt: meta.indexedAt,
-    lastCommit: meta.lastCommit,
-    remoteUrl: meta.remoteUrl,
-    stats: meta.stats,
-  };
+  // This run's branch summary (non-primary runs only); hoisted so the
+  // re-read-before-write merge below can re-apply it against a fresh snapshot.
+  const summary: BranchSummary | null = opts?.branch
+    ? {
+        branch: opts.branch,
+        indexedAt: meta.indexedAt,
+        lastCommit: meta.lastCommit,
+        stats: meta.stats,
+      }
+    : null;
 
-  if (existingIdx >= 0) {
-    entries[existingIdx] = entry;
+  let entry: RegistryEntry;
+  if (summary) {
+    // Non-primary branch run (#2106): keep the primary's top-level fields and
+    // upsert this branch into branches[]. One entry per path is preserved.
+    // When the registry entry is missing (lost/rebuilt registry.json), rebuild
+    // the primary top-level from the FLAT meta.json rather than this branch's
+    // meta, so `--branch <primary>` can still resolve (#2106 review).
+    const flatMeta = existing ? null : await loadMeta(storagePath);
+    const base: RegistryEntry = existing ?? {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: flatMeta?.indexedAt ?? meta.indexedAt,
+      lastCommit: flatMeta?.lastCommit ?? meta.lastCommit,
+      remoteUrl: flatMeta?.remoteUrl ?? meta.remoteUrl,
+      stats: flatMeta?.stats ?? meta.stats,
+      ...(flatMeta?.branch ? { branch: flatMeta.branch } : {}),
+    };
+    const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
+    branches.push(summary);
+    entry = { ...base, name, branches };
   } else {
-    entries.push(entry);
+    // Primary/flat run: refresh top-level fields, preserve any branch summaries
+    // already recorded for this path so a primary re-analyze does not drop them.
+    entry = {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      remoteUrl: meta.remoteUrl,
+      stats: meta.stats,
+      ...(meta.branch ? { branch: meta.branch } : {}),
+      ...(existing?.branches ? { branches: existing.branches } : {}),
+    };
   }
 
-  await writeRegistry(entries);
+  // Re-read immediately before writing to narrow the lost-update window (#2106
+  // R9): re-derive THIS run's delta against the FRESHEST snapshot so a
+  // concurrent change to the OTHER axis (a branch upsert vs a primary refresh)
+  // survives instead of being clobbered by a stale entry-time view.
+  const fresh = await readRegistry();
+  const freshIdx = fresh.findIndex((e) => {
+    const a = canonicalizePath(e.path);
+    return process.platform === 'win32'
+      ? a.toLowerCase() === canonicalInput.toLowerCase()
+      : a === canonicalInput;
+  });
+  const freshExisting = freshIdx >= 0 ? fresh[freshIdx] : null;
+  let merged: RegistryEntry;
+  if (summary) {
+    // Branch run: keep the FRESH top-level + branches, just upsert our summary.
+    const base = freshExisting ?? entry;
+    const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
+    branches.push(summary);
+    merged = { ...base, name, branches };
+  } else {
+    // Primary run: apply our refreshed top-level, but defer to the FRESH
+    // branches[] (a concurrent branch upsert or `clean --branch` wins).
+    merged = { ...entry };
+    if (freshExisting?.branches) merged.branches = freshExisting.branches;
+    else delete merged.branches;
+  }
+  if (freshIdx >= 0) {
+    fresh[freshIdx] = merged;
+  } else {
+    fresh.push(merged);
+  }
+
+  await writeRegistry(fresh);
   return name;
 };
 
@@ -633,6 +758,33 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
     process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
   await writeRegistry(filtered);
+};
+
+/**
+ * Remove a single non-primary branch's summary from a repo's registry entry
+ * (#2106 R7). Called by `gitnexus clean --branch`. Returns `true` when a
+ * matching `branches[]` summary was found and removed; `false` otherwise (so
+ * the CLI can report "no such indexed branch" without crashing). The top-level
+ * primary entry is left intact; an empty `branches[]` is dropped to keep the
+ * registry shape legacy-clean.
+ */
+export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> => {
+  const resolved = canonicalizePath(repoPath);
+  const matches = (a: string, b: string) =>
+    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const entries = await readRegistry();
+  const idx = entries.findIndex((e) => matches(canonicalizePath(e.path), resolved));
+  if (idx < 0) return false;
+  const entry = entries[idx];
+  const before = entry.branches?.length ?? 0;
+  if (!entry.branches || before === 0) return false;
+  const remaining = entry.branches.filter((b) => b.branch !== branch);
+  if (remaining.length === before) return false; // branch not recorded
+  if (remaining.length > 0) entry.branches = remaining;
+  else delete entry.branches;
+  entries[idx] = entry;
+  await writeRegistry(entries);
+  return true;
 };
 
 /**

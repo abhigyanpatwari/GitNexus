@@ -33,8 +33,11 @@ import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
   canonicalizePath,
+  getStoragePaths,
+  loadMeta,
   RegistryAmbiguousTargetError,
   type RegistryEntry,
+  type BranchSummary,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
@@ -247,6 +250,10 @@ interface RepoHandle {
   lastCommit: string;
   remoteUrl?: string;
   stats?: RegistryEntry['stats'];
+  /** Primary/flat branch name, when known (#2106). */
+  branch?: string;
+  /** Non-primary branch indexes available for this repo (#2106). */
+  branches?: BranchSummary[];
 }
 
 /** Resolve symlinks for path comparison; falls back to path.resolve on error.
@@ -368,6 +375,10 @@ export interface RepoListing {
   stats?: any;
   staleness?: { commitsBehind: number; hint?: string };
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
+  /** Primary/flat branch name, when known (#2106). */
+  branch?: string;
+  /** Non-primary branch indexes available for this repo (#2106). */
+  branches?: Array<Omit<BranchSummary, 'stats'>>;
 }
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
@@ -438,6 +449,12 @@ export class LocalBackend {
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  // Last meta.indexedAt observed for an open pool, keyed by lbugPath. Keyed by
+  // pool (not stored on the handle) because branch handles are produced fresh
+  // by applyBranchScope on every resolveRepo call, so mutating the handle would
+  // not persist across calls and the staleness check would reinit forever
+  // (#2106).
+  private lastObservedIndexedAt: Map<string, string> = new Map();
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -547,6 +564,8 @@ export class LocalBackend {
         lastCommit: entry.lastCommit,
         remoteUrl: entry.remoteUrl,
         stats: entry.stats,
+        branch: entry.branch,
+        branches: entry.branches,
       };
 
       nextRepos.set(id, handle);
@@ -572,12 +591,30 @@ export class LocalBackend {
     // the resolve→query wrong-clone window for good (#2067). Only a path that
     // dropped out of the registry must release its pooled connection + state.
     const liveLbugPaths = new Set([...nextRepos.values()].map((h) => h.lbugPath));
-    for (const prev of this.repos.values()) {
-      if (liveLbugPaths.has(prev.lbugPath)) continue;
-      this.initializedRepos.delete(prev.lbugPath);
-      this.lastStalenessCheck.delete(prev.lbugPath);
-      this.reinitPromises.delete(prev.lbugPath);
-      closeLbug(prev.lbugPath).catch(() => {});
+    // Branch pools (opened on demand by applyBranchScope) are NOT in this.repos
+    // — branch handles are minted fresh and discarded — so add every registered
+    // branch's lbugPath to the live set. Pure string work over the already-in-
+    // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
+    for (const entry of entries) {
+      for (const b of entry.branches ?? []) {
+        liveLbugPaths.add(getStoragePaths(entry.path, b.branch).lbugPath);
+      }
+    }
+    // initializedRepos is the authoritative set of OPENED pool keys (flat AND
+    // branch); union it with the previously-known flat handles so an orphaned
+    // branch pool (e.g. after `clean --branch` removes its summary) is closed
+    // and forgotten too, not just flat handles.
+    const knownKeys = new Set<string>([
+      ...[...this.repos.values()].map((h) => h.lbugPath),
+      ...this.initializedRepos,
+    ]);
+    for (const key of knownKeys) {
+      if (liveLbugPaths.has(key)) continue;
+      this.initializedRepos.delete(key);
+      this.lastStalenessCheck.delete(key);
+      this.lastObservedIndexedAt.delete(key);
+      this.reinitPromises.delete(key);
+      closeLbug(key).catch(() => {});
     }
 
     this.repos = nextRepos;
@@ -658,7 +695,7 @@ export class LocalBackend {
    * On a miss, re-reads the registry once in case a new repo was indexed
    * while the MCP server was running.
    */
-  async resolveRepo(repoParam?: string): Promise<RepoHandle> {
+  async resolveRepo(repoParam?: string, branch?: string): Promise<RepoHandle> {
     let refreshedAfterAmbiguity = false;
     let result: RepoHandle | null;
     try {
@@ -682,7 +719,7 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return result;
+      return this.applyBranchScope(result, branch);
     }
 
     // Miss — refresh registry and try once more (skip if already refreshed above)
@@ -692,7 +729,7 @@ export class LocalBackend {
     const retried = this.resolveRepoFromCache(repoParam);
     if (retried) {
       this.maybeWarnSiblingDrift(retried).catch(() => {});
-      return retried;
+      return this.applyBranchScope(retried, branch);
     }
 
     // Still no match — throw with helpful message
@@ -718,6 +755,51 @@ export class LocalBackend {
     }
     throw new Error(
       `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${labels.join(', ')}`,
+    );
+  }
+
+  /**
+   * Re-point a resolved repo handle at a specific branch index (#2106).
+   *
+   * - No `branch` (default) → the primary/flat handle, unchanged (backward
+   *   compatible: every existing caller passes no branch).
+   * - `branch` equal to the known primary → the flat handle.
+   * - `branch` matching an indexed non-primary branch → a handle whose
+   *   `lbugPath` points at `branches/<slug>/lbug`; the connection pool keys by
+   *   `lbugPath`, so this is the only change needed to scope every tool.
+   * - `branch` that was never indexed → a clear error (never a silently-empty
+   *   result against the wrong DB).
+   */
+  private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
+    if (!branch) return handle;
+    if (handle.branch && handle.branch === branch) return handle;
+    const summary = handle.branches?.find((b) => b.branch === branch);
+    if (summary) {
+      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+      return {
+        ...handle,
+        lbugPath,
+        indexedAt: summary.indexedAt,
+        lastCommit: summary.lastCommit,
+        stats: summary.stats,
+      };
+    }
+    // Legacy entry (pre-#2106): the registry has no recorded primary `branch`,
+    // so a `--branch <primary>` request misses the checks above. Read the flat
+    // meta.json (next to the flat handle's lbug) to learn the primary and serve
+    // the flat handle only when it actually matches — never serve flat for an
+    // arbitrary unindexed branch (#2106 R4).
+    if (!handle.branch) {
+      const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+      if (flatMeta?.branch && flatMeta.branch === branch) return handle;
+    }
+    const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
+      Boolean,
+    );
+    const available = indexed.length > 0 ? indexed.join(', ') : '(primary only)';
+    throw new Error(
+      `Branch "${branch}" is not indexed for "${handle.name}". ` +
+        `Indexed branches: ${available}. Run: gitnexus analyze --branch ${branch}`,
     );
   }
 
@@ -854,10 +936,19 @@ export class LocalBackend {
 
       this.lastStalenessCheck.set(poolKey, now);
       try {
-        const metaPath = path.join(repo.storagePath, 'meta.json');
+        // Read the meta.json that sits next to THIS handle's lbug. For the
+        // flat/primary handle this is `<storagePath>/meta.json` (unchanged);
+        // for a branch handle it is `<storagePath>/branches/<slug>/meta.json`.
+        // Reading the flat meta for a branch handle would compare the branch
+        // index's indexedAt against the primary's and thrash the pool (#2106).
+        const metaPath = path.join(path.dirname(repo.lbugPath), 'meta.json');
         const metaRaw = await fs.readFile(metaPath, 'utf-8');
         const meta = JSON.parse(metaRaw);
-        if (meta.indexedAt && meta.indexedAt !== repo.indexedAt) {
+        // Compare against the last indexedAt OBSERVED for this pool (keyed by
+        // lbugPath), not the handle's — branch handles are fresh spreads so a
+        // handle mutation would not persist and would reinit on every check.
+        const observed = this.lastObservedIndexedAt.get(poolKey) ?? repo.indexedAt;
+        if (meta.indexedAt && meta.indexedAt !== observed) {
           // Index was rebuilt — close stale connection and re-init.
           // Wrap in reinitPromises to prevent TOCTOU race where concurrent
           // callers both detect staleness and double-close the pool.
@@ -865,7 +956,7 @@ export class LocalBackend {
             try {
               await closeLbug(poolKey);
               this.initializedRepos.delete(poolKey);
-              repo.indexedAt = meta.indexedAt;
+              this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
               await initLbug(poolKey, repo.lbugPath);
               this.initializedRepos.add(poolKey);
             } finally {
@@ -885,6 +976,7 @@ export class LocalBackend {
     try {
       await initLbug(poolKey, repo.lbugPath);
       this.initializedRepos.add(poolKey);
+      this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);
@@ -968,6 +1060,15 @@ export class LocalBackend {
                 name: s.name,
                 path: s.repoPath,
                 lastCommit: s.lastCommit,
+              }))
+            : undefined,
+        branch: h.branch,
+        branches:
+          h.branches && h.branches.length > 0
+            ? h.branches.map((b) => ({
+                branch: b.branch,
+                indexedAt: b.indexedAt,
+                lastCommit: b.lastCommit,
               }))
             : undefined,
       };
@@ -1106,8 +1207,10 @@ export class LocalBackend {
       return this.callToolAtGroupRepo(method, p);
     }
 
-    // Resolve repo from optional param (re-reads registry on miss)
-    const repo = await this.resolveRepo((params as { repo?: string } | undefined)?.repo);
+    // Resolve repo from optional param (re-reads registry on miss). An optional
+    // `branch` param scopes the resolved handle to that branch's index (#2106).
+    const repoParams = params as { repo?: string; branch?: string } | undefined;
+    const repo = await this.resolveRepo(repoParams?.repo, repoParams?.branch);
 
     switch (method) {
       case 'query':

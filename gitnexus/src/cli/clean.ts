@@ -13,6 +13,8 @@ import {
   unregisterRepo,
   listRegisteredRepos,
   assertSafeStoragePath,
+  getStoragePaths,
+  removeBranchIndex,
   UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
 import {
@@ -26,7 +28,50 @@ export const cleanCommand = async (options?: {
   force?: boolean;
   all?: boolean;
   lbugSidecars?: boolean;
+  branch?: string;
 }) => {
+  // --branch <name>: remove a single non-primary branch's index (#2106 R7).
+  // Resolve against the RECORDED branches[] summary (never by slugging the
+  // user's raw input, which can disagree with the index-time-sanitized label).
+  if (options?.branch) {
+    const cwd = process.cwd();
+    const repo = await findRepo(cwd);
+    if (!repo) {
+      console.log(t('clean.notFoundHere'));
+      return;
+    }
+    const entries = await listRegisteredRepos();
+    const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo.repoPath));
+    const summary = entry?.branches?.find((b) => b.branch === options.branch);
+    if (!summary) {
+      console.log(t('clean.branchNotIndexed', { branch: options.branch }));
+      return;
+    }
+    const { storagePath, lbugPath } = getStoragePaths(repo.repoPath, summary.branch);
+    const branchDir = path.dirname(lbugPath);
+    // Safety guard: the target MUST live under <repo>/.gitnexus/branches/.
+    // assertSafeStoragePath only validates the flat `<repo>/.gitnexus`, so this
+    // is a dedicated branches-sub-dir check before any destructive fs.rm.
+    const branchesRoot = path.join(storagePath, 'branches') + path.sep;
+    if (!branchDir.startsWith(branchesRoot)) {
+      logger.error(`Refusing to clean branch index outside .gitnexus/branches: ${branchDir}`);
+      return;
+    }
+    if (!options.force) {
+      console.log(t('clean.deleteBranch', { branch: summary.branch, path: branchDir }));
+      console.log(`\n${t('common.runForceConfirm')}`);
+      return;
+    }
+    try {
+      await fs.rm(branchDir, { recursive: true, force: true });
+      await removeBranchIndex(repo.repoPath, summary.branch);
+      console.log(t('clean.deletedBranch', { branch: summary.branch }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to delete branch index:');
+    }
+    return;
+  }
+
   if (options?.lbugSidecars) {
     const cwd = process.cwd();
     const repo = await findRepo(cwd);
