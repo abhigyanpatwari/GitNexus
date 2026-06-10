@@ -4,15 +4,17 @@
  * The scope-resolution registry (`scope-resolution/pipeline/registry.ts`) and
  * the language-provider index statically import all 16 language providers. Each
  * per-language `query.ts` used to do a top-level `import X from 'tree-sitter-Y'`.
- * For the OPTIONAL grammars (swift/dart/kotlin) that import resolved — and on a
- * default install where the vendored/optional binding is absent, THREW
- * `ERR_MODULE_NOT_FOUND` — at module-load on the main thread, before any runtime
- * gate, crashing `gitnexus analyze` regardless of the repo's actual languages.
+ * For the prebuild-only / optional grammars (swift/dart/kotlin, and — since
+ * #2116 — vendored-prebuild-only C) that import resolved — and on a default
+ * install where the binding is absent, THREW `ERR_MODULE_NOT_FOUND` — at
+ * module-load on the main thread, before any runtime gate, crashing
+ * `gitnexus analyze` regardless of the repo's actual languages.
  *
- * The fix routes those three `query.ts` modules through the lazy, guarded
+ * The fix routes those `query.ts` modules through the lazy, guarded
  * `parser-loader.getLanguageGrammar()` so the grammar binding is only required
  * at first use (inside the worker, for a file of that language) — never at
- * module-load.
+ * module-load. (C joined this set when it became vendored prebuild-only; it used
+ * to be an always-present npm dependency.)
  *
  * This test locks the fix in WITHOUT needing to simulate a missing grammar:
  * spawn a child Node process, import the built scope-resolution `registry.js`
@@ -57,10 +59,13 @@ const PROBE = `
   process.stdout.write(JSON.stringify([...after].filter((k) => !before.has(k))));
 `;
 
-const OPTIONAL_GRAMMAR_RE = /tree-sitter-(swift|dart|kotlin)[\\/]/;
+// `tree-sitter-c[\\/]` matches only the exact `tree-sitter-c/` package — NOT
+// `tree-sitter-cpp/` or `tree-sitter-c-sharp/` (those need a non-separator after
+// the `c`), so the required C++/C# eager loads are unaffected.
+const OPTIONAL_GRAMMAR_RE = /tree-sitter-(swift|dart|kotlin|c)[\\/]/;
 
-describe('optional-grammar static-import closure (#2091/#2093)', () => {
-  it('importing the scope-resolution registry loads NO optional grammar binding', () => {
+describe('optional-grammar static-import closure (#2091/#2093, #2116)', () => {
+  it('importing the scope-resolution registry loads NO lazy grammar binding (swift/dart/kotlin/c)', () => {
     if (!fs.existsSync(DIST_REGISTRY)) {
       throw new Error(
         `${DIST_REGISTRY} missing — run \`npm run build\` first (or \`npm run test:integration\`, ` +
@@ -117,13 +122,13 @@ describe('optional-grammar static-import closure (#2091/#2093)', () => {
         `Newly-loaded (${newlyLoaded.length}):\n${newlyLoaded.join('\n')}`,
     ).toBeGreaterThan(0);
 
-    // Headline assertion: no OPTIONAL grammar binding (swift/dart/kotlin) is
+    // Headline assertion: no lazy grammar binding (swift/dart/kotlin/c) is
     // loaded at registry static-import time — they must load lazily.
     const optionalLoaded = newlyLoaded.filter((p) => OPTIONAL_GRAMMAR_RE.test(p));
     expect(
       optionalLoaded,
-      `Optional tree-sitter grammar binding(s) loaded at registry static-import time. ` +
-        `query.ts must load swift/dart/kotlin lazily via parser-loader, not via a ` +
+      `Lazy tree-sitter grammar binding(s) loaded at registry static-import time. ` +
+        `query.ts must load swift/dart/kotlin/c lazily via parser-loader, not via a ` +
         `top-level \`import\`. Offending paths:\n${optionalLoaded.join('\n')}`,
     ).toEqual([]);
   });

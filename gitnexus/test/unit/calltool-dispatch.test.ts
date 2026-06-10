@@ -85,7 +85,11 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend, REPO_ID_HASH_LENGTH } from '../../src/mcp/local/local-backend.js';
+import {
+  LocalBackend,
+  REPO_ID_HASH_LENGTH,
+  parseListReposPagination,
+} from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -276,9 +280,18 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('routes list_repos without needing repo param', async () => {
+    // No-arg compatibility: callTool('list_repos', {}) returns the first page as
+    // a { repositories, pagination } object (Strategy A — always paginated, #2119).
     const result = await backend.callTool('list_repos', {});
-    expect(Array.isArray(result)).toBe(true);
-    expect(result[0].name).toBe('test-project');
+    expect(Array.isArray(result.repositories)).toBe(true);
+    expect(result.repositories[0].name).toBe('test-project');
+    expect(result.pagination).toEqual({
+      total: 1,
+      limit: 50,
+      offset: 0,
+      returned: 1,
+      hasMore: false,
+    });
   });
 
   it('throws for unknown tool name', async () => {
@@ -1165,7 +1178,7 @@ describe('LocalBackend.resolveRepo', () => {
   it('resolves single repo without param', async () => {
     setupSingleRepo();
     await backend.init();
-    const result = await backend.callTool('list_repos', {});
+    const result = await backend.listRepos();
     expect(result).toHaveLength(1);
   });
 
@@ -1383,6 +1396,25 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     }
   });
 
+  it('serves all sibling clones through the list_repos tool with siblings/remoteUrl intact (#2054, #2119)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    // Exercise the real TOOL surface (callTool → listReposPage), not just
+    // listRepos(): the paginated wrapper must not drop sibling-clone fields
+    // during its sort + slice.
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(4);
+    expect(page.pagination.total).toBe(4);
+    const paths = page.repositories.map((r: any) => path.resolve(r.path)).sort();
+    expect(paths).toEqual(dirs.map((d) => path.resolve(d)).sort());
+    for (const entry of page.repositories) {
+      expect(entry.remoteUrl).toBe('git@github.com:MYCOMPANY/REPO.git');
+      expect(entry.siblings).toHaveLength(3);
+    }
+  });
+
   it('lists all four sibling clones that share a name and remote (#2054)', async () => {
     const { dirs, entries } = makeSiblingClonesFixture(4);
     (listRegisteredRepos as any).mockResolvedValue(entries);
@@ -1394,7 +1426,7 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
 
     expect(await backend.init()).toBe(true);
 
-    const listed = await backend.callTool('list_repos', {});
+    const listed = await backend.listRepos();
     expect(listed).toHaveLength(4);
 
     // Every distinct on-disk clone survives exactly once — no silent overwrite.
@@ -1416,7 +1448,7 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     }
 
     // Re-running list_repos (which re-reads the registry) is idempotent.
-    const again = await backend.callTool('list_repos', {});
+    const again = await backend.listRepos();
     expect(again).toHaveLength(4);
   });
 
@@ -1474,7 +1506,7 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
   it('refresh stability: reorder, remove-one, and re-add never drop a different clone (#2054)', async () => {
     const { dirs, entries } = makeSiblingClonesFixture(4);
     const listedPaths = async () =>
-      (await backend.callTool('list_repos', {})).map((r: any) => path.resolve(r.path)).sort();
+      (await backend.listRepos()).map((r: any) => path.resolve(r.path)).sort();
     const allPaths = dirs.map((d) => path.resolve(d)).sort();
 
     (listRegisteredRepos as any).mockResolvedValue(entries);
@@ -1627,7 +1659,7 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     (listRegisteredRepos as any).mockResolvedValue(entries);
     await backend.init();
 
-    const listed = await backend.callTool('list_repos', {});
+    const listed = await backend.listRepos();
     expect(listed).toHaveLength(6);
 
     // All six ids are distinct (clones 3–6 exercise the sha256 fallback tier).
@@ -1643,7 +1675,7 @@ describe('LocalBackend repo-id collisions (#2054)', () => {
     (listRegisteredRepos as any).mockResolvedValue(noRemote);
     await backend.init();
 
-    const listed = await backend.callTool('list_repos', {});
+    const listed = await backend.listRepos();
     expect(listed).toHaveLength(2); // both present, not collapsed
     for (const e of listed) {
       expect(e.remoteUrl).toBeUndefined();
@@ -1782,14 +1814,14 @@ describe('LocalBackend.listRepos', () => {
   it('returns empty array when no repos', async () => {
     setupNoRepos();
     await backend.init();
-    const repos = await backend.callTool('list_repos', {});
+    const repos = await backend.listRepos();
     expect(repos).toEqual([]);
   });
 
   it('returns repo metadata', async () => {
     setupSingleRepo();
     await backend.init();
-    const repos = await backend.callTool('list_repos', {});
+    const repos = await backend.listRepos();
     expect(repos).toHaveLength(1);
     expect(repos[0]).toEqual(
       expect.objectContaining({
@@ -1804,10 +1836,269 @@ describe('LocalBackend.listRepos', () => {
   it('re-reads registry on each listRepos call', async () => {
     setupSingleRepo();
     await backend.init();
-    await backend.callTool('list_repos', {});
-    await backend.callTool('list_repos', {});
+    await backend.listRepos();
+    await backend.listRepos();
     // listRegisteredRepos called: once in init, once per listRepos
     expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ─── list_repos pagination (#2119) ─────────────────────────────────────
+
+describe('parseListReposPagination', () => {
+  const opts = { defaultLimit: 50, maxLimit: 200 };
+
+  it('applies defaults when nothing is supplied', () => {
+    expect(parseListReposPagination(undefined, opts)).toEqual({ limit: 50, offset: 0 });
+    expect(parseListReposPagination({}, opts)).toEqual({ limit: 50, offset: 0 });
+  });
+
+  it('accepts valid integer limit/offset', () => {
+    expect(parseListReposPagination({ limit: 10, offset: 20 }, opts)).toEqual({
+      limit: 10,
+      offset: 20,
+    });
+  });
+
+  it('rejects a limit above the maximum (does not silently clamp)', () => {
+    expect(() => parseListReposPagination({ limit: 201 }, opts)).toThrow(/limit/);
+    expect(() => parseListReposPagination({ limit: 99999 }, opts)).toThrow(/limit/);
+  });
+
+  it('accepts a valid in-range limit, including the boundary', () => {
+    expect(parseListReposPagination({ limit: 200 }, opts).limit).toBe(200);
+    expect(parseListReposPagination({ limit: 199 }, opts).limit).toBe(199);
+  });
+
+  it('rejects malformed limit values', () => {
+    for (const bad of [0, -5, 1.5, NaN, Infinity, '5', null, true, {}]) {
+      expect(() => parseListReposPagination({ limit: bad as any }, opts)).toThrow(/limit/);
+    }
+  });
+
+  it('rejects malformed offset values', () => {
+    for (const bad of [-1, 2.5, NaN, Infinity, '0', null, false]) {
+      expect(() => parseListReposPagination({ offset: bad as any }, opts)).toThrow(/offset/);
+    }
+  });
+});
+
+describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', () => {
+  let backend: LocalBackend;
+
+  // Build N registry entries with unique, lexically-ordered names + paths and
+  // no remoteUrl (so no sibling grouping). Zero-padding makes lexical order
+  // equal numeric order, so page boundaries are predictable.
+  const id = (i: number) => `repo-${String(i).padStart(4, '0')}`;
+  const makeRepoEntries = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      ...MOCK_REPO_ENTRY,
+      name: id(i),
+      path: `/tmp/repos/${id(i)}`,
+      storagePath: `/tmp/repos/${id(i)}/.gitnexus`,
+    }));
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    backend = new LocalBackend();
+  });
+
+  it('default page caps a large registry and reports continuation metadata', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(50);
+    expect(page.pagination).toEqual({
+      total: 437,
+      limit: 50,
+      offset: 0,
+      returned: 50,
+      hasMore: true,
+      nextOffset: 50,
+    });
+    // First page starts at the first repo in deterministic order.
+    expect(page.repositories[0].name).toBe(id(0));
+  });
+
+  it('limit controls the page size', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 100 });
+    expect(page.repositories).toHaveLength(100);
+    expect(page.pagination.limit).toBe(100);
+    expect(page.pagination.nextOffset).toBe(100);
+  });
+
+  it('offset selects a middle page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 50, offset: 50 });
+    expect(page.repositories[0].name).toBe(id(50));
+    expect(page.repositories[49].name).toBe(id(99));
+    // Assert total + limit too (a total miscalculation at non-zero offset would
+    // otherwise slip past this targeted middle-page test).
+    expect(page.pagination).toEqual({
+      total: 437,
+      limit: 50,
+      offset: 50,
+      returned: 50,
+      hasMore: true,
+      nextOffset: 100,
+    });
+  });
+
+  it('returns the final partial page with hasMore=false and no nextOffset', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 50, offset: 400 });
+    expect(page.repositories).toHaveLength(37); // 437 - 400
+    expect(page.pagination.returned).toBe(37);
+    expect(page.pagination.hasMore).toBe(false);
+    expect(page.pagination).not.toHaveProperty('nextOffset');
+  });
+
+  it('limit larger than the remaining count returns only the remaining entries', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 200, offset: 400 });
+    expect(page.repositories).toHaveLength(37);
+    expect(page.pagination.hasMore).toBe(false);
+  });
+
+  it('offset equal to total returns an empty page (total preserved)', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: 437 });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({ total: 437, returned: 0, hasMore: false });
+    expect(page.pagination).not.toHaveProperty('nextOffset');
+  });
+
+  it('offset beyond total returns an empty page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: 1000 });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({
+      total: 437,
+      offset: 1000,
+      returned: 0,
+      hasMore: false,
+    });
+  });
+
+  it('accepts a negative-zero offset (treated as the first page)', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 5, offset: -0 });
+    expect(page.repositories[0].name).toBe(id(0));
+    expect(page.pagination.returned).toBe(5);
+    // -0 is accepted (not rejected) and behaves as offset 0 (=== treats them equal).
+    expect(page.pagination.offset === 0).toBe(true);
+  });
+
+  it('accepts a MAX_SAFE_INTEGER offset and returns an empty page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: Number.MAX_SAFE_INTEGER });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({ total: 437, returned: 0, hasMore: false });
+    expect(page.pagination).not.toHaveProperty('nextOffset');
+  });
+
+  it('returns the full set with metadata when everything fits on one page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(3));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(3);
+    expect(page.pagination).toEqual({
+      total: 3,
+      limit: 50,
+      offset: 0,
+      returned: 3,
+      hasMore: false,
+    });
+  });
+
+  it('rejects a limit above the maximum through the real callTool path', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    await expect(backend.callTool('list_repos', { limit: 99999 })).rejects.toThrow(/limit/);
+    // A request at the documented maximum is still accepted.
+    const page = await backend.callTool('list_repos', { limit: 200 });
+    expect(page.repositories).toHaveLength(200);
+    expect(page.pagination.limit).toBe(200);
+    expect(page.pagination.hasMore).toBe(true);
+  });
+
+  it('rejects malformed limit/offset through the real callTool path', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(3));
+    await backend.init();
+
+    await expect(backend.callTool('list_repos', { limit: 0 })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { limit: -5 })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { limit: 1.5 })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { limit: 'all' as any })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { offset: -1 })).rejects.toThrow(/offset/);
+    await expect(backend.callTool('list_repos', { offset: 2.5 })).rejects.toThrow(/offset/);
+  });
+
+  it('traverses every repository exactly once across pages (the #2119 guarantee)', async () => {
+    const entries = makeRepoEntries(437);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    const collected: string[] = [];
+    let offset = 0;
+    const limit = 50;
+    // Hard cap iterations to avoid an infinite loop if hasMore were ever wrong.
+    for (let guard = 0; guard < 100; guard++) {
+      const page = await backend.callTool('list_repos', { limit, offset });
+      collected.push(...page.repositories.map((r: any) => r.path));
+      expect(page.pagination.total).toBe(437);
+      if (!page.pagination.hasMore) break;
+      offset = page.pagination.nextOffset;
+    }
+
+    expect(collected).toHaveLength(437);
+    expect(new Set(collected).size).toBe(437); // no duplicates
+    expect(new Set(collected)).toEqual(new Set(entries.map((e) => e.path))); // exact set
+  });
+
+  it('orders pages deterministically by name then path, stable across calls', async () => {
+    // Scrambled input order; two entries deliberately SHARE a name (collision)
+    // and must be tie-broken by path, never collapsed.
+    const entries = [
+      { ...MOCK_REPO_ENTRY, name: 'zeta', path: '/tmp/z', storagePath: '/tmp/z/.gitnexus' },
+      { ...MOCK_REPO_ENTRY, name: 'shared', path: '/tmp/b', storagePath: '/tmp/b/.gitnexus' },
+      { ...MOCK_REPO_ENTRY, name: 'Alpha', path: '/tmp/a', storagePath: '/tmp/a/.gitnexus' },
+      { ...MOCK_REPO_ENTRY, name: 'shared', path: '/tmp/a2', storagePath: '/tmp/a2/.gitnexus' },
+    ];
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    const first = await backend.callTool('list_repos', {});
+    const order = first.repositories.map((r: any) => `${r.name}@${r.path}`);
+    // lower-cased name primary (Alpha < shared < zeta), path tie-break for the
+    // two "shared" entries (/tmp/a2 < /tmp/b).
+    expect(order).toEqual(['Alpha@/tmp/a', 'shared@/tmp/a2', 'shared@/tmp/b', 'zeta@/tmp/z']);
+    expect(first.repositories).toHaveLength(4); // collision not collapsed
+
+    // Re-listing yields identical page boundaries.
+    const second = await backend.callTool('list_repos', {});
+    expect(second.repositories.map((r: any) => `${r.name}@${r.path}`)).toEqual(order);
   });
 });
 

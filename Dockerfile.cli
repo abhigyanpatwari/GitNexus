@@ -36,6 +36,17 @@ RUN npm ci --prefix gitnexus
 # Drop dev dependencies for a smaller runtime layer.
 RUN npm prune --omit=dev --prefix gitnexus
 
+# `npm prune` removes anything not in package.json's dependency tree — which
+# includes the VENDORED tree-sitter grammars (materialized into node_modules/ by
+# postinstall, but not declared as deps) and their freshly-built native bindings.
+# The `serve` image analyzes/parses uploaded repos at runtime, so those grammars
+# must survive into the runtime layer. Re-run the grammar postinstall here in the
+# builder (which still has python3/make/g++ and the hoisted node-addon-api /
+# node-gyp-build) to re-materialize + rebuild them after the prune. This is
+# load-bearing for tree-sitter-c (a core, REQUIRED grammar now vendored, #2116):
+# as a former `dependency` it used to survive prune; vendored, it would not.
+RUN npm run postinstall --prefix gitnexus
+
 # -- Runtime -----------------------------------------------------------
 # node:22-bookworm-slim
 FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS runtime

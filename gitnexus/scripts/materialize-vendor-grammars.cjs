@@ -13,14 +13,28 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const VENDORED_GRAMMARS = ['tree-sitter-dart', 'tree-sitter-proto', 'tree-sitter-swift'];
+// tree-sitter-c is a REQUIRED grammar that we vendor prebuild-only purely to
+// close upstream's ARM prebuild gap (#2116) — it needs no toolchain and is not a
+// language the user opts out of, so it is always materialized, even under
+// GITNEXUS_SKIP_OPTIONAL_GRAMMARS. The rest are optional (user-skippable, and
+// Dart/Proto compile from source) and honor the skip flag.
+const REQUIRED_VENDORED = ['tree-sitter-c'];
+const OPTIONAL_VENDORED = [
+  'tree-sitter-dart',
+  'tree-sitter-proto',
+  'tree-sitter-swift',
+  'tree-sitter-kotlin',
+];
 
-if (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1') {
+const skipOptional = process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1';
+if (skipOptional) {
   console.warn(
-    '[gitnexus] Skipping vendored grammar materialize (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1). Dart/Proto/Swift parsing will be unavailable.',
+    '[gitnexus] GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1: skipping optional Dart/Proto/Swift/Kotlin materialize (required C is still materialized).',
   );
-  process.exit(0);
 }
+const VENDORED_GRAMMARS = skipOptional
+  ? REQUIRED_VENDORED
+  : [...REQUIRED_VENDORED, ...OPTIONAL_VENDORED];
 
 for (const name of VENDORED_GRAMMARS) {
   const src = path.join(ROOT, 'vendor', name);
@@ -49,13 +63,22 @@ for (const name of VENDORED_GRAMMARS) {
       fs.renameSync(partial, dest);
     } catch (renameErr) {
       // Best-effort rollback: restore the previous dest from backup.
+      let restored = false;
       if (fs.existsSync(backup)) {
         try {
           fs.renameSync(backup, dest);
+          restored = true;
         } catch {
-          // If rollback also fails, the prior backup directory still exists on
-          // disk — the catch block below surfaces both errors via the warning.
+          // Rollback also failed — dest is now missing. Leave the backup in
+          // place (the catch below will NOT remove it) and surface where it is.
         }
+      }
+      if (!restored && fs.existsSync(backup)) {
+        console.warn(
+          `[gitnexus] CRITICAL: could not materialize vendor/${name} AND could not restore the ` +
+            `previous node_modules/${name}. A recoverable copy remains at ${backup} — ` +
+            `restore it (e.g. \`mv ${backup} ${dest}\`) or reinstall to recover ${name}.`,
+        );
       }
       throw renameErr;
     }
@@ -63,6 +86,8 @@ for (const name of VENDORED_GRAMMARS) {
   } catch (err) {
     // Fail-soft: a single locked/inaccessible file (common on Windows) must not
     // abort the whole gitnexus install. Matches build-tree-sitter-*.cjs pattern.
+    // Only remove the scratch `partial`; never the `backup` (it may be the sole
+    // recoverable copy after a failed rollback above).
     fs.rmSync(partial, { recursive: true, force: true });
     console.warn(`[gitnexus] Could not materialize vendor/${name}: ${err.message}`);
     console.warn(
