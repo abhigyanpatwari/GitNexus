@@ -367,25 +367,58 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // scan JS/TS consumer files for calls to those wrapper functions with
     // URL-like string arguments and add them to allFetchCalls so
     // processNextjsFetchRoutes can create FETCHES edges.
-    if (allFetchWrapperDefs && allFetchWrapperDefs.length > 0 && routeRegistry.size > 0) {
-      const wrapperNames = new Set(allFetchWrapperDefs.map((d) => d.functionName));
+    // Wrapper names come from two sources: functions the parse phase
+    // auto-detected as calling the bare global `fetch()`, plus any names the
+    // user declared in `.gitnexusrc` `fetchWrappers` (#1589/#1852 residual).
+    // Config names let an axios/custom-client wrapper — or one named outside the
+    // built-in convention — still produce route_map consumers; without them it
+    // silently falls back to `consumers: []`. Configured names alone are enough
+    // to run the scan even when nothing was auto-detected.
+    const configuredWrappers = (ctx.options?.fetchWrappers ?? [])
+      .map((n) => (typeof n === 'string' ? n.trim() : ''))
+      .filter((n) => n.length > 0);
+    const wrapperNames = new Set<string>(
+      [...(allFetchWrapperDefs ?? []).map((d) => d.functionName), ...configuredWrappers].filter(
+        (n): n is string => typeof n === 'string' && n.trim().length > 0,
+      ),
+    );
+    if (wrapperNames.size > 0 && routeRegistry.size > 0) {
       const jsFiles = allPaths.filter((p) => /\.[jt]sx?$/.test(p));
-      if (jsFiles.length > 0 && wrapperNames.size > 0) {
-        const jsContents = await readFileContents(ctx.repoPath, jsFiles);
-        for (const [filePath, content] of jsContents) {
-          for (const name of wrapperNames) {
-            const regex = new RegExp(
-              `\\b${escapeRegex(name)}\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
-              'g',
-            );
-            let match;
-            while ((match = regex.exec(content)) !== null) {
-              allFetchCalls.push({
-                filePath,
-                fetchURL: match[1],
-                lineNumber: content.substring(0, match.index).split('\n').length,
-              });
-            }
+      if (jsFiles.length > 0) {
+        // Reuse contents already read for handler extraction; only read the
+        // remainder (mirrors the Expo block above). Avoids a second full read of
+        // files we already have in memory.
+        const unreadJsFiles = jsFiles.filter((p) => !handlerContents?.has(p));
+        const extraContents =
+          unreadJsFiles.length > 0
+            ? await readFileContents(ctx.repoPath, unreadJsFiles)
+            : new Map<string, string>();
+        // One alternation regex over every wrapper name per file — O(files), not
+        // O(files × wrappers) (#1852 review F3). Names are escaped and grouped
+        // non-capturing so capture group 1 stays the URL.
+        const alternation = [...wrapperNames].map(escapeRegex).join('|');
+        const wrapperCallRegex = new RegExp(
+          `\\b(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+          'g',
+        );
+        const scanContent = (filePath: string, content: string): void => {
+          wrapperCallRegex.lastIndex = 0;
+          let match;
+          while ((match = wrapperCallRegex.exec(content)) !== null) {
+            allFetchCalls.push({
+              filePath,
+              fetchURL: match[1],
+              lineNumber: content.substring(0, match.index).split('\n').length,
+            });
+          }
+        };
+        for (const [filePath, content] of extraContents) scanContent(filePath, content);
+        // Also scan already-read JS/TS handler files (a handler can itself
+        // consume another route through a wrapper).
+        if (handlerContents) {
+          for (const p of jsFiles) {
+            const cached = handlerContents.get(p);
+            if (cached !== undefined) scanContent(p, cached);
           }
         }
       }
