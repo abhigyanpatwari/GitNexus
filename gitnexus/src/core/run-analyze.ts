@@ -159,6 +159,13 @@ export interface AnalyzeOptions {
    * removed); `undefined` defers to the env / auto-formula fallback.
    */
   workerPoolSize?: number;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers, forwarded to
+   * `PipelineOptions.fetchWrappers` (#1589/#1852 residual). Sourced from the CLI
+   * `.gitnexusrc` `fetchWrappers` list. `undefined`/empty leaves the route
+   * consumer scan unchanged.
+   */
+  fetchWrappers?: string[];
 }
 
 export interface AnalyzeResult {
@@ -641,6 +648,7 @@ export async function runFullAnalysis(
     {
       parseCache,
       workerPoolSize: options.workerPoolSize,
+      fetchWrappers: options.fetchWrappers,
     },
   );
 

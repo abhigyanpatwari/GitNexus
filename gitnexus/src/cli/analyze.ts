@@ -663,6 +663,14 @@ export interface AnalyzeOptions {
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
   embeddingDevice?: string;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers (#1589/#1852
+   * residual). Supplied via `.gitnexusrc` `fetchWrappers: [...]`. Threaded into
+   * the routes phase, where the cross-file consumer scan unions them with the
+   * auto-detected `fetch()` wrappers so a custom/axios-based wrapper named
+   * outside the built-in convention still produces `route_map` consumers.
+   */
+  fetchWrappers?: string[];
 }
 
 /**
@@ -1137,6 +1145,9 @@ const analyzeCommandImpl = async (
         // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
         // env / auto-formula fallback inside the pipeline.
         workerPoolSize,
+        // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
+        // forwarded to the routes phase consumer scan.
+        fetchWrappers: options.fetchWrappers,
       },
       {
         onProgress: (_phase, percent, message) => {

@@ -128,12 +128,33 @@ export const VALID_RELATION_TYPES = new Set([
   'OVERRIDES', // Legacy alias — dual-read for pre-rename indexes
   'METHOD_IMPLEMENTS',
   'ACCESSES',
+  // Emitted by emit-references.ts / scope-resolution/graph-bridge/edges.ts and
+  // already part of the default impact relTypes + context() incoming queries.
+  // It was missing from this allowlist, so `impact({relationTypes:['USES']})`
+  // silently filtered to [] and fell back to the full default traversal
+  // (#2129/#1858 review F5). No IMPACT_RELATION_CONFIDENCE floor → 0.5 fallback,
+  // matching the FETCHES / WRAPS / HANDLES_ROUTE precedent below.
+  'USES',
   'HANDLES_ROUTE',
   'FETCHES',
   'HANDLES_TOOL',
   'ENTRY_POINT_OF',
   'WRAPS',
 ]);
+
+/**
+ * Relation types the #1858 epistemic-boundary probe keys on. Kept as
+ * module-level `readonly` arrays (not Sets) because computeEpistemicBoundary
+ * binds them as Cypher query params (`r.type IN $heritage` / `IN $types`).
+ * The heritage set is exactly the IMPACT_RELATION_CONFIDENCE 0.85 tier —
+ * "statically verifiable, but the concrete binding past it is not".
+ */
+export const EPISTEMIC_HERITAGE_RELATION_TYPES: readonly string[] = [
+  'IMPLEMENTS',
+  'METHOD_IMPLEMENTS',
+  'EXTENDS',
+];
+export const EPISTEMIC_CONSUMER_RELATION_TYPES: readonly string[] = ['CALLS', 'USES', 'ACCESSES'];
 
 /**
  * Per-relation-type confidence floor for impact analysis.
@@ -2565,6 +2586,30 @@ export class LocalBackend {
     const symKind = isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2];
     const isMethodLike =
       symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
+
+    // #1858 review F2 — start the epistemic boundary probe here (right after
+    // `symKind` is known) so it runs CONCURRENTLY with the methodMetadata fetch
+    // below, mirroring how _runImpactBFS overlaps it with the BFS. It is awaited
+    // at result assembly. (It cannot start earlier — `symKind` is only computed
+    // on this line, after the incoming/outgoing round-trips.)
+    //
+    // #1858 review F3 — pass an interface-preserving type, NOT `symKind`.
+    // `symKind` collapses a single-resolved Interface to 'Class' (resolvedLabel
+    // is '' on the single-candidate path), which would skip computeEpistemicBoundary's
+    // `symType === 'Interface'` self-boundary branch and under-report a leaf
+    // interface as 'exact'. `enrichCandidateLabels` runs BEFORE the single-candidate
+    // early return and patches `sym.type` from '' to 'Interface' (LadybugDB returns
+    // '' for labels()[0] on Interface/Class), so `sym.type` is the reliable signal
+    // here — mirroring impact()'s `resolvedLabel || symbol.type` derivation. Do not
+    // "fix" enrichment ordering; F3 depends on enrichment-before-early-return.
+    const epistemicSymType = (resolvedLabel || sym.type || symKind || '') as string;
+    const epistemicPromise = this.computeEpistemicBoundary(
+      repo,
+      symId,
+      epistemicSymType,
+      (sym.name || sym[1]) as string,
+    );
+
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -2597,6 +2642,13 @@ export class LocalBackend {
       }
     }
 
+    // #1858 — same epistemic boundary signal as impact(): when this symbol sits
+    // behind an interface / indirection boundary, callers binding via DI or
+    // dynamic dispatch are not reflected in `incoming`, so the view is a lower
+    // bound. Additive; never suppresses a field. Resolved from the probe started
+    // above (concurrent with methodMetadata).
+    const epistemic = await epistemicPromise;
+
     return {
       status: 'found',
       symbol: {
@@ -2609,6 +2661,7 @@ export class LocalBackend {
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
+      ...epistemic,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
       ...(typedPropertyRows.length > 0
@@ -3261,21 +3314,121 @@ export class LocalBackend {
     }
 
     if (outcome.kind === 'ambiguous') {
+      // #2129 — a bare name that collides with several symbols must NOT report a
+      // bare `impactedCount: 0`. The real blast radius lives under whichever
+      // candidate the caller meant; a flat zero here is precisely the silent
+      // under-report the "run impact before editing" workflow exists to prevent
+      // (the dropped caller calls a *different* same-name node, so it never shows
+      // up against the one the resolver happened to pick). Run a bounded,
+      // summary-only BFS per candidate so each one's true count + risk is
+      // visible, and surface the maximum at the top level so the headline can
+      // never read as "safe to refactor". Candidates arrive sorted by score.
+      const AMBIGUOUS_MAX_CANDIDATES = 6;
+      const probed = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
+      // `partialProbe` is intentionally a SECOND incompleteness flag, distinct
+      // from the traversal-interrupted `partial` flag used elsewhere: it means
+      // one or more per-candidate probes threw, so maxRisk / maxImpactedCount
+      // are lower bounds over the probes that succeeded (a failed candidate must
+      // not be masked by a benign sibling success).
+      let probeFailed = false;
+      const candidateSummaries = await Promise.all(
+        probed.map(async (c) => {
+          const cType = c.type || '';
+          const cRelTypes =
+            (cType === 'Class' || cType === 'Interface') &&
+            !hasExplicitRelationTypes &&
+            !relationTypes.includes('ACCESSES')
+              ? [...relationTypes, 'ACCESSES']
+              : relationTypes;
+          // #1858/#2129 review F8 — name the shape the probe summary is read
+          // through (`_runImpactBFS` returns `Promise<any>`, so this is the
+          // narrowing cast) so a future rename of those fields fails tsc instead
+          // of silently zeroing candidate counts.
+          let summary: {
+            impactedCount: number;
+            risk: string;
+            summary?: { direct: number };
+          } | null = null;
+          try {
+            summary = await this._runImpactBFS(
+              repo,
+              { id: c.id, name: c.name, filePath: c.filePath },
+              cType,
+              direction,
+              {
+                maxDepth,
+                relationTypes: cRelTypes,
+                includeTests,
+                minConfidence,
+                summaryOnly: true,
+                skipEpistemic: true,
+                skipEnrichment: true,
+              },
+            );
+          } catch (e) {
+            probeFailed = true;
+            logQueryError('impact:ambiguous-candidate', e);
+          }
+          return {
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+            impactedCount: summary?.impactedCount ?? 0,
+            risk: summary?.risk ?? 'UNKNOWN',
+            direct: summary?.summary?.direct ?? 0,
+          };
+        }),
+      );
+
+      // Rank by blast radius so the most-impactful interpretation is first, and
+      // hoist the maximum count/risk to the top level so the response cannot be
+      // misread as "no impact".
+      candidateSummaries.sort((a, b) => b.impactedCount - a.impactedCount);
+      const maxImpactedCount = candidateSummaries.reduce((m, c) => Math.max(m, c.impactedCount), 0);
+      const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+      // If EVERY candidate probe failed (all 'UNKNOWN' — e.g. pool exhaustion
+      // under the fan-out), the worst real risk is genuinely unknown, not LOW.
+      // Reporting LOW here would re-introduce the false-safe signal. Only fall to
+      // the LOW seed when at least one candidate produced a real risk.
+      const anyKnownRisk = candidateSummaries.some((c) => RISK_ORDER.includes(c.risk));
+      const maxRisk = anyKnownRisk
+        ? candidateSummaries.reduce(
+            (worst, c) => (RISK_ORDER.indexOf(c.risk) > RISK_ORDER.indexOf(worst) ? c.risk : worst),
+            'LOW',
+          )
+        : 'UNKNOWN';
+      const truncated = outcome.candidates.length > probed.length;
+
       return {
         status: 'ambiguous',
-        message: `Found ${outcome.candidates.length} symbols matching '${target}'. Use target_uid, file_path, or kind to disambiguate.`,
+        message:
+          `Found ${outcome.candidates.length} symbols matching '${target}'` +
+          (truncated
+            ? ` (showing ${candidateSummaries.length} of ${outcome.candidates.length})`
+            : '') +
+          `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). ` +
+          `Disambiguate with target_uid (or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
+        // Full match count — `candidates[]` is truncated to AMBIGUOUS_MAX_CANDIDATES,
+        // so consumers (CLI formatter) need this to report "N of M" honestly (#2129
+        // review F11; the CLI previously read the truncated array length).
+        totalCandidates: outcome.candidates.length,
+        // `impactedCount` stays 0 and `risk` stays UNKNOWN — there is no single
+        // resolved symbol, and UNKNOWN must NOT read as "safe to refactor". The
+        // real blast radius is surfaced per-candidate plus `maxImpactedCount` /
+        // `maxRisk` so a real caller can never hide behind the ambiguous zero
+        // (#2129).
         impactedCount: 0,
         risk: 'UNKNOWN',
-        candidates: outcome.candidates.map((c) => ({
-          uid: c.id,
-          name: c.name,
-          kind: c.type,
-          filePath: c.filePath,
-          line: c.startLine,
-          score: Number(c.score.toFixed(2)),
-        })),
+        maxImpactedCount,
+        maxRisk,
+        ...(probeFailed ? { partialProbe: true } : {}),
+        ...(truncated && { candidatesTruncated: true }),
+        candidates: candidateSummaries,
       };
     }
 
@@ -3305,6 +3458,122 @@ export class LocalBackend {
   }
 
   /**
+   * #1858 — epistemic lower-bound detection.
+   *
+   * impact()/context() traverse only edges materialized in the graph. When the
+   * queried symbol sits on an interface / abstract boundary, callers that bind
+   * to the interface via DI, a container, or dynamic dispatch — rather than
+   * naming the concrete symbol — are not traced. The reported count is then a
+   * lower bound, not an exact figure. Instead of returning a confident count
+   * that silently omits those callers, annotate the result with
+   * `epistemic: 'lower-bound'` plus a human-readable boundary note. A fully
+   * resolved leaf with no indirection stays `epistemic: 'exact'`.
+   *
+   * Aligns with the numeric confidence model rather than the long-deleted
+   * TIER_CONFIDENCE enum: the heritage/indirection edges this keys on
+   * (IMPLEMENTS / METHOD_IMPLEMENTS / EXTENDS) carry the 0.85
+   * `IMPACT_RELATION_CONFIDENCE` floor — "statically verifiable, but the
+   * concrete binding past it is not".
+   *
+   * Never throws: on query error it returns 'exact', so it can only add signal,
+   * never suppress a result.
+   */
+  private async computeEpistemicBoundary(
+    repo: RepoHandle,
+    symId: string,
+    symType: string,
+    symName: string,
+  ): Promise<{ epistemic: 'exact' | 'lower-bound'; boundaries?: string[] }> {
+    const HERITAGE_TYPES = EPISTEMIC_HERITAGE_RELATION_TYPES;
+    const CONSUMER_TYPES = EPISTEMIC_CONSUMER_RELATION_TYPES;
+    try {
+      // Discover the interface / abstract supertypes on the target's boundary.
+      // If the target is itself an interface, it is its own boundary node.
+      const boundary = new Map<string, { name: string; label: string }>();
+      if (symType === 'Interface') {
+        boundary.set(symId, { name: symName || '', label: 'Interface' });
+      }
+      const ifaceRows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (x)-[r:CodeRelation]->(iface)
+         WHERE x.id = $symId AND r.type IN $heritage
+         RETURN DISTINCT iface.id AS id, iface.name AS name, labels(iface)[0] AS label
+         LIMIT 25`,
+        { symId, heritage: HERITAGE_TYPES },
+      ).catch(() => []);
+      for (const r of ifaceRows) {
+        const id = (r.id ?? r[0]) as string;
+        if (id && !boundary.has(id)) {
+          boundary.set(id, {
+            name: (r.name ?? r[1] ?? '') as string,
+            label: (r.label ?? r[2] ?? 'Interface') as string,
+          });
+        }
+      }
+      if (boundary.size === 0) return { epistemic: 'exact' };
+
+      const ifaceIds = Array.from(boundary.keys());
+      // Count per interface id with scalar equality. A parameterized
+      // `iface.id IN $ids` combined with `COUNT(DISTINCT ...)` + implicit
+      // group-by returns no rows under the LadybugDB cypher subset, so query
+      // each boundary node individually (boundary is small — capped at 25).
+      const countByType = async (types: readonly string[]): Promise<Map<string, number>> => {
+        const m = new Map<string, number>();
+        await Promise.all(
+          ifaceIds.map(async (ifaceId) => {
+            const rows = await executeParameterized(
+              repo.lbugPath,
+              `MATCH (other)-[r:CodeRelation]->(iface)
+               WHERE iface.id = $ifaceId AND r.type IN $types
+               RETURN COUNT(DISTINCT other.id) AS cnt`,
+              { ifaceId, types },
+            ).catch(() => []);
+            const cnt =
+              rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
+            m.set(ifaceId, cnt);
+          }),
+        );
+        return m;
+      };
+      const [implCounts, consumerCounts] = await Promise.all([
+        countByType(HERITAGE_TYPES),
+        countByType(CONSUMER_TYPES),
+      ]);
+
+      const boundaries: string[] = [];
+      for (const [id, info] of boundary) {
+        const impls = implCounts.get(id) ?? 0;
+        const consumers = consumerCounts.get(id) ?? 0;
+        // Flag only a genuine indirection risk: an interface that is actually
+        // consumed (callers bind to it) or that has multiple implementations
+        // (runtime dispatch is ambiguous). A concrete type implementing an
+        // interface nothing references is fully traced → stays exact.
+        if (consumers >= 1 || impls >= 2) {
+          const label = (info.label || 'Interface').toLowerCase();
+          const name = info.name || '(unnamed)';
+          const article = /^[aeiou]/.test(label) ? 'an' : 'a';
+          const parts: string[] = [];
+          if (impls >= 1)
+            parts.push(`${impls} ${impls === 1 ? 'implementation' : 'implementations'}`);
+          if (consumers >= 1)
+            parts.push(
+              `${consumers} interface-level ${consumers === 1 ? 'consumer' : 'consumers'}`,
+            );
+          boundaries.push(
+            `${name} is ${article} ${label} with ${parts.join(' and ')}; callers that bind via the ${label} ` +
+              `(e.g. a DI container or dynamic dispatch) are not traced to the concrete symbol — ` +
+              `actual impact may be higher.`,
+          );
+        }
+      }
+      if (boundaries.length === 0) return { epistemic: 'exact' };
+      return { epistemic: 'lower-bound', boundaries };
+    } catch {
+      return { epistemic: 'exact' };
+    }
+  }
+
+  /**
    * Shared BFS traversal for impact analysis (name-resolved or UID-resolved symbol).
    */
   private async _runImpactBFS(
@@ -3320,11 +3589,28 @@ export class LocalBackend {
       limit?: number;
       offset?: number;
       summaryOnly?: boolean;
+      // Enrichment/annotation suppression flags (#1858/#2129 review F6). Each
+      // suppresses a distinct sub-phase; they compose, and the real call sites are:
+      //   - full impact()/context(): none set.
+      //   - group cross-repo fan-out (impactByUid): skipPerSymbolEnrichment +
+      //     skipEpistemic — the fan-out consumes only byDepth.
+      //   - ambiguous #2129 per-candidate probe: skipEpistemic + skipEnrichment —
+      //     needs only count + a count-based risk.
+      // skipPerSymbolEnrichment: drop the post-pagination per-symbol
+      //   STEP_IN_PROCESS pass (keeps byDepth).
+      // skipEpistemic: skip the #1858 interface/indirection boundary probe.
+      // skipEnrichment: skip the process/module aggregation passes entirely;
+      //   risk then derives from directCount/total only. NOTE: this also makes
+      //   skipPerSymbolEnrichment a no-op (affectedProcesses stays empty), which
+      //   is why the ambiguous probe sets only the two flags above.
       skipPerSymbolEnrichment?: boolean;
+      skipEpistemic?: boolean;
+      skipEnrichment?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
     const skipPerSymbolEnrichment = opts.skipPerSymbolEnrichment ?? false;
+    const skipEnrichment = opts.skipEnrichment ?? false;
     const hasExplicitLimit = typeof opts.limit === 'number' && Number.isFinite(opts.limit);
     const paginationLimit = hasExplicitLimit
       ? Math.max(1, Math.min(Math.trunc(opts.limit!), 10000))
@@ -3343,6 +3629,22 @@ export class LocalBackend {
     const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
+
+    // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
+    // It depends only on symId/symType/symName (all known now) and touches no
+    // shared state, so its extra round-trip overlaps the traversal instead of
+    // adding to the serial path. `skipEpistemic` (ambiguous #2129 candidate
+    // probes, group fan-out) resolves to no field, preserving prior behavior.
+    // #1858/#2129 review F8 — the skip case adds no field, so `epistemic` is
+    // optional here (the union's `{}` subtype). computeEpistemicBoundary's own
+    // return keeps `epistemic` REQUIRED — only this promise widens to the skip
+    // subtype.
+    const epistemicPromise: Promise<{
+      epistemic?: 'exact' | 'lower-bound';
+      boundaries?: string[];
+    }> = opts.skipEpistemic
+      ? Promise.resolve({})
+      : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
 
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
@@ -3509,7 +3811,13 @@ export class LocalBackend {
     // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
     const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
 
-    if (impacted.length > 0) {
+    // `skipEnrichment` (ambiguous #2129 per-candidate probes) bypasses the
+    // process/module aggregation passes entirely — those probes need only the
+    // count + a count-based risk, so paying the bounded-but-real enrichment cost
+    // ~6× per ambiguous call is wasted. risk then derives from directCount /
+    // total only (processCount/moduleCount stay 0), an acceptable approximation
+    // for a disambiguation aid.
+    if (impacted.length > 0 && !skipEnrichment) {
       // ── Process enrichment: batched chunking (bounded by MAX_CHUNKS) ─
       // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
       // process + entry point info in 1 round-trip per chunk. Converted to
@@ -3776,6 +4084,10 @@ export class LocalBackend {
       byDepthCounts[Number(depth)] = items.length;
     }
 
+    // #1858 — await the epistemic boundary probe kicked off alongside the BFS
+    // above. Additive: leaves impactedCount and every existing field untouched.
+    const epistemic = await epistemicPromise;
+
     const base = {
       target: {
         id: symId,
@@ -3786,6 +4098,7 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      ...epistemic,
       ...(!traversalComplete && { partial: true }),
       summary: {
         direct: directCount,
@@ -3998,6 +4311,10 @@ export class LocalBackend {
         includeTests: opts.includeTests,
         minConfidence: opts.minConfidence,
         skipPerSymbolEnrichment: true,
+        // Group cross-repo fan-out consumes only byDepth (cross-impact.ts), not
+        // the #1858 epistemic/boundaries fields — computing them per neighbor is
+        // dead work on the highest-volume path, so suppress them here too.
+        skipEpistemic: true,
       });
     } catch {
       return null;
