@@ -780,6 +780,33 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
 };
 
 /**
+ * Remove a single non-primary branch's summary from a repo's registry entry
+ * (#2106 R7). Called by `gitnexus clean --branch`. Returns `true` when a
+ * matching `branches[]` summary was found and removed; `false` otherwise (so
+ * the CLI can report "no such indexed branch" without crashing). The top-level
+ * primary entry is left intact; an empty `branches[]` is dropped to keep the
+ * registry shape legacy-clean.
+ */
+export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> => {
+  const resolved = canonicalizePath(repoPath);
+  const matches = (a: string, b: string) =>
+    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const entries = await readRegistry();
+  const idx = entries.findIndex((e) => matches(canonicalizePath(e.path), resolved));
+  if (idx < 0) return false;
+  const entry = entries[idx];
+  const before = entry.branches?.length ?? 0;
+  if (!entry.branches || before === 0) return false;
+  const remaining = entry.branches.filter((b) => b.branch !== branch);
+  if (remaining.length === before) return false; // branch not recorded
+  if (remaining.length > 0) entry.branches = remaining;
+  else delete entry.branches;
+  entries[idx] = entry;
+  await writeRegistry(entries);
+  return true;
+};
+
+/**
  * Thrown by {@link resolveRegistryEntry} when no registered repo matches
  * the caller's target string (by alias, basename, remote-inferred name,
  * or resolved path). CLI callers that want idempotent "remove" semantics

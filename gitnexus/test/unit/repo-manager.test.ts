@@ -19,6 +19,7 @@ import {
   readRegistry,
   loadCLIConfig,
   registerRepo,
+  removeBranchIndex,
   listRegisteredRepos,
   resolveRegistryEntry,
   canonicalizePath,
@@ -625,6 +626,44 @@ describe('registerRepo branch nesting (#2106)', () => {
     expect(entry.lastCommit).toBe('aaa9999');
     expect(entry.branches).toHaveLength(1);
     expect(entry.branches?.[0].branch).toBe('feature/x');
+  });
+
+  // ─── removeBranchIndex (#2106 R7) ──────────────────────────────────
+
+  it('removeBranchIndex drops a recorded branch summary, leaves the primary', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const removed = await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
+    expect(removed).toBe(true);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main'); // primary intact
+    expect(entry.lastCommit).toBe('aaa1111');
+    expect(entry.branches).toBeUndefined(); // empty branches[] dropped
+  });
+
+  it('removeBranchIndex returns false for an unknown branch (no crash)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    expect(await removeBranchIndex(tmpRepo.dbPath, 'nope')).toBe(false);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toHaveLength(1); // unchanged
+  });
+
+  it('removeBranchIndex returns false when the repo has no branch indexes', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    expect(await removeBranchIndex(tmpRepo.dbPath, 'feature/x')).toBe(false);
+  });
+
+  it('removeBranchIndex keeps other branch summaries when removing one', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+
+    await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/y']);
   });
 });
 

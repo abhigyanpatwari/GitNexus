@@ -37,6 +37,9 @@ export const en = {
   'clean.deletedRepo': 'Deleted: {{name}} ({{storagePath}})',
   'clean.notFoundHere': 'No indexed repository found in this directory.',
   'clean.deleteCurrent': 'This will delete the GitNexus index for: {{repoName}}',
+  'clean.branchNotIndexed': 'No indexed branch named "{{branch}}" for this repository.',
+  'clean.deleteBranch': 'This will delete the branch index "{{branch}}" at: {{path}}',
+  'clean.deletedBranch': 'Deleted branch index: {{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar state: {{state}}',
   'clean.lbugSidecars.none': 'No quarantined LadybugDB missing-shadow WAL sidecars found.',
   'clean.lbugSidecars.preview':
@@ -196,6 +199,7 @@ export const en = {
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
+  'help.option.clean.branch': 'Delete only the named branch index (not the primary)',
   'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':

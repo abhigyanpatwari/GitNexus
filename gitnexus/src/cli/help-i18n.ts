@@ -73,6 +73,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'uninstall|-f, --force': 'help.option.uninstall.force',
   'clean|-f, --force': 'help.option.force.confirmation',
   'clean|--all': 'help.option.clean.all',
+  'clean|--branch <name>': 'help.option.clean.branch',
   'clean|--lbug-sidecars': 'help.option.clean.lbugSidecars',
   'remove|-f, --force': 'help.option.force.confirmation',
   'wiki|-f, --force': 'help.option.wiki.force',

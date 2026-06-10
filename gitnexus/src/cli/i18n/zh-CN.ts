@@ -41,6 +41,9 @@ export const zhCN = {
   'clean.deletedRepo': '已删除：{{name}}（{{storagePath}}）',
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
+  'clean.branchNotIndexed': '该仓库没有名为 “{{branch}}” 的已索引分支。',
+  'clean.deleteBranch': '将删除分支索引 “{{branch}}”，路径：{{path}}',
+  'clean.deletedBranch': '已删除分支索引：{{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar 状态：{{state}}',
   'clean.lbugSidecars.none': '未找到已隔离的 LadybugDB missing-shadow WAL sidecar。',
   'clean.lbugSidecars.preview':
@@ -185,6 +188,7 @@ export const zhCN = {
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
+  'help.option.clean.branch': '仅删除指定分支的索引（不影响主索引）',
   'help.option.clean.lbugSidecars': '清理已隔离的 LadybugDB missing-shadow WAL sidecar',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
