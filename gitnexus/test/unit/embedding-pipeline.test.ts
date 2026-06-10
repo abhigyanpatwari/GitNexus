@@ -545,6 +545,41 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(progressUpdates.at(-1)?.phase).toBe('ready');
   });
 
+  it('degrades to exact-scan (without throwing) when vector index creation fails', async () => {
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: vi
+        .fn()
+        .mockImplementation((texts: string[]) =>
+          Promise.resolve(texts.map(() => new Float32Array(384))),
+        ),
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+    // VECTOR loads, but the adapter's createVectorIndex throws (e.g. a DB error
+    // during HNSW build). The pipeline wrapper must swallow it, log, and fall
+    // back to exact-scan rather than failing the whole analyze run (#2114).
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
+      createVectorIndex: vi.fn().mockRejectedValue(new Error('HNSW build failed')),
+    }));
+
+    const node = makeNode();
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    const result = await runEmbeddingPipeline(executeQuery, executeWithReusedStatement, onProgress);
+
+    expect(result.vectorIndexReady).toBe(false);
+    expect(result.semanticMode).toBe('exact-scan');
+    // Embeddings were still persisted and the pipeline completed normally.
+    expect(stmtCalls.some((call) => call.cypher.includes('CREATE'))).toBe(true);
+    expect(progressUpdates.at(-1)?.phase).toBe('ready');
+  });
+
   it('does not inject preceding context when overlap is disabled', async () => {
     const embedBatchSpy = vi
       .fn()
