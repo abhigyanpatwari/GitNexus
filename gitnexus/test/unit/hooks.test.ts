@@ -22,7 +22,12 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
+import {
+  runHook,
+  parseHookOutput,
+  createHookToolDir,
+  hookEnv,
+} from '../utils/hook-test-helpers.js';
 
 // ─── Paths to both hook variants ────────────────────────────────────
 
@@ -145,61 +150,8 @@ function createGlobalRegistry(homeDir: string, marker: 'both' | 'registry' | 're
   }
 }
 
-function writeExecutable(filePath: string, content: string) {
-  fs.writeFileSync(filePath, content, { mode: 0o755 });
-}
-
-function createHookToolDir(options: {
-  gitnexusStderr?: string;
-  gitnexusMarkerPath?: string;
-  lsofOutput?: string;
-  lsofOutputLines?: string[];
-  psOutput?: string;
-  psOutputByPid?: Record<string, string>;
-  lsofSleepMs?: number;
-}) {
-  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-bin-'));
-  const gitnexusStderr = JSON.stringify(options.gitnexusStderr ?? '');
-  const markerPath = JSON.stringify(options.gitnexusMarkerPath ?? '');
-
-  const fakeGitNexus = `#!/usr/bin/env node\nconst fs = require('fs');\nconst marker = ${markerPath};\nif (marker) fs.writeFileSync(marker, 'called');\nprocess.stderr.write(${gitnexusStderr});\n`;
-  writeExecutable(path.join(binDir, 'gitnexus'), fakeGitNexus);
-  writeExecutable(path.join(binDir, 'gitnexus-cli.js'), fakeGitNexus);
-
-  const lsofOutput =
-    options.lsofOutputLines != null
-      ? options.lsofOutputLines.join('\n') + (options.lsofOutputLines.length ? '\n' : '')
-      : (options.lsofOutput ?? '');
-  const lsofBody =
-    options.lsofSleepMs != null
-      ? `#!/usr/bin/env node\nsetTimeout(() => {}, ${Number(options.lsofSleepMs)});\n`
-      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(lsofOutput)});\nprocess.exit(0);\n`;
-  writeExecutable(path.join(binDir, 'lsof'), lsofBody);
-
-  const psBody =
-    options.psOutputByPid != null
-      ? `#!/usr/bin/env node
-const byPid = ${JSON.stringify(options.psOutputByPid)};
-const args = process.argv;
-const p = args[args.indexOf('-p') + 1];
-process.stdout.write(byPid[p] ?? '');
-process.exit(0);
-`
-      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.psOutput ?? '')});\nprocess.exit(0);\n`;
-  writeExecutable(path.join(binDir, 'ps'), psBody);
-
-  return binDir;
-}
-
-function hookEnv(binDir: string) {
-  return {
-    ...process.env,
-    PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
-    GITNEXUS_HOOK_CLI_PATH: path.join(binDir, 'gitnexus-cli.js'),
-    GITNEXUS_HOOK_LSOF_PATH: path.join(binDir, 'lsof'),
-    GITNEXUS_HOOK_PS_PATH: path.join(binDir, 'ps'),
-  };
-}
+// createHookToolDir / hookEnv live in ../utils/hook-test-helpers so the antigravity
+// e2e suite can reuse the same DB-owner-probe fakes.
 
 // ─── Both hook files should exist ───────────────────────────────────
 
@@ -972,8 +924,13 @@ describe('PreToolUse augmentation filtering (integration)', () => {
       }
     });
 
+    // Issue #1913: the MCP-owned-DB skip is a NORMAL (non-error) path, so by
+    // default it must stay completely silent — empty stdout AND empty stderr,
+    // exit 0 — so strict hook runners (e.g. Codex `PreToolUse`) never see
+    // unexpected output. GITNEXUS_DEBUG is forced off to keep the assertion
+    // deterministic regardless of the ambient environment.
     it.skipIf(process.platform === 'win32')(
-      `${label}: skips augment when a GitNexus MCP process owns the repo DB`,
+      `${label}: skips augment SILENTLY when a GitNexus MCP process owns the repo DB`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-called-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
@@ -994,25 +951,118 @@ describe('PreToolUse augmentation filtering (integration)', () => {
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
           );
 
           expect(result.stdout.trim()).toBe('');
+          expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
-          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
+          fs.rmSync(lbugPath, { force: true });
           fs.rmSync(markerPath, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
         }
       },
     );
+
+    // Issue #1913: the skip reason remains recoverable for operators who opt in
+    // via GITNEXUS_DEBUG=1 — stdout stays empty (no augment ran), the diagnostic
+    // appears on stderr.
+    it.skipIf(process.platform === 'win32')(
+      `${label}: surfaces the MCP-owner skip reason only under GITNEXUS_DEBUG`,
+      () => {
+        const markerPath = path.join(os.tmpdir(), `gitnexus-hook-dbg-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          lsofOutput: '12345\n',
+          psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+        });
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
+          );
+
+          expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    // #1913: the GITNEXUS_DEBUG contract is strict — ONLY '1' and 'true' enable
+    // diagnostics. Pin that non-canonical truthy-looking values ('0', 'false')
+    // are treated as OFF, so the skip stays silent. A truthy-gated reader would
+    // have emitted on these; this guards the unified strict gate (incl. the
+    // main() catch handler) across the claude/plugin copies.
+    for (const debugValue of ['0', 'false']) {
+      it.skipIf(process.platform === 'win32')(
+        `${label}: MCP-owner skip stays SILENT with GITNEXUS_DEBUG='${debugValue}' (strict contract)`,
+        () => {
+          const markerPath = path.join(
+            os.tmpdir(),
+            `gitnexus-hook-dbg-${debugValue}-${process.pid}-${label}`,
+          );
+          const lbugPath = path.join(gitNexusDir, 'lbug');
+          fs.writeFileSync(lbugPath, '');
+          fs.rmSync(markerPath, { force: true });
+          const binDir = createHookToolDir({
+            gitnexusMarkerPath: markerPath,
+            lsofOutput: '12345\n',
+            psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+          });
+          try {
+            const result = runHook(
+              hookPath,
+              {
+                hook_event_name: 'PreToolUse',
+                tool_name: 'Grep',
+                tool_input: { pattern: 'validateUser' },
+                cwd: tmpDir,
+              },
+              undefined,
+              { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: debugValue } },
+            );
+
+            expect(result.stdout.trim()).toBe('');
+            expect(result.stderr.trim()).toBe('');
+            expect(result.status).toBe(0);
+            expect(fs.existsSync(markerPath)).toBe(false);
+          } finally {
+            fs.rmSync(lbugPath, { force: true });
+            fs.rmSync(markerPath, { force: true });
+            fs.rmSync(binDir, { recursive: true, force: true });
+          }
+        },
+      );
+    }
   }
 });
 
 describe.skipIf(process.platform === 'win32')(
   'Ladybug DB owner guard — production-shaped ps + failure modes (#1493)',
   () => {
+    // These tests assert owner *detection*: a positive skip is signalled by the
+    // `[GitNexus] augment skipped` diagnostic. Since #1913 made that diagnostic
+    // debug-gated (silent by default for strict hook runners), they run with
+    // GITNEXUS_DEBUG=1 so the discriminator remains observable. Default-silence
+    // itself is covered by the 'augmentation filtering' describe above.
     for (const [label, hookPath] of [
       ['CJS', CJS_HOOK],
       ['Plugin', PLUGIN_HOOK],
@@ -1037,7 +1087,7 @@ describe.skipIf(process.platform === 'win32')(
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
           expect(result.stdout.trim()).toBe('');
           expect(result.status).toBe(0);
@@ -1101,7 +1151,7 @@ describe.skipIf(process.platform === 'win32')(
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
           expect(result.stdout.trim()).toBe('');
           expect(result.status).toBe(0);
@@ -1169,13 +1219,50 @@ describe.skipIf(process.platform === 'win32')(
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
           expect(result.stdout.trim()).toBe('');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      // #1913: the fail-closed (probe-timeout) skip routes through the SAME gated
+      // line as the MCP-owner skip, so it too must be silent by default. Symmetric
+      // counterpart to the debug-on test above, so a regression that ungated the
+      // ETIMEDOUT path specifically would still be caught.
+      it(`${label}: ETIMEDOUT lsof → augment skipped SILENTLY by default`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-etime-silent-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          lsofSleepMs: 5000,
+          psOutput: '',
+        });
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
+          );
+          expect(result.stdout.trim()).toBe('');
+          expect(result.stderr.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
           fs.rmSync(markerPath, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
         }
@@ -1237,7 +1324,7 @@ describe.skipIf(process.platform === 'win32')(
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
           expect(result.stdout.trim()).toBe('');
           expect(result.status).toBe(0);

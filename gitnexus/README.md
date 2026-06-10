@@ -436,6 +436,26 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
 
+### Hook augmentation/notifications are silently skipped
+
+The Claude Code / Antigravity hooks intentionally stay **silent** on normal skip
+paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
+output. A search may not be augmented — or a stale-index reminder may not appear
+on stderr — when the GitNexus MCP server owns the repo DB, when the DB-lock probe
+times out and fails closed, or when the index is already current.
+
+To see why a hook skipped, set `GITNEXUS_DEBUG=1` and re-run the action — the hook
+writes the reason (e.g. `[GitNexus] augment skipped: MCP server owns DB`) and the
+stale-index hint to its stderr:
+
+```bash
+GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr
+```
+
+Only `GITNEXUS_DEBUG=1` and `GITNEXUS_DEBUG=true` enable diagnostics; every other
+value (including `0` and `false`) is treated as off. Diagnostics go to stderr
+only — the hook's structured stdout (the JSON the agent consumes) is unaffected.
+
 ## Privacy
 
 - All processing happens locally on your machine
