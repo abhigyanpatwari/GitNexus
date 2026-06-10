@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -100,23 +100,27 @@ function mockReq(body: Buffer, headers: Record<string, string>): IncomingMessage
   return r;
 }
 
-const staged: string[] = [];
-afterEach(async () => {
-  while (staged.length) {
-    await fs.rm(staged.pop()!, { recursive: true, force: true }).catch(() => {});
-  }
-});
-
 describe('ingestUpload', () => {
+  // Each test gets its own staging parent (via the IngestOptions root override)
+  // so assertions never read the shared global ~/.gitnexus/uploads, which other
+  // upload test files mutate concurrently under vitest's parallel forks.
+  let root: string;
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ingest-test-'));
+  });
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  });
+
   it('writes a manifest-described tree into the sandbox and returns its shape', async () => {
     const { body, headers } = multipart([
       { name: 'manifest', value: JSON.stringify(['myrepo/a.js', 'myrepo/sub/b.js']) },
       { name: 'files', filename: 'blob', data: Buffer.from('alpha') },
       { name: 'files', filename: 'blob', data: Buffer.from('beta') },
     ]);
-    const result = await ingestUpload(mockReq(body, headers));
-    staged.push(result.stageRoot);
+    const result = await ingestUpload(mockReq(body, headers), undefined, { root });
 
+    expect(result.stageRoot.startsWith(await fs.realpath(root))).toBe(true);
     expect(result.fileCount).toBe(2);
     expect(result.topLevelName).toBe('myrepo');
     expect(result.totalBytes).toBe('alpha'.length + 'beta'.length);
@@ -131,10 +135,12 @@ describe('ingestUpload', () => {
       { name: 'manifest', value: JSON.stringify(['../escape.js']) },
       { name: 'files', filename: 'blob', data: Buffer.from('x') },
     ]);
-    const before = await countStaging();
-    await expect(ingestUpload(mockReq(body, headers))).rejects.toMatchObject({ status: 400 });
-    // No new staging dir should survive.
-    expect(await countStaging()).toBeLessThanOrEqual(before);
+    await expect(ingestUpload(mockReq(body, headers), undefined, { root })).rejects.toMatchObject({
+      status: 400,
+    });
+    // The staging dir created by this call must not survive the rejection —
+    // the isolated root makes this exact (no concurrent test can add entries).
+    expect(await countStaging(root)).toBe(0);
   });
 
   it('rejects a file part that arrives before the manifest', async () => {
@@ -142,7 +148,9 @@ describe('ingestUpload', () => {
       { name: 'files', filename: 'blob', data: Buffer.from('x') },
       { name: 'manifest', value: JSON.stringify(['a/x.js']) },
     ]);
-    await expect(ingestUpload(mockReq(body, headers))).rejects.toThrow(/Manifest must precede/);
+    await expect(ingestUpload(mockReq(body, headers), undefined, { root })).rejects.toThrow(
+      /Manifest must precede/,
+    );
   });
 
   it('rejects when total bytes exceed the cap (413)', async () => {
@@ -150,14 +158,14 @@ describe('ingestUpload', () => {
       { name: 'manifest', value: JSON.stringify(['r/big.bin']) },
       { name: 'files', filename: 'blob', data: Buffer.alloc(64, 1) },
     ]);
-    await expect(ingestUpload(mockReq(body, headers), { maxTotalBytes: 16 })).rejects.toMatchObject(
-      { status: 413 },
-    );
+    await expect(
+      ingestUpload(mockReq(body, headers), { maxTotalBytes: 16 }, { root }),
+    ).rejects.toMatchObject({ status: 413 });
   });
 
   it('rejects an empty upload (0 files)', async () => {
     const { body, headers } = multipart([{ name: 'manifest', value: JSON.stringify([]) }]);
-    await expect(ingestUpload(mockReq(body, headers))).rejects.toThrow();
+    await expect(ingestUpload(mockReq(body, headers), undefined, { root })).rejects.toThrow();
   });
 
   it('exposes sane default caps', () => {
@@ -166,8 +174,7 @@ describe('ingestUpload', () => {
   });
 });
 
-async function countStaging(): Promise<number> {
-  const root = path.resolve(path.join(os.homedir(), '.gitnexus', 'uploads'));
+async function countStaging(root: string): Promise<number> {
   try {
     const entries = await fs.readdir(root);
     return entries.filter((e) => e.startsWith('.staging-')).length;

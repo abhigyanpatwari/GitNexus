@@ -139,6 +139,11 @@ function mkdirContained(stageRoot: string, destFile: string, state: DirState): v
   }
 }
 
+export interface IngestOptions {
+  /** Override the staging parent dir (defaults to UPLOAD_ROOT; for tests). */
+  root?: string;
+}
+
 /**
  * Parse and securely write a multipart folder upload into a fresh staging
  * directory under UPLOAD_ROOT. Resolves with the populated staging dir, or
@@ -148,12 +153,14 @@ function mkdirContained(stageRoot: string, destFile: string, state: DirState): v
 export async function ingestUpload(
   req: IncomingMessage,
   limitsOverride?: Partial<IngestLimits>,
+  opts: IngestOptions = {},
 ): Promise<IngestResult> {
   const limits = { ...DEFAULT_INGEST_LIMITS, ...limitsOverride };
-  await fsp.mkdir(UPLOAD_ROOT, { recursive: true });
+  const uploadRoot = opts.root ?? UPLOAD_ROOT;
+  await fsp.mkdir(uploadRoot, { recursive: true });
   // mkdtemp creates the dir mode 0o700 (owner-only); realpath canonicalizes
   // the root so the containment prefix check is exact.
-  const stageRoot = await fsp.realpath(await fsp.mkdtemp(path.join(UPLOAD_ROOT, STAGING_PREFIX)));
+  const stageRoot = await fsp.realpath(await fsp.mkdtemp(path.join(uploadRoot, STAGING_PREFIX)));
 
   let cleaned = false;
   const cleanup = async (): Promise<void> => {
