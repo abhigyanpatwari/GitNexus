@@ -82,6 +82,65 @@ describe('run-analyze module', () => {
   });
 });
 
+describe('collectBranchCacheKeys (#2106 R6)', () => {
+  const writeMeta = async (dir: string, cacheKeys: unknown) => {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ cacheKeys }));
+  };
+
+  it('collects sibling branch keys, excluding the current run dir', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a', 'b']); // flat
+      await writeMeta(path.join(storagePath, 'branches', 'feat'), ['c']);
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      // Excluding the flat dir → only the branch's keys.
+      const r1 = await collectBranchCacheKeys(storagePath, storagePath);
+      expect([...r1.keys].sort()).toEqual(['c']);
+      expect(r1.complete).toBe(true);
+      // Excluding the branch dir → only the flat keys.
+      const r2 = await collectBranchCacheKeys(
+        storagePath,
+        path.join(storagePath, 'branches', 'feat'),
+      );
+      expect([...r2.keys].sort()).toEqual(['a', 'b']);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('single-branch (flat only) excluded → empty (byte-identical prune)', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-solo-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a', 'b']);
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      const r = await collectBranchCacheKeys(storagePath, storagePath);
+      expect(r.keys.size).toBe(0);
+      expect(r.complete).toBe(true);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('a corrupt sibling meta sets complete=false (fail-safe retention)', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-corrupt-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a']);
+      const branchDir = path.join(storagePath, 'branches', 'feat');
+      await fs.mkdir(branchDir, { recursive: true });
+      await fs.writeFile(path.join(branchDir, 'meta.json'), '{ not valid json');
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      const r = await collectBranchCacheKeys(storagePath, storagePath);
+      expect(r.complete).toBe(false);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+});
+
 describe('primaryInversionWarning (#2106 R8)', () => {
   it('warns when the default branch is not the flat-slot owner', async () => {
     const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');

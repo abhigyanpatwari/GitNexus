@@ -59,6 +59,9 @@ describe('multi-branch analyze (#2106)', () => {
       const flatMeta = await loadMeta(flat.storagePath);
       expect(flatMeta?.branch).toBe('main');
       expect(flatMeta?.lastCommit).toBe(mainCommit);
+      // main records its live chunk keys so a later branch prune can keep them.
+      const mainCacheKeys = flatMeta?.cacheKeys ?? [];
+      expect(mainCacheKeys.length).toBeGreaterThan(0);
 
       // Switch to a feature branch with different content and re-analyze.
       git(['checkout', '-b', 'feature/x'], repo);
@@ -84,6 +87,15 @@ describe('multi-branch analyze (#2106)', () => {
       const branchMeta = await loadMeta(branchDir);
       expect(branchMeta?.branch).toBe('feature/x');
       expect(branchMeta?.lastCommit).toBe(featureCommit);
+
+      // #2106 R6: the feature analyze must NOT have evicted main's chunks from
+      // the SHARED parse cache (they were unioned in via main's recorded keys).
+      const { loadParseCache } = await import('../../src/storage/parse-cache.js');
+      const sharedCache = await loadParseCache(flat.storagePath);
+      const onDisk = sharedCache.onDiskKeys ?? new Set<string>();
+      for (const k of mainCacheKeys) {
+        expect(onDisk.has(k), `main chunk ${k} survives the feature prune`).toBe(true);
+      }
 
       // The global registry keeps one entry per path: primary at top level,
       // the feature branch nested under branches[] (#2106 U4).

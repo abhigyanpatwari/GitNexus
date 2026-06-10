@@ -109,6 +109,14 @@ export interface RepoMeta {
    * their own `branch`.
    */
   branch?: string;
+  /**
+   * The parse-cache chunk keys this branch's index needs (#2106 R6). The
+   * parse-cache and durable parsedfile store live ONCE at the repo root and are
+   * shared across branches; recording each branch's live chunk keys lets the
+   * prune step union them so re-analyzing one branch doesn't evict another
+   * branch's still-live shards. Additive/optional; absent in legacy metas.
+   */
+  cacheKeys?: string[];
 }
 
 /**

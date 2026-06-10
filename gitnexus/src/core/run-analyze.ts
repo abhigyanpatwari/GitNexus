@@ -259,6 +259,45 @@ export const primaryInversionWarning = (
   );
 };
 
+/**
+ * Collect the recorded parse-cache chunk keys across the flat + every branch
+ * meta under a flat `.gitnexus` storage, EXCLUDING `excludeDir` (the current
+ * run's own meta dir) so a single-branch repo collects nothing and its prune
+ * stays byte-identical to today (#2106 R6). `complete` is false when a sibling
+ * meta.json exists but fails to parse — callers then retain the whole shared
+ * cache rather than over-evict another branch's still-live shards. Exported for
+ * testing.
+ */
+export const collectBranchCacheKeys = async (
+  storagePath: string,
+  excludeDir?: string,
+): Promise<{ keys: Set<string>; complete: boolean }> => {
+  const keys = new Set<string>();
+  let complete = true;
+  const metaDirs = [storagePath];
+  const branchesDir = path.join(storagePath, 'branches');
+  const slugs = await fs.readdir(branchesDir).catch(() => [] as string[]);
+  for (const slug of slugs) metaDirs.push(path.join(branchesDir, slug));
+  for (const dir of metaDirs) {
+    if (excludeDir && path.resolve(dir) === path.resolve(excludeDir)) continue;
+    let raw: string;
+    try {
+      raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
+    } catch {
+      continue; // no meta here — not a branch index, not a failure
+    }
+    try {
+      const parsed = JSON.parse(raw) as { cacheKeys?: unknown };
+      if (Array.isArray(parsed.cacheKeys)) {
+        for (const k of parsed.cacheKeys) if (typeof k === 'string') keys.add(k);
+      }
+    } catch {
+      complete = false; // present but corrupt → fail-safe toward retention
+    }
+  }
+  return { keys, complete };
+};
+
 export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
@@ -1064,6 +1103,11 @@ export async function runFullAnalysis(
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
+      // chunk hash touched in this scan — cache HITS included (see parse-impl
+      // usedKeys.add) — so it's complete even on an incremental run. Persisted
+      // so a sibling branch's prune can union it and not evict our shards.
+      cacheKeys: [...parseCache.usedKeys],
       incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
     };
     await saveMeta(metaDir, meta);
@@ -1076,6 +1120,22 @@ export async function runFullAnalysis(
     // dead weight; the parse phase populates `usedKeys` as it processes
     // chunks).
     try {
+      // #2106 R6: the parse cache + durable store are shared across branches.
+      // Before pruning to this run's keys, fold in the OTHER branches' recorded
+      // chunk keys so a branch switch doesn't evict their still-live shards.
+      // Adding to usedKeys makes them survive pruneCache AND land in the saved
+      // index (saveParseCache builds the index from usedKeys). Excludes this
+      // run's own meta dir, so a single-branch repo folds in nothing → prune
+      // set byte-identical to today.
+      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      if (complete) {
+        for (const k of siblingKeys) parseCache.usedKeys.add(k);
+      } else {
+        // Fail-safe toward retention: a sibling meta was unreadable, so keep
+        // everything currently loaded rather than evict on incomplete info.
+        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
+        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+      }
       const pruned = pruneCache(parseCache, parseCache.usedKeys);
       if (pruned > 0) {
         log(`Parse cache: pruned ${pruned} stale chunk entries`);
