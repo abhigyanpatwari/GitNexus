@@ -506,6 +506,70 @@ describe('precision floor — multi-declarator conflation (documented FP)', () =
   });
 });
 
+// ── source-discriminated taint state (review fix: multi-source merge) ───────
+
+describe('multi-source identity — distinct sources do not merge at one def', () => {
+  // A spec with two source properties and a sql sanitizer, so the same-source
+  // ∅-intersection case has a kind to neutralize.
+  const MULTI: SourceSinkSanitizerSpec = {
+    sources: [{ kind: 'remote-input', objects: ['req'], properties: ['body', 'query'] }],
+    sinks: [
+      { name: 'exec', kind: 'command-injection', args: [0], global: true },
+      { name: 'query', kind: 'sql-injection', args: [0], anyReceiver: true },
+    ],
+    sanitizers: [{ name: 'escape', neutralizes: ['sql-injection'], global: true }],
+  };
+
+  it('cond ? req.body : req.query into one var → TWO findings (one per source)', () => {
+    const r = analyze(`function f(req, cond) { const x = cond ? req.body : req.query; exec(x); }`, {
+      spec: MULTI,
+    });
+    expect(r.findings).toHaveLength(2);
+    const props = r.findings.map((f) => f.source.property).sort();
+    expect(props).toEqual(['body', 'query']);
+  });
+
+  it('req.body + req.query into one var → TWO findings', () => {
+    const r = analyze(`function f(req) { const x = req.body + req.query; exec(x); }`, {
+      spec: MULTI,
+    });
+    expect(r.findings).toHaveLength(2);
+  });
+
+  it('same-source two-path flow → ONE finding (one root source occurrence)', () => {
+    // `req.body` is read ONCE (one source occurrence → one root identity); the
+    // single tainted `x` then flows two ways into `c`. Both paths share the
+    // same source discriminator, so they converge on one state for `c` and
+    // produce exactly one finding — the source dimension must not split a
+    // single source occurrence by downstream path.
+    const r = analyze(
+      `function f(req, cond) { const x = req.body; const c = cond ? id(x) : x; db.query(c); }`,
+      { spec: MULTI },
+    );
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0].sinkKind).toBe('sql-injection');
+  });
+
+  it('one source re-derived into one sink var → ONE finding, no doubling', () => {
+    // A single source reaching a single sink binding via a re-derived path
+    // dedups to one finding (findingsByIdentity); the source dimension in the
+    // state key must not split this same-source flow.
+    const r = analyze(`function f(req, cond) { let x = req.body; if (cond) { x = x; } exec(x); }`, {
+      spec: MULTI,
+    });
+    expect(r.findings).toHaveLength(1);
+  });
+
+  it('two sources through a loop back-edge terminate with TWO findings', () => {
+    const r = analyze(
+      `function f(req, n) { let x = req.body; for (let i = 0; i < n; i++) { x = x + req.query; } exec(x); }`,
+      { spec: MULTI },
+    );
+    expect(r.status).toBe('computed');
+    expect(r.findings).toHaveLength(2);
+  });
+});
+
 // ── kind-set exclusion model (real built-in model) ──────────────────────────
 
 describe('kind-set exclusions — sanitizers neutralize their kinds only', () => {

@@ -550,6 +550,22 @@ export function computeTaintFlows(
   const taints = new Map<string, TaintState>();
   const queue: string[] = [];
 
+  /** The (binding, def-point) portion of a state key — the def→use fact-table
+   *  lookup key, source-independent. */
+  const defKey = (bindingIdx: number, point: ProgramPoint): string =>
+    `${bindingIdx}:${pointKey(point)}`;
+  /** Full taint-state key: the def-point portion plus a ROOT source-occurrence
+   *  discriminator ({point, siteIndex} — the same source fields recordFinding's
+   *  identity uses, deliberately excluding `kind`). Distinct sources reaching
+   *  one def get distinct states, so a second source is no longer dropped
+   *  (KTD6); same-source multi-path derivations still share a key so their
+   *  exclusion sets intersect (the raw arm soundly wins). */
+  const stateKey = (
+    bindingIdx: number,
+    point: ProgramPoint,
+    source: TaintSourceOccurrence,
+  ): string => `${defKey(bindingIdx, point)}#${pointKey(source.point)}:${source.siteIndex}`;
+
   const deriveTaint = (
     bindingIdx: number,
     point: ProgramPoint,
@@ -558,7 +574,7 @@ export function computeTaintFlows(
     source: TaintSourceOccurrence,
     viaCall: boolean,
   ): void => {
-    const key = `${bindingIdx}:${pointKey(point)}`;
+    const key = stateKey(bindingIdx, point, source);
     const existing = taints.get(key);
     if (!existing) {
       taints.set(key, {
@@ -740,7 +756,7 @@ export function computeTaintFlows(
   // ── rule (a): worklist over def→use facts ─────────────────────────────────
   const factsByDef = new Map<string, DefUseFact[]>();
   for (const f of defUse.facts) {
-    const key = `${f.bindingIdx}:${pointKey(f.def)}`;
+    const key = defKey(f.bindingIdx, f.def);
     const list = factsByDef.get(key);
     if (list) list.push(f);
     else factsByDef.set(key, [f]);
@@ -754,7 +770,9 @@ export function computeTaintFlows(
     const b = t.bindingIdx;
     const E = t.exclusions;
 
-    for (const fact of factsByDef.get(key) ?? []) {
+    // Facts are keyed by (binding, def-point) only — look up by the def portion
+    // of this state, not the source-discriminated state key.
+    for (const fact of factsByDef.get(defKey(b, t.point)) ?? []) {
       const ctx = contextAt(fact.use.blockIndex, fact.use.stmtIndex);
       if (!ctx) continue;
 
