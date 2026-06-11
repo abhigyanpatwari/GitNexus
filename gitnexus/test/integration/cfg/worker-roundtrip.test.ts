@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
@@ -181,5 +182,91 @@ describe('#2082 M2 — the REACHING_DEF emit cap does NOT perturb the chunk key'
       maxReachingDefEdgesPerFunction: 1,
     });
     expect(withExtra).toBe(base);
+  });
+});
+
+describe('#2083 M3 U1 — taint sites cross the worker/store boundary intact', () => {
+  const siteSource = `function handler(req, x) {
+    const cp = require('child_process');
+    const b = req.body;
+    cp.exec(escape(x), b);
+    sql\`select \${x}\`;
+    run(...b);
+  }`;
+
+  function siteCfgs() {
+    const { cfgs } = collectFunctionCfgs(tsRoot(siteSource), tsVisitor(), 'sites.ts');
+    expect(cfgs).toHaveLength(1);
+    return cfgs;
+  }
+
+  function allSites(cfgs: readonly { blocks: readonly { statements?: readonly unknown[] }[] }[]) {
+    return cfgs.flatMap((c) =>
+      c.blocks.flatMap((b) =>
+        (b.statements ?? []).flatMap((s) => (s as { sites?: unknown[] }).sites ?? []),
+      ),
+    );
+  }
+
+  it('sites survive the worker JSON boundary (mapReplacer/mapReviver) byte-equal', () => {
+    const cfgs = siteCfgs();
+    expect(allSites(cfgs).length).toBeGreaterThan(0);
+    const round = JSON.parse(JSON.stringify(cfgs, mapReplacer), mapReviver);
+    expect(round).toEqual(cfgs);
+    expect(allSites(round)).toEqual(allSites(cfgs));
+  });
+
+  it('sites survive a frozen re-wrap + the DURABLE store interning reviver (no nodeId-dedup loss)', async () => {
+    const { makeInterningReviver } = await import('../../../src/storage/parsedfile-store.js');
+    const cfgs = siteCfgs();
+    // The pipeline deep-freezes ParsedFiles and re-wraps via spread — the CFG
+    // payload itself rides by reference and must tolerate being frozen.
+    const deepFreeze = (o: unknown): unknown => {
+      if (o && typeof o === 'object') {
+        for (const v of Object.values(o)) deepFreeze(v);
+        Object.freeze(o);
+      }
+      return o;
+    };
+    const frozen = (deepFreeze(cfgs) as typeof cfgs).map((c) => ({ ...c }));
+    const raw = JSON.stringify(frozen, mapReplacer);
+    // The durable parsedfile-cache revives with the interning reviver, which
+    // DEDUPS any object carrying a string `nodeId` field — SiteRecord must
+    // never trip it (the KTD2 "no field named nodeId" obligation).
+    const revived = JSON.parse(raw, makeInterningReviver(new Map(), new Map()));
+    expect(revived).toEqual(frozen);
+    expect(allSites(revived)).toEqual(allSites(cfgs));
+  });
+});
+
+describe('#2083 M3 U1 — pdg chunk-key namespace version (flag-off keys untouched)', () => {
+  const entries = [
+    { filePath: 'b.ts', contentHash: 'h2' },
+    { filePath: 'a.ts', contentHash: 'h1' },
+  ];
+
+  it('flag-off chunk keys are BYTE-IDENTICAL across the M3 namespace bump (pinned hash)', () => {
+    // Independent reconstruction of the pre-namespace key format: pdg-off
+    // keys are sha256 over the sorted filePath:contentHash lines and NOTHING
+    // else. This pin fails if the version token ever leaks into non-pdg keys
+    // (which would force a cold re-parse on every flag-off user).
+    const expected = createHash('sha256').update(Buffer.from('a.ts:h1\nb.ts:h2')).digest('hex');
+    expect(computeChunkHash(entries, false)).toBe(expected);
+    expect(computeChunkHash(entries)).toBe(expected);
+  });
+
+  it('pdg-mode keys CHANGED from the M2-era namespace (v1 chunks invalidate on upgrade)', () => {
+    // The M2-era pdg namespace was `pdg:1;maxFn=<v>` — an M3 binary must not
+    // serve a v1 chunk (its cfgSideChannel lacks `sites`, so taint would
+    // silently no-op on warm caches).
+    const joined = 'a.ts:h1\nb.ts:h2';
+    const m2Key = createHash('sha256')
+      .update(Buffer.from(`pdg:1;maxFn=def\n${joined}`))
+      .digest('hex');
+    expect(computeChunkHash(entries, { pdg: true })).not.toBe(m2Key);
+    // and the v2 key is still deterministic + order-independent
+    expect(computeChunkHash([...entries].reverse(), { pdg: true })).toBe(
+      computeChunkHash(entries, { pdg: true }),
+    );
   });
 });
