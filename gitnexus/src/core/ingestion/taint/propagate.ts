@@ -509,16 +509,15 @@ export function computeTaintFlows(
       });
   };
 
-  const recordFinding = (
+  // KTD6 statement-level finding identity: source occurrence + sink occurrence
+  // + kind (NOT entryName). Computed standalone so the worklist can dedup-check
+  // BEFORE the cost of chainHops (first write wins; dedup-before-budget).
+  const findingKey = (
     sinkKind: SinkKind,
     source: TaintSourceOccurrence,
-    sink: TaintSinkOccurrence,
-    hops: TaintHop[],
-    hopsTruncated: boolean,
-  ): void => {
-    // KTD6 statement-level identity: source occurrence + sink occurrence +
-    // kind. First write wins (one path per finding); dedup-before-budget.
-    const key = [
+    sink: Pick<TaintSinkOccurrence, 'point' | 'siteIndex' | 'argIndex' | 'bindingIdx'>,
+  ): string =>
+    [
       sinkKind,
       pointKey(source.point),
       source.siteIndex,
@@ -529,6 +528,15 @@ export function computeTaintFlows(
       sink.argIndex,
       sink.bindingIdx,
     ].join('|');
+
+  const recordFinding = (
+    sinkKind: SinkKind,
+    source: TaintSourceOccurrence,
+    sink: TaintSinkOccurrence,
+    hops: TaintHop[],
+    hopsTruncated: boolean,
+  ): void => {
+    const key = findingKey(sinkKind, source, sink);
     if (findingsByIdentity.has(key)) return;
     const maxHops = limits?.maxHops && limits.maxHops > 0 ? limits.maxHops : Infinity;
     let truncated = hopsTruncated;
@@ -762,8 +770,21 @@ export function computeTaintFlows(
     else factsByDef.set(key, [f]);
   }
 
-  while (queue.length > 0) {
-    const key = queue.shift() as string;
+  // Strict-FIFO worklist via a head cursor (not Array.shift, which is O(N) per
+  // dequeue). FIFO order is load-bearing beyond perf: chainHops reconstructs
+  // hops from the live `taints` map, whose parentKey/source/viaCall are
+  // rewritten order-sensitively on monotone shrink — so hop-content
+  // determinism is contingent on dequeue order matching enqueue order. Do NOT
+  // sort or reprioritize the worklist.
+  let head = 0;
+  while (head < queue.length) {
+    const key = queue[head++];
+    // Reclaim the consumed prefix periodically so the array doesn't grow
+    // unbounded across a long run (order-preserving — pure memory hygiene).
+    if (head > 1024 && head * 2 > queue.length) {
+      queue.splice(0, head);
+      head = 0;
+    }
     const t = taints.get(key) as TaintState;
     if (t.processedSize === t.exclusions.size) continue; // no-op requeue
     t.processedSize = t.exclusions.size;
@@ -786,6 +807,16 @@ export function computeTaintFlows(
             if (E.has(kind)) continue; // suppressed at def time; kill already recorded
             const justify = paths.find((p) => !p.kinds.has(kind));
             if (justify) {
+              const sinkOcc = {
+                point: ctx.point,
+                siteIndex,
+                argIndex: argPos,
+                bindingIdx: b,
+                entryName: sink.entry.name,
+              };
+              // Dedup BEFORE chainHops: already-recorded identities discard
+              // their hop chain anyway (first write wins), so skip the walk.
+              if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
               const chain = chainHops(key);
               chain.hops.push({
                 bindingIdx: b,
@@ -793,19 +824,7 @@ export function computeTaintFlows(
                 point: ctx.point,
                 ...(justify.viaCall ? { viaCall: true } : {}),
               });
-              recordFinding(
-                kind,
-                t.source,
-                {
-                  point: ctx.point,
-                  siteIndex,
-                  argIndex: argPos,
-                  bindingIdx: b,
-                  entryName: sink.entry.name,
-                },
-                chain.hops,
-                chain.truncated,
-              );
+              recordFinding(kind, t.source, sinkOcc, chain.hops, chain.truncated);
             } else {
               // EVERY path interposed — value-position kill(s) held.
               for (const p of paths) {
