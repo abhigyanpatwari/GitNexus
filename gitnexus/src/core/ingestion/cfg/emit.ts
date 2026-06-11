@@ -168,6 +168,9 @@ export const hasEmitSafeFacts = (cfg: FunctionCfg): boolean => {
         return false;
       }
       if (!s.defs.every(inRange) || !s.uses.every(inRange)) return false;
+      if (s.mayDefs !== undefined) {
+        if (!Array.isArray(s.mayDefs) || !s.mayDefs.every(inRange)) return false;
+      }
     }
   }
   return true;

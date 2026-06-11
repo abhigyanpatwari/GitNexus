@@ -420,7 +420,61 @@ describe('TS/JS def/use harvest — review-pass regressions (#2082)', () => {
   });
 });
 
-describe('TS/JS def/use harvest — tri-review harvest fixes (#2160 review)', () => {
+describe('TS/JS def/use harvest — conditional contexts are MAY-defs (tri-review P1)', () => {
+  it('short-circuit RHS def lands in mayDefs, not defs', () => {
+    const cfg = cfgOf(`function f(a) { let x = source(); if (a && (x = clean())) {} sink(x); }`);
+    const x = bindingIdx(cfg, 'x');
+    const cond = cfg.blocks.find((b) => b.text.includes('a && (x = clean())'))!;
+    const fact = cond.statements!.find((s) => (s.mayDefs ?? []).includes(x));
+    expect(fact).toBeDefined();
+    expect(fact!.defs).not.toContain(x);
+  });
+
+  it('nullish lazy-init (`c ?? (c = load())`) and ternary-arm defs are may-defs', () => {
+    const cfg = cfgOf(`function f(c, k) {
+      const v = c ?? (c = load());
+      const w = k ? (c = a()) : b();
+      use(v, w, c);
+    }`);
+    const c = bindingIdx(cfg, 'c');
+    const all = allFacts(cfg);
+    expect(all.filter((s) => (s.mayDefs ?? []).includes(c))).toHaveLength(2);
+    // the only MUST def of c is its ENTRY param record — neither conditional
+    // assignment is a must-def
+    const mustDefs = all.filter((s) => s.defs.includes(c));
+    expect(mustDefs).toHaveLength(1);
+    expect(mustDefs[0].line).toBe(1); // the param record
+  });
+
+  it('switch case-test defs are may-defs on the dispatch block', () => {
+    const cfg = cfgOf(`function f(v) {
+      let y = taint();
+      switch (v) {
+        case probe(): sinkA(y); break;
+        case (y = 1): sinkB(); break;
+      }
+    }`);
+    const y = bindingIdx(cfg, 'y');
+    const dispatch = cfg.blocks.find((b) => b.text === '(v)')!;
+    expect(dispatch.statements!.some((s) => (s.mayDefs ?? []).includes(y))).toBe(true);
+    expect(dispatch.statements!.some((s) => s.defs.includes(y))).toBe(false);
+  });
+
+  it('logical-assignment operators (`x ||= v`) write conditionally — may-def, but the read is a use', () => {
+    const cfg = cfgOf(`function f(x) { x ||= fallback(); use(x); }`);
+    const x = bindingIdx(cfg, 'x');
+    const stmt = allFacts(cfg).find((s) => (s.mayDefs ?? []).includes(x));
+    expect(stmt).toBeDefined();
+    expect(stmt!.defs).not.toContain(x);
+    expect(stmt!.uses).toContain(x);
+  });
+
+  it('plain compound assignment (`x += 1`) stays a MUST def', () => {
+    const cfg = cfgOf(`function f(x) { x += 1; }`);
+    const x = bindingIdx(cfg, 'x');
+    expect(allFacts(cfg).some((s) => s.defs.includes(x))).toBe(true);
+  });
+
   it('bare `var x;` is a runtime no-op — no def fact (initialized var still defs)', () => {
     const cfg = cfgOf(`function f() { x = source(); var x; var y = 1; sink(x, y); }`);
     const x = bindingIdx(cfg, 'x');

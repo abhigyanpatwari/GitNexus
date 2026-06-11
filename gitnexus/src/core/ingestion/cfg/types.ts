@@ -49,11 +49,20 @@ export interface BindingEntry {
  * lists its binding in BOTH. Self-describing — `line` is carried here, never
  * inferred from the block's text fragments (facts-only records exist, e.g.
  * params on ENTRY and catch params).
+ *
+ * `mayDefs` (tri-review P1): defs harvested inside CONDITIONALLY-EVALUATED
+ * subexpressions — short-circuit right operands (`a && (x = v)`,
+ * `c ?? (c = load())`), ternary arms, logical-assignment operators, and
+ * switch case-test expressions. The solver treats them as GEN WITHOUT KILL:
+ * treating them as must-defs would falsely kill the prior def on the
+ * not-taken path (a taint false negative on core JS idioms). Optional —
+ * absent means none.
  */
 export interface StatementFacts {
   readonly line: number;
   readonly defs: readonly number[];
   readonly uses: readonly number[];
+  readonly mayDefs?: readonly number[];
 }
 
 /** A basic block: a maximal straight-line run of statements between leaders. */

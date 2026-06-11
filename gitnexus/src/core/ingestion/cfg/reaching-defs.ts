@@ -16,13 +16,15 @@
  *
  * COMPLEXITY DISCIPLINE (the four-times-repeated repo bug shape is per-item
  * re-derivation inside the loop): def-sets are SHARED BY REFERENCE, never
- * deep-copied — RD's kill is total per binding, so a transfer either aliases
- * the incoming set or replaces it with a fresh singleton. Single-predecessor
- * blocks alias the predecessor's OUT map outright; multi-pred merges union
- * only bindings whose incoming sets differ by reference. Iteration is reverse
- * post-order, seeded with every block (unreachable blocks keep ⊥ IN — correct,
- * their defs reach nothing). Convergence: sets grow monotonically within the
- * finite def-site universe ⇒ ≤ loop-depth+1 passes in practice.
+ * deep-copied — a MUST def's kill is total per binding, so a transfer either
+ * aliases the incoming set or replaces it; a MAY def (conditional context —
+ * see StatementFacts.mayDefs) unions WITHOUT killing via a copy-on-extend.
+ * Single-predecessor blocks alias the predecessor's OUT map outright;
+ * multi-pred merges union only bindings whose incoming sets differ by
+ * reference. Iteration is reverse post-order, seeded with every block
+ * (unreachable blocks keep ⊥ IN — correct, their defs reach nothing).
+ * Convergence: sets grow monotonically within the finite def-site universe ⇒
+ * ≤ loop-depth+1 passes in practice.
  *
  * `limits.maxFacts` bounds materialization: facts are O(defs×uses) BY SPEC in
  * merge-heavy code (N branch-arm defs × N later uses = N² facts), and a
@@ -149,26 +151,40 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
   }
   for (const list of succs) list.sort((a, b) => a - b);
 
-  // ── per-block GEN (last def per binding) + def/use telemetry ────────────
-  // gen[b]: bindingIdx → singleton def-set of the block's LAST def of it.
-  const gen: (Map<number, DefSet> | null)[] = new Array(n).fill(null);
+  // ── per-block GEN + def/use telemetry ────────────────────────────────────
+  // gen[b]: bindingIdx → { set, kills }. A MUST def resets the accumulated
+  // set (kill is total); a MAY def (conditionally-evaluated context — see
+  // StatementFacts.mayDefs) only ADDS: the binding's incoming defs survive,
+  // so the transfer is out[x] = kills ? set : in[x] ∪ set.
+  interface GenEntry {
+    set: DefSet;
+    kills: boolean;
+  }
+  const gen: (Map<number, GenEntry> | null)[] = new Array(n).fill(null);
   const defLine = new Map<number, number>(); // defKey → source line
   let defCount = 0;
   let useCount = 0;
   for (const b of blocks) {
     const stmts = b.statements;
     if (!stmts || stmts.length === 0) continue;
-    let g: Map<number, DefSet> | null = null;
+    let g: Map<number, GenEntry> | null = null;
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i];
       useCount += s.uses.length;
-      for (const d of s.defs) {
+      const key = defKey(b.index, i);
+      const record = (d: number, kills: boolean): void => {
         defCount += 1;
-        const key = defKey(b.index, i);
         defLine.set(key, s.line);
         if (!g) g = new Map();
-        g.set(d, new Set([key])); // later defs overwrite — kill is total
-      }
+        const entry = g.get(d);
+        if (kills || !entry) {
+          g.set(d, { set: new Set([key]), kills: kills || (entry?.kills ?? false) });
+        } else {
+          entry.set.add(key); // may-def accumulates; never clears
+        }
+      };
+      if (s.mayDefs) for (const d of s.mayDefs) record(d, false);
+      for (const d of s.defs) record(d, true);
     }
     gen[b.index] = g;
   }
@@ -199,14 +215,22 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
       inSets[b] = inB;
 
       const g = gen[b];
-      // OUT = overlay(IN) replacing only GEN'd bindings with singletons. When
+      // OUT = overlay(IN): a KILLING gen entry replaces the binding's set; a
+      // may-def-only entry unions with the incoming set (never kills). When
       // nothing is genned, OUT aliases IN outright.
       let outB: Lattice;
       if (!g) {
         outB = inB;
       } else {
         outB = new Map(inB); // copies REFERENCES, never set contents
-        for (const [bindingIdx, set] of g) outB.set(bindingIdx, set);
+        for (const [bindingIdx, entry] of g) {
+          if (entry.kills) {
+            outB.set(bindingIdx, entry.set);
+          } else {
+            const incoming = inB.get(bindingIdx);
+            outB.set(bindingIdx, incoming ? unionSets(incoming, entry.set) : entry.set);
+          }
+        }
       }
 
       const requeue = (s: number): void => {
@@ -243,8 +267,9 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
       // defs ∪ the same-statement def. Sound over-approximation — the extra
       // self-fact on compound assignments is harmless; missing the
       // assign-and-test def→use (the most common JS idiom) would be a taint
-      // false negative.
-      const sameStmtDefs = s.defs.length > 0 ? new Set(s.defs) : null;
+      // false negative. May-defs join the self-key set the same way.
+      const sameStmtDefs =
+        s.defs.length > 0 || s.mayDefs?.length ? new Set([...s.defs, ...(s.mayDefs ?? [])]) : null;
       for (const u of s.uses) {
         const reaching = (reach ?? inSets[b.index]).get(u);
         const selfKey = sameStmtDefs?.has(u) ? defKey(b.index, i) : undefined;
@@ -265,6 +290,15 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
             def: { blockIndex: defBlock, stmtIndex: defStmt, line: defLine.get(key) ?? s.line },
             use: { blockIndex: b.index, stmtIndex: i, line: s.line },
           });
+        }
+      }
+      if (s.mayDefs?.length) {
+        // Gen WITHOUT kill: the conditional def joins the binding's set.
+        if (!reach) reach = new Map(inSets[b.index]);
+        const key = defKey(b.index, i);
+        for (const d of s.mayDefs) {
+          const prior = reach.get(d);
+          reach.set(d, prior ? unionSets(prior, new Set([key])) : new Set([key]));
         }
       }
       if (s.defs.length > 0) {
@@ -355,6 +389,22 @@ function mergePreds(
     if (p.viaThrow) mergeOne(inSets[p.from]); // exception may fire pre-defs
   }
   return merged;
+}
+
+/** Order-stable union of two def-sets (shares `a` when `b` adds nothing). */
+function unionSets(a: DefSet, b: DefSet): DefSet {
+  let target = a;
+  let copied = false;
+  for (const key of b) {
+    if (!target.has(key)) {
+      if (!copied) {
+        target = new Set(a);
+        copied = true;
+      }
+      target.add(key);
+    }
+  }
+  return target;
 }
 
 /** Per-binding equality with a reference fast path (sets only ever grow). */

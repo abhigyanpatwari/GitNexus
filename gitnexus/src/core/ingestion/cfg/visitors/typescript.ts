@@ -528,10 +528,13 @@ class TsCfgWalk {
     // `case x:` test expressions live in no block (caseStatements filters the
     // value node out) — harvest their uses onto the dispatch block, one record
     // per case in source order (a sound over-approximation of JS's in-order
-    // case evaluation).
+    // case evaluation). Conditionally: a later case test only evaluates when
+    // earlier cases didn't match, so any def inside one is a may-def — as a
+    // must-def on the always-executed dispatch block it would falsely kill
+    // prior defs for earlier-matching arms (tri-review).
     for (const c of cases) {
       const caseValue = c.childForFieldName('value');
-      if (caseValue) this.builder.attachFacts(dispatch, this.harvest.facts(caseValue));
+      if (caseValue) this.builder.attachFacts(dispatch, this.harvest.factsConditional(caseValue));
     }
 
     const caseResults = cases.map((c) => this.visitSeq(this.caseStatements(c)));

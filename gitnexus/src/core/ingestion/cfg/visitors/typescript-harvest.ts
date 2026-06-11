@@ -105,6 +105,13 @@ export class TsHarvester {
    * parent-chain walk quadratic (tri-review perf finding).
    */
   private readonly nearestScopeCache = new Map<number, Scope>();
+  /**
+   * >0 while walking a conditionally-evaluated subexpression (short-circuit
+   * right operand, ternary arm, logical-assignment target, case test). Defs
+   * found there are MAY-defs — gen without kill (tri-review P1: a must-def
+   * here falsely kills the prior def on the not-taken path).
+   */
+  private conditionalDepth = 0;
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -302,6 +309,17 @@ export class TsHarvester {
     return acc.finish();
   }
 
+  /**
+   * Facts for an expression whose WHOLE evaluation is conditional (switch
+   * case tests, which only run when earlier cases didn't match) — every def
+   * inside becomes a may-def.
+   */
+  factsConditional(node: SyntaxNode): StatementFacts {
+    const acc = new FactAccumulator(node.startPosition.row + 1);
+    this.conditional(() => this.walkValue(node, acc));
+    return acc.finish();
+  }
+
   /** Facts for a `for (left in/of right)` head: left binds/assigns, right is used. */
   forInHeadFacts(stmt: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(stmt.startPosition.row + 1);
@@ -380,11 +398,18 @@ export class TsHarvester {
   }
 
   private def(nameNode: SyntaxNode, acc: FactAccumulator): void {
-    acc.addDef(this.resolve(nameNode));
+    if (this.conditionalDepth > 0) acc.addMayDef(this.resolve(nameNode));
+    else acc.addDef(this.resolve(nameNode));
   }
 
-  private use(nameNode: SyntaxNode, acc: FactAccumulator): void {
-    acc.addUse(this.resolve(nameNode));
+  /** Run `fn` with defs demoted to may-defs (conditionally-evaluated context). */
+  private conditional(fn: () => void): void {
+    this.conditionalDepth++;
+    try {
+      fn();
+    } finally {
+      this.conditionalDepth--;
+    }
   }
 
   /** Strip wrappers that don't change the lvalue (`(x) += 1`, `x! ++`). */
@@ -396,6 +421,10 @@ export class TsHarvester {
       n = inner;
     }
     return n;
+  }
+
+  private use(nameNode: SyntaxNode, acc: FactAccumulator): void {
+    acc.addUse(this.resolve(nameNode));
   }
 
   /** Value-position walk: collect uses; route def positions to the pattern walk. */
@@ -442,18 +471,27 @@ export class TsHarvester {
         return;
       }
       case 'augmented_assignment_expression': {
-        // `x += y` both defines and uses x.
+        // `x += y` both defines and uses x. The logical-assignment operators
+        // (`||=`, `&&=`, `??=`) only WRITE conditionally — their def is a
+        // may-def (the read always happens).
         const left = node.childForFieldName('left')
           ? this.unwrapLvalue(node.childForFieldName('left') as SyntaxNode)
           : null;
         const right = node.childForFieldName('right');
+        const op = node.childForFieldName('operator')?.type ?? '';
+        const logical = op === '||=' || op === '&&=' || op === '??=';
         if (left?.type === 'identifier') {
-          this.def(left, acc);
+          if (logical) this.conditional(() => this.def(left, acc));
+          else this.def(left, acc);
           this.use(left, acc);
         } else if (left) {
           this.walkValue(left, acc); // member/subscript target — uses only
         }
-        if (right) this.walkValue(right, acc);
+        // The RHS of a logical assignment is itself conditionally evaluated.
+        if (right) {
+          if (logical) this.conditional(() => this.walkValue(right, acc));
+          else this.walkValue(right, acc);
+        }
         return;
       }
       case 'update_expression': {
@@ -465,6 +503,34 @@ export class TsHarvester {
         } else if (arg) {
           this.walkValue(arg, acc);
         }
+        return;
+      }
+      case 'binary_expression': {
+        // Short-circuit operators evaluate their RIGHT operand conditionally:
+        // a def inside it (`a && (x = clean())`, `c ?? (c = load())`) must be
+        // a may-def or the not-taken path's prior def is falsely killed
+        // (tri-review P1). Other binary operators evaluate both sides.
+        const left = node.childForFieldName('left');
+        const right = node.childForFieldName('right');
+        const op = node.childForFieldName('operator')?.type ?? '';
+        if (left) this.walkValue(left, acc);
+        if (right) {
+          if (op === '&&' || op === '||' || op === '??') {
+            this.conditional(() => this.walkValue(right, acc));
+          } else {
+            this.walkValue(right, acc);
+          }
+        }
+        return;
+      }
+      case 'ternary_expression': {
+        // Each arm is conditionally evaluated — defs inside are may-defs.
+        const cond = node.childForFieldName('condition');
+        const consequence = node.childForFieldName('consequence');
+        const alternative = node.childForFieldName('alternative');
+        if (cond) this.walkValue(cond, acc);
+        if (consequence) this.conditional(() => this.walkValue(consequence, acc));
+        if (alternative) this.conditional(() => this.walkValue(alternative, acc));
         return;
       }
       case 'class_declaration': {
@@ -543,8 +609,10 @@ export class TsHarvester {
 class FactAccumulator {
   private readonly defs: number[] = [];
   private readonly uses: number[] = [];
+  private readonly mayDefs: number[] = [];
   private readonly defSeen = new Set<number>();
   private readonly useSeen = new Set<number>();
+  private readonly mayDefSeen = new Set<number>();
 
   constructor(private readonly line: number) {}
 
@@ -554,6 +622,13 @@ class FactAccumulator {
     this.defs.push(idx);
   }
 
+  /** A def that may not execute (conditional context) — gen without kill. */
+  addMayDef(idx: number): void {
+    if (this.mayDefSeen.has(idx)) return;
+    this.mayDefSeen.add(idx);
+    this.mayDefs.push(idx);
+  }
+
   addUse(idx: number): void {
     if (this.useSeen.has(idx)) return;
     this.useSeen.add(idx);
@@ -561,7 +636,7 @@ class FactAccumulator {
   }
 
   defCount(): number {
-    return this.defs.length;
+    return this.defs.length + this.mayDefs.length;
   }
 
   useCount(): number {
@@ -569,6 +644,13 @@ class FactAccumulator {
   }
 
   finish(): StatementFacts {
-    return { line: this.line, defs: this.defs, uses: this.uses };
+    return {
+      line: this.line,
+      defs: this.defs,
+      uses: this.uses,
+      // Optional field stays absent when empty — keeps the serialized
+      // side-channel payload lean (most statements have no may-defs).
+      ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
+    };
   }
 }

@@ -422,6 +422,43 @@ describe('computeReachingDefs — parser-direct acceptance (with U1/U2)', () => 
 });
 
 describe('computeReachingDefs — tri-review soundness fixes (#2160 review)', () => {
+  it('may-def gen does NOT kill: prior def survives a conditional assignment (hand-built)', () => {
+    // block 2: def x. block 3: stmt with MAY-def of x. block 4: use x.
+    const cfg = mkCfg(
+      [
+        {},
+        {},
+        { stmts: [stmt(10, [0])] },
+        { stmts: [{ line: 20, defs: [], uses: [], mayDefs: [0] }] },
+        { stmts: [stmt(30, [], [0])] },
+      ],
+      [
+        [0, 2],
+        [2, 3],
+        [3, 4],
+        [4, 1],
+      ],
+      ['x'],
+    );
+    const r = computeReachingDefs(cfg);
+    // BOTH the unconditional def and the conditional one reach the use
+    expect(render(r.facts).sort()).toEqual(['2:0->4:0:0', '3:0->4:0:0']);
+  });
+
+  it('short-circuit conditional def: the not-taken path keeps the prior def (parser-direct, P1)', () => {
+    const cfg = cfgOf(`function f(a) {
+      let x = source();
+      if (a && (x = clean())) {}
+      sink(x);
+    }`);
+    const [x] = nameIdx(cfg, 'x');
+    const r = computeReachingDefs(cfg);
+    const sinkUses = r.facts.filter((f) => f.bindingIdx === x && f.use.line === 4);
+    // BOTH source (line 2) and clean (line 3) reach sink — pre-fix, source was
+    // falsely killed (taint false negative on the lazy-init idiom)
+    expect(new Set(sinkUses.map((f) => f.def.line))).toEqual(new Set([2, 3]));
+  });
+
   it('a block with ≥ STMT_STRIDE statements reports overflow with zero facts (no aliasing)', () => {
     const shared = { line: 1, defs: [], uses: [] };
     const huge = new Array(1 << 21).fill(shared);
