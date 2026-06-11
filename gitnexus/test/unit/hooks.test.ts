@@ -842,9 +842,513 @@ describe('Cross-platform DB lock probe (source)', () => {
       expect(p).toContain('GITNEXUS_HOOK_LSOF_PATH');
       expect(p).toContain('GITNEXUS_HOOK_POWERSHELL_PATH');
       expect(p).toContain('GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS');
+      // #2163: lsof/ps orphan containment via a self-tested coreutils
+      // timeout/gtimeout wrapper.
+      expect(p).toContain('GITNEXUS_HOOK_TIMEOUT_PATH');
+      expect(p).toContain('resolveUnixGuardTimeout');
+    });
+  }
+
+  // T5 (#2163): the two probe copies were only kept in sync by convention
+  // (setup.ts copies the canonical gitnexus/hooks/claude/ file; the plugin
+  // ships its own). Enforce byte-parity in CI, mirroring the
+  // resolve-analyze-cmd.cjs parity test. `.gitattributes` pins `eol=lf`
+  // repo-wide, so the byte comparison is safe on the Windows lane too.
+  it('keeps the two hook-db-lock-probe.cjs copies byte-identical', () => {
+    expect(fs.readFileSync(CJS_HOOK_DB_PROBE, 'utf-8')).toBe(
+      fs.readFileSync(PLUGIN_HOOK_DB_PROBE, 'utf-8'),
+    );
+  });
+});
+
+// ─── Source: hook slot must gate the DB-owner probe (#2163) ──────────
+
+describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
+  const ANTIGRAVITY_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'hooks',
+    'antigravity',
+    'gitnexus-antigravity-hook.cjs',
+  );
+
+  // T1: pin cheap guards → acquireHookSlot → probe. The probe spawns lsof/ps,
+  // so it must sit BEHIND the per-repo slot cap; and the acquire must stay
+  // AFTER the cheap gating (extractPattern), or every tool call churns slot
+  // files. The antigravity adapter splits the cheap gating (extractPattern in
+  // buildAfterToolContext) from probe+augment (runAugment), so its slice
+  // spans both functions to express the same call-order contract.
+  for (const [label, hookPath, sliceStart, sliceEnd] of [
+    ['CJS', CJS_HOOK, 'function handlePreToolUse', 'function handlePostToolUse'],
+    ['Plugin', PLUGIN_HOOK, 'function handlePreToolUse', 'function handlePostToolUse'],
+    [
+      'Antigravity',
+      ANTIGRAVITY_HOOK,
+      'function buildAfterToolContext',
+      'function buildStaleIndexHint',
+    ],
+  ] as const) {
+    it(`${label}: extractPattern → acquireHookSlot → hasGitNexusServerOwner`, () => {
+      const source = fs.readFileSync(hookPath, 'utf-8');
+      const start = source.indexOf(sliceStart);
+      const end = source.indexOf(sliceEnd);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const slice = source.slice(start, end);
+      const patternIdx = slice.indexOf('extractPattern(');
+      const acquireIdx = slice.indexOf('acquireHookSlot(');
+      const probeIdx = slice.indexOf('hasGitNexusServerOwner(');
+      expect(patternIdx).toBeGreaterThanOrEqual(0);
+      expect(acquireIdx).toBeGreaterThan(patternIdx);
+      expect(probeIdx).toBeGreaterThan(acquireIdx);
     });
   }
 });
+
+// ─── Behavior: slot-gated probe + wrapper-reaped orphans (#2163) ─────
+
+describe.skipIf(process.platform === 'win32')(
+  'DB-owner probe is gated behind the hook slot (behavior, #2163)',
+  () => {
+    for (const [label, hookPath] of [
+      ['CJS', CJS_HOOK],
+      ['Plugin', PLUGIN_HOOK],
+    ] as const) {
+      it(`${label}: when all slots are full, the lsof probe never runs`, async () => {
+        const { spawn } = await import('child_process');
+        const lockDir = path.join(gitNexusDir, '.hook-locks');
+        fs.mkdirSync(lockDir, { recursive: true });
+        // REQUIRED: the probe's first guard is
+        // `if (!fs.existsSync(dbPath)) return false;` — without a real lbug
+        // file the probe never reaches lsof even before the fix and this
+        // test would pass vacuously.
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        const lsofMarkerPath = path.join(os.tmpdir(), `gn-hook-slotgate-${process.pid}-${label}`);
+        fs.rmSync(lsofMarkerPath, { force: true });
+        const binDir = createHookToolDir({
+          lsofMarkerPath,
+          lsofOutput: '12345\n',
+          psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+        });
+
+        // Fill all 3 slots with live sleeper PIDs (same pattern as the
+        // concurrency-guard integration tests above).
+        const sleepers = [0, 1, 2].map(() =>
+          spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], {
+            stdio: 'ignore',
+            detached: false,
+          }),
+        );
+        const writtenLocks: string[] = [];
+        try {
+          for (let i = 0; i < sleepers.length; i++) {
+            const p = path.join(lockDir, `slot-${i}.lock`);
+            fs.writeFileSync(p, String(sleepers[i].pid));
+            writtenLocks.push(p);
+          }
+
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                // Force the Linux /proc scan to fall through to lsof
+                // immediately. Must be '1' — do NOT "simplify" to '0': the
+                // current parser (`Number(raw && String(raw).trim())`)
+                // treats '0' as falsy and falls back to the 1200ms default.
+                GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+              },
+            },
+          );
+
+          expect(result.stdout.trim()).toBe('');
+          // Core assertion: the probe (and therefore its lsof child) never
+          // ran — the slot gate now sits in front of it. Before the fix the
+          // probe ran un-gated and the marker existed.
+          expect(fs.existsSync(lsofMarkerPath)).toBe(false);
+        } finally {
+          for (const child of sleepers) {
+            try {
+              child.kill();
+            } catch {
+              /* ignore */
+            }
+          }
+          for (const p of writtenLocks) {
+            try {
+              fs.unlinkSync(p);
+            } catch {
+              /* ignore */
+            }
+          }
+          try {
+            fs.rmdirSync(lockDir);
+          } catch {
+            /* ignore */
+          }
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(lsofMarkerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+    }
+
+    // F5-3 (#2165 review): behavior-level slot-gate coverage for the
+    // ANTIGRAVITY adapter (the loop above only covers CJS/Plugin; the
+    // antigravity copy was pinned at source level only). The source adapter
+    // requires sibling helpers that live in hooks/claude/ — it is designed to
+    // be installed by copy (see the antigravity e2e suite) — so stage adapter
+    // + helpers into a temp dir and spawn that copy directly.
+    it('Antigravity: when all slots are full, the lsof probe never runs', async () => {
+      const { spawn } = await import('child_process');
+      const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-antigravity-stage-'));
+      const antigravitySrc = path.resolve(
+        __dirname,
+        '..',
+        '..',
+        'hooks',
+        'antigravity',
+        'gitnexus-antigravity-hook.cjs',
+      );
+      const claudeHooksDir = path.resolve(__dirname, '..', '..', 'hooks', 'claude');
+      const stagedHook = path.join(stageDir, 'gitnexus-antigravity-hook.cjs');
+      fs.copyFileSync(antigravitySrc, stagedHook);
+      for (const helper of [
+        'hook-lock.cjs',
+        'hook-db-lock-probe.cjs',
+        'resolve-analyze-cmd.cjs',
+        'win-rm-list-json.ps1',
+      ]) {
+        fs.copyFileSync(path.join(claudeHooksDir, helper), path.join(stageDir, helper));
+      }
+
+      const lockDir = path.join(gitNexusDir, '.hook-locks');
+      fs.mkdirSync(lockDir, { recursive: true });
+      // REQUIRED: without a real lbug file the probe never reaches lsof even
+      // before the fix and this test would pass vacuously.
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      const lsofMarkerPath = path.join(os.tmpdir(), `gn-hook-slotgate-${process.pid}-antigravity`);
+      fs.rmSync(lsofMarkerPath, { force: true });
+      const binDir = createHookToolDir({
+        lsofMarkerPath,
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      });
+
+      const sleepers = [0, 1, 2].map(() =>
+        spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], {
+          stdio: 'ignore',
+          detached: false,
+        }),
+      );
+      const writtenLocks: string[] = [];
+      try {
+        for (let i = 0; i < sleepers.length; i++) {
+          const p = path.join(lockDir, `slot-${i}.lock`);
+          fs.writeFileSync(p, String(sleepers[i].pid));
+          writtenLocks.push(p);
+        }
+
+        const result = runHook(
+          stagedHook,
+          {
+            hook_event_name: 'AfterTool',
+            tool_name: 'search_file_content',
+            tool_input: { pattern: 'validateUser' },
+            tool_response: { llmContent: '...' },
+            cwd: tmpDir,
+          },
+          undefined,
+          {
+            env: {
+              ...hookEnv(binDir),
+              // '1', NOT '0' — see the CJS/Plugin slot-gate test above.
+              GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+            },
+          },
+        );
+
+        // Guards against a vacuous pass: if the staged copy crashes (e.g. a
+        // future sibling require missing from the staging list), stdout is
+        // empty and the marker absent for the wrong reason.
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe('');
+        // Core assertion: the probe (and therefore its lsof child) never ran —
+        // runAugment bailed at the slot gate before hasGitNexusServerOwner.
+        expect(fs.existsSync(lsofMarkerPath)).toBe(false);
+      } finally {
+        for (const child of sleepers) {
+          try {
+            child.kill();
+          } catch {
+            /* ignore */
+          }
+        }
+        for (const p of writtenLocks) {
+          try {
+            fs.unlinkSync(p);
+          } catch {
+            /* ignore */
+          }
+        }
+        try {
+          fs.rmdirSync(lockDir);
+        } catch {
+          /* ignore */
+        }
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(lsofMarkerPath, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+        fs.rmSync(stageDir, { recursive: true, force: true });
+      }
+    });
+  },
+);
+
+describe.skipIf(process.platform !== 'linux')(
+  'Orphaned lsof is reaped by the timeout wrapper (#2163)',
+  () => {
+    // T3 — minimal reproduction of the incident mechanism: the hook process
+    // is SIGKILLed (modeling Claude Code's 10s hook timeout) while a slow,
+    // SIGTERM-immune lsof child is still running. Before the fix nothing can
+    // signal that child anymore (and spawnSync's own SIGTERM is ignored
+    // anyway), so it survives its full 30s sleep → test red regardless of
+    // race timing. After the fix the coreutils `timeout -k 1` wrapper
+    // outlives the hook and SIGKILLs the child within ~3s — making this also
+    // a direct regression test for the wrapper's `-k` capability.
+    it('CJS: SIGKILLed hook leaves no immortal lsof child', async () => {
+      const { spawn } = await import('child_process');
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      const pidFile = path.join(os.tmpdir(), `gn-hook-lsofpid-${process.pid}`);
+      fs.rmSync(pidFile, { force: true });
+      const binDir = createHookToolDir({
+        lsofPidFile: pidFile,
+        lsofSleepMs: 30000,
+        lsofIgnoreSigterm: true,
+      });
+      let lsofPid = 0;
+      let hookChild: ReturnType<typeof spawn> | null = null;
+
+      const isFakeLsofAlive = () => {
+        try {
+          process.kill(lsofPid, 0);
+        } catch {
+          return false; // ESRCH — reaped
+        }
+        // PID-reuse guard: only count it alive while the cmdline still
+        // points at our fake lsof.
+        try {
+          return fs.readFileSync(`/proc/${lsofPid}/cmdline`, 'utf-8').includes(binDir);
+        } catch {
+          return false;
+        }
+      };
+
+      try {
+        hookChild = spawn(process.execPath, [CJS_HOOK], {
+          stdio: ['pipe', 'ignore', 'ignore'],
+          env: {
+            ...hookEnv(binDir),
+            // '1', NOT '0' — see the slot-gate test above.
+            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+            // Hermeticity: hookEnv() spreads process.env, so a stray
+            // GITNEXUS_HOOK_TIMEOUT_PATH=disabled left in a developer shell
+            // would turn the wrapper off and fake-red this test. Empty string
+            // falls through to the built-in candidates (the path under test).
+            GITNEXUS_HOOK_TIMEOUT_PATH: '',
+          },
+        });
+        hookChild.stdin!.end(
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: tmpDir,
+          }),
+        );
+
+        // The fake lsof writes its PID as its FIRST statement; poll tightly.
+        const spawnDeadline = Date.now() + 8000;
+        while (Date.now() < spawnDeadline) {
+          try {
+            const raw = fs.readFileSync(pidFile, 'utf-8').trim();
+            if (raw) {
+              lsofPid = Number.parseInt(raw, 10);
+              break;
+            }
+          } catch {
+            /* not written yet */
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(lsofPid).toBeGreaterThan(0);
+
+        // Kill the hook while its lsof child is alive.
+        hookChild.kill('SIGKILL');
+
+        const reapDeadline = Date.now() + 5000;
+        let alive = isFakeLsofAlive();
+        while (alive && Date.now() < reapDeadline) {
+          await new Promise((r) => setTimeout(r, 100));
+          alive = isFakeLsofAlive();
+        }
+        expect(alive).toBe(false);
+      } finally {
+        if (lsofPid > 0) {
+          try {
+            process.kill(lsofPid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }
+        try {
+          hookChild?.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        // The hook claims a slot before probing now; it died holding it.
+        const lockDir = path.join(gitNexusDir, '.hook-locks');
+        try {
+          for (const f of fs.readdirSync(lockDir)) fs.unlinkSync(path.join(lockDir, f));
+        } catch {
+          /* ignore */
+        }
+        try {
+          fs.rmdirSync(lockDir);
+        } catch {
+          /* ignore */
+        }
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(pidFile, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    }, 30000);
+
+    // F3 (#2165 review): GITNEXUS_HOOK_TIMEOUT_PATH pointing at an EXISTING
+    // but unusable path (here: a directory) must not silently disable orphan
+    // containment. Before the fix, fs.existsSync() accepted the directory as
+    // THE candidate, its self-test failed, and the wrapper was memoized off —
+    // no fall-through — so the SIGTERM-immune lsof below survived its full
+    // 30s sleep. After the fix the env candidate merely goes first in the
+    // candidate list; failing its self-test falls through to the built-in
+    // coreutils guard, which still reaps the orphan within ~3s.
+    it('CJS: env guard pointing at a directory falls through to a working built-in guard', async () => {
+      const { spawn } = await import('child_process');
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      const pidFile = path.join(os.tmpdir(), `gn-hook-lsofpid-dirguard-${process.pid}`);
+      fs.rmSync(pidFile, { force: true });
+      const guardDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-guard-dir-'));
+      const binDir = createHookToolDir({
+        lsofPidFile: pidFile,
+        lsofSleepMs: 30000,
+        lsofIgnoreSigterm: true,
+      });
+      let lsofPid = 0;
+      let hookChild: ReturnType<typeof spawn> | null = null;
+
+      const isFakeLsofAlive = () => {
+        try {
+          process.kill(lsofPid, 0);
+        } catch {
+          return false; // ESRCH — reaped
+        }
+        try {
+          return fs.readFileSync(`/proc/${lsofPid}/cmdline`, 'utf-8').includes(binDir);
+        } catch {
+          return false;
+        }
+      };
+
+      try {
+        hookChild = spawn(process.execPath, [CJS_HOOK], {
+          stdio: ['pipe', 'ignore', 'ignore'],
+          env: {
+            ...hookEnv(binDir),
+            // '1', NOT '0' — see the slot-gate test above.
+            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+            // Exists but is a directory — spawning it fails the lazy
+            // self-test, forcing the fall-through path under test.
+            GITNEXUS_HOOK_TIMEOUT_PATH: guardDir,
+          },
+        });
+        hookChild.stdin!.end(
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: tmpDir,
+          }),
+        );
+
+        const spawnDeadline = Date.now() + 8000;
+        while (Date.now() < spawnDeadline) {
+          try {
+            const raw = fs.readFileSync(pidFile, 'utf-8').trim();
+            if (raw) {
+              lsofPid = Number.parseInt(raw, 10);
+              break;
+            }
+          } catch {
+            /* not written yet */
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(lsofPid).toBeGreaterThan(0);
+
+        // Kill the hook while its lsof child is alive (the incident topology).
+        hookChild.kill('SIGKILL');
+
+        const reapDeadline = Date.now() + 5000;
+        let alive = isFakeLsofAlive();
+        while (alive && Date.now() < reapDeadline) {
+          await new Promise((r) => setTimeout(r, 100));
+          alive = isFakeLsofAlive();
+        }
+        expect(alive).toBe(false);
+      } finally {
+        if (lsofPid > 0) {
+          try {
+            process.kill(lsofPid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }
+        try {
+          hookChild?.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        const lockDir = path.join(gitNexusDir, '.hook-locks');
+        try {
+          for (const f of fs.readdirSync(lockDir)) fs.unlinkSync(path.join(lockDir, f));
+        } catch {
+          /* ignore */
+        }
+        try {
+          fs.rmdirSync(lockDir);
+        } catch {
+          /* ignore */
+        }
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(pidFile, { force: true });
+        fs.rmSync(guardDir, { recursive: true, force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    }, 30000);
+  },
+);
 
 // ─── Integration: PreToolUse augmentation filtering (#1492) ─────────
 
@@ -1260,6 +1764,216 @@ describe.skipIf(process.platform === 'win32')(
           expect(result.stdout.trim()).toBe('');
           expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      // T6 (#2163): with the timeout wrapper explicitly disabled the probe must
+      // degrade to EXACTLY the pre-wrapper behavior — lsof ETIMEDOUT stays
+      // fail-closed and the augment is silently skipped. Uses the `disabled`
+      // sentinel, NOT a bogus path: an invalid GITNEXUS_HOOK_TIMEOUT_PATH falls
+      // through to the real candidate list by design. CI lane note: the sibling
+      // wrapped ETIMEDOUT tests above exercise GNU /usr/bin/timeout on the
+      // Linux lane, and on macos-latest hit BSD /usr/bin/timeout (macOS ≥13,
+      // `-k`-compatible) or Homebrew gtimeout — a de-facto BSD-wrapper
+      // regression test.
+      it(`${label}: ETIMEDOUT lsof with wrapper disabled → identical fail-closed skip`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-nowrap-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          lsofSleepMs: 5000,
+          psOutput: '',
+        });
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                GITNEXUS_DEBUG: '1',
+                GITNEXUS_HOOK_TIMEOUT_PATH: 'disabled',
+              },
+            },
+          );
+          expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      // T7 (#2163): a wrapper that fails the `-k` self-test (busybox <1.34,
+      // toybox, broken symlink…) must be REJECTED — resolution falls through
+      // to the built-in candidates (or, with none usable, to the unwrapped
+      // status quo); either way ETIMEDOUT stays fail-closed. Adopted blindly,
+      // the bad wrapper would exit with a usage error before ever running
+      // lsof — empty stdout, status≠0, no ETIMEDOUT — silently flipping the
+      // fail-closed contract to fail-open.
+      it(`${label}: bad wrapper (no -k support) is rejected by the self-test → still fail-closed`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-badwrap-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          lsofSleepMs: 5000,
+          psOutput: '',
+        });
+        // Models busybox <1.34: `-k` unsupported → usage error, exit 2.
+        const badTimeout = path.join(binDir, 'bad-timeout');
+        fs.writeFileSync(
+          badTimeout,
+          `#!/usr/bin/env node\nprocess.stderr.write('usage: timeout [-t SECS] [-s SIG] PROG ARGS\\n');\nprocess.exit(2);\n`,
+          { mode: 0o755 },
+        );
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                GITNEXUS_DEBUG: '1',
+                GITNEXUS_HOOK_TIMEOUT_PATH: badTimeout,
+              },
+            },
+          );
+          expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      // F5-1 (#2165 review): pin the LIVE arm of the 124 mapping — a guard
+      // that passes the `-k` self-test and then reports coreutils budget
+      // expiry (exit 124) must map to "unresponsive holder" → fail-closed
+      // skip. The fake guard distinguishes the self-test invocation
+      // (`-k 1 1 /bin/sh -c :`) from a real wrap by the /bin/sh argv token.
+      it(`${label}: guard exit 124 (budget expiry) → fail-closed skip`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-guard124-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+          lsofOutput: '',
+          psOutput: '',
+        });
+        const fakeGuard = path.join(binDir, 'guard-exit-124');
+        fs.writeFileSync(
+          fakeGuard,
+          `#!/usr/bin/env node\nif (process.argv.includes('/bin/sh')) process.exit(0);\nprocess.exit(124);\n`,
+          { mode: 0o755 },
+        );
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                GITNEXUS_DEBUG: '1',
+                GITNEXUS_HOOK_TIMEOUT_PATH: fakeGuard,
+                // '1', NOT '0' — see the slot-gate test above.
+                GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+              },
+            },
+          );
+          expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      // F5-2 (#2165 review): a guard-wrapped probe that dies BY SIGNAL with
+      // no spawnSync .error must fail closed. coreutils timeout SELF-RAISES
+      // the signal when `-k` escalates to SIGKILL, so spawnSync sees
+      // {status: null, signal: 'SIGKILL'} — NOT exit 137. The same shape
+      // appears when the hook is frozen >2s (SIGSTOP / laptop suspend) and
+      // resumes after the guard expired. Before the F1 patch this shape fell
+      // through every check → empty stdout → fail-open, silently inverting
+      // this call's fail-closed contract.
+      it(`${label}: guard signal-death (status null + signal, no error) → fail-closed skip`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-guardsig-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+          lsofOutput: '',
+          psOutput: '',
+        });
+        const fakeGuard = path.join(binDir, 'guard-sigkill');
+        fs.writeFileSync(
+          fakeGuard,
+          `#!/usr/bin/env node\nif (process.argv.includes('/bin/sh')) process.exit(0);\nprocess.kill(process.pid, 'SIGKILL');\n`,
+          { mode: 0o755 },
+        );
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                GITNEXUS_DEBUG: '1',
+                GITNEXUS_HOOK_TIMEOUT_PATH: fakeGuard,
+                // '1', NOT '0' — see the slot-gate test above.
+                GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+              },
+            },
+          );
+          expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(lbugPath, { force: true });
