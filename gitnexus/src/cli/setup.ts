@@ -106,10 +106,10 @@ function selectedCodingAgents(values: string[] | string | undefined): Set<Editor
   );
   if (requested.length === 0 || invalid.length > 0) {
     const detail =
-      requested.length === 0 ? 'No coding agents were provided.' : `Unknown: ${invalid.join(', ')}.`;
-    process.stderr.write(
-      `${detail} Valid values: ${SUPPORTED_CODING_AGENTS.join(', ')}.\n`,
-    );
+      requested.length === 0
+        ? 'No coding agents were provided.'
+        : `Unknown: ${invalid.join(', ')}.`;
+    process.stderr.write(`${detail} Valid values: ${SUPPORTED_CODING_AGENTS.join(', ')}.\n`);
     process.exitCode = 1;
     return null;
   }
@@ -999,9 +999,7 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
 
 // ─── Main command ──────────────────────────────────────────────────
 
-export const setupCommand = async (options?: {
-  codingAgent?: string[] | string;
-}) => {
+export const setupCommand = async (options?: { codingAgent?: string[] | string }) => {
   const selected = selectedCodingAgents(options?.codingAgent);
   if (!selected) return;
 
