@@ -93,6 +93,84 @@ describe('encodeTaintPath / decodeTaintPath round trip', () => {
   });
 });
 
+describe('kind header (;<kind> — U6, the only persisted channel for sinkKind)', () => {
+  it('round-trips a kind header with hops', () => {
+    const { reason } = encodeTaintPath(
+      [
+        { name: 'req', line: 3 },
+        { name: 'cmd', line: 4 },
+      ],
+      { kind: 'command-injection' },
+    );
+    expect(reason).toBe('1;command-injection|req:3|cmd:4');
+    const decoded = decodeTaintPath(reason);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.kind).toBe('command-injection');
+      expect(decoded.hops.map((h) => h.variable)).toEqual(['req', 'cmd']);
+    }
+  });
+
+  it('round-trips a kind header on the hop-less path', () => {
+    const { reason } = encodeTaintPath([], { kind: 'xss' });
+    expect(reason).toBe('1;xss');
+    const decoded = decodeTaintPath(reason);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.kind).toBe('xss');
+      expect(decoded.hops).toEqual([]);
+    }
+  });
+
+  it('kind + truncation marker coexist; the header is never sacrificed to the byte cap', () => {
+    const { reason, truncated } = encodeTaintPath([{ name: 'longVariableName', line: 12345 }], {
+      kind: 'sql-injection',
+      maxBytes: 8, // far below the header size — floor lifts it, hops drop
+    });
+    expect(truncated).toBe(true);
+    expect(reason).toBe(`1;sql-injection|${TAINT_PATH_TRUNCATION_MARKER}`);
+    const decoded = decodeTaintPath(reason);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.kind).toBe('sql-injection');
+      expect(decoded.truncated).toBe(true);
+      expect(decoded.hops).toEqual([]);
+    }
+  });
+
+  it('a kind outside [a-z0-9-] is dropped (header omitted), never corrupted into the wire', () => {
+    for (const bad of ['Command-Injection', 'a;b', 'k|x', 'café', '']) {
+      const { reason } = encodeTaintPath([{ name: 'x', line: 1 }], { kind: bad });
+      expect(reason).toBe('1|x:1');
+      const decoded = decodeTaintPath(reason);
+      expect(decoded.ok).toBe(true);
+      if (decoded.ok) expect(decoded.kind).toBeUndefined();
+    }
+  });
+
+  it('a header-less version-1 string still decodes (kind undefined)', () => {
+    const decoded = decodeTaintPath('1|a:1');
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.kind).toBeUndefined();
+  });
+
+  it('the kind header survives the CSV persistence transform byte-exact', () => {
+    const { reason } = encodeTaintPath([{ name: 'req', line: 2 }], { kind: 'path-traversal' });
+    const loaded = unescapeCSVField(escapeCSVField(sanitizeUTF8(reason)));
+    expect(loaded).toBe(reason);
+    const decoded = decodeTaintPath(loaded);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.kind).toBe('path-traversal');
+  });
+
+  it('fails typed on a malformed kind header', () => {
+    for (const bad of ['1;|a:1', '1;BAD|a:1', '1;', '1;a;b|x:1']) {
+      const decoded = decodeTaintPath(bad);
+      expect(decoded.ok, bad).toBe(false);
+    }
+  });
+});
+
 describe('CSV persistence composition (escapeCSVField ∘ sanitizeUTF8)', () => {
   it('the encoding survives the exact persistence transform byte-exact', () => {
     const hops: TaintPathHopInput[] = [

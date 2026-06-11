@@ -257,9 +257,12 @@ export function emitFileTaint(
       );
       if (seenEdgeIds.has(id)) continue;
       seenEdgeIds.add(id);
+      // `kind` rides the reason's `;<kind>` header — the only persisted
+      // channel for the finding's category (the edge id embedding it is not a
+      // stored column; `step` is INT32). U6's `explain` decodes it back.
       const encoded = encodeTaintPath(
         finding.hops.map((h) => ({ name: h.name, line: h.point.line, viaCall: h.viaCall })),
-        { truncated: finding.hopsTruncated === true },
+        { truncated: finding.hopsTruncated === true, kind: finding.sinkKind },
       );
       if (encoded.truncated) result.hopsTruncatedFindings++;
       graph.addRelationship({

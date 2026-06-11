@@ -179,6 +179,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use \`query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
+- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).
 
 ## Never Do
 

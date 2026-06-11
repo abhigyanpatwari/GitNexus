@@ -152,6 +152,9 @@ function handler(req: { body: string }) {
     expect(decoded.ok).toBe(true);
     if (decoded.ok) {
       expect(decoded.truncated).toBe(false);
+      // The finding's sinkKind rides the `;<kind>` header (the only persisted
+      // channel — the edge id embedding it is not a stored column; U6 reads it).
+      expect(decoded.kind).toBe('command-injection');
       // seed def (cmd @ const line) → sink use (cmd @ exec line)
       expect(decoded.hops.map((h) => `${h.variable}@${h.line}`)).toEqual(['cmd@3', 'cmd@4']);
     }

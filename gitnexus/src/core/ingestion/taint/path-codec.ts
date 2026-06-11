@@ -9,11 +9,24 @@
  * ## Wire format (version `1`)
  *
  * ```
- * 1|<name>:<line>[:<flags>]|<name>:<line>[:<flags>]|…[|~]
+ * 1[;<kind>]|<name>:<line>[:<flags>]|<name>:<line>[:<flags>]|…[|~]
  * ```
  *
- * - One-character version prefix (`TAINT_PATH_CODEC_VERSION`), then ordered
- *   source→sink hops, each `variable:line[:flags]`.
+ * - One-character version prefix (`TAINT_PATH_CODEC_VERSION`), then an
+ *   OPTIONAL `;<kind>` header segment, then ordered source→sink hops, each
+ *   `variable:line[:flags]`.
+ * - `kind` is the finding's sink category (`SinkKind`, e.g.
+ *   `command-injection`). It rides the reason because it is the ONLY
+ *   persisted channel: the CodeRelation columns are
+ *   `type/confidence/reason/step` — `step` is INT32 and the emit-time edge id
+ *   (which embeds the kind) is not a stored column. The U6 `explain` tool
+ *   reads it for finding classification. Charset `[a-z0-9-]` (printable
+ *   ASCII, disjoint from every structural delimiter); `;` itself is printable
+ *   ASCII and never appears in hop names (identifier charset) or flags.
+ *   U6 deviation note: this header was added by U6 WITHIN version `1` —
+ *   U4 and U6 ship in the same release, so no reason string without the
+ *   header was ever persisted by a released build; the decoder still accepts
+ *   header-less strings (`kind` simply decodes as `undefined`).
  * - `flags` is a lowercase-letter set; only `c` (= the hop passed through an
  *   unmodeled call, KTD5 `viaCall`) is defined today — the rest of the
  *   alphabet is RESERVED, and the decoder accepts unknown flag letters so a
@@ -71,6 +84,12 @@ const SAFE_NAME = /^[A-Za-z0-9_$#]+$/;
 /** Decoder-side flags charset — `c` defined, the rest reserved (see module doc). */
 const FLAGS = /^[a-z]*$/;
 
+/**
+ * Kind-header charset: lowercase + digits + hyphen — covers every `SinkKind`
+ * label and stays disjoint from the structural delimiters (`;|:~`).
+ */
+const SAFE_KIND = /^[a-z0-9-]+$/;
+
 /** Encoder input hop — shape-compatible with `TaintHop` (propagate.ts). */
 export interface TaintPathHopInput {
   readonly name: string;
@@ -87,6 +106,14 @@ export interface EncodeTaintPathOptions {
   readonly truncated?: boolean;
   /** Byte cap override (tests). Default {@link TAINT_REASON_MAX_BYTES}. */
   readonly maxBytes?: number;
+  /**
+   * Finding sink category (`SinkKind`) carried in the `;<kind>` header — the
+   * only persisted channel for it (see the module doc). A value outside the
+   * `[a-z0-9-]` charset is DROPPED (header omitted), never corrupted into the
+   * wire string; `SinkKind` is a closed lowercase-hyphen union so this is
+   * purely defensive.
+   */
+  readonly kind?: string;
 }
 
 export interface EncodedTaintPath {
@@ -106,6 +133,8 @@ export interface DecodedTaintHop {
 export interface DecodedTaintPath {
   readonly ok: true;
   readonly version: string;
+  /** Finding sink category from the `;<kind>` header; absent when not encoded. */
+  readonly kind?: string;
   /** Ordered source→sink hops (a PREFIX when `truncated`). */
   readonly hops: readonly DecodedTaintHop[];
   /** Path incomplete (trailing `|~`) — informational, NOT an error. */
@@ -129,12 +158,20 @@ export function encodeTaintPath(
   hops: readonly TaintPathHopInput[],
   options?: EncodeTaintPathOptions,
 ): EncodedTaintPath {
-  // Floor: version char + room for the marker — a smaller cap could not hold
-  // even the empty truncated path.
-  const maxBytes = Math.max(options?.maxBytes ?? TAINT_REASON_MAX_BYTES, 3);
+  // Kind header (defensively validated — see EncodeTaintPathOptions.kind).
+  const kindHeader =
+    typeof options?.kind === 'string' && SAFE_KIND.test(options.kind) ? `;${options.kind}` : '';
+  // Floor: version char + kind header + room for the marker — a smaller cap
+  // could not hold even the empty truncated path. The header is identity
+  // material (finding classification), so it is never sacrificed to the byte
+  // cap; trailing hops are.
+  const maxBytes = Math.max(
+    options?.maxBytes ?? TAINT_REASON_MAX_BYTES,
+    TAINT_PATH_CODEC_VERSION.length + kindHeader.length + 2,
+  );
   let truncated = options?.truncated === true;
   const segments: string[] = [];
-  let total = TAINT_PATH_CODEC_VERSION.length;
+  let total = TAINT_PATH_CODEC_VERSION.length + kindHeader.length;
   for (const hop of hops) {
     if (
       typeof hop.name !== 'string' ||
@@ -163,6 +200,7 @@ export function encodeTaintPath(
   }
   const reason =
     TAINT_PATH_CODEC_VERSION +
+    kindHeader +
     segments.join('') +
     (truncated ? `|${TAINT_PATH_TRUNCATION_MARKER}` : '');
   return { reason, truncated };
@@ -181,9 +219,20 @@ export function decodeTaintPath(reason: unknown): TaintPathDecodeResult {
   if (version !== TAINT_PATH_CODEC_VERSION) {
     return { ok: false, error: `unsupported taint-path version '${version}'` };
   }
-  const body = reason.slice(1);
+  let body = reason.slice(1);
+  // Optional `;<kind>` header segment (finding sink category — see module doc).
+  let kind: string | undefined;
+  if (body.startsWith(';')) {
+    const headerEnd = body.indexOf('|');
+    kind = headerEnd === -1 ? body.slice(1) : body.slice(1, headerEnd);
+    if (!SAFE_KIND.test(kind)) {
+      return { ok: false, error: `invalid kind header '${kind}'` };
+    }
+    body = headerEnd === -1 ? '' : body.slice(headerEnd);
+  }
   const hops: DecodedTaintHop[] = [];
-  if (body.length === 0) return { ok: true, version, hops, truncated: false };
+  if (body.length === 0)
+    return { ok: true, version, ...(kind ? { kind } : {}), hops, truncated: false };
   if (!body.startsWith('|')) {
     return { ok: false, error: 'malformed body: expected a hop separator after the version' };
   }
@@ -214,5 +263,5 @@ export function decodeTaintPath(reason: unknown): TaintPathDecodeResult {
     }
     hops.push({ variable: name, line: Number(lineStr), viaCall: flags.includes('c') });
   }
-  return { ok: true, version, hops, truncated };
+  return { ok: true, version, ...(kind ? { kind } : {}), hops, truncated };
 }

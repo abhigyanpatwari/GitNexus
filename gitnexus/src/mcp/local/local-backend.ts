@@ -54,7 +54,13 @@ import {
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
-import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from '../tools.js';
+import {
+  LIST_REPOS_DEFAULT_LIMIT,
+  LIST_REPOS_MAX_LIMIT,
+  EXPLAIN_DEFAULT_LIMIT,
+  EXPLAIN_MAX_LIMIT,
+} from '../tools.js';
+import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1242,6 +1248,8 @@ export class LocalBackend {
       }
       case 'context':
         return this.context(repo, params);
+      case 'explain':
+        return this.explain(repo, params);
       case 'impact':
         return this.impact(repo, params);
       case 'detect_changes':
@@ -2686,6 +2694,236 @@ export class LocalBackend {
         step_index: r.step || r[2],
         step_count: r.stepCount || r[3],
       })),
+    };
+  }
+
+  /**
+   * Explain tool (#2083 M3 U6) — persisted taint-finding explanation.
+   * WAL-aware wrapper mirroring `context`.
+   */
+  private async explain(
+    repo: RepoHandle,
+    params: { target?: string; limit?: number },
+  ): Promise<any> {
+    try {
+      return await this._explainImpl(repo, params);
+    } catch (err: any) {
+      const msg = (err instanceof Error ? err.message : String(err)) || 'Explain query failed';
+      if (isWalCorruptionError(err)) {
+        return {
+          error: msg,
+          recoverySuggestion: WAL_RECOVERY_SUGGESTION,
+        };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Taint findings are persisted as `TAINTED` rows in CodeRelation whose
+   * endpoints are BOTH BasicBlock nodes — the label anchor restricts every
+   * query here to the BasicBlock→BasicBlock partition of the rel table
+   * (which holds only the sparse, per-function-capped pdg layers), never a
+   * global symbol-space scan (the S1 verdict; LadybugDB has no rel-property
+   * index, so the label anchor IS the bound).
+   *
+   * Anchoring granularity:
+   * - file target → BasicBlock id prefix (`BasicBlock:<filePath>:` — the
+   *   shared `basicBlockId` template) with an exact-or-suffix path match so
+   *   `vuln.ts` finds `src/vuln.ts`.
+   * - symbol target → resolved via `resolveSymbolCandidates` (the context()
+   *   path: ambiguous ⇒ ranked candidates, unknown ⇒ not-found), then the
+   *   file id-prefix PLUS source-block startLine within the symbol's
+   *   [startLine, endLine] span. Findings are intra-procedural, so filtering
+   *   the SOURCE endpoint is sufficient — both endpoints share the function.
+   *   Symbols without a line span degrade to the file-level filter.
+   *
+   * The per-finding `sinkKind` and hop path decode from the persisted
+   * `reason` via the SHARED `taint/path-codec.ts` (the U4 write path encodes
+   * with the same module — `;<kind>` header + ordered `variable:line` hops).
+   */
+  private async _explainImpl(
+    repo: RepoHandle,
+    params: { target?: string; limit?: number },
+  ): Promise<any> {
+    await this.ensureInitialized(repo);
+
+    const rawLimit = params.limit ?? EXPLAIN_DEFAULT_LIMIT;
+    if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > EXPLAIN_MAX_LIMIT) {
+      return {
+        error: `Invalid "limit": expected an integer in [1, ${EXPLAIN_MAX_LIMIT}], got ${JSON.stringify(params.limit)}.`,
+      };
+    }
+    const limit = rawLimit;
+
+    const NO_TAINT_NOTE =
+      'no taint layer — run gitnexus analyze --pdg to record taint findings for this repo';
+
+    // Cheap meta probe: RepoMeta.pdg presence ≡ the BasicBlock/taint layer
+    // exists in this index (#2099 F1 stamp). An unreadable meta (e.g. a
+    // seeded test DB) falls through to the row-existence probe below.
+    let pdgStamped: boolean | undefined;
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      if (meta) pdgStamped = meta.pdg !== undefined;
+    } catch {
+      /* meta unreadable — decide from the DB below */
+    }
+    if (pdgStamped === false) {
+      return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
+    }
+
+    // Resolve the optional anchor into a WHERE clause on the SOURCE block.
+    const target = typeof params.target === 'string' ? params.target.trim() : '';
+    let anchorClause = '';
+    const queryParams: Record<string, unknown> = {};
+    let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number } | undefined;
+
+    if (target) {
+      const fileish = /[\\/]/.test(target) || /\.[A-Za-z0-9]+$/.test(target);
+      if (fileish) {
+        // Exact path via the BasicBlock id-prefix template, OR a
+        // path-separator-aligned suffix so partial paths work like context()'s
+        // file_path hint ("vuln.ts" ⇒ "src/vuln.ts", never "devuln.ts").
+        anchorClause =
+          'AND (a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)';
+        queryParams.idPrefix = `BasicBlock:${target}:`;
+        queryParams.targetPath = target;
+        queryParams.targetSuffix = `/${target}`;
+        anchor = { file: target };
+      } else {
+        const outcome = await this.resolveSymbolCandidates(repo, { name: target }, {});
+        if (outcome.kind === 'not_found') {
+          return { error: `Symbol '${target}' not found` };
+        }
+        if (outcome.kind === 'ambiguous') {
+          return {
+            status: 'ambiguous',
+            message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call explain with the file path, or disambiguate via context() first.`,
+            candidates: outcome.candidates.map((c) => ({
+              uid: c.id,
+              name: c.name,
+              kind: c.type,
+              filePath: c.filePath,
+              line: c.startLine,
+              score: Number(c.score.toFixed(2)),
+            })),
+          };
+        }
+        const sym = outcome.symbol;
+        queryParams.idPrefix = `BasicBlock:${sym.filePath}:`;
+        anchor = { file: sym.filePath, symbol: sym.name };
+        if (
+          typeof sym.startLine === 'number' &&
+          typeof sym.endLine === 'number' &&
+          sym.endLine >= sym.startLine
+        ) {
+          anchorClause =
+            'AND a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
+          queryParams.symStart = sym.startLine;
+          queryParams.symEnd = sym.endLine;
+          anchor.startLine = sym.startLine;
+          anchor.endLine = sym.endLine;
+        } else {
+          // No usable span — degrade to the file-level filter (documented).
+          anchorClause = 'AND a.id STARTS WITH $idPrefix';
+        }
+      }
+    }
+
+    // Bounded by construction: the BasicBlock→BasicBlock partition holds only
+    // the sparse pdg layers, TAINTED rows are per-function-capped at analyze
+    // time, and the page is LIMIT-bounded (the limit is a validated integer —
+    // interpolated because LadybugDB does not parameterize LIMIT).
+    const matchClause = `
+      MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+      WHERE r.type = 'TAINTED' ${anchorClause}`;
+    const [rows, countRows] = await Promise.all([
+      executeParameterized(
+        repo.lbugPath,
+        `${matchClause}
+      RETURN a.id AS sourceBlockId, a.filePath AS file, a.startLine AS sourceStart,
+             b.startLine AS sinkStart, r.reason AS reason, b.id AS sinkBlockId
+      ORDER BY sourceBlockId, sinkBlockId, reason
+      LIMIT ${limit}`,
+        queryParams,
+      ),
+      executeParameterized(
+        repo.lbugPath,
+        `${matchClause}
+      RETURN COUNT(*) AS total`,
+        queryParams,
+      ),
+    ]);
+
+    const totalFindings = Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0);
+
+    if (totalFindings === 0 && pdgStamped === undefined && !target) {
+      // Meta was unreadable and the repo-wide enumerate found nothing — the
+      // count above WAS the existence probe; surface the layer hint.
+      return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
+    }
+    if (totalFindings === 0 && pdgStamped === undefined && target) {
+      // Anchored miss with unreadable meta: one extra bounded probe decides
+      // "no findings for this anchor" vs "no taint layer at all".
+      const probe = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock) WHERE r.type = 'TAINTED' RETURN r.reason AS reason LIMIT 1`,
+        {},
+      );
+      if (probe.length === 0) {
+        return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
+      }
+    }
+
+    const findings = rows.map((r: any) => {
+      const sourceBlockId = String(r.sourceBlockId ?? r[0] ?? '');
+      const file = String(r.file ?? r[1] ?? '');
+      const sourceStart = (r.sourceStart ?? r[2]) as number | undefined;
+      const sinkStart = (r.sinkStart ?? r[3]) as number | undefined;
+      const reason = r.reason ?? r[4];
+      // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` —
+      // split from the RIGHT (the filePath may itself contain ':').
+      const idParts = sourceBlockId.split(':');
+      const fnLine = Number(idParts[idParts.length - 3]);
+      const decoded = decodeTaintPath(reason);
+      if (!decoded.ok) {
+        // Unreadable reason (foreign/corrupt row): surface the finding's
+        // existence with its block anchors, never throw.
+        return {
+          file,
+          ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+          sinkKind: 'unknown',
+          source: { line: sourceStart },
+          sink: { line: sinkStart },
+          hops: [],
+          pathIncomplete: true,
+        };
+      }
+      const hops = decoded.hops.map((h) => ({
+        variable: h.variable,
+        line: h.line,
+        ...(h.viaCall ? { viaCall: true } : {}),
+      }));
+      const first = hops[0];
+      const last = hops[hops.length - 1];
+      return {
+        file,
+        ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+        sinkKind: decoded.kind ?? 'unknown',
+        source: first ? { variable: first.variable, line: first.line } : { line: sourceStart },
+        sink: { line: last?.line ?? sinkStart },
+        hops,
+        ...(decoded.truncated ? { pathIncomplete: true } : {}),
+      };
+    });
+
+    return {
+      ...(anchor ? { anchor } : {}),
+      findings,
+      totalFindings,
+      ...(totalFindings > findings.length ? { truncated: true } : {}),
+      note: 'Intra-procedural findings only — cross-function, closure/callback, property/field, and implicit flows are not modeled; absence of a finding is not proof of safety. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
