@@ -11,6 +11,22 @@
  *
  * Fail-open on most errors; fail-closed only on lsof ETIMEDOUT (Unix) or
  * PowerShell ETIMEDOUT (Windows), matching the hook contract.
+ *
+ * Unix subprocess containment contract (#2163):
+ * - lsof/ps are wrapped in coreutils `timeout`/`gtimeout` when a working
+ *   wrapper is found (`timeout -k 1 <budget> lsof ...`). If this hook process
+ *   is itself SIGKILLed (e.g. by the runner's 10s hook timeout) the wrapper
+ *   survives, SIGTERMs its child at the budget (2s lsof / 1s ps) and SIGKILLs
+ *   it 1s later — orphan lifetime is bounded at ~3s instead of unbounded.
+ * - GITNEXUS_HOOK_TIMEOUT_PATH: the sentinel value `disabled` switches the
+ *   wrapper off deterministically; any other non-existent value FALLS THROUGH
+ *   to the built-in candidate list (same semantics as the sibling
+ *   GITNEXUS_HOOK_LSOF_PATH / GITNEXUS_HOOK_PS_PATH overrides). A candidate
+ *   must pass a one-shot `-k` self-test before being adopted.
+ * - The gitnexus server is lazy-open + sticky-hold: an idle MCP server holds
+ *   ZERO lbug fds until the repo's first MCP query, then keeps the fd open.
+ *   A probe before that first query is therefore always false — a known,
+ *   pre-existing race, not a bug in this probe.
  */
 
 const fs = require('fs');
@@ -44,6 +60,75 @@ function resolveHookBinary(tool) {
     }
   }
   return tool;
+}
+
+// Sentinel:
+//   undefined = not resolved yet (resolve lazily, on first lsof/ps fallback)
+//   string    = self-tested coreutils timeout/gtimeout path (use as wrapper)
+//   null      = no usable wrapper (disabled, none found, or self-test failed)
+let unixGuardTimeoutCache;
+
+/**
+ * Resolve a coreutils `timeout`/`gtimeout` binary to wrap lsof/ps with
+ * (#2163). Dead code on Windows (the win32 dispatch returns earlier).
+ *
+ * GITNEXUS_HOOK_TIMEOUT_PATH semantics: the sentinel `disabled` turns the
+ * wrapper off; an existing file path is used as the candidate; any other
+ * value falls through to the built-in candidates — matching the sibling
+ * GITNEXUS_HOOK_LSOF_PATH / GITNEXUS_HOOK_PS_PATH overrides above, so a
+ * typo'd path can never silently disable orphan containment.
+ *
+ * Lazy self-test: the chosen candidate is adopted only when
+ * `timeout -k 1 1 /bin/sh -c :` exits 0. This rejects wrappers that do not
+ * support the coreutils `-k` flag — busybox <1.34, toybox, broken symlinks —
+ * which would otherwise exit with a usage error without ever running lsof,
+ * silently converting the lsof-ETIMEDOUT fail-closed contract into fail-open
+ * (#1492 regression). Rejection falls back to the unwrapped status quo.
+ * busybox ≥1.34 passes the test and is fully usable (capability, not
+ * identity, decides).
+ */
+function resolveUnixGuardTimeout() {
+  if (unixGuardTimeoutCache !== undefined) return unixGuardTimeoutCache;
+  unixGuardTimeoutCache = null;
+  const fromEnv = process.env.GITNEXUS_HOOK_TIMEOUT_PATH;
+  const trimmed = fromEnv ? String(fromEnv).trim() : '';
+  if (trimmed === 'disabled') return unixGuardTimeoutCache;
+  let guard = null;
+  if (trimmed && fs.existsSync(trimmed)) {
+    guard = trimmed;
+  } else {
+    const candidates = [
+      '/usr/bin/timeout',
+      '/bin/timeout',
+      '/opt/homebrew/bin/gtimeout',
+      '/usr/local/bin/gtimeout',
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) {
+          guard = candidate;
+          break;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  if (!guard) return unixGuardTimeoutCache;
+  try {
+    const selfTest = spawnSync(guard, ['-k', '1', '1', '/bin/sh', '-c', ':'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
+    });
+    if (!selfTest.error && selfTest.status === 0) {
+      unixGuardTimeoutCache = guard;
+    }
+  } catch {
+    /* keep null — fall back to unwrapped lsof/ps */
+  }
+  return unixGuardTimeoutCache;
 }
 
 function resolveWindowsPowerShellPath() {
@@ -188,20 +273,38 @@ function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
 }
 
 function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
+  const guard = resolveUnixGuardTimeout();
   const lsofPath = resolveHookBinary('lsof');
-  const lsof = spawnSync(lsofPath, ['-nP', '-t', '--', dbPathAbs], {
+  // The spawnSync timeouts below (lsof 1000ms / ps 500ms) are deliberately
+  // SHORTER than the wrapper budgets (2s / 1s): on the supervised path Node's
+  // SIGTERM always fires first, so `error.code === 'ETIMEDOUT'` and the
+  // fail-closed contract are untouched. The wrapper only matters once this
+  // hook process has been SIGKILLed and can no longer deliver that SIGTERM.
+  const [lsofCmd, lsofArgs] = guard
+    ? [guard, ['-k', '1', '2', lsofPath, '-nP', '-t', '--', dbPathAbs]]
+    : [lsofPath, ['-nP', '-t', '--', dbPathAbs]];
+  const lsof = spawnSync(lsofCmd, lsofArgs, {
     encoding: 'utf-8',
     timeout: 1000,
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
   });
   if (lsof.error) return lsof.error.code === 'ETIMEDOUT';
+  // Belt-and-suspenders, coreutils-only: GNU/BSD timeout exits 124 on budget
+  // expiry and 137 after the -k SIGKILL — map both to "unresponsive holder"
+  // (fail-closed). busybox-style wrappers surface expiry as a signal with
+  // status null instead, so this mapping never fires there — harmless,
+  // because the 1s spawnSync timer above always ETIMEDOUTs first.
+  if (guard && (lsof.status === 124 || lsof.status === 137)) return true;
 
   const pids = (lsof.stdout || '').split(/\s+/).filter(Boolean);
   const psPath = resolveHookBinary('ps');
   for (const pid of pids) {
     if (Number(pid) === myPid) continue;
-    const ps = spawnSync(psPath, ['-p', pid, '-o', 'command='], {
+    const [psCmd, psArgs] = guard
+      ? [guard, ['-k', '1', '1', psPath, '-p', pid, '-o', 'command=']]
+      : [psPath, ['-p', pid, '-o', 'command=']];
+    const ps = spawnSync(psCmd, psArgs, {
       encoding: 'utf-8',
       timeout: 500,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -211,6 +314,8 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
       if (ps.error.code === 'ETIMEDOUT') return true;
       continue;
     }
+    // Same coreutils-only defensive mapping as the lsof call above.
+    if (guard && (ps.status === 124 || ps.status === 137)) return true;
     if (isGitNexusServerCommand(ps.stdout || '')) return true;
   }
   return false;

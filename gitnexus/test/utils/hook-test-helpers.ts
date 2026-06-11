@@ -92,6 +92,12 @@ export function createHookToolDir(options: {
   psOutput?: string;
   psOutputByPid?: Record<string, string>;
   lsofSleepMs?: number;
+  /** Fake lsof writes this marker file as soon as it starts — proves whether the probe reached the lsof fallback at all (#2163). */
+  lsofMarkerPath?: string;
+  /** Fake lsof writes its own PID here as its FIRST statement, minimizing detection latency for orphan-reaping tests (#2163). */
+  lsofPidFile?: string;
+  /** Fake lsof traps SIGTERM as a no-op before sleeping — models an unkillable/D-state lsof that only SIGKILL can end (#2163). */
+  lsofIgnoreSigterm?: boolean;
 }) {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-bin-'));
   const gitnexusStderr = JSON.stringify(options.gitnexusStderr ?? '');
@@ -105,10 +111,21 @@ export function createHookToolDir(options: {
     options.lsofOutputLines != null
       ? options.lsofOutputLines.join('\n') + (options.lsofOutputLines.length ? '\n' : '')
       : (options.lsofOutput ?? '');
+  // Composable prologue: pidFile write MUST stay the first statement (see the
+  // option docs above); SIGTERM trap MUST be installed before any sleep.
+  const lsofPrologue =
+    `#!/usr/bin/env node\nconst fs = require('fs');\n` +
+    (options.lsofPidFile != null
+      ? `fs.writeFileSync(${JSON.stringify(options.lsofPidFile)}, String(process.pid));\n`
+      : '') +
+    (options.lsofMarkerPath != null
+      ? `fs.writeFileSync(${JSON.stringify(options.lsofMarkerPath)}, 'called');\n`
+      : '') +
+    (options.lsofIgnoreSigterm ? `process.on('SIGTERM', () => {});\n` : '');
   const lsofBody =
     options.lsofSleepMs != null
-      ? `#!/usr/bin/env node\nsetTimeout(() => {}, ${Number(options.lsofSleepMs)});\n`
-      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(lsofOutput)});\nprocess.exit(0);\n`;
+      ? `${lsofPrologue}setTimeout(() => {}, ${Number(options.lsofSleepMs)});\n`
+      : `${lsofPrologue}process.stdout.write(${JSON.stringify(lsofOutput)});\nprocess.exit(0);\n`;
   writeExecutable(path.join(binDir, 'lsof'), lsofBody);
 
   const psBody =
