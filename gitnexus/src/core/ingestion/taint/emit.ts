@@ -80,6 +80,13 @@ import {
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
   DEFAULT_PDG_MAX_TAINT_HOPS,
 } from './propagate.js';
+
+// Re-exported so the pipeline (run.ts) sources the taint default caps through
+// this orchestration module rather than reaching into propagate.ts directly.
+export {
+  DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_TAINT_HOPS,
+} from './propagate.js';
 import { encodeTaintPath } from './path-codec.js';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
 

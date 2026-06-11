@@ -42,13 +42,14 @@ import {
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
-import { emitFileTaint, type TaintEmitLimits } from '../../taint/emit.js';
-import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
-import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
 import {
+  emitFileTaint,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
   DEFAULT_PDG_MAX_TAINT_HOPS,
-} from '../../taint/propagate.js';
+  type TaintEmitLimits,
+} from '../../taint/emit.js';
+import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
+import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';

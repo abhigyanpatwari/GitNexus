@@ -117,8 +117,3 @@ export interface SourceSinkSanitizerSpec {
   readonly sinks: readonly TaintSinkEntry[];
   readonly sanitizers: readonly TaintSanitizerEntry[];
 }
-
-/** Whether a matched sanitizer neutralizes a sink of the given kind (KTD4). */
-export function sanitizerNeutralizes(entry: TaintSanitizerEntry, kind: SinkKind): boolean {
-  return entry.neutralizes.includes(kind);
-}

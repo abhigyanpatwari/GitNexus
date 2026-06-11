@@ -21,10 +21,7 @@ import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import { emitTsScopeCaptures } from '../../../src/core/ingestion/languages/typescript/captures.js';
 import { interpretTsImport } from '../../../src/core/ingestion/languages/typescript/interpret.js';
 import { hasTaintSafeSites } from '../../../src/core/ingestion/taint/site-safety.js';
-import {
-  sanitizerNeutralizes,
-  type SourceSinkSanitizerSpec,
-} from '../../../src/core/ingestion/taint/source-sink-config.js';
+import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import {
   TS_JS_TAINT_MODEL,
   computeTaintModelVersion,
@@ -273,8 +270,8 @@ describe('sanitizers — import-aware only, kind-scoped', () => {
 function f(p) { const safe = path.basename(p); }`);
     const sans = allSanitizers(m);
     expect(sans).toHaveLength(1);
-    expect(sanitizerNeutralizes(sans[0].entry, 'path-traversal')).toBe(true);
-    expect(sanitizerNeutralizes(sans[0].entry, 'command-injection')).toBe(false);
+    expect(sans[0].entry.neutralizes).toContain('path-traversal');
+    expect(sans[0].entry.neutralizes).not.toContain('command-injection');
     // resultDefs carries the kill target (KTD4b)
     expect(sans[0].resultDefs).toHaveLength(1);
   });
