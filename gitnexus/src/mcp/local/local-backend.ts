@@ -55,6 +55,7 @@ import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from '../tools.js';
+import { findImportCycles } from '../../core/graph/import-cycles.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1246,6 +1247,8 @@ export class LocalBackend {
         return this.impact(repo, params);
       case 'detect_changes':
         return this.detectChanges(repo, params);
+      case 'check':
+        return this.check(repo, params);
       case 'rename':
         return this.rename(repo, params);
       // Legacy aliases for backwards compatibility
@@ -1278,6 +1281,31 @@ export class LocalBackend {
    * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
    * 4. Return: { processes, process_symbols, definitions }
    */
+  private async check(repo: RepoHandle, params: { cycles?: boolean }): Promise<any> {
+    if (params.cycles === false) {
+      return { error: 'No checks selected. Set "cycles" to true.' };
+    }
+    await this.ensureInitialized(repo);
+    const rows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (source:File)-[r:CodeRelation]->(target:File)
+       WHERE r.type = 'IMPORTS'
+       RETURN source.filePath AS source, target.filePath AS target`,
+      {},
+    );
+    const cycles = findImportCycles(
+      rows.map((row: any) => ({
+        source: String(row.source ?? row[0] ?? ''),
+        target: String(row.target ?? row[1] ?? ''),
+      })),
+    );
+    return {
+      status: cycles.length === 0 ? 'clean' : 'cycles_found',
+      cycleCount: cycles.length,
+      cycles: cycles.map((files) => ({ files })),
+    };
+  }
+
   private async query(
     repo: RepoHandle,
     params: {

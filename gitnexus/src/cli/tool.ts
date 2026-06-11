@@ -226,3 +226,31 @@ export async function detectChangesCommand(options?: {
   });
   output(formatDetectChangesResult(result));
 }
+
+export async function checkCommand(options?: {
+  cycles?: boolean;
+  json?: boolean;
+  repo?: string;
+  branch?: string;
+}): Promise<void> {
+  if (!options?.cycles) {
+    process.stderr.write('Usage: gitnexus check --cycles [--json]\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  const backend = await getBackend();
+  const result = await backend.callTool('check', {
+    cycles: true,
+    repo: options.repo,
+    branch: options.branch,
+  });
+  if (options.json) {
+    output(result);
+  } else if (result.cycleCount === 0) {
+    output('No circular imports found.');
+  } else {
+    output(result.cycles.map((cycle: { files: string[] }) => cycle.files.join(' -> ')).join('\n'));
+  }
+  if (result.cycleCount > 0) process.exitCode = 1;
+}

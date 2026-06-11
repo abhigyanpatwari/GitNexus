@@ -317,6 +317,29 @@ Returns: changed symbols, affected processes, and a risk summary.`,
     },
   },
   {
+    name: 'check',
+    description: `Run read-only structural checks against the indexed graph.
+
+Currently detects directed cycles between File nodes connected by IMPORTS edges.
+Returns deterministic cycle paths and a cycle count suitable for CI automation.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cycles: {
+          type: 'boolean',
+          description: 'Detect circular file imports (default: true).',
+          default: true,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'rename',
     description: `Multi-file coordinated rename using the knowledge graph + text search.
 Finds all references via graph (high confidence) and regex text search (lower confidence). Preview by default.
@@ -624,6 +647,7 @@ const BRANCH_SCOPED_TOOLS = new Set([
   'cypher',
   'context',
   'detect_changes',
+  'check',
   'impact',
   'rename',
   'route_map',

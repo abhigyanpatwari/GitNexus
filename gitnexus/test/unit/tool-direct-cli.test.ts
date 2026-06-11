@@ -23,7 +23,42 @@ describe('direct CLI tool commands', () => {
     initMock.mockReset();
     callToolMock.mockReset();
     writeSyncMock.mockReset();
+    process.exitCode = undefined;
     initMock.mockResolvedValue(true);
+  });
+
+  it('dispatches circular-import checks and fails CI when cycles exist', async () => {
+    callToolMock.mockResolvedValue({
+      status: 'cycles_found',
+      cycleCount: 1,
+      cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
+    });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true, repo: 'gitnexus' });
+
+    expect(callToolMock).toHaveBeenCalledWith('check', {
+      cycles: true,
+      repo: 'gitnexus',
+    });
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('src/a.ts -> src/b.ts -> src/a.ts'),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('emits JSON and succeeds for a clean import graph', async () => {
+    callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true, json: true });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('"status": "clean"'),
+    );
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('dispatches detect_changes with CLI-shaped arguments', async () => {

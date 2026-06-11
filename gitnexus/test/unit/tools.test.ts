@@ -22,7 +22,7 @@ const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
   it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(13);
+    expect(GITNEXUS_TOOLS).toHaveLength(14);
   });
 
   it('contains all expected tool names', () => {
@@ -34,6 +34,7 @@ describe('GITNEXUS_TOOLS', () => {
         'cypher',
         'context',
         'detect_changes',
+        'check',
         'rename',
         'impact',
         'api_impact',

@@ -281,6 +281,15 @@ program
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
+program
+  .command('check')
+  .description('Run structural checks against the indexed graph')
+  .option('--cycles', 'Detect circular imports and fail when any are found')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .action(createLbugLazyAction(() => import('./tool.js'), 'checkCommand'));
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program
