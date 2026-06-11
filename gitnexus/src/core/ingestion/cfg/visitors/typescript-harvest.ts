@@ -887,6 +887,9 @@ class FactAccumulator {
   private readonly mayDefSeen = new Set<number>();
   /** Taint sites recorded for this statement (#2083 M3 U1). */
   private readonly sites: MutableSite[] = [];
+  /** Composite (object|property|parent) keys of recorded member-read sites, so
+   *  dedup is O(1) instead of a rescan of `sites` per read. */
+  private readonly memberReadKeys = new Set<string>();
   /** Stack of open call/new sites — the occurrence fan-out targets. */
   private readonly frames: SiteFrame[] = [];
 
@@ -1016,19 +1019,9 @@ class FactAccumulator {
    */
   addMemberRead(object: number, property: string): void {
     const parent = this.innermostArgPosition();
-    for (const s of this.sites) {
-      if (
-        s.kind === 'member-read' &&
-        s.object === object &&
-        s.property === property &&
-        (s.parent === undefined) === (parent === undefined) &&
-        (s.parent === undefined ||
-          (s.parent[0] === (parent as [number, number])[0] &&
-            s.parent[1] === (parent as [number, number])[1]))
-      ) {
-        return;
-      }
-    }
+    const dedupKey = `${object}|${property}|${parent ? `${parent[0]}:${parent[1]}` : 'top'}`;
+    if (this.memberReadKeys.has(dedupKey)) return;
+    this.memberReadKeys.add(dedupKey);
     const site: MutableSite = { kind: 'member-read' };
     if (parent) site.parent = parent;
     site.object = object;
