@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hook db-lock probe no longer strands unkillable `lsof`/`ps` orphans** — the probe's `lsof`/`ps` subprocesses are now wrapped in a self-tested coreutils `timeout`/`gtimeout` (`timeout -k 1 …`), so a hook SIGKILLed by the runner's 10s timeout can no longer leave `lsof` running forever (orphan lifetime bounded at ~3s); `acquireHookSlot` now also gates the probe itself, capping concurrent probes at 3 per repo. Opt out with `GITNEXUS_HOOK_TIMEOUT_PATH=disabled`. (#2163)
+
 ### Changed
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)
