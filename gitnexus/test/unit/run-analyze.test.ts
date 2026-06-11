@@ -330,7 +330,14 @@ describe('deriveEmbeddingCap', () => {
 });
 
 describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
-  const DEFAULTS = { maxFunctionLines: 2000, maxEdgesPerFunction: 5000 };
+  // M2 (#2082) added the resolved REACHING_DEF cap to the stamp; these tests
+  // model M2 STEADY-STATE equality. The M1-era-stamp (field absent) upgrade
+  // path is pinned in pdg-mode-flip.test.ts.
+  const DEFAULTS = {
+    maxFunctionLines: 2000,
+    maxEdgesPerFunction: 5000,
+    maxReachingDefEdgesPerFunction: 4000,
+  };
 
   it('resolvePdgConfig: pdg-off run resolves to undefined (the meta field is omitted)', async () => {
     const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
@@ -342,8 +349,13 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
     const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
     expect(resolvePdgConfig({ pdg: true })).toEqual(DEFAULTS);
     expect(
-      resolvePdgConfig({ pdg: true, pdgMaxFunctionLines: 0, pdgMaxEdgesPerFunction: 0 }),
-    ).toEqual({ maxFunctionLines: 0, maxEdgesPerFunction: 0 });
+      resolvePdgConfig({
+        pdg: true,
+        pdgMaxFunctionLines: 0,
+        pdgMaxEdgesPerFunction: 0,
+        pdgMaxReachingDefEdgesPerFunction: 0,
+      }),
+    ).toEqual({ maxFunctionLines: 0, maxEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 });
   });
 
   it('legacy meta (no recorded stamp) + plain run → no mismatch', async () => {
