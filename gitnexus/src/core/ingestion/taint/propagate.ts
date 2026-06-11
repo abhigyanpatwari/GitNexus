@@ -97,6 +97,7 @@
  */
 
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
+import { pointKey } from '../cfg/reaching-defs.js';
 import type { DefUseFact, FunctionDefUse, ProgramPoint } from '../cfg/reaching-defs.js';
 import type {
   FunctionSiteMatches,
@@ -298,7 +299,6 @@ export function computeTaintFlows(
   }
 
   const bindings = defUse.bindings;
-  const pointKey = (p: ProgramPoint): string => `${p.blockIndex}:${p.stmtIndex}`;
 
   // ── per-statement context (built lazily; statements revisit often) ────────
   const matchByPoint = new Map<string, StatementMatches>();

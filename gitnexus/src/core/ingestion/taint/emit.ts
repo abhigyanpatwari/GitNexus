@@ -71,7 +71,7 @@ import {
   bindingKey,
   DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
 } from '../cfg/emit.js';
-import { computeReachingDefs, type ProgramPoint } from '../cfg/reaching-defs.js';
+import { computeReachingDefs, pointKey, type ProgramPoint } from '../cfg/reaching-defs.js';
 import type { BindingEntry, FunctionCfg } from '../cfg/types.js';
 import { hasTaintSafeSites } from './site-safety.js';
 import { buildTaintImportIndex, matchFunctionSites } from './match.js';
@@ -212,7 +212,6 @@ export function emitFileTaint(
     const fnAnchor = `${filePath}:${functionStartLine}:${functionStartColumn}`;
     const blockId = (p: ProgramPoint): string =>
       basicBlockId(filePath, functionStartLine, functionStartColumn, p.blockIndex);
-    const pointKey = (p: ProgramPoint): string => `${p.blockIndex}.${p.stmtIndex}`;
     const bKey = (idx: number): string => {
       const b = bindings[idx];
       return b === undefined ? `#${idx}` : bindingKey(b);
