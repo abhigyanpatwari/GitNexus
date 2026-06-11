@@ -48,6 +48,13 @@ import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.
 import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../../src/core/ingestion/cfg/emit.ts';
 import { createTypeScriptCfgVisitor } from '../../src/core/ingestion/cfg/visitors/typescript.ts';
 import { getTreeSitterBufferSize } from '../../src/core/ingestion/constants.ts';
+import { buildTaintImportIndex, matchFunctionSites } from '../../src/core/ingestion/taint/match.ts';
+import { TS_JS_TAINT_MODEL } from '../../src/core/ingestion/taint/typescript-model.ts';
+import {
+  computeTaintFlows,
+  DEFAULT_PDG_MAX_TAINT_HOPS,
+} from '../../src/core/ingestion/taint/propagate.ts';
+import { encodeTaintPath } from '../../src/core/ingestion/taint/path-codec.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
@@ -141,7 +148,50 @@ const SCENARIOS = [
       return s + '}\n';
     },
   },
+  {
+    name: 'taint-dense',
+    // #2083 M3 U7 (R10): N functions, EACH source/sink-dense — 12 matched
+    // `req.body` source statements + a 4-hop chained reassignment + 13 `eval`
+    // sinks per function (13 deduped findings/fn, ABOVE the scenario cap of 8
+    // so the cap binds). Functions scale with N, so total findings grow
+    // linearly BY DESIGN; the boundedness gate is the per-function pin: kept
+    // findings/function stays EXACTLY at the cap as N grows (a cap loss shows
+    // as 13). This scenario's sites are the densest of the suite, so its
+    // ABSOLUTE disk_bytes_large_max is the load-bearing site-harvest ceiling
+    // (the M2 straight-line carrier has no call sites), and the summed
+    // encoded TAINTED reason bytes get their own absolute ceiling
+    // (taint_reason_bytes_large_max). The zero-match control (genZero) keeps
+    // the identical statement/CFG shape with names OUTSIDE the model
+    // (inp.payload / evalish) — the match-gate must make unmatched functions
+    // cost ~nothing (no solver call), gated as zero-time/dense-time ratio.
+    small: 125,
+    large: 500, // 4x, like the global sizes — per-fn bodies are ~30 lines
+    taint: { cap: 8 },
+    gen: (n) => genTaintFunctions(n, false),
+    genZero: (n) => genTaintFunctions(n, true),
+  },
 ];
+
+// taint-dense generator: `zero` swaps every model-matched name for an
+// unmatched one without changing statement count, def/use shape, or CFG.
+const TAINT_SOURCES_PER_FN = 12;
+const TAINT_CHAIN_HOPS = 4;
+function genTaintFunctions(n, zero) {
+  const recv = zero ? 'inp' : 'req';
+  const prop = zero ? 'payload' : 'body';
+  const sink = zero ? 'evalish' : 'eval';
+  let s = '';
+  for (let i = 0; i < n; i++) {
+    s += `function f${i}(${recv}) {\n`;
+    for (let j = 0; j < TAINT_SOURCES_PER_FN; j++) s += `  const s${j} = ${recv}.${prop};\n`;
+    s += `  let c0 = s0 + '!';\n`;
+    for (let h = 1; h < TAINT_CHAIN_HOPS; h++) s += `  const c${h} = c${h - 1} + '!';\n`;
+    for (let j = 0; j < TAINT_SOURCES_PER_FN; j++) s += `  ${sink}(s${j});\n`;
+    s += `  ${sink}(c${TAINT_CHAIN_HOPS - 1});\n`;
+    s += '}\n';
+  }
+  return s;
+}
 
 const SMALL = 500;
 const LARGE = 2000; // 4× — O(n) ⇒ ratio ~1, O(n²) ⇒ ratio ~4
@@ -197,6 +247,57 @@ function measureReachingDefs(cfgs, reps, maxFacts) {
     samples.push(Number(process.hrtime.bigint() - start) / 1e6);
   }
   return { ms: median(samples), facts };
+}
+
+// ---- taint pass cost (#2083 M3 U7) ----
+
+// Times the EXACT per-function sequence the in-phase emit driver runs on a
+// --pdg run for a taint-modeled language: match sites → zero-match fast path
+// → computeReachingDefs → computeTaintFlows. `cap` is the scenario's
+// maxFindingsPerFunction (deliberately small so the cap BINDS on the dense
+// generator). Also sums the encoded TAINTED `reason` bytes for the kept
+// findings — the persisted-taint disk posture (R10).
+function measureTaint(cfgs, reps, cap) {
+  const importIndex = buildTaintImportIndex([]); // bench callees are globals
+  const pass = () => {
+    let analyzed = 0;
+    let kept = 0;
+    let dropped = 0;
+    let reasonBytes = 0;
+    for (const c of cfgs) {
+      const matches = matchFunctionSites(c, TS_JS_TAINT_MODEL, importIndex);
+      if (!matches.hasSource || !matches.hasSink) continue;
+      const du = computeReachingDefs(c, {
+        maxFacts: DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+      });
+      const flows = computeTaintFlows(c, du, matches, {
+        maxFindingsPerFunction: cap,
+        maxHops: DEFAULT_PDG_MAX_TAINT_HOPS,
+      });
+      if (flows.status !== 'computed') continue;
+      analyzed++;
+      kept += flows.findings.length;
+      dropped += flows.droppedFindings;
+      for (const f of flows.findings) {
+        // All structural chars + identifier names are single-byte ASCII, so
+        // string length IS the byte length (path-codec discipline).
+        reasonBytes += encodeTaintPath(
+          f.hops.map((h) => ({ name: h.name, line: h.point.line, viaCall: h.viaCall })),
+          { truncated: f.hopsTruncated === true, kind: f.sinkKind },
+        ).reason.length;
+      }
+    }
+    return { analyzed, kept, dropped, reasonBytes };
+  };
+  pass(); // warm JIT (uncounted)
+  const samples = [];
+  let out;
+  for (let i = 0; i < reps; i++) {
+    const start = process.hrtime.bigint();
+    out = pass();
+    samples.push(Number(process.hrtime.bigint() - start) / 1e6);
+  }
+  return { ms: median(samples), ...out };
 }
 
 // ---- memory growth: retained heap of the cfgSideChannel payload ----
@@ -279,7 +380,40 @@ function measureScenario(scenario) {
   // ratio 0 and the gate would self-disable exactly when the solver is fast.
   const rdRatio = rdLarge.ms / Math.max(rdSmall.ms, 0.001) / sizeRatio;
 
+  // #2083 M3 U7: taint pass cost + boundedness on taint-bearing scenarios.
+  let taintMetrics = {};
+  if (scenario.taint !== undefined) {
+    const cap = scenario.taint.cap;
+    const tSmall = measureTaint(small.cfgs, REPS, cap);
+    const tLarge = measureTaint(large.cfgs, REPS, cap);
+    const tRatio = tLarge.ms / Math.max(tSmall.ms, 0.001) / sizeRatio;
+    // Zero-match control: identical CFG shape, no model hits — measures the
+    // match-gate overhead unmatched functions pay on a real --pdg repo.
+    const zeroCfgs = collectFunctionCfgs(
+      parse(scenario.genZero(nLarge)).rootNode,
+      visitor,
+      `${scenario.name}-zero.ts`,
+      NO_CAP,
+    ).cfgs;
+    const tZero = measureTaint(zeroCfgs, REPS, cap);
+    taintMetrics = {
+      taint_ms_small: Number(tSmall.ms.toFixed(3)),
+      taint_ms_large: Number(tLarge.ms.toFixed(3)),
+      taint_scaling_ratio: Number(tRatio.toFixed(3)),
+      // Boundedness: kept findings PER ANALYZED FUNCTION (total findings grow
+      // linearly with N by design — the per-function pin is the cap gate).
+      taint_findings_per_fn_small: tSmall.analyzed > 0 ? tSmall.kept / tSmall.analyzed : 0,
+      taint_findings_per_fn_large: tLarge.analyzed > 0 ? tLarge.kept / tLarge.analyzed : 0,
+      taint_dropped_large: tLarge.dropped,
+      taint_reason_bytes_large: tLarge.reasonBytes,
+      taint_zero_ms_large: Number(tZero.ms.toFixed(3)),
+      taint_zero_findings: tZero.kept + tZero.dropped,
+      taint_zero_match_ratio: Number((tZero.ms / Math.max(tLarge.ms, 0.001)).toFixed(3)),
+    };
+  }
+
   return {
+    ...taintMetrics,
     scenario: scenario.name,
     elapsed_ms_small: Number(small.ms.toFixed(3)),
     elapsed_ms_large: Number(large.ms.toFixed(3)),
@@ -365,6 +499,56 @@ if (!CHECK) {
       failures.push(
         `${r.scenario}: cfgSideChannel absolute size ${r.disk_bytes_large} > ceiling ` +
           `${base.disk_bytes_large_max} bytes (constant-factor encoding bloat)`,
+      );
+    }
+    // #2083 M3 U7 gates — taint boundedness (per-function findings pinned at
+    // the cap as N grows), an ABSOLUTE ceiling on persisted TAINTED reason
+    // bytes, taint solve-time scaling, and the zero-match fast path staying
+    // ~free relative to the match-dense pass.
+    if (base.taint_findings_per_fn_pin !== undefined) {
+      for (const side of ['small', 'large']) {
+        const perFn = r[`taint_findings_per_fn_${side}`];
+        if (perFn !== base.taint_findings_per_fn_pin) {
+          failures.push(
+            `${r.scenario}: taint findings/function (${side}) ${perFn} != pin ` +
+              `${base.taint_findings_per_fn_pin} (cap must BIND exactly: above = cap lost, ` +
+              `below = detection regressed)`,
+          );
+        }
+      }
+      if (r.taint_zero_findings !== 0) {
+        failures.push(
+          `${r.scenario}: zero-match control produced ${r.taint_zero_findings} findings ` +
+            `(the control must not match the model — generator drift)`,
+        );
+      }
+    }
+    if (
+      base.taint_reason_bytes_large_max !== undefined &&
+      r.taint_reason_bytes_large > base.taint_reason_bytes_large_max
+    ) {
+      failures.push(
+        `${r.scenario}: persisted TAINTED reason bytes ${r.taint_reason_bytes_large} > ceiling ` +
+          `${base.taint_reason_bytes_large_max} (hop-encoding bloat or cap loss)`,
+      );
+    }
+    if (
+      base.taint_scaling_budget !== undefined &&
+      r.taint_scaling_ratio >= base.taint_scaling_budget
+    ) {
+      failures.push(
+        `${r.scenario}: taint scaling ratio ${r.taint_scaling_ratio} >= budget ` +
+          `${base.taint_scaling_budget} (ms ${r.taint_ms_small}->${r.taint_ms_large})`,
+      );
+    }
+    if (
+      base.taint_zero_match_budget !== undefined &&
+      r.taint_zero_match_ratio >= base.taint_zero_match_budget
+    ) {
+      failures.push(
+        `${r.scenario}: zero-match taint time is ${r.taint_zero_match_ratio} of the match-dense ` +
+          `pass, >= budget ${base.taint_zero_match_budget} (the match gate must keep unmatched ` +
+          `functions ~free — no solver call)`,
       );
     }
     // Heap gate only when measured (--expose-gc present) AND a budget exists.

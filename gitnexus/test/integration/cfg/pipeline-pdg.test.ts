@@ -5,6 +5,7 @@ import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
+import { fixtureTaintTotals } from '../../helpers/taint-fixture.js';
 
 // U7 — end-to-end proof that the `--pdg` opt-in reaches BOTH sinks: the parse
 // worker builds a per-function CFG (workerData.pdg) and scope-resolution emits
@@ -76,18 +77,39 @@ describe('U7 — end-to-end --pdg pipeline', () => {
     }
   }, 60000);
 
-  // M3 (#2083 U4): the taint layer rides the same gate. The fixture's
+  // M3 (#2083 U4/U7): the taint layer rides the same gate. The fixture's
   // vuln.ts carries one vulnerable flow (req.body → child_process.exec) and
-  // one sanitized variant (encodeURIComponent before res.send).
+  // one sanitized variant (encodeURIComponent before res.send); taint-cases.ts
+  // adds the U7 acceptance battery (direct, multi-hop, conditional-sanitizer,
+  // loop-carried, through-call).
   it('with --pdg on: emits TAINTED + SANITIZES edges with decodable hop reasons', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
     const blockIds = new Set<string>();
     result.graph.forEachNode((n) => {
       if (n.label === 'BasicBlock') blockIds.add(n.id);
     });
-    const { tainted, sanitizes } = counts(result);
+    const { tainted, sanitizes, reachingDefs } = counts(result);
     expect(tainted).toBeGreaterThan(0);
     expect(sanitizes).toBeGreaterThanOrEqual(1);
+
+    // AE2 (AC2) — sparse persistence. The load-bearing O(findings) gate is
+    // EXACT equality: one TAINTED row per pure-path finding and one SANITIZES
+    // row per kill over the same fixture, computed through the shared harness
+    // so the worker pipeline and the snapshot suite cannot drift apart. Any
+    // REACHING_DEF-style row multiplication (per-fact, per-block-pair, …)
+    // breaks the equality immediately.
+    const expected = fixtureTaintTotals(FIXTURE);
+    expect(expected.findings).toBeGreaterThan(0);
+    expect(tainted).toBe(expected.findings);
+    expect(sanitizes).toBe(expected.kills);
+    // Ratio sanity vs the dense RD projection on the SAME run. The fixture is
+    // deliberately finding-DENSE (nearly every function is a vulnerable
+    // acceptance case), so the honest measured ratio here is ~22% (8 taint
+    // rows vs 37 RD rows) — the < 0.5 bound still catches any per-fact
+    // explosion (which would multiply taint rows past RD); the representative
+    // ≪-RD posture on realistic density is gated by the bench taint scenario's
+    // absolute boundedness/byte ceilings (bench/cfg).
+    expect(tainted + sanitizes).toBeLessThan(reachingDefs * 0.5);
     let sawVulnFlow = false;
     for (const rel of result.graph.iterRelationships()) {
       if (rel.type !== 'TAINTED' && rel.type !== 'SANITIZES') continue;
@@ -108,8 +130,9 @@ describe('U7 — end-to-end --pdg pipeline', () => {
           if (decoded.hops.some((h) => h.variable === 'cmd')) sawVulnFlow = true;
         }
       } else {
-        // SANITIZES carries the killed binding's plain name.
-        expect(rel.reason).toBe('value');
+        // SANITIZES carries the killed binding's plain name: `value` from
+        // vuln.ts sendEncoded, `text` from taint-cases.ts conditionalSanitizer.
+        expect(['value', 'text']).toContain(rel.reason);
       }
     }
     expect(sawVulnFlow).toBe(true); // the req.body → exec flow, via `cmd`
