@@ -54,10 +54,7 @@ describe('direct CLI tool commands', () => {
 
     await checkCommand({ cycles: true, json: true });
 
-    expect(writeSyncMock).toHaveBeenCalledWith(
-      1,
-      expect.stringContaining('"status": "clean"'),
-    );
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"status": "clean"'));
     expect(process.exitCode).toBeUndefined();
   });
 

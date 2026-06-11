@@ -102,8 +102,7 @@ export function findImportCycles(edges: ImportEdge[]): string[][] {
   return components
     .filter(
       (component) =>
-        component.length > 1 ||
-        (sortedAdjacency.get(component[0]) ?? []).includes(component[0]),
+        component.length > 1 || (sortedAdjacency.get(component[0]) ?? []).includes(component[0]),
     )
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map((component) => findCyclePath(component, sortedAdjacency));
