@@ -1,49 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
-import {
-  createTypeScriptCfgVisitor,
-  TS_FUNCTION_TYPES,
-} from '../../../src/core/ingestion/cfg/visitors/typescript.js';
 import type { FunctionCfg, StatementFacts } from '../../../src/core/ingestion/cfg/types.js';
+import { cfgOf } from '../../helpers/ts-cfg-harness.js';
 
 // U1 (#2082 M2) — per-statement def/use harvesting. The two-phase design
 // (declaration pre-scan → resolve during the CFG walk) is what makes the
 // walk-order traps pass: the visitor walks finally-before-try, for-init-last,
 // and do-while-condition-first, so declare-as-you-walk would mis-key common
 // code. Each test pins names→binding-index agreement, not just presence.
-
-const visitor = createTypeScriptCfgVisitor();
-
-function parse(code: string): SyntaxNode {
-  const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
-  return parser.parse(code).rootNode;
-}
-
-function collectFunctions(root: SyntaxNode): SyntaxNode[] {
-  const out: SyntaxNode[] = [];
-  const stack = [root];
-  while (stack.length) {
-    const n = stack.pop() as SyntaxNode;
-    if (TS_FUNCTION_TYPES.has(n.type)) out.push(n);
-    for (let i = n.namedChildCount - 1; i >= 0; i--) {
-      const c = n.namedChild(i);
-      if (c) stack.push(c);
-    }
-  }
-  return out;
-}
-
-function cfgOf(code: string, index = 0): FunctionCfg {
-  const fns = collectFunctions(parse(code));
-  const fn = fns[index];
-  if (!fn) throw new Error(`no function at index ${index}`);
-  const cfg = visitor.buildFunctionCfg(fn, 'fixture.ts');
-  if (!cfg) throw new Error('buildFunctionCfg returned undefined');
-  return cfg;
-}
 
 /** All statement facts of the CFG, flattened in (block, statement) order. */
 function allFacts(cfg: FunctionCfg): StatementFacts[] {

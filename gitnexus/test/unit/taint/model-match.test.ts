@@ -9,17 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
-import type { ParsedImport } from 'gitnexus-shared';
-import {
-  createTypeScriptCfgVisitor,
-  TS_FUNCTION_TYPES,
-} from '../../../src/core/ingestion/cfg/visitors/typescript.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
-import { emitTsScopeCaptures } from '../../../src/core/ingestion/languages/typescript/captures.js';
-import { interpretTsImport } from '../../../src/core/ingestion/languages/typescript/interpret.js';
+import { cfgOf, importsFor } from '../../helpers/ts-cfg-harness.js';
 import { hasTaintSafeSites } from '../../../src/core/ingestion/taint/site-safety.js';
 import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import {
@@ -41,45 +31,6 @@ import {
   clearSourceSinkRegistry,
   registeredTaintLanguages,
 } from '../../../src/core/ingestion/taint/source-sink-registry.js';
-
-const visitor = createTypeScriptCfgVisitor();
-
-function parse(code: string): SyntaxNode {
-  const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
-  return parser.parse(code).rootNode;
-}
-
-function collectFunctions(root: SyntaxNode): SyntaxNode[] {
-  const out: SyntaxNode[] = [];
-  const stack = [root];
-  while (stack.length) {
-    const n = stack.pop() as SyntaxNode;
-    if (TS_FUNCTION_TYPES.has(n.type)) out.push(n);
-    for (let i = n.namedChildCount - 1; i >= 0; i--) {
-      const c = n.namedChild(i);
-      if (c) stack.push(c);
-    }
-  }
-  return out;
-}
-
-function cfgOf(code: string, index = 0): FunctionCfg {
-  const fns = collectFunctions(parse(code));
-  const fn = fns[index];
-  if (!fn) throw new Error(`no function at index ${index}`);
-  const cfg = visitor.buildFunctionCfg(fn, 'fixture.ts');
-  if (!cfg) throw new Error('buildFunctionCfg returned undefined');
-  return cfg;
-}
-
-/** Real ParsedImports via the TS scope-capture + interpreter path. */
-function importsFor(src: string): ParsedImport[] {
-  return emitTsScopeCaptures(src, 'fixture.ts')
-    .filter((m) => m['@import.statement'] !== undefined)
-    .map((m) => interpretTsImport(m))
-    .filter((p): p is ParsedImport => p !== null);
-}
 
 /** Match function #`fnIndex` of `code` against the built-in model (or `spec`). */
 function matchesOf(

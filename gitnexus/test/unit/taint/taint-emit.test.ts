@@ -16,18 +16,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
-import type { ParsedImport } from 'gitnexus-shared';
-import {
-  createTypeScriptCfgVisitor,
-  TS_FUNCTION_TYPES,
-} from '../../../src/core/ingestion/cfg/visitors/typescript.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import { cfgsOf, importsFor } from '../../helpers/ts-cfg-harness.js';
 import { emitFileCfgs } from '../../../src/core/ingestion/cfg/emit.js';
-import { emitTsScopeCaptures } from '../../../src/core/ingestion/languages/typescript/captures.js';
-import { interpretTsImport } from '../../../src/core/ingestion/languages/typescript/interpret.js';
 import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import {
   emitFileTaint,
@@ -38,42 +28,6 @@ import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
 import type { GraphRelationship } from 'gitnexus-shared';
-
-const visitor = createTypeScriptCfgVisitor();
-
-function parse(code: string): SyntaxNode {
-  const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
-  return parser.parse(code).rootNode;
-}
-
-function collectFunctions(root: SyntaxNode): SyntaxNode[] {
-  const out: SyntaxNode[] = [];
-  const stack = [root];
-  while (stack.length) {
-    const n = stack.pop() as SyntaxNode;
-    if (TS_FUNCTION_TYPES.has(n.type)) out.push(n);
-    for (let i = n.namedChildCount - 1; i >= 0; i--) {
-      const c = n.namedChild(i);
-      if (c) stack.push(c);
-    }
-  }
-  return out;
-}
-
-function cfgsOf(code: string): FunctionCfg[] {
-  return collectFunctions(parse(code))
-    .map((fn) => visitor.buildFunctionCfg(fn, 'fixture.ts'))
-    .filter((c): c is FunctionCfg => c !== undefined);
-}
-
-/** Real ParsedImports via the TS scope-capture + interpreter path. */
-function importsFor(src: string): ParsedImport[] {
-  return emitTsScopeCaptures(src, 'fixture.ts')
-    .filter((m) => m['@import.statement'] !== undefined)
-    .map((m) => interpretTsImport(m))
-    .filter((p): p is ParsedImport => p !== null);
-}
 
 /** Mechanics spec (propagate.test.ts MECH): global exec sink, global escape sanitizer. */
 const MECH: SourceSinkSanitizerSpec = {
