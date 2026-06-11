@@ -313,3 +313,27 @@ describe('#2082 M2 — statement-fact emit guard (isEmitSafeCfg extension)', () 
     expect(warns()).toHaveLength(0);
   });
 });
+
+describe('#2160 review — entry/exit index validation', () => {
+  it('an out-of-range entryIndex is rejected per element (would crash the solver mid-file)', () => {
+    const bad = { ...validCfg, entryIndex: 99 };
+    const logs = _captureLogger();
+    try {
+      const graph = emitWith([bad, validCfg]);
+      // the malformed element is skipped; the valid sibling still emits
+      let cfgEdges = 0;
+      graph.forEachRelationship((r) => {
+        if (r.type === 'CFG') cfgEdges++;
+      });
+      expect(cfgEdges).toBeGreaterThan(0);
+      expect(
+        logs
+          .records()
+          .filter((r) => r.level >= 40)
+          .some((r) => String(r.msg).includes('malformed')),
+      ).toBe(true);
+    } finally {
+      logs.restore();
+    }
+  });
+});

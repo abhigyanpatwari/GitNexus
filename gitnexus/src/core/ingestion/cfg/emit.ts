@@ -107,6 +107,19 @@ export const isEmitSafeCfg = (cfg: FunctionCfg | undefined | null): cfg is Funct
     if (cfg.blocks[i]?.index !== i) return false;
   }
   const n = cfg.blocks.length;
+  // entry/exit must land on real blocks — the solver feeds entryIndex straight
+  // into its RPO walk, where an out-of-range index throws and (worse than this
+  // one element) costs the whole FILE's REACHING_DEF pass (tri-review P3).
+  if (
+    !Number.isInteger(cfg.entryIndex) ||
+    cfg.entryIndex < 0 ||
+    cfg.entryIndex >= n ||
+    !Number.isInteger(cfg.exitIndex) ||
+    cfg.exitIndex < 0 ||
+    cfg.exitIndex >= n
+  ) {
+    return false;
+  }
   return cfg.edges.every(
     (e) =>
       Number.isInteger(e?.from) &&
