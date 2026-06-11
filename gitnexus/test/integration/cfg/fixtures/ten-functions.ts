@@ -116,8 +116,10 @@ export function withShadowing(): void {
   let s = 1;
   {
     let s = 2;
+    s = s + 1;
     use(s);
   }
+  s = s + 1;
   done2(s);
 }
 

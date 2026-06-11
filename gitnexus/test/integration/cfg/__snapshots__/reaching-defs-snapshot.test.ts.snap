@@ -107,14 +107,18 @@ exports[`R5 — REACHING_DEF facts snapshot on the M1 fixture > matches the comm
     "uses": 5,
   },
   {
-    "defs": 2,
+    "defs": 4,
     "facts": [
       "2:0->4:0:s:116:6",
       "3:0->3:1:s:118:8",
+      "3:1->3:1:s:118:8",
+      "3:1->3:2:s:118:8",
+      "4:0->4:0:s:116:6",
+      "4:0->4:1:s:116:6",
     ],
     "startLine": 115,
     "status": "computed",
-    "uses": 4,
+    "uses": 6,
   },
 ]
 `;
