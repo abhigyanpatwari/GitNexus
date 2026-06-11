@@ -413,7 +413,13 @@ export class TsHarvester {
           if (d?.type !== 'variable_declarator') continue;
           const name = d.childForFieldName('name');
           const value = d.childForFieldName('value');
-          if (name) this.walkDefPattern(name, acc);
+          // A bare `var x;` mid-function is hoisted and writes NOTHING at
+          // runtime — harvesting it as a def would fabricate a kill of the
+          // live def (`x = source(); var x; sink(x)` must keep source→sink;
+          // tri-review P2). `let`/`const` declarators genuinely initialize.
+          if (name && (value || t === 'lexical_declaration')) {
+            this.walkDefPattern(name, acc);
+          }
           if (value) this.walkValue(value, acc);
         }
         return;

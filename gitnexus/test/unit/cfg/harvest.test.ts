@@ -419,3 +419,14 @@ describe('TS/JS def/use harvest — review-pass regressions (#2082)', () => {
     expect(condUses.length).toBeGreaterThan(0);
   });
 });
+
+describe('TS/JS def/use harvest — tri-review harvest fixes (#2160 review)', () => {
+  it('bare `var x;` is a runtime no-op — no def fact (initialized var still defs)', () => {
+    const cfg = cfgOf(`function f() { x = source(); var x; var y = 1; sink(x, y); }`);
+    const x = bindingIdx(cfg, 'x');
+    const y = bindingIdx(cfg, 'y');
+    const defFacts = allFacts(cfg).filter((s) => s.defs.includes(x));
+    expect(defFacts).toHaveLength(1); // only the assignment, never the bare declarator
+    expect(allFacts(cfg).some((s) => s.defs.includes(y))).toBe(true);
+  });
+});
