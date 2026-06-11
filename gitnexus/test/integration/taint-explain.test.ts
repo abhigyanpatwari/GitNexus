@@ -131,6 +131,25 @@ withTestLbugDB(
         expect(result.error).toMatch(/not found/i);
       });
 
+      it('a dotted symbol name resolves as a symbol, not a silent file miss', async () => {
+        // Regression: `Class.method` was classified as a file (the `.method`
+        // extension-like suffix) and returned a silent empty file-anchored
+        // result. It must now route to symbol resolution — here, not-found.
+        const result = await backend.callTool('explain', { target: 'UserController.create' });
+        expect(result).toHaveProperty('error');
+        expect(result.error).toMatch(/not found/i);
+        // Must NOT be a silent file-anchored empty result.
+        expect(result.anchor).toBeUndefined();
+      });
+
+      it('a dotted symbol whose tail looks bare still resolves as a symbol', async () => {
+        // `runUserCommand` is a real fixture symbol; a dotted lead-in that does
+        // not match any symbol confirms the symbol branch (not file routing).
+        const result = await backend.callTool('explain', { target: 'Service.runUserCommand' });
+        expect(result).toHaveProperty('error');
+        expect(result.error).toMatch(/not found/i);
+      });
+
       it('rejects an out-of-bounds limit with a clear error', async () => {
         for (const limit of [0, -1, 1.5, 10_000]) {
           const result = await backend.callTool('explain', { limit });

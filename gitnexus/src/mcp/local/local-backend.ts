@@ -61,6 +61,21 @@ import {
   EXPLAIN_MAX_LIMIT,
 } from '../tools.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
+import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
+
+/** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
+ *  excluding the empty entry and the `/index.*` forms — used to decide whether
+ *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
+const SOURCE_FILE_EXTENSIONS: readonly string[] = EXTENSIONS.filter(
+  (e) => e.startsWith('.') && !e.includes('/'),
+);
+/** A target is path-ish if it has a path separator or ends in a known source
+ *  extension. A bare dotted symbol (`UserController.create`) is NOT path-ish. */
+function looksLikeFilePath(target: string): boolean {
+  if (/[\\/]/.test(target)) return true;
+  const lower = target.toLowerCase();
+  return SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -2779,84 +2794,104 @@ export class LocalBackend {
     const queryParams: Record<string, unknown> = {};
     let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number } | undefined;
 
-    if (target) {
-      const fileish = /[\\/]/.test(target) || /\.[A-Za-z0-9]+$/.test(target);
-      if (fileish) {
-        // Exact path via the BasicBlock id-prefix template, OR a
-        // path-separator-aligned suffix so partial paths work like context()'s
-        // file_path hint ("vuln.ts" ⇒ "src/vuln.ts", never "devuln.ts").
-        anchorClause =
-          'AND (a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)';
-        queryParams.idPrefix = `BasicBlock:${target}:`;
-        queryParams.targetPath = target;
-        queryParams.targetSuffix = `/${target}`;
-        anchor = { file: target };
-      } else {
-        const outcome = await this.resolveSymbolCandidates(repo, { name: target }, {});
-        if (outcome.kind === 'not_found') {
-          return { error: `Symbol '${target}' not found` };
-        }
-        if (outcome.kind === 'ambiguous') {
-          return {
-            status: 'ambiguous',
-            message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call explain with the file path, or disambiguate via context() first.`,
-            candidates: outcome.candidates.map((c) => ({
-              uid: c.id,
-              name: c.name,
-              kind: c.type,
-              filePath: c.filePath,
-              line: c.startLine,
-              score: Number(c.score.toFixed(2)),
-            })),
-          };
-        }
-        const sym = outcome.symbol;
-        queryParams.idPrefix = `BasicBlock:${sym.filePath}:`;
-        anchor = { file: sym.filePath, symbol: sym.name };
-        if (
-          typeof sym.startLine === 'number' &&
-          typeof sym.endLine === 'number' &&
-          sym.endLine >= sym.startLine
-        ) {
-          anchorClause =
-            'AND a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
-          queryParams.symStart = sym.startLine;
-          queryParams.symEnd = sym.endLine;
-          anchor.startLine = sym.startLine;
-          anchor.endLine = sym.endLine;
-        } else {
-          // No usable span — degrade to the file-level filter (documented).
-          anchorClause = 'AND a.id STARTS WITH $idPrefix';
-        }
+    // Build the anchor as a file filter (used only when `target` is path-ish).
+    const buildFileAnchor = (): void => {
+      // Exact path via the BasicBlock id-prefix template, OR a
+      // path-separator-aligned suffix so partial paths work like context()'s
+      // file_path hint ("vuln.ts" ⇒ "src/vuln.ts", never "devuln.ts").
+      anchorClause =
+        'AND (a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)';
+      queryParams.idPrefix = `BasicBlock:${target}:`;
+      queryParams.targetPath = target;
+      queryParams.targetSuffix = `/${target}`;
+      anchor = { file: target as string };
+    };
+
+    // Resolve `target` as a symbol into the anchor. Returns an early-return
+    // payload (not_found / ambiguous) or undefined on success.
+    const resolveSymbolAnchor = async (): Promise<Record<string, unknown> | undefined> => {
+      const outcome = await this.resolveSymbolCandidates(repo, { name: target as string }, {});
+      if (outcome.kind === 'not_found') {
+        return { error: `Symbol '${target}' not found` };
       }
-    }
+      if (outcome.kind === 'ambiguous') {
+        return {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call explain with the file path, or disambiguate via context() first.`,
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        };
+      }
+      const sym = outcome.symbol;
+      queryParams.idPrefix = `BasicBlock:${sym.filePath}:`;
+      anchor = { file: sym.filePath, symbol: sym.name };
+      if (
+        typeof sym.startLine === 'number' &&
+        typeof sym.endLine === 'number' &&
+        sym.endLine >= sym.startLine
+      ) {
+        anchorClause =
+          'AND a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
+        queryParams.symStart = sym.startLine;
+        queryParams.symEnd = sym.endLine;
+        anchor.startLine = sym.startLine;
+        anchor.endLine = sym.endLine;
+      } else {
+        // No usable span — degrade to the file-level filter (documented).
+        anchorClause = 'AND a.id STARTS WITH $idPrefix';
+      }
+      return undefined;
+    };
 
     // Bounded by construction: the BasicBlock→BasicBlock partition holds only
     // the sparse pdg layers, TAINTED rows are per-function-capped at analyze
     // time, and the page is LIMIT-bounded (the limit is a validated integer —
     // interpolated because LadybugDB does not parameterize LIMIT).
-    const matchClause = `
+    const runAnchoredQuery = async (): Promise<{ rows: unknown[]; totalFindings: number }> => {
+      const matchClause = `
       MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
       WHERE r.type = 'TAINTED' ${anchorClause}`;
-    const [rows, countRows] = await Promise.all([
-      executeParameterized(
-        repo.lbugPath,
-        `${matchClause}
+      const [qRows, countRows] = await Promise.all([
+        executeParameterized(
+          repo.lbugPath,
+          `${matchClause}
       RETURN a.id AS sourceBlockId, a.filePath AS file, a.startLine AS sourceStart,
              b.startLine AS sinkStart, r.reason AS reason, b.id AS sinkBlockId
       ORDER BY sourceBlockId, sinkBlockId, reason
       LIMIT ${limit}`,
-        queryParams,
-      ),
-      executeParameterized(
-        repo.lbugPath,
-        `${matchClause}
+          queryParams,
+        ),
+        executeParameterized(
+          repo.lbugPath,
+          `${matchClause}
       RETURN COUNT(*) AS total`,
-        queryParams,
-      ),
-    ]);
+          queryParams,
+        ),
+      ]);
+      return {
+        rows: qRows,
+        totalFindings: Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0),
+      };
+    };
 
-    const totalFindings = Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0);
+    if (target) {
+      if (looksLikeFilePath(target)) {
+        buildFileAnchor();
+      } else {
+        // A bare or dotted symbol name (`UserController.create`) — resolve as a
+        // symbol rather than silently file-anchoring to an empty result.
+        const early = await resolveSymbolAnchor();
+        if (early) return early;
+      }
+    }
+
+    const { rows, totalFindings } = await runAnchoredQuery();
 
     if (totalFindings === 0 && pdgStamped === undefined && !target) {
       // Meta was unreadable and the repo-wide enumerate found nothing — the
