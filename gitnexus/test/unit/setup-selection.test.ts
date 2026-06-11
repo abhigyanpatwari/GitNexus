@@ -88,4 +88,44 @@ describe('setupCommand coding-agent selection', () => {
       fs.access(path.join(tempHome, '.config', 'opencode', 'opencode.json')),
     ).rejects.toThrow();
   });
+
+  it.each([
+    ['an empty string', ''],
+    ['an empty array', []],
+  ])('rejects %s before writing configuration', async (_label, codingAgent) => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand({ codingAgent });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('No coding agents were provided.'));
+    await expect(fs.access(path.join(tempHome, '.cursor', 'mcp.json'))).rejects.toThrow();
+  });
+
+  it('fails clearly when an explicitly selected agent is not installed', async () => {
+    await fs.rm(path.join(tempHome, '.codex'), { recursive: true, force: true });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand({ codingAgent: ['codex'] });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderr).toHaveBeenCalledWith(
+      'None of the explicitly selected coding agents were configured.\n',
+    );
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('MCP is ready!');
+  });
+
+  it('preserves the no-flag default of configuring every detected agent', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand();
+
+    await expect(fs.access(path.join(tempHome, '.cursor', 'mcp.json'))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(tempHome, '.claude.json'))).resolves.toBeUndefined();
+    await expect(
+      fs.access(path.join(tempHome, '.config', 'opencode', 'opencode.json')),
+    ).resolves.toBeUndefined();
+  });
 });

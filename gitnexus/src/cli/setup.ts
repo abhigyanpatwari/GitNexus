@@ -86,16 +86,17 @@ interface SetupResult {
   errors: string[];
 }
 
-const SUPPORTED_CODING_AGENTS = [
-  'cursor',
-  'claude',
-  'antigravity',
-  'opencode',
-  'codex',
-] as const satisfies readonly EditorId[];
+const CODING_AGENT_IDS = {
+  cursor: 'cursor',
+  claude: 'claude',
+  antigravity: 'antigravity',
+  opencode: 'opencode',
+  codex: 'codex',
+} as const satisfies Record<EditorId, EditorId>;
+const SUPPORTED_CODING_AGENTS = Object.values(CODING_AGENT_IDS);
 
 function selectedCodingAgents(values: string[] | string | undefined): Set<EditorId> | null {
-  if (values == null || values.length === 0) return new Set(SUPPORTED_CODING_AGENTS);
+  if (values == null) return new Set(SUPPORTED_CODING_AGENTS);
   const rawValues = Array.isArray(values) ? values : [values];
   const requested = rawValues
     .flatMap((value) => value.split(','))
@@ -1000,6 +1001,7 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async (options?: { codingAgent?: string[] | string }) => {
+  const explicitSelection = options?.codingAgent != null;
   const selected = selectedCodingAgents(options?.codingAgent);
   if (!selected) return;
 
@@ -1070,10 +1072,17 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
   console.log(
     `    Skills installed to: ${result.configured.filter((c) => c.includes('skills')).length > 0 ? result.configured.filter((c) => c.includes('skills')).join(', ') : 'none'}`,
   );
+  const configurationSucceeded = result.configured.length > 0;
+  if (explicitSelection && !configurationSucceeded) {
+    process.stderr.write('None of the explicitly selected coding agents were configured.\n');
+    process.exitCode = 1;
+  }
   console.log('');
-  console.log('  Next steps:');
-  console.log('    1. cd into any git repo');
-  console.log('    2. Run: gitnexus analyze');
-  console.log('    3. Open the repo in your editor — MCP is ready!');
+  if (configurationSucceeded) {
+    console.log('  Next steps:');
+    console.log('    1. cd into any git repo');
+    console.log('    2. Run: gitnexus analyze');
+    console.log('    3. Open the repo in your editor — MCP is ready!');
+  }
   console.log('');
 };
