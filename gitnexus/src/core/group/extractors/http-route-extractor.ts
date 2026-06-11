@@ -305,9 +305,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       const graphKeys = new Set(graphContracts.map((contract) => contract.contractId));
       const sourceProviderKeys = (await getDetections(file))
         .filter((detection) => detection.role === 'provider')
-        .map((detection) =>
-          contractIdFor(detection.method, normalizeHttpPath(detection.path)),
-        );
+        .map((detection) => contractIdFor(detection.method, normalizeHttpPath(detection.path)));
       if (sourceProviderKeys.some((key) => !graphKeys.has(key))) {
         providerSourceFiles.push(file);
       }
