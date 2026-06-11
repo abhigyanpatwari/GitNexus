@@ -97,6 +97,14 @@ export class TsHarvester {
   /** name → synthetic binding index (implicit global / import / captured). */
   private readonly synthetic = new Map<string, number>();
   private readonly fnId: number;
+  /**
+   * Innermost enclosing scope per visited node id, filled during the prescan
+   * (which already touches every named node once). Makes phase-2 resolution
+   * O(scope-chain) instead of O(AST-depth) per identifier — a deeply-chained
+   * single-statement expression (generated code) otherwise turns the
+   * parent-chain walk quadratic (tri-review perf finding).
+   */
+  private readonly nearestScopeCache = new Map<number, Scope>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -213,6 +221,7 @@ export class TsHarvester {
   }
 
   private prescan(node: SyntaxNode, scope: Scope): void {
+    this.nearestScopeCache.set(node.id, scope);
     const t = node.type;
     if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
       // A nested function's NAME binds in the enclosing scope; its body is opaque.
@@ -335,16 +344,29 @@ export class TsHarvester {
 
   private resolve(nameNode: SyntaxNode): number {
     const name = nameNode.text;
-    for (let p: SyntaxNode | null = nameNode; p; p = p.parent) {
-      const scope = this.scopeByNode.get(p.id);
-      if (scope) {
-        for (let s: Scope | null = scope; s; s = s.parent) {
-          const idx = s.table.get(name);
-          if (idx !== undefined) return idx;
+    // Fast path: the prescan cached every visited node's innermost scope, so
+    // resolution walks the SCOPE chain (shallow), not the AST parent chain
+    // (arbitrarily deep in chained expressions). The parent-chain walk remains
+    // as fallback for the few nodes the prescan never visits (e.g. a nested
+    // function declaration's own name node).
+    const cached = this.nearestScopeCache.get(nameNode.id);
+    let startScope: Scope | null = cached ?? null;
+    if (!startScope) {
+      for (let p: SyntaxNode | null = nameNode; p; p = p.parent) {
+        const scope = this.scopeByNode.get(p.id) ?? this.nearestScopeCache.get(p.id);
+        if (scope) {
+          startScope = scope;
+          break;
         }
-        break; // reached the root scope without a hit
+        if (p.id === this.fnId) {
+          startScope = this.root;
+          break;
+        }
       }
-      if (p.id === this.fnId) break;
+    }
+    for (let s: Scope | null = startScope; s; s = s.parent) {
+      const idx = s.table.get(name);
+      if (idx !== undefined) return idx;
     }
     // No in-function declaration — synthetic module-level binding, shared by
     // defs and uses so `notDeclared = 1; use(notDeclared)` still forms a fact.
