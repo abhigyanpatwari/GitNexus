@@ -665,21 +665,35 @@ export const processCalls = async (
         }
         return;
       }
-      const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
+      // WI-1 (#159) — line-aware CALLS id. The per-site
+      // id embeds `nameNode.startPosition.row` so two same-name
+      // calls in the same function (`a(); b(); a();`) mint TWO
+      // distinct edges (previously one — silently rejected by
+      // `graph.ts:14` id dedup). The `:L${row}` suffix mirrors
+      // the COBOL convention (`cobol-processor.ts`).
+      const callRow = nameNode.startPosition.row;
+      const relId = generateId(
+        'CALLS',
+        `${sourceId}:${calledName}->${resolved.nodeId}:L${callRow}`,
+      );
 
       // WI-1 (#166 P3 Mode A) — push `global`-0.50 winner to correction
       // feed. Mirrors processCallsFromExtracted (:1471-1480) byte-for-byte
       // (addRelationship still runs in the default path; the push is
       // additive and gated by opts?.lsp). The reconciler re-resolves it
       // via LSP and either confirms (same target), corrects (different
-      // target), or refuses (non-callable / no node).
+      // target), or refuses (non-callable / no node). The exact
+      // heuristic id is carried as `oldRelId` so the engine can target
+      // the right row when multiple per-site edges share the same
+      // (sourceId, targetId) pair.
       if (opts?.lsp && opts.correctionFeed && resolved.reason === 'global') {
         opts.correctionFeed.push({
           sourceId,
           calledName,
           oldTargetId: resolved.nodeId,
+          oldRelId: relId,
           file: file.path,
-          line: nameNode.startPosition.row,
+          line: callRow,
           character: nameNode.startPosition.column,
         });
       }
@@ -692,6 +706,7 @@ export const processCalls = async (
         confidence: resolved.confidence,
         reason: resolved.reason,
         source: 'heuristic',
+        line: callRow,
       });
     });
 
@@ -1299,6 +1314,15 @@ export interface CorrectionFeedItem {
   calledName: string;
   /** Heuristic target id (the `global`-0.50 winner). Absent for ambiguous sites. */
   oldTargetId?: string;
+  /**
+   * Heuristic CALLS edge id for this exact call site
+   * (`CALLS:${sourceId}:${calledName}->${resolved.nodeId}:L${row}`).
+   * Carried into the candidate (`mode-a-reconciler.ts:Candidate.oldRelId`)
+   * so the engine's `correct`/`confirm` actions can target the exact
+   * row even when multiple per-site edges share the same
+   * (sourceId, targetId) pair (WI-1 / #159).
+   */
+  oldRelId: string;
   file: string;
   /** 0-based line of the callee identifier (callNameNode.startPosition.row). */
   line: number;
@@ -1520,21 +1544,36 @@ export const processCallsFromExtracted = async (
 
       resolvedCalls++;
 
+      // WI-1 (#159) — line-aware CALLS id. Mirrors the AST
+      // path (:668): embed `effectiveCall.line` (or 0 for
+      // position-less emitters — documented collapse at L0).
+      // `relId` MUST be computed BEFORE the feed push so
+      // `oldRelId` can be carried (reordered in WI-1 from
+      // the post-push position to here).
+      const callRow = effectiveCall.line ?? 0;
+      const relId = generateId(
+        'CALLS',
+        `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}:L${callRow}`,
+      );
+
       // WI-2 — Mode A: push `global`-0.50 winner to correction feed. The reconciler
       // re-resolves it via LSP and either confirms (same target), corrects
-      // (different target), or refuses (non-callable / no node).
+      // (different target), or refuses (non-callable / no node). The exact
+      // heuristic id rides through as `oldRelId` so the engine can target
+      // the right row when multiple per-site edges share the same
+      // (sourceId, targetId) pair.
       if (opts?.lsp && opts.correctionFeed && resolved.reason === 'global') {
         opts.correctionFeed.push({
           sourceId: effectiveCall.sourceId,
           calledName: effectiveCall.calledName,
           oldTargetId: resolved.nodeId,
+          oldRelId: relId,
           file: effectiveCall.filePath,
-          line: effectiveCall.line ?? 0,
+          line: callRow,
           character: effectiveCall.character ?? 0,
         });
       }
 
-      const relId = generateId('CALLS', `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`);
       graph.addRelationship({
         id: relId,
         sourceId: effectiveCall.sourceId,
@@ -1543,6 +1582,7 @@ export const processCallsFromExtracted = async (
         confidence: resolved.confidence,
         reason: resolved.reason,
         source: 'heuristic',
+        line: callRow,
       });
     }
 

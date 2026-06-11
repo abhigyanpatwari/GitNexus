@@ -490,6 +490,116 @@ describe('WI-V — AC-2 two-independent-default-runs byte-identity (B1)', () => 
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// (a2-dup) — AC-1 line-aware CALLS ids: integration proof of
+// byte-identity for a fixture with TWO same-name CALLS edges.
+//
+// The (a2) block above covers the byte-identity contract on a
+// fixture with one `user.save()` and one `user.getName()` — one
+// call each, no duplicate sites. The unit test for AC-1 covers
+// the multiplicity (call-processor.test.ts:1200-1245), but the
+// integration proof of byte-identity for a fixture with two
+// same-name CALLS edges is the WI-1 baseline change (`:L` suffix)
+// determinism across real pipelines, not just the in-memory unit
+// test.
+//
+// This block adds a duplicate-site variant of (a2): `user.work()`
+// is called twice in the same function on distinct lines, minting
+// two distinct CALLS edges whose ids differ only in `:L${line}`.
+// Two independent default runs must produce identical snapshots
+// (the AC-2 contract under the WI-1 line-aware multiplicity).
+// ═══════════════════════════════════════════════════════════════════════
+describe('WI-V — AC-1 line-aware CALLS ids: duplicate-site byte-identity (B1)', () => {
+  let tmpDir2dup: string;
+  let dupRun1: PipelineResult;
+  let dupRun2: PipelineResult;
+
+  beforeAll(async () => {
+    tmpDir2dup = fs.mkdtempSync(path.join(require('os').tmpdir(), 'gn-mode-a-golden-2runs-dup-'));
+    // Two same-name call sites in app.ts: `user.work()` is
+    // called on line 3 and line 4 of `main()`. The `User.work`
+    // method is a global-0.50 winner (the only `work` globally),
+    // so both calls land on the same target.
+    fs.writeFileSync(
+      path.join(tmpDir2dup, 'models.ts'),
+      [
+        'export class User {',
+        '  save(): void {}',
+        '  work(): void {}',     // the target of both calls
+        '  getName(): string { return ""; }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir2dup, 'service.ts'),
+      "import { getUser } from './models';\nexport const user = getUser();\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir2dup, 'app.ts'),
+      [
+        "import { user } from './service';",
+        'export function main() {',
+        '  user.work();',  // first call site
+        '  user.work();',  // second call site — same name, same target, distinct line
+        '}',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir2dup, 'tsconfig.json'),
+      '{\n  "compilerOptions": {\n    "target": "es2020",\n    "module": "commonjs",\n    "strict": true\n  }\n}\n',
+    );
+
+    // Two completely independent default runs — same shape
+    // as (a2) above. The snapshot equality proves that the
+    // `:L${line}` suffix is deterministic across real
+    // pipelines, not just the in-memory unit test.
+    dupRun1 = await runPipelineFromRepo(tmpDir2dup, () => {}, { skipGraphPhases: true });
+    dupRun2 = await runPipelineFromRepo(tmpDir2dup, () => {}, { skipGraphPhases: true });
+  }, 90_000);
+
+  afterAll(() => {
+    if (tmpDir2dup && fs.existsSync(tmpDir2dup)) {
+      fs.rmSync(tmpDir2dup, { recursive: true, force: true });
+    }
+  });
+
+  it('(a2-dup) two same-name CALLS edges with distinct :L survive byte-identity (AC-1 / AC-2)', () => {
+    // The fixture has TWO `user.work()` calls on distinct
+    // lines. After the WI-1 fix, both edges survive with
+    // distinct ids differing only in `:L${line}`. Two
+    // independent runs must produce identical snapshots —
+    // if the `:L` derivation were non-deterministic (e.g.
+    // using a non-stable per-line counter), the two
+    // snapshots would diverge.
+    expect(snapshotRels(dupRun1.graph)).toBe(snapshotRels(dupRun2.graph));
+  });
+
+  it('(a2-dup) the graph has exactly the expected :L-suffixed CALLS edges for the duplicate work() sites', () => {
+    // Pin the exact edge set: the two `user.work()` calls
+    // mint two distinct edges with `:L${line}`; the
+    // unrelated `User.work` method itself does NOT emit
+    // any other edges in this fixture. If a future refactor
+    // dedupes duplicate sites or drops the `:L` suffix,
+    // the snapshot would change shape and the next (a2-dup)
+    // byte-identity run would diverge.
+    const workEdges = [...dupRun1.graph.iterRelationships()].filter(
+      (r) => r.type === 'CALLS' && r.targetId.includes(':work'),
+    );
+    expect(workEdges.length, 'two distinct :L-suffixed work() edges must survive').toBe(2);
+    // The two edges differ only in `:L${line}`.
+    const ids = workEdges.map((r) => r.id).sort();
+    expect(ids[0]).toMatch(/:L\d+$/);
+    expect(ids[1]).toMatch(/:L\d+$/);
+    expect(ids[0]).not.toBe(ids[1]);
+    // Every default-path edge stamps `source: 'heuristic'`.
+    for (const e of workEdges) {
+      expect(e.source).toBe('heuristic');
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // (a3) — Non-Angular fixture pin: Angular post-pass did not run.
 //
 // The fixture used by (a) and (a2) is a plain TypeScript repo

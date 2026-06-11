@@ -367,6 +367,20 @@ export interface ExtractedHeritage {
   parentName: string;
   /** 'extends' | 'implements' | 'trait-impl' | 'include' | 'extend' | 'prepend' */
   kind: string;
+  /**
+   * WI-3 / WI-4 (#159 P3 Mode A — heritage feed) — 0-indexed
+   * line of the **parent** identifier at the heritage clause.
+   * Populated for the worker's heritage.extends / heritage.implements
+   * captures only; absent (undefined) on Ruby include/extend/prepend
+   * (the captured node is the method call, not an identifier
+   * position) and on Go cross-file items.
+   */
+  line?: number;
+  /**
+   * WI-3 / WI-4 — 0-indexed character offset of the parent
+   * identifier start. See `line` for the gate.
+   */
+  character?: number;
 }
 
 export interface ExtractedRoute {
@@ -2734,11 +2748,19 @@ const processFileGroup = (
             // preserves the original EXTENDS emission for normal class inheritance.
             // (Restored after #150; the prior isAnonymousField guard silently
             // dropped non-Go EXTENDS in the worker path.)
+            //
+            // WI-3 / WI-4 (#159 P3 Mode A — heritage feed):
+            // capture the parent-identifier position so the
+            // heritage processor can build a `HeritageFeedItem`
+            // and the reconciler can issue
+            // `textDocument/definition` at the parent position.
             result.heritage.push({
               filePath: file.path,
               className: captureMap['heritage.class'].text,
               parentName: captureMap['heritage.extends'].text,
               kind: 'extends',
+              line: captureMap['heritage.extends'].startPosition.row,
+              character: captureMap['heritage.extends'].startPosition.column,
             });
           }
         }
@@ -2748,14 +2770,21 @@ const processFileGroup = (
             className: captureMap['heritage.class'].text,
             parentName: captureMap['heritage.implements'].text,
             kind: 'implements',
+            line: captureMap['heritage.implements'].startPosition.row,
+            character: captureMap['heritage.implements'].startPosition.column,
           });
         }
         if (captureMap['heritage.trait']) {
+          // WI-3: Rust `impl Trait for Struct` — capture the
+          // trait identifier position so the heritage feed
+          // can target it.
           result.heritage.push({
             filePath: file.path,
             className: captureMap['heritage.class'].text,
             parentName: captureMap['heritage.trait'].text,
             kind: 'trait-impl',
+            line: captureMap['heritage.trait'].startPosition.row,
+            character: captureMap['heritage.trait'].startPosition.column,
           });
         }
         if (captureMap['heritage.extends'] || captureMap['heritage.implements'] || captureMap['heritage.trait']) {

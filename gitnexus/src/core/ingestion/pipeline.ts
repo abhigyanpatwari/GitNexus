@@ -10,7 +10,7 @@ import {
 import { processCalls, processCallsFromExtracted, processRoutesFromExtracted, processORMQueriesFromExtracted, processExpoRoutesWithRepoId, processExpoRouterNavigations, processDecoratorRoutesWithRepoId, processPHPRoutesWithRepoId, processNextjsRoutesWithRepoId, processNextjsFetchRoutes, processNextjsMiddleware, processToolDefsFromExtracted, type ProcessCallsOpts, type CorrectionFeedItem, type RecallFeedItem } from './call-processor.js';
 import type { ExtractedRoute, ExtractedExpoNav, ExtractedORMQuery, ExtractedDecoratorRoute, ExtractedFetchCall, ExtractedToolDef } from './workers/parse-worker.js';
 import type { CrossRepoRegistry } from './cross-repo-registry.js';
-import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
+import { processHeritage, processHeritageFromExtracted, type ProcessHeritageOpts, type HeritageFeedItem } from './heritage-processor.js';
 import { processAngularMetadataFromExtracted } from './angular-metadata-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -317,6 +317,26 @@ export const runPipelineFromRepo = async (
       ? { lsp: true, correctionFeed, recallFeed }
       : undefined;
 
+    // WI-4 / WI-6 (#159 P3 Mode A — heritage feed): the
+    // heritage candidate feed. We pass it as a sink into
+    // `processHeritageFromExtracted` (worker path) and
+    // `processHeritage` (sequential fallback) ONLY when
+    // `options.lsp.enabled` is true. The default path leaves
+    // the array empty and the heritage processor never
+    // references it (the heritage processor checks
+    // `opts?.lsp && opts.heritageFeed` before pushing). One
+    // array is declared up front and SHARED across all chunks
+    // and the sequential-fallback re-resolution, so the
+    // reconciler sees a single merged heritage feed. The
+    // candidate-merge block below concats the heritage feed
+    // into the same `Candidate[]` stream the CALLS feeds feed
+    // into — exactly ONE `withReconciliationSession` call
+    // drains the merged stream.
+    const heritageFeed: HeritageFeedItem[] = [];
+    const lspHeritageOpt: ProcessHeritageOpts | undefined = options?.lsp?.enabled
+      ? { lsp: true, heritageFeed }
+      : undefined;
+
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
         const chunkPaths = chunks[chunkIdx];
@@ -378,6 +398,7 @@ export const runPipelineFromRepo = async (
                 stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
               });
             },
+            lspHeritageOpt,
           );
 
           await processCallsFromExtracted(
@@ -488,10 +509,13 @@ export const runPipelineFromRepo = async (
         .filter(p => chunkContents.has(p))
         .map(p => ({ path: p, content: chunkContents.get(p)! }));
       astCache = createASTCache(chunkFiles.length);
-      await processHeritage(graph, chunkFiles, astCache, ctx);
+      // WI-4 / WI-6: pass `lspHeritageOpt` so the AST-path
+      // `processHeritage` populates the shared heritage feed
+      // (mirrors the worker-path threading at `:388-403`).
+      await processHeritage(graph, chunkFiles, astCache, ctx, undefined, lspHeritageOpt);
       const rubyHeritage = await processCalls(graph, chunkFiles, astCache, ctx, undefined, undefined, undefined, undefined, undefined, lspFeedsOpt);
       if (rubyHeritage.length > 0) {
-        await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+        await processHeritageFromExtracted(graph, rubyHeritage, ctx, undefined, lspHeritageOpt);
       }
       const chunkRoutes = sequentialChunkRoutes[chunkIdx];
       if (chunkRoutes.length > 0) {
@@ -647,13 +671,18 @@ export const runPipelineFromRepo = async (
       // (sourceId, calledName, line, character) and caps at
       // 2000 — see `withReconciliationSession` (KD-9). Recall
       // candidates lack `oldTargetId`; correction candidates
-      // carry it. We unify the two shapes here.
+      // carry it. We unify the two shapes here. WI-1 / #159
+      // also threads `oldRelId` so the engine's site-precise
+      // `correct`/`confirm` can target the exact edge id
+      // minted by the heuristic (call-processor.ts:668/:1537
+      // `:L${line}` suffix).
       const candidates: Candidate[] = [];
       for (const c of correctionFeed) {
         candidates.push({
           sourceId: c.sourceId,
           calledName: c.calledName,
           oldTargetId: c.oldTargetId,
+          oldRelId: c.oldRelId,
           file: c.file,
           line: c.line,
           character: c.character,
@@ -666,6 +695,36 @@ export const runPipelineFromRepo = async (
           file: r.file,
           line: r.line,
           character: r.character,
+        });
+      }
+
+      // WI-6 (#159 P3 Mode A — pipeline merge): concat the
+      // heritage feed into the same `Candidate[]` stream.
+      // The heritage processor emits a `HeritageFeedItem`
+      // per heuristic heritage edge that passes the WI-4
+      // gate (lsp on, TS-family, parent at global/unresolved
+      // tier, position available, edge actually emitted).
+      // Each `HeritageFeedItem` maps to a `Candidate` with
+      // `relType` set (WI-5: `'IMPLEMENTS' | 'EXTENDS'`) and
+      // `parentName` mapped to `calledName` (the parent
+      // identifier is the LSP query target — KD-5: definition
+      // at the parent position). `oldTargetId` / `oldRelId`
+      // ride through unchanged so the engine can find the
+      // heuristic edge and (on `correct`) remove it by exact
+      // id. The shared 2000 cap applies to the merged stream
+      // — CALLS + heritage compete for the deterministic
+      // prefix after the stable sort (partitioning is a
+      // documented follow-up).
+      for (const h of heritageFeed) {
+        candidates.push({
+          sourceId: h.sourceId,
+          calledName: h.parentName,
+          oldTargetId: h.oldTargetId,
+          oldRelId: h.oldRelId,
+          relType: h.relType,
+          file: h.file,
+          line: h.line,
+          character: h.character,
         });
       }
 

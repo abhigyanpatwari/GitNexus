@@ -505,18 +505,31 @@ describe('WI-4b — atomic correction: never net-deletes on collision', () => {
     expect(result.removed).toBe(1);
     // removed ≤ added (redundant but pinned for documentation).
     expect(result.removed).toBeLessThanOrEqual(result.added);
-    // The graph still has exactly one caller1→B edge —
-    // never a net-deleted, never a duplicated outcome.
+    // WI-1 / #159: the new row carries the line-aware
+    // `:L${line}` suffix (cand.line=10 from mkCandidate),
+    // so the new id is `CALLS:caller1->B:L10` — distinct
+    // from the pre-existing `CALLS:caller1->B:prior-pass`
+    // (no `line`). The line-aware collapse key
+    // (`sourceId|targetId|type|line`) puts them in
+    // DISTINCT buckets; BOTH survive the collapse.
     const caller1Edges = graph.relationships.filter(
       (r) => r.sourceId === cand.sourceId,
     );
-    expect(caller1Edges).toHaveLength(1);
-    expect(caller1Edges[0].targetId).toBe(higherTierTarget);
-    expect(caller1Edges[0].confidence).toBe(LSP_CONFIDENCE);
-    expect(caller1Edges[0].source).toBe('lsp-corrected');
-    // The pre-existing id is the survivor — the new
-    // re-stamp row was dropped by the collapse.
-    expect(caller1Edges[0].id).toBe(higherTierRel.id);
+    expect(caller1Edges).toHaveLength(2);
+    for (const edge of caller1Edges) {
+      expect(edge.targetId).toBe(higherTierTarget);
+      expect(edge.confidence).toBe(LSP_CONFIDENCE);
+      expect(edge.source).toBe('lsp-corrected');
+    }
+    // The pre-existing id is preserved.
+    expect(caller1Edges.find((r) => r.id === higherTierRel.id)).toBeDefined();
+    // The new row carries the `:L${cand.line}` suffix.
+    const newRow = caller1Edges.find((r) => r.id !== higherTierRel.id)!;
+    expect(newRow).toBeDefined();
+    expect(newRow.id).toBe(`CALLS:${cand.sourceId}->${higherTierTarget}:L${cand.line}`);
+    expect(newRow.line).toBe(cand.line);
+    // No collapse happened (different buckets).
+    expect(result.collapsed).toBe(0);
     // And the A row is gone (it was the `oldRelId`).
     expect(
       graph.relationships.find((r) => r.targetId === cand.oldTargetId),
@@ -585,17 +598,28 @@ describe('WI-4b — atomic correction: never net-deletes on collision', () => {
     // Atomic correction contract: per-decision removed ≤
     // added (no net loss at the per-decision step).
     expect(result.removed).toBeLessThanOrEqual(result.added);
-    // The collapse MUST have removed at least one duplicate
-    // (the add collision on (caller1, B, CALLS) left two
-    // rows in the graph; the collapse prunes to one).
-    expect(result.collapsed).toBeGreaterThanOrEqual(1);
-    // Graph has exactly one caller1 → B edge.
+    // WI-1 / #159: the new row carries `line=10` (from
+    // `mkCandidate`'s default), so the line-aware collapse
+    // key puts the new B (`L10`) in a DIFFERENT bucket
+    // from the pre-existing B (no `line`). NO collapse
+    // happens — both rows survive.
+    expect(result.collapsed).toBe(0);
+    // Graph has TWO caller1 → B edges (pre-existing +
+    // new), both with `lsp-corrected` / LSP_CONFIDENCE.
     const bEdges = graph.relationships.filter(
       (r) => r.sourceId === cand.sourceId && r.targetId === targetB,
     );
-    expect(bEdges).toHaveLength(1);
-    expect(bEdges[0].source).toBe('lsp-corrected');
-    expect(bEdges[0].confidence).toBe(LSP_CONFIDENCE);
+    expect(bEdges).toHaveLength(2);
+    for (const edge of bEdges) {
+      expect(edge.source).toBe('lsp-corrected');
+      expect(edge.confidence).toBe(LSP_CONFIDENCE);
+    }
+    // The pre-existing id is preserved.
+    expect(bEdges.find((r) => r.id === preExistingB.id)).toBeDefined();
+    // The new row carries the `:L${cand.line}` suffix.
+    const newRow = bEdges.find((r) => r.id !== preExistingB.id)!;
+    expect(newRow).toBeDefined();
+    expect(newRow.id).toBe(`CALLS:${cand.sourceId}->${targetB}:L${cand.line}`);
     // The A row is gone.
     expect(
       graph.relationships.find((r) => r.targetId === cand.oldTargetId),
@@ -773,6 +797,212 @@ describe('WI-4b — applyDecisions dryRun: mutates nothing, returns full tuples'
     expect(result.collapsed).toBe(0);
     // The duplicates are STILL present (no collapse ran).
     expect(graph.relationshipCount).toBe(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// WI-1 line-aware multiplicity: precise correction targets the
+// exact :L-suffixed site (AC-3 server-independent).
+//
+// The heritage side has a corresponding test in
+// `mode-a-engine-heritage.test.ts` (see the AC-3 contract
+// comment around `confirm`/`correct` minting). The CALLS side
+// needs its own proof because the WI-1 fix changed the
+// heuristic id format from `CALLS:src->tgt` to
+// `CALLS:src->tgt:L${line}`. A regression that stripped the
+// `:L` suffix from the candidate's `oldRelId` would still
+// remove ONE of the duplicate edges (any one matches the
+// id-substring) — but it would not be DETERMINISTIC about
+// which one. These tests pin that the precise correction
+// removes the EXACT :L-suffixed row, not just any row that
+// matches the (sourceId, targetId) pair.
+// ═══════════════════════════════════════════════════════════════════
+
+describe('WI-1 — applyDecisions: precise correction under line-aware multiplicity (AC-3)', () => {
+  it('correct on one :L removes only that row; the other :L sibling survives by exact id', () => {
+    // The graph has TWO heuristic CALLS edges from
+    // `caller1` to `Function:src/b.ts:bar` (the same
+    // target, same source, distinct lines). The WI-1
+    // line-aware id format mints two distinct edges:
+    //   - `CALLS:caller1->Function:src/b.ts:bar:L10`
+    //   - `CALLS:caller1->Function:src/b.ts:bar:L11`
+    // The correction targets ONLY the :L10 row; the :L11
+    // row must survive by exact id.
+    const graph = createKnowledgeGraph();
+    const sourceId = 'caller1';
+    const targetId = 'Function:src/b.ts:bar';
+    const relL10: GraphRelationship = {
+      id: `CALLS:${sourceId}->${targetId}:L10`,
+      sourceId,
+      targetId,
+      type: 'CALLS',
+      confidence: HEURISTIC_GLOBAL_CONFIDENCE,
+      reason: 'fuzzy-global',
+      source: 'heuristic',
+      line: 10,
+    };
+    const relL11: GraphRelationship = {
+      id: `CALLS:${sourceId}->${targetId}:L11`,
+      sourceId,
+      targetId,
+      type: 'CALLS',
+      confidence: HEURISTIC_GLOBAL_CONFIDENCE,
+      reason: 'fuzzy-global',
+      source: 'heuristic',
+      line: 11,
+    };
+    graph.addRelationship(relL10);
+    graph.addRelationship(relL11);
+    expect(graph.relationshipCount).toBe(2);
+
+    // The candidate for the L10 site carries the exact
+    // heuristic id in `oldRelId`. The decision is a
+    // `correct` to a different target (LSP disagreed).
+    const cand: Candidate = {
+      sourceId,
+      calledName: 'bar',
+      oldTargetId: targetId,
+      oldRelId: relL10.id, // exact :L10 id — the WI-1 contract
+      file: 'src/a.ts',
+      line: 10,
+      character: 4,
+    };
+    const newTarget = 'Function:src/c.ts:baz';
+    const decision: Decision = {
+      candidate: cand,
+      action: 'correct',
+      from: sourceId,
+      to: newTarget,
+      source: 'lsp-corrected',
+      oldTargetId: targetId,
+      oldRelId: relL10.id, // pinned to the L10 row
+      reason: REASON_LSP_CORRECTED,
+    };
+    const result = applyDecisions(graph, [decision]);
+
+    // Atomic correction liveness: 1 add + 1 remove.
+    expect(result.added).toBe(1);
+    expect(result.removed).toBe(1);
+
+    // AC-3 / WI-1 / #159: the L10 row was the target of
+    // the correction. The L11 row MUST survive by exact
+    // id (the wrong-site removal is impossible, asserted
+    // by exact ids). If a future refactor weakened
+    // `oldRelId` to a (sourceId, targetId) substring
+    // match, it would still find the L10 row via the
+    // substring `caller1->Function:src/b.ts:bar` — but
+    // the deterministic site is then gone. Pin the L11
+    // row's exact id.
+    const surviving = graph.relationships.filter((r) => r.sourceId === sourceId);
+    expect(surviving).toHaveLength(2);
+    // The L11 row is unchanged (still heuristic, still
+    // its exact id, still :L11).
+    const l11Row = surviving.find((r) => r.id === relL11.id);
+    expect(l11Row, 'the L11 sibling row must survive by exact id').toBeDefined();
+    expect(l11Row!.source).toBe('heuristic');
+    expect(l11Row!.confidence).toBe(HEURISTIC_GLOBAL_CONFIDENCE);
+    expect(l11Row!.line).toBe(11);
+    // The L10 row was replaced by the new target.
+    const newRow = surviving.find((r) => r.targetId === newTarget);
+    expect(newRow, 'the new (corrected) row must point at the new target').toBeDefined();
+    expect(newRow!.source).toBe('lsp-corrected');
+    expect(newRow!.confidence).toBe(LSP_CONFIDENCE);
+    // The new row carries the `:L${cand.line}` suffix
+    // (WI-1 contract — see call-processor.ts:674-678 and
+    // the heritage engine's CALLS add pin at
+    // `mode-a-engine-heritage.test.ts:611-645`).
+    expect(newRow!.id).toBe(`CALLS:${sourceId}->${newTarget}:L${cand.line}`);
+    expect(newRow!.line).toBe(cand.line);
+    // The L10 row's exact id is GONE from the graph
+    // (it was the `oldRelId`; the correction removed
+    // it before adding the new row).
+    expect(
+      graph.relationships.find((r) => r.id === relL10.id),
+      'the L10 row must be removed (it was the oldRelId)',
+    ).toBeUndefined();
+  });
+
+  it('confirm on one :L preserves both siblings; the targeted :L is re-stamped, the other :L keeps its heuristic stamp', () => {
+    // The AC-3 contract on the `confirm` action: when
+    // the LSP verdict agrees with the heuristic for ONE
+    // :L row, the OTHER :L row (untouched by the
+    // correction) must keep its heuristic stamp and
+    // exact id. A regression that collapsed both rows
+    // on (sourceId, targetId, type) regardless of `:L`
+    // would silently drop the sibling — this test fires
+    // first.
+    const graph = createKnowledgeGraph();
+    const sourceId = 'caller1';
+    const targetId = 'Function:src/b.ts:bar';
+    const relL10: GraphRelationship = {
+      id: `CALLS:${sourceId}->${targetId}:L10`,
+      sourceId,
+      targetId,
+      type: 'CALLS',
+      confidence: HEURISTIC_GLOBAL_CONFIDENCE,
+      reason: 'fuzzy-global',
+      source: 'heuristic',
+      line: 10,
+    };
+    const relL11: GraphRelationship = {
+      id: `CALLS:${sourceId}->${targetId}:L11`,
+      sourceId,
+      targetId,
+      type: 'CALLS',
+      confidence: HEURISTIC_GLOBAL_CONFIDENCE,
+      reason: 'fuzzy-global',
+      source: 'heuristic',
+      line: 11,
+    };
+    graph.addRelationship(relL10);
+    graph.addRelationship(relL11);
+
+    // Confirm the L10 row. `oldRelId` pins the exact
+    // :L10 heuristic id; the engine re-stamps it in
+    // place. The L11 row is untouched.
+    const cand: Candidate = {
+      sourceId,
+      calledName: 'bar',
+      oldTargetId: targetId,
+      oldRelId: relL10.id,
+      file: 'src/a.ts',
+      line: 10,
+      character: 4,
+    };
+    const decision: Decision = {
+      candidate: cand,
+      action: 'confirm',
+      from: sourceId,
+      to: targetId,
+      source: 'lsp-confirmed',
+      oldTargetId: targetId,
+      oldRelId: relL10.id,
+      reason: REASON_LSP_CONFIRMED,
+    };
+    const result = applyDecisions(graph, [decision]);
+
+    // Confirm liveness: 1 add + 1 remove.
+    expect(result.added).toBe(1);
+    expect(result.removed).toBe(1);
+
+    // BOTH rows survive.
+    const surviving = graph.relationships.filter((r) => r.sourceId === sourceId);
+    expect(surviving).toHaveLength(2);
+    // The L11 row's exact id is preserved (untouched by
+    // the confirm on the L10 row).
+    const l11Row = surviving.find((r) => r.id === relL11.id);
+    expect(l11Row, 'the L11 sibling row must survive by exact id').toBeDefined();
+    expect(l11Row!.source).toBe('heuristic');
+    expect(l11Row!.line).toBe(11);
+    // The L10 row's id is preserved (confirm re-stamps
+    // in place), but the `source` flipped to
+    // `lsp-confirmed` and the `confidence` to
+    // LSP_CONFIDENCE.
+    const l10Row = surviving.find((r) => r.id === relL10.id);
+    expect(l10Row, 'the L10 row id is preserved (confirm re-stamp in place)').toBeDefined();
+    expect(l10Row!.source).toBe('lsp-confirmed');
+    expect(l10Row!.confidence).toBe(LSP_CONFIDENCE);
+    expect(l10Row!.line).toBe(10);
   });
 });
 

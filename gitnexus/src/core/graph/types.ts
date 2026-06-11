@@ -172,6 +172,16 @@ export interface GraphRelationship {
    * is no widening to `string` anywhere on the write path.
    */
   source?: EdgeSource;
+  /**
+   * 0-based source line of the call/parent identifier (WI-1 / #159).
+   * In-memory only — NOT serialized to CSV. Carried ONLY on per-site
+   * CALLS edges (heuristic + LSP-minted) and on heritage edges that
+   * were emitted from a worker with a captured position. Absent on
+   * synthetic edges (route/tool) and on legacy emitters that did not
+   * capture a call name node. Used by the Mode A engine to make
+   * collapse keys + correction lookup site-precise.
+   */
+  line?: number;
 }
 
 /**

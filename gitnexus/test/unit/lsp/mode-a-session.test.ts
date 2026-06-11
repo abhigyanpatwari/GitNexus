@@ -537,3 +537,85 @@ describe('withReconciliationSession — default probe refuses when no samples ar
     expect(fn).not.toHaveBeenCalled();
   });
 });
+
+// ─── security-3 polish MAJOR: bad line/character is refused pre-request ─
+
+describe('withReconciliationSession — security-3: line/character bounds gate', () => {
+  // Per the polish review: an attacker-controlled (or
+  // upstream-buggy) heritage feed could pass a negative,
+  // non-integer, or otherwise out-of-range position. The
+  // session funnel MUST refuse the request (no
+  // `textDocument/definition` call) so the engine treats
+  // the candidate as `NO_NODE` and emits `keep`. The
+  // session's hand-to-engine collector receives an empty
+  // `Location[]` for that candidate; the LSP client
+  // `request` is never invoked.
+  const BAD_LINE_CASES: Array<[string, number]> = [
+    ['line = -1 (negative)', -1],
+    ['line = NaN', Number.NaN],
+    ['line = 1.5 (fractional)', 1.5],
+    ['line = Infinity', Number.POSITIVE_INFINITY],
+  ];
+  const BAD_CHAR_CASES: Array<[string, number]> = [
+    ['character = -1 (negative)', -1],
+    ['character = NaN', Number.NaN],
+    ['character = 2.7 (fractional)', 2.7],
+  ];
+
+  for (const [label, line] of BAD_LINE_CASES) {
+    it(`${label} → no LSP request issued, engine receives empty Location[]`, async () => {
+      const { client, request } = makeMockClient({
+        requestImpl: async () => null,
+      });
+      const handToEngine = vi.fn(async (_cand: Candidate, _locs: Location[]) => undefined);
+      const deps = makeDeps({ client });
+      const input: Candidate[] = [mkCandidate({ line, character: 0 })];
+      const fn = vi.fn(async () => undefined);
+      await withReconciliationSession(REPO, input, fn, { ...deps, handToEngine });
+      // The gate ran BEFORE the LSP request. A `NaN` line
+      // would otherwise serialize as `null` in JSON-RPC,
+      // which the server could reject or — worse — return
+      // a coerced position for. We refuse at the funnel.
+      expect(request).not.toHaveBeenCalled();
+      expect(handToEngine).toHaveBeenCalledTimes(1);
+      const [_cand, locs] = handToEngine.mock.calls[0];
+      expect((locs as Location[]).length).toBe(0);
+    });
+  }
+
+  for (const [label, character] of BAD_CHAR_CASES) {
+    it(`${label} → no LSP request issued, engine receives empty Location[]`, async () => {
+      const { client, request } = makeMockClient({
+        requestImpl: async () => null,
+      });
+      const handToEngine = vi.fn(async (_cand: Candidate, _locs: Location[]) => undefined);
+      const deps = makeDeps({ client });
+      const input: Candidate[] = [mkCandidate({ line: 0, character })];
+      const fn = vi.fn(async () => undefined);
+      await withReconciliationSession(REPO, input, fn, { ...deps, handToEngine });
+      expect(request).not.toHaveBeenCalled();
+      expect(handToEngine).toHaveBeenCalledTimes(1);
+      const [_cand, locs] = handToEngine.mock.calls[0];
+      expect((locs as Location[]).length).toBe(0);
+    });
+  }
+
+  it('a valid (line, character) still issues the LSP request (regression pin)', async () => {
+    // Belt-and-braces: the gate MUST NOT false-positive on
+    // a legitimate zero-based position. The pre-fix
+    // behavior was an unconditional `request` call for any
+    // position; we want to keep that for the valid range.
+    const { client, request } = makeMockClient({
+      requestImpl: async () => null,
+    });
+    const handToEngine = vi.fn(async (_cand: Candidate, _locs: Location[]) => undefined);
+    const deps = makeDeps({ client });
+    const input: Candidate[] = [mkCandidate({ line: 0, character: 0 })];
+    const fn = vi.fn(async () => undefined);
+    await withReconciliationSession(REPO, input, fn, { ...deps, handToEngine });
+    expect(request).toHaveBeenCalledTimes(1);
+    const [method, params] = request.mock.calls[0];
+    expect(method).toBe('textDocument/definition');
+    expect((params as any).position).toEqual({ line: 0, character: 0 });
+  });
+});

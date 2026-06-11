@@ -1615,7 +1615,11 @@ describe('Kotlin default parameter arity resolution', () => {
   it('resolves greet("Alice") with 1 arg to greet with 2 params (1 default)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCalls = calls.filter(c => c.source === 'process' && c.target === 'greet');
-    expect(greetCalls.length).toBe(1);
+    // WI-1 / #159: heuristic CALLS id is line-aware (`:L${row}`
+    // suffix). The fixture has TWO call sites (line 4: 1-arg,
+    // line 5: 2-arg) at distinct lines → two distinct edges
+    // survive collapse (previously one — id dedup at graph.ts:14).
+    expect(greetCalls.length).toBe(2);
   });
 });
 

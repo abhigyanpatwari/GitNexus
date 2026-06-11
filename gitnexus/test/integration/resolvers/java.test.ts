@@ -1408,8 +1408,11 @@ describe('Java virtual dispatch via constructor type (same-file)', () => {
     // animal.fetchBall() only resolves if constructorTypeMap overrides
     // receiver from Animal → Dog (since only Dog has fetchBall).
     // dog.fetchBall() resolves directly via Dog type.
-    // Both target same nodeId → 1 CALLS edge after dedup.
-    expect(fetchCalls.length).toBe(1);
+    // WI-1 / #159: heuristic CALLS id is line-aware (`:L${row}`
+    // suffix). The fixture has TWO call sites (L25: animal,
+    // L29: dog) at distinct lines → two distinct edges survive
+    // collapse (previously one — id dedup at graph.ts:14).
+    expect(fetchCalls.length).toBe(2);
   });
 });
 

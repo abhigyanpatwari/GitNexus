@@ -2281,8 +2281,11 @@ describe('TypeScript virtual dispatch via constructor type (same-file)', () => {
     const fetchCalls = calls.filter(c => c.source === 'run' && c.target === 'fetchBall');
     // animal.fetchBall() only resolves if constructorTypeMap overrides
     // receiver from Animal → Dog. dog.fetchBall() resolves directly.
-    // Both target same nodeId → 1 CALLS edge after dedup.
-    expect(fetchCalls.length).toBe(1);
+    // WI-1 / #159: heuristic CALLS id is line-aware (`:L${row}`
+    // suffix). The fixture has TWO call sites (L22: animal,
+    // L26: dog) at distinct lines → two distinct edges survive
+    // collapse (previously one — id dedup at graph.ts:14).
+    expect(fetchCalls.length).toBe(2);
   });
 });
 
@@ -2313,8 +2316,11 @@ describe('TypeScript overload disambiguation via inferLiteralType', () => {
     const lookupCalls = calls.filter(c => c.source === 'process' && c.target === 'lookup');
     // Phase 0 (fileIndex stores both overloads) + Phase 2 (literal type matching)
     // enables resolution where previously 2 same-arity candidates → null.
-    // Both calls resolve to same nodeId (ID collision) → 1 CALLS edge after dedup.
-    expect(lookupCalls.length).toBe(1);
+    // WI-1 / #159: heuristic CALLS id is line-aware (`:L${row}`
+    // suffix). The fixture has TWO call sites (L8: number, L9:
+    // string) at distinct lines → two distinct edges survive
+    // collapse (previously one — id dedup at graph.ts:14).
+    expect(lookupCalls.length).toBe(2);
   });
 });
 
@@ -2333,12 +2339,18 @@ describe('TypeScript optional parameter arity resolution', () => {
   it('resolves greet("Alice") with 1 arg to greet with 2 params (1 optional)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCalls = calls.filter(c => c.source === 'process' && c.target === 'greet');
-    expect(greetCalls.length).toBe(1);
+    // WI-1 / #159: heuristic CALLS id is line-aware (`:L${row}`
+    // suffix). The fixture has TWO call sites (L10: 1-arg, L11:
+    // 2-arg) at distinct lines → two distinct edges survive
+    // collapse (previously one — id dedup at graph.ts:14).
+    expect(greetCalls.length).toBe(2);
   });
 
   it('resolves search("test") with 1 arg to search with 2 params (1 optional)', () => {
     const calls = getRelationships(result, 'CALLS');
     const searchCalls = calls.filter(c => c.source === 'process' && c.target === 'search');
-    expect(searchCalls.length).toBe(1);
+    // WI-1 / #159: see comment above — two call sites at
+    // distinct lines (L12 / L13) → two distinct CALLS edges.
+    expect(searchCalls.length).toBe(2);
   });
 });

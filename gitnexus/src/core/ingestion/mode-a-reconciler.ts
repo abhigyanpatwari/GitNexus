@@ -68,6 +68,13 @@ import { pathToFileURL } from 'node:url';
  * (per WI-2 prerequisite), NOT the call-expression start. For
  * `a.b.c()`, this is the position of the `c` token, not `a` —
  * member-call recall depends on this.
+ *
+ * `relType` (WI-5) discriminates the heritage edge family
+ * (IMPLEMENTS / EXTENDS). When absent, the candidate is a
+ * CALLS candidate — the default behavior, byte-identical to
+ * PR #168. Producers that emit heritage candidates set this
+ * field; the existing CALLS producers are untouched and
+ * produce identical keys/decisions.
  */
 export interface Candidate {
   /** Source node id (the caller). */
@@ -76,12 +83,31 @@ export interface Candidate {
   calledName: string;
   /** Heuristic target id (empty string for recall candidates). */
   oldTargetId?: string;
+  /**
+   * The id of the existing heuristic edge the candidate
+   * corresponds to. Populated for heritage candidates
+   * (WI-4 design contract) and CALLS correction candidates
+   * that need a site-precise `correct`. The engine passes
+   * this to `applyDecisions` so the `correct` action can
+   * `removeRelationship(oldRelId)` for the exact row even
+   * when the (source, target) pair has multiple edges (the
+   * WI-1 line-aware multiplicity). Absent on CALLS recall
+   * candidates (no heuristic edge to remove).
+   */
+  oldRelId?: string;
   /** Repo-relative POSIX file path. */
   file: string;
   /** 0-indexed line of the callee identifier. */
   line: number;
   /** 0-indexed character offset of the callee identifier start. */
   character: number;
+  /**
+   * Edge family discriminator (WI-5). Absent ⇒ CALLS. Present
+   * ⇒ one of the heritage families. The candidate-location
+   * key helper appends `|${relType}` only when this is set so
+   * the CALLS key shape stays byte-identical to PR #168.
+   */
+  relType?: 'IMPLEMENTS' | 'EXTENDS';
 }
 
 /**
@@ -225,15 +251,16 @@ export const DEFAULT_CANDIDATE_CAP = 2_000;
 
 /**
  * Max in-flight `textDocument/definition` requests during the
- * per-candidate dispatch. tsserver is happy to interleave
- * idempotent reads; bounding at 8 cuts worst-case wall time
- * from cap × timeoutMs (e.g. 2000 × 5s = ~3h) to roughly
- * cap/8 × timeoutMs (~21 min) while keeping memory + server
- * load reasonable. Overlap safety: the underlying
- * `LspClient.request` uses a per-client promise chain — see
- * `lsp-client.ts`. If a future client version serializes
- * requests, the pool still completes correctly (it just
- * collapses to serial).
+ * per-candidate dispatch. The underlying `LspClient.request`
+ * serializes all JSON-RPC traffic through a per-client promise
+ * chain (see `lsp-client.ts` `queue` field), so the pool does
+ * NOT actually parallelize the wall-clock work — the wall-time
+ * bound is `cap × serialLatency` (≈ `cap × timeoutMs` in the
+ * worst case). The cap still bounds memory and in-flight
+ * concurrent-futures bookkeeping, which is its real purpose.
+ * If a future client version makes `request` truly concurrent
+ * (e.g. multiplexes over the JSON-RPC stream), the 8-way pool
+ * delivers on the wall-time promise as a free side effect.
  */
 export const CONCURRENT_DEFINITION_REQUESTS = 8;
 
@@ -389,12 +416,16 @@ export async function withReconciliationSession<T>(
     // engine seam. A throw inside the dispatch or fn propagates
     // to the outer `catch` → null + stop in finally.
     //
-    // Bounded-concurrency pool (concurrency=8) — the
-    // sequential `for…await` form below was O(cap × timeoutMs)
-    // worst-case (2000 × 5000ms = ~3h). tsserver is happy to
-    // interleave idempotent reads; we cap in-flight at 8 to
-    // bound memory + load while still cutting wall time by
-    // 8×. Order preservation: the pool writes into a
+    // Bounded-concurrency pool (concurrency=8). The
+    // underlying `LspClient.request` serializes requests
+    // through a per-client promise chain (see
+    // `lsp-client.ts`), so this pool does NOT actually
+    // parallelize the wall-clock work — the wall-time
+    // bound is `cap × serialLatency`. The cap still
+    // bounds memory + in-flight bookkeeping, and it
+    // would deliver real wall-time savings if a future
+    // client version makes `request` truly concurrent.
+    // Order preservation: the pool writes into a
     // pre-sized array keyed by source-order index — the
     // engine sees the same order it would have seen
     // sequentially, which matters for the dry-run print
@@ -569,6 +600,29 @@ async function fetchDefinitionForCandidate(
     return [];
   }
 
+  // security-3 (polish MAJOR): gate `line` / `character`
+  // BEFORE the `textDocument/definition` request. An
+  // attacker-controlled (or upstream-buggy) heritage feed
+  // could pass a negative, non-integer, or otherwise
+  // out-of-range position; the LSP server would either
+  // crash, hang, or return garbage, and a malicious
+  // server response could be coerced into a node-id we
+  // never intended to map. Refuse over guess: a bad
+  // position is treated as `NO_NODE` and the engine
+  // emits `keep` for the existing edge. Per the polish
+  // review: `Number.isInteger` rejects `NaN`, `Infinity`,
+  // fractional floats, and string-encoded numbers. The
+  // `< 0` clause rejects negative offsets. Both are
+  // cheap (constant time) and run before any I/O.
+  if (
+    !Number.isInteger(candidate.line) ||
+    !Number.isInteger(candidate.character) ||
+    candidate.line < 0 ||
+    candidate.character < 0
+  ) {
+    return [];
+  }
+
   // Build the `textDocument/definition` params. The file
   // path becomes a `file://` URI via `pathToFileURL` (Node
   // stdlib) — handles spaces, non-ASCII, and Windows drive
@@ -720,6 +774,38 @@ export const REASON_LSP_CORRECTED = 'lsp-corrected';
 export const REASON_LSP_RECALL = 'lsp-recall';
 
 /**
+ * WI-5 — heritage target-label gates. The decision table
+ * reads `deps.callableLabels` and refuses any resolved
+ * target whose label is not in the set. For heritage
+ * candidates, the gate is keyed by the candidate's
+ * `relType`:
+ *
+ *   IMPLEMENTS  → { Interface }   (TS legal: `class A implements I` only)
+ *   EXTENDS     → { Class }       (TS legal: `class B extends C`)
+ *
+ * Anything outside the gate is refused (`non_callable`
+ * reason) and the heuristic edge (if any) is kept. This
+ * covers:
+ *   - `class A implements SomeClass` (legal but rare in TS)
+ *     — refused; the heuristic edge stands.
+ *   - `class B extends SomeInterface` (legal in TS) — refused;
+ *     the heuristic edge stands.
+ *   - A self-loop (`B === A`) — refused earlier by the
+ *     self-loop guard.
+ *
+ * The sets are derived from the spec, not from the graph;
+ * the engine does NOT query the in-memory node list to
+ * build them. `type-env.ts:has` is reused inside the
+ * decision-table's callee-gate check, not here.
+ */
+export const HERITAGE_TARGET_LABELS: Readonly<
+  Record<'IMPLEMENTS' | 'EXTENDS', ReadonlySet<string>>
+> = {
+  IMPLEMENTS: new Set(['Interface']),
+  EXTENDS: new Set(['Class']),
+};
+
+/**
  * The action enum the engine emits per candidate. Mirrors the
  * decision table in `docs/designs/159-lsp-mode-a-calls.md`:
  *
@@ -842,14 +928,24 @@ export interface ReconcileDecisionsDeps {
     repoId: string,
   ) => Promise<MapperResult>;
   /**
-   * Look up the existing `global`-tier CALLS edge from
-   * `sourceId` → `oldTargetId` in the in-memory graph.
-   * Default: real scan of `graph.relationships`.
+   * Look up the existing `global`-tier edge from
+   * `sourceId` → `oldTargetId` of the given `relType` in
+   * the in-memory graph. Default: real scan of
+   * `graph.relationships` filtered by `relType` (so a CALLS
+   * row never matches a heritage candidate and vice
+   * versa). Per security-2 (polish BLOCKER): `relType`
+   * became a parameter when heritage candidates began
+   * using the same `(sourceId, oldTargetId)` pair shape as
+   * CALLS — the dependency was widened to filter
+   * cross-type. Caller-supplied overrides MUST honor
+   * `relType` (the default does; tests that pin CALLS
+   * behavior should ignore the new arg).
    */
   findExistingRel?: (
     graph: KnowledgeGraph,
     sourceId: string,
     oldTargetId: string,
+    relType: string,
   ) => GraphRelationship | undefined;
   /**
    * Override the callable-label set (KD-3). Default: the
@@ -1096,6 +1192,27 @@ function decideRefusalOrKeep(
     : makeRefuse(candidate, why, from);
 }
 
+/**
+ * WI-2 / #159 — line-aware collapse key.
+ *
+ * `sourceId|targetId|type|line` (line suffixed). Edges without a
+ * `line` (synthetic route/tool rows, heritage edges from sources
+ * that did not capture a position, legacy emitters) collapse
+ * byte-identically to the pre-WI-2 shape via the `''` suffix.
+ * The collapse is therefore:
+ *   - byte-identical for edges without a `line` (the `''` suffix
+ *     is the new tail; there is no longer a `${type}`-only key,
+ *     so a CALLS and an IMPLEMENTS edge for the same
+ *     (sourceId, targetId) now sit in distinct buckets — this
+ *     matches the WI-5 production design where heritage edges
+ *     live in their own type and never collide with CALLS);
+ *   - per-site distinct for edges WITH a `line` (`:L10` and `:L12`
+ *     are two buckets, BOTH survive).
+ */
+function collapseKey(rel: GraphRelationship): string {
+  return `${rel.sourceId}|${rel.targetId}|${rel.type}|${rel.line ?? ''}`;
+}
+
 // ─── WI-4b apply (mutator) ────────────────────────────────────────────
 
 /**
@@ -1148,7 +1265,7 @@ export function applyDecisions(
   if (!dryRun) {
     for (const rel of graph.iterRelationships()) {
       byId.set(rel.id, rel);
-      const key = `${rel.sourceId}|${rel.targetId}|${rel.type}`;
+      const key = collapseKey(rel);
       let bucket = byKey.get(key);
       if (!bucket) {
         bucket = [];
@@ -1191,14 +1308,55 @@ export function applyDecisions(
           // whatever was already there (which may include
           // the new id if it was a pre-existing duplicate).
           const wasPresent = byId.has(newRel.id);
-          graph.addRelationship(newRel);
-          addToIndex(byId, byKey, newRel);
+          // AC-5 / KD-8 (never net-delete) is enforced
+          // transactionally: the new edge is added to the
+          // graph + indexes first, and ONLY if every step
+          // succeeds do we touch the old edge. If any step
+          // throws, the catch block below rolls the indexes
+          // (and, when feasible, the graph) back to its
+          // pre-add state so the relationship is not lost.
+          let addCommitted = false;
+          try {
+            graph.addRelationship(newRel);
+            addToIndex(byId, byKey, newRel);
+            addCommitted = true;
+          } catch {
+            // The new edge could not be installed (e.g. the
+            // graph rejected it on a duplicate id, or the
+            // in-memory index helper threw). Best-effort
+            // rollback: undo the index insertion if it ran,
+            // and ask the graph to remove the new edge if
+            // it was added. Either way, the old edge must
+            // be untouched — AC-5 / KD-8: never net-delete.
+            if (byId.has(newRel.id)) {
+              removeFromIndex(byKey, newRel);
+              byId.delete(newRel.id);
+            }
+            // `graph.addRelationship` is all-or-nothing in
+            // the current backend (it either inserts the row
+            // or throws before mutating), but we still issue
+            // a defensive `removeRelationship` to handle a
+            // future backend that buffers-then-commits. The
+            // call is a no-op when the id was never inserted.
+            try {
+              graph.removeRelationship(newRel.id);
+            } catch {
+              /* noop — old edge is the safe default */
+            }
+            // Skip the remove-old branch below — the old
+            // edge stays in place by construction.
+            break;
+          }
           // `addedOk` = the id WAS NOT in the pre-built
           // index (so the add was new, not a no-op
-          // duplicate-id collision). This is the
-          // "never net-delete" guard: if the add was a
-          // no-op, we leave the old edge in place.
-          const addedOk = !wasPresent;
+          // duplicate-id collision). The `addCommitted`
+          // guard is the actual success check: it is only
+          // true when `addRelationship` returned without
+          // throwing. Belt-and-braces — if a future backend
+          // buffers-then-throws after the in-memory index
+          // was already touched, the catch above has already
+          // rolled things back.
+          const addedOk = addCommitted && !wasPresent;
           if (addedOk && d.oldRelId) {
             // Remove the old row from the indexes too —
             // otherwise the collapse at the end would see a
@@ -1215,7 +1373,10 @@ export function applyDecisions(
           }
           // If the add did NOT take (e.g. duplicate id from a
           // future refactor), we leave the old edge in place
-          // — AC-5 / KD-8: never net-delete.
+          // — AC-5 / KD-8: never net-delete. The catch block
+          // above is the transactional counterpart for the
+          // throw path: it rolls back the new edge AND
+          // preserves the old one.
           break;
         }
         case 'confirm': {
@@ -1290,7 +1451,7 @@ function addToIndex(
   rel: GraphRelationship,
 ): void {
   byId.set(rel.id, rel);
-  const key = `${rel.sourceId}|${rel.targetId}|${rel.type}`;
+  const key = collapseKey(rel);
   let bucket = byKey.get(key);
   if (!bucket) {
     bucket = [];
@@ -1311,7 +1472,7 @@ function removeFromIndex(
   byKey: Map<string, GraphRelationship[]>,
   rel: GraphRelationship,
 ): void {
-  const key = `${rel.sourceId}|${rel.targetId}|${rel.type}`;
+  const key = collapseKey(rel);
   const bucket = byKey.get(key);
   if (!bucket) return;
   const idx = bucket.indexOf(rel);
@@ -1326,26 +1487,62 @@ function removeFromIndex(
  * `Label:filePath:name[:overloadIndex]` form the rest of the
  * graph expects.
  *
- * For CALLS edges, the `type` is hard-coded — the engine
- * only mints CALLS relationships (I-3 / `TS-only, CALLS-only`).
+ * For CALLS edges, the `type` is hard-coded and the id is
+ * `` `${from}->${to}` `` — byte-identical to PR #168
+ * (438600e). The `:L${line}` suffix is a separate
+ * dependency (WI-2 / line-aware reconciler) and is NOT
+ * applied here so this WI is independently landable.
+ *
+ * For heritage edges (WI-5), the type and id prefix follow
+ * `d.candidate.relType` — IMPLEMENTS / EXTENDS — and the
+ * id is `IMPLEMENTS:${from}->${to}` / `EXTENDS:${from}->${to}`,
+ * byte-identical to the heuristic template minted at
+ * `heritage-processor.ts:403` (format-consistent).
  */
 function makeLspRelationship(d: Decision): GraphRelationship {
   if (d.to === null) {
     throw new Error(`makeLspRelationship: 'to' is null for action=${d.action}`);
   }
+  // WI-5: heritage edges carry their own relType; CALLS is
+  // the default when no relType is set on the candidate.
+  // The `type` value flows into the generateId prefix AND
+  // the relationship's `type` field — they MUST match the
+  // heuristic pipeline's shape for the collapse to behave
+  // correctly on collisions (a CALLS and an IMPLEMENTS
+  // edge for the same (from,to) pair are distinct
+  // collapse-keys and will both survive).
+  const relType = d.candidate.relType ?? 'CALLS';
+  // WI-2 / #159: line-aware id for CALLS. The reconciler
+  // mints the same `:L${line}` shape the heuristic uses
+  // (call-processor.ts:668/:1537) so confirm/correct edges
+  // carry the line suffix and the per-site multiplicity
+  // survives the collapse. Heritage edges do NOT get the
+  // suffix — they keep the byte-identical
+  // `${from}->${to}` template from PR #168 (their `line`
+  // is the parent-identifier position, semantically
+  // distinct, and the heritage-processor.ts:403 template
+  // has no suffix). Position-less CALLS candidates (no
+  // `line` on the candidate) get `:L0` — collapse-safe
+  // with other L0 edges, distinct from any L>0 edge.
+  const idPayload =
+    relType === 'CALLS' && typeof d.candidate.line === 'number'
+      ? `${d.from}->${d.to}:L${d.candidate.line}`
+      : `${d.from}->${d.to}`;
   return {
-    // CALLS-only mode: source/target are the node ids; the
-    // `generateId` shape mirrors the indexer's call-edge ids
-    // (Label:filePath:name[:overloadIndex]). The id embeds
-    // the source→target pair so it's unique per (caller,
-    // callee) tuple.
-    id: generateId('CALLS', `${d.from}->${d.to}`),
+    // Id is the canonical (Type, payload) tuple — the
+    // heritage template (`IMPLEMENTS:${from}->${to}`)
+    // matches the heuristic processor's output
+    // (`heritage-processor.ts:403`); the CALLS template
+    // preserves the heuristic `:L` shape (call-processor.ts
+    // :668/:1537).
+    id: generateId(relType, idPayload),
     sourceId: d.from,
     targetId: d.to,
-    type: 'CALLS',
+    type: relType,
     confidence: LSP_CONFIDENCE,
     reason: d.reason,
     source: d.source ?? 'heuristic',
+    line: d.candidate.line,
   };
 }
 
@@ -1375,11 +1572,16 @@ function collapseDuplicates(
   graph: KnowledgeGraph,
   prebuiltByKey?: Map<string, GraphRelationship[]>,
 ): number {
-  // Bucket: "from|to|type" → GraphRelationship[]
+  // Bucket: "from|to|type|line" → GraphRelationship[].
+  // WI-2 / #159: the key now embeds the per-site `line` so
+  // two same-name CALLS edges (`:L10`, `:L12`) end up in
+  // distinct buckets and BOTH survive the collapse. Edges
+  // without a `line` (synthetic route/tool rows) keep the
+  // old byte-identical key shape via `''` (empty suffix).
   const groups = prebuiltByKey ?? new Map<string, GraphRelationship[]>();
   if (!prebuiltByKey) {
     for (const rel of graph.iterRelationships()) {
-      const key = `${rel.sourceId}|${rel.targetId}|${rel.type}`;
+      const key = collapseKey(rel);
       let bucket = groups.get(key);
       if (!bucket) {
         bucket = [];
@@ -1492,6 +1694,19 @@ export async function reconcileDecisions(
   const relIndex: Map<string, GraphRelationship> = useIndexedLookup
     ? buildExistingRelIndex(graph)
     : new Map();
+  // WI-2 / #159: secondary `oldRelId → GraphRelationship`
+  // index used for site-precise lookup. Built from the
+  // SAME scan — the line-aware `:L` suffix on
+  // heuristic/minted ids makes the (sourceId, targetId)
+  // pair ambiguous when duplicate call sites exist; the
+  // exact id stored in the correction feed is the only
+  // way to target the right row. Belt-and-braces beneath
+  // the WI-5 type-keyed pair index: the pair index picks
+  // a representative (last-writer-wins), the id index
+  // picks the exact one.
+  const relIdIndex: Map<string, GraphRelationship> = useIndexedLookup
+    ? buildRelIdIndex(graph)
+    : new Map();
 
   for (const candidate of candidates) {
     const locs = locations.get(candidateLocationKey(candidate)) ?? [];
@@ -1521,21 +1736,64 @@ export async function reconcileDecisions(
     }
 
     // Look up the existing edge (for confirm/correct paths).
-    // Gated on `oldTargetId` so `add`-path candidates never
-    // touch the index. P1: O(1) lookup via the pre-built
-    // `relIndex` when the default is in play; falls through
-    // to the supplied `findExistingRel` when the caller
-    // injected a custom one.
-    const existingRel =
-      candidate.oldTargetId
-        ? useIndexedLookup
-          ? relIndex.get(`${candidate.sourceId}|${candidate.oldTargetId}`)
-          : findExisting(graph, candidate.sourceId, candidate.oldTargetId)
-        : undefined;
+    // WI-2 / #159: prefer the direct `oldRelId` lookup when
+    // the correction feed carried the exact heuristic id
+    // (CALLS correction / heritage correction). This is the
+    // ONLY way to target a specific per-site edge when two
+    // same-name CALLS edges share the same (sourceId,
+    // targetId) pair. Per security-2 (polish BLOCKER):
+    //   - If `oldRelId` is present and the direct index
+    //     misses, do NOT fall through to the pair index or
+    //     to `findExistingRel`. The `oldRelId` is the
+    //     site-precise id; a miss means the row is gone
+    //     (delete/rename upstream) and falling through
+    //     could match a row that has the same
+    //     (sourceId, oldTargetId) pair but a different id
+    //     (e.g. a CALLS row instead of the IMPLEMENTS row
+    //     the candidate targets) — `applyDecisions` would
+    //     then `removeRelationship` the wrong edge.
+    //     Refuse over guess; the engine emits `keep` (or
+    //     `add` if there is no heuristic row).
+    //   - When `oldRelId` is absent, the type-keyed pair
+    //     index (WI-5) is the correct fallback — it cannot
+    //     cross a relType boundary because the key includes
+    //     `|${relType}`.
+    //   - The `findExistingRel` dep (callers' escape hatch)
+    //     MUST also filter by `relType` to avoid the same
+    //     cross-type pickup; `defaultFindExistingRel`
+    //     below does so as defense-in-depth.
+    let existingRel: GraphRelationship | undefined;
+    if (candidate.oldTargetId) {
+      if (candidate.oldRelId && useIndexedLookup) {
+        existingRel = relIdIndex.get(candidate.oldRelId);
+        // Do not fall through on a miss — see comment above.
+      } else if (!candidate.oldRelId) {
+        // No `oldRelId`: use the type-keyed pair index (or
+        // the caller's `findExistingRel` for the test bag).
+        existingRel = useIndexedLookup
+          ? relIndex.get(`${candidate.sourceId}|${candidate.oldTargetId}|${candidate.relType ?? 'CALLS'}`)
+          : findExisting(graph, candidate.sourceId, candidate.oldTargetId, candidate.relType ?? 'CALLS');
+      }
+      // else: `oldRelId` was provided but the index
+      // missed — refuse. `existingRel` stays `undefined`.
+    }
 
+    // WI-5: per-candidate label gate. The decision table
+    // reads `deps.callableLabels` — that is the field that
+    // decides whether a `Class` / `Interface` hit is
+    // refused. The CALLS path uses the production set
+    // (or whatever the caller supplied via
+    // `deps.callableLabels`); a heritage candidate uses the
+    // per-`relType` set from `HERITAGE_TARGET_LABELS`. The
+    // pure `decideForCandidate` body is UNCHANGED — the
+    // `non_callable` refusal reason string is the same, so
+    // every test that pins it stays green.
+    const labelGate = candidate.relType
+      ? HERITAGE_TARGET_LABELS[candidate.relType]
+      : callableLabels;
     const decision = decideForCandidate(candidate, mapperResult, {
       existingRel,
-      callableLabels,
+      callableLabels: labelGate,
       targetLabel,
     });
     decisions.push(decision);
@@ -1569,18 +1827,36 @@ export async function reconcileDecisions(
 
 /**
  * Default `findExistingRel` — O(n) scan of the in-memory
- * graph. Kept as the externally-overrideable seam (the
- * `findExistingRel` dep) so callers (mostly tests) can pin
- * their own behavior; the production hot path uses the
- * `relIndex` built in `reconcileDecisions` instead.
+ * graph, filtered by `relType`. Kept as the externally-
+ * overrideable seam (the `findExistingRel` dep) so callers
+ * (mostly tests) can pin their own behavior; the
+ * production hot path uses the `relIndex` built in
+ * `reconcileDecisions` instead.
+ *
+ * Per security-2 (polish BLOCKER): the `relType` filter is
+ * defense-in-depth — the `relIndex` and `relIdIndex` paths
+ * never reach this function in production (the lookup
+ * chain in `reconcileDecisions` short-circuits on
+ * `oldRelId` misses and uses the type-keyed pair index
+ * otherwise). But the test bag (and any future caller
+ * supplying `findExistingRel` without using the indexes)
+ * can still hit this function, and a CALLS row sharing
+ * `(sourceId, oldTargetId)` with a heritage candidate
+ * would be a graph-poisoning cross-type pickup. Filter
+ * by `relType` to refuse that.
  */
 function defaultFindExistingRel(
   graph: KnowledgeGraph,
   sourceId: string,
   oldTargetId: string,
+  relType: string,
 ): GraphRelationship | undefined {
   for (const rel of graph.iterRelationships()) {
-    if (rel.sourceId === sourceId && rel.targetId === oldTargetId) {
+    if (
+      rel.sourceId === sourceId &&
+      rel.targetId === oldTargetId &&
+      rel.type === relType
+    ) {
       return rel;
     }
   }
@@ -1588,11 +1864,18 @@ function defaultFindExistingRel(
 }
 
 /**
- * P1 helper: build the `sourceId|oldTargetId → GraphRelationship`
+ * P1 helper: build the `sourceId|oldTargetId|type → GraphRelationship`
  * index used by the default `findExistingRel` lookup.
  *
- * On collision (two CALLS edges for the same source→target
- * pair) the LAST one wins — the engine's confirm/correct
+ * The `|${type}` segment (WI-5) is belt-and-braces beneath the
+ * WI-2 `oldRelId` direct lookup: it ensures the index cannot
+ * return a CALLS edge when the candidate is a heritage candidate
+ * (or vice versa) even if a call site happens to share the same
+ * `(sourceId, oldTargetId)` pair. The CALLS-only path is
+ * unaffected — keys still uniquely identify a row.
+ *
+ * On collision (two edges for the same source→target→type
+ * triple) the LAST one wins — the engine's confirm/correct
  * path only needs a representative relationship to attach
  * `oldRelId` to; the collapse pass at the end of
  * `applyDecisions` reconciles any duplicate (from,to,type)
@@ -1605,7 +1888,31 @@ function buildExistingRelIndex(
 ): Map<string, GraphRelationship> {
   const index = new Map<string, GraphRelationship>();
   for (const rel of graph.iterRelationships()) {
-    index.set(`${rel.sourceId}|${rel.targetId}`, rel);
+    index.set(`${rel.sourceId}|${rel.targetId}|${rel.type}`, rel);
+  }
+  return index;
+}
+
+/**
+ * WI-2 / #159 — site-precise `rel.id → GraphRelationship`
+ * index. Used for `correct`/`confirm` when the correction
+ * feed carried the exact heuristic edge id (the
+ * `oldRelId` minted at call-processor.ts:668/:1537 with the
+ * `:L${line}` suffix). The (sourceId, targetId) pair index
+ * above returns the LAST relationship that matches the
+ * pair — wrong-site when duplicate per-site edges exist.
+ * The id index is the only path that targets the exact
+ * row. Last-writer-wins on id collision is fine: the
+ * `addRelationship` in `addRelationship`/`confirm`
+ * already de-dups by id, so at most one row carries any
+ * given id.
+ */
+function buildRelIdIndex(
+  graph: KnowledgeGraph,
+): Map<string, GraphRelationship> {
+  const index = new Map<string, GraphRelationship>();
+  for (const rel of graph.iterRelationships()) {
+    index.set(rel.id, rel);
   }
   return index;
 }
@@ -1617,15 +1924,18 @@ function buildExistingRelIndex(
  * `handToEngine` seam) can use the SAME key shape — a
  * mismatch would silently drop every payload.
  *
- * Key shape: `sourceId|calledName|line|character` — the same
- * canonical four-tuple `sortCandidates` uses, with `|`
- * separators. `sourceId` and `calledName` cannot contain
- * `|` in practice (node ids are `Label:filePath:name` and
- * the callee name is a TS identifier), so the separator is
- * safe.
+ * Key shape: `sourceId|calledName|line|character` plus an
+ * OPTIONAL `|${relType}` suffix ONLY when `c.relType` is set
+ * (WI-5). CALLS candidates (the default path) produce
+ * byte-identical keys to PR #168 — the `|${relType}` segment
+ * is appended only for heritage candidates, never for CALLS.
+ * `sourceId` and `calledName` cannot contain `|` in practice
+ * (node ids are `Label:filePath:name` and the callee name
+ * is a TS identifier), so the separator is safe.
  */
 export function candidateLocationKey(c: Candidate): string {
-  return `${c.sourceId}|${c.calledName}|${c.line}|${c.character}`;
+  const base = `${c.sourceId}|${c.calledName}|${c.line}|${c.character}`;
+  return c.relType ? `${base}|${c.relType}` : base;
 }
 
 // ─── Re-exports for tests (extended) ─────────────────────────────────

@@ -8,6 +8,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { realpathSync } from 'fs';
 import { pathToFileURL } from 'node:url';
 import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady } from '../core/lbug-adapter.js';
 // WI-4 (issue #159 P2): opt-in `precision:'lsp'` branch for `rename`.
@@ -110,6 +111,120 @@ export function isWriteQuery(query: string): boolean {
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`GitNexus [${context}]: ${msg}`);
+}
+
+/**
+ * Guard: ensure a file path resolves within the repo root
+ * (prevents path traversal AND symlink-bridged escapes).
+ *
+ * - Read operations (`mode: 'read'`) tolerate ENOENT — a
+ *   missing file falls through to the lexical path so the
+ *   caller's `readFile` produces the conventional ENOENT
+ *   error.
+ * - Write operations (`mode: 'write'`) REFUSE a missing
+ *   target — a write to a non-existent file under a
+ *   symlink that resolves outside the repo is a classic
+ *   directory-traversal vector; we refuse over guess.
+ *
+ * The defense is layered:
+ *   1. Lexical `startsWith` (case-folded on darwin/win32)
+ *      as a fast reject.
+ *   2. Lexical `path.relative` to catch cross-platform
+ *      case-bytes that fool `startsWith`.
+ *   3. `realpathSync` to dereference symlinks — this is
+ *      the missing piece. A symlink inside the repo that
+ *      points outside passes the lexical guards but
+ *      dereferences to an out-of-repo file; the second
+ *      `path.relative(realRoot, realResolved)` catches
+ *      that TOCTOU class. Mirrors the hardening in
+ *      `lsp/lsp-client.ts:maybeDidOpenForDefinition`.
+ */
+export function assertSafePathForRepo(
+  repoPath: string,
+  filePath: string,
+  mode: 'read' | 'write' = 'read',
+): string {
+  // Step 1: resolve to an absolute, normalized form.
+  // `path.resolve` collapses `..` and `./` but does NOT
+  // normalize case — on case-insensitive volumes the
+  // fast-reject below is case-folded defensively.
+  const full = path.resolve(repoPath, filePath);
+  const isCaseInsensitiveFs = process.platform === 'darwin' || process.platform === 'win32';
+  const repoRoot = isCaseInsensitiveFs ? repoPath.toLowerCase() : repoPath;
+  const fullKey = isCaseInsensitiveFs ? full.toLowerCase() : full;
+  if (!fullKey.startsWith(repoRoot + path.sep) && fullKey !== repoRoot) {
+    // First check (legacy shape, kept as a fast reject).
+    throw new Error(`Path traversal blocked: ${filePath}`);
+  }
+  // Step 2: lexical `path.relative` rejects an escape even
+  // if `startsWith` passed accidentally (sibling dir sharing
+  // a case-folded prefix with the repo root, etc).
+  const rel = path.relative(repoPath, full);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Path traversal blocked: ${filePath}`);
+  }
+  // Step 3: symlink dereference for BOTH the candidate and
+  // the repo root. `realpathSync(repoPath)` is the
+  // `repoPath` in its dereferenced form (e.g. on macOS
+  // `/tmp` → `/private/tmp`); comparing a still-lexical
+  // `repoPath` against an already-dereferenced
+  // `realResolved` would falsely claim an escape.
+  // For reads, ENOENT on the repo root is treated as
+  // soft — the lexical repoPath is used for containment
+  // and the candidate ENOENT is handled in step 4.
+  let realRepoPath: string;
+  try {
+    realRepoPath = realpathSync.native(repoPath);
+  } catch {
+    realRepoPath = repoPath;
+  }
+  const realRoot = isCaseInsensitiveFs ? realRepoPath.toLowerCase() : realRepoPath;
+  let realResolved: string;
+  try {
+    realResolved = realpathSync.native(full);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      if (mode === 'write') {
+        // Writes must target an existing on-disk path
+        // that we have dereferenced. Refuse — the caller
+        // should not be creating new files via this
+        // guard (the rename tool only edits existing
+        // files; if the target is missing, that is a bug
+        // or an attack).
+        throw new Error(`Path traversal blocked: ${filePath}`);
+      }
+      // Read mode: fall back to the lexical `full`. The
+      // lexical guards above already verified it lives
+      // inside the repo; the caller's readFile will
+      // surface the conventional ENOENT.
+      return full;
+    }
+    // Any other error (EACCES, ELOOP, ENOTDIR, etc.) is
+    // a refusal — we cannot vouch for the path.
+    throw new Error(`Path traversal blocked: ${filePath}`);
+  }
+  // Step 4: re-check containment against the
+  // dereferenced path. A symlink inside the repo that
+  // points outside passes the lexical guards but the
+  // `path.relative(realRoot, realResolved)` check
+  // catches the escape. `realRoot` is the
+  // `realpathSync`-ed repoPath; on macOS this matters
+  // for `/tmp` → `/private/tmp` style mounts.
+  const realKey = isCaseInsensitiveFs ? realResolved.toLowerCase() : realResolved;
+  // Empty `rel` means `realResolved === realRepoPath`
+  // — the repo root itself is refused (the LSP server's
+  // job, not the rename tool's).
+  const realRel = path.relative(realRepoPath, realResolved);
+  if (
+    realKey === realRoot ||
+    realRel === '' ||
+    realRel.startsWith('..') ||
+    path.isAbsolute(realRel)
+  ) {
+    throw new Error(`Path traversal blocked: ${filePath}`);
+  }
+  return realResolved;
 }
 
 /**
@@ -3343,15 +3458,17 @@ export class LocalBackend {
       return { error: 'Either symbol_name or symbol_uid is required.' };
     }
 
-    /** Guard: ensure a file path resolves within the repo root (prevents path traversal) */
-    const assertSafePath = (filePath: string): string => {
-      const full = path.resolve(repo.repoPath, filePath);
-      if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
-        throw new Error(`Path traversal blocked: ${filePath}`);
-      }
-      return full;
-    };
-    
+    /** Local alias — thin closure over the module-level
+     *  `assertSafePath` (security-1 hardening: symlink
+     *  dereference + `mode` gating). Read-mode by default;
+     *  the single write site at the bottom of this method
+     *  passes `'write'` explicitly. The local name shadows
+     *  the module export so the existing call sites
+     *  (`assertSafePath(sym.filePath)`) keep their shape
+     *  while routing through the hardened helper. */
+    const assertSafePath = (filePath: string, mode: 'read' | 'write' = 'read'): string =>
+      assertSafePathForRepo(repo.repoPath, filePath, mode);
+
     // Step 1: Find the target symbol (reuse context's lookup)
     const lookupResult = await this.context(repo, {
       name: params.symbol_name,
@@ -3724,7 +3841,13 @@ export class LocalBackend {
       // Apply edits to files
       for (const change of allChanges) {
         try {
-          const fullPath = assertSafePath(change.file_path);
+          // `mode: 'write'` — refuses to operate on a path
+          // whose target is missing (a write to a non-
+          // existent file is suspicious; the rename tool
+          // only edits existing files). Symlink-bridged
+          // escapes are caught by the `realpathSync` step
+          // in `assertSafePathForRepo`.
+          const fullPath = assertSafePath(change.file_path, 'write');
           let content = await fs.readFile(fullPath, 'utf-8');
           const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
           content = content.replace(regex, new_name);

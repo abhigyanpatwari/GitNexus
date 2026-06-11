@@ -1532,7 +1532,11 @@ describe('C# optional parameter arity resolution', () => {
   it('resolves g.Greet("Alice") with 1 arg to Greet with 2 params (1 optional)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCalls = calls.filter(c => c.source === 'Main' && c.target === 'Greet');
-    expect(greetCalls.length).toBe(1);
+    // WI-1 / #159: heuristic CALLS id is line-aware (`:L${row}`
+    // suffix). The fixture has TWO call sites (line 10: 1-arg,
+    // line 11: 2-arg) at distinct lines → two distinct edges
+    // survive collapse (previously one — id dedup at graph.ts:14).
+    expect(greetCalls.length).toBe(2);
   });
 });
 

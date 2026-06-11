@@ -14,6 +14,23 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import type { ExtractedCall, ExtractedFetchCall, FileConstructorBindings } from '../../src/core/ingestion/workers/parse-worker.js';
 
+// ────────────────────────────────────────────────────────────────────────
+// WI-1 / #159 — SANCTIONED TEST-PIN UPDATES (tripwires).
+//
+// The `toEqual` pins that include `oldRelId: 'CALLS:...:L${row}'` (see
+// "lsp:true — global-0.50 edges populate the correction feed" and the
+// exact-shape pin at :835 in this file, plus its sibling in
+// `gitnexus/test/integration/lsp/mode-a-golden.test.ts`) are
+// LOAD-BEARING. They pin the WI-1 line-aware id mint — the `:L${row}`
+// suffix is the one and only deliberate default-baseline change for
+// slice A. If a future diff ever breaks the pin, the EXPECTED string
+// is correct — the regression is in the production mint at
+// `call-processor.ts:668` and `call-processor.ts:1554-1557` (the
+// `relId` reorder at :1553-1557 is what makes the feed push at
+// :1565-1575 carry the right `oldRelId`). Do NOT weaken the pin; do
+// NOT add a `?? 'L0'` fallback. The pin's brittleness is the point.
+// ────────────────────────────────────────────────────────────────────────
+
 describe('processCallsFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
@@ -801,6 +818,27 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('lsp:true — global-0.50 edges populate the correction feed', async () => {
+    // ──────────────────────────────────────────────────────────────────
+    // WI-1 (PR #159, slice A) — SANCTIONED TRIPWIRE UPDATE.
+    //
+    // The `toEqual` pin below (and the exact-shape pin at :835)
+    // gained the `oldRelId` field as part of WI-1. This update is
+    // deliberate and load-bearing: `oldRelId` carries the exact
+    // heuristic CALLS edge id (`CALLS:${sourceId}:${calledName}
+    // ->${targetId}:L${row}`) through the feed into
+    // `Candidate.oldRelId` (`mode-a-reconciler.ts:72-85`), so the
+    // engine's `correct`/`confirm` actions can target the exact
+    // row even when multiple per-site edges share the same
+    // (sourceId, targetId) pair (WI-1 / #159).
+    //
+    // The :L42 suffix is the WI-1 line-aware id mint — it MUST
+    // match `call-processor.ts:1556` byte-for-byte. If this pin
+    // ever fails, do not change the expected string; instead
+    // verify the call-site row at
+    // `call-processor.ts:1553-1557` and the feed push at
+    // `call-processor.ts:1565-1575` are still line-aware. This
+    // pin is the tripwire that catches a missing WI-1 mint.
+    // ──────────────────────────────────────────────────────────────────
     ctx.symbols.add('src/other.ts', 'uniqueFunc', 'Function:src/other.ts:uniqueFunc', 'Function');
 
     const calls: ExtractedCall[] = [{
@@ -828,6 +866,7 @@ describe('processCallsFromExtracted', () => {
       sourceId: 'Function:src/index.ts:main',
       calledName: 'uniqueFunc',
       oldTargetId: 'Function:src/other.ts:uniqueFunc',
+      oldRelId: 'CALLS:Function:src/index.ts:main:uniqueFunc->Function:src/other.ts:uniqueFunc:L42',
       file: 'src/index.ts',
       line: 42,
       character: 7,
@@ -892,6 +931,7 @@ describe('processCallsFromExtracted', () => {
       sourceId: 'Function:src/index.ts:main',
       calledName: 'c',
       oldTargetId: 'Function:src/other.ts:c',
+      oldRelId: 'CALLS:Function:src/index.ts:main:c->Function:src/other.ts:c:L100',
       file: 'src/index.ts',
       line: 100,
       character: 8,
@@ -1183,6 +1223,185 @@ describe('candidateLocationKey dedup (WI-1 / #166)', () => {
     }
 
     expect(deduped).toHaveLength(4);
+  });
+});
+
+describe('WI-1 / #159 — line-aware CALLS ids (duplicate call sites)', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  // AC-1: `function f(){ a(); b(); a(); }` (extracted fast path)
+  // mints exactly 2 distinct CALLS edges to `a`, ids differing
+  // only in `:L${line}`, both `source:'heuristic'`. Previously
+  // the second `a()` call collided with the first on id and was
+  // silently dropped by `graph.ts:14` dedup — the whole point
+  // of WI-1 is to make that loss visible + recoverable.
+  it('two same-name call sites to the same target mint two distinct edges with :L suffixes', async () => {
+    ctx.symbols.add('src/other.ts', 'a', 'Function:src/other.ts:a', 'Function');
+    ctx.symbols.add('src/other.ts', 'b', 'Function:src/other.ts:b', 'Function');
+
+    const calls: ExtractedCall[] = [
+      // First a() at line 10
+      { filePath: 'src/index.ts', calledName: 'a', sourceId: 'Function:src/index.ts:main', line: 10, character: 2 },
+      // b() at line 11 (different target — sanity check that the
+      // multiplicity isn't a single-edge happy path).
+      { filePath: 'src/index.ts', calledName: 'b', sourceId: 'Function:src/index.ts:main', line: 11, character: 2 },
+      // Second a() at line 12 — same name + same target as the
+      // first, distinct line. Without `:L${line}` in the id this
+      // collides with the first `a()` and gets dropped.
+      { filePath: 'src/index.ts', calledName: 'a', sourceId: 'Function:src/index.ts:main', line: 12, character: 2 },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const aEdges = graph.relationships.filter(r => r.type === 'CALLS' && r.targetId === 'Function:src/other.ts:a');
+    expect(aEdges).toHaveLength(2);
+    // The two edges differ only in `:L${line}`.
+    const ids = aEdges.map(e => e.id).sort();
+    expect(ids).toEqual([
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L10',
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L12',
+    ]);
+    // Every default-path edge stamps `source: 'heuristic'` (B1 contract).
+    for (const edge of aEdges) {
+      expect(edge.source).toBe('heuristic');
+      expect(edge.confidence).toBe(0.5);
+      expect(edge.reason).toBe('global');
+    }
+    // `line` rides on the in-memory rel (call-processor.ts:1545).
+    expect(aEdges.map(e => e.line).sort()).toEqual([10, 12]);
+    // The b() call is still its own edge (no false-merge with a()).
+    const bEdges = graph.relationships.filter(r => r.type === 'CALLS' && r.targetId === 'Function:src/other.ts:b');
+    expect(bEdges).toHaveLength(1);
+  });
+
+  // AC-1 / I-2: when lsp:true is on, the correction feed carries
+  // the exact heuristic `oldRelId` for each duplicate site (BOTH
+  // a() calls feed). This is the contract that lets WI-2's
+  // reconciler target the exact per-site row.
+  it('duplicate call sites each feed their own oldRelId with distinct :L suffixes', async () => {
+    ctx.symbols.add('src/other.ts', 'a', 'Function:src/other.ts:a', 'Function');
+
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/index.ts', calledName: 'a', sourceId: 'Function:src/index.ts:main', line: 10, character: 2 },
+      { filePath: 'src/index.ts', calledName: 'a', sourceId: 'Function:src/index.ts:main', line: 12, character: 2 },
+    ];
+
+    const correctionFeed: CorrectionFeedItem[] = [];
+    const recallFeed: RecallFeedItem[] = [];
+    await processCallsFromExtracted(
+      graph, calls, ctx, undefined, undefined, undefined,
+      { lsp: true, correctionFeed, recallFeed },
+    );
+
+    expect(correctionFeed).toHaveLength(2);
+    // `oldRelId` mirrors the heuristic id exactly.
+    const oldRelIds = correctionFeed.map(f => f.oldRelId).sort();
+    expect(oldRelIds).toEqual([
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L10',
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L12',
+    ]);
+    // And the in-memory edge ids match the feed `oldRelId` values.
+    const edgeIds = graph.relationships.filter(r => r.type === 'CALLS').map(r => r.id).sort();
+    expect(edgeIds).toEqual(oldRelIds);
+  });
+
+  // AC-1 mirror on the AST path (`processCalls`). The
+  // `processCallsFromExtracted` block above proves the
+  // extracted fast path (the worker pipeline). This test
+  // proves the AST fallback path (the sequential pipeline
+  // at `pipeline.ts:515`) mints the SAME two distinct
+  // :L-suffixed edges. Without this, the spec's "two
+  // per-site heuristic emit sites" promise is only
+  // proven for the worker path — and a regression that
+  // broke `:L` on the AST path would slip through CI.
+  it('AST path: two same-name call sites in the same function mint two distinct edges with :L suffixes', async () => {
+    // The heuristic target is a globally-unique symbol (no
+    // import), so each `a()` call resolves via the global
+    // tier (0.5) — the same path that carries `:L${row}`
+    // into the id (call-processor.ts:668-678).
+    ctx.symbols.add('src/other.ts', 'a', 'Function:src/other.ts:a', 'Function');
+
+    // The function body holds TWO `a()` calls on distinct
+    // lines. With the line-aware id, these mint two
+    // distinct edges; without it, the second collides on
+    // id and is silently dropped by `graph.ts:14` dedup.
+    const files = [
+      {
+        path: 'src/index.ts',
+        content: [
+          'export function main() {',
+          '  a();',   // line 1
+          '  a();',   // line 2 — the duplicate
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ];
+
+    await processCalls(graph, files, createASTCache(files.length), ctx);
+
+    const aEdges = graph.relationships.filter(r => r.type === 'CALLS' && r.targetId === 'Function:src/other.ts:a');
+    expect(aEdges).toHaveLength(2);
+    // The two edges differ only in `:L${line}` — the
+    // WI-1 contract.
+    const ids = aEdges.map(e => e.id).sort();
+    expect(ids).toEqual([
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L1',
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L2',
+    ]);
+    for (const edge of aEdges) {
+      expect(edge.source).toBe('heuristic');
+      expect(edge.confidence).toBe(0.5);
+      expect(edge.reason).toBe('global');
+    }
+    // `line` rides on the in-memory rel (call-processor.ts:709).
+    expect(aEdges.map(e => e.line).sort()).toEqual([1, 2]);
+  });
+
+  // AC-1 mirror on the AST path with lsp:true: BOTH
+  // duplicate sites feed the correction feed with their
+  // exact `:L` suffixed oldRelId. Mirrors the
+  // processCallsFromExtracted version byte-for-byte
+  // (additive push, gated on opts.lsp).
+  it('AST path: duplicate call sites each feed their own oldRelId with distinct :L suffixes', async () => {
+    ctx.symbols.add('src/other.ts', 'a', 'Function:src/other.ts:a', 'Function');
+
+    const files = [
+      {
+        path: 'src/index.ts',
+        content: [
+          'export function main() {',
+          '  a();',
+          '  a();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ];
+    const correctionFeed: CorrectionFeedItem[] = [];
+    const recallFeed: RecallFeedItem[] = [];
+
+    await processCalls(
+      graph, files, createASTCache(files.length), ctx,
+      undefined, undefined, undefined, undefined, undefined,
+      { lsp: true, correctionFeed, recallFeed },
+    );
+
+    expect(correctionFeed).toHaveLength(2);
+    const oldRelIds = correctionFeed.map(f => f.oldRelId).sort();
+    expect(oldRelIds).toEqual([
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L1',
+      'CALLS:Function:src/index.ts:main:a->Function:src/other.ts:a:L2',
+    ]);
+    // In-memory edge ids match the feed `oldRelId` values.
+    const edgeIds = graph.relationships.filter(r => r.type === 'CALLS').map(r => r.id).sort();
+    expect(edgeIds).toEqual(oldRelIds);
   });
 });
 
