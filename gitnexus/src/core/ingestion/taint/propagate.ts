@@ -106,6 +106,25 @@ import type {
 } from './match.js';
 import type { SinkKind, SourceKind } from './source-sink-config.js';
 
+/**
+ * Default per-function findings cap (U5 config resolution; cfg/emit.ts
+ * DEFAULT_* pattern). Resolved into the RepoMeta `pdg` stamp by
+ * `resolvePdgConfig` so a cap change trips full writeback; `0` = unlimited
+ * is preserved like the other pdg caps. 200 is generous — a real function
+ * with more deduped source→sink findings is a fixture or a disaster, and
+ * the truncation is deterministic + counted (`droppedFindings`).
+ */
+export const DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION = 200;
+
+/**
+ * Default per-finding hop cap (U5; joins the RepoMeta `pdg` stamp like the
+ * findings cap). Bounds the persisted `reason` hop encoding (KTD6 pins the
+ * hop cap in config); 32 intra-procedural def→use hops is far beyond any
+ * legible path — overflow keeps the source-side prefix and sets
+ * `hopsTruncated`, parsed downstream as "path incomplete", never an error.
+ */
+export const DEFAULT_PDG_MAX_TAINT_HOPS = 32;
+
 export interface TaintLimits {
   /**
    * Maximum findings per function AFTER dedup; the sorted finding list is

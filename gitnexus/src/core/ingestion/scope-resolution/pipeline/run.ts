@@ -273,6 +273,14 @@ interface RunScopeResolutionInput {
   /** Per-function REACHING_DEF edge cap (#2082 M2). `undefined` ⇒
    *  {@link DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION}; `0` ⇒ no cap. */
   readonly pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function taint findings cap (#2083 M3, consumed by the U4 taint
+   *  emit step in the pdg window). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION` (200); `0` ⇒ no cap. */
+  readonly pdgMaxTaintFindingsPerFunction?: number;
+  /** Per-finding taint hop cap (#2083 M3 KTD6 — bounds the hop-encoded
+   *  `reason`; consumed by the U4 taint emit step). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_TAINT_HOPS` (32); `0` ⇒ no cap. */
+  readonly pdgMaxTaintHops?: number;
   /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
