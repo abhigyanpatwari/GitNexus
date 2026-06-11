@@ -302,6 +302,20 @@ withTestLbugDB(
         expect(result.totalFindings).toBe(0);
         expect(result.note).toMatch(/no taint layer/i);
       });
+
+      it('an M1/M2-era pdg stamp (no taintModelVersion) reports the missing taint layer', async () => {
+        // The pdg stamp exists (BasicBlock/REACHING_DEF were recorded) but
+        // taint never ran — no taintModelVersion. The taint-layer probe must
+        // gate on taintModelVersion, not generic pdg presence, so this surfaces
+        // the actionable "run analyze" hint instead of a bare empty result.
+        vi.mocked(loadMeta).mockResolvedValueOnce({
+          pdg: { mode: 'on', maxFunctionLines: 2000 },
+        } as any);
+        const result = await backend.callTool('explain', {});
+        expect(result.findings).toEqual([]);
+        expect(result.totalFindings).toBe(0);
+        expect(result.note).toMatch(/no taint layer/i);
+      });
     });
   },
   {

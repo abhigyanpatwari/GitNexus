@@ -2774,13 +2774,16 @@ export class LocalBackend {
     const NO_TAINT_NOTE =
       'no taint layer — run gitnexus analyze --pdg to record taint findings for this repo';
 
-    // Cheap meta probe: RepoMeta.pdg presence ≡ the BasicBlock/taint layer
-    // exists in this index (#2099 F1 stamp). An unreadable meta (e.g. a
-    // seeded test DB) falls through to the row-existence probe below.
+    // Cheap meta probe: the TAINT layer exists iff the pdg stamp carries a
+    // `taintModelVersion` (the field M3 added). An M1/M2-era `--pdg` index has
+    // `meta.pdg` defined but no taintModelVersion — BasicBlock/REACHING_DEF
+    // exist, zero TAINTED rows do — so it must surface the no-taint-layer hint,
+    // not the generic "analyzed, nothing found" note. An unreadable meta (e.g.
+    // a seeded test DB) falls through to the row-existence probe below.
     let pdgStamped: boolean | undefined;
     try {
       const meta = await loadMeta(path.dirname(repo.lbugPath));
-      if (meta) pdgStamped = meta.pdg !== undefined;
+      if (meta) pdgStamped = meta.pdg?.taintModelVersion !== undefined;
     } catch {
       /* meta unreadable — decide from the DB below */
     }
