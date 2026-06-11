@@ -213,6 +213,7 @@ export function buildMethodProps(info: MethodInfo): Record<string, unknown> {
     ...(info.isAsync ? { isAsync: info.isAsync } : {}),
     ...(info.isPartial ? { isPartial: info.isPartial } : {}),
     ...(info.isConst ? { isConst: info.isConst } : {}),
+    ...(info.isDeleted ? { isDeleted: info.isDeleted } : {}),
     ...(info.annotations.length > 0 ? { annotations: info.annotations } : {}),
   };
 }

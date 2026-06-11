@@ -51,6 +51,38 @@ export interface PipelineOptions {
    */
   skipGraphPhases?: boolean;
   /**
+   * Build the control-flow-graph / PDG substrate (#2081 M1, opt-in via `--pdg`).
+   * Off by default: workers skip all CFG work and emit no `cfgSideChannel`, and
+   * scope-resolution emits no BasicBlock nodes or CFG edges — so the default
+   * graph is byte-identical to a pre-#2081 run. Folded into the parse-cache key
+   * so a pdg-off warm cache is not reused on a `--pdg` run.
+   */
+  pdg?: boolean;
+  /**
+   * Per-function source-line cap for worker-side CFG construction.
+   * `undefined` ⇒ the worker applies `DEFAULT_PDG_MAX_FUNCTION_LINES`; `0` ⇒ no
+   * cap (unlimited). Bounds the cost of a pathological mega-function; over-cap
+   * functions are skipped (no CFG emitted for them). No CLI flag in M1 —
+   * programmatic / server analyze-worker path only.
+   */
+  pdgMaxFunctionLines?: number;
+  /**
+   * Per-function CFG edge cap for the scope-resolution emit step.
+   * `undefined` ⇒ `DEFAULT_MAX_CFG_EDGES_PER_FUNCTION`; `0` ⇒ no cap (unlimited).
+   * Over-cap functions stop at the cap and log a structured drop warning (no
+   * silent truncation). No CLI flag in M1 — programmatic / server path only.
+   */
+  pdgMaxEdgesPerFunction?: number;
+  /**
+   * Per-function REACHING_DEF edge cap for the scope-resolution emit step
+   * (#2082 M2). `undefined` ⇒ `DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION`
+   * (4000); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the
+   * parse-cache chunk key (the worker never sees it); recorded in
+   * `RepoMeta.pdg` so a cap change forces a full writeback. No CLI flag —
+   * programmatic / server path only, like the M1 caps.
+   */
+  pdgMaxReachingDefEdgesPerFunction?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to
@@ -129,6 +161,15 @@ export interface PipelineOptions {
    * `process.env` state across invocations. When undefined, the env var decides.
    */
   keepLocalValueSymbols?: boolean;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers, threaded
+   * from `.gitnexusrc` `fetchWrappers` via `AnalyzeOptions` (#1589/#1852
+   * residual). The routes phase unions these with the auto-detected `fetch()`
+   * wrappers when scanning for `route_map` consumers, so a wrapper named outside
+   * the built-in convention (or built on axios / a custom client) is still
+   * traced. Empty/undefined leaves behavior unchanged.
+   */
+  fetchWrappers?: readonly string[];
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

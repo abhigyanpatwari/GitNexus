@@ -11,7 +11,8 @@
  *   Child -> Parent: { type: 'error', message: string }
  */
 
-import { runFullAnalysis, type AnalyzeOptions, type AnalyzeResult } from '../core/run-analyze.js';
+import { runFullAnalysis, type AnalyzeOptions } from '../core/run-analyze.js';
+import { projectAnalyzeResultForIpc, type AnalyzeResultIpc } from './analyze-worker-ipc.js';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
 
 interface StartMessage {
@@ -20,24 +21,27 @@ interface StartMessage {
   options: AnalyzeOptions;
 }
 
-interface ProgressMessage {
+export interface ProgressMessage {
   type: 'progress';
   phase: string;
   percent: number;
   message: string;
 }
 
-interface CompleteMessage {
+export interface CompleteMessage {
   type: 'complete';
-  result: AnalyzeResult;
+  // JSON-safe projection (no `pipelineResult` / live KnowledgeGraph). This
+  // channel is default-JSON child_process IPC — see analyze-worker-ipc.ts.
+  result: AnalyzeResultIpc;
 }
 
-interface ErrorMessage {
+export interface ErrorMessage {
   type: 'error';
   message: string;
 }
 
-type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
+/** Child → parent IPC messages. Shared with the parent-side launcher. */
+export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
 
 function send(msg: WorkerMessage) {
   process.send?.(msg);
@@ -79,7 +83,12 @@ process.on('message', async (msg: StartMessage) => {
       },
     });
 
-    send({ type: 'complete', result });
+    // Send a JSON-safe projection, NOT the raw result: the IPC channel is
+    // default-JSON serialization and `result.pipelineResult` carries the live
+    // KnowledgeGraph (wasteful to materialize, silently corrupted by JSON, and
+    // a BigInt/circular value would throw and mis-report this success as a
+    // failure). See analyze-worker-ipc.ts.
+    send({ type: 'complete', result: projectAnalyzeResultForIpc(result) });
   } catch (err: any) {
     send({ type: 'error', message: err?.message || 'Analysis failed' });
   }

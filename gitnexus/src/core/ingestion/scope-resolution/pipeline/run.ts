@@ -34,6 +34,14 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import {
+  emitFileCfgs,
+  emitFileReachingDefs,
+  isEmitSafeCfg,
+  DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+} from '../../cfg/emit.js';
+import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
@@ -252,6 +260,19 @@ interface RunScopeResolutionInput {
    * cache miss is safe (the provider re-parses).
    */
   readonly treeCache?: { get(filePath: string): unknown };
+  /**
+   * CFG/PDG opt-in (#2081 M1). When true, emit BasicBlock nodes + CFG edges
+   * from each ParsedFile's worker-built `cfgSideChannel` during Phase-4 graph
+   * emission (while the disk store is still live). Default/false ⇒ no CFG
+   * nodes or edges and a byte-identical graph.
+   */
+  readonly pdg?: boolean;
+  /** Per-function CFG edge cap. `undefined` ⇒ {@link DEFAULT_MAX_CFG_EDGES_PER_FUNCTION};
+   *  `0` ⇒ no cap (unlimited). */
+  readonly pdgMaxEdgesPerFunction?: number;
+  /** Per-function REACHING_DEF edge cap (#2082 M2). `undefined` ⇒
+   *  {@link DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION}; `0` ⇒ no cap. */
+  readonly pdgMaxReachingDefEdgesPerFunction?: number;
   /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
@@ -679,6 +700,109 @@ export function runScopeResolution(
     });
   }
 
+  // ── CFG/PDG emission (#2081 M1, opt-in via `--pdg`) ──────────────────────
+  // Emit BasicBlock nodes + CFG edges from each ParsedFile's worker-built
+  // `cfgSideChannel`, HERE — the last point inside scope-resolution where the
+  // ParsedFiles are still loaded (`emitParsedFiles` carries the channel; the
+  // disk store is cleared right after this orchestrator returns, see phase.ts).
+  // A post-`mro` phase would read empty data (KTD1). Off by default ⇒ zero
+  // BasicBlock/CFG nodes/edges and a byte-identical graph.
+  // Accumulated M2 reaching-defs time (solve + dedup + REACHING_DEF emit),
+  // reported as the PROF `pdg=` segment. It is a SUBSET of `emit=` — the M1
+  // CFG emit and the M2 solve interleave per file, so a separate checkpoint
+  // pair can't bracket them; without this accumulator the M2 cost would
+  // silently disappear into `emit=` and field regressions would be invisible.
+  let pdgMs = 0;
+  if (input.pdg === true) {
+    let cfgBlocks = 0;
+    let cfgEdges = 0;
+    let cfgDroppedEdges = 0;
+    let rdEdges = 0;
+    let rdDropped = 0;
+    let rdFacts = 0;
+    let rdTruncated = 0;
+    for (const pf of emitParsedFiles) {
+      const cfgs = pf.cfgSideChannel;
+      // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
+      // durable store. A stale or wrong-shape value (e.g. a pre-SCHEMA_BUMP
+      // shard that slipped the version gate) must skip emission, not throw a
+      // TypeError mid-graph-build and abort scope-resolution for the language.
+      if (!Array.isArray(cfgs) || cfgs.length === 0) continue;
+      try {
+        // Per-element emit-safety filter (mirrors the parsedfile-store
+        // reviver's POLICY: valid elements in a mixed array still emit; junk
+        // is warned and skipped). isEmitSafeCfg lives in cfg/emit.ts next to
+        // the id templating it defends — see its doc for why anchor-field and
+        // endpoint-membership checks are load-bearing. Runs INSIDE the try so
+        // even a predicate-time throw (e.g. a hostile getter) is isolated.
+        const wellFormed = (cfgs as readonly (FunctionCfg | undefined | null)[]).filter(
+          isEmitSafeCfg,
+        );
+        if (wellFormed.length < cfgs.length) {
+          logger.warn(
+            `[cfg] ${pf.filePath}: skipped ${cfgs.length - wellFormed.length} malformed ` +
+              `cfgSideChannel element(s) (bad shape, missing id-anchor fields, or edge ` +
+              `endpoints matching no block) — CFG for those functions omitted`,
+          );
+        }
+        if (wellFormed.length === 0) continue;
+        const emitted = emitFileCfgs(
+          graph,
+          wellFormed,
+          input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+          // Log cap-overflow drops UNCONDITIONALLY (not via input.onWarn, which is
+          // gated behind the semantic-model validator and silent in production) so
+          // the per-function edge cap never truncates the CFG silently (R6/KTD6).
+          (message) => logger.warn(message),
+        );
+        cfgBlocks += emitted.blocks;
+        cfgEdges += emitted.edges;
+        cfgDroppedEdges += emitted.droppedEdges;
+
+        // M2 (#2082 U4): reaching definitions over the same validated CFGs.
+        // In-memory facts are computed per function and dropped after the
+        // bounded (defBlock, useBlock, binding) projection is persisted —
+        // M3 recomputes via the same pure solver in-phase (KTD8). Timing is
+        // PROF-gated like every other checkpoint here (zero cost when off).
+        const t0 = PROF ? performance.now() : 0;
+        const rd = emitFileReachingDefs(
+          graph,
+          wellFormed,
+          input.pdgMaxReachingDefEdgesPerFunction ??
+            DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+          (message) => logger.warn(message), // unconditional — R7, both layers
+        );
+        if (PROF) pdgMs += performance.now() - t0;
+        rdEdges += rd.edges;
+        rdDropped += rd.droppedEdges;
+        rdFacts += rd.facts;
+        rdTruncated += rd.truncatedFunctions;
+      } catch (err) {
+        // Last-resort isolation, mirroring the worker-side per-file try/catch:
+        // a shape the predicate misses must cost this one file's CFG, not
+        // abort the language's whole scope-resolution pass mid-graph-build.
+        // NOTE a mid-emit throw can leave this file's already-inserted
+        // BasicBlock nodes in the graph (addNode is not transactional) —
+        // orphaned but inert; the predicate keeps every JSON-representable
+        // bad shape from reaching this path at all.
+        logger.warn(
+          `[cfg] ${pf.filePath}: CFG emission failed (${err instanceof Error ? err.message : String(err)}) — ` +
+            `this file's CFG is partial or absent`,
+        );
+      }
+    }
+    if (cfgBlocks > 0) {
+      logger.debug(
+        `[scope-resolution] CFG emit (lang=${provider.language}): ` +
+          `${cfgBlocks} BasicBlock nodes, ${cfgEdges} CFG edges` +
+          (cfgDroppedEdges > 0 ? `, ${cfgDroppedEdges} edges dropped (per-function cap)` : '') +
+          `; ${rdEdges} REACHING_DEF edges (${rdFacts} facts)` +
+          (rdDropped > 0 ? `, ${rdDropped} REACHING_DEF edges dropped (per-function cap)` : '') +
+          (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : ''),
+      );
+    }
+  }
+
   if (PROF) {
     const tEnd = process.hrtime.bigint();
     const ns = (a: bigint, b: bigint): number => Number(b - a) / 1_000_000;
@@ -688,6 +812,8 @@ export function runScopeResolution(
         ` propagate=${ns(tFinalize, tPropagate).toFixed(0)}ms` +
         ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
+        // pdg ⊆ emit: the M2 reaching-defs share of the emit bucket (#2082 U4).
+        (input.pdg === true ? ` pdg=${pdgMs.toFixed(0)}ms` : '') +
         ` total=${ns(tStart, tEnd).toFixed(0)}ms` +
         ` (${parsedFiles.length} files)`,
     );

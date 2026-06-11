@@ -2,8 +2,22 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
-import C from 'tree-sitter-c';
 import Cpp from 'tree-sitter-cpp';
+import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
+
+// `tree-sitter-c` is vendored (#2116), loaded from `vendor/` by absolute path
+// (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Load it
+// via a guarded call rather than a top-level `import C from 'tree-sitter-c'`,
+// which would throw ERR_MODULE_NOT_FOUND at module-load and crash analyze
+// (#2091/#2093). It may be absent on a platform without a prebuild; when the
+// binding is absent, `getLanguageForFile` returns null for `.c`/`.h` so C
+// include-extraction is skipped (C++ is unaffected — its binding always ships).
+let C: unknown = null;
+try {
+  C = requireVendoredGrammar('tree-sitter-c');
+} catch {
+  /* C grammar unavailable — C include extraction degrades to a no-op. */
+}
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';

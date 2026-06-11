@@ -38,7 +38,38 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
 | `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
-| `list_repos`     | Discover indexed repos                                                   |
+| `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                    |
+
+### Paginating `list_repos`
+
+`list_repos` is paginated so a large registry is not truncated by MCP/LLM token limits. It takes optional `limit` (default **50**, max **200**) and `offset`, and returns:
+
+```jsonc
+{
+  "repositories": [
+    { "name": "...", "path": "...", "indexedAt": "...", "lastCommit": "...", "stats": { } }
+  ],
+  "pagination": {
+    "total": 437,
+    "limit": 50,
+    "offset": 0,
+    "returned": 50,
+    "hasMore": true,
+    "nextOffset": 50
+  }
+}
+```
+
+To enumerate **every** repository, keep calling with `offset` set to `pagination.nextOffset` until `hasMore` is `false`:
+
+```text
+list_repos {}               → repos 1–50,    nextOffset 50,  hasMore true
+list_repos { offset: 50 }   → repos 51–100,  nextOffset 100, hasMore true
+…
+list_repos { offset: 400 }  → repos 401–437,                 hasMore false   (done)
+```
+
+Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). Out-of-range or malformed `limit`/`offset` (non-integer, `limit` outside `[1, 200]`, `offset < 0`) are rejected with a clear error — `limit` above the max is rejected, not silently capped. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
 
 ## Resources Reference
 

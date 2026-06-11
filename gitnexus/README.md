@@ -126,7 +126,7 @@ Your AI agent gets these tools automatically:
 
 | Tool             | What It Does                                                     | `repo` Param |
 | ---------------- | ---------------------------------------------------------------- | ------------ |
-| `list_repos`     | Discover all indexed repositories                                | —            |
+| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`) | —            |
 | `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
 | `context`        | 360-degree symbol view — categorized refs, process participation | Optional     |
 | `impact`         | Blast radius analysis with depth grouping and confidence         | Optional     |
@@ -159,6 +159,7 @@ Your AI agent gets these tools automatically:
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
+gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
@@ -195,6 +196,8 @@ gitnexus group contracts <name>  # Inspect extracted contracts and cross-links
 gitnexus group query <name> <q>  # Search execution flows across all repos in a group
 gitnexus group status <name>     # Check staleness of repos in a group
 ```
+
+> **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
 ## Remote Embeddings
 
@@ -432,6 +435,26 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 | `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS`  | unset   | Set to `1`/`true` to keep inert block-local value symbols instead of pruning them.                      |
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
+
+### Hook augmentation/notifications are silently skipped
+
+The Claude Code / Antigravity hooks intentionally stay **silent** on normal skip
+paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
+output. A search may not be augmented — or a stale-index reminder may not appear
+on stderr — when the GitNexus MCP server owns the repo DB, when the DB-lock probe
+times out and fails closed, or when the index is already current.
+
+To see why a hook skipped, set `GITNEXUS_DEBUG=1` and re-run the action — the hook
+writes the reason (e.g. `[GitNexus] augment skipped: MCP server owns DB`) and the
+stale-index hint to its stderr:
+
+```bash
+GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr
+```
+
+Only `GITNEXUS_DEBUG=1` and `GITNEXUS_DEBUG=true` enable diagnostics; every other
+value (including `0` and `false`) is treated as off. Diagnostics go to stderr
+only — the hook's structured stdout (the JSON the agent consumes) is unaffected.
 
 ## Privacy
 

@@ -204,6 +204,10 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
 Orchestrator: `runScopeResolution(input, provider)` in `scope-resolution/pipeline/run.ts`.
 Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates the registered `SCOPE_RESOLVERS` over the worker-serialized `ParsedFile`s. (Per-language `emitScopeCaptures` hooks may reuse a cached Tree via the orchestrator's `treeCache`, but in worker-pool runs that cache is empty — Trees can't cross MessageChannels — so they consume the pre-extracted `ParsedFile` instead; § Performance notes.)
 
+### Optional CFG/PDG emission (`--pdg`, #2081 M1)
+
+On a `--pdg` run, the parse worker builds a per-function control-flow graph from the tree-sitter AST (`LanguageProvider.cfgVisitor`; TypeScript/JavaScript in M1) and serializes it onto `ParsedFile.cfgSideChannel` as plain data. Scope-resolution then emits `BasicBlock` nodes + `CFG` edges from that side-channel **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live** — the only window where the worker-built CFGs are loaded (the store is cleared right after the phase returns). A standalone post-`mro` phase would read an empty store, so the CFG emit deliberately lives in-phase, mirroring the `applyCaptureSideChannel` pattern. The opt-in is off by default (graph byte-identical), folded into the parse-cache key (a pdg-off warm cache is never reused on a `--pdg` run), and bounded by a per-function edge cap that logs any dropped edges. Edge *kind* (`seq`/`cond-true`/`loop-back`/…) rides in the `CFG` relationship's `reason` (CFG is a single `CodeRelation` type, not one type per kind). See `core/ingestion/cfg/`.
+
 ### `ScopeResolver` contract
 
 Single interface a language implements to plug into the pipeline. Contract fully documented in `scope-resolution/contract/scope-resolver.ts`.
