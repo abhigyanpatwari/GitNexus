@@ -484,6 +484,24 @@ describe('computeReachingDefs — tri-review soundness fixes (#2160 review)', ()
     expect(new Set(sinkUses.map((f) => f.def.line))).toEqual(new Set([2, 3]));
   });
 
+  it('throw edges deliver INTERMEDIATE defs of a coalesced block to the handler (parser-direct, P1)', () => {
+    const cfg = cfgOf(`function f(a) {
+      let x = seed(a);
+      try {
+        x = parse(a);
+        x = normalize(x);
+      } catch (e) {
+        sink(x);
+      }
+    }`);
+    const [x] = nameIdx(cfg, 'x');
+    const r = computeReachingDefs(cfg);
+    const sinkUses = r.facts.filter((f) => f.bindingIdx === x && f.use.line === 7);
+    // seed (pre-try), parse (intermediate — normalize may throw with parse's
+    // value live), and normalize (its own RHS use may throw) all reach sink
+    expect(new Set(sinkUses.map((f) => f.def.line))).toEqual(new Set([2, 4, 5]));
+  });
+
   it('a block with ≥ STMT_STRIDE statements reports overflow with zero facts (no aliasing)', () => {
     const shared = { line: 1, defs: [], uses: [] };
     const huge = new Array(1 << 21).fill(shared);

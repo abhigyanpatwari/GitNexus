@@ -124,12 +124,13 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
   }
 
   // ── adjacency (sorted for deterministic merges) ─────────────────────────
-  // A `throw` edge contributes IN(from) ∪ OUT(from) to its handler, not just
-  // OUT: an exception can fire BEFORE the faulting block's defs complete, so
-  // OUT-only would falsely kill the pre-block defs on the exceptional path —
-  // `let x = seed(); try { x = risky(); } catch { sink(x) }` must let the
-  // seed def reach the sink (risky() may throw before assigning). Sound
-  // over-approximation; monotone, so the fixpoint absorbs it.
+  // A `throw` edge contributes IN(from) ∪ allDefs(from) to its handler, not
+  // OUT: an exception can fire BEFORE the block's defs complete (the seed def
+  // in `let x = seed(); try { x = risky(); } catch { sink(x) }` must reach the
+  // sink) AND between any two defs of a multi-def coalesced block (the parse
+  // def in `x = parse(a); x = normalize(x);` is live exactly when normalize
+  // throws — OUT's last-def-wins misses it). Sound over-approximation;
+  // monotone, so the fixpoint absorbs it. See mergePreds.
   const preds: { from: number; viaThrow: boolean }[][] = Array.from({ length: n }, () => []);
   const succs: number[][] = Array.from({ length: n }, () => []);
   // Handlers whose IN depends on this block's IN (throw edges) — requeued on
@@ -161,6 +162,13 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
     kills: boolean;
   }
   const gen: (Map<number, GenEntry> | null)[] = new Array(n).fill(null);
+  // allDefsGen[b]: bindingIdx → EVERY def-site key in the block (must + may).
+  // This is what a throw edge delivers to its handler: an exception can fire
+  // between any two statements, so every intermediate def may be the live one
+  // at the handler — IN∪OUT alone misses defs overwritten later in the same
+  // coalesced block (`try { x = parse(a); x = normalize(x); } catch { sink(x) }`
+  // — parse's value is exactly what sink sees when normalize throws).
+  const allDefsGen: (Lattice | null)[] = new Array(n).fill(null);
   const defLine = new Map<number, number>(); // defKey → source line
   let defCount = 0;
   let useCount = 0;
@@ -168,6 +176,7 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
     const stmts = b.statements;
     if (!stmts || stmts.length === 0) continue;
     let g: Map<number, GenEntry> | null = null;
+    let all: Lattice | null = null;
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i];
       useCount += s.uses.length;
@@ -182,11 +191,16 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
         } else {
           entry.set.add(key); // may-def accumulates; never clears
         }
+        if (!all) all = new Map();
+        const allSet = all.get(d);
+        if (allSet) allSet.add(key);
+        else all.set(d, new Set([key]));
       };
       if (s.mayDefs) for (const d of s.mayDefs) record(d, false);
       for (const d of s.defs) record(d, true);
     }
     gen[b.index] = g;
+    allDefsGen[b.index] = all;
   }
 
   // ── iteration order: RPO over reachable blocks, then the rest by index ──
@@ -210,7 +224,7 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
           ? EMPTY_LATTICE
           : p.length === 1 && !p[0].viaThrow
             ? outSets[p[0].from] // alias — zero allocation on straight-line chains
-            : mergePreds(p, inSets, outSets);
+            : mergePreds(p, inSets, outSets, allDefsGen);
       const inChanged = !latticeEquals(inSets[b], inB);
       inSets[b] = inB;
 
@@ -354,11 +368,19 @@ function reversePostOrder(entry: number, succs: readonly number[][], n: number):
   return order;
 }
 
-/** Union predecessor lattices (OUT; plus IN for throw edges), sharing sets. */
+/**
+ * Union predecessor lattices, sharing sets where possible. A normal edge
+ * contributes OUT(from). A THROW edge contributes IN(from) ∪ allDefs(from):
+ * an exception may fire before, between, or after any of the block's defs, so
+ * the handler can observe the incoming state OR any intermediate def — OUT
+ * alone (last-def-wins) misses defs overwritten later in the same block.
+ * IN ∪ allDefs ⊇ OUT, so the throw contribution subsumes it.
+ */
 function mergePreds(
   preds: readonly { from: number; viaThrow: boolean }[],
   inSets: readonly Lattice[],
   outSets: readonly Lattice[],
+  allDefsGen: readonly (Lattice | null)[],
 ): Lattice {
   const merged: Lattice = new Map();
   const mergeOne = (source: Lattice): void => {
@@ -385,8 +407,13 @@ function mergePreds(
     }
   };
   for (const p of preds) {
-    mergeOne(outSets[p.from]);
-    if (p.viaThrow) mergeOne(inSets[p.from]); // exception may fire pre-defs
+    if (p.viaThrow) {
+      mergeOne(inSets[p.from]); // exception may fire pre-defs…
+      const all = allDefsGen[p.from];
+      if (all) mergeOne(all); // …or after ANY of the block's defs
+    } else {
+      mergeOne(outSets[p.from]);
+    }
   }
   return merged;
 }
