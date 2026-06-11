@@ -284,18 +284,32 @@ function buildAfterToolContext(input) {
 }
 
 function runAugment(gitNexusDir, cwd, pattern) {
-  if (hasGitNexusServerOwner(gitNexusDir)) {
-    // Normal skip path: the MCP server owns the DB. Stay silent for strict
-    // hook runners (issue #1913); surface the reason only under GITNEXUS_DEBUG.
+  // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
+  // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
+  // as the augment, or concurrent sessions fan out unbounded probe
+  // subprocesses. The cheap guards (extractPattern, gitNexusDir lookup) run in
+  // buildAfterToolContext before this — moving the acquire any earlier would
+  // churn slot files on tool calls that never probe.
+  const release = acquireHookSlot(gitNexusDir);
+  if (!release) {
+    // Normal skip path: all per-repo hook slots are held by concurrent
+    // sessions. Stay silent for strict hook runners (issue #1913); surface
+    // the reason only under GITNEXUS_DEBUG.
     if (isDebugEnabled()) {
-      process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+      process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
     }
     return '';
   }
-  const release = acquireHookSlot(gitNexusDir);
-  if (!release) return '';
-  const cliPath = resolveCliPath();
   try {
+    if (hasGitNexusServerOwner(gitNexusDir)) {
+      // Normal skip path: the MCP server owns the DB. Stay silent for strict
+      // hook runners (issue #1913); surface the reason only under GITNEXUS_DEBUG.
+      if (isDebugEnabled()) {
+        process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+      }
+      return '';
+    }
+    const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
     if (!child.error && child.status === 0) {
       return extractAugmentContext(child.stderr || '');
