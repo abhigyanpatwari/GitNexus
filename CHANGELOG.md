@@ -7,6 +7,7 @@ All notable changes to GitNexus will be documented in this file.
 ### Fixed
 
 - **Hook db-lock probe no longer strands unkillable `lsof`/`ps` orphans** — the probe's `lsof`/`ps` subprocesses are now wrapped in a self-tested coreutils `timeout`/`gtimeout` (`timeout -k 1 …`), so a hook SIGKILLed by the runner's 10s timeout can no longer leave `lsof` running forever (orphan lifetime bounded at ~3s); `acquireHookSlot` now also gates the probe itself, capping concurrent probes at 3 per repo. Opt out with `GITNEXUS_HOOK_TIMEOUT_PATH=disabled`. (#2163)
+- **Hook augment CLI no longer strands orphans either** — `runGitNexusCli` in the Claude, plugin, and Antigravity hook adapters now wraps the `gitnexus augment` subprocess (the longest-lived hook child: 7s local / 12s npx inner budgets) in the same self-tested coreutils `timeout -k 1` guard as the probe's `lsof`/`ps`, with a budget of ceil(inner/1000)+1 seconds — strictly above the inner `spawnSync` timeout, so supervised behavior is unchanged and the wrapper only takes over once the hook itself has been SIGKILLed. Windows and `GITNEXUS_HOOK_TIMEOUT_PATH=disabled` keep the exact pre-wrap invocation. The Cursor hook is not wrapped yet (it does not install the probe helper) but now reports its slot-saturated skip under `GITNEXUS_DEBUG`. (#2163 follow-up)
 
 ### Changed
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)

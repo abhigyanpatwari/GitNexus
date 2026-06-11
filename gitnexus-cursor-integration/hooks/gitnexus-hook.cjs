@@ -241,7 +241,18 @@ function main() {
     if (!pattern || pattern.length < 3) return;
 
     const release = acquireHookSlot(gitNexusDir);
-    if (!release) return;
+    if (!release) {
+      // Normal skip path: all per-repo hook slots are held by concurrent
+      // sessions. Stays silent by default; surfaced only under the cursor
+      // hook's own GITNEXUS_DEBUG (truthy) convention. NOTE: unlike the
+      // claude/plugin/antigravity adapters this integration does not install
+      // hook-db-lock-probe.cjs, so its augment child is not guard-wrapped
+      // yet — tracked on the #2163 follow-up list ("cursor probe").
+      if (process.env.GITNEXUS_DEBUG) {
+        process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
+      }
+      return;
+    }
 
     const cliPath = resolveCliPath();
     let result = '';

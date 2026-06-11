@@ -24,7 +24,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
-const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const {
+  hasGitNexusDbLockedByGitNexusServer,
+  resolveUnixGuardTimeout,
+} = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 
 function readInput() {
@@ -198,10 +201,32 @@ function resolveCliPath() {
   return cliPath;
 }
 
+/**
+ * Unix orphan containment (#2163 follow-up): the augment CLI is the
+ * longest-lived hook child (inner spawnSync timeout 7s locally, 12s via
+ * npx), so on Unix it gets the same SIGKILL-surviving coreutils
+ * `timeout -k 1` wrapper as the probe's lsof/ps. The wrapper budget is
+ * ceil(inner/1000)+1 seconds — STRICTLY greater than the inner spawnSync
+ * timeout, so on the supervised path Node's SIGTERM always fires first and
+ * the existing error/status contract is untouched (a SIGTERM-immune child
+ * can hold the guard ~1s past the inner timeout before `-k` escalates; if
+ * the runner SIGKILLs the hook instead, that is exactly the orphan case the
+ * wrapper exists for). Windows is deliberately NOT wrapped — there is no
+ * coreutils timeout to resolve there and the resolver's self-test spawns
+ * /bin/sh — so on win32 (the npx.cmd path) and whenever the guard resolves
+ * to null the argv stays byte-identical to the pre-wrap invocation.
+ */
 function runGitNexusCli(cliPath, args, cwd, timeout) {
   const isWin = process.platform === 'win32';
+  const guard = isWin ? null : resolveUnixGuardTimeout();
   if (cliPath) {
-    return spawnSync(process.execPath, [cliPath, ...args], {
+    const [cmd, cmdArgs] = guard
+      ? [
+          guard,
+          ['-k', '1', String(Math.ceil(timeout / 1000) + 1), process.execPath, cliPath, ...args],
+        ]
+      : [process.execPath, [cliPath, ...args]];
+    return spawnSync(cmd, cmdArgs, {
       encoding: 'utf-8',
       timeout,
       cwd,
@@ -209,7 +234,23 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       windowsHide: true,
     });
   }
-  return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
+  // A non-null guard implies non-Windows, so the wrapped arm can hardcode
+  // plain `npx`.
+  const [cmd, cmdArgs] = guard
+    ? [
+        guard,
+        [
+          '-k',
+          '1',
+          String(Math.ceil((timeout + 5000) / 1000) + 1),
+          'npx',
+          '-y',
+          'gitnexus',
+          ...args,
+        ],
+      ]
+    : [isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args]];
+  return spawnSync(cmd, cmdArgs, {
     encoding: 'utf-8',
     timeout: timeout + 5000,
     cwd,

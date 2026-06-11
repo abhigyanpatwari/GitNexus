@@ -27,6 +27,10 @@
  *   ZERO lbug fds until the repo's first MCP query, then keeps the fd open.
  *   A probe before that first query is therefore always false — a known,
  *   pre-existing race, not a bug in this probe.
+ * - resolveUnixGuardTimeout is exported so the hook adapters can wrap the
+ *   `gitnexus augment` CLI child — the longest-lived hook subprocess (7s
+ *   local / 12s npx inner budgets) — in the same guard; see runGitNexusCli
+ *   in the adapters (#2163 follow-up).
  */
 
 const fs = require('fs');
@@ -70,7 +74,11 @@ let unixGuardTimeoutCache;
 
 /**
  * Resolve a coreutils `timeout`/`gtimeout` binary to wrap lsof/ps with
- * (#2163). Dead code on Windows (the win32 dispatch returns earlier).
+ * (#2163). Unix-only by contract: the probe's win32 dispatch returns before
+ * reaching it, and the exported callers (the adapters' runGitNexusCli,
+ * #2163 follow-up) must check the platform first — the self-test below
+ * spawns /bin/sh. The memoized result is module-wide, so probe and adapter
+ * share one lazy self-test per hook process.
  *
  * GITNEXUS_HOOK_TIMEOUT_PATH semantics: the sentinel `disabled` turns the
  * wrapper off; any other value is only a CANDIDATE — an existing file path
@@ -359,4 +367,8 @@ function hasGitNexusDbLockedByGitNexusServer(dbPath, myPid) {
 
 module.exports = {
   hasGitNexusDbLockedByGitNexusServer,
+  // #2163 follow-up: the hook adapters wrap the augment CLI in the same
+  // guard. Returns a self-tested absolute wrapper path, or null when the
+  // wrapper is disabled/unavailable. Never call on win32 (see its JSDoc).
+  resolveUnixGuardTimeout,
 };

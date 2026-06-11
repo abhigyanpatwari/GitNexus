@@ -15,7 +15,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.js');
-const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const {
+  hasGitNexusDbLockedByGitNexusServer,
+  resolveUnixGuardTimeout,
+} = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 
 /**
@@ -202,12 +205,42 @@ function extractPattern(toolName, toolInput) {
  *
  * SECURITY: Never use shell: true with user-controlled arguments.
  * On Windows, invoke gitnexus.cmd directly (no shell needed).
+ *
+ * Unix orphan containment (#2163 follow-up): the augment CLI is the
+ * longest-lived hook child (inner spawnSync timeout 7s locally, 12s via
+ * npx), so on Unix every CLI-running branch gets the same SIGKILL-surviving
+ * coreutils `timeout -k 1` wrapper as the probe's lsof/ps (the cheap
+ * which/where PATH check stays unwrapped). The wrapper budget is
+ * ceil(inner/1000)+1 seconds — STRICTLY greater than the inner spawnSync
+ * timeout, so on the supervised path Node's SIGTERM always fires first and
+ * the existing error/status contract is untouched (a SIGTERM-immune child
+ * can hold the guard ~1s past the inner timeout before `-k` escalates; if
+ * the runner SIGKILLs the hook instead, that is exactly the orphan case the
+ * wrapper exists for). Windows is deliberately NOT wrapped — there is no
+ * coreutils timeout to resolve there and the resolver's self-test spawns
+ * /bin/sh — so on win32 (the gitnexus.cmd / npx.cmd paths) and whenever the
+ * guard resolves to null the argv stays byte-identical to the pre-wrap
+ * invocation.
  */
 function runGitNexusCli(args, cwd, timeout) {
   const isWin = process.platform === 'win32';
+  const guard = isWin ? null : resolveUnixGuardTimeout();
   const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
   if (hookCli !== undefined && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
-    return spawnSync(process.execPath, [String(hookCli), ...args], {
+    const [cmd, cmdArgs] = guard
+      ? [
+          guard,
+          [
+            '-k',
+            '1',
+            String(Math.ceil(timeout / 1000) + 1),
+            process.execPath,
+            String(hookCli),
+            ...args,
+          ],
+        ]
+      : [process.execPath, [String(hookCli), ...args]];
+    return spawnSync(cmd, cmdArgs, {
       encoding: 'utf-8',
       timeout,
       cwd,
@@ -231,7 +264,12 @@ function runGitNexusCli(args, cwd, timeout) {
   }
 
   if (useDirectBinary) {
-    return spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, {
+    // A non-null guard implies non-Windows, so the wrapped arm can hardcode
+    // plain `gitnexus` (the guard resolves it via PATH, like spawnSync does).
+    const [cmd, cmdArgs] = guard
+      ? [guard, ['-k', '1', String(Math.ceil(timeout / 1000) + 1), 'gitnexus', ...args]]
+      : [isWin ? 'gitnexus.cmd' : 'gitnexus', args];
+    return spawnSync(cmd, cmdArgs, {
       encoding: 'utf-8',
       timeout,
       cwd,
@@ -240,7 +278,21 @@ function runGitNexusCli(args, cwd, timeout) {
     });
   }
   // npx fallback needs shell on Windows since npx is a .cmd script
-  return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
+  const [cmd, cmdArgs] = guard
+    ? [
+        guard,
+        [
+          '-k',
+          '1',
+          String(Math.ceil((timeout + 5000) / 1000) + 1),
+          'npx',
+          '-y',
+          'gitnexus',
+          ...args,
+        ],
+      ]
+    : [isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args]];
+  return spawnSync(cmd, cmdArgs, {
     encoding: 'utf-8',
     timeout: timeout + 5000,
     cwd,
