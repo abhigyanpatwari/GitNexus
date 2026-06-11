@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
+import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
 
 // U7 — end-to-end proof that the `--pdg` opt-in reaches BOTH sinks: the parse
 // worker builds a per-function CFG (workerData.pdg) and scope-resolution emits
@@ -17,6 +18,8 @@ function counts(result: PipelineResult): {
   basicBlocks: number;
   cfgEdges: number;
   reachingDefs: number;
+  tainted: number;
+  sanitizes: number;
 } {
   let basicBlocks = 0;
   result.graph.forEachNode((n) => {
@@ -24,11 +27,15 @@ function counts(result: PipelineResult): {
   });
   let cfgEdges = 0;
   let reachingDefs = 0;
+  let tainted = 0;
+  let sanitizes = 0;
   for (const rel of result.graph.iterRelationships()) {
     if (rel.type === 'CFG') cfgEdges++;
     if (rel.type === 'REACHING_DEF') reachingDefs++;
+    if (rel.type === 'TAINTED') tainted++;
+    if (rel.type === 'SANITIZES') sanitizes++;
   }
-  return { basicBlocks, cfgEdges, reachingDefs };
+  return { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes };
 }
 
 const tmpDirs: string[] = [];
@@ -69,11 +76,52 @@ describe('U7 — end-to-end --pdg pipeline', () => {
     }
   }, 60000);
 
+  // M3 (#2083 U4): the taint layer rides the same gate. The fixture's
+  // vuln.ts carries one vulnerable flow (req.body → child_process.exec) and
+  // one sanitized variant (encodeURIComponent before res.send).
+  it('with --pdg on: emits TAINTED + SANITIZES edges with decodable hop reasons', async () => {
+    const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
+    const blockIds = new Set<string>();
+    result.graph.forEachNode((n) => {
+      if (n.label === 'BasicBlock') blockIds.add(n.id);
+    });
+    const { tainted, sanitizes } = counts(result);
+    expect(tainted).toBeGreaterThan(0);
+    expect(sanitizes).toBeGreaterThanOrEqual(1);
+    let sawVulnFlow = false;
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type !== 'TAINTED' && rel.type !== 'SANITIZES') continue;
+      // Both endpoints are persisted BasicBlock nodes (the shared id template).
+      expect(blockIds.has(rel.sourceId)).toBe(true);
+      expect(blockIds.has(rel.targetId)).toBe(true);
+      if (rel.type === 'TAINTED') {
+        // The reason is the versioned hop encoding — decodable by the SHARED
+        // codec (U6's explain imports the same module), variables carried.
+        const decoded = decodeTaintPath(rel.reason);
+        expect(decoded.ok).toBe(true);
+        if (decoded.ok) {
+          expect(decoded.hops.length).toBeGreaterThan(0);
+          for (const hop of decoded.hops) {
+            expect(hop.variable.length).toBeGreaterThan(0);
+            expect(hop.line).toBeGreaterThan(0);
+          }
+          if (decoded.hops.some((h) => h.variable === 'cmd')) sawVulnFlow = true;
+        }
+      } else {
+        // SANITIZES carries the killed binding's plain name.
+        expect(rel.reason).toBe('value');
+      }
+    }
+    expect(sawVulnFlow).toBe(true); // the req.body → exec flow, via `cmd`
+  }, 60000);
+
   it('with --pdg off (default): emits zero BasicBlock nodes and zero CFG edges', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {});
-    const { basicBlocks, cfgEdges, reachingDefs } = counts(result);
+    const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes } = counts(result);
     expect(basicBlocks).toBe(0);
     expect(cfgEdges).toBe(0);
     expect(reachingDefs).toBe(0);
+    expect(tainted).toBe(0);
+    expect(sanitizes).toBe(0);
   }, 60000);
 });
