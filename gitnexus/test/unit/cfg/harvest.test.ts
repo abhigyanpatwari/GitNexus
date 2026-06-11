@@ -429,4 +429,11 @@ describe('TS/JS def/use harvest — tri-review harvest fixes (#2160 review)', ()
     expect(defFacts).toHaveLength(1); // only the assignment, never the bare declarator
     expect(allFacts(cfg).some((s) => s.defs.includes(y))).toBe(true);
   });
+
+  it('parenthesized lvalues unwrap: `(x) += 1` and `(x)++` def+use x', () => {
+    const cfg = cfgOf(`function f(x) { (x) += 1; (x)++; }`);
+    const x = bindingIdx(cfg, 'x');
+    const withDef = allFacts(cfg).filter((s) => s.defs.includes(x));
+    expect(withDef.length).toBeGreaterThanOrEqual(2);
+  });
 });

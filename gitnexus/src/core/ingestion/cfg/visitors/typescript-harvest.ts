@@ -387,6 +387,17 @@ export class TsHarvester {
     acc.addUse(this.resolve(nameNode));
   }
 
+  /** Strip wrappers that don't change the lvalue (`(x) += 1`, `x! ++`). */
+  private unwrapLvalue(node: SyntaxNode): SyntaxNode {
+    let n = node;
+    while (n.type === 'parenthesized_expression' || n.type === 'non_null_expression') {
+      const inner = n.namedChild(0);
+      if (!inner) break;
+      n = inner;
+    }
+    return n;
+  }
+
   /** Value-position walk: collect uses; route def positions to the pattern walk. */
   private walkValue(node: SyntaxNode, acc: FactAccumulator): void {
     const t = node.type;
@@ -426,13 +437,15 @@ export class TsHarvester {
       case 'assignment_expression': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
-        if (left) this.walkDefPattern(left, acc);
+        if (left) this.walkDefPattern(this.unwrapLvalue(left), acc);
         if (right) this.walkValue(right, acc);
         return;
       }
       case 'augmented_assignment_expression': {
         // `x += y` both defines and uses x.
-        const left = node.childForFieldName('left');
+        const left = node.childForFieldName('left')
+          ? this.unwrapLvalue(node.childForFieldName('left') as SyntaxNode)
+          : null;
         const right = node.childForFieldName('right');
         if (left?.type === 'identifier') {
           this.def(left, acc);
@@ -444,7 +457,8 @@ export class TsHarvester {
         return;
       }
       case 'update_expression': {
-        const arg = node.childForFieldName('argument');
+        const rawArg = node.childForFieldName('argument');
+        const arg = rawArg ? this.unwrapLvalue(rawArg) : null;
         if (arg?.type === 'identifier') {
           this.def(arg, acc);
           this.use(arg, acc);
