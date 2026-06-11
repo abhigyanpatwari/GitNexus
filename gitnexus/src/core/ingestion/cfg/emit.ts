@@ -322,6 +322,15 @@ export function emitFileReachingDefs(
           `limit (${maxFacts}) reached — facts beyond it were not computed; ` +
           `the persisted REACHING_DEF projection for this function is sparse`,
       );
+    } else if (r.status === 'overflow') {
+      result.truncatedFunctions++;
+      onWarn?.(
+        `[reaching-defs] ${filePath}:${functionStartLine}: a basic block exceeds ` +
+          `the def-key stride (≥2^21 coalesced statements — minified/generated ` +
+          `code) — REACHING_DEF skipped for this function (computing any facts ` +
+          `would risk wrong-block aliasing); its CFG is unaffected`,
+      );
+      continue;
     }
 
     // Dedup to (defBlock, useBlock, binding) — facts arrive sorted, so the

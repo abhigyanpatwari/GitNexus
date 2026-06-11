@@ -63,8 +63,13 @@ export interface FunctionDefUse {
    * `no-facts`  — the CFG carries no statement facts (hand-built or pre-M2
    *               side channel); empty facts, NOT an error.
    * `truncated` — `limits.maxFacts` hit; `facts` is a deterministic prefix.
+   * `overflow`  — a block's statement count breaches the def-key stride; no
+   *               facts at all (computing any would risk key aliasing —
+   *               wrong-block facts are strictly worse than none). Distinct
+   *               from `truncated` so the caller's diagnostic doesn't
+   *               misname it as the fact-materialization limit.
    */
-  readonly status: 'computed' | 'no-facts' | 'truncated';
+  readonly status: 'computed' | 'no-facts' | 'truncated' | 'overflow';
   /** Pass-through of the CFG's binding table (empty for `no-facts`). */
   readonly bindings: readonly BindingEntry[];
   /** Sorted by (def block, def stmt, use block, use stmt, binding). */
@@ -109,10 +114,10 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
   // Key-aliasing guard (see STMT_STRIDE): a block with ≥ STRIDE statements
   // cannot be keyed without aliasing into the next block's def sites, which
   // would fabricate wrong-block facts — strictly worse than producing none.
-  // Bail to a sound empty `truncated` result (the emit path warns).
+  // Bail to a sound empty `overflow` result (the emit path warns distinctly).
   for (const b of blocks) {
     if ((b.statements?.length ?? 0) >= STMT_STRIDE) {
-      return { status: 'truncated', bindings: cfg.bindings, facts: [], defCount: 0, useCount: 0 };
+      return { status: 'overflow', bindings: cfg.bindings, facts: [], defCount: 0, useCount: 0 };
     }
   }
 

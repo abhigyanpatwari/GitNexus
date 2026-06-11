@@ -420,3 +420,21 @@ describe('computeReachingDefs — parser-direct acceptance (with U1/U2)', () => 
     expect(new Set(retUse.map((f) => f.def.line))).toEqual(new Set([2, 3]));
   });
 });
+
+describe('computeReachingDefs — tri-review soundness fixes (#2160 review)', () => {
+  it('a block with ≥ STMT_STRIDE statements reports overflow with zero facts (no aliasing)', () => {
+    const shared = { line: 1, defs: [], uses: [] };
+    const huge = new Array(1 << 21).fill(shared);
+    const cfg = mkCfg(
+      [{}, {}, { stmts: huge as StatementFacts[] }],
+      [
+        [0, 2],
+        [2, 1],
+      ],
+      ['x'],
+    );
+    const r = computeReachingDefs(cfg);
+    expect(r.status).toBe('overflow');
+    expect(r.facts).toEqual([]);
+  });
+});
