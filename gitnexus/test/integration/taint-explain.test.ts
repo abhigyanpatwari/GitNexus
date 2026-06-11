@@ -151,7 +151,9 @@ withTestLbugDB(
       });
 
       it('rejects an out-of-bounds limit with a clear error', async () => {
-        for (const limit of [0, -1, 1.5, 10_000]) {
+        // Includes the non-integer / non-finite / non-numeric cases the
+        // interpolated `LIMIT ${limit}` depends on the guard rejecting.
+        for (const limit of [0, -1, 1.5, 10_000, NaN, Infinity, -Infinity, '50']) {
           const result = await backend.callTool('explain', { limit });
           expect(result).toHaveProperty('error');
           expect(result.error).toMatch(/limit/i);
