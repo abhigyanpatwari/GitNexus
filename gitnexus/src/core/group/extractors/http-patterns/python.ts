@@ -795,6 +795,7 @@ function joinPrefix(prefix: string, route: string): string {
 export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
   language: Python,
+  graphProviderCoverage: 'complete',
   prepareRepo({ files, parser, readFile, parseSource }): RepoContext {
     return buildPythonRepoContext(files, parser, readFile, parseSource);
   },

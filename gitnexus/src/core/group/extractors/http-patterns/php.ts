@@ -130,6 +130,7 @@ function isHttpUrlLiteral(path: string): boolean {
 export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'php-http',
   language: PHP.php_only,
+  graphProviderCoverage: 'complete',
   scan(tree) {
     const out: HttpDetection[] = [];
 

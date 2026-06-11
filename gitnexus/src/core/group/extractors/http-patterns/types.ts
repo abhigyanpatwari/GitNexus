@@ -79,6 +79,12 @@ export interface HttpLanguagePlugin {
   /** tree-sitter grammar object (passed to the shared parser). */
   language: unknown;
   /**
+   * The ingestion pipeline emits every provider route for this language as a
+   * Route/HANDLES_ROUTE graph entry. The orchestrator may skip source-provider
+   * emission for graph-covered files only when graph handlers also resolve.
+   */
+  graphProviderCoverage?: 'complete';
+  /**
    * Optional pre-pass: walk the relevant files in the repo and produce
    * an opaque context that `scan` can use to resolve cross-file facts.
    * Implementations must not throw — return undefined on any error so

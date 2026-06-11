@@ -282,11 +282,39 @@ export class HttpRouteExtractor implements ContractExtractor {
 
     const graphProviders =
       dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
-    // Source scan always runs to capture routes in languages/files not covered
-    // by graph edges; the glob and per-file parse results are cached above.
+    const graphProvidersByFile = new Map<string, ExtractedContract[]>();
+    for (const contract of graphProviders) {
+      const fileContracts = graphProvidersByFile.get(contract.symbolRef.filePath) ?? [];
+      fileContracts.push(contract);
+      graphProvidersByFile.set(contract.symbolRef.filePath, fileContracts);
+    }
+    const providerSourceFiles: string[] = [];
+    for (const file of files) {
+      const plugin = getPluginForFile(file);
+      if (plugin?.graphProviderCoverage !== 'complete') {
+        providerSourceFiles.push(file);
+        continue;
+      }
+      const graphContracts = graphProvidersByFile.get(file);
+      // An empty or unresolved graph result is not proof of full coverage.
+      // Preserve source fallback for partial indexes and handler misses.
+      if (!graphContracts?.length || graphContracts.some((contract) => !contract.symbolUid)) {
+        providerSourceFiles.push(file);
+        continue;
+      }
+      const graphKeys = new Set(graphContracts.map((contract) => contract.contractId));
+      const sourceProviderKeys = (await getDetections(file))
+        .filter((detection) => detection.role === 'provider')
+        .map((detection) =>
+          contractIdFor(detection.method, normalizeHttpPath(detection.path)),
+        );
+      if (sourceProviderKeys.some((key) => !graphKeys.has(key))) {
+        providerSourceFiles.push(file);
+      }
+    }
     const providers = this.mergeGraphAndSourceContracts(
       graphProviders,
-      await this.extractProvidersSourceScan(files, getDetections),
+      await this.extractProvidersSourceScan(providerSourceFiles, getDetections),
     );
 
     const graphConsumers =

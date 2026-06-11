@@ -173,6 +173,59 @@ func main() {
       expect(sourceRoute?.symbolName).toBe('healthHandler');
       expect(sourceRoute?.meta.extractionStrategy).toBe('source_scan');
     });
+
+    it('preserves source fallback when a graph-covered file also has a source-only route', async () => {
+      const dir = path.join(tmpDir, 'graph-partial-provider-file');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+@RestController
+@RequestMapping("/api")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+
+    @PostMapping("/users")
+    public User create(@RequestBody User user) { return service.save(user); }
+}
+`,
+      );
+
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) {
+          return [
+            {
+              fileId: 'file-uid-ctrl',
+              filePath: 'src/controller/UserController.java',
+              routePath: '/api/users',
+              routeId: 'route-uid-users',
+              routeSource: 'decorator-GetMapping',
+            },
+          ];
+        }
+        if (query.includes('CONTAINS')) {
+          return [
+            {
+              uid: 'method-uid-list',
+              name: 'list',
+              filePath: 'src/controller/UserController.java',
+              labels: ['Method'],
+            },
+          ];
+        }
+        if (query.includes('FETCHES')) return [];
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter((contract) => contract.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::POST::/api/users')).toMatchObject({
+        meta: expect.objectContaining({ extractionStrategy: 'source_scan' }),
+      });
+    });
   });
 
   describe('provider extraction — source-scan fallback (Strategy B)', () => {

@@ -675,6 +675,7 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'java-http',
   language: Java,
+  graphProviderCoverage: 'complete',
   scan(tree) {
     const out: HttpDetection[] = [];
 
