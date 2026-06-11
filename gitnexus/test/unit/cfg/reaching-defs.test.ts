@@ -459,6 +459,31 @@ describe('computeReachingDefs — tri-review soundness fixes (#2160 review)', ()
     expect(new Set(sinkUses.map((f) => f.def.line))).toEqual(new Set([2, 3]));
   });
 
+  it('labeled non-loop block: break keeps the real continuation (parser-direct, P1)', () => {
+    const cfg = cfgOf(`function f(c) {
+      let x = 1;
+      blk: { if (c) break blk; x = 2; }
+      sink(x);
+    }`);
+    const [x] = nameIdx(cfg, 'x');
+    const r = computeReachingDefs(cfg);
+    const sinkUses = r.facts.filter((f) => f.bindingIdx === x && f.use.line === 4);
+    // the break path preserves x=1; the fall-through path redefines to x=2
+    expect(new Set(sinkUses.map((f) => f.def.line))).toEqual(new Set([2, 3]));
+  });
+
+  it('doubly-labeled loop: `break outer` resolves to the loop exit, keeping post-loop facts (P1)', () => {
+    const cfg = cfgOf(`function f(c) {
+      let x = 1;
+      outer: inner: do { if (c) break outer; x = 2; } while (g());
+      sink(x);
+    }`);
+    const [x] = nameIdx(cfg, 'x');
+    const r = computeReachingDefs(cfg);
+    const sinkUses = r.facts.filter((f) => f.bindingIdx === x && f.use.line === 4);
+    expect(new Set(sinkUses.map((f) => f.def.line))).toEqual(new Set([2, 3]));
+  });
+
   it('a block with ≥ STMT_STRIDE statements reports overflow with zero facts (no aliasing)', () => {
     const shared = { line: 1, defs: [], uses: [] };
     const huge = new Array(1 << 21).fill(shared);

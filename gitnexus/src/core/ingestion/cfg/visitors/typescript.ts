@@ -30,16 +30,18 @@
  *    finallys chain inner→outer; finally-as-shared-join conflates exit paths
  *    (sound over-approximation; duplication-per-exit-path was rejected). An
  *    empty/comment-only finally pushes no frame — jumps keep direct edges.
- *  - labeled `break`/`continue` resolve against the labeled loop's frame.
+ *  - labeled `break`/`continue` resolve against the labeled construct's frame:
+ *    loops/switches carry their full label LIST (`outer: inner: for` resolves
+ *    both), and a labeled NON-loop statement (`blk: { … break blk; … }`) gets
+ *    a break-target frame whose target is a synthesized join after the body —
+ *    the M1 route-to-EXIT fallback removed the real continuation and falsely
+ *    killed defs for reaching-defs (tri-review P1).
  *
  * Known limitations:
- *  - A `break`/`continue` to a label on a non-loop/non-switch block, and the
- *    OUTER label of a doubly-labeled construct (`outer: inner: for (...)`), are
- *    not modeled. The jump is conservatively routed to the function EXIT (a
- *    sound over-approximation that keeps the graph single-exit — see visitBreak)
- *    rather than left as a dangling sink, and threads no finallys (target
- *    unknown ⇒ crossed set unknown). Single-labeled loops/switches resolve
- *    correctly, including across finallys.
+ *  - A jump whose label STILL fails to resolve (malformed source) keeps the
+ *    conservative route-to-EXIT + thread-all-finallys fallback in
+ *    visitBreak/visitContinue — single-exit preserved, no finally bypassed,
+ *    but the continuation path is approximate.
  *  - Exceptional flow stays the sound over-approximation: EVERY protected-region
  *    block edges to the handler (an exception may fire mid-block), which
  *    over-supplies reaching-defs facts into `catch` — extra facts, never false
@@ -120,8 +122,8 @@ class TsCfgWalk {
   private readonly cfc = new ControlFlowContext();
   /** Stack of exception-handler entry blocks (catch/finally) a `throw` jumps to. */
   private readonly handlers: number[] = [];
-  /** Label awaiting the loop/switch it immediately precedes (labeled_statement). */
-  private pendingLabel: string | undefined;
+  /** Labels awaiting the construct they precede (`outer: inner: for` = both). */
+  private pendingLabels: string[] = [];
 
   constructor(
     private readonly builder: CfgBuilder,
@@ -308,14 +310,28 @@ class TsCfgWalk {
   private visitLabeled(stmt: SyntaxNode): SeqResult {
     const body =
       stmt.childForFieldName('body') ?? stmt.namedChildren[stmt.namedChildren.length - 1];
-    if (body && LOOP_OR_SWITCH_TYPES.has(body.type)) {
-      this.pendingLabel = this.labelOf(stmt);
+    const label = this.labelOf(stmt);
+    if (body && (LOOP_OR_SWITCH_TYPES.has(body.type) || body.type === 'labeled_statement')) {
+      // Loop/switch consumes the accumulated labels via takeLabels(); a nested
+      // labeled_statement keeps accumulating (`outer: inner: for` → both
+      // labels land on the loop frame).
+      if (label) this.pendingLabels.push(label);
       const res = this.visitStmt(body);
-      this.pendingLabel = undefined; // clear even if the construct didn't consume it
+      this.pendingLabels = []; // clear leftovers if the construct didn't consume
       return res;
     }
-    // Labeled non-loop blocks (break-to-block-label) are not modeled in M1.
-    return this.visitBody(body);
+    // Labeled NON-loop statement (`blk: { … break blk; … }`): break-to-label
+    // targets a synthesized join after the body. Routing it to EXIT instead
+    // (the M1 behavior) removed the real continuation and falsely killed
+    // every def live at the jump for post-construct uses (tri-review P1).
+    const labels = [...this.pendingLabels, ...(label ? [label] : [])];
+    this.pendingLabels = [];
+    const join = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
+    this.cfc.pushLabeledBlock(join, labels);
+    const res = this.visitBody(body);
+    this.cfc.pop();
+    if (res) this.builder.connect(res.exits, join, 'seq');
+    return { entry: res?.entry ?? join, exits: [join] };
   }
 
   private visitIf(stmt: SyntaxNode): TraversalResult {
@@ -365,7 +381,7 @@ class TsCfgWalk {
   }
 
   private visitWhile(stmt: SyntaxNode): TraversalResult {
-    const label = this.takeLabel();
+    const labels = this.takeLabels();
     const cond = stmt.childForFieldName('condition') ?? stmt;
     const header = this.builder.newBlock(
       startLineOf(stmt),
@@ -376,7 +392,7 @@ class TsCfgWalk {
     );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
-    this.cfc.pushLoop(header, loopExit, label);
+    this.cfc.pushLoop(header, loopExit, labels);
     const body = this.visitBody(this.bodyBlockOf(stmt));
     this.cfc.pop();
 
@@ -391,7 +407,7 @@ class TsCfgWalk {
   }
 
   private visitDoWhile(stmt: SyntaxNode): TraversalResult {
-    const label = this.takeLabel();
+    const labels = this.takeLabels();
     const cond = stmt.childForFieldName('condition') ?? stmt;
     const condBlock = this.builder.newBlock(
       startLineOf(cond),
@@ -402,7 +418,7 @@ class TsCfgWalk {
     );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
-    this.cfc.pushLoop(condBlock, loopExit, label);
+    this.cfc.pushLoop(condBlock, loopExit, labels);
     const body = this.visitBody(this.bodyBlockOf(stmt));
     this.cfc.pop();
 
@@ -414,7 +430,7 @@ class TsCfgWalk {
   }
 
   private visitFor(stmt: SyntaxNode): TraversalResult {
-    const label = this.takeLabel();
+    const labels = this.takeLabels();
     const init = stmt.childForFieldName('initializer');
     const cond = stmt.childForFieldName('condition');
     const incr = stmt.childForFieldName('increment');
@@ -440,7 +456,7 @@ class TsCfgWalk {
       this.builder.edge(incrBlock, header, 'loop-back');
     }
 
-    this.cfc.pushLoop(incrBlock, loopExit, label);
+    this.cfc.pushLoop(incrBlock, loopExit, labels);
     const body = this.visitBody(this.bodyBlockOf(stmt));
     this.cfc.pop();
 
@@ -475,7 +491,7 @@ class TsCfgWalk {
   }
 
   private visitForIn(stmt: SyntaxNode): TraversalResult {
-    const label = this.takeLabel();
+    const labels = this.takeLabels();
     // Header text is SYNTHESIZED, so facts come from the left/right AST nodes
     // directly (the loop variable is a def, the iterated expression a use).
     const header = this.builder.newBlock(
@@ -487,7 +503,7 @@ class TsCfgWalk {
     );
     const loopExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
-    this.cfc.pushLoop(header, loopExit, label);
+    this.cfc.pushLoop(header, loopExit, labels);
     const body = this.visitBody(this.bodyBlockOf(stmt));
     this.cfc.pop();
 
@@ -508,7 +524,7 @@ class TsCfgWalk {
   }
 
   private visitSwitch(stmt: SyntaxNode): TraversalResult {
-    const label = this.takeLabel();
+    const labels = this.takeLabels();
     const value = stmt.childForFieldName('value') ?? stmt;
     const dispatch = this.builder.newBlock(
       startLineOf(stmt),
@@ -519,7 +535,7 @@ class TsCfgWalk {
     );
     const switchExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
-    this.cfc.pushSwitch(switchExit, label);
+    this.cfc.pushSwitch(switchExit, labels);
     const body = stmt.childForFieldName('body');
     const cases = body
       ? body.namedChildren.filter((c) => c.type === 'switch_case' || c.type === 'switch_default')
@@ -692,11 +708,11 @@ class TsCfgWalk {
     return this.handlers.length ? this.handlers[this.handlers.length - 1] : this.builder.exitIndex;
   }
 
-  /** Consume the label awaiting the loop/switch this call is building. */
-  private takeLabel(): string | undefined {
-    const label = this.pendingLabel;
-    this.pendingLabel = undefined;
-    return label;
+  /** Consume the labels awaiting the loop/switch this call is building. */
+  private takeLabels(): string[] {
+    const labels = this.pendingLabels;
+    this.pendingLabels = [];
+    return labels;
   }
 
   private labelOf(stmt: SyntaxNode): string | undefined {

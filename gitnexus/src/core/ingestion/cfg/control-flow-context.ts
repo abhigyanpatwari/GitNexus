@@ -26,14 +26,28 @@ interface LoopFrame {
   readonly continueTo: number;
   /** Block a `break` jumps to (the loop exit / join). */
   readonly breakTo: number;
-  readonly label?: string;
+  /** All labels naming this construct (`outer: inner: for` carries both). */
+  readonly labels: readonly string[];
 }
 
 interface SwitchFrame {
   readonly kind: 'switch';
   /** Block a `break` jumps to (after the switch). `continue` is invalid here. */
   readonly breakTo: number;
-  readonly label?: string;
+  readonly labels: readonly string[];
+}
+
+/**
+ * A labeled NON-loop statement (`blk: { … break blk; … }`) — break-to-label
+ * targets the synthesized join after the body (tri-review P1: routing such a
+ * break to EXIT removed the real continuation and falsely killed every def
+ * live at the jump for post-construct uses). Matched ONLY by a labeled break
+ * naming it; unlabeled breaks and continues skip it.
+ */
+interface BlockFrame {
+  readonly kind: 'block';
+  readonly breakTo: number;
+  readonly labels: readonly string[];
 }
 
 /** A `finally` whose body any crossing jump must route through. */
@@ -49,7 +63,8 @@ export interface FinalizerFrame {
   readonly pending: { to: number; kind: CfgEdgeKind }[];
 }
 
-type Frame = LoopFrame | SwitchFrame | FinalizerFrame;
+type Frame = LoopFrame | SwitchFrame | BlockFrame | FinalizerFrame;
+type TargetFrame = LoopFrame | SwitchFrame | BlockFrame;
 
 /** A resolved jump: its ultimate target + the finallys it crosses (inner→outer). */
 export interface JumpResolution {
@@ -60,12 +75,17 @@ export interface JumpResolution {
 export class ControlFlowContext {
   private readonly stack: Frame[] = [];
 
-  pushLoop(continueTo: number, breakTo: number, label?: string): void {
-    this.stack.push({ kind: 'loop', continueTo, breakTo, label });
+  pushLoop(continueTo: number, breakTo: number, labels: readonly string[] = []): void {
+    this.stack.push({ kind: 'loop', continueTo, breakTo, labels });
   }
 
-  pushSwitch(breakTo: number, label?: string): void {
-    this.stack.push({ kind: 'switch', breakTo, label });
+  pushSwitch(breakTo: number, labels: readonly string[] = []): void {
+    this.stack.push({ kind: 'switch', breakTo, labels });
+  }
+
+  /** Push a labeled non-loop statement's break-target frame. */
+  pushLabeledBlock(breakTo: number, labels: readonly string[]): void {
+    this.stack.push({ kind: 'block', breakTo, labels });
   }
 
   /**
@@ -91,13 +111,17 @@ export class ControlFlowContext {
    * threads nothing.
    */
   resolveBreak(label?: string): JumpResolution | undefined {
-    return this.resolve((f) => label === undefined || f.label === label);
+    return this.resolve((f) =>
+      label === undefined
+        ? f.kind !== 'block' // an unlabeled break never targets a labeled block
+        : f.labels.includes(label),
+    );
   }
 
   /** Resolve a `continue`: like {@link resolveBreak} but only loop frames match. */
   resolveContinue(label?: string): JumpResolution | undefined {
     return this.resolve(
-      (f) => f.kind === 'loop' && (label === undefined || f.label === label),
+      (f) => f.kind === 'loop' && (label === undefined || f.labels.includes(label)),
       (f) => (f as LoopFrame).continueTo,
     );
   }
@@ -128,8 +152,8 @@ export class ControlFlowContext {
   }
 
   private resolve(
-    matches: (f: LoopFrame | SwitchFrame) => boolean,
-    targetOf: (f: LoopFrame | SwitchFrame) => number = (f) => f.breakTo,
+    matches: (f: TargetFrame) => boolean,
+    targetOf: (f: TargetFrame) => number = (f) => f.breakTo,
   ): JumpResolution | undefined {
     const crossed: FinalizerFrame[] = [];
     for (let i = this.stack.length - 1; i >= 0; i--) {

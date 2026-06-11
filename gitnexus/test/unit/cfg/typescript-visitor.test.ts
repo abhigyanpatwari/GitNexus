@@ -645,3 +645,66 @@ describe('TS/JS CfgVisitor — early exits through finally (#2082 M2 U2)', () =>
     }
   });
 });
+
+describe('TS/JS CfgVisitor — labeled statements modeled generically (#2160 review)', () => {
+  it('break to a labeled non-loop block targets the synthesized join, not EXIT', () => {
+    const cfg = cfgOf(`function f(c) {
+      let x = 1;
+      blk: { if (c) { break blk; } x = 2; }
+      sink(x);
+    }`);
+    const brk = block(cfg, 'break blk');
+    const sink = block(cfg, 'sink(x)');
+    const brkEdges = cfg.edges.filter((e) => e.from === brk && e.kind === 'break');
+    expect(brkEdges).toHaveLength(1);
+    expect(brkEdges[0].to).not.toBe(cfg.exitIndex);
+    // the break's target flows into the post-construct continuation
+    expect(reaches(cfg, brkEdges[0].to, sink)).toBe(true);
+  });
+
+  it('doubly-labeled loop: break to the OUTER label resolves to the loop exit', () => {
+    const cfg = cfgOf(`function f(c) {
+      outer: inner: do { if (c) { break outer; } work(); } while (g());
+      done();
+    }`);
+    const brk = block(cfg, 'break outer');
+    const done = block(cfg, 'done()');
+    const brkEdges = cfg.edges.filter((e) => e.from === brk && e.kind === 'break');
+    expect(brkEdges).toHaveLength(1);
+    expect(brkEdges[0].to).not.toBe(cfg.exitIndex);
+    expect(reaches(cfg, brkEdges[0].to, done)).toBe(true);
+  });
+
+  it('labeled break crossing a finally still threads it (labels + finalizers compose)', () => {
+    const cfg = cfgOf(`function f(c) {
+      blk: {
+        try { if (c) { break blk; } } finally { f1(); }
+        rest();
+      }
+      after();
+    }`);
+    const brk = block(cfg, 'break blk');
+    const fin = block(cfg, 'f1()');
+    expect(cfg.edges).toContainEqual({ from: brk, to: fin, kind: 'break' });
+    const completions = cfg.edges.filter((e) => e.from === fin && e.kind === 'finally-break');
+    expect(completions).toHaveLength(1);
+    // the completion resumes at the block's join → after() reachable, rest() skipped on that path
+    expect(reaches(cfg, completions[0].to, block(cfg, 'after()'))).toBe(true);
+    expect(completions[0].to).not.toBe(block(cfg, 'rest()'));
+  });
+
+  it('an unlabeled break inside a labeled block still targets the enclosing loop', () => {
+    const cfg = cfgOf(`function f(xs) {
+      for (const x of xs) {
+        blk: { if (x) { break; } }
+        body();
+      }
+      done();
+    }`);
+    const brk = block(cfg, 'break');
+    const brkEdges = cfg.edges.filter((e) => e.from === brk && e.kind === 'break');
+    expect(brkEdges).toHaveLength(1);
+    // targets the LOOP exit (reaches done() without re-entering body())
+    expect(reaches(cfg, brkEdges[0].to, block(cfg, 'done()'))).toBe(true);
+  });
+});
