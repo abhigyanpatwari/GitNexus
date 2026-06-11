@@ -58,6 +58,29 @@ describe('direct CLI tool commands', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('fails closed for backend error payloads in JSON mode', async () => {
+    callToolMock.mockResolvedValue({ error: 'Import graph exceeds the safety limit.' });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true, json: true });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('Import graph exceeds the safety limit.'),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails closed when the backend throws', async () => {
+    callToolMock.mockRejectedValue(new Error('unknown branch'));
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('unknown branch'));
+    expect(process.exitCode).toBe(1);
+  });
+
   it('dispatches detect_changes with CLI-shaped arguments', async () => {
     callToolMock.mockResolvedValue({
       summary: {

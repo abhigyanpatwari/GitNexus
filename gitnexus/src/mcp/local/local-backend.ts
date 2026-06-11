@@ -1273,26 +1273,31 @@ export class LocalBackend {
 
   // ─── Tool Implementations ────────────────────────────────────────
 
-  /**
-   * Query tool — process-grouped search.
-   *
-   * 1. Hybrid search (BM25 + semantic) to find matching symbols
-   * 2. Trace each match to its process(es) via STEP_IN_PROCESS
-   * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
-   * 4. Return: { processes, process_symbols, definitions }
-   */
-  private async check(repo: RepoHandle, params: { cycles?: boolean }): Promise<any> {
-    if (params.cycles === false) {
+  /** Check repository graph invariants that are suitable for CI gating. */
+  private async check(repo: RepoHandle, params?: { cycles?: boolean }): Promise<any> {
+    if (params?.cycles === false) {
       return { error: 'No checks selected. Set "cycles" to true.' };
     }
     await this.ensureInitialized(repo);
+    const rowLimit = 100_001;
     const rows = await executeParameterized(
       repo.lbugPath,
       `MATCH (source:File)-[r:CodeRelation]->(target:File)
        WHERE r.type = 'IMPORTS'
-       RETURN source.filePath AS source, target.filePath AS target`,
+         AND (r.reason IS NULL OR (
+           r.reason <> 'swift-scope: implicit module visibility'
+           AND r.reason <> 'markdown-link'
+         ))
+       RETURN source.filePath AS source, target.filePath AS target
+       LIMIT ${rowLimit}`,
       {},
     );
+    if (rows.length === rowLimit) {
+      return {
+        error: `Import graph exceeds the ${rowLimit - 1} edge safety limit.`,
+        truncated: true,
+      };
+    }
     const cycles = findImportCycles(
       rows.map((row: any) => ({
         source: String(row.source ?? row[0] ?? ''),
@@ -1306,6 +1311,14 @@ export class LocalBackend {
     };
   }
 
+  /**
+   * Query tool — process-grouped search.
+   *
+   * 1. Hybrid search (BM25 + semantic) to find matching symbols
+   * 2. Trace each match to its process(es) via STEP_IN_PROCESS
+   * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
+   * 4. Return: { processes, process_symbols, definitions }
+   */
   private async query(
     repo: RepoHandle,
     params: {

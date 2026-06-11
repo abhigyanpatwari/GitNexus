@@ -1,4 +1,4 @@
-export interface ImportEdge {
+interface ImportEdge {
   source: string;
   target: string;
 }
@@ -6,29 +6,30 @@ export interface ImportEdge {
 function findCyclePath(component: string[], adjacency: Map<string, string[]>): string[] {
   const allowed = new Set(component);
   const start = component[0];
-  const path = [start];
-  const seen = new Set([start]);
-  const stack = [{ node: start, nextIndex: 0 }];
+  const parents = new Map<string, string | null>([[start, null]]);
+  const queue = [start];
 
-  while (stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    const neighbors = adjacency.get(frame.node) ?? [];
-    if (frame.nextIndex >= neighbors.length) {
-      stack.pop();
-      path.pop();
-      continue;
+  for (let index = 0; index < queue.length; index += 1) {
+    const node = queue[index];
+    for (const next of adjacency.get(node) ?? []) {
+      if (!allowed.has(next)) continue;
+      if (next === start) {
+        const path: string[] = [];
+        let cursor: string | null = node;
+        while (cursor !== null) {
+          path.push(cursor);
+          cursor = parents.get(cursor) ?? null;
+        }
+        path.reverse();
+        return [...path, start];
+      }
+      if (parents.has(next)) continue;
+      parents.set(next, node);
+      queue.push(next);
     }
-
-    const next = neighbors[frame.nextIndex++];
-    if (!allowed.has(next)) continue;
-    if (next === start) return [...path, start];
-    if (seen.has(next)) continue;
-    seen.add(next);
-    path.push(next);
-    stack.push({ node: next, nextIndex: 0 });
   }
 
-  return [...component, start];
+  throw new Error('Invariant violation: no cycle found through SCC root.');
 }
 
 /**
@@ -104,6 +105,6 @@ export function findImportCycles(edges: ImportEdge[]): string[][] {
       (component) =>
         component.length > 1 || (sortedAdjacency.get(component[0]) ?? []).includes(component[0]),
     )
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map((component) => findCyclePath(component, sortedAdjacency));
 }

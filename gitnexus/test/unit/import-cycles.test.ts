@@ -34,6 +34,29 @@ describe('findImportCycles', () => {
     ).toEqual([['src/a.ts', 'src/a.ts']]);
   });
 
+  it('returns the shortest deterministic path through the component root', () => {
+    expect(
+      findImportCycles([
+        { source: 'src/a.ts', target: 'src/b.ts' },
+        { source: 'src/b.ts', target: 'src/c.ts' },
+        { source: 'src/c.ts', target: 'src/d.ts' },
+        { source: 'src/d.ts', target: 'src/a.ts' },
+        { source: 'src/a.ts', target: 'src/z.ts' },
+        { source: 'src/z.ts', target: 'src/a.ts' },
+      ]),
+    ).toEqual([['src/a.ts', 'src/z.ts', 'src/a.ts']]);
+  });
+
+  it('finds an edge-connected path when component sort order is not a path', () => {
+    expect(
+      findImportCycles([
+        { source: 'src/a.ts', target: 'src/c.ts' },
+        { source: 'src/c.ts', target: 'src/b.ts' },
+        { source: 'src/b.ts', target: 'src/a.ts' },
+      ]),
+    ).toEqual([['src/a.ts', 'src/c.ts', 'src/b.ts', 'src/a.ts']]);
+  });
+
   it('handles deep import graphs without recursive traversal', () => {
     const size = 20_000;
     const edges = Array.from({ length: size - 1 }, (_, index) => ({
