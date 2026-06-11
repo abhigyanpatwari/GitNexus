@@ -53,6 +53,7 @@ import {
   cBindingScopeFor,
   cImportOwningScope,
   cReceiverBinding,
+  collectCStaticLinkageSideChannel,
 } from './c/index.js';
 import {
   emitCppScopeCaptures,
@@ -62,8 +63,13 @@ import {
   cppBindingScopeFor,
   cppImportOwningScope,
   cppReceiverBinding,
+  collectCppCaptureSideChannel,
 } from './cpp/index.js';
-import { extractCppTemplateConstraints } from './cpp/constraint-extractor.js';
+import {
+  extractCppTemplateConstraints,
+  type CppConstraintPayload,
+} from './cpp/constraint-extractor.js';
+import { assertCloneable } from '../workers/clone-safety.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -395,6 +401,19 @@ export const cProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   emitScopeCaptures: emitCScopeCaptures,
+  // Worker-side: snapshot the module-level `static`-linkage marks
+  // `emitCScopeCaptures` just populated for this file (`markStaticName` →
+  // `staticNames`) into plain data on `ParsedFile.captureSideChannel`, so the
+  // main thread can restore them via `applyCaptureSideChannel` WITHOUT a
+  // re-parse (#1983 — the worker is the sole parse path). Without this, C
+  // `static` functions look non-file-local on the main thread and leak into
+  // cross-file global free-call resolution / wildcard imports. See
+  // `c/capture-side-channel.ts`.
+  // `assertCloneable` is a runtime identity; it makes a future non-serializable
+  // value in the side-channel payload a compile error here, at the source, rather
+  // than a DataCloneError at the worker boundary (#2143).
+  collectCaptureSideChannel: (filePath) =>
+    assertCloneable(collectCStaticLinkageSideChannel(filePath)),
   interpretImport: interpretCImport,
   interpretTypeBinding: interpretCTypeBinding,
   bindingScopeFor: cBindingScopeFor,
@@ -465,6 +484,11 @@ export const cppProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   emitScopeCaptures: emitCppScopeCaptures,
+  // Worker-side: snapshot the module-level capture marks `emitCppScopeCaptures`
+  // just populated for this file into plain data on `ParsedFile.captureSideChannel`,
+  // so the main thread can restore them via `applyCaptureSideChannel` WITHOUT a
+  // re-parse (#1983). See `cpp/capture-side-channel.ts`.
+  collectCaptureSideChannel: (filePath) => assertCloneable(collectCppCaptureSideChannel(filePath)),
   interpretImport: interpretCppImport,
   interpretTypeBinding: interpretCppTypeBinding,
   bindingScopeFor: cppBindingScopeFor,
@@ -485,7 +509,9 @@ export const cppProvider = defineLanguage({
  * functions whose constraints the extractor can't model — both cases
  * result in no constraint suffix on the node ID.
  */
-function extractCppTemplateConstraintsForProvider(definitionNode: SyntaxNode): unknown {
+function extractCppTemplateConstraintsForProvider(
+  definitionNode: SyntaxNode,
+): CppConstraintPayload | undefined {
   // Walk up to the enclosing template_declaration. Bound the walk so we
   // can't accidentally land on a far-ancestor template_declaration that
   // wraps an unrelated function.
@@ -514,5 +540,8 @@ function extractCppTemplateConstraintsForProvider(definitionNode: SyntaxNode): u
     }
     break;
   }
-  return extractCppTemplateConstraints(templateDecl, declarator);
+  // Guard the boundary at the source: a future non-cloneable member of the
+  // constraint payload becomes a compile error here, not a runtime
+  // DataCloneError at the worker post (#2143).
+  return assertCloneable(extractCppTemplateConstraints(templateDecl, declarator));
 }

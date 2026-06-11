@@ -912,6 +912,18 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     expect(content).toContain('base_ref: "main"');
   });
 
+  it('references MCP tools by their registered (unprefixed) names (#2059)', () => {
+    const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
+    // The server registers tools without a `gitnexus_` prefix (see mcp/tools.ts);
+    // generated instructions must use the exact callable names or agents call a
+    // tool that does not exist.
+    expect(content).not.toMatch(/gitnexus_(impact|query|context|detect_changes|rename|cypher)/);
+    expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
+    expect(content).toContain('detect_changes()');
+    expect(content).toContain('query({query: "concept"})');
+    expect(content).toContain('context({name: "symbolName"})');
+  });
+
   it('JSON-escapes a markdown/quote-bearing branch so it cannot break the code span (#243)', () => {
     // A branch name with a double-quote must be JSON-escaped, not concatenated
     // raw, so it stays inside the inline code span.
@@ -959,7 +971,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-- run \`gitnexus_detect_changes({scope: "compare", base_ref: "main"})\`.
+- run \`detect_changes({scope: "compare", base_ref: "main"})\`.
 
 | Task | Read this skill file |
 |------|---------------------|

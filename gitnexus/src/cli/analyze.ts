@@ -9,6 +9,7 @@
  */
 
 import path from 'path';
+import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
@@ -36,7 +37,7 @@ import {
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
-import { warnMissingOptionalGrammars } from './optional-grammars.js';
+import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
@@ -59,6 +60,22 @@ const writeFatalToStderr = (label: string, err: unknown): void => {
   const message = isErr ? err.message : String(err);
   realStderrWrite(`\n  ${label}: ${message}\n`);
   if (isErr && err.stack) realStderrWrite(`${err.stack}\n`);
+  // Walk and print the `cause` chain. The phase runner wraps the underlying
+  // failure as `new Error("Phase 'X' failed: …", { cause })`, so the original
+  // error (e.g. a WorkerPoolDispatchError carrying the worker-side stack from
+  // #2068) is only reachable via `.cause`. Without this the user sees the
+  // wrapper's main-thread stack and never the real frame. `cause.stack` already
+  // begins with the cause's message, so we print the stack alone (not message +
+  // stack) to avoid repeating it. Depth-bounded so a cyclic `cause` can't loop
+  // (the phase runner wraps one level; the bound leaves headroom for future
+  // nesting); uses realStderrWrite so the redirected console.error's ANSI
+  // clear-line wrapping can't erase it (#1169).
+  const MAX_CAUSE_DEPTH = 5;
+  let cause: unknown = isErr ? (err as { cause?: unknown }).cause : undefined;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && cause instanceof Error; depth++) {
+    realStderrWrite(`\n  Caused by: ${cause.stack ?? cause.message}\n`);
+    cause = (cause as { cause?: unknown }).cause;
+  }
 };
 
 let fatalHandlersInstalled = false;
@@ -84,13 +101,45 @@ const installFatalHandlers = (): void => {
   });
 };
 
-const HEAP_MB = 16384;
+/** Historical floor for the re-exec heap cap — the auto-sizer never goes below
+ *  this, so small boxes / CI never regress. */
+const DEFAULT_HEAP_MB = 16384;
+
+/**
+ * RAM-aware re-exec heap cap (MB): `0.75 × effective RAM`, clamped to
+ * `>= DEFAULT_HEAP_MB`. Kept BELOW physical RAM on purpose — a cap `>=` RAM makes
+ * V8 collect lazily and inflate the heap into swap-thrash (observed analyzing the
+ * Linux kernel at a 30GB cap on a 31GB box). `constrainedBytes` is the cgroup
+ * limit or `null`; it is honored only as a real, smaller-than-physical cap, because
+ * `process.constrainedMemory()` returns a huge sentinel when UNCONSTRAINED.
+ */
+export function computeHeapCapMb(totalBytes: number, constrainedBytes: number | null): number {
+  const effectiveBytes =
+    constrainedBytes !== null && constrainedBytes > 0 && constrainedBytes < totalBytes
+      ? constrainedBytes
+      : totalBytes;
+  const effectiveMb = Math.floor(effectiveBytes / (1024 * 1024));
+  return Math.max(DEFAULT_HEAP_MB, Math.floor(0.75 * effectiveMb));
+}
+
+function readConstrainedBytes(): number | null {
+  if (typeof process.constrainedMemory !== 'function') return null;
+  const c = process.constrainedMemory();
+  return typeof c === 'number' && c > 0 ? c : null;
+}
+
+const HEAP_MB = computeHeapCapMb(os.totalmem(), readConstrainedBytes());
 const TEST_RESPAWN_HEAP_MB = Number(process.env.GITNEXUS_TEST_RESPAWN_HEAP_MB);
 const RESPAWN_HEAP_MB =
   Number.isFinite(TEST_RESPAWN_HEAP_MB) && TEST_RESPAWN_HEAP_MB > 0
     ? Math.floor(TEST_RESPAWN_HEAP_MB)
     : HEAP_MB;
 const HEAP_FLAG = `--max-old-space-size=${RESPAWN_HEAP_MB}`;
+/** Larger semi-space (young-gen) cuts minor-GC frequency + promotion churn during
+ *  the multi-million-node graph build/emit. Allowed in NODE_OPTIONS (unlike
+ *  --stack-size), so it propagates to the re-exec env cleanly. */
+const SEMI_SPACE_MB = 128;
+const SEMI_FLAG = `--max-semi-space-size=${SEMI_SPACE_MB}`;
 /** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
 const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
@@ -440,7 +489,8 @@ const forceHeapOOMForTestIfEnabled = (): void => {
 // `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
 const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 
-/** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
+/** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
+ *  if we're currently below that. A user-supplied NODE_OPTIONS heap wins (no re-exec). */
 async function ensureHeap(): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
@@ -448,25 +498,26 @@ async function ensureHeap(): Promise<boolean> {
   const v8Heap = v8.getHeapStatistics().heap_size_limit;
   if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
 
-  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+,
-  // so pass it only as a direct CLI argument, not via the environment.
-  const cliFlags = [HEAP_FLAG];
+  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
+  // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
+  const cliFlags = [HEAP_FLAG, SEMI_FLAG];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   const childArgs = [...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
-    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim(),
+    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
       cliError(
-        `  Analysis likely ran out of memory.\n` +
-          `  Retry with a larger heap if your machine allows it:\n` +
-          `    NODE_OPTIONS="--max-old-space-size=24576" gitnexus analyze [your-args]\n` +
-          `    (Windows: set NODE_OPTIONS=--max-old-space-size=24576 && gitnexus analyze [your-args])\n` +
+        `  Analysis likely ran out of memory (heap cap auto-sized to ${RESPAWN_HEAP_MB}MB ≈ 0.75x RAM).\n` +
+          `  This repository's working set exceeds available RAM. Use a machine with more RAM,\n` +
+          `  or override the cap (a cap above physical RAM causes swap-thrash — use with care):\n` +
+          `    NODE_OPTIONS="--max-old-space-size=<MB>" gitnexus analyze [your-args]\n` +
+          `    (Windows: set NODE_OPTIONS=--max-old-space-size=<MB> && gitnexus analyze [your-args])\n` +
           `  If this persists, it may be a native crash unrelated to heap size.\n`,
         { recoveryHint: 'heap-oom-respawn' },
       );
@@ -474,8 +525,7 @@ async function ensureHeap(): Promise<boolean> {
       cliError(
         `  Analysis aborted in a native worker or native binding path.\n` +
           `  Try one of these recovery paths:\n` +
-          `    gitnexus analyze --workers 0\n` +
-          `    npm uninstall -g gitnexus && npm install -g gitnexus@latest\n` +
+          `    npm uninstall -g gitnexus && npm install -g gitnexus@latest (rebuilds native bindings)\n` +
           `    Use Node 22 LTS if you are on a newer non-LTS runtime.\n`,
         { recoveryHint: 'native-worker-abort' },
       );
@@ -500,6 +550,7 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_VERBOSE',
   'GITNEXUS_PROFILE_DEFERRED',
   'GITNEXUS_PROFILE_DEFERRED_SLOW_MS',
+  'GITNEXUS_DEBUG_HEAP',
   'GITNEXUS_MAX_FILE_SIZE',
   'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
   'GITNEXUS_WAL_CHECKPOINT_THRESHOLD',
@@ -549,6 +600,12 @@ export interface AnalyzeOptions {
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
   /**
+   * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
+   * default. Threaded to both the worker (CFG build) and scope-resolution
+   * (BasicBlock/CFG emit).
+   */
+  pdg?: boolean;
+  /**
    * Stats inclusion in AGENTS.md and CLAUDE.md.
    *
    * Commander.js represents `--no-stats` as `stats: boolean` (default
@@ -569,6 +626,14 @@ export interface AnalyzeOptions {
    * before being threaded into the generated AGENTS.md / CLAUDE.md content.
    */
   defaultBranch?: string;
+  /**
+   * Index-branch selector (#2106). From `--branch`. Distinct from
+   * `defaultBranch` (cosmetic base_ref): this routes the index to a per-branch
+   * slot. NOT sourced from `.gitnexusrc` — the `.gitnexusrc` `branch` key is an
+   * alias for `defaultBranch` and must not change index placement. Defaults to
+   * the checked-out branch inside `runFullAnalysis` when omitted.
+   */
+  branch?: string;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -598,12 +663,20 @@ export interface AnalyzeOptions {
   workerTimeout?: string;
   /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
   walCheckpointThreshold?: string;
-  /** Parse worker pool size; 0 disables workers (sequential fallback). */
+  /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
   embeddingDevice?: string;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers (#1589/#1852
+   * residual). Supplied via `.gitnexusrc` `fetchWrappers: [...]`. Threaded into
+   * the routes phase, where the cross-file consumer scan unions them with the
+   * auto-detected `fetch()` wrappers so a custom/axios-based wrapper named
+   * outside the built-in convention still produces `route_map` consumers.
+   */
+  fetchWrappers?: string[];
 }
 
 /**
@@ -711,6 +784,21 @@ const analyzeCommandImpl = async (
     }
   }
 
+  // Validate the index-branch selector (#2106) the same way, so a malformed
+  // `--branch` exits before any expensive analysis starts. Capture the TRIMMED
+  // return so a whitespace-padded value (e.g. " feature" from shell completion)
+  // normalizes before the checked-out-branch mismatch guard and slug — otherwise
+  // it would false-reject on-branch or create a ghost index when detached.
+  if (cliOptions?.branch !== undefined) {
+    try {
+      cliOptions.branch = validateBranchName(cliOptions.branch, '--branch');
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   // ── Load .gitnexusrc and merge: CLI flags override config (#243) ───
   // Parse/validate before the progress bar so a malformed config produces an
   // actionable error and exits before any expensive analysis starts.
@@ -793,10 +881,11 @@ const analyzeCommandImpl = async (
   let workerPoolSize: number | undefined;
   if (options.workers !== undefined) {
     const parsedWorkers = Number(options.workers);
-    if (!Number.isInteger(parsedWorkers) || parsedWorkers < 0) {
+    if (!Number.isInteger(parsedWorkers) || parsedWorkers < 1) {
       cliError(
-        '  --workers must be a non-negative integer. ' +
-          'Pass 0 to disable the worker pool (sequential fallback).\n',
+        '  --workers must be a positive integer (>= 1). ' +
+          'GitNexus parses through a worker pool only — there is no sequential ' +
+          'mode, so 0 is not allowed. Omit --workers for an auto-sized pool.\n',
       );
       process.exitCode = 1;
       return;
@@ -891,11 +980,13 @@ const analyzeCommandImpl = async (
   }
 
   // If the target repo contains files an optional grammar would parse but
-  // that grammar's native binding is absent, warn before analysis so users
-  // learn why those files end up unparsed instead of silently getting a
-  // degraded index.
+  // that grammar's native binding is absent (or disabled via
+  // GITNEXUS_SKIP_OPTIONAL_GRAMMARS), warn before analysis so users learn why
+  // those files end up unparsed instead of silently getting a degraded index.
+  // The extension set is derived from OPTIONAL_GRAMMARS so it can't drift.
   try {
-    const matches = await glob(['**/*.dart', '**/*.proto'], {
+    const optionalGlobs = getOptionalGrammarExtensions().map((e) => `**/*${e}`);
+    const matches = await glob(optionalGlobs, {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
       dot: false,
@@ -1037,9 +1128,15 @@ const analyzeCommandImpl = async (
         skipGit: options.skipGit,
         skipAgentsMd,
         skipSkills,
+        // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
+        pdg: options.pdg === true,
         // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
         // threaded into the generated regression-compare example (#243).
         defaultBranch: resolvedDefaultBranch,
+        // Index-branch selector (#2106). Read straight from the CLI flag (not
+        // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
+        // can never change index placement. Undefined → auto-detect in pipeline.
+        branch: cliOptions?.branch,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options.noStats` here returns
@@ -1056,6 +1153,9 @@ const analyzeCommandImpl = async (
         // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
         // env / auto-formula fallback inside the pipeline.
         workerPoolSize,
+        // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
+        // forwarded to the routes phase consumer scan.
+        fetchWrappers: options.fetchWrappers,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -1077,14 +1177,20 @@ const analyzeCommandImpl = async (
       // preserving the rest of the block (incl. --skills community rows). No-op
       // when the value already matches, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the
+      // PRIMARY/flat index (#2106 R2). A non-primary branch's up-to-date
+      // analyze must not churn the committed AGENTS.md — this mirrors the
+      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
-      try {
-        const { refreshBaseRefLine } = await import('./ai-context.js');
-        baseRefRefreshed = (
-          await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
-        ).files;
-      } catch {
-        /* best-effort — never fail the fast path over a context refresh */
+      if (result.isPrimaryBranch !== false) {
+        try {
+          const { refreshBaseRefLine } = await import('./ai-context.js');
+          baseRefRefreshed = (
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+          ).files;
+        } catch {
+          /* best-effort — never fail the fast path over a context refresh */
+        }
       }
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);

@@ -9,6 +9,20 @@ function onceMessage(transport: CompatibleStdioServerTransport): Promise<any> {
   });
 }
 
+function trackClose(transport: CompatibleStdioServerTransport): {
+  onclose: ReturnType<typeof vi.fn>;
+  closed: Promise<void>;
+} {
+  const onclose = vi.fn();
+  const closed = new Promise<void>((resolve) => {
+    transport.onclose = () => {
+      onclose();
+      resolve();
+    };
+  });
+  return { onclose, closed };
+}
+
 describe('CompatibleStdioServerTransport', () => {
   let stdin: PassThrough;
   let stdout: PassThrough;
@@ -257,5 +271,58 @@ describe('CompatibleStdioServerTransport', () => {
     const raw = Buffer.concat(chunks).toString('utf8');
 
     expect(raw).toBe('{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n');
+  });
+
+  // ─── stdin lifecycle behavior ──────────────────────────────
+
+  it('stdin end closes transport and calls onclose exactly once', async () => {
+    const { onclose, closed } = trackClose(transport);
+
+    await transport.start();
+    stdin.push(null);
+
+    await closed;
+    expect(onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it('stdin close closes transport and calls onclose exactly once', async () => {
+    const { onclose, closed } = trackClose(transport);
+
+    await transport.start();
+    stdin.destroy();
+
+    await closed;
+    expect(onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it('close() is idempotent: calling close twice calls onclose once', async () => {
+    const onclose = vi.fn();
+    transport.onclose = onclose;
+
+    await transport.start();
+    await transport.close();
+    await transport.close();
+
+    expect(onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it('start() immediately closes if stdin is already ended/destroyed before listeners register', async () => {
+    const endedStdin = new PassThrough();
+    endedStdin.push(null);
+
+    const t = new CompatibleStdioServerTransport(endedStdin, new PassThrough());
+    const { onclose, closed } = trackClose(t);
+
+    await t.start();
+
+    await closed;
+    expect(onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it('start() after close throws', async () => {
+    await transport.start();
+    await transport.close();
+
+    await expect(transport.start()).rejects.toThrow(/close/i);
   });
 });

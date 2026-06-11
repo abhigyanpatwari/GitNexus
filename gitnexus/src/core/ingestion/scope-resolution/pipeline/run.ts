@@ -34,6 +34,8 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { emitFileCfgs, isEmitSafeCfg, DEFAULT_MAX_CFG_EDGES_PER_FUNCTION } from '../../cfg/emit.js';
+import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
@@ -45,6 +47,10 @@ import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
+import { logHeapProbe } from '../../utils/heap-probe.js';
+import { parseTruthyEnv } from '../../utils/env.js';
+import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
+import { forceGc } from '../../../../storage/parsedfile-store.js';
 
 import { logger } from '../../../logger.js';
 
@@ -240,13 +246,36 @@ interface RunScopeResolutionInput {
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly onWarn?: (message: string) => void;
   /**
-   * Optional pre-parsed-Tree lookup keyed by file path. When the
-   * pipeline's parse phase ran sequentially, it populated an
-   * `ASTCache`; passing that here lets the per-file extract step
-   * skip a second `tree-sitter parser.parse(...)` call. Cache miss
-   * is safe — falls back to a fresh parse inside the provider.
+   * Optional pre-parsed-Tree lookup keyed by file path: a cache hit lets the
+   * per-file extract step skip a second `tree-sitter parser.parse(...)` call.
+   * Currently always empty — the only producer was the (removed) sequential
+   * parser, and workers can't return native Trees across the MessageChannel,
+   * so the parse phase no longer threads one. Kept as an extension point;
+   * cache miss is safe (the provider re-parses).
    */
   readonly treeCache?: { get(filePath: string): unknown };
+  /**
+   * CFG/PDG opt-in (#2081 M1). When true, emit BasicBlock nodes + CFG edges
+   * from each ParsedFile's worker-built `cfgSideChannel` during Phase-4 graph
+   * emission (while the disk store is still live). Default/false ⇒ no CFG
+   * nodes or edges and a byte-identical graph.
+   */
+  readonly pdg?: boolean;
+  /** Per-function CFG edge cap. `undefined` ⇒ {@link DEFAULT_MAX_CFG_EDGES_PER_FUNCTION};
+   *  `0` ⇒ no cap (unlimited). */
+  readonly pdgMaxEdgesPerFunction?: number;
+  /**
+   * Optional graph-node lookup built ONCE by the caller and shared across
+   * every language pass. `buildGraphNodeLookup` scans the whole graph and is
+   * language-agnostic, so rebuilding it per language wastes both CPU and ~GBs
+   * of heap (on the kernel it is ~2 GB; a 5-file language would otherwise build
+   * its own full copy that then overlaps the next language's). When omitted
+   * (tests / isolated calls) the lookup is built locally as before. Providers
+   * that add graph nodes mid-pass (e.g. Ruby heritage Property nodes) still
+   * rebuild a fresh post-heritage lookup internally, so sharing the pre-loop
+   * base is safe.
+   */
+  readonly prebuiltNodeLookup?: ReturnType<typeof buildGraphNodeLookup>;
   /**
    * Opaque per-language import-resolution config (e.g. tsconfig path
    * aliases for TypeScript). Loaded once by the caller via
@@ -271,6 +300,15 @@ interface RunScopeResolutionInput {
    * Cache miss is safe — falls back to fresh extract.
    */
   readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
+  /**
+   * Out-of-core scope index (disk-backed scope seal). When set AND `GITNEXUS_DISK_SCOPE_INDEX` is
+   * enabled, the per-language `scopeTree` is sealed to a disk-backed store at
+   * this path after resolve (before emit), and the heavy `Scope.bindings`
+   * payload is dropped from heap — lowering the per-language peak (kernel:
+   * ~20→~12 GB) so the analysis fits on smaller-RAM machines. Same storage path
+   * as the ParsedFile store; a sibling `scope-index-store/` dir.
+   */
+  readonly scopeIndexStorePath?: string;
   /**
    * Optional additive diagnostics sink. Resolver passes call this when they
    * intentionally suppress an edge; the graph remains unchanged.
@@ -328,15 +366,20 @@ export function runScopeResolution(
   let preExtractedHits = 0;
   const progressInterval = files.length > 0 ? Math.max(1, Math.floor(files.length / 50)) : 1;
   input.onProgress?.('extracting', 0, files.length);
+  logHeapProbe('sr-extract-start', `lang=${provider.language} files=${files.length}`);
   for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
     const file = files[fileIdx];
     let parsed: ParsedFile | undefined;
     // Fast path: a worker (during the parse phase) already produced a
     // ParsedFile for this file via `extractParsedFile`. Reuse it
     // directly — skips a tree-sitter re-parse on the main thread.
+    let reusedPreExtracted = false;
     if (preExtracted !== undefined) {
       parsed = preExtracted.get(file.path);
-      if (parsed !== undefined) preExtractedHits++;
+      if (parsed !== undefined) {
+        preExtractedHits++;
+        reusedPreExtracted = true;
+      }
     }
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
@@ -352,18 +395,37 @@ export function runScopeResolution(
         continue;
       }
     }
+    // Worker-boundary restore: a pre-extracted ParsedFile was produced by
+    // `extractParsedFile` running INSIDE a worker, so any capture-time
+    // module-level side-channel state (`emitScopeCaptures` side effects that
+    // are NOT serialized onto the ParsedFile's scopes/defs — C++ ADL/namespace
+    // marks) was populated in the worker process and is missing here. The
+    // worker stashed a plain-data snapshot on `parsed.captureSideChannel` (via
+    // `collectCaptureSideChannel`); write it back into the module maps now,
+    // BEFORE populateOwners consumes the resolved ranges. NO re-parse — that is
+    // the #1983 fix. The fresh-extract leg above already populated those marks
+    // in this process, so it skips the restore. See
+    // `ScopeResolver.applyCaptureSideChannel`.
+    if (reusedPreExtracted && provider.applyCaptureSideChannel !== undefined) {
+      provider.applyCaptureSideChannel(parsed);
+    }
     provider.populateOwners(parsed);
     parsedFiles.push(parsed);
-    if (
-      input.onProgress &&
-      ((fileIdx + 1) % progressInterval === 0 || fileIdx === files.length - 1)
-    ) {
-      input.onProgress('extracting', fileIdx + 1, files.length);
+    if ((fileIdx + 1) % progressInterval === 0 || fileIdx === files.length - 1) {
+      input.onProgress?.('extracting', fileIdx + 1, files.length);
+      logHeapProbe(
+        'sr-extract-progress',
+        `lang=${provider.language} idx=${fileIdx + 1}/${files.length} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits}`,
+      );
     }
   }
   if (PROF && preExtracted !== undefined) {
     logger.warn(`[scope-resolution prof] pre-extracted hits: ${preExtractedHits}/${files.length}`);
   }
+  logHeapProbe(
+    'sr-extract-end',
+    `lang=${provider.language} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits} skipped=${filesSkipped}`,
+  );
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
 
   // Reconcile scope-resolution's ownership view into the SemanticModel.
@@ -397,7 +459,9 @@ export function runScopeResolution(
   // ── Phase 2: finalize → ScopeResolutionIndexes ─────────────────────────
   input.onProgress?.('analyzing types', files.length, files.length);
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const nodeLookup = buildGraphNodeLookup(graph);
+  logHeapProbe('sr-pre-nodeLookup', `lang=${provider.language}`);
+  const nodeLookup = input.prebuiltNodeLookup ?? buildGraphNodeLookup(graph);
+  logHeapProbe('sr-post-nodeLookup', `lang=${provider.language}`);
 
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
@@ -410,6 +474,7 @@ export function runScopeResolution(
         provider.mergeBindings(existing, incoming, scopeId),
     },
   });
+  logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
   const preEmittedInheritanceSites = preEmitInheritanceEdges(graph, finalized, nodeLookup);
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
@@ -461,7 +526,12 @@ export function runScopeResolution(
   // cannot carry. Must run AFTER `populateOwners` (so owned defs are
   // attributed correctly) and AFTER finalize (so module-scope
   // bindings are available).
-  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles);
+  // Pass the scopeTree so the index's class/module Scope lookups are id-backed
+  // views that delegate to it (out-of-core scope index) — the index pins no Scope objects, so the
+  // disk seal can reclaim them. Byte-identical: the view returns the same Scope
+  // the resident tree holds (or a value-identical revived one in disk mode).
+  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree);
+  logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
   // Cross-file implicit-namespace visibility (C#). Must run before
   // propagateImportedReturnTypes so the latter pass sees siblings'
@@ -522,6 +592,33 @@ export function runScopeResolution(
       lookupOwnedMembersByOwner(readonlyModel, ownerDefId, memberName),
   });
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
+  logHeapProbe('sr-post-resolve', `lang=${provider.language}`);
+
+  // ── Out-of-core scope seal boundary ─────────────────────────────────────
+  // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
+  // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
+  // `scopeTree.getScope` (a point lookup), so seal the TransitionalScopeTree to
+  // disk now and drop the resident scopes. The scopes are pinned from THREE
+  // sides: (1) the model's frozen `scopeTree` — released by `seal()` nulling its
+  // resident backing from the inside; (2) `input.preExtractedParsedFiles` (held
+  // by the caller for its own post-run release) — released here since run.ts is
+  // its last reader after extract; (3) this function's `parsedFiles` — replaced
+  // by a scope-stripped copy that keeps only what emit reads (referenceSites /
+  // filePath / localDefs). All three released → the heavy payload is collectible.
+  let emitParsedFiles: readonly ParsedFile[] = parsedFiles;
+  if (
+    input.scopeIndexStorePath !== undefined &&
+    parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX) &&
+    indexes.scopeTree instanceof TransitionalScopeTree
+  ) {
+    logHeapProbe('sr-seal-pre', `lang=${provider.language}`);
+    indexes.scopeTree.seal(input.scopeIndexStorePath);
+    emitParsedFiles = parsedFiles.map((p) => ({ ...p, scopes: [] }));
+    parsedFiles.length = 0;
+    if (preExtracted !== undefined) (preExtracted as Map<string, ParsedFile>).clear();
+    forceGc();
+    logHeapProbe('sr-seal-post', `lang=${provider.language}`);
+  }
 
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
@@ -529,7 +626,7 @@ export function runScopeResolution(
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
-    parsedFiles,
+    emitParsedFiles,
     postHeritageNodeLookup,
     handledSites,
     provider,
@@ -544,7 +641,7 @@ export function runScopeResolution(
       ? provider.emitUnresolvedReceiverEdges(
           graph,
           indexes,
-          parsedFiles,
+          emitParsedFiles,
           postHeritageNodeLookup,
           handledSites,
           readonlyModel,
@@ -553,7 +650,7 @@ export function runScopeResolution(
   const freeCallExtras = emitFreeCallFallback(
     graph,
     indexes,
-    parsedFiles,
+    emitParsedFiles,
     postHeritageNodeLookup,
     referenceIndex,
     handledSites,
@@ -588,10 +685,81 @@ export function runScopeResolution(
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
   // Runs last so the full graph — including import edges — is visible.
   if (provider.emitPostResolutionEdges !== undefined) {
-    provider.emitPostResolutionEdges(graph, parsedFiles, postHeritageNodeLookup, indexes, {
+    provider.emitPostResolutionEdges(graph, emitParsedFiles, postHeritageNodeLookup, indexes, {
       fileContents: getFileContents(),
       resolutionConfig,
     });
+  }
+
+  // ── CFG/PDG emission (#2081 M1, opt-in via `--pdg`) ──────────────────────
+  // Emit BasicBlock nodes + CFG edges from each ParsedFile's worker-built
+  // `cfgSideChannel`, HERE — the last point inside scope-resolution where the
+  // ParsedFiles are still loaded (`emitParsedFiles` carries the channel; the
+  // disk store is cleared right after this orchestrator returns, see phase.ts).
+  // A post-`mro` phase would read empty data (KTD1). Off by default ⇒ zero
+  // BasicBlock/CFG nodes/edges and a byte-identical graph.
+  if (input.pdg === true) {
+    let cfgBlocks = 0;
+    let cfgEdges = 0;
+    let cfgDroppedEdges = 0;
+    for (const pf of emitParsedFiles) {
+      const cfgs = pf.cfgSideChannel;
+      // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
+      // durable store. A stale or wrong-shape value (e.g. a pre-SCHEMA_BUMP
+      // shard that slipped the version gate) must skip emission, not throw a
+      // TypeError mid-graph-build and abort scope-resolution for the language.
+      if (!Array.isArray(cfgs) || cfgs.length === 0) continue;
+      try {
+        // Per-element emit-safety filter (mirrors the parsedfile-store
+        // reviver's POLICY: valid elements in a mixed array still emit; junk
+        // is warned and skipped). isEmitSafeCfg lives in cfg/emit.ts next to
+        // the id templating it defends — see its doc for why anchor-field and
+        // endpoint-membership checks are load-bearing. Runs INSIDE the try so
+        // even a predicate-time throw (e.g. a hostile getter) is isolated.
+        const wellFormed = (cfgs as readonly (FunctionCfg | undefined | null)[]).filter(
+          isEmitSafeCfg,
+        );
+        if (wellFormed.length < cfgs.length) {
+          logger.warn(
+            `[cfg] ${pf.filePath}: skipped ${cfgs.length - wellFormed.length} malformed ` +
+              `cfgSideChannel element(s) (bad shape, missing id-anchor fields, or edge ` +
+              `endpoints matching no block) — CFG for those functions omitted`,
+          );
+        }
+        if (wellFormed.length === 0) continue;
+        const emitted = emitFileCfgs(
+          graph,
+          wellFormed,
+          input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+          // Log cap-overflow drops UNCONDITIONALLY (not via input.onWarn, which is
+          // gated behind the semantic-model validator and silent in production) so
+          // the per-function edge cap never truncates the CFG silently (R6/KTD6).
+          (message) => logger.warn(message),
+        );
+        cfgBlocks += emitted.blocks;
+        cfgEdges += emitted.edges;
+        cfgDroppedEdges += emitted.droppedEdges;
+      } catch (err) {
+        // Last-resort isolation, mirroring the worker-side per-file try/catch:
+        // a shape the predicate misses must cost this one file's CFG, not
+        // abort the language's whole scope-resolution pass mid-graph-build.
+        // NOTE a mid-emit throw can leave this file's already-inserted
+        // BasicBlock nodes in the graph (addNode is not transactional) —
+        // orphaned but inert; the predicate keeps every JSON-representable
+        // bad shape from reaching this path at all.
+        logger.warn(
+          `[cfg] ${pf.filePath}: CFG emission failed (${err instanceof Error ? err.message : String(err)}) — ` +
+            `this file's CFG is partial or absent`,
+        );
+      }
+    }
+    if (cfgBlocks > 0) {
+      logger.debug(
+        `[scope-resolution] CFG emit (lang=${provider.language}): ` +
+          `${cfgBlocks} BasicBlock nodes, ${cfgEdges} CFG edges` +
+          (cfgDroppedEdges > 0 ? `, ${cfgDroppedEdges} edges dropped (per-function cap)` : ''),
+      );
+    }
   }
 
   if (PROF) {
@@ -607,6 +775,8 @@ export function runScopeResolution(
         ` (${parsedFiles.length} files)`,
     );
   }
+
+  logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
 
   return {
     filesProcessed: parsedFiles.length,

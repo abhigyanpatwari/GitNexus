@@ -24,7 +24,11 @@ import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { normalizeQualifiedName } from '../../utils/qualified-name.js';
+import {
+  normalizeQualifiedName,
+  splitQualifiedName,
+  stripTrailingTypeArguments,
+} from '../../utils/qualified-name.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -353,7 +357,7 @@ function resolveQualifiedInheritanceBase(
   scopes: ScopeResolutionIndexes,
   enclosingClassDef?: SymbolDefinition,
 ): SymbolDefinition | undefined {
-  const normalized = normalizeQualifiedName(rawQualifiedName);
+  const normalized = stripTrailingTypeArguments(normalizeQualifiedName(rawQualifiedName));
   // No qualifier after normalization → nothing the simple-tail walk doesn't do.
   if (normalized.length === 0 || !normalized.includes('.')) return undefined;
 
@@ -365,12 +369,26 @@ function resolveQualifiedInheritanceBase(
   const enclosing = isRootAnchored
     ? []
     : enclosingScopeSegments(startScope, scopes, enclosingClassDef);
-  // Candidate keys: longest enclosing prefix first, then the root-anchored form.
+  // Candidate keys: longest enclosing prefix first for *relative* qualified
+  // bases (`Outer.Inner` inside `NS.Outer.Derived` → `NS.Outer.Inner`). When the
+  // qualifier names a *different* namespace than the enclosing scope (`new B.Foo()`
+  // inside `namespace A` → `B.Foo`, not `A.Foo`), try the raw normalized key
+  // FIRST so same-tail local bindings don't win (#2046 / #1991).
+  const normParts = splitQualifiedName(normalized);
+  const isRelativeToEnclosing =
+    enclosing.length > 0 &&
+    normParts.length > 0 &&
+    normParts[0] === enclosing[enclosing.length - 1];
   const keys: string[] = [];
+  if (!isRelativeToEnclosing) {
+    keys.push(normalized);
+  }
   for (let i = enclosing.length; i >= 1; i--) {
     keys.push([...enclosing.slice(0, i), normalized].join('.'));
   }
-  keys.push(normalized);
+  if (!keys.includes(normalized)) {
+    keys.push(normalized);
+  }
 
   for (const key of keys) {
     const ids = scopes.qualifiedNames.get(key);
@@ -406,6 +424,31 @@ function resolveQualifiedInheritanceBase(
       }
       return undefined; // genuine tie → refuse, don't guess
     }
+  }
+
+  // Qualifier-vs-sidecar fallback (#2046). Languages whose class `qualifiedName`
+  // is the SIMPLE name (C#) never populate a qualified key in the index, so the
+  // keyed loop above can't see `B.Foo`. Resolve the simple TAIL and break the
+  // same-tail collision by matching the explicit qualifier (`B`) against each
+  // candidate's `namespacePrefix` sidecar. Commit only on a unique match — a
+  // still-ambiguous qualifier refuses (never guesses a wrong EXTENDS/CALLS edge).
+  const tail = normParts[normParts.length - 1];
+  const qualifier = normParts.slice(0, -1).join('.');
+  if (tail !== undefined && qualifier.length > 0) {
+    const tailIds = scopes.qualifiedNames.get(tail);
+    let qUnique: SymbolDefinition | undefined;
+    let qCount = 0;
+    for (const id of tailIds) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      const np = def.namespacePrefix;
+      if (np === undefined || np.length === 0) continue;
+      if (np === qualifier || np.endsWith(`.${qualifier}`)) {
+        qUnique = def;
+        qCount++;
+      }
+    }
+    if (qCount === 1) return qUnique;
   }
   return undefined;
 }
@@ -965,24 +1008,16 @@ export function findExportedDefByName(
     }
     currentId = scope.parent;
   }
-  // Workspace-wide fallback: iterate every file's Module scope (via
-  // the scope-tied `moduleScopeByFile` lookup) and return the first
-  // locally-declared callable binding matching `name`. First-seen-
-  // by-file wins; bindings filtered to `origin === 'local'` and the
-  // callable types Function/Method/Constructor. We walk scopes here
-  // rather than consult `SemanticModel.symbols.lookupCallableByName`
-  // because the `origin === 'local'` module-export-visibility filter
-  // is a scope concept the raw symbol index doesn't express.
-  for (const [, moduleScope] of index.moduleScopeByFile) {
-    const refs = moduleScope.bindings.get(name);
-    if (refs === undefined) continue;
-    for (const ref of refs) {
-      if (ref.origin !== 'local') continue;
-      const t = ref.def.type;
-      if (t === 'Function' || t === 'Method' || t === 'Constructor') return ref.def;
-    }
-  }
-  return undefined;
+  // Workspace-wide fallback: the first locally-declared callable binding
+  // matching `name` across every file's Module scope (first-seen-by-file wins;
+  // `origin === 'local'`, callable types Function/Method/Constructor). This is
+  // precomputed ONCE into `index.exportedCallableByName` — byte-identical to the
+  // old per-call scan over `moduleScopeByFile`, but O(1) and disk-read-free
+  // (the old scan faulted every module scope in from disk under the out-of-core scope index). We use
+  // this scope-derived index rather than `SemanticModel.symbols.lookupCallableByName`
+  // because the `origin === 'local'` module-export-visibility filter is a scope
+  // concept the raw symbol index doesn't express.
+  return index.exportedCallableByName.get(name);
 }
 
 /**

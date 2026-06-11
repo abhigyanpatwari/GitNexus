@@ -180,6 +180,7 @@ export const FUNCTION_NODE_TYPES = new Set([
   'anonymous_function',
   // Kotlin
   'lambda_literal',
+  'secondary_constructor', // F48: methodNodeTypes superset invariant
   // Swift
   'init_declaration',
   'deinit_declaration',
@@ -583,6 +584,19 @@ export const findEnclosingClassInfo = (
         ) {
           label = 'Interface';
         }
+        // class_declaration with a `declaration_kind` field collapses several
+        // type kinds onto one node (tree-sitter-swift: class / struct / enum /
+        // extension / actor). The structure query labels struct → Struct and
+        // enum → Enum; refine the owner label to match so a member edge
+        // (HAS_METHOD / HAS_PROPERTY) anchors on the real Enum/Struct node id
+        // rather than a non-existent `Class:` id (F79). Gated on the field
+        // being present, so it is a no-op for grammars whose class_declaration
+        // has no `declaration_kind` field (e.g. Kotlin).
+        if (current.type === 'class_declaration' && label === 'Class') {
+          const declKind = current.childForFieldName?.('declaration_kind')?.text;
+          if (declKind === 'struct') label = 'Struct';
+          else if (declKind === 'enum') label = 'Enum';
+        }
         const templateArguments = extractTemplateArguments(nameNode.text);
         const classIdName =
           templateArguments !== undefined
@@ -818,6 +832,62 @@ export const inferFunctionLabel = (nodeType: string): NodeLabel =>
 
 /** Argument list node types shared between countCallArguments and call-resolution helpers. */
 export const CALL_ARGUMENT_LIST_TYPES = new Set(['arguments', 'argument_list', 'value_arguments']);
+
+/**
+ * Function/method parameter-list node types across grammars. Used to tell a
+ * PARAMETER-property (a constructor parameter that is also a class field, e.g.
+ * TypeScript `constructor(public name: string)`) apart from a function-BODY
+ * local: a property reached through one of these — rather than through the
+ * function's executable body — is a genuine class member, so the
+ * function-local-property guard must NOT strip its owner edge.
+ */
+export const PARAMETER_LIST_NODE_TYPES = new Set([
+  'formal_parameters', // TypeScript / JavaScript
+  'parameters', // Python / C#
+  'parameter_list', // Java / Go / C / Swift
+  'function_value_parameters', // Kotlin
+  'class_parameters', // Scala-like / future grammars
+]);
+
+/**
+ * Executable local-scope boundaries for the property-ownership guard
+ * (`isFunctionLocalProperty` in parse-worker.ts). A `Property` capture whose
+ * nearest enclosing scope — walking up before any class container — is one of
+ * these executable bodies is a function-local binding, NOT a class member, so it
+ * must not receive a class `HAS_PROPERTY` owner edge.
+ *
+ * Derived from FUNCTION_NODE_TYPES, with two deliberate adjustments found by the
+ * #1919 review of the original guard:
+ *  - EXCLUDES Dart's bare signature wrappers (`function_signature` /
+ *    `method_signature`). A Dart getter/setter NAME lives under `method_signature`,
+ *    yet it is a class-member declaration, not a local inside an executable body;
+ *    treating the signature as a scope boundary OVER-stripped every Dart class
+ *    accessor's owner edge. (Signatures are Dart-only; no language emits a
+ *    legitimately-function-local Property under one.)
+ *  - INCLUDES accessor + initializer bodies (Kotlin `anonymous_initializer` /
+ *    `getter` / `setter`, Swift `computed_property` / `computed_getter` /
+ *    `computed_setter` / `computed_modify`). Destructuring/locals inside these ARE
+ *    function-local, yet they are absent from FUNCTION_NODE_TYPES; omitting them
+ *    UNDER-stripped and emitted spurious class `HAS_PROPERTY` edges for
+ *    `init {}` / accessor-body destructuring bindings.
+ *
+ * Kept separate from FUNCTION_NODE_TYPES because that set has many other consumers
+ * (e.g. enclosing-callable resolution) where signatures must remain function nodes
+ * and accessor bodies must not.
+ */
+export const LOCAL_SCOPE_BODY_NODE_TYPES: ReadonlySet<string> = new Set(
+  [...FUNCTION_NODE_TYPES]
+    .filter((t) => t !== 'function_signature' && t !== 'method_signature')
+    .concat([
+      'anonymous_initializer', // Kotlin: init { }
+      'getter', // Kotlin: val x get() { }
+      'setter', // Kotlin: var x set(v) { }
+      'computed_property', // Swift: var x: T { get set }
+      'computed_getter', // Swift: get { }
+      'computed_setter', // Swift: set { }
+      'computed_modify', // Swift: _modify { }
+    ]),
+);
 
 // ============================================================================
 // Generic AST traversal helpers (shared by parse-worker + php-helpers)

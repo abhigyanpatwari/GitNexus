@@ -10,13 +10,16 @@ import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
 import CSharp from 'tree-sitter-c-sharp';
-import Kotlin from 'tree-sitter-kotlin';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+
+// Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
+const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 
 /**
  * Helper: parse code, run the language query, and return all @call captures

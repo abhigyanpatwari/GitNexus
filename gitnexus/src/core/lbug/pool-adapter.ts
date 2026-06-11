@@ -16,10 +16,9 @@
  */
 
 import fs from 'fs/promises';
-import os from 'os';
-import path from 'path';
 import lbug from '@ladybugdb/core';
 import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
+import { closeQueryResults } from './query-result-utils.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
@@ -36,42 +35,6 @@ import {
   statIfExists,
 } from './sidecar-recovery.js';
 
-/**
- * Probe whether a Windows FTS extension binary is locally installed under
- * ~/.lbdb/extension/<any-version>/win_amd64/fts/. Returns true on the first
- * version dir whose libfts.lbug_extension exists on disk; false if the
- * extension root is missing or contains no FTS binary.
- *
- * Gates the Windows skip-FTS-load guard below so we only skip the load
- * when no extension binary is present. When at least one binary exists,
- * loadFTSExtension is called with policy: 'load-only' — LadybugDB resolves
- * LOAD EXTENSION fts to its version-specific path internally, and the
- * ExtensionManager's tryLoad try/catch handles version-mismatch errors
- * cleanly without ever attempting dlopen of a stale binary. The install
- * path that the #1199/#1217 SIGSEGV documented is never exercised at
- * query time.
- *
- * Exported so unit tests can exercise the probe directly against a
- * temp-dir plus spied `os.homedir()` — see lbug-pool-win-fts-probe.test.ts.
- */
-export async function hasLocalWinFtsExtension(): Promise<boolean> {
-  try {
-    const extRoot = path.join(os.homedir(), '.lbdb', 'extension');
-    const versions = await fs.readdir(extRoot);
-    for (const v of versions) {
-      try {
-        await fs.stat(path.join(extRoot, v, 'win_amd64', 'fts', 'libfts.lbug_extension'));
-        return true;
-      } catch {
-        /* missing for this version, keep looking */
-      }
-    }
-  } catch {
-    /* no .lbdb/extension dir */
-  }
-  return false;
-}
-
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
   db: lbug.Database;
@@ -79,8 +42,14 @@ interface PoolEntry {
   available: lbug.Connection[];
   /** Number of connections currently checked out */
   checkedOut: number;
-  /** Queued waiters for when all connections are busy */
-  waiters: Array<(conn: lbug.Connection) => void>;
+  /** Queued waiters for when all connections are busy. Each carries `resolve`
+   *  (hand off a freed connection) and `reject` (fail fast when the pool is
+   *  closed before a connection frees, instead of hanging until the waiter
+   *  timeout — #2068 follow-up). */
+  waiters: Array<{
+    resolve: (conn: lbug.Connection) => void;
+    reject: (err: Error) => void;
+  }>;
   lastUsed: number;
   dbPath: string;
   /** Set to true when the pool entry is closed — checkin will close orphaned connections */
@@ -133,6 +102,19 @@ const MAX_POOL_SIZE = 5;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = 8;
+
+// Behavior-neutral RSS tracing for the FTS evict→reload memory repro
+// (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
+// in the pool init/close hot path: it writes ONLY to stderr (stdout is the MCP
+// JSON-RPC channel), and the GITNEXUS_POOL_RSS_TRACE gate makes it a no-op — one
+// env-var compare per call, nothing else — unless a harness explicitly enables it.
+function traceRss(event: 'init' | 'close', repoId: string): void {
+  if (process.env.GITNEXUS_POOL_RSS_TRACE !== '1') return;
+  const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+  process.stderr.write(
+    `[pool-rss] ${event} repo=${repoId} pool=${pool.size} dbCache=${dbCache.size} rssMB=${rssMb}\n`,
+  );
+}
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -214,6 +196,20 @@ function closeOne(repoId: string): void {
 
   entry.closed = true;
 
+  // Reject any callers still queued for a connection: the pool is going away
+  // (re-init / teardown / LRU eviction), so they must fail fast with an
+  // actionable error instead of hanging until WAITER_TIMEOUT_MS and then
+  // surfacing a misleading "pool exhausted" (#2068 follow-up). Draining the
+  // queue also guarantees checkin() below finds no waiter expecting a
+  // connection, so a connection returned after close is simply closed.
+  if (entry.waiters.length > 0) {
+    const closedErr = new Error(
+      `LadybugDB connection pool closed for repo "${repoId}" (re-init/teardown); retry the query.`,
+    );
+    for (const waiter of entry.waiters) waiter.reject(closedErr);
+    entry.waiters.length = 0;
+  }
+
   // Close available connections — fire-and-forget with .catch() to prevent
   // unhandled rejections.  Native close() returns Promise<void> but can crash
   // the N-API destructor on macOS/Windows; deferring to process exit lets
@@ -257,6 +253,8 @@ function closeOne(repoId: string): void {
       // Isolate listener failures — teardown must complete.
     }
   }
+
+  traceRss('close', repoId);
 }
 
 /**
@@ -612,27 +610,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // install; analyze owns extension installation. If LOAD fails, search
   // features degrade gracefully and the user-facing query path proceeds.
   if (!shared.ftsLoaded) {
-    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows during
-    // *install* — the @ladybugdb/core out-of-process installer hits an unhandled
-    // error path that signals SIGSEGV instead of throwing (see #1199, #1217).
-    // The previous unconditional skip was over-broad: it also disabled FTS on
-    // hosts where the binary was already on disk and only needed LOAD, leaving
-    // BM25 silently degraded with no error path (see #1690).
-    //
-    // Probe ~/.lbdb/extension/*/win_amd64/fts/ first. If any binary is on disk
-    // we run loadFTSExtension(..., 'load-only'); the install path is never
-    // exercised, and LadybugDB's version-specific resolution + ExtensionManager
-    // try/catch handle stale/zero-byte siblings cleanly (verified empirically
-    // on Win10 + Node 22.19 + gitnexus 1.6.5 + @ladybugdb/core 0.16.1). With
-    // no binary at all, we fall back to the upstream skip so install-time
-    // SIGSEGV continues to be avoided.
-    if (process.platform === 'win32') {
-      shared.ftsLoaded = (await hasLocalWinFtsExtension())
-        ? await loadFTSExtension(available[0], { policy: 'load-only' })
-        : true;
-    } else {
-      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
 
   // Register pool entry only after all connections are pre-warmed and FTS is
@@ -648,6 +626,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     closed: false,
   });
   ensureIdleTimer();
+  traceRss('init', repoId);
 }
 
 /**
@@ -696,15 +675,8 @@ export async function initLbugWithDb(
   // Load FTS extension if not already loaded on this Database.
   // policy: 'load-only' — same contract as initLbug above; the read pool
   // must not block on a network install during query execution.
-  // Windows guard: same probe-then-load policy as doInitLbug above.
   if (!shared.ftsLoaded) {
-    if (process.platform === 'win32') {
-      shared.ftsLoaded = (await hasLocalWinFtsExtension())
-        ? await loadFTSExtension(available[0], { policy: 'load-only' })
-        : true;
-    } else {
-      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
 
   pool.set(repoId, {
@@ -717,6 +689,7 @@ export async function initLbugWithDb(
     closed: false,
   });
   ensureIdleTimer();
+  traceRss('init', repoId);
 }
 
 /**
@@ -745,14 +718,20 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
 
   // At capacity — queue the caller with a timeout.
   return new Promise<lbug.Connection>((resolve, reject) => {
-    const waiter = (conn: lbug.Connection) => {
-      clearTimeout(timer);
-      resolve(conn);
+    const waiter = {
+      resolve: (conn: lbug.Connection) => {
+        clearTimeout(timer);
+        resolve(conn);
+      },
+      reject: (err: Error) => {
+        clearTimeout(timer);
+        reject(err);
+      },
     };
     const timer = setTimeout(() => {
       const idx = entry.waiters.indexOf(waiter);
       if (idx !== -1) entry.waiters.splice(idx, 1);
-      reject(
+      waiter.reject(
         new Error(
           `Connection pool exhausted: timed out after ${WAITER_TIMEOUT_MS}ms waiting for a free connection`,
         ),
@@ -778,7 +757,7 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
   if (entry.waiters.length > 0) {
     // Hand directly to the next waiter — no intermediate available state
     const waiter = entry.waiters.shift()!;
-    waiter(conn);
+    waiter.resolve(conn);
   } else {
     entry.checkedOut--;
     entry.available.push(conn);
@@ -821,22 +800,33 @@ export const executeParameterized = async (
   const conn = await checkout(entry);
   silenceStdout();
   activeQueryCount++;
+  let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
     const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       throw new Error(`Prepare failed: ${errMsg}`);
     }
-    const queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
+    queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
   } catch (err) {
     if (isReadOnlyDbError(err)) {
-      throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+      // Preserve the native error as `cause` so the original frame/message is
+      // not lost behind the friendly read-only message (#2068 follow-up).
+      throw new Error('Write operations are not allowed. The pool adapter is read-only.', {
+        cause: err,
+      });
     }
     throw err;
   } finally {
+    // Close the native QueryResult cursor(s) before returning the connection —
+    // getAll() drains rows but does not release the native cursor, so without
+    // this the cursor leaks for the connection's lifetime (#2068 follow-up).
+    // Best-effort via the shared helper; never masks the query result or a real
+    // error.
+    if (queryResult) await closeQueryResults(queryResult);
     activeQueryCount--;
     restoreStdout();
     checkin(entry, conn);

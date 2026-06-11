@@ -24,6 +24,14 @@ program
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
+  .command('uninstall')
+  .description(
+    'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
+  )
+  .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
+  .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
+
+program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
@@ -45,9 +53,20 @@ program
   )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option(
+    '--pdg',
+    'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
+      'for supported languages. Opt-in; off by default. (#2081 M1)',
+  )
+  .option(
     '--default-branch <branch>',
     'Default branch used in the generated regression-compare example (base_ref). ' +
       'Falls back to .gitnexusrc, then auto-detected origin/HEAD, then "main".',
+  )
+  .option(
+    '--branch <name>',
+    'Index the working tree under a specific branch slot (multi-branch indexing). ' +
+      'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
+      'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
   )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
@@ -87,7 +106,7 @@ program
   )
   .option(
     '--workers <n>',
-    'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
+    'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
@@ -137,6 +156,7 @@ program
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
+  .option('--branch <name>', 'Delete only the named branch index (not the primary)')
   .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 
@@ -155,7 +175,7 @@ program
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option(
     '--provider <provider>',
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, or codex (default: openai)',
+    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
   )
   .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
   .option(
@@ -208,6 +228,7 @@ program
   .command('query <search_query>')
   .description('Search the knowledge graph for execution flows related to a concept')
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
@@ -218,6 +239,7 @@ program
   .command('context [name]')
   .description('360-degree view of a code symbol: callers, callees, processes')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('--content', 'Include full symbol source code')
@@ -228,6 +250,7 @@ program
   .description('Blast radius analysis: what breaks if you change a symbol')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option(
@@ -245,6 +268,7 @@ program
   .command('cypher <query>')
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
@@ -254,6 +278,7 @@ program
   .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare', 'unstaged')
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────

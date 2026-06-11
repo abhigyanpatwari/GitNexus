@@ -66,10 +66,9 @@
  *      site where the enclosing class can't be statically determined
  *      is left unresolved.
  *
- * Shadow-harness corpus parity is the authoritative signal for which
- * of these matter in practice. The CI parity gate blocks any PR that
- * regresses either the legacy or registry-primary run of
- * `test/integration/resolvers/python.test.ts`.
+ * The `test/integration/resolvers/python.test.ts` resolver suite is the
+ * authoritative signal for which of these matter in practice; it runs in
+ * the standard CI test workflow, so a regression blocks the merge.
  */
 
 export { emitPythonScopeCaptures } from './captures.js';

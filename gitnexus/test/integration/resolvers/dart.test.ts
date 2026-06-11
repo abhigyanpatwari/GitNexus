@@ -708,6 +708,118 @@ describe.skipIf(!dartAvailable)('Dart named-constructor body (no file drop)', ()
 });
 
 // ---------------------------------------------------------------------------
+// F26 (issue #1919): static const / static final class fields.
+// `static const`/`static final` fields parse with a static_final_declaration_list
+// (not initialized_identifier_list), so the legacy field rules missed them and
+// no Property node was created end-to-end. They must surface as Property nodes
+// marked static + readonly, one per name in a multi-name declaration.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart static const/final fields (F26)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-static-fields'), () => {});
+  }, 60000);
+
+  it('captures static const and static final fields as Properties', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('maxRetries'); // static const
+    expect(properties).toContain('host'); // static final, name 1 of 2
+    expect(properties).toContain('scheme'); // static final, name 2 of 2
+    expect(properties).toContain('port'); // instance field (regression)
+    expect(properties).toContain('_secret'); // private static const
+  });
+
+  it('emits HAS_PROPERTY edges for static fields', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toEqual(
+      expect.arrayContaining([
+        'Config → maxRetries',
+        'Config → host',
+        'Config → scheme',
+        'Config → port',
+        'Config → _secret',
+      ]),
+    );
+  });
+
+  it('marks static const/final fields as static + readonly', () => {
+    const props = getNodesByLabelFull(result, 'Property');
+    for (const name of ['maxRetries', 'host', 'scheme', '_secret']) {
+      const p = props.find((n) => n.name === name);
+      expect(p, name).toBeDefined();
+      expect(p!.properties.isStatic, name).toBe(true);
+      expect(p!.properties.isReadonly, name).toBe(true);
+    }
+  });
+
+  it('keeps the instance field non-static, non-readonly (regression)', () => {
+    const props = getNodesByLabelFull(result, 'Property');
+    const port = props.find((n) => n.name === 'port');
+    expect(port).toBeDefined();
+    expect(port!.properties.isStatic).toBe(false);
+    expect(port!.properties.isReadonly).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F29 (issue #1919): top-level Dart variables. Top-level vars are loose
+// siblings under `program` (no `declaration` wrapper), so the structure query
+// never captured them and no Variable node existed end-to-end. They must now
+// surface as Variable nodes with the real type/const metadata read from the
+// captured container's leading siblings (not a phantom `type` field).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart top-level variables (F29)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-toplevel-vars'), () => {});
+  }, 60000);
+
+  it('captures top-level variables (typed final, inferred var, multi-name const)', () => {
+    const vars = getNodesByLabel(result, 'Variable');
+    expect(vars).toContain('count'); // final int count = 3; (covers F29)
+    expect(vars).toContain('name'); // var name = 'x';
+    expect(vars).toContain('a'); // const a = 1, b = 2;
+    expect(vars).toContain('b');
+  });
+
+  it('reads the real type for a typed final and leaves an inferred var untyped', () => {
+    const vars = getNodesByLabelFull(result, 'Variable');
+    const count = vars.find((n) => n.name === 'count');
+    expect(count).toBeDefined();
+    expect(count!.properties.declaredType).toBe('int');
+    expect(count!.properties.isConst).toBe(true);
+
+    const name = vars.find((n) => n.name === 'name');
+    expect(name).toBeDefined();
+    // inferred `var` → no declaredType from a phantom field; mutable.
+    expect(name!.properties.declaredType).toBeUndefined();
+    expect(name!.properties.isMutable).toBe(true);
+  });
+
+  it('keeps the class instance field as a Property, not a Variable (regression)', () => {
+    const vars = getNodesByLabel(result, 'Variable');
+    expect(vars).not.toContain('z');
+    const props = getNodesByLabel(result, 'Property');
+    expect(props).toContain('z');
+  });
+
+  it('does NOT emit top-level vars as Property nodes (#1919 review CF4)', () => {
+    // Guards the `(program …)` vs `(declaration …)` anchor split: top-level
+    // siblings under `program` must surface as Variable, never Property. If the
+    // top-level anchor regressed to the class-field `(declaration …)` rule, these
+    // names would mis-classify as class Properties.
+    const props = getNodesByLabel(result, 'Property');
+    for (const name of ['count', 'a', 'b', 'name']) {
+      expect(props).not.toContain(name);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage cross-file simple-name collision (PR #1970 tri-review P2).
 // console_logger.dart and file_logger.dart each declare `class Logger`; each
 // file's service `implements Logger`. emitDartHeritageEdges resolves the base
@@ -734,5 +846,28 @@ describe.skipIf(!dartAvailable)('Dart heritage cross-file name collision', () =>
     const fileEdge = impl.find((e) => e.source === 'FileService' && e.target === 'Logger');
     expect(fileEdge).toBeDefined();
     expect(fileEdge!.targetFilePath).toContain('file_logger.dart');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF3 (#1919 review): Dart class getters/setters keep their class owner edge.
+// ---------------------------------------------------------------------------
+// A Dart accessor's name lives under `method_signature`; the CF3 owner-strip
+// guard must NOT treat that signature as an executable body and strip the
+// HAS_PROPERTY owner (the over-strip regression this guards against).
+describe('CF3 — Dart class accessors keep their class owner', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-accessor-owner'), () => {});
+  }, 60000);
+
+  it('owns the getter/setter property `answer` and the stored field under Box', () => {
+    const owned = getRelationships(result, 'HAS_PROPERTY')
+      .filter((e) => e.source === 'Box')
+      .map((e) => e.target)
+      .sort();
+    expect(owned).toContain('answer');
+    expect(owned).toContain('normalField');
   });
 });

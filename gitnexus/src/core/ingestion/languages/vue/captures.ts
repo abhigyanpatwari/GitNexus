@@ -22,6 +22,7 @@
 import type { CaptureMatch } from 'gitnexus-shared';
 import { extractVueScript } from '../../vue-sfc-extractor.js';
 import { emitTsScopeCaptures } from '../typescript/captures.js';
+import { emitJsScopeCaptures } from '../javascript/captures.js';
 
 /**
  * Emit scope captures for a Vue SFC.
@@ -31,11 +32,11 @@ import { emitTsScopeCaptures } from '../typescript/captures.js';
  *   1. **Full SFC content** (sequential path, <15 files): `sourceText`
  *      contains the whole `.vue` file with `<template>`, `<script>`, etc.
  *      `extractVueScript` extracts the script block and we delegate to
- *      `emitTsScopeCaptures` with that extracted content.
+ *      `emitTsScopeCaptures` or `emitJsScopeCaptures` based on `lang`.
  *
  *   2. **Already-extracted script content** (worker-mode path, ≥15 files):
  *      the parse worker calls `extractVueScript` itself before calling
- *      `extractParsedFile`, so `sourceText` is already the bare TypeScript
+ *      `extractParsedFile`, so `sourceText` is already the bare script
  *      text with no `<script>` tags. The caller marks this explicitly via
  *      `sourceMeta.sourceKind === 'pre-extracted-script'`.
  *
@@ -48,7 +49,7 @@ export function emitVueScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
-  sourceMeta?: { sourceKind?: 'full-file' | 'pre-extracted-script' },
+  sourceMeta?: { sourceKind?: 'full-file' | 'pre-extracted-script'; setupLang?: string },
 ): readonly CaptureMatch[] {
   // Vue resolver may include supporting TS/JS files in the same run to
   // preserve cross-file import/type context for `.vue` callers. These are
@@ -58,10 +59,19 @@ export function emitVueScopeCaptures(
   }
 
   if (sourceMeta?.sourceKind === 'pre-extracted-script') {
+    // Worker-mode path: the parse worker always uses TypeScript grammar for
+    // .vue files. Lang-based grammar selection is a sequential-path feature.
     return emitTsScopeCaptures(sourceText, filePath, cachedTree);
   }
 
   const extracted = extractVueScript(sourceText);
   if (extracted === null) return [];
+
+  // Select captures based on script lang attribute.
+  // Use TS grammar unless ALL blocks explicitly request JS/JSX.
+  // Mixed-lang: TS handles JS natively; JS grammar chokes on TS syntax.
+  if (extracted.lang === 'js' || extracted.lang === 'jsx') {
+    return emitJsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
+  }
   return emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree);
 }

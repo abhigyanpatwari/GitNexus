@@ -32,7 +32,11 @@
 import http from 'http';
 import { isIPv4, isIPv6 } from 'node:net';
 import { writeSync } from 'node:fs';
-import { LocalBackend } from '../mcp/local/local-backend.js';
+import {
+  LocalBackend,
+  type RepoListing,
+  type ListReposPagination,
+} from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
@@ -185,7 +189,47 @@ export function formatImpactResult(result: any): string {
   const byDepth = result.byDepth || {};
   const total = result.impactedCount || 0;
 
+  // #2129 — an ambiguous bare name must not print the "isolated / safe to
+  // refactor" headline. Surface the per-candidate blast radius + the maximum,
+  // mirroring formatContextResult, so the real impact under whichever symbol the
+  // caller meant is visible on the text surface, not just in the JSON.
+  if (result.status === 'ambiguous') {
+    // #2129 review F11 — report the FULL match count (`totalCandidates`), not the
+    // truncated `candidates[]` length; note when the candidate list is capped.
+    const shown = result.candidates?.length ?? 0;
+    const total = result.totalCandidates ?? shown;
+    const countPhrase = total > shown ? `${total} symbols (showing ${shown})` : `${total} symbols`;
+    const lines = [
+      `${target?.name || '?'}: AMBIGUOUS — ${countPhrase} share this name. ` +
+        `Max blast radius ${result.maxImpactedCount ?? 0} (${result.maxRisk ?? 'UNKNOWN'} risk). ` +
+        `Disambiguate with --uid for one authoritative result:`,
+    ];
+    for (const c of result.candidates || []) {
+      lines.push(
+        `  ${c.kind} ${c.name} → ${c.filePath}:${c.line || '?'}  ` +
+          `[${c.impactedCount ?? 0} ${direction}, risk ${c.risk ?? 'UNKNOWN'}]  (uid: ${c.uid})`,
+      );
+    }
+    // #2129 review F1 — a failed per-candidate probe makes the max a lower bound.
+    if (result.partialProbe) {
+      lines.push(
+        '  ⚠️  One or more candidate probes failed — max blast radius / risk are lower bounds.',
+      );
+    }
+    return lines.join('\n');
+  }
+
   if (total === 0) {
+    // #1858 — "isolated" is a confident claim. If an interface / indirection
+    // boundary is on the path, the true count is a lower bound, not zero;
+    // callers binding via DI / dynamic dispatch were not traced. Say so instead.
+    if (result.epistemic === 'lower-bound') {
+      const lines = [
+        `${target?.name || '?'}: no direct ${direction} dependencies traced, but this is a LOWER BOUND — unresolved indirection on the path (actual impact may be higher):`,
+      ];
+      for (const b of result.boundaries || []) lines.push(`    • ${b}`);
+      return lines.join('\n');
+    }
     return `${target?.name || '?'}: No ${direction} dependencies found. This symbol appears isolated.`;
   }
 
@@ -197,6 +241,14 @@ export function formatImpactResult(result: any): string {
   );
   if (result.partial) {
     lines.push('⚠️  Partial results — graph traversal was interrupted. Deeper impacts may exist.');
+  }
+  // #1858 — an interface / indirection boundary on the path makes this a lower
+  // bound; surface it so the count is not read as exhaustive.
+  if (result.epistemic === 'lower-bound') {
+    lines.push(
+      '⚠️  Lower bound — unresolved indirection on the path (callers binding via DI / dynamic dispatch are not traced; actual impact may be higher):',
+    );
+    for (const b of result.boundaries || []) lines.push(`    • ${b}`);
   }
   lines.push('');
 
@@ -265,19 +317,35 @@ export function formatCypherResult(result: any): string {
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
 }
 
-export function formatListReposResult(result: any): string {
-  if (!Array.isArray(result) || result.length === 0) {
-    return 'No indexed repositories.';
+export function formatListReposResult(result: {
+  repositories: RepoListing[];
+  pagination?: ListReposPagination;
+}): string {
+  // `list_repos` always returns the paginated { repositories, pagination } object (#2119).
+  const repos = result.repositories;
+  const pg = result.pagination;
+
+  if (repos.length === 0) {
+    return pg && pg.total > 0
+      ? `No repositories on this page (offset ${pg.offset} of ${pg.total} total).`
+      : 'No indexed repositories.';
   }
 
   const lines = ['Indexed repositories:\n'];
-  for (const r of result) {
+  for (const r of repos) {
     const stats = r.stats || {};
     lines.push(
       `  ${r.name} — ${stats.nodes || '?'} symbols, ${stats.edges || '?'} relationships, ${stats.processes || '?'} flows`,
     );
     lines.push(`    Path: ${r.path}`);
     lines.push(`    Indexed: ${r.indexedAt}`);
+  }
+  if (pg) {
+    lines.push('');
+    lines.push(
+      `  Showing ${repos.length} of ${pg.total} (offset ${pg.offset}).` +
+        (pg.hasMore ? ` More available — re-run with offset ${pg.nextOffset}.` : ''),
+    );
   }
   return lines.join('\n');
 }
@@ -324,6 +392,9 @@ function getNextStepHint(toolName: string): string {
 
     case 'detect_changes':
       return '\n---\nNext: Run gitnexus-context "<symbol>" on high-risk changed symbols to check their callers.';
+
+    case 'list_repos':
+      return '\n---\nNext: READ gitnexus://repo/{name}/context for a repo above. If pagination.hasMore is true, re-run list_repos with offset set to pagination.nextOffset to page through the rest.';
 
     default:
       return '';

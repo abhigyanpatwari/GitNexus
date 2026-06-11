@@ -75,6 +75,17 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     });
   });
 
+  it('normalizes the pdg opt-in (#2081) and rejects a non-boolean value', async () => {
+    await writeRc(JSON.stringify({ pdg: true }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ pdg: true });
+
+    await writeRc(JSON.stringify({ pdg: false }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ pdg: false });
+
+    await writeRc(JSON.stringify({ pdg: 'yes' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a boolean/);
+  });
+
   it('parses the nested analyze form', async () => {
     await writeRc(JSON.stringify({ analyze: { defaultBranch: 'master', skipSkills: true } }));
     expect(loadAnalyzeConfig(dir)).toEqual({ defaultBranch: 'master', skipSkills: true });
@@ -135,6 +146,28 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     // Build the JSON manually so the control char survives.
     await writeRc('{"defaultBranch": "de\\u0007velop"}');
     expect(() => loadAnalyzeConfig(dir)).toThrow(/control or hidden/);
+  });
+
+  // ── fetchWrappers (#1589/#1852 residual) ───────────────────────────
+
+  it('normalizes a fetchWrappers string array (de-duped)', async () => {
+    await writeRc(JSON.stringify({ fetchWrappers: ['doRequest', 'apiClient.get', 'doRequest'] }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ fetchWrappers: ['doRequest', 'apiClient.get'] });
+  });
+
+  it('rejects a non-array fetchWrappers value', async () => {
+    await writeRc(JSON.stringify({ fetchWrappers: 'doRequest' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be an array of strings/);
+  });
+
+  it('rejects a fetchWrappers entry with regex / non-identifier characters', async () => {
+    await writeRc(JSON.stringify({ fetchWrappers: ['do(.*)Request'] }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be an identifier or member name/);
+  });
+
+  it('rejects an empty fetchWrappers array', async () => {
+    await writeRc(JSON.stringify({ fetchWrappers: [] }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one string/);
   });
 
   // ── validateBranchName ─────────────────────────────────────────────

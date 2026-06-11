@@ -10,10 +10,13 @@
 export interface VueScriptExtraction {
   /** Extracted script content (TypeScript/JavaScript) */
   scriptContent: string;
-  /** 0-based line number in the .vue file where the script content starts */
+  /** 1-based line number in the .vue file where the script content starts
+   * (used as offset from tree-sitter's 0-based row). */
   lineOffset: number;
-  /** true if the primary block is <script setup> */
+  /** true if at least one block is <script setup> */
   isSetup: boolean;
+  /** Value of the `lang` attribute on the extracted script block (e.g. "ts", "js", "tsx", "jsx", or "" for default). */
+  lang: string;
 }
 
 interface ScriptBlock {
@@ -238,11 +241,9 @@ function parseScriptBlock(
 /**
  * Extract script content from a Vue SFC.
  *
- * When both <script> and <script setup> are present, returns only the
- * <script setup> block (the dominant pattern — 94% of Vue files in real
- * projects use setup). The <script> (non-setup) block typically contains
- * only `defineOptions` or legacy option merges and is less important for
- * the knowledge graph.
+ * When both <script> and <script setup> are present, the content of all
+ * blocks is combined (non-setup first, then setup) so the full script
+ * surface is available to the knowledge graph.
  */
 export function extractVueScript(vueContent: string): VueScriptExtraction | null {
   const blocks: ScriptBlock[] = [];
@@ -257,14 +258,22 @@ export function extractVueScript(vueContent: string): VueScriptExtraction | null
 
   if (blocks.length === 0) return null;
 
-  // Prefer <script setup> if present
-  const setupBlock = blocks.find((b) => b.isSetup);
-  const primary = setupBlock ?? blocks[0];
+  // Merge all blocks: non-setup first, then setup, so content order is stable.
+  const nonSetupBlocks = blocks.filter((b) => !b.isSetup);
+  const setupBlocks = blocks.filter((b) => b.isSetup);
+  const ordered = [...nonSetupBlocks, ...setupBlocks];
+  const combinedContent = ordered.map((b) => b.content).join('\n');
+  const lineOffset = ordered[0].lineOffset;
+  // Only use JavaScript grammar when ALL blocks are explicitly lang="js"
+  // or lang="jsx". If any block omits lang or uses ts/tsx, TypeScript wins.
+  const allBlocksJs = blocks.length > 0 && blocks.every((b) => b.lang === 'js' || b.lang === 'jsx');
+  const lang = allBlocksJs ? 'js' : '';
 
   return {
-    scriptContent: primary.content,
-    lineOffset: primary.lineOffset,
-    isSetup: primary.isSetup,
+    scriptContent: combinedContent,
+    lineOffset,
+    isSetup: blocks.some((b) => b.isSetup),
+    lang,
   };
 }
 

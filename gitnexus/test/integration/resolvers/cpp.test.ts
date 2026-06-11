@@ -893,6 +893,21 @@ describe('C++ structured binding in range-for', () => {
     );
     expect(wrongSave).toBeUndefined();
   });
+
+  // F9 — a plain structured-binding declaration emits one Variable per bound name.
+  it('emits a Variable for each name in `auto [firstId, secondId] = makePair();`', () => {
+    const vars = getNodesByLabelFull(result, 'Variable').map((v) => v.name);
+    expect(vars).toContain('firstId');
+    expect(vars).toContain('secondId');
+  });
+
+  it('classifies top-level structured-binding names as module scope', () => {
+    const bound = getNodesByLabelFull(result, 'Variable').filter(
+      (v) => v.name === 'firstId' || v.name === 'secondId',
+    );
+    expect(bound).toHaveLength(2);
+    for (const v of bound) expect(v.properties.scope).toBe('module');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1833,6 +1848,109 @@ describe('C++ Derived : A, B — diamond inheritance via leftmost-base MRO (SM-1
     );
     expect(methodCall).toBeDefined();
     expect(methodCall!.source).toBe('run');
+  });
+});
+
+describe('C++ inheritance-lattice member lookup (#1891)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-member-lattice'), () => {});
+  }, 60000);
+
+  it('suppresses same-name members inherited from unrelated bases', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'ambiguousCall' && call.target === 'collide',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('lets a derived declaration hide both base declarations', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dominantCall' && call.target === 'collide',
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetFilePath).toBe('main.cpp');
+  });
+
+  it('merges a shared virtual base into one member subobject', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'virtualDiamondCall' && call.target === 'shared',
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('suppresses the same declaration reached through two non-virtual base subobjects', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'plainDiamondCall' && call.target === 'shared',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('adds a member using-declaration to the derived overload set', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'usingCall' && call.target === 'select',
+    );
+    expect(calls).toHaveLength(1);
+    const target = result.graph.getNode(calls[0]!.rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('records both conservative ambiguity suppressions', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'member-lookup-ambiguous',
+    );
+    const names = outcomes.map((outcome) => outcome.name);
+    expect(names).toContain('collide');
+    expect(names).toContain('overrideMember');
+    expect(names).toContain('shared');
+  });
+
+  it('keeps sibling non-virtual subobjects ambiguous when one branch overrides the member', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'nonVirtualOverrideCall' && call.target === 'overrideMember',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('merges inherited using-declarations with methods declared by the same intermediate class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'inheritedUsingCall' && call.target === 'inheritedUsing',
+    );
+    expect(calls).toHaveLength(1);
+    const target = result.graph.getNode(calls[0]!.rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('uses qualified base identities when same-simple-name direct bases collide', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'qualifiedUsingCall' && call.target === 'qualified',
+    );
+    expect(calls).toHaveLength(1);
+    const target = result.graph.getNode(calls[0]!.rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('normalizes every segment of a nested templated base name', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'nestedTemplateCall' && call.target === 'nestedTemplate',
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('applies lattice ambiguity suppression to explicit this receivers', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'callThis' && call.target === 'collide',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('resolves inherited members across files', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'crossFileCall' && call.target === 'crossFile',
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetFilePath).toBe('base.h');
   });
 });
 
@@ -3869,7 +3987,6 @@ describe('C++ inline nested same-tail collision — worker path parity (issue #1
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-nested-tail-collision'), () => {}, {
       // Force the worker-pool gate low so the 1-file fixture engages the pool.
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
       workerPoolSize: 2,
     });
   }, 120000);
@@ -3962,7 +4079,7 @@ describe('C++ named-union nested same-tail collision — worker path parity (iss
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'cpp-union-nested-tail-collision'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
@@ -4033,7 +4150,7 @@ describe('C++ anonymous-namespace nested same-tail collision — worker path par
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'cpp-anon-ns-tail-collision'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
@@ -4146,7 +4263,6 @@ describe('C++ namespaced same-tail nested heritage — worker path parity (issue
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-namespaced-collision'), () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
       workerPoolSize: 2,
     });
   }, 120000);
@@ -4229,7 +4345,7 @@ describe('C++ cross-namespace same-tail nested heritage — worker path parity (
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'cpp-cross-namespace-same-tail'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 1 }, workerPoolSize: 2 },
+      { workerPoolSize: 2 },
     );
   }, 120000);
 
@@ -4267,5 +4383,80 @@ describe('C++ root-anchored base ignores enclosing-relative type (issue #1982)',
     // is `Struct:main.cpp:Outer.Wrap.A.Inner`. KTD3: discriminate on the node id.
     expect(e!.rel.targetId).toContain('A.Inner');
     expect(e!.rel.targetId).not.toContain('Wrap');
+  });
+});
+
+describe('C++ deleted overload selection (#1893 A2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-deleted-overload'), () => {});
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === target,
+    );
+  const targetParameterTypes = (source: string, target: string) => {
+    const edge = callsFrom(source, target);
+    expect(edge).toHaveLength(1);
+    return result.graph.getNode(edge[0]!.rel.targetId)?.properties.parameterTypes;
+  };
+
+  it('keeps a live free-function winner callable', () => {
+    expect(callsFrom('call_live_free', 'choose')).toHaveLength(1);
+  });
+
+  it('suppresses a deleted best free-function match instead of rerouting', () => {
+    expect(callsFrom('call_deleted_free', 'choose')).toHaveLength(0);
+  });
+
+  it('keeps a live member winner callable', () => {
+    expect(targetParameterTypes('call_live_member', 'touch')).toEqual(['int']);
+  });
+
+  it('suppresses a deleted best member match instead of rerouting', () => {
+    expect(callsFrom('call_deleted_member', 'touch')).toHaveLength(0);
+  });
+
+  it('keeps a defaulted constructor callable', () => {
+    expect(callsFrom('call_defaulted_constructor', 'Gadget')).toHaveLength(1);
+  });
+
+  it('ranks a live base-qualified overload declared after a deleted sibling', () => {
+    expect(targetParameterTypes('call_base_qualified_live', 'select')).toEqual(['int']);
+  });
+
+  it('ranks inherited overloads before applying deleted suppression', () => {
+    expect(targetParameterTypes('call_inherited_live', 'select')).toEqual(['int']);
+    expect(callsFrom('call_inherited_deleted', 'select')).toHaveLength(0);
+  });
+
+  it('ranks class-qualified static overloads before applying deleted suppression', () => {
+    expect(targetParameterTypes('call_static_live', 'select')).toEqual(['int']);
+    expect(callsFrom('call_static_deleted', 'select')).toHaveLength(0);
+  });
+
+  it('ranks namespace-qualified overloads before applying deleted suppression', () => {
+    expect(targetParameterTypes('call_namespace_live', 'select')).toEqual(['int']);
+    expect(callsFrom('call_namespace_deleted', 'select')).toHaveLength(0);
+  });
+
+  it('keeps a same-arity defaulted copy constructor callable', () => {
+    expect(callsFrom('call_same_arity_defaulted_constructor', 'DefaultedChoice')).toHaveLength(1);
+  });
+
+  it('records every deleted-winner suppression explicitly', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'selected-callable-deleted',
+    );
+    expect(outcomes).toHaveLength(5);
+    expect(outcomes.map((outcome) => outcome.name).sort()).toEqual([
+      'choose',
+      'select',
+      'select',
+      'select',
+      'touch',
+    ]);
   });
 });

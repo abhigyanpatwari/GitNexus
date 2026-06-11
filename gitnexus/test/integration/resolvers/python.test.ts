@@ -2998,9 +2998,7 @@ def create_utf8_user():
     user.save()
 `,
     });
-    result = await runPipelineFromRepo(repoDir, () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
-    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
   }, 120000);
 
   afterAll(() => {

@@ -41,3 +41,28 @@ export const splitQualifiedName = (value: string): string[] => {
   const normalized = normalizeQualifiedName(value);
   return normalized ? normalized.split('.').filter(Boolean) : [];
 };
+
+/**
+ * Strip a trailing generic argument list at angle-bracket depth 0
+ * (`Models.Box<int>` → `Models.Box`). Constructor and inheritance sites
+ * often carry type arguments that are not part of the indexed def key.
+ */
+export function stripTrailingTypeArguments(value: string): string {
+  let depth = 0;
+  let ltAt0 = -1;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === '<') {
+      if (depth === 0) ltAt0 = i;
+      depth++;
+    } else if (c === '>') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && ltAt0 >= 0) {
+        const after = value.slice(i + 1).trim();
+        if (after.length === 0) return value.slice(0, ltAt0);
+        ltAt0 = -1;
+      }
+    }
+  }
+  return value;
+}

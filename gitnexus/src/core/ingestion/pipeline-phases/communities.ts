@@ -4,7 +4,7 @@
  * Detects code communities via Leiden algorithm and creates
  * Community nodes + MEMBER_OF edges.
  *
- * @deps    mro
+ * @deps    mro, pruneLocalSymbols
  * @reads   graph (all nodes and relationships)
  * @writes  graph (Community nodes, MEMBER_OF edges)
  */
@@ -22,7 +22,10 @@ export interface CommunitiesOutput {
 
 export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
   name: 'communities',
-  deps: ['mro', 'structure'],
+  // `pruneLocalSymbols` is declared explicitly (not just transitively via `mro`)
+  // so community detection always reads the trimmed graph even if a future option
+  // drops `mro` from the phase list.
+  deps: ['mro', 'pruneLocalSymbols', 'structure'],
 
   async execute(
     ctx: PipelineContext,
