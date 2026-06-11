@@ -149,6 +149,14 @@ describe('CLI help surface', () => {
     expect(result.stdout).not.toContain('Target repository (omit if only one indexed)');
   });
 
+  it('setup help exposes selective coding-agent configuration', () => {
+    const result = runHelp('setup');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('gitnexus setup [options]');
+    expect(result.stdout).toContain('-c, --coding-agent <agents>');
+  });
+
   it('localizes every registered CLI command and option description in zh-CN help', () => {
     const zhHelpOutput = allHelpCommands
       .map((args) => {
