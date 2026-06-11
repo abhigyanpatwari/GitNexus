@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 /**
- * Activate the vendored tree-sitter native bindings after
- * materialize-vendor-grammars.cjs. One registry-driven script replaces the
- * former per-grammar build-tree-sitter-<name>.cjs files (they were ~95%
- * identical).
+ * Activate the vendored tree-sitter native bindings IN PLACE under `vendor/`.
+ * One registry-driven script replaces the former per-grammar
+ * build-tree-sitter-<name>.cjs files (they were ~95% identical).
+ *
+ * The grammars (tree-sitter-c/dart/proto/swift/kotlin) are loaded from
+ * `vendor/<name>/` by absolute path at runtime (see
+ * src/core/tree-sitter/vendored-grammars.ts) and are NEVER copied into
+ * node_modules — an undeclared package under node_modules is "extraneous" to
+ * every subsequent npm/npx reify, which prunes/relocates it (Windows
+ * `EPERM: …, symlink` + a silent grammar deletion on the 2nd run; #2111/#1728).
  *
  * For each grammar the resolution order is identical:
- *   1. If the package isn't materialized (no binding.gyp) or the binding is
+ *   1. If the vendored source is absent (no binding.gyp) or the binding is
  *      already built, do nothing.
  *   2. Prefer a committed prebuild for this platform-arch (toolchain-free) via
- *      node-gyp-build — the goal once build-tree-sitter-prebuilds.yml has
- *      populated all six tuples.
+ *      node-gyp-build — `vendor/<name>/prebuilds/` ships all six tuples, so on a
+ *      supported platform this returns immediately and writes nothing.
  *   3. Otherwise source-build from the vendored grammar source (binding.gyp +
- *      src/) so parsing still works on any toolchain host — e.g. CI, before the
- *      prebuilds land.
+ *      src/) into `vendor/<name>/build/` (gitignored) so parsing still works on
+ *      a toolchain host that lacks a matching prebuild.
  *
  * HARD INVARIANT: this runs in `gitnexus`'s postinstall, so it MUST NEVER throw
  * or exit non-zero — a failure for any single grammar must not break the install.
@@ -53,7 +59,7 @@ function buildGrammar(short) {
     return;
   }
 
-  const dir = path.join(__dirname, '..', 'node_modules', `tree-sitter-${short}`);
+  const dir = path.join(__dirname, '..', 'vendor', `tree-sitter-${short}`);
   const bindingGyp = path.join(dir, 'binding.gyp');
   const bindingNode = path.join(dir, 'build', 'Release', `tree_sitter_${short}_binding.node`);
 

@@ -9,7 +9,7 @@
     "type": "git",
     "url": "git+https://github.com/alex-pinkus/tree-sitter-swift.git"
   },
-  "_vendoredBy": "gitnexus - runtime package derived from official tree-sitter-swift@0.7.1 (gitHead 88bfd19a89be9d0481b14566fb6160cccea2fe0a). Unified with Dart/Proto/Kotlin/C: the grammar source (parser.c/scanner.c/binding.gyp + src/) is ALSO vendored so build-tree-sitter-grammars.cjs can source-build the binding on a toolchain host when no prebuild matches (e.g. CI before prebuilds land); src/parser.c is the ABI-14 default (~18 MB on disk, compresses heavily in git — the upstream parser_abi13.c alternate is not vendored). The native prebuilds/ are GitNexus-cross-built by .github/workflows/build-tree-sitter-prebuilds.yml (originally upstream-shipped). Build activation runs via gitnexus/scripts/build-tree-sitter-grammars.cjs after materialize-vendor-grammars.cjs (no scripts.install here — avoids #836 / #1728).",
+  "_vendoredBy": "gitnexus - runtime package derived from official tree-sitter-swift@0.7.1 (gitHead 88bfd19a89be9d0481b14566fb6160cccea2fe0a). Unified with Dart/Proto/Kotlin/C: the grammar source (parser.c/scanner.c/binding.gyp + src/) is ALSO vendored so build-tree-sitter-grammars.cjs can source-build the binding on a toolchain host when no prebuild matches (e.g. CI before prebuilds land); src/parser.c is the ABI-14 default (~18 MB on disk, compresses heavily in git — the upstream parser_abi13.c alternate is not vendored). The native prebuilds/ are GitNexus-cross-built by .github/workflows/build-tree-sitter-prebuilds.yml (originally upstream-shipped). Build activation runs via gitnexus/scripts/build-tree-sitter-grammars.cjs (no scripts.install here — avoids #836 / #1728).",
   "peerDependencies": {
     "tree-sitter": "^0.21.1 || ^0.22.1"
   },

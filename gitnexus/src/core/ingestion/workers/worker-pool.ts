@@ -232,6 +232,15 @@ export interface WorkerPoolOptions {
    * `undefined` ⇒ no durable write.
    */
   durableParsedFileStoragePath?: string;
+  /**
+   * CFG/PDG opt-in (#2081 M1). Baked into every spawned worker's `workerData`
+   * (like the store paths above); when `true`, workers build a per-function
+   * control-flow graph from the tree-sitter AST and attach it to
+   * `ParsedFile.cfgSideChannel`. `undefined`/`false` ⇒ no CFG work.
+   */
+  pdg?: boolean;
+  /** Per-function source-line cap for worker-side CFG construction (0 ⇒ no cap). */
+  pdgMaxFunctionLines?: number;
 }
 
 export class WorkerPoolDispatchError extends Error {
@@ -858,6 +867,12 @@ function createJobs<TInput>(
  *   time spent across all attempts/splits/retries. When the budget is
  *   exhausted, the pool surfaces the in-flight path via `WorkerPoolDispatchError`
  *   instead of letting timeouts compound indefinitely.
+ *
+ * Upstream of these layers, the parse worker self-sanitizes a result that the
+ * structured-clone algorithm can't serialize (#2112) — stripping or dropping
+ * the offending value and reporting the affected paths on the result — so a
+ * single non-cloneable value can't masquerade as a worker death and exhaust a
+ * slot's respawn budget here.
  */
 export const createWorkerPool = (
   workerUrl: URL,
@@ -884,9 +899,12 @@ export const createWorkerPool = (
   // signature is unchanged so the zero-arg test factories keep working.
   const parsedFileStoreStoragePath = options?.parsedFileStoreStoragePath;
   const durableParsedFileStoragePath = options?.durableParsedFileStoragePath;
+  // CFG/PDG opt-in (#2081 M1) — carried in workerData alongside the store paths.
+  const pdg = options?.pdg === true;
+  const pdgMaxFunctionLines = options?.pdgMaxFunctionLines;
   const workerStoreData =
-    parsedFileStoreStoragePath || durableParsedFileStoragePath
-      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath }
+    parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg
+      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
       : undefined;
   const spawnWorker =
     options?.workerFactory ??
@@ -1816,14 +1834,19 @@ export const createWorkerPool = (
           if (slotGenerations[workerIndex] !== slotGen) return;
           if (settled || stopped) return;
           // Native postMessage delivers POJO directly via Node's
-          // structured clone. V8 deserialization failures (malformed
-          // frame, non-cloneable value) surface as a `messageerror`
-          // event handled below — they never reach this handler. The
-          // only thing we need to guard for here is a worker that
-          // sends a message without a `type` discriminant (a bug in
-          // the worker, not a wire-format issue): without the guard
-          // `null.type` would throw a TypeError out of the
-          // EventEmitter listener → uncaughtException on the main
+          // structured clone. Two distinct clone failure modes exist,
+          // and NEITHER reaches this handler: (1) a SENDER-side
+          // non-cloneable value (a function/symbol that leaked into the
+          // result) throws a synchronous `DataCloneError` on the
+          // worker's own postMessage — the parse worker self-sanitizes
+          // such results before delivery (#2112) and falls back to a
+          // primitive-only `{type:'error'}` if it still can't serialize;
+          // (2) a RECEIVER-side deserialization failure surfaces as a
+          // `messageerror` event handled below. The only thing THIS
+          // handler guards is a worker that sends a message without a
+          // `type` discriminant (a worker bug, not a wire-format issue):
+          // without the guard `null.type` would throw a TypeError out of
+          // the EventEmitter listener → uncaughtException on the main
           // thread.
           const msg = raw as WorkerOutgoingMessage;
           if (msg === null || typeof msg !== 'object' || typeof msg.type !== 'string') {
@@ -1931,12 +1954,15 @@ export const createWorkerPool = (
           }
         };
 
-        // `messageerror` fires when V8 fails to deserialize a postMessage
-        // payload (e.g., the worker tries to send a non-cloneable value
-        // back, or structured-clone hits an unsupported shape). The worker
-        // stays ALIVE but the message is lost — without this handler the
-        // pool would sit on the dropped message until the idle timeout
-        // expires. Treat it as worker death so the resilience layers fire:
+        // `messageerror` fires when V8 fails to DESERIALIZE a postMessage
+        // payload on THIS (receiver) side — a value that serialized on the
+        // worker but can't be reconstructed here. (A non-cloneable value on
+        // the SENDER side instead throws a synchronous DataCloneError on the
+        // worker's own postMessage; that path is caught and sanitized
+        // worker-side (#2112) and never arrives here.) The worker stays ALIVE
+        // but the message is lost — without this handler the pool would sit on
+        // the dropped message until the idle timeout expires. Treat it as
+        // worker death so the resilience layers fire:
         // requeue the remainder via `recoverAndResume`, attribute the
         // in-flight file from the `starting-file` signal (if observed),
         // and let the per-slot respawn budget and circuit breaker decide

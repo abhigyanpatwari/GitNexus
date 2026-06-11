@@ -18,10 +18,10 @@
     "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
   },
   "cpp": {
-    "fingerprint": "f56625342f73e182170e2c964d538e316c079fa6e9466a7f076bff2ebcf8aac4",
+    "fingerprint": "9b5b4393d158d76dcf1ef9807e0326462c45a5266310f0ae7894d017f3858219",
     "scaling_budget": 1.5,
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
-    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression).",
+    "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression). #2094: deleted C++ declarations retain @declaration.is-deleted metadata; deleted operator and pointer-return shapes plus the expanded deleted-overload fixture are included. Intended capture drift; scaling remains linear (1.139 < 1.5).",
     "_note": "#1975: + cpp-out-of-line-class fixture, fixture_count 263->265. #1990: + cpp-adl-ns-plus-hidden-friend-same-name fixture (ADL hidden-friend + namespace-callable merge parity test). Pure fixture-corpus drift — no scope-extractor change; existing fixtures' captures byte-identical. fixture_count 265->267. #1995: + cpp-union-nested-tail-collision and cpp-anon-ns-tail-collision fixtures — pure fixture-corpus drift; fixture_count 270->272, fingerprint 538e8be->d63ded6. #1993: + cpp-cross-namespace-same-tail fixture — pure fixture-corpus drift; fixture_count 272->273, fingerprint d63ded6->6d6207ae. #2077 review follow-up: cpp-member-lattice adds cross-file, qualified-base, nested-template, inherited-using, this-receiver, and non-virtual-override regressions; fixture_count 274->275. Capture scaling remains linear (1.134 < 1.5)."
   },
   "csharp": {

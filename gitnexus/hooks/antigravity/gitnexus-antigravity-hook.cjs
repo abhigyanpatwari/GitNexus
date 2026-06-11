@@ -91,10 +91,20 @@ function hasGitNexusServerOwner(gitNexusDir) {
   return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
 }
 
+/**
+ * Whether opt-in diagnostics should be written to the hook's stderr. Strict
+ * hook runners validate hook output, so normal, non-error skip paths must stay
+ * silent unless the operator explicitly asks for diagnostics via GITNEXUS_DEBUG.
+ * See issue #1913.
+ */
+function isDebugEnabled() {
+  return process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+}
+
 function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf('[GitNexus]');
-  const debug = process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+  const debug = isDebugEnabled();
   if (debug && output.length > 0) {
     // Emit the FULL discarded prefix (everything before the marker, or all of
     // it when no marker is present) so suppressed diagnostics — LadybugDB lock
@@ -258,8 +268,14 @@ function buildAfterToolContext(input) {
     if (/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) {
       const hint = buildStaleIndexHint(gitNexusDir, cwd);
       if (hint) {
-        process.stderr.write(`${hint}\n`);
+        // The hint always reaches the agent via additionalContext (parts). Mirror
+        // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
+        // hook runners see no unexpected output on this normal path (#1913). The
+        // claude hook never mirrored this to stderr — this aligns the two adapters.
         parts.push(hint);
+        if (isDebugEnabled()) {
+          process.stderr.write(`${hint}\n`);
+        }
       }
     }
   }
@@ -268,14 +284,32 @@ function buildAfterToolContext(input) {
 }
 
 function runAugment(gitNexusDir, cwd, pattern) {
-  if (hasGitNexusServerOwner(gitNexusDir)) {
-    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+  // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
+  // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
+  // as the augment, or concurrent sessions fan out unbounded probe
+  // subprocesses. The cheap guards (extractPattern, gitNexusDir lookup) run in
+  // buildAfterToolContext before this — moving the acquire any earlier would
+  // churn slot files on tool calls that never probe.
+  const release = acquireHookSlot(gitNexusDir);
+  if (!release) {
+    // Normal skip path: all per-repo hook slots are held by concurrent
+    // sessions. Stay silent for strict hook runners (issue #1913); surface
+    // the reason only under GITNEXUS_DEBUG.
+    if (isDebugEnabled()) {
+      process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
+    }
     return '';
   }
-  const release = acquireHookSlot(gitNexusDir);
-  if (!release) return '';
-  const cliPath = resolveCliPath();
   try {
+    if (hasGitNexusServerOwner(gitNexusDir)) {
+      // Normal skip path: the MCP server owns the DB. Stay silent for strict
+      // hook runners (issue #1913); surface the reason only under GITNEXUS_DEBUG.
+      if (isDebugEnabled()) {
+        process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+      }
+      return '';
+    }
+    const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
     if (!child.error && child.status === 0) {
       return extractAugmentContext(child.stderr || '');
@@ -338,7 +372,7 @@ function main() {
     const handler = handlers[input.hook_event_name || ''];
     if (handler) handler(input);
   } catch (err) {
-    if (process.env.GITNEXUS_DEBUG) {
+    if (isDebugEnabled()) {
       console.error('GitNexus antigravity hook error:', (err.message || '').slice(0, 200));
     }
   }

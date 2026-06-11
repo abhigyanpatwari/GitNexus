@@ -102,7 +102,7 @@ jobs:
       matrix: ${{ steps.decide.outputs.matrix }}
       release_app: ${{ steps.relapp.outputs.configured }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0 # need base history to diff recorded versions
           persist-credentials: false
@@ -270,7 +270,7 @@ jobs:
     # and compiling them under emulation on the arm runners is slow.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false # this job uploads artifacts (artipacked)
 
@@ -280,7 +280,7 @@ jobs:
 
       - name: Ensure Python (arm64 Windows only)
         if: matrix.platform_arch == 'win32-arm64'
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
 
@@ -431,7 +431,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
@@ -477,7 +477,7 @@ jobs:
           NODE
 
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: 'gitnexus/vendor/tree-sitter-*/prebuilds/**/*.node'
 

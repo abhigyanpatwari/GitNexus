@@ -283,12 +283,11 @@ const fetchWithTimeout = async (
 ): Promise<Response> => {
   // Merge the external caller signal (if any) with an
   // `AbortSignal.timeout()` so a timer-fired abort produces a
-  // `DOMException` with `name === 'TimeoutError'` — which
-  // `resilientFetch` correctly classifies as terminal-network (no
-  // retry, no breaker hit). A manual `AbortController.abort()` would
-  // produce `name === 'AbortError'` and route through the
-  // retryable-network branch, which mis-penalizes the breaker for
-  // user-side network slowness.
+  // `DOMException` with `name === 'TimeoutError'`. Both shapes are
+  // breaker-safe: `resilientFetch` classifies TimeoutError AND a manual
+  // `AbortController.abort()`'s AbortError as terminal-network (no
+  // retry, breaker-neutral via recordNeutral), so caller-driven
+  // cancellation never penalizes the breaker.
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const externalSignal = init.signal;
   const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
@@ -753,6 +752,35 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
   );
   await assertOk(response);
   return response.json();
+};
+
+// ── Upload API ─────────────────────────────────────────────────────────────
+
+/**
+ * Upload a folder (selected via `<input webkitdirectory>`) and start analysis.
+ * Sends the file blobs plus a JSON `manifest` of their relative paths — the
+ * multipart filename can't carry the path (browsers strip separators), so the
+ * manifest is the source of truth. Routed through fetchWithTimeout (the shared,
+ * origin-validated request path) rather than a raw XHR; returns the analysis
+ * jobId, which the caller drives through the normal SSE flow.
+ */
+export const uploadFolder = async (
+  files: File[],
+  manifest: string[],
+  signal?: AbortSignal,
+): Promise<{ jobId: string; status: string }> => {
+  const form = new FormData();
+  // Manifest MUST precede the file parts (the server enforces this).
+  form.append('manifest', JSON.stringify(manifest));
+  for (const f of files) form.append('files', f);
+
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/analyze/upload`,
+    { method: 'POST', body: form, signal },
+    5 * 60_000, // up to 5 min for large repos
+  );
+  await assertOk(response);
+  return response.json() as Promise<{ jobId: string; status: string }>;
 };
 
 // ── Analyze API ────────────────────────────────────────────────────────────

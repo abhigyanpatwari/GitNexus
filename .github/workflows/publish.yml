@@ -162,7 +162,7 @@ jobs:
       should_run: ${{ steps.decide.outputs.should_run }}
       head_sha: ${{ steps.decide.outputs.head_sha }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -332,7 +332,7 @@ jobs:
       # on the RC path.
       - name: Checkout (RC)
         if: needs.route.outputs.mode == 'rc'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -349,7 +349,7 @@ jobs:
 
       - name: Checkout (stable)
         if: needs.route.outputs.mode == 'stable'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
         # path performs no git pushes; the default scope is sufficient.
         with:

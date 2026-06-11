@@ -21,9 +21,11 @@ import {
   startAnalyze,
   cancelAnalyze,
   streamAnalyzeProgress,
+  uploadFolder,
   type JobProgress,
 } from '../services/backend-client';
 import { AnalyzeProgress } from './AnalyzeProgress';
+import { filterRepoFiles } from '@/lib/upload-filter';
 import { useTranslation } from 'react-i18next';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -165,8 +167,11 @@ export interface RepoAnalyzerProps {
 export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProps) => {
   const { t } = useTranslation(['common', 'errors', 'onboarding']);
   const inputId = useId();
-  const folderInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<InputMode>('github');
+  const [uploading, setUploading] = useState(false);
+  const [uploadSummary, setUploadSummary] = useState<{ count: number; dropped: number } | null>(
+    null,
+  );
   const [githubUrl, setGithubUrl] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('');
   const [localPath, setLocalPath] = useState('');
@@ -181,28 +186,73 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
 
   const jobIdRef = useRef<string | null>(null);
   const sseControllerRef = useRef<AbortController | null>(null);
+  // Owns the in-flight analyze/upload request. The controller doubles as the
+  // staleness token: each request captures its own controller in a closure and
+  // bails after the await when that controller was aborted, so a resolution
+  // arriving after a mode switch / cancel / unmount can never drive state.
+  const requestControllerRef = useRef<AbortController | null>(null);
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
       sseControllerRef.current?.abort();
+      requestControllerRef.current?.abort();
       if (completeTimerRef.current) clearTimeout(completeTimerRef.current);
     };
   }, []);
 
+  // Abort any in-flight analyze/upload request so its settlement can't drive
+  // state. Aborting is load-bearing: once a mode switch resets `uploading`,
+  // the `uploading || isLoading` re-entry guard no longer covers the stale
+  // request — only its aborted signal does.
+  const invalidateRequest = (): void => {
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+  };
+
+  // Invalidate the previous request and hand the caller a fresh controller.
+  const renewRequestController = (): AbortController => {
+    invalidateRequest();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    return controller;
+  };
+
+  // An upload that resolved after invalidation has still created a server-side
+  // job; cancel it so the single analyze slot isn't held for the job's full
+  // duration. Upload-path only: every upload owns a fresh job (the server
+  // stages each upload into a unique dir, never dedup-aliasing), whereas URL
+  // analyzes dedup-alias by repo — the returned jobId may belong to a job
+  // another session (or this user's own resubmit) is actively watching, so
+  // cancelling on that path could kill a live analysis. A stale URL job is
+  // left to finish: a same-URL resubmit re-attaches to it via dedup, and the
+  // server's job timeout/TTL sweep bounds the slot occupancy.
+  const cancelStaleUploadJob = (jobId: string): void => {
+    void cancelAnalyze(jobId).catch(() => {});
+  };
+
   const handleModeChange = (m: InputMode) => {
+    // ModeTabs fires onChange on every click, including the already-active
+    // tab — never abort the user's own in-flight request for a no-op click.
+    if (m === mode) return;
+    invalidateRequest();
     setMode(m);
     setGithubUrl('');
     setGitlabUrl('');
     setLocalPath('');
     setValidationError(null);
+    setUploadSummary(null);
+    setUploading(false);
+    // An aborted request no longer resolves to move `phase` off 'starting';
+    // reset so the new mode's form is immediately usable (also clears a stale
+    // 'error' phase). Only reachable while showInput is true.
+    setPhase('input');
   };
 
-  // Use the browser's native directory picker (webkitdirectory doesn't give paths,
-  // so we use a text input + a "Browse" button that opens a standard file input
-  // to let users pick files from the folder — the path is typed manually since
-  // browsers don't expose absolute paths for security reasons).
-  // For local paths, the user types or pastes the absolute path.
+  // Local-folder mode uploads the selected folder's files (the browser never
+  // exposes an absolute path, so the old typed-path/browse approach couldn't
+  // work — see handleFolderUpload). A typed server path is also still accepted.
 
   const canSubmit =
     mode === 'github'
@@ -228,6 +278,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setValidationError(null);
     setPhase('starting');
 
+    // Staleness guard only (no wire abort): the POST is short-lived and
+    // self-terminates, but its resolution must not drive state after a mode
+    // switch / cancel / unmount invalidated this request.
+    const controller = renewRequestController();
     try {
       const request =
         mode === 'github'
@@ -236,8 +290,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             ? { url: gitlabUrl.trim() }
             : { path: localPath.trim() };
       const { jobId } = await startAnalyze(request);
-      jobIdRef.current = jobId;
-      setPhase('analyzing');
+      // Stale resolution: return without cancelling — URL jobIds may be
+      // dedup-aliased to a job another session owns (see cancelStaleUploadJob).
+      if (controller.signal.aborted) return;
 
       const nameSource =
         mode === 'github'
@@ -245,29 +300,84 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           : mode === 'gitlab'
             ? gitlabUrl.trim()
             : localPath.trim();
-      const controller = streamAnalyzeProgress(
-        jobId,
-        (p) => setProgress(p),
-        (data) => {
-          const name =
-            data.repoName ??
-            nameSource.split(/[/\\]/).filter(Boolean).at(-1) ??
-            t('onboarding:repoAnalyzer.defaultRepoName');
-          setCompletedRepoName(name);
-          setPhase('done');
-          sseControllerRef.current = null;
-          completeTimerRef.current = setTimeout(() => {
-            completeTimerRef.current = null;
-            onComplete(name);
-          }, 1200);
-        },
-        (errMsg) => {
-          setValidationError(errMsg || t('errors:analysisFailed'));
-          setPhase('error');
-        },
-      );
-      sseControllerRef.current = controller;
+      trackJob(jobId, nameSource);
     } catch (err) {
+      // Unmount aborts the controller, so this also covers the unmounted case.
+      if (controller.signal.aborted) return;
+      setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
+      setPhase('error');
+    }
+  };
+
+  // Drive an already-created analysis job through the SSE progress stream to
+  // completion. Shared by the path/URL analyze flow and the folder-upload flow.
+  const trackJob = (jobId: string, fallbackNameSource: string | null) => {
+    // Callers reach here only with a live (non-aborted) request controller, so
+    // the component is mounted — unmount aborts the controller.
+    jobIdRef.current = jobId;
+    setPhase('analyzing');
+    const controller = streamAnalyzeProgress(
+      jobId,
+      (p) => setProgress(p),
+      (data) => {
+        const name =
+          data.repoName ??
+          (fallbackNameSource
+            ? fallbackNameSource.split(/[/\\]/).filter(Boolean).at(-1)
+            : undefined) ??
+          t('onboarding:repoAnalyzer.defaultRepoName');
+        setCompletedRepoName(name);
+        setPhase('done');
+        sseControllerRef.current = null;
+        completeTimerRef.current = setTimeout(() => {
+          completeTimerRef.current = null;
+          onComplete(name);
+        }, 1200);
+      },
+      (errMsg) => {
+        setValidationError(errMsg || t('errors:analysisFailed'));
+        setPhase('error');
+      },
+    );
+    sseControllerRef.current = controller;
+  };
+
+  // Upload a browser-selected folder (webkitdirectory) and start analysis. The
+  // upload endpoint returns a jobId, which then joins the normal SSE flow.
+  const handleFolderUpload = async (fileList: FileList) => {
+    if (uploading || isLoading) return; // guard against a concurrent upload
+    const { files, manifest, droppedCount } = filterRepoFiles(fileList);
+    if (files.length === 0) {
+      setValidationError(t('onboarding:repoAnalyzer.upload.empty'));
+      return;
+    }
+    setValidationError(null);
+    setUploadSummary({ count: files.length, dropped: droppedCount });
+    setUploading(true);
+    setPhase('starting');
+    // The selected folder's name (manifest entries are `<folder>/<rest>`) is a
+    // sensible fallback if the server's complete event omits repoName.
+    const folderName = manifest[0]?.split('/')[0] ?? null;
+    const controller = renewRequestController();
+    try {
+      const { jobId } = await uploadFolder(files, manifest, controller.signal);
+      if (controller.signal.aborted) {
+        // The abort raced the response: the server already created the job.
+        // (Unmount aborts the controller, so this also covers unmounted.)
+        cancelStaleUploadJob(jobId);
+        return;
+      }
+      setUploading(false);
+      trackJob(jobId, folderName);
+    } catch (err) {
+      // An abort surfaces in two shapes — BackendError('Request aborted')
+      // when it lands during fetch, raw AbortError when it lands during the
+      // response-body read — so branch on the closure controller's signal,
+      // never on the error identity. In the second shape the server may have
+      // already launched a job whose id we never learn; that orphan is bounded
+      // by the server's job timeout and terminal-job TTL sweep.
+      if (controller.signal.aborted) return;
+      setUploading(false);
       setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
       setPhase('error');
     }
@@ -276,6 +386,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const handleCancel = async () => {
     sseControllerRef.current?.abort();
     sseControllerRef.current = null;
+    // Defensive: no UI path can reach handleCancel while a request is in
+    // flight (the cancel affordance renders only at phase === 'analyzing'),
+    // but invalidate it anyway so the guard topology has no holes.
+    invalidateRequest();
     if (jobIdRef.current) {
       try {
         await cancelAnalyze(jobIdRef.current);
@@ -284,6 +398,8 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     }
     setPhase('input');
     setProgress({ phase: 'queued', percent: 0, message: t('common:analyzePhases.queued') });
+    setUploading(false);
+    setUploadSummary(null);
   };
 
   const isLoading = phase === 'starting';
@@ -443,35 +559,51 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
             )}
           </div>
-          {/* Native folder picker + Browse button — below the input */}
+          {/* Upload a folder from your computer — no server path or mount needed.
+              The browser can't expose an absolute path, so we upload the files. */}
           <input
             ref={folderInputRef}
             type="file"
             // @ts-expect-error -- webkitdirectory is non-standard but widely supported
             webkitdirectory=""
+            multiple
             className="hidden"
+            data-testid="folder-upload-input"
             onChange={(e) => {
-              const files = e.target.files;
-              if (files && files.length > 0) {
-                const rel = files[0].webkitRelativePath;
-                const folderName = rel.split('/')[0];
-                if (folderName) {
-                  setLocalPath(folderName);
-                  setValidationError(null);
-                }
+              if (e.target.files && e.target.files.length > 0) {
+                handleFolderUpload(e.target.files);
               }
               e.target.value = '';
             }}
           />
           <button
             type="button"
+            data-testid="upload-folder"
             onClick={() => folderInputRef.current?.click()}
             disabled={isLoading}
             className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-border-subtle bg-elevated px-3 py-2 text-xs font-medium text-text-secondary transition-all duration-150 hover:bg-hover hover:text-text-primary disabled:opacity-50"
           >
             <FolderOpen className="h-3.5 w-3.5" />
-            {t('onboarding:repoAnalyzer.browseForFolder')}
+            {t('onboarding:repoAnalyzer.upload.button')}
           </button>
+          {uploading && (
+            <div role="status" aria-busy="true" data-testid="upload-progress" className="space-y-1">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+              </div>
+              <p className="text-xs text-text-muted">
+                {t('onboarding:repoAnalyzer.upload.uploading')}
+              </p>
+            </div>
+          )}
+          {uploadSummary && !uploading && phase !== 'error' && (
+            <p className="text-xs text-text-muted" data-testid="upload-summary">
+              {t('onboarding:repoAnalyzer.upload.selected', {
+                fileCount: uploadSummary.count,
+                dropped: uploadSummary.dropped,
+              })}
+            </p>
+          )}
         </div>
       )}
 

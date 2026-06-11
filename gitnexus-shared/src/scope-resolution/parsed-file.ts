@@ -98,4 +98,26 @@ export interface ParsedFile {
    * side effects — the contract default) leave this undefined.
    */
   readonly captureSideChannel?: unknown;
+
+  /**
+   * Per-function control-flow graphs for this file (#2081 M1, PDG/taint
+   * substrate). A DISTINCT field from {@link captureSideChannel} — different
+   * producer, consumer, and lifecycle: the worker builds it from the
+   * tree-sitter AST via `LanguageProvider.cfgVisitor` (only on a `--pdg` run),
+   * and scope-resolution emits BasicBlock nodes + CFG edges from it while the
+   * disk-backed ParsedFile store is still live (it is NOT a capture-time
+   * marker the resolver restores into module maps). Kept separate so a future
+   * change to either channel's shape invalidates independently.
+   *
+   * Shared / ingestion code treats this as opaque (`unknown`) per AGENTS.md.
+   * Concretely it is a `readonly FunctionCfg[]` (see
+   * `core/ingestion/cfg/types.ts`) — plain JSON-serializable data (no AST
+   * refs, no class instances) so it round-trips through the parse cache and
+   * the `parsedfile-store` (whose interning reviver keys on `nodeId`, which
+   * these blocks/edges deliberately lack).
+   *
+   * Optional: `undefined` on non-`--pdg` runs and for languages with no
+   * `cfgVisitor` — the default for every run today.
+   */
+  readonly cfgSideChannel?: unknown;
 }

@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
  * asserts exit code 0 every time, plus the required-vs-optional opt-out split.
  *
  * The script is copied into an isolated temp `scripts/` dir so its
- * `__dirname`-relative `../node_modules/tree-sitter-<name>` resolves under our
+ * `__dirname`-relative `../vendor/tree-sitter-<name>` resolves under our
  * control. The temp dir has no reachable `node-gyp-build` / `node-addon-api`, so
  * the source-build path stops at the "hoisted build deps not resolvable" guard
  * (still exit 0) instead of invoking a real compile.
@@ -61,8 +61,9 @@ function runBuild(grammar: string, overrides: Record<string, string | undefined>
 }
 
 function materializeShell(grammar: string) {
-  // A package shell with a binding.gyp present but no prebuild / built binary.
-  const pkg = path.join(tmpRoot, 'node_modules', `tree-sitter-${grammar}`);
+  // A vendored grammar shell with a binding.gyp present but no prebuild / built
+  // binary — mirrors `vendor/tree-sitter-<name>/` (the script's build target).
+  const pkg = path.join(tmpRoot, 'vendor', `tree-sitter-${grammar}`);
   mkdirSync(path.join(pkg, 'bindings', 'node'), { recursive: true });
   writeFileSync(path.join(pkg, 'binding.gyp'), '{ "targets": [] }');
   writeFileSync(path.join(pkg, 'bindings', 'node', 'index.js'), '');
@@ -102,7 +103,7 @@ describe('build-tree-sitter-grammars.cjs consolidated activation', () => {
       expect(r.stderr).toMatch(/hoisted build deps not resolvable|Could not build native binding/);
       expect(r.stderr).not.toContain('built successfully');
     } finally {
-      rmSync(path.join(tmpRoot, 'node_modules'), { recursive: true, force: true });
+      rmSync(path.join(tmpRoot, 'vendor'), { recursive: true, force: true });
     }
   });
 

@@ -1,5 +1,5 @@
 import Parser from 'tree-sitter';
-import { createRequire } from 'node:module';
+import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -60,17 +60,16 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  *         value_argument
  *           string_literal                ← the path
  *
- * tree-sitter-kotlin is an optional npm dependency — when its native
- * binding is unavailable the plugin gracefully exports `null` and
- * `http-patterns/index.ts` skips registration for `.kt`/`.kts` files.
+ * tree-sitter-kotlin is a vendored grammar loaded from `vendor/` by absolute
+ * path (NEVER copied into node_modules — see vendored-grammars.ts / #2111) —
+ * when its native binding is unavailable the plugin gracefully exports `null`
+ * and `http-patterns/index.ts` skips registration for `.kt`/`.kts` files.
  */
 
-const _require = createRequire(import.meta.url);
-
-/** Loaded lazily; null when the grammar binding isn't installed. */
+/** Loaded lazily; null when the grammar binding isn't available. */
 let Kotlin: unknown | null = null;
 try {
-  Kotlin = _require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   Kotlin = null;
 }

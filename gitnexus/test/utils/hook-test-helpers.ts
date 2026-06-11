@@ -72,6 +72,88 @@ function hasGitNexusLauncher(dir: string): boolean {
   });
 }
 
+// ─── Fake tool dir for the DB-owner probe (shared by unit + e2e) ────
+//
+// Builds a temp bin dir holding fake `gitnexus`, `lsof`, and `ps` executables so
+// a hook spawned with hookEnv(binDir) sees a deterministic DB-owner probe result
+// (and a marker-writing fake CLI) without touching the real process table.
+
+// Module-private: only createHookToolDir writes these fakes; callers use the
+// higher-level createHookToolDir, never writeExecutable directly.
+function writeExecutable(filePath: string, content: string) {
+  fs.writeFileSync(filePath, content, { mode: 0o755 });
+}
+
+export function createHookToolDir(options: {
+  gitnexusStderr?: string;
+  gitnexusMarkerPath?: string;
+  lsofOutput?: string;
+  lsofOutputLines?: string[];
+  psOutput?: string;
+  psOutputByPid?: Record<string, string>;
+  lsofSleepMs?: number;
+  /** Fake lsof writes this marker file as soon as it starts — proves whether the probe reached the lsof fallback at all (#2163). */
+  lsofMarkerPath?: string;
+  /** Fake lsof writes its own PID here as its FIRST statement, minimizing detection latency for orphan-reaping tests (#2163). */
+  lsofPidFile?: string;
+  /** Fake lsof traps SIGTERM as a no-op before sleeping — models an unkillable/D-state lsof that only SIGKILL can end (#2163). */
+  lsofIgnoreSigterm?: boolean;
+}) {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-bin-'));
+  const gitnexusStderr = JSON.stringify(options.gitnexusStderr ?? '');
+  const markerPath = JSON.stringify(options.gitnexusMarkerPath ?? '');
+
+  const fakeGitNexus = `#!/usr/bin/env node\nconst fs = require('fs');\nconst marker = ${markerPath};\nif (marker) fs.writeFileSync(marker, 'called');\nprocess.stderr.write(${gitnexusStderr});\n`;
+  writeExecutable(path.join(binDir, 'gitnexus'), fakeGitNexus);
+  writeExecutable(path.join(binDir, 'gitnexus-cli.js'), fakeGitNexus);
+
+  const lsofOutput =
+    options.lsofOutputLines != null
+      ? options.lsofOutputLines.join('\n') + (options.lsofOutputLines.length ? '\n' : '')
+      : (options.lsofOutput ?? '');
+  // Composable prologue: pidFile write MUST stay the first statement (see the
+  // option docs above); SIGTERM trap MUST be installed before any sleep.
+  const lsofPrologue =
+    `#!/usr/bin/env node\nconst fs = require('fs');\n` +
+    (options.lsofPidFile != null
+      ? `fs.writeFileSync(${JSON.stringify(options.lsofPidFile)}, String(process.pid));\n`
+      : '') +
+    (options.lsofMarkerPath != null
+      ? `fs.writeFileSync(${JSON.stringify(options.lsofMarkerPath)}, 'called');\n`
+      : '') +
+    (options.lsofIgnoreSigterm ? `process.on('SIGTERM', () => {});\n` : '');
+  const lsofBody =
+    options.lsofSleepMs != null
+      ? `${lsofPrologue}setTimeout(() => {}, ${Number(options.lsofSleepMs)});\n`
+      : `${lsofPrologue}process.stdout.write(${JSON.stringify(lsofOutput)});\nprocess.exit(0);\n`;
+  writeExecutable(path.join(binDir, 'lsof'), lsofBody);
+
+  const psBody =
+    options.psOutputByPid != null
+      ? `#!/usr/bin/env node
+const byPid = ${JSON.stringify(options.psOutputByPid)};
+const args = process.argv;
+const p = args[args.indexOf('-p') + 1];
+process.stdout.write(byPid[p] ?? '');
+process.exit(0);
+`
+      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.psOutput ?? '')});\nprocess.exit(0);\n`;
+  writeExecutable(path.join(binDir, 'ps'), psBody);
+
+  return binDir;
+}
+
+/** A full env that points a spawned hook at the fake tool dir from createHookToolDir. */
+export function hookEnv(binDir: string) {
+  return {
+    ...process.env,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
+    GITNEXUS_HOOK_CLI_PATH: path.join(binDir, 'gitnexus-cli.js'),
+    GITNEXUS_HOOK_LSOF_PATH: path.join(binDir, 'lsof'),
+    GITNEXUS_HOOK_PS_PATH: path.join(binDir, 'ps'),
+  };
+}
+
 /**
  * The current PATH with every dir that contains a `gitnexus` launcher removed, so
  * a test box that already has gitnexus installed cannot make the assertion pass

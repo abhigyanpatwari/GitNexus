@@ -7,6 +7,8 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { emitCppScopeCaptures } from '../../../../src/core/ingestion/languages/cpp/captures.js';
+import { cppProvider } from '../../../../src/core/ingestion/languages/c-cpp.js';
+import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
 import {
   clearFileLocalNames,
   isFileLocal,
@@ -422,6 +424,72 @@ describe('emitCppScopeCaptures — arity enrichment', () => {
     expect(m).toBeDefined();
     expect(m!['@declaration.required-parameter-count'].text).toBe('1');
     expect(m!['@declaration.parameter-count'].text).toBe('2');
+  });
+
+  it('tags deleted declarations but not defaulted declarations', () => {
+    const deleted = findMatch('void foo(int) = delete;', (tags) =>
+      tags.includes('@declaration.is-deleted'),
+    );
+    const defaulted = emitCppScopeCaptures('struct S { S() = default; };', 'test.cpp').find(
+      (match) => Object.values(match).some((capture) => capture.text.includes('= default')),
+    );
+
+    expect(deleted?.['@declaration.is-deleted'].text).toBe('true');
+    expect(defaulted).toBeDefined();
+    expect(defaulted?.['@declaration.is-deleted']).toBeUndefined();
+  });
+
+  it('tags deleted free operators', () => {
+    const deleted = findMatch(
+      'struct S {}; bool operator==(const S&, const S&) = delete;',
+      (tags) => tags.includes('@declaration.is-deleted'),
+    );
+
+    expect(deleted?.['@declaration.name'].text).toBe('operator==');
+    expect(deleted?.['@declaration.is-deleted'].text).toBe('true');
+  });
+
+  it('tags deleted pointer-return free functions', () => {
+    const deleted = findMatch('int* lookup(int) = delete;', (tags) =>
+      tags.includes('@declaration.is-deleted'),
+    );
+
+    expect(deleted?.['@declaration.name'].text).toBe('lookup');
+    expect(deleted?.['@declaration.is-deleted'].text).toBe('true');
+  });
+
+  it('does not borrow a deleted initializer from another declarator', () => {
+    const declarations = allMatches('void f(int), g = delete(new int);', (tags) =>
+      tags.includes('@declaration.function'),
+    );
+    const f = declarations.find((match) => match['@declaration.name']?.text === 'f');
+
+    expect(f).toBeDefined();
+    expect(f?.['@declaration.is-deleted']).toBeUndefined();
+  });
+
+  it('preserves deleted-callable metadata in parsed local definitions', () => {
+    const parsed = extractParsedFile(
+      cppProvider,
+      `
+        void choose(int) = delete;
+        struct S {
+          S() = default;
+          void touch(double) = delete;
+        };
+      `,
+      'test.cpp',
+    );
+
+    const choose = parsed?.localDefs.find((def) => def.qualifiedName === 'choose');
+    const touch = parsed?.localDefs.find((def) => def.qualifiedName === 'touch');
+    const constructor = parsed?.localDefs.find(
+      (def) => def.type === 'Constructor' && def.qualifiedName === 'S',
+    );
+
+    expect(choose?.isDeleted).toBe(true);
+    expect(touch?.isDeleted).toBe(true);
+    expect(constructor?.isDeleted).not.toBe(true);
   });
 
   it('enriches call reference with arity', () => {
