@@ -730,4 +730,20 @@ describe('M3 U1 — taint-site harvest: templates, callbacks, statement granular
     expect(trip).toEqual(cfg);
     expect(allSites(trip).length).toBeGreaterThan(0);
   });
+
+  it('sequence expression: only the final operand flows into the sink argument', () => {
+    // `exec((log(x), 'safe'))` — the comma operator's value is the last operand
+    // (`'safe'`), so exec's arg 0 must NOT carry `x` (review fix). `x` is still
+    // a USE of the statement (the side-effect operand is evaluated).
+    const cfg = cfgOf(`function f(x) { exec((log(x), 'safe')); }`);
+    const execSite = allSites(cfg).find((s) => s.callee === 'exec')!;
+    expect(execSite.args ?? [[]]).toEqual([[]]); // arg 0 has no flowing binding
+    expect(siteFact(cfg, 1).uses).toContain(bindingIdx(cfg, 'x'));
+  });
+
+  it('sequence expression: a tainted final operand DOES flow into the sink', () => {
+    const cfg = cfgOf(`function f(x) { exec((log('a'), x)); }`);
+    const execSite = allSites(cfg).find((s) => s.callee === 'exec')!;
+    expect(execSite.args).toEqual([[bindingIdx(cfg, 'x')]]);
+  });
 });

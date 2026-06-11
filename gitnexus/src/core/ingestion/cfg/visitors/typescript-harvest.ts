@@ -608,6 +608,24 @@ export class TsHarvester {
         // a member-read site for the innermost identifier-rooted access.
         this.walkChain(node, acc, false);
         return;
+      case 'sequence_expression': {
+        // Comma operator: only the LAST operand's value flows. Earlier operands
+        // are evaluated for side effects — record their uses but suppress
+        // occurrence fan-out so `exec((log(x), 'safe'))` does not taint exec's
+        // arg 0 with `x` (review fix). Defs/uses stay byte-identical to the old
+        // default descent; only the sites layer narrows.
+        const operands: SyntaxNode[] = [];
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (c) operands.push(c);
+        }
+        const last = operands.length - 1;
+        operands.forEach((op, i) => {
+          if (i === last) this.walkValue(op, acc);
+          else acc.suppressOccurrences(() => this.walkValue(op, acc));
+        });
+        return;
+      }
       default:
         for (let i = 0; i < node.namedChildCount; i++) {
           const c = node.namedChild(i);
@@ -945,6 +963,24 @@ class FactAccumulator {
   setFrameArg(argIdx: number): void {
     const top = this.frames[this.frames.length - 1];
     if (top) top.argIdx = argIdx;
+  }
+
+  /**
+   * Run `fn` with all open arg frames temporarily detached (argIdx = -1), so
+   * identifier reads inside still record USES but do NOT fan occurrences into
+   * the enclosing sink-argument position. Used for the non-value operands of a
+   * sequence (comma) expression — only the final operand's value flows.
+   */
+  suppressOccurrences(fn: () => void): void {
+    const saved = this.frames.map((f) => f.argIdx);
+    for (const f of this.frames) f.argIdx = -1;
+    try {
+      fn();
+    } finally {
+      this.frames.forEach((f, i) => {
+        f.argIdx = saved[i];
+      });
+    }
   }
 
   setSiteCallee(siteIdx: number, callee: string): void {

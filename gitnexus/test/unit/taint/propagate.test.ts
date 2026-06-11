@@ -506,6 +506,20 @@ describe('precision floor — multi-declarator conflation (documented FP)', () =
   });
 });
 
+// ── sequence-expression value semantics (review fix) ────────────────────────
+
+describe('sequence expressions — only the final operand carries taint', () => {
+  it('exec((log(x), "safe")) with tainted x → NO finding (safe operand flows)', () => {
+    const r = analyze(`function f(req) { const x = req.body; exec((log(x), 'safe')); }`);
+    expect(r.findings).toHaveLength(0);
+  });
+
+  it('exec((log("a"), x)) with tainted x → finding (tainted final operand)', () => {
+    const r = analyze(`function f(req) { const x = req.body; exec((log('a'), x)); }`);
+    expect(r.findings).toHaveLength(1);
+  });
+});
+
 // ── source-discriminated taint state (review fix: multi-source merge) ───────
 
 describe('multi-source identity — distinct sources do not merge at one def', () => {
