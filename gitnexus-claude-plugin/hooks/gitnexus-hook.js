@@ -283,7 +283,15 @@ function handlePreToolUse(input) {
   // subprocesses. Keep the acquire right after the cheap guards above —
   // moving it earlier would churn slot files on tool calls that never probe.
   const release = acquireHookSlot(gitNexusDir);
-  if (!release) return;
+  if (!release) {
+    // Normal skip path: all per-repo hook slots are held by concurrent
+    // sessions. Stay silent for strict hook runners (issue #1913); surface
+    // the reason only when diagnostics are explicitly requested.
+    if (isDebugEnabled()) {
+      process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
+    }
+    return;
+  }
 
   let result = '';
   try {

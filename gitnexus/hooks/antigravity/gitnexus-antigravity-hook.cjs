@@ -291,7 +291,15 @@ function runAugment(gitNexusDir, cwd, pattern) {
   // buildAfterToolContext before this — moving the acquire any earlier would
   // churn slot files on tool calls that never probe.
   const release = acquireHookSlot(gitNexusDir);
-  if (!release) return '';
+  if (!release) {
+    // Normal skip path: all per-repo hook slots are held by concurrent
+    // sessions. Stay silent for strict hook runners (issue #1913); surface
+    // the reason only under GITNEXUS_DEBUG.
+    if (isDebugEnabled()) {
+      process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
+    }
+    return '';
+  }
   try {
     if (hasGitNexusServerOwner(gitNexusDir)) {
       // Normal skip path: the MCP server owns the DB. Stay silent for strict

@@ -19,10 +19,10 @@
  *   survives, SIGTERMs its child at the budget (2s lsof / 1s ps) and SIGKILLs
  *   it 1s later — orphan lifetime is bounded at ~3s instead of unbounded.
  * - GITNEXUS_HOOK_TIMEOUT_PATH: the sentinel value `disabled` switches the
- *   wrapper off deterministically; any other non-existent value FALLS THROUGH
- *   to the built-in candidate list (same semantics as the sibling
- *   GITNEXUS_HOOK_LSOF_PATH / GITNEXUS_HOOK_PS_PATH overrides). A candidate
- *   must pass a one-shot `-k` self-test before being adopted.
+ *   wrapper off deterministically; any other value is adopted only when it
+ *   exists AND passes a one-shot `-k` self-test — otherwise resolution FALLS
+ *   THROUGH to the built-in candidate list (first self-test pass wins), so
+ *   no malformed value of any shape can silently disable orphan containment.
  * - The gitnexus server is lazy-open + sticky-hold: an idle MCP server holds
  *   ZERO lbug fds until the repo's first MCP query, then keeps the fd open.
  *   A probe before that first query is therefore always false — a known,
@@ -73,48 +73,27 @@ let unixGuardTimeoutCache;
  * (#2163). Dead code on Windows (the win32 dispatch returns earlier).
  *
  * GITNEXUS_HOOK_TIMEOUT_PATH semantics: the sentinel `disabled` turns the
- * wrapper off; an existing file path is used as the candidate; any other
- * value falls through to the built-in candidates — matching the sibling
- * GITNEXUS_HOOK_LSOF_PATH / GITNEXUS_HOOK_PS_PATH overrides above, so a
- * typo'd path can never silently disable orphan containment.
+ * wrapper off; any other value is only a CANDIDATE — an existing file path
+ * is tried first, but it must pass the `-k` self-test to be adopted. On any
+ * failure (non-existent path, directory, non-executable file, wrapper
+ * without `-k` support, …) resolution falls through to the built-in
+ * candidates below, tried in order, first self-test pass wins. This is
+ * strictly stronger than the sibling GITNEXUS_HOOK_LSOF_PATH /
+ * GITNEXUS_HOOK_PS_PATH overrides (which only check existence): no bad env
+ * value of ANY shape can silently disable orphan containment.
  *
- * Lazy self-test: the chosen candidate is adopted only when
- * `timeout -k 1 1 /bin/sh -c :` exits 0. This rejects wrappers that do not
- * support the coreutils `-k` flag — busybox <1.34, toybox, broken symlinks —
- * which would otherwise exit with a usage error without ever running lsof,
- * silently converting the lsof-ETIMEDOUT fail-closed contract into fail-open
- * (#1492 regression). Rejection falls back to the unwrapped status quo.
+ * Lazy self-test: candidates are probed only when the lsof/ps fallback is
+ * first reached, and the result is memoized. A candidate is adopted only
+ * when `timeout -k 1 1 /bin/sh -c :` exits 0. This rejects wrappers that do
+ * not support the coreutils `-k` flag — busybox <1.34, toybox, broken
+ * symlinks — which would otherwise exit with a usage error without ever
+ * running lsof, silently converting the lsof-ETIMEDOUT fail-closed contract
+ * into fail-open (#1492 regression). Only when EVERY candidate fails does
+ * the probe fall back to the unwrapped status quo (memoized null).
  * busybox ≥1.34 passes the test and is fully usable (capability, not
  * identity, decides).
  */
-function resolveUnixGuardTimeout() {
-  if (unixGuardTimeoutCache !== undefined) return unixGuardTimeoutCache;
-  unixGuardTimeoutCache = null;
-  const fromEnv = process.env.GITNEXUS_HOOK_TIMEOUT_PATH;
-  const trimmed = fromEnv ? String(fromEnv).trim() : '';
-  if (trimmed === 'disabled') return unixGuardTimeoutCache;
-  let guard = null;
-  if (trimmed && fs.existsSync(trimmed)) {
-    guard = trimmed;
-  } else {
-    const candidates = [
-      '/usr/bin/timeout',
-      '/bin/timeout',
-      '/opt/homebrew/bin/gtimeout',
-      '/usr/local/bin/gtimeout',
-    ];
-    for (const candidate of candidates) {
-      try {
-        if (fs.existsSync(candidate)) {
-          guard = candidate;
-          break;
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  if (!guard) return unixGuardTimeoutCache;
+function passesGuardSelfTest(guard) {
   try {
     const selfTest = spawnSync(guard, ['-k', '1', '1', '/bin/sh', '-c', ':'], {
       encoding: 'utf-8',
@@ -122,11 +101,37 @@ function resolveUnixGuardTimeout() {
       stdio: ['ignore', 'ignore', 'ignore'],
       windowsHide: true,
     });
-    if (!selfTest.error && selfTest.status === 0) {
-      unixGuardTimeoutCache = guard;
-    }
+    return !selfTest.error && selfTest.status === 0;
   } catch {
-    /* keep null — fall back to unwrapped lsof/ps */
+    return false;
+  }
+}
+
+function resolveUnixGuardTimeout() {
+  if (unixGuardTimeoutCache !== undefined) return unixGuardTimeoutCache;
+  unixGuardTimeoutCache = null;
+  const fromEnv = process.env.GITNEXUS_HOOK_TIMEOUT_PATH;
+  const trimmed = fromEnv ? String(fromEnv).trim() : '';
+  if (trimmed === 'disabled') return unixGuardTimeoutCache;
+  const candidates = [];
+  if (trimmed && fs.existsSync(trimmed)) candidates.push(trimmed);
+  for (const builtin of [
+    '/usr/bin/timeout',
+    '/bin/timeout',
+    '/opt/homebrew/bin/gtimeout',
+    '/usr/local/bin/gtimeout',
+  ]) {
+    try {
+      if (fs.existsSync(builtin)) candidates.push(builtin);
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const candidate of candidates) {
+    if (passesGuardSelfTest(candidate)) {
+      unixGuardTimeoutCache = candidate;
+      break;
+    }
   }
   return unixGuardTimeoutCache;
 }
@@ -290,11 +295,19 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
     windowsHide: true,
   });
   if (lsof.error) return lsof.error.code === 'ETIMEDOUT';
-  // Belt-and-suspenders, coreutils-only: GNU/BSD timeout exits 124 on budget
-  // expiry and 137 after the -k SIGKILL — map both to "unresponsive holder"
-  // (fail-closed). busybox-style wrappers surface expiry as a signal with
-  // status null instead, so this mapping never fires there — harmless,
-  // because the 1s spawnSync timer above always ETIMEDOUTs first.
+  // Guard-mediated deaths map to "unresponsive holder" (fail-closed). Three
+  // result shapes, verified against coreutils 9.1:
+  //   - signal-death: when `-k` escalates to SIGKILL, coreutils timeout
+  //     SELF-RAISES the signal, so spawnSync reports {status: null, signal}
+  //     with no .error (spawnSync's own ETIMEDOUT was handled above). The
+  //     same shape appears when this hook is frozen >2s (SIGSTOP, laptop
+  //     suspend) and the guard expires while it sleeps. By construction, a
+  //     guard-wrapped probe that died by signal without spawnSync ETIMEDOUT
+  //     is a budget/kill outcome.
+  //   - 124: budget expired and the child exited after the plain SIGTERM.
+  //   - 137: NOT the coreutils -k path — only exit-code-propagating wrappers,
+  //     or a child SIGKILLed externally (e.g. the OOM killer).
+  if (guard && lsof.status === null && lsof.signal) return true;
   if (guard && (lsof.status === 124 || lsof.status === 137)) return true;
 
   const pids = (lsof.stdout || '').split(/\s+/).filter(Boolean);
@@ -314,7 +327,10 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
       if (ps.error.code === 'ETIMEDOUT') return true;
       continue;
     }
-    // Same coreutils-only defensive mapping as the lsof call above.
+    // Same guard-mediated-death mapping as the lsof call above (signal-death
+    // from the -k escalation or a frozen hook; 124 budget expiry; 137 only
+    // for exit-code-propagating wrappers / external SIGKILL).
+    if (guard && ps.status === null && ps.signal) return true;
     if (guard && (ps.status === 124 || ps.status === 137)) return true;
     if (isGitNexusServerCommand(ps.stdout || '')) return true;
   }
