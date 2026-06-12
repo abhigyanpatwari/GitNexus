@@ -43,6 +43,7 @@ import {
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
+import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -232,6 +233,14 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     );
     const sharedNodeLookup = totalScopeFiles > 0 ? buildGraphNodeLookup(ctx.graph) : undefined;
     logHeapProbe('scope-setup-nodeLookup-end', `langs=${totalScopeLangs}`);
+    // M4 (#2084 review P2-6): build the functionish-node index ONCE for the
+    // taint summary harvest, shared across every language pass (it is a whole-
+    // graph scan and language-agnostic). Only when pdg is on — off ⇒ undefined,
+    // no scan, byte-identical.
+    const sharedFnNodeIndex =
+      ctx.options?.pdg === true && totalScopeFiles > 0
+        ? buildFunctionNodeIndex(ctx.graph)
+        : undefined;
 
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       // Standalone providers (COBOL, JCL) don't emit graph edges yet
@@ -359,6 +368,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           files,
           resolutionConfig,
           prebuiltNodeLookup: sharedNodeLookup,
+          prebuiltFunctionNodeIndex: sharedFnNodeIndex,
           preExtractedParsedFiles: preExtractedByPath,
           scopeIndexStorePath: parsedFileStorePath,
           // CFG/PDG emission (#2081 M1) — opt-in; off ⇒ byte-identical graph.

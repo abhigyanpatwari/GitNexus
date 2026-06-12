@@ -54,6 +54,7 @@ import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
 import {
   buildFunctionNodeIndex,
   harvestFileSummaries,
+  type FunctionNodeIndex,
 } from '../../taint/summary-harvest-driver.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
 import type { FunctionCfg } from '../../cfg/types.js';
@@ -308,6 +309,14 @@ interface RunScopeResolutionInput {
    * base is safe.
    */
   readonly prebuiltNodeLookup?: ReturnType<typeof buildGraphNodeLookup>;
+  /**
+   * Functionish-node index built ONCE by the caller and shared across every
+   * language pass (#2084 review P2-6). Like `prebuiltNodeLookup`,
+   * `buildFunctionNodeIndex` is a whole-graph scan and is language-agnostic, so
+   * rebuilding it per language wastes a full scan each time. When omitted
+   * (tests / isolated calls) it is built locally for the pdg-enabled language.
+   */
+  readonly prebuiltFunctionNodeIndex?: FunctionNodeIndex;
   /**
    * Opaque per-language import-resolution config (e.g. tsconfig path
    * aliases for TypeScript). Loaded once by the caller via
@@ -807,7 +816,10 @@ export function runScopeResolution(
     // is built ONCE (whole-graph scan) and reused across every file; summaries
     // accumulate here and ride out on the stats for the cross-function fixpoint
     // phase. Only built when the language has a registered taint model.
-    const fnNodeIndex = taintSpec !== undefined ? buildFunctionNodeIndex(graph) : undefined;
+    const fnNodeIndex =
+      taintSpec !== undefined
+        ? (input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph))
+        : undefined;
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
