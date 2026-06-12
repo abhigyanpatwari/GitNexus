@@ -37,33 +37,15 @@ import { zigMethodConfig } from '../method-extractors/configs/zig.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { zigVariableConfig } from '../variable-extractors/configs/zig.js';
 import { zigTypeConfig } from '../type-extractors/zig.js';
-import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
   emitZigScopeCaptures,
   interpretZigImport,
   interpretZigTypeBinding,
+  isZigContainerMethod,
   zigArityCompatibility,
   zigBindingScopeFor,
   zigReceiverBinding,
 } from './zig/index.js';
-
-const ZIG_CONTAINER_TYPES = new Set(['struct_declaration', 'enum_declaration', 'union_declaration']);
-
-/**
- * A Zig `fn` declared directly inside a struct/enum/union container is a
- * method (mirrors `isKotlinClassMethod`). Containers nest function
- * declarations directly — there is no intermediate body node.
- */
-function isZigContainerMethod(
-  captureNode: { parent?: SyntaxNode | null } | null | undefined,
-): boolean {
-  let ancestor = captureNode?.parent;
-  while (ancestor) {
-    if (ZIG_CONTAINER_TYPES.has(ancestor.type)) return true;
-    ancestor = ancestor.parent;
-  }
-  return false;
-}
 
 export const zigProvider = defineLanguage({
   id: SupportedLanguages.Zig,

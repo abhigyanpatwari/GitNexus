@@ -4,7 +4,7 @@ import { getZigParser, getZigScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
-const ZIG_CONTAINER_TYPES = new Set([
+export const ZIG_CONTAINER_TYPES: ReadonlySet<string> = new Set([
   'struct_declaration',
   'enum_declaration',
   'union_declaration',
@@ -27,11 +27,15 @@ function isContainerOrImportBinding(declNode: SyntaxNode): boolean {
   return false;
 }
 
-/** A `fn` nested in a struct/enum/union container is a method — mirror the
- *  provider's `labelOverride` so scope-side defs carry the same label the
- *  worker gives the graph node. */
-function isContainerMethod(fnNode: SyntaxNode): boolean {
-  let ancestor = fnNode.parent;
+/** A `fn` nested in a struct/enum/union container is a method. Single
+ *  predicate shared between the provider's `labelOverride` (worker
+ *  structure phase) and the scope-capture relabel below, so the graph
+ *  node label and the scope-side def label cannot drift apart. The loose
+ *  parameter shape matches what `labelOverride` receives. */
+export function isZigContainerMethod(
+  captureNode: { readonly parent?: SyntaxNode | null } | null | undefined,
+): boolean {
+  let ancestor = captureNode?.parent;
   while (ancestor) {
     if (ZIG_CONTAINER_TYPES.has(ancestor.type)) return true;
     ancestor = ancestor.parent;
@@ -75,7 +79,7 @@ export function emitZigScopeCaptures(
     // Relabel container-nested fns Function → Method (provider labelOverride
     // parity). The anchor capture name carries the kind, so rebuild it.
     const fnAnchor = nodeMap['@declaration.function'];
-    if (fnAnchor !== undefined && isContainerMethod(fnAnchor)) {
+    if (fnAnchor !== undefined && isZigContainerMethod(fnAnchor)) {
       const fnCapture = grouped['@declaration.function']!;
       delete grouped['@declaration.function'];
       grouped['@declaration.method'] = { ...fnCapture, name: '@declaration.method' };

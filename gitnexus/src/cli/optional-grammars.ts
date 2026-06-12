@@ -7,18 +7,22 @@
  * prebuilds activated via node-gyp-build. All can be skipped via
  * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
  * soft-fail when no prebuild matches the host platform (and a source build was
- * unavailable / not attempted).
+ * unavailable / not attempted). tree-sitter-zig is the one npm-installed
+ * optionalDependency in the list; its `probe` overrides the vendored load.
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
- * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt
+ * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt/.zig
  * support is unavailable instead of silently getting a degraded index.
  */
 
+import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isGrammarRuntimeSkipped } from '../core/tree-sitter/parser-loader.js';
 import { requireVendoredGrammar } from '../core/tree-sitter/vendored-grammars.js';
 import { cliWarn } from './cli-message.js';
+
+const _require = createRequire(import.meta.url);
 
 interface OptionalGrammar {
   /** Display name in warnings */
@@ -34,6 +38,12 @@ interface OptionalGrammar {
    * `.proto`, which is a gRPC-extractor concern, not a SupportedLanguages.
    */
   language?: SupportedLanguages;
+  /**
+   * Availability probe. Defaults to `requireVendoredGrammar(pkg)`; grammars
+   * that install from npm as an optionalDependency (zig) override it with a
+   * plain `require` of the package.
+   */
+  probe?: () => unknown;
 }
 
 const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
@@ -55,6 +65,14 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
     pkg: 'tree-sitter-kotlin',
     extensions: ['.kt', '.kts'],
     language: SupportedLanguages.Kotlin,
+  },
+  {
+    name: 'tree-sitter-zig',
+    pkg: '@tree-sitter-grammars/tree-sitter-zig',
+    extensions: ['.zig'],
+    language: SupportedLanguages.Zig,
+    // npm optionalDependency, not vendored — probe via plain require.
+    probe: () => _require('@tree-sitter-grammars/tree-sitter-zig'),
   },
 ];
 
@@ -105,7 +123,11 @@ export function detectMissingOptionalGrammars(): MissingGrammar[] {
       continue;
     }
     try {
-      requireVendoredGrammar(g.pkg);
+      if (g.probe !== undefined) {
+        g.probe();
+      } else {
+        requireVendoredGrammar(g.pkg);
+      }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       const msg = err instanceof Error ? err.message : String(err);

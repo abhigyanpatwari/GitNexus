@@ -3,6 +3,10 @@ pub const State = enum { idle, working };
 pub const Tag = union(enum) {
     none,
     energy: u32,
+
+    pub fn isEnergy(self: Tag) bool {
+        return self == .energy;
+    }
 };
 
 pub const Pioneer = struct {

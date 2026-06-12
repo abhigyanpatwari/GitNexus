@@ -42,6 +42,17 @@ describe('Zig basic resolution', () => {
     expect(methods).toContain('reset');
   });
 
+  it('extracts union(enum) methods as Methods (Union is class-like)', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('isEnergy');
+  });
+
+  it('dispatches method calls on a union receiver (main → isEnergy)', () => {
+    // Pins the `isClassLike('Union')` widening in scope/walkers.ts: without
+    // it `populateClassOwnedMembers` finds no class-like def in the Tag
+    // scope, the method gets no ownerId, and dispatch silently drops.
+    expect(edgeSet(getRelationships(result, 'CALLS'))).toContain('main → isEnergy');
+  });
+
   it('resolves the relative @import("./pioneer.zig") to pioneer.zig', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const internal = imports.filter((e) => e.targetFilePath.endsWith('pioneer.zig'));

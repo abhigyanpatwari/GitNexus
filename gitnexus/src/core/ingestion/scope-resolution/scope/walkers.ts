@@ -173,9 +173,10 @@ export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): 
  * that collapses to `@scope.class` in the scope-extractor query contract.
  *
  * Semantics widened historically from `'Class' | 'Interface'` to cover
- * C#-shape languages (struct, record, enum, trait). Languages that emit
- * only `'Class'` are unaffected — the extra kinds never appear in their
- * parsed output.
+ * C#-shape languages (struct, record, enum, trait) and Zig tagged unions
+ * (`union(enum)` containers own methods like structs do). Languages that
+ * emit only `'Class'` are unaffected — the extra kinds never appear in
+ * their parsed output.
  */
 export function isClassLike(t: string): boolean {
   return (
@@ -184,7 +185,8 @@ export function isClassLike(t: string): boolean {
     t === 'Struct' ||
     t === 'Record' ||
     t === 'Enum' ||
-    t === 'Trait'
+    t === 'Trait' ||
+    t === 'Union'
   );
 }
 
