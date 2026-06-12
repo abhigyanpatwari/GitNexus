@@ -1,10 +1,12 @@
 /**
  * Per-language source/sink/sanitizer registry seam (issue #2080).
  *
- * A keyed registry of {@link SourceSinkSanitizerSpec} by language id. M0 stands
- * up the empty seam — no language is registered and nothing in the pipeline
- * reads it. M3 (#2083) registers per-language specs and queries this registry
- * when emitting taint edges.
+ * A keyed registry of {@link SourceSinkSanitizerSpec} by language id. M0 stood
+ * up the empty seam; M3 U2 (#2083) fills it with the built-in TS/JS model via
+ * the EXPLICIT `registerBuiltinTaintModels()` seam in `typescript-model.ts` —
+ * deliberately not an import side-effect. The U4 taint emit path must call it
+ * once before the pdg window consumes the registry (idempotent; the registry
+ * itself stays empty until then, preserving default-run parity).
  *
  * The store is module-level (matching the codebase's other per-language
  * registries). {@link clearSourceSinkRegistry} resets it for test isolation.

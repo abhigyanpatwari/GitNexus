@@ -1,38 +1,119 @@
 /**
- * Source/sink/sanitizer config model (issue #2080, taint/PDG substrate M0).
+ * Source/sink/sanitizer config model (issue #2080 M0 seam, extended by #2083
+ * M3 U2).
  *
- * The per-language taint configuration *shape*. M0 ships only the type and an
- * (empty) registry seam — no analysis consumes it yet. M3 (#2083, intra-proc
- * taint) populates per-language specs and reads them when emitting TAINTED /
- * SANITIZES edges.
+ * The per-language taint configuration *shape*. M0 shipped only the bare
+ * `{name, args?}` callable matcher and an empty registry seam; M3 U2 extends
+ * it with the `kind` taxonomy and the resolution-mechanism fields the
+ * import-aware matcher (`taint/match.ts`) needs, and fills the registry with
+ * the built-in TS/JS model (`taint/typescript-model.ts`).
  *
- * Kept deliberately minimal: enough for M3 to express "callable X is a
- * source / sink / sanitizer, optionally for argument position N" without M0
- * committing to matcher semantics it cannot yet validate. The shape is
- * expected to grow (e.g. sanitizer escape conditions, return-position taint)
- * when M3 makes contact with real flows; that is a forward-declared-interface
- * design choice, not a finished contract.
+ * Design rule: entries describe WHAT a callable is (category + how its name
+ * resolves), never HOW matching works — matching semantics (import joins,
+ * shadow checks, spread/template position rules) live in the matcher so the
+ * spec stays declarative data that can hash into `taintModelVersion`.
  */
 
+/** Categories of taint sources. M3 ships remote HTTP input only. */
+export type SourceKind = 'remote-input';
+
 /**
- * Identifies a callable that participates in taint flow. `name` is matched
- * against a resolved callable (simple or qualified name — exact matching
- * semantics are M3's call). `args` optionally narrows to specific 0-based
- * argument positions that carry taint (for a source/sink) or clear it (for a
- * sanitizer); omit to mean "unspecified / all".
+ * Vulnerability categories for sinks. Sanitizers reference the SAME taxonomy
+ * via {@link TaintSanitizerEntry.neutralizes}: a sanitizer kill applies only
+ * when it neutralizes the matched sink's kind (`path.basename` strips
+ * directories, not shell metacharacters — a kind-blind kill is a suppressed
+ * live command injection, the forbidden false-negative direction).
  */
-export interface TaintCallableMatcher {
+export type SinkKind =
+  | 'command-injection'
+  | 'code-injection'
+  | 'path-traversal'
+  | 'sql-injection'
+  | 'xss';
+
+/**
+ * Identifies a callable that participates in taint flow. `name` is the
+ * callable's own (unqualified) name — qualification comes from the
+ * resolution-mechanism fields on the extending entry types, not from dotted
+ * `name` strings. `args` optionally narrows to specific 0-based argument
+ * positions that carry taint into a sink (or are cleared by a sanitizer);
+ * omit to mean "all positions".
+ */
+export interface TaintCallableMatcher<K extends string = string> {
   readonly name: string;
   readonly args?: readonly number[];
+  /** Category label — drives finding classification and sanitizer kind-compat. */
+  readonly kind: K;
 }
 
 /**
- * The taint configuration for a single language: which callables introduce
- * taint (sources), which are dangerous to reach with tainted input (sinks),
- * and which clear taint (sanitizers).
+ * A sink callable. Exactly one resolution mechanism should be set per entry:
+ *
+ * - `module` — the callable lives in a package/builtin module; the matcher
+ *   resolves call sites against it import-aware (ESM `parsedImports` aliases,
+ *   namespace handles, and the CommonJS `require('<literal>')` join). `name`
+ *   is the exported member (`'exec'` of `'child_process'`); the pseudo-name
+ *   `'default'` denotes invoking the module's default export / the module
+ *   handle itself.
+ * - `global` — a true ECMAScript global (`eval`, `Function`); matched by bare
+ *   name only when the name is not shadowed by an in-function declaration and
+ *   not bound by an import. `newOnly` further restricts to `new` expressions
+ *   (`new Function(body)`).
+ * - `anyReceiver` — a method matched on ANY receiver chain by its final
+ *   segment (`.query(sql)` / `.execute(sql)` on whatever the DB handle is
+ *   named) — deliberately name-conventional, like Semgrep's default rules.
+ * - `receivers` — a method matched only on the listed conventional receiver
+ *   names (`res.send` / `res.write`); exactly `<receiver>.<name>`, name-based.
+ */
+export interface TaintSinkEntry extends TaintCallableMatcher<SinkKind> {
+  readonly module?: string;
+  readonly global?: boolean;
+  /** Only meaningful with `global`: match `new <name>(…)` sites only. */
+  readonly newOnly?: boolean;
+  readonly anyReceiver?: boolean;
+  readonly receivers?: readonly string[];
+}
+
+/**
+ * A sanitizer callable. Carries the sink kinds it `neutralizes` instead of a
+ * `kind` of its own. STRICTER resolution than sinks by design: only the
+ * `module` (import-aware) and `global` mechanisms exist — never a bare-name
+ * convention — because a sanitizer mis-match is a false KILL (a user's own
+ * `escape` helper must not suppress findings), while a sink mis-match is
+ * merely noise. `args` narrows which argument positions are cleared (omit =
+ * all).
+ */
+export interface TaintSanitizerEntry {
+  readonly name: string;
+  readonly args?: readonly number[];
+  readonly neutralizes: readonly SinkKind[];
+  readonly module?: string;
+  readonly global?: boolean;
+}
+
+/**
+ * A member-read taint source: reading `<object>.<property>` where the object
+ * is one of the conventional receiver `objects` names (`req`/`request`) and
+ * the property is one of `properties` (`body`, `query`, …). Matching is
+ * name-based on the harvested `member-read` site (Semgrep-convention, not
+ * type-aware — the accepted M3 FP/FN trade recorded in the plan's risk
+ * table). One entry fans out over the objects × properties product.
+ */
+export interface TaintMemberSourceEntry {
+  readonly kind: SourceKind;
+  readonly objects: readonly string[];
+  readonly properties: readonly string[];
+}
+
+/**
+ * The taint configuration for a single language: which member reads introduce
+ * taint (sources), which callables are dangerous to reach with tainted input
+ * (sinks), and which callables clear it (sanitizers). M3 sources are
+ * member-read entries only; call-result sources are a forward extension
+ * (add a union variant), not a missing case.
  */
 export interface SourceSinkSanitizerSpec {
-  readonly sources: readonly TaintCallableMatcher[];
-  readonly sinks: readonly TaintCallableMatcher[];
-  readonly sanitizers: readonly TaintCallableMatcher[];
+  readonly sources: readonly TaintMemberSourceEntry[];
+  readonly sinks: readonly TaintSinkEntry[];
+  readonly sanitizers: readonly TaintSanitizerEntry[];
 }

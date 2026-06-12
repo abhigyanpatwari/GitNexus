@@ -1,49 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
-import {
-  createTypeScriptCfgVisitor,
-  TS_FUNCTION_TYPES,
-} from '../../../src/core/ingestion/cfg/visitors/typescript.js';
 import type { FunctionCfg, StatementFacts } from '../../../src/core/ingestion/cfg/types.js';
+import { cfgOf } from '../../helpers/ts-cfg-harness.js';
 
 // U1 (#2082 M2) — per-statement def/use harvesting. The two-phase design
 // (declaration pre-scan → resolve during the CFG walk) is what makes the
 // walk-order traps pass: the visitor walks finally-before-try, for-init-last,
 // and do-while-condition-first, so declare-as-you-walk would mis-key common
 // code. Each test pins names→binding-index agreement, not just presence.
-
-const visitor = createTypeScriptCfgVisitor();
-
-function parse(code: string): SyntaxNode {
-  const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
-  return parser.parse(code).rootNode;
-}
-
-function collectFunctions(root: SyntaxNode): SyntaxNode[] {
-  const out: SyntaxNode[] = [];
-  const stack = [root];
-  while (stack.length) {
-    const n = stack.pop() as SyntaxNode;
-    if (TS_FUNCTION_TYPES.has(n.type)) out.push(n);
-    for (let i = n.namedChildCount - 1; i >= 0; i--) {
-      const c = n.namedChild(i);
-      if (c) stack.push(c);
-    }
-  }
-  return out;
-}
-
-function cfgOf(code: string, index = 0): FunctionCfg {
-  const fns = collectFunctions(parse(code));
-  const fn = fns[index];
-  if (!fn) throw new Error(`no function at index ${index}`);
-  const cfg = visitor.buildFunctionCfg(fn, 'fixture.ts');
-  if (!cfg) throw new Error('buildFunctionCfg returned undefined');
-  return cfg;
-}
 
 /** All statement facts of the CFG, flattened in (block, statement) order. */
 function allFacts(cfg: FunctionCfg): StatementFacts[] {
@@ -489,5 +452,261 @@ describe('TS/JS def/use harvest — conditional contexts are MAY-defs (tri-revie
     const x = bindingIdx(cfg, 'x');
     const withDef = allFacts(cfg).filter((s) => s.defs.includes(x));
     expect(withDef.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ── #2083 M3 U1 — taint-site harvest ────────────────────────────────────────
+
+import type { SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
+
+/** All site records of the CFG, flattened in (block, statement) order. */
+function allSites(cfg: FunctionCfg): SiteRecord[] {
+  return allFacts(cfg).flatMap((f) => [...(f.sites ?? [])]);
+}
+
+/** The single statement fact carrying sites (throws when ambiguous). */
+function siteFact(cfg: FunctionCfg, line?: number): StatementFacts {
+  const withSites = allFacts(cfg).filter(
+    (f) => (f.sites?.length ?? 0) > 0 && (line === undefined || f.line === line),
+  );
+  if (withSites.length !== 1)
+    throw new Error(`expected 1 site-bearing fact, got ${withSites.length}`);
+  return withSites[0];
+}
+
+describe('M3 U1 — taint-site harvest: call sites', () => {
+  it('exec(a, b) → one call site mapping position 0→[a], 1→[b]', () => {
+    const cfg = cfgOf(`function f(a, b) { exec(a, b); }`);
+    const sites = siteFact(cfg, 1).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('exec');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+    expect(s.parent).toBeUndefined();
+  });
+
+  it('child_process.exec(cmd) → dotted callee path + receiver slot', () => {
+    const cfg = cfgOf(`function f(cmd) { child_process.exec(cmd); }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.callee).toBe('child_process.exec');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'child_process'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'cmd')]]);
+    // chain-length-1 callee: the access IS the callee — no member-read site
+    expect(siteFact(cfg, 1).sites).toHaveLength(1);
+    // and the receiver use is recorded exactly once (no double-record)
+    expect(
+      siteFact(cfg, 1).uses.filter((u) => u === bindingIdx(cfg, 'child_process')),
+    ).toHaveLength(1);
+  });
+
+  it('const r = f(x) → resultDefs carries r', () => {
+    const cfg = cfgOf(`function g(x) { const r = f(x); }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'r')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+  });
+
+  it('exec(escape(x)) → inner site is first-class with parent link + occurrence tagging', () => {
+    const cfg = cfgOf(`function f(x) { exec(escape(x)); }`);
+    const sites = siteFact(cfg, 1).sites!;
+    expect(sites).toHaveLength(2);
+    const execIdx = sites.findIndex((s) => s.callee === 'exec');
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    expect(execIdx).toBeGreaterThanOrEqual(0);
+    expect(escapeIdx).toBeGreaterThanOrEqual(0);
+    const x = bindingIdx(cfg, 'x');
+    // inner escape: plain occurrence, parent link to (exec, arg 0)
+    expect(sites[escapeIdx].args).toEqual([[x]]);
+    expect(sites[escapeIdx].parent).toEqual([execIdx, 0]);
+    // outer exec: x's occurrence is via-tagged through the escape site
+    expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
+    expect(sites[execIdx].parent).toBeUndefined();
+  });
+
+  it('a bypass occurrence stays a PLAIN entry next to the via-tagged one (exec(x + escape(x)))', () => {
+    const cfg = cfgOf(`function f(x) { exec(x + escape(x)); }`);
+    const sites = siteFact(cfg, 1).sites!;
+    const exec = sites.find((s) => s.callee === 'exec')!;
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    const x = bindingIdx(cfg, 'x');
+    expect(exec.args![0]).toEqual([x, [x, escapeIdx]]);
+  });
+
+  it('new Function(x) → kind "new" site (new_expression case)', () => {
+    const cfg = cfgOf(`function f(x) { new Function(x); }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.kind).toBe('new');
+    expect(s.callee).toBe('Function');
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+  });
+
+  it('exec(...args) → spread index recorded, args binding occurs at the position', () => {
+    const cfg = cfgOf(`function f(...args) { exec(...args); }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.spread).toBe(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'args')]]);
+  });
+
+  it('const cp = require("child_process") → requireArg literal + cp in resultDefs', () => {
+    const cfg = cfgOf(`function f() { const cp = require('child_process'); }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.callee).toBe('require');
+    expect(s.requireArg).toBe('child_process');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'cp')]);
+  });
+
+  it('per-declarator attribution: const a = t, b = escape(t) → resultDefs [b] only', () => {
+    const cfg = cfgOf(`function f(t) { const a = t, b = escape(t); }`);
+    const sites = siteFact(cfg, 1).sites!;
+    expect(sites).toHaveLength(1);
+    expect(sites[0].callee).toBe('escape');
+    expect(sites[0].resultDefs).toEqual([bindingIdx(cfg, 'b')]);
+  });
+
+  it('non-top-level call gets NO resultDefs (const c = cond ? escape(b) : b keeps c taintable)', () => {
+    const cfg = cfgOf(`function f(cond, b) { const c = cond ? escape(b) : b; }`);
+    const sites = siteFact(cfg, 1).sites!;
+    expect(sites).toHaveLength(1);
+    expect(sites[0].callee).toBe('escape');
+    expect(sites[0].resultDefs).toBeUndefined();
+  });
+
+  it('value wrappers unwrap for resultDefs: const b = (await escape(t))! still attaches [b]', () => {
+    const cfg = cfgOf(`async function f(t) { const b = (await escape(t))!; }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'b')]);
+  });
+
+  it('plain assignment x = f(y) attaches resultDefs [x]', () => {
+    const cfg = cfgOf(`function g(y) { let x; x = f(y); }`);
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+  });
+});
+
+describe('M3 U1 — taint-site harvest: member reads', () => {
+  it('const b = req.body → member read {object: req, property: body} AND b in defs', () => {
+    const cfg = cfgOf(`function f(req) { const b = req.body; }`);
+    const fact = siteFact(cfg, 1);
+    expect(fact.defs).toContain(bindingIdx(cfg, 'b'));
+    expect(fact.sites).toEqual([
+      { kind: 'member-read', object: bindingIdx(cfg, 'req'), property: 'body' },
+    ]);
+  });
+
+  it('req?.body records identically to req.body (optional-chain normalization)', () => {
+    const plain = cfgOf(`function f(req) { const b = req.body; }`);
+    const optional = cfgOf(`function f(req) { const b = req?.body; }`);
+    expect(siteFact(optional, 1).sites).toEqual(siteFact(plain, 1).sites);
+  });
+
+  it('req["body"] records as a member read; dynamic req[key] records NOTHING', () => {
+    const literal = cfgOf(`function f(req) { const c = req["body"]; }`);
+    expect(siteFact(literal, 1).sites).toEqual([
+      { kind: 'member-read', object: bindingIdx(literal, 'req'), property: 'body' },
+    ]);
+    const dynamic = cfgOf(`function f(req, key) { const d = req[key]; }`);
+    expect(allSites(dynamic)).toHaveLength(0);
+    // the dynamic index is still a value use
+    expect(usesOf(dynamic)).toContain(bindingIdx(dynamic, 'key'));
+  });
+
+  it('exec(req.body.toString()) → the mid-callee-chain member read IS recorded', () => {
+    const cfg = cfgOf(`function f(req) { exec(req.body.toString()); }`);
+    const sites = siteFact(cfg, 1).sites!;
+    const read = sites.find((s) => s.kind === 'member-read');
+    expect(read).toBeDefined();
+    expect(read!.object).toBe(bindingIdx(cfg, 'req'));
+    expect(read!.property).toBe('body');
+    // the toString call site carries the full dotted path + receiver
+    const ts = sites.find((s) => s.callee === 'req.body.toString');
+    expect(ts).toBeDefined();
+    expect(ts!.receiver).toBe(bindingIdx(cfg, 'req'));
+    // and req's occurrence reaches exec's arg 0 via the toString site
+    const exec = sites.find((s) => s.callee === 'exec')!;
+    const tsIdx = sites.indexOf(ts!);
+    expect(exec.args).toEqual([[[bindingIdx(cfg, 'req'), tsIdx]]]);
+  });
+
+  it('write-position member targets record NO member read (obj.p = q)', () => {
+    const cfg = cfgOf(`function f(obj, q) { obj.p = q; }`);
+    expect(allSites(cfg)).toHaveLength(0);
+  });
+
+  it('a mid-chain LOAD inside a write target IS recorded (req.body.x = v)', () => {
+    const cfg = cfgOf(`function f(req, v) { req.body.x = v; }`);
+    expect(siteFact(cfg, 1).sites).toEqual([
+      { kind: 'member-read', object: bindingIdx(cfg, 'req'), property: 'body' },
+    ]);
+  });
+});
+
+describe('M3 U1 — taint-site harvest: templates, callbacks, statement granularity', () => {
+  it('template-literal argument: exec(`ls ${dir}`) → dir occurs at position 0, no template flag', () => {
+    const cfg = cfgOf('function f(dir) { exec(`ls ${dir}`); }');
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.template).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'dir')]]);
+  });
+
+  it('tagged template: sql`…${id}` → call site with template marker, id recorded', () => {
+    const cfg = cfgOf('function f(id) { sql`select ${id}`; }');
+    const s = siteFact(cfg, 1).sites![0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('sql');
+    expect(s.template).toBe(true);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'id')]]);
+  });
+
+  it('nested callback: arr.forEach(() => exec(y)) → inner call invisible, outer site has receiver arr', () => {
+    const cfg = cfgOf(`function f(arr, y) { arr.forEach(() => exec(y)); }`);
+    const sites = siteFact(cfg, 1).sites!;
+    expect(sites).toHaveLength(1);
+    expect(sites[0].callee).toBe('arr.forEach');
+    expect(sites[0].receiver).toBe(bindingIdx(cfg, 'arr'));
+    // y is invisible (nested-function opacity) — neither a use nor an occurrence
+    expect(usesOf(cfg)).not.toContain(bindingIdx(cfg, 'y'));
+    expect(sites[0].args).toBeUndefined();
+  });
+
+  it('two statements on one line → distinct site records on distinct StatementFacts', () => {
+    const cfg = cfgOf(`function f(a, b) { exec(a); run(b); }`);
+    const withSites = allFacts(cfg).filter((f) => (f.sites?.length ?? 0) > 0);
+    expect(withSites).toHaveLength(2);
+    expect(withSites[0].sites![0].callee).toBe('exec');
+    expect(withSites[1].sites![0].callee).toBe('run');
+    // site indices are PER-STATEMENT — both are index 0 of their own record
+    expect(withSites[0].sites).toHaveLength(1);
+    expect(withSites[1].sites).toHaveLength(1);
+  });
+
+  it('sites are omitted entirely on statements without calls or member reads', () => {
+    const cfg = cfgOf(`function f() { let x = 1; x = 2; }`);
+    for (const fact of allFacts(cfg)) expect(fact.sites).toBeUndefined();
+  });
+
+  it('sites survive a JSON round-trip (worker boundary shape)', () => {
+    const cfg = cfgOf(`function f(req, x) { const b = req.body; exec(escape(x), b); }`);
+    const trip = JSON.parse(JSON.stringify(cfg)) as FunctionCfg;
+    expect(trip).toEqual(cfg);
+    expect(allSites(trip).length).toBeGreaterThan(0);
+  });
+
+  it('sequence expression: only the final operand flows into the sink argument', () => {
+    // `exec((log(x), 'safe'))` — the comma operator's value is the last operand
+    // (`'safe'`), so exec's arg 0 must NOT carry `x` (review fix). `x` is still
+    // a USE of the statement (the side-effect operand is evaluated).
+    const cfg = cfgOf(`function f(x) { exec((log(x), 'safe')); }`);
+    const execSite = allSites(cfg).find((s) => s.callee === 'exec')!;
+    expect(execSite.args ?? [[]]).toEqual([[]]); // arg 0 has no flowing binding
+    expect(siteFact(cfg, 1).uses).toContain(bindingIdx(cfg, 'x'));
+  });
+
+  it('sequence expression: a tainted final operand DOES flow into the sink', () => {
+    const cfg = cfgOf(`function f(x) { exec((log('a'), x)); }`);
+    const execSite = allSites(cfg).find((s) => s.callee === 'exec')!;
+    expect(execSite.args).toEqual([[bindingIdx(cfg, 'x')]]);
   });
 });

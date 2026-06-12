@@ -62,6 +62,16 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const LIST_REPOS_DEFAULT_LIMIT = 50;
 export const LIST_REPOS_MAX_LIMIT = 200;
 
+/**
+ * Pagination bounds for the `explain` tool (#2083 M3 U6). Findings are sparse
+ * and capped per function at analyze time, but a large repo can still
+ * accumulate enough TAINTED rows to blow MCP/LLM token limits — the response
+ * is page-bounded like `list_repos`. Exported so the backend clamp
+ * (`local-backend.ts`) and the schema stay a single source of truth.
+ */
+export const EXPLAIN_DEFAULT_LIMIT = 50;
+export const EXPLAIN_MAX_LIMIT = 200;
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -514,6 +524,50 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
     },
   },
   {
+    name: 'explain',
+    description: `Explain persisted taint findings: intra-procedural source→sink data flows (TAINTED edges) recorded by \`gitnexus analyze --pdg\`.
+
+Each finding carries the sink category (command-injection, code-injection, path-traversal, sql-injection, xss), the source/sink lines, and the ordered hop path with the variable carried on each hop (decoded from the persisted path encoding).
+
+WHEN TO USE: Security review — "what taint findings exist in this repo / file / function?". Requires the repo to be indexed with \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no taint layer" note, not an error.
+
+ANCHORLESS (no "target"): enumerates all persisted findings for the repo — bounded ("limit", deterministic order), with "totalFindings" and a "truncated" flag.
+ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates, unknown names return not-found. Symbol anchoring is line-range granular (findings whose source block starts inside the symbol's span).
+
+CONTRACT CAVEATS (intra-procedural M3 scope — absent flows are NOT proof of safety):
+- Cross-function flows are not modeled (a flow through a helper function is invisible).
+- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))).
+- Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
+- Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
+- CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).
+- Exception-path over-approximation can produce false-positive noise.
+
+Findings are deliberately NOT part of impact()'s traversal or the web schema — explain is the dedicated taint consumer. SANITIZES (kill) edges are queryable via cypher.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description:
+            'Optional anchor: a file path (e.g. "src/handlers/run.ts" — suffix match accepted) or a symbol/function name (resolved like context()). Omit to enumerate all findings for the repo.',
+        },
+        limit: {
+          type: 'integer',
+          description: `Max findings returned (default: ${EXPLAIN_DEFAULT_LIMIT}, max: ${EXPLAIN_MAX_LIMIT}). "totalFindings" reports the full matched count; "truncated" is set when the page is smaller.`,
+          default: EXPLAIN_DEFAULT_LIMIT,
+          minimum: 1,
+          maximum: EXPLAIN_MAX_LIMIT,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'route_map',
     description: `Show API route mappings: which components/hooks fetch which API endpoints, and which handler files serve them.
 
@@ -647,6 +701,7 @@ const BRANCH_SCOPED_TOOLS = new Set([
   'cypher',
   'context',
   'detect_changes',
+  'explain',
   'check',
   'impact',
   'rename',
