@@ -102,6 +102,15 @@ export interface InterprocResult {
 
 export const DEFAULT_MAX_INTERPROC_HOPS = 32;
 
+/**
+ * Default per-run cap on cross-function findings (#2084 review P1-3). Like the
+ * other pdg caps it is resolved into `RepoMeta.pdg` so `pdgModeMismatch`
+ * stamps it; `0` ⇒ unlimited. 2000 is generous for a real repo — more deduped
+ * `(source, sink, kind)` findings than that is a fixture or a runaway fan-in,
+ * and the overflow is deterministic + counted (`droppedFindings`).
+ */
+export const DEFAULT_PDG_MAX_INTERPROC_FINDINGS = 2000;
+
 /** A tainted parameter, with the flow that first tainted it (for path reconstruction). */
 interface TaintedParam {
   readonly fnId: string;

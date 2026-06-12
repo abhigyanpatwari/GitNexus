@@ -20,8 +20,13 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ScopeResolutionOutput } from '../scope-resolution/pipeline/phase.js';
-import { solveInterprocTaint, type InterprocCallEdge } from '../taint/interproc-solver.js';
-import { emitInterprocTaint } from '../taint/interproc-emit.js';
+import {
+  solveInterprocTaint,
+  DEFAULT_MAX_INTERPROC_HOPS,
+  DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+  type InterprocCallEdge,
+} from '../taint/interproc-solver.js';
+import { emitInterprocTaint, DEFAULT_PDG_MAX_INTERPROC_EDGES } from '../taint/interproc-emit.js';
 import type { FunctionSummary } from '../taint/summary-model.js';
 import { logger } from '../../logger.js';
 
@@ -70,8 +75,28 @@ export const taintSummariesPhase: PipelinePhase<TaintSummariesOutput> = {
       callEdges.push({ callerId: rel.sourceId, calleeId: rel.targetId, calleeName });
     }
 
-    const solved = solveInterprocTaint(summaryMap, callEdges);
-    const emit = emitInterprocTaint(ctx.graph, solved.findings, undefined, (m) => logger.warn(m));
+    // Arm the per-run caps (#2084 review P1-3) — every other pdg layer bounds
+    // its output via RepoMeta.pdg; without this the fixpoint state + TAINT_PATH
+    // edges grow unbounded on a fan-in-heavy repo (OOM). `0` ⇒ unlimited
+    // (preserved like the other pdg caps). The solver/emit already implement
+    // deterministic truncate-and-warn — this just hands them the budgets.
+    const maxFindings = ctx.options?.pdgMaxInterprocFindings ?? DEFAULT_PDG_MAX_INTERPROC_FINDINGS;
+    const maxHops = ctx.options?.pdgMaxInterprocHops ?? DEFAULT_MAX_INTERPROC_HOPS;
+    const maxEdges = ctx.options?.pdgMaxInterprocEdges ?? DEFAULT_PDG_MAX_INTERPROC_EDGES;
+
+    const solved = solveInterprocTaint(summaryMap, callEdges, { maxFindings, maxHops });
+    const emit = emitInterprocTaint(ctx.graph, solved.findings, { maxEdges }, (m) =>
+      logger.warn(m),
+    );
+
+    // Surface drops UNCONDITIONALLY (R4 — never silently truncate the layer).
+    if (solved.droppedFindings > 0 || emit.edgesDropped > 0) {
+      logger.warn(
+        `[taint-interproc] capped: ${solved.droppedFindings} finding(s) dropped by the ` +
+          `per-run findings cap (${maxFindings}), ${emit.edgesDropped} edge(s) by the edge cap ` +
+          `(${maxEdges}) — raise pdgMaxInterprocFindings/pdgMaxInterprocEdges if intentional`,
+      );
+    }
 
     if (solved.findings.length > 0 || emit.edgesEmitted > 0) {
       logger.debug(

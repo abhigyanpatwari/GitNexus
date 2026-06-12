@@ -100,6 +100,19 @@ export interface PipelineOptions {
    */
   pdgMaxTaintHops?: number;
   /**
+   * Per-run cross-function findings cap (#2084 M4 review P1-3). `undefined` ⇒
+   * `DEFAULT_PDG_MAX_INTERPROC_FINDINGS` (2000); `0` ⇒ no cap. Consumed by the
+   * `taintSummaries` phase; RepoMeta-stamped, no CLI flag (KTD8) — same
+   * discipline as the per-function taint caps.
+   */
+  pdgMaxInterprocFindings?: number;
+  /** Per-finding cross-function hop cap (#2084 review P1-3). `undefined` ⇒
+   *  `DEFAULT_MAX_INTERPROC_HOPS` (32); `0` ⇒ no cap. */
+  pdgMaxInterprocHops?: number;
+  /** Per-run `TAINT_PATH` edge cap (#2084 review P1-3). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_INTERPROC_EDGES` (1000); `0` ⇒ no cap. */
+  pdgMaxInterprocEdges?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to

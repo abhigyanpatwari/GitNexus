@@ -80,4 +80,18 @@ describe('U9 — end-to-end interprocedural taint (--pdg)', () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {});
     expect(taintPaths(result)).toHaveLength(0);
   });
+
+  it('the taintSummaries phase ARMS the per-run edge cap (#2084 review P1-3)', async () => {
+    // The fixture yields ≥2 cross-function findings (handle→runIt, handle2→runIt).
+    // A cap of 1 must bound the emitted TAINT_PATH edges — proving the phase
+    // passes the limit, not just that the solver supports one.
+    const uncapped = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
+    expect(taintPaths(uncapped).length).toBeGreaterThan(1);
+
+    const capped = await runPipelineFromRepo(freshRepo(), () => {}, {
+      pdg: true,
+      pdgMaxInterprocEdges: 1,
+    });
+    expect(taintPaths(capped)).toHaveLength(1);
+  });
 });

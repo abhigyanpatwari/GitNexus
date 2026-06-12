@@ -27,6 +27,12 @@ import type { InterprocFinding } from './interproc-solver.js';
  *  coarser signal (return/call-site merging). */
 export const INTERPROC_TAINT_CONFIDENCE = 0.6;
 
+/**
+ * Default per-run cap on emitted `TAINT_PATH` edges (#2084 review P1-3).
+ * Resolved into `RepoMeta.pdg` like the other pdg caps; `0` ⇒ unlimited.
+ */
+export const DEFAULT_PDG_MAX_INTERPROC_EDGES = 1000;
+
 export interface InterprocEmitLimits {
   /** Max `TAINT_PATH` edges per run (post-dedup). `undefined`/0 ⇒ unlimited. */
   readonly maxEdges?: number;
