@@ -1599,122 +1599,127 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const embedJobManager = new JobManager();
 
   // POST /api/embed — trigger server-side embedding generation
-  app.post('/api/embed', createRouteLimiter({ limit: 20 }), requireLocalhostOrigin, async (req, res) => {
-    try {
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-
-      // Check shared repo lock — prevent concurrent analyze + embed on same repo
-      const repoLockPath = entry.storagePath;
-      const lockErr = acquireRepoLock(repoLockPath);
-      if (lockErr) {
-        res.status(409).json({ error: lockErr });
-        return;
-      }
-
-      const job = embedJobManager.createJob({ repoPath: entry.storagePath });
-      embedJobManager.updateJob(job.id, {
-        repoName: entry.name,
-        status: 'analyzing' as any,
-        progress: { phase: 'analyzing', percent: 0, message: 'Starting embedding generation...' },
-      });
-
-      // 30-minute timeout for embedding jobs (same as analyze jobs)
-      const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
-      const embedTimeout = setTimeout(() => {
-        const current = embedJobManager.getJob(job.id);
-        if (current && current.status !== 'complete' && current.status !== 'failed') {
-          releaseRepoLock(repoLockPath);
-          embedJobManager.updateJob(job.id, {
-            status: 'failed',
-            error: 'Embedding timed out (30 minute limit)',
-          });
+  app.post(
+    '/api/embed',
+    createRouteLimiter({ limit: 20 }),
+    requireLocalhostOrigin,
+    async (req, res) => {
+      try {
+        const entry = await resolveRepo(requestedRepo(req));
+        if (!entry) {
+          res.status(404).json({ error: 'Repository not found' });
+          return;
         }
-      }, EMBED_TIMEOUT_MS);
 
-      // Run embedding pipeline asynchronously
-      (async () => {
-        try {
-          const lbugPath = path.join(entry.storagePath, 'lbug');
-          await withLbugDb(lbugPath, async () => {
-            const { runEmbeddingPipeline } =
-              await import('../core/embeddings/embedding-pipeline.js');
-            // Fetch existing content hashes for incremental embedding.
-            // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
-            const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
-            const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
-            if (existingEmbeddings && existingEmbeddings.size > 0) {
-              console.log(
-                `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
-              );
-            }
-            await runEmbeddingPipeline(
-              executeQuery,
-              executeWithReusedStatement,
-              (p) => {
-                embedJobManager.updateJob(job.id, {
-                  progress: {
-                    phase:
-                      p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
-                    percent: p.percent,
-                    message:
-                      p.phase === 'loading-model'
-                        ? 'Loading embedding model...'
-                        : p.phase === 'embedding'
-                          ? `Embedding nodes (${p.percent}%)...`
-                          : p.phase === 'indexing'
-                            ? 'Creating vector index...'
-                            : p.phase === 'ready'
-                              ? 'Embeddings complete'
-                              : `${p.phase} (${p.percent}%)`,
-                  },
-                });
-              },
-              {}, // config: use defaults
-              undefined, // skipNodeIds
-              undefined, // context
-              existingEmbeddings,
-            );
+        // Check shared repo lock — prevent concurrent analyze + embed on same repo
+        const repoLockPath = entry.storagePath;
+        const lockErr = acquireRepoLock(repoLockPath);
+        if (lockErr) {
+          res.status(409).json({ error: lockErr });
+          return;
+        }
 
-            // Flush WAL so subsequent /api/search requests see the new
-            // embeddings immediately (#1149). In the CLI path closeLbug()
-            // handles this during process exit, but the server keeps the
-            // connection open for other routes — a CHECKPOINT is enough.
-            await flushWAL();
-          });
+        const job = embedJobManager.createJob({ repoPath: entry.storagePath });
+        embedJobManager.updateJob(job.id, {
+          repoName: entry.name,
+          status: 'analyzing' as any,
+          progress: { phase: 'analyzing', percent: 0, message: 'Starting embedding generation...' },
+        });
 
-          clearTimeout(embedTimeout);
-          releaseRepoLock(repoLockPath);
-          // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
+        // 30-minute timeout for embedding jobs (same as analyze jobs)
+        const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
+        const embedTimeout = setTimeout(() => {
           const current = embedJobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
-            embedJobManager.updateJob(job.id, { status: 'complete' });
-          }
-        } catch (err: any) {
-          clearTimeout(embedTimeout);
-          releaseRepoLock(repoLockPath);
-          const current = embedJobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
+          if (current && current.status !== 'complete' && current.status !== 'failed') {
+            releaseRepoLock(repoLockPath);
             embedJobManager.updateJob(job.id, {
               status: 'failed',
-              error: err.message || 'Embedding generation failed',
+              error: 'Embedding timed out (30 minute limit)',
             });
           }
-        }
-      })();
+        }, EMBED_TIMEOUT_MS);
 
-      res.status(202).json({ jobId: job.id, status: 'analyzing' });
-    } catch (err: any) {
-      if (err.message?.includes('already in progress')) {
-        res.status(409).json({ error: err.message });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to start embedding generation' });
+        // Run embedding pipeline asynchronously
+        (async () => {
+          try {
+            const lbugPath = path.join(entry.storagePath, 'lbug');
+            await withLbugDb(lbugPath, async () => {
+              const { runEmbeddingPipeline } =
+                await import('../core/embeddings/embedding-pipeline.js');
+              // Fetch existing content hashes for incremental embedding.
+              // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
+              const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
+              const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
+              if (existingEmbeddings && existingEmbeddings.size > 0) {
+                console.log(
+                  `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
+                );
+              }
+              await runEmbeddingPipeline(
+                executeQuery,
+                executeWithReusedStatement,
+                (p) => {
+                  embedJobManager.updateJob(job.id, {
+                    progress: {
+                      phase:
+                        p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
+                      percent: p.percent,
+                      message:
+                        p.phase === 'loading-model'
+                          ? 'Loading embedding model...'
+                          : p.phase === 'embedding'
+                            ? `Embedding nodes (${p.percent}%)...`
+                            : p.phase === 'indexing'
+                              ? 'Creating vector index...'
+                              : p.phase === 'ready'
+                                ? 'Embeddings complete'
+                                : `${p.phase} (${p.percent}%)`,
+                    },
+                  });
+                },
+                {}, // config: use defaults
+                undefined, // skipNodeIds
+                undefined, // context
+                existingEmbeddings,
+              );
+
+              // Flush WAL so subsequent /api/search requests see the new
+              // embeddings immediately (#1149). In the CLI path closeLbug()
+              // handles this during process exit, but the server keeps the
+              // connection open for other routes — a CHECKPOINT is enough.
+              await flushWAL();
+            });
+
+            clearTimeout(embedTimeout);
+            releaseRepoLock(repoLockPath);
+            // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
+            const current = embedJobManager.getJob(job.id);
+            if (!current || current.status !== 'failed') {
+              embedJobManager.updateJob(job.id, { status: 'complete' });
+            }
+          } catch (err: any) {
+            clearTimeout(embedTimeout);
+            releaseRepoLock(repoLockPath);
+            const current = embedJobManager.getJob(job.id);
+            if (!current || current.status !== 'failed') {
+              embedJobManager.updateJob(job.id, {
+                status: 'failed',
+                error: err.message || 'Embedding generation failed',
+              });
+            }
+          }
+        })();
+
+        res.status(202).json({ jobId: job.id, status: 'analyzing' });
+      } catch (err: any) {
+        if (err.message?.includes('already in progress')) {
+          res.status(409).json({ error: err.message });
+        } else {
+          res.status(500).json({ error: err.message || 'Failed to start embedding generation' });
+        }
       }
-    }
-  });
+    },
+  );
 
   // GET /api/embed/:jobId — poll embedding job status
   app.get('/api/embed/:jobId', (req, res) => {

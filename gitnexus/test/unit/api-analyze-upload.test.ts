@@ -302,7 +302,10 @@ describe('requireLocalhostOrigin', () => {
 });
 
 describe('createLocalhostOriginGuard (bound host)', () => {
-  function callWith(boundHost: string, origin: string | undefined): { passed: boolean; status: number } {
+  function callWith(
+    boundHost: string,
+    origin: string | undefined,
+  ): { passed: boolean; status: number } {
     const guard = createLocalhostOriginGuard(boundHost);
     let passed = false;
     let status = 0;
