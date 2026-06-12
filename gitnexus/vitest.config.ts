@@ -90,6 +90,7 @@ export default defineConfig({
           sequence: { groupOrder: 2 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'scratch/**',
             'test/integration/lbug-core-adapter.test.ts',
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',

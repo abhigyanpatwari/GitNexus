@@ -45,6 +45,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "prepare": "npm run build",
     "prepack": "npm run build && chmod +x dist/cli/index.js"
   },

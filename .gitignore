@@ -97,12 +97,22 @@ gitnexus/tcbs-bond-trading-core
 # Claude local config
 gitnexus/.claude/
 
-# Local scripts
-gitnexus/scripts/
+# Local scripts (committed harness scripts in gitnexus/scripts/ are tracked —
+# see `gitnexus/scripts/measure-mode-c.ts` and `gitnexus/scripts/flow-fate.ts`
+# for the Mode C campaign harness; everything else under scripts/ is local).
+gitnexus/scripts/check-scope-guard.sh
+gitnexus/scripts/*.mjs
+gitnexus/scripts/*.js
+gitnexus/scripts/*.sh
+!gitnexus/scripts/measure-mode-c.ts
+!gitnexus/scripts/flow-fate.ts
+!gitnexus/tsconfig.scripts.json
 
 # Local scratch files
 gitnexus/CLAUDE.md
 gitnexus/test-doc-endpoint.ts
+gitnexus/scratch/
+gitnexus/.gitnexus-mc-out/
 
 gitnexus/test/fixtures/mini-repo/*.md
 gitnexus/test/fixtures/mini-repo/.claude
