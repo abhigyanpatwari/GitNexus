@@ -28,6 +28,10 @@ export function requireLocalhostOrigin(req: Request, res: Response, next: () => 
       return;
     }
 
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+      throw new Error('Unsupported origin hostname');
+    }
+
     const octets = hostname.split('.').map(Number);
     if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
       throw new Error('Unsupported origin hostname');

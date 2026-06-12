@@ -298,4 +298,11 @@ describe('requireLocalhostOrigin', () => {
     expect(call('http://172.15.10.1:4173').passed).toBe(false);
     expect(call('http://172.32.10.1:4173').passed).toBe(false);
   });
+
+  it('rejects malformed and non-private hostnames with 403', () => {
+    expect(call('http://10.0.0.256:4173').passed).toBe(false);
+    expect(call('http://192.167.1.1:4173').passed).toBe(false);
+    expect(call('http://192.169.1.1:4173').passed).toBe(false);
+    expect(call('http://my-local-server.local:4173').passed).toBe(false);
+  });
 });
