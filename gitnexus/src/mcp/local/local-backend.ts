@@ -55,6 +55,7 @@ import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from '../tools.js';
+import { findImportCycles } from '../../core/graph/import-cycles.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1246,6 +1247,8 @@ export class LocalBackend {
         return this.impact(repo, params);
       case 'detect_changes':
         return this.detectChanges(repo, params);
+      case 'check':
+        return this.check(repo, params);
       case 'rename':
         return this.rename(repo, params);
       // Legacy aliases for backwards compatibility
@@ -1269,6 +1272,44 @@ export class LocalBackend {
   }
 
   // ─── Tool Implementations ────────────────────────────────────────
+
+  /** Check repository graph invariants that are suitable for CI gating. */
+  private async check(repo: RepoHandle, params?: { cycles?: boolean }): Promise<any> {
+    if (params?.cycles === false) {
+      return { error: 'No checks selected. Set "cycles" to true.' };
+    }
+    await this.ensureInitialized(repo);
+    const rowLimit = 100_001;
+    const rows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (source:File)-[r:CodeRelation]->(target:File)
+       WHERE r.type = 'IMPORTS'
+         AND (r.reason IS NULL OR (
+           r.reason <> 'swift-scope: implicit module visibility'
+           AND r.reason <> 'markdown-link'
+         ))
+       RETURN source.filePath AS source, target.filePath AS target
+       LIMIT ${rowLimit}`,
+      {},
+    );
+    if (rows.length === rowLimit) {
+      return {
+        error: `Import graph exceeds the ${rowLimit - 1} edge safety limit.`,
+        truncated: true,
+      };
+    }
+    const cycles = findImportCycles(
+      rows.map((row: any) => ({
+        source: String(row.source ?? row[0] ?? ''),
+        target: String(row.target ?? row[1] ?? ''),
+      })),
+    );
+    return {
+      status: cycles.length === 0 ? 'clean' : 'cycles_found',
+      cycleCount: cycles.length,
+      cycles: cycles.map((files) => ({ files })),
+    };
+  }
 
   /**
    * Query tool — process-grouped search.
