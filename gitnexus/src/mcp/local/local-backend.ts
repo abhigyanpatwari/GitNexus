@@ -368,6 +368,17 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
  */
 export const REPO_ID_HASH_LENGTH = 6;
 
+interface TraceParams {
+  from?: string;
+  from_uid?: string;
+  from_file?: string;
+  to?: string;
+  to_uid?: string;
+  to_file?: string;
+  maxDepth?: number;
+  includeTests?: boolean;
+}
+
 interface ImpactParams {
   target: string;
   target_uid?: string;
@@ -1266,6 +1277,8 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'trace':
+        return this.trace(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3286,6 +3299,206 @@ export class LocalBackend {
       text_search_edits: astSearchEdits,
       changes: allChanges,
       applied: !dry_run,
+    };
+  }
+
+  private async trace(repo: RepoHandle, params: TraceParams): Promise<any> {
+    try {
+      return await this._traceImpl(repo, params);
+    } catch (err: any) {
+      return {
+        error: (err instanceof Error ? err.message : String(err)) || 'Trace analysis failed',
+        from: { name: params.from },
+        to: { name: params.to },
+        suggestion:
+          'The graph query failed — try gitnexus context <symbol> to see connections, ' +
+          'or check if an interface bridges them.',
+        ...(isWalCorruptionError(err) ? { recoverySuggestion: WAL_RECOVERY_SUGGESTION } : {}),
+      };
+    }
+  }
+
+  private async _traceImpl(repo: RepoHandle, params: TraceParams): Promise<any> {
+    await this.ensureInitialized(repo);
+
+    const fromOutcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid: params.from_uid, name: params.from },
+      { file_path: params.from_file },
+    );
+
+    if (fromOutcome.kind === 'not_found') {
+      return {
+        status: 'not_found',
+        error: `Source symbol '${params.from_uid ?? params.from}' not found.`,
+        suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
+      };
+    }
+    if (fromOutcome.kind === 'ambiguous') {
+      return {
+        status: 'ambiguous',
+        role: 'from',
+        message: `Found ${fromOutcome.candidates.length} symbols matching '${params.from}'. Disambiguate with --from-uid.`,
+        candidates: fromOutcome.candidates,
+      };
+    }
+
+    const toOutcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid: params.to_uid, name: params.to },
+      { file_path: params.to_file },
+    );
+
+    if (toOutcome.kind === 'not_found') {
+      return {
+        status: 'not_found',
+        error: `Target symbol '${params.to_uid ?? params.to}' not found.`,
+        suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
+      };
+    }
+    if (toOutcome.kind === 'ambiguous') {
+      return {
+        status: 'ambiguous',
+        role: 'to',
+        message: `Found ${toOutcome.candidates.length} symbols matching '${params.to}'. Disambiguate with --to-uid.`,
+        candidates: toOutcome.candidates,
+      };
+    }
+
+    const fromSym = fromOutcome.symbol;
+    const toSym = toOutcome.symbol;
+
+    if (fromSym.id === toSym.id) {
+      return {
+        status: 'ok',
+        from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
+        to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
+        hopCount: 0,
+        hops: [{ name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine }],
+        edges: [],
+      };
+    }
+
+    const maxDepth = Math.min(params.maxDepth ?? 10, 30);
+    const includeTests = params.includeTests ?? false;
+    const EDGE_TYPES = ['CALLS', 'HAS_METHOD'];
+
+    const visited = new Set<string>([fromSym.id]);
+    let frontier = [fromSym.id];
+    const parent = new Map<
+      string,
+      {
+        from: string;
+        name: string;
+        type: string;
+        filePath: string;
+        startLine: number;
+        edgeType: string;
+        confidence: number;
+      }
+    >();
+
+    let found = false;
+    let deepestInfo: {
+      name: string;
+      filePath: string;
+      startLine: number;
+    } | null = null;
+    let reachedDepth = 0;
+
+    for (let depth = 1; depth <= maxDepth && frontier.length > 0 && !found; depth++) {
+      const nextFrontier: string[] = [];
+
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (n)-[r:CodeRelation]->(m)
+         WHERE n.id IN $frontierIds AND r.type IN $edgeTypes
+         RETURN n.id AS sourceId, m.id AS id, m.name AS name, labels(m)[0] AS type,
+                m.filePath AS filePath, m.startLine AS startLine,
+                r.type AS edgeType, r.confidence AS confidence`,
+        { frontierIds: frontier, edgeTypes: EDGE_TYPES },
+      );
+
+      for (const row of rows) {
+        const nodeId = (row.id ?? row[1]) as string;
+        const sourceId = (row.sourceId ?? row[0]) as string;
+        const filePath = (row.filePath ?? row[4]) as string;
+
+        if (!includeTests && isTestFilePath(filePath)) continue;
+
+        const edgeType = (row.edgeType ?? row[6]) as string;
+        const storedConfidence = row.confidence ?? row[7];
+        const effectiveConfidence =
+          typeof storedConfidence === 'number' && storedConfidence > 0
+            ? storedConfidence
+            : confidenceForRelType(edgeType);
+
+        if (nodeId === toSym.id) {
+          parent.set(nodeId, {
+            from: sourceId,
+            name: (row.name ?? row[2]) as string,
+            type: (row.type ?? row[3]) as string,
+            filePath,
+            startLine: (row.startLine ?? row[5]) as number,
+            edgeType,
+            confidence: effectiveConfidence,
+          });
+          found = true;
+          break;
+        }
+
+        if (!visited.has(nodeId)) {
+          visited.add(nodeId);
+          parent.set(nodeId, {
+            from: sourceId,
+            name: (row.name ?? row[2]) as string,
+            type: (row.type ?? row[3]) as string,
+            filePath,
+            startLine: (row.startLine ?? row[5]) as number,
+            edgeType,
+            confidence: effectiveConfidence,
+          });
+          nextFrontier.push(nodeId);
+          deepestInfo = { name: (row.name ?? row[2]) as string, filePath, startLine: (row.startLine ?? row[5]) as number };
+          reachedDepth = depth;
+        }
+      }
+
+      frontier = nextFrontier;
+    }
+
+    if (found) {
+      const path: Array<{ name: string; filePath: string; startLine: number }> = [];
+      const edges: Array<{ relType: string; confidence: number }> = [];
+      let current = toSym.id;
+
+      while (current !== fromSym.id) {
+        const info = parent.get(current)!;
+        path.unshift({ name: info.name, filePath: info.filePath, startLine: info.startLine });
+        edges.unshift({ relType: info.edgeType, confidence: info.confidence });
+        current = info.from;
+      }
+      path.unshift({ name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine });
+
+      return {
+        status: 'ok',
+        from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
+        to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
+        hopCount: edges.length,
+        hops: path,
+        edges,
+      };
+    }
+
+    return {
+      status: 'no_path',
+      from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
+      to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
+      furthest: deepestInfo ? { ...deepestInfo, depth: reachedDepth } : null,
+      suggestion:
+        'No directed path found. The call chain likely breaks at dynamic dispatch, ' +
+        'reflection, or an external API boundary. Try gitnexus context <symbol> to see ' +
+        "both symbols' connections, or check if an interface/abstraction bridges them.",
     };
   }
 

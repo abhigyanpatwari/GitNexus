@@ -1,0 +1,337 @@
+/**
+ * Unit Tests: trace tool — BFS pathfinding, symbol resolution, gap reporting
+ *
+ * Drives the implementation of the `trace` MCP tool via TDD.
+ * Mocks LadybugDB; tests the LocalBackend trace() logic in isolation.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+  lbugMocks: {
+    initLbug: vi.fn().mockResolvedValue(undefined),
+    executeQuery: vi.fn().mockResolvedValue([]),
+    executeParameterized: vi.fn().mockResolvedValue([]),
+    closeLbug: vi.fn().mockResolvedValue(undefined),
+    isLbugReady: vi.fn().mockReturnValue(true),
+  },
+  platformMocks: {
+    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
+  },
+}));
+
+vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, ...lbugMocks };
+});
+
+vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, ...lbugMocks };
+});
+
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    listRegisteredRepos: vi.fn().mockResolvedValue([
+      {
+        name: 'test-project',
+        path: '/tmp/test-project',
+        storagePath: '/tmp/.gitnexus/test-project',
+        indexedAt: '2024-06-01T12:00:00Z',
+        lastCommit: 'abc123',
+        stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
+      },
+    ]),
+    cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+    findSiblingClones: vi.fn().mockResolvedValue([]),
+  };
+});
+
+vi.mock('../../src/core/git-staleness.js', () => ({
+  checkStaleness: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
+  checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
+  checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
+}));
+
+vi.mock('../../src/storage/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/git.js')>();
+  return { ...actual, getGitRoot: vi.fn().mockReturnValue(null) };
+});
+
+vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
+  return { ...actual, ...platformMocks };
+});
+
+vi.mock('../../src/core/search/bm25-index.js', () => ({
+  searchFTSFromLbug: vi.fn().mockResolvedValue({ results: [], ftsAvailable: true }),
+}));
+
+vi.mock('../../src/mcp/core/embedder.js', () => ({
+  embedQuery: vi.fn().mockResolvedValue([]),
+  getEmbeddingDims: vi.fn().mockReturnValue(384),
+}));
+
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { executeParameterized } from '../../src/mcp/core/lbug-adapter.js';
+
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+const SYMBOL_A = {
+  id: 'func:A',
+  name: 'A',
+  type: 'Function',
+  filePath: 'src/a.ts',
+  startLine: 1,
+  endLine: 10,
+};
+const SYMBOL_B = {
+  id: 'func:B',
+  name: 'B',
+  type: 'Function',
+  filePath: 'src/b.ts',
+  startLine: 1,
+  endLine: 5,
+};
+const SYMBOL_C = {
+  id: 'func:C',
+  name: 'C',
+  type: 'Function',
+  filePath: 'src/c.ts',
+  startLine: 1,
+  endLine: 8,
+};
+
+function makeResolveMock(
+  fromRows: any[],
+  toRows: any[],
+  bfsRowsByFrontier?: Record<string, any[]>,
+) {
+  const bfsMap = bfsRowsByFrontier ?? {};
+  return (_db: string, query: string, params: any) => {
+    if (query.includes('WHERE n.id = $uid') && params.uid) {
+      if (fromRows.length === 1 && fromRows[0].id === params.uid) return fromRows;
+      if (toRows.length === 1 && toRows[0].id === params.uid) return toRows;
+    }
+    if (params.symName !== undefined) {
+      if (params.symName === fromRows[0]?.name && fromRows.length > 0) return fromRows;
+      if (params.symName === toRows[0]?.name && toRows.length > 0) return toRows;
+    }
+    if (params.frontierIds) {
+      for (const frontierId of params.frontierIds) {
+        if (bfsMap[frontierId]) return bfsMap[frontierId];
+      }
+    }
+    return [];
+  };
+}
+
+async function makeBackend(): Promise<LocalBackend> {
+  const b = new LocalBackend();
+  await b.init();
+  return b;
+}
+
+describe('trace: dispatch', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = await makeBackend();
+  });
+
+  it('dispatches trace tool without throwing', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('trace', { from: 'foo', to: 'bar' });
+
+    expect(result).toBeDefined();
+    expect(result.status).toBe('not_found');
+  });
+
+  it('returns not_found when source symbol does not exist', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('trace', { from: 'nonexistent', to: 'bar' });
+
+    expect(result.status).toBe('not_found');
+    expect(result.error).toContain('nonexistent');
+  });
+  it('returns ambiguous with candidates when source has multiple matches', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      { id: 'func:login:1', name: 'login', type: 'Function', filePath: 'src/auth.ts', startLine: 1, endLine: 10 },
+      { id: 'func:login:2', name: 'login', type: 'Function', filePath: 'src/admin.ts', startLine: 5, endLine: 15 },
+    ]);
+
+    const result = await backend.callTool('trace', { from: 'login', to: 'bar' });
+
+    expect(result.status).toBe('ambiguous');
+    expect(result.role).toBe('from');
+    expect(result.candidates).toHaveLength(2);
+  });
+
+  it('returns ambiguous with candidates when target has multiple matches', async () => {
+    (executeParameterized as any)
+      .mockResolvedValueOnce([SYMBOL_A])
+      .mockResolvedValue([
+        { id: 'func:db:1', name: 'db', type: 'Function', filePath: 'src/db.ts', startLine: 1, endLine: 10 },
+        { id: 'func:db:2', name: 'db', type: 'Function', filePath: 'src/db2.ts', startLine: 1, endLine: 10 },
+      ]);
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'db' });
+
+    expect(result.status).toBe('ambiguous');
+    expect(result.role).toBe('to');
+    expect(result.candidates).toHaveLength(2);
+  });
+});
+
+// ─── Group 2: BFS Core ──────────────────────────────────────────────
+
+describe('trace: BFS core', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = await makeBackend();
+  });
+
+  it('returns 0-hop path when from and to are the same symbol', async () => {
+    (executeParameterized as any).mockResolvedValue([SYMBOL_A]);
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'A' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(0);
+    expect(result.hops).toHaveLength(1);
+    expect(result.hops[0].name).toBe('A');
+    expect(result.edges).toHaveLength(0);
+  });
+
+  it('finds direct 1-hop path A→B', async () => {
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], {
+        'func:A': [{
+          sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function',
+          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+        }],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'B' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(1);
+    expect(result.hops).toHaveLength(2);
+    expect(result.hops[0].name).toBe('A');
+    expect(result.hops[1].name).toBe('B');
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0].relType).toBe('CALLS');
+    expect(result.edges[0].confidence).toBe(1.0);
+  });
+
+  it('finds 2-hop path A→C→B', async () => {
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], {
+        'func:A': [{
+          sourceId: 'func:A', id: 'func:C', name: 'C', type: 'Function',
+          filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+        }],
+        'func:C': [{
+          sourceId: 'func:C', id: 'func:B', name: 'B', type: 'Function',
+          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 0.95,
+        }],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'B' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(2);
+    expect(result.hops).toHaveLength(3);
+    expect(result.hops.map((h: any) => h.name)).toEqual(['A', 'C', 'B']);
+    expect(result.edges[0].confidence).toBe(1.0);
+    expect(result.edges[1].confidence).toBe(0.95);
+  });
+
+  it('reports furthest reachable node when no path exists', async () => {
+    const SYMBOL_X = { id: 'func:X', name: 'X', type: 'Function', filePath: 'src/x.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_X], {
+        'func:A': [{
+          sourceId: 'func:A', id: 'func:C', name: 'C', type: 'Function',
+          filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+        }],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'X' });
+
+    expect(result.status).toBe('no_path');
+    expect(result.furthest).toBeDefined();
+    expect(result.furthest.name).toBe('C');
+    expect(result.furthest.depth).toBe(1);
+    expect(result.suggestion).toBeDefined();
+  });
+
+  it('handles cycles without infinite loop', async () => {
+    const SYMBOL_X = { id: 'func:X', name: 'X', type: 'Function', filePath: 'src/x.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_X], {
+        'func:A': [
+          { sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          { sourceId: 'func:A', id: 'func:A', name: 'A', type: 'Function', filePath: 'src/a.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+        ],
+        'func:B': [
+          { sourceId: 'func:B', id: 'func:A', name: 'A', type: 'Function', filePath: 'src/a.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+        ],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'X' });
+
+    expect(result.status).toBe('no_path');
+  }, 5000);
+
+  it('respects maxDepth limit', async () => {
+    const SYMBOL_D = { id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_E = { id: 'func:E', name: 'E', type: 'Function', filePath: 'src/e.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_E], {
+        'func:A': [{ sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
+        'func:B': [{ sourceId: 'func:B', id: 'func:C', name: 'C', type: 'Function', filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
+        'func:C': [{ sourceId: 'func:C', id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
+        'func:D': [{ sourceId: 'func:D', id: 'func:E', name: 'E', type: 'Function', filePath: 'src/e.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'E', maxDepth: 2 });
+
+    expect(result.status).toBe('no_path');
+  });
+
+  it('resolves from_uid/to_uid without name-based lookup', async () => {
+    (executeParameterized as any).mockImplementation(
+      (_db: string, query: string, params: any) => {
+        if (params.uid === 'uid:from') return [{ id: 'uid:from', name: 'A', type: 'Function', filePath: 'src/a.ts', startLine: 1, endLine: 10 }];
+        if (params.uid === 'uid:to') return [{ id: 'uid:to', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, endLine: 5 }];
+        if (params.frontierIds?.includes('uid:from')) {
+          return [{ sourceId: 'uid:from', id: 'uid:to', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('trace', { from_uid: 'uid:from', to_uid: 'uid:to' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(1);
+    const calls = (executeParameterized as any).mock.calls as Array<[string, string, Record<string, unknown>]>;
+    for (const [, cypher] of calls) {
+      expect(cypher).not.toMatch(/WHERE n\.name = \$symName/);
+    }
+  });
+});
+
+

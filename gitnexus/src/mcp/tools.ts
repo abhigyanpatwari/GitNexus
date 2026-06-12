@@ -633,6 +633,40 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  {
+    name: 'trace',
+    description: `Find the shortest directed call path between two symbols.
+
+WHEN TO USE: Debugging "how does A reach B?" — answers in one call what would take 3-8 manual context/impact hops. Shows the exact chain of function calls with file:line positions and edge confidence.
+
+Returns: ordered hops with file:line, edge type, and confidence. When no path exists, reports the furthest reachable node so you know exactly where the chain breaks.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Source symbol name' },
+        from_uid: { type: 'string', description: 'Source symbol UID (zero-ambiguity)' },
+        from_file: { type: 'string', description: 'Source file path hint for disambiguation' },
+        to: { type: 'string', description: 'Target symbol name' },
+        to_uid: { type: 'string', description: 'Target symbol UID (zero-ambiguity)' },
+        to_file: { type: 'string', description: 'Target file path hint for disambiguation' },
+        maxDepth: {
+          type: 'number',
+          description: 'Maximum path length in hops (default: 10)',
+          default: 10,
+          minimum: 1,
+          maximum: 30,
+        },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test-file symbols in traversal (default: false)',
+          default: false,
+        },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+      },
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -654,6 +688,7 @@ const BRANCH_SCOPED_TOOLS = new Set([
   'tool_map',
   'shape_check',
   'api_impact',
+  'trace',
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
