@@ -281,9 +281,21 @@ describe('requireLocalhostOrigin', () => {
     expect(call(undefined).passed).toBe(true);
   });
 
+  it('passes RFC1918 private network origins', () => {
+    expect(call('http://10.0.0.1:4173').passed).toBe(true);
+    expect(call('http://172.16.1.21:4173').passed).toBe(true);
+    expect(call('http://172.31.255.254:4173').passed).toBe(true);
+    expect(call('http://192.168.1.100:4173').passed).toBe(true);
+  });
+
   it('rejects a public/cross origin with 403', () => {
     const r = call('https://gitnexus.vercel.app');
     expect(r.passed).toBe(false);
     expect(r.status).toBe(403);
+  });
+
+  it('rejects non-RFC1918 172.x origins with 403', () => {
+    expect(call('http://172.15.10.1:4173').passed).toBe(false);
+    expect(call('http://172.32.10.1:4173').passed).toBe(false);
   });
 });

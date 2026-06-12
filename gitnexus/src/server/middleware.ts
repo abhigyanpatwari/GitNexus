@@ -17,8 +17,24 @@ export function requireLocalhostOrigin(req: Request, res: Response, next: () => 
     return;
   }
   try {
-    const hostname = new URL(origin).hostname;
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname;
+    const protocol = parsed.protocol;
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      throw new Error('Unsupported origin protocol');
+    }
     if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      next();
+      return;
+    }
+
+    const octets = hostname.split('.').map(Number);
+    if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
+      throw new Error('Unsupported origin hostname');
+    }
+
+    const [a, b] = octets;
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
       next();
       return;
     }
