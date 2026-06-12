@@ -87,6 +87,16 @@ export interface SwiftPackageConfig {
   targets: Map<string, string>;
 }
 
+/** Zig package config parsed from build.zig.zon */
+export interface ZigBuildZonConfig {
+  /**
+   * Map of dependency name -> repo-relative path for `.path = "..."` entries.
+   * `.url`-based deps cannot be resolved to a repo-local file (they unpack
+   * into a build cache outside the repo) and so are not included here.
+   */
+  pathDeps: Map<string, string>;
+}
+
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG LOADERS
 // ============================================================================
@@ -465,6 +475,88 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
   return null;
 }
 
+/**
+ * Parse build.zig.zon to extract `.path = "..."` dependency mappings.
+ *
+ * `build.zig.zon` is Zig source (an anonymous-struct literal), not JSON.
+ * Rather than pull in a tree-sitter parse for one file, we use a small
+ * regex-based extractor that handles the common shapes:
+ *
+ *   .dependencies = .{
+ *       .ziggit_pkg = .{
+ *           .url = "https://...",
+ *           .hash = "1220...",
+ *       },
+ *       .local_dep = .{
+ *           .path = "../local_dep",
+ *       },
+ *   },
+ *
+ * Limitations (intentional — bail to null on anything weirder):
+ *   - Only the top-level `.dependencies = .{ ... }` block is parsed; nested
+ *     or aliased blocks are ignored.
+ *   - Each dep entry is matched by a single shape: `.<name> = .{ ... }`
+ *     where `<name>` is a bare identifier (no `@"…"` quoted form).
+ *   - Only `.path = "..."` is captured. `.url` deps are left unresolved
+ *     because their unpacked location lives outside the repo
+ *     (.zig-cache/p/<hash>/ or ~/.cache/zig/p/<hash>/) and is therefore
+ *     not in our `allFilePaths` set.
+ *   - Comments (`//`) inside the dep block are not stripped; if a `.path`
+ *     is commented out it will still match. Acceptable for an indexer.
+ */
+export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConfig | null> {
+  try {
+    const zonPath = path.join(repoRoot, 'build.zig.zon');
+    const raw = await fs.readFile(zonPath, 'utf-8');
+    return parseZigBuildZon(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Pure parser split out for testability. Returns null when no path-deps found. */
+export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
+  // Locate the `.dependencies = .{ ... }` block. Use brace counting because
+  // dep entries are nested anonymous structs and a naive `}` match would stop early.
+  const depsHeader = raw.match(/\.dependencies\s*=\s*\.\{/);
+  if (!depsHeader) return null;
+  const start = depsHeader.index! + depsHeader[0].length;
+  let depth = 1;
+  let end = -1;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) return null;
+  const block = raw.slice(start, end);
+
+  const pathDeps = new Map<string, string>();
+  // Match each `.<name> = .{ ... }` entry; capture the entry body.
+  const entryRe = /\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\.\{([\s\S]*?)\}\s*,?/g;
+  let m: RegExpExecArray | null;
+  while ((m = entryRe.exec(block)) !== null) {
+    const depName = m[1];
+    const body = m[2];
+    const pathMatch = body.match(/\.path\s*=\s*"([^"\n]+)"/);
+    if (pathMatch) {
+      pathDeps.set(depName, pathMatch[1]);
+    }
+  }
+
+  if (pathDeps.size === 0) return null;
+  if (isDev) {
+    logger.info(`📦 Loaded ${pathDeps.size} Zig path-dep(s) from build.zig.zon`);
+  }
+  return { pathDeps };
+}
+
 // ============================================================================
 // BUNDLED CONFIG LOADER
 // ============================================================================
@@ -488,6 +580,9 @@ export interface ImportConfigs {
   csharpConfigs: CSharpProjectConfig[];
   /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
   csharpNamespaces?: CSharpNamespaceEvidence;
+  /** Zig `.path` deps from build.zig.zon. Optional so call sites that
+   *  hand-build ImportConfigs (tests) don't have to supply it. */
+  zigBuildZon?: ZigBuildZonConfig | null;
 }
 
 /** Load all language-specific configs once for an ingestion run. */
@@ -500,5 +595,6 @@ export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
     csharpConfigs: csharpScan.configs,
     csharpNamespaces: csharpScanToEvidence(csharpScan),
+    zigBuildZon: await loadZigBuildZon(repoRoot),
   };
 }

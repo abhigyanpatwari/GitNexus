@@ -3,7 +3,7 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
 
 export type ClassLikeNodeLabel = Extract<
   NodeLabel,
-  'Class' | 'Struct' | 'Interface' | 'Enum' | 'Record'
+  'Class' | 'Struct' | 'Interface' | 'Enum' | 'Record' | 'Union'
 >;
 
 export interface ExtractedClassSymbol {

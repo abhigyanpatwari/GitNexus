@@ -57,6 +57,7 @@ const CLASS_LIKE_LABELS = new Set<ClassLikeNodeLabel>([
   'Interface',
   'Enum',
   'Record',
+  'Union',
 ]);
 
 const extractScopeSegmentsFromNode = (

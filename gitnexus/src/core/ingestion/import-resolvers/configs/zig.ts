@@ -1,31 +1,33 @@
 /**
  * Zig import resolution.
  *
- * v1 scope: only `@import("./foo.zig")`-style local-file imports. Standard
- * library and external packages (`@import("std")`, `@import("mod")`) are
- * treated as external — return an empty result so they don't produce ghost
- * import edges.
+ * Local-file imports (`@import("./foo.zig")`, `@import("foo.zig")`) resolve
+ * relative to the importer. Bare names (`@import("bar")`) resolve through
+ * build.zig.zon `.path` deps when a parsed ZigBuildZonConfig is available
+ * (see language-config.ts `loadZigBuildZon`). Everything unresolvable —
+ * `std`, `builtin`, `root`, `.url`-based deps — returns an empty result so
+ * it doesn't produce ghost import edges.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ImportResolutionConfig, ImportResolverStrategy } from '../types.js';
-import { resolveStandard } from '../standard.js';
+import { resolveZigImportInternal } from '../zig.js';
 
 const stripQuotes = (s: string): string => s.replace(/^['"]|['"]$/g, '');
 
 export const zigImportStrategy: ImportResolverStrategy = (rawImportPath, filePath, ctx) => {
+  // tree-sitter-zig captures the string with surrounding quotes.
   const stripped = stripQuotes(rawImportPath);
-
-  // Local-file imports always reference a `.zig` path. Anything else
-  // (`std`, `builtin`, package names) is external — stop the chain.
-  if (!stripped.endsWith('.zig')) {
-    return { kind: 'files', files: [] };
-  }
-
-  // Treat as relative to the importing file. tree-sitter-zig captures the
-  // string with surrounding quotes; resolveStandard handles `./` and `../`.
-  const relPath = stripped.startsWith('.') ? stripped : './' + stripped;
-  return resolveStandard(relPath, filePath, ctx, SupportedLanguages.Zig);
+  const resolved = resolveZigImportInternal(
+    filePath,
+    stripped,
+    ctx.allFilePaths,
+    ctx.configs.zigBuildZon ?? null,
+  );
+  // Unresolvable (stdlib / builtin / .url dep / missing file): stop the
+  // chain with an empty result rather than falling through to suffix
+  // matching, which could ghost-match an unrelated same-named file.
+  return { kind: 'files', files: resolved ? [resolved] : [] };
 };
 
 export const zigImportConfig: ImportResolutionConfig = {

@@ -2468,12 +2468,9 @@ export const ZIG_QUERIES = `
   (enum_declaration)) @definition.enum
 
 ; Union: const Foo = union { ... } (and tagged-union union(enum) { ... })
-; Labeled as @definition.struct because CONTAINER_TYPE_TO_LABEL has no Union
-; label by default; the CONTAINER_TYPE_TO_LABEL update for union_declaration
-; lives in ast-helpers.ts.
 (variable_declaration
   (identifier) @name
-  (union_declaration)) @definition.struct
+  (union_declaration)) @definition.union
 
 ; Container fields (struct fields, enum variants, union variants).
 (container_field

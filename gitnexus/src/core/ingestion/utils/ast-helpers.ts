@@ -440,11 +440,10 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   companion_object: 'Class',
   struct_type: 'Struct',
   interface_type: 'Interface',
-  // Zig: tagged and untagged unions are class-like containers; map to Struct
-  // since CONTAINER_TYPE_TO_LABEL has no dedicated `Union` label and the
-  // graph schema doesn't model unions distinctly. `struct_declaration` and
-  // `enum_declaration` are already present (Dart / generic).
-  union_declaration: 'Struct',
+  // Zig: tagged and untagged unions are class-like containers.
+  // `struct_declaration` and `enum_declaration` are already present
+  // (Dart / generic).
+  union_declaration: 'Union',
 };
 
 /**

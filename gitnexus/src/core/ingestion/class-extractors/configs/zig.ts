@@ -23,7 +23,7 @@ const extractZigContainerName = (node: SyntaxNode): string | undefined => {
 const extractZigContainerType = (node: SyntaxNode): ClassLikeNodeLabel | undefined => {
   if (node.type === 'struct_declaration') return 'Struct';
   if (node.type === 'enum_declaration') return 'Enum';
-  if (node.type === 'union_declaration') return 'Struct';
+  if (node.type === 'union_declaration') return 'Union';
   return undefined;
 };
 
