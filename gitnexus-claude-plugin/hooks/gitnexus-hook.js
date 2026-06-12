@@ -199,6 +199,11 @@ function extractPattern(toolName, toolInput) {
   return null;
 }
 
+// Debounce for the unguarded-CLI diagnostic below (#2163 follow-up review):
+// at most one line per (short-lived) hook process, even if a future change
+// runs the CLI more than once.
+let unguardedCliWarned = false;
+
 /**
  * Spawn a gitnexus CLI command synchronously.
  * Detects binary on PATH once, then runs exactly once.
@@ -209,22 +214,59 @@ function extractPattern(toolName, toolInput) {
  * Unix orphan containment (#2163 follow-up): the augment CLI is the
  * longest-lived hook child (inner spawnSync timeout 7s locally, 12s via
  * npx), so on Unix every CLI-running branch gets the same SIGKILL-surviving
- * coreutils `timeout -k 1` wrapper as the probe's lsof/ps (the cheap
- * which/where PATH check stays unwrapped). The wrapper budget is
- * ceil(inner/1000)+1 seconds — STRICTLY greater than the inner spawnSync
- * timeout, so on the supervised path Node's SIGTERM always fires first and
- * the existing error/status contract is untouched (a SIGTERM-immune child
- * can hold the guard ~1s past the inner timeout before `-k` escalates; if
- * the runner SIGKILLs the hook instead, that is exactly the orphan case the
- * wrapper exists for). Windows is deliberately NOT wrapped — there is no
- * coreutils timeout to resolve there and the resolver's self-test spawns
- * /bin/sh — so on win32 (the gitnexus.cmd / npx.cmd paths) and whenever the
- * guard resolves to null the argv stays byte-identical to the pre-wrap
+ * coreutils `timeout` wrapper as the probe's lsof/ps (the cheap which/where
+ * PATH check stays unwrapped). The wrapper budget is ceil(inner/1000)+1
+ * seconds — STRICTLY greater than the inner spawnSync timeout, so on the
+ * supervised path Node's SIGTERM always fires first and the existing
+ * error/status contract is untouched. Once the hook itself has been
+ * SIGKILLed (exactly the orphan case the wrapper exists for), the guard
+ * semantics differ per branch:
+ *   - direct exec (GITNEXUS_HOOK_CLI_PATH / PATH-installed `gitnexus`; the
+ *     CLI is the guard's CHILD): `-k 1` TERM-first — a SIGTERM-immune CLI
+ *     can hold the guard ~1s past the inner timeout before the `-k` SIGKILL
+ *     escalation reaps it.
+ *   - npx (the CLI is a GRANDCHILD: guard → npx → CLI): `-s KILL` — the
+ *     budget expiry SIGKILLs the whole process group outright. TERM-first
+ *     would kill only the obedient npx parent, making `timeout` reap it and
+ *     return before the `-k` escalation ever fires, stranding a
+ *     SIGTERM-immune CLI grandchild unbounded (reproduced on coreutils
+ *     9.x). `-k 1` is retained alongside `-s KILL` as a harmless belt: with
+ *     `-s KILL` the `-k` escalation signal is also KILL. Two residual gaps
+ *     on this branch, both bounded by "no worse than pre-fix" (where the
+ *     grandchild received no signal at all): the group-wide SIGKILL is
+ *     coreutils semantics — a busybox `timeout` passes the self-test (it
+ *     has `-k` and propagates exit status) but signals only its direct
+ *     child, so a busybox guard cannot reach the grandchild; and on the
+ *     SUPERVISED path (hook alive, inner spawnSync timeout SIGTERMs the
+ *     guard) coreutils forwards TERM rather than the `-s` signal, npx dies,
+ *     and the guard exits before any KILL fires — so a SIGTERM-immune CLI
+ *     grandchild still escapes in those two cases.
+ * If the sibling probe predates the resolveUnixGuardTimeout export (version
+ * skew), the adapter degrades to the unwrapped invocation instead of
+ * throwing. Windows is deliberately NOT wrapped — there is no coreutils
+ * timeout to resolve there and the resolver's self-test spawns /bin/sh — so
+ * on win32 (the gitnexus.cmd / npx.cmd paths) and whenever the guard
+ * resolves to null (e.g. macOS without Homebrew coreutils — reported once
+ * under GITNEXUS_DEBUG) the argv stays byte-identical to the pre-wrap
  * invocation.
  */
 function runGitNexusCli(args, cwd, timeout) {
   const isWin = process.platform === 'win32';
-  const guard = isWin ? null : resolveUnixGuardTimeout();
+  // Version-skew guard (#2163 follow-up review): an older sibling probe
+  // without the resolveUnixGuardTimeout export must degrade to the unwrapped
+  // invocation — a TypeError here would be swallowed by the caller's catch
+  // and silently kill the augment.
+  const guard =
+    isWin || typeof resolveUnixGuardTimeout !== 'function' ? null : resolveUnixGuardTimeout();
+  if (!isWin && !guard && !unguardedCliWarned && isDebugEnabled()) {
+    // Diagnose the "stays unwrapped" Unix paths once per hook process: no
+    // usable coreutils timeout/gtimeout (e.g. macOS without Homebrew
+    // coreutils), GITNEXUS_HOOK_TIMEOUT_PATH=disabled, or probe skew above.
+    unguardedCliWarned = true;
+    process.stderr.write(
+      '[GitNexus hook] no usable timeout/gtimeout guard; augment CLI child runs unguarded\n',
+    );
+  }
   const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
   if (hookCli !== undefined && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
     const [cmd, cmdArgs] = guard
@@ -277,11 +319,16 @@ function runGitNexusCli(args, cwd, timeout) {
       windowsHide: true,
     });
   }
-  // npx fallback needs shell on Windows since npx is a .cmd script
+  // npx fallback needs shell on Windows since npx is a .cmd script. The
+  // wrapped arm leads with `-s KILL` (NOT TERM-first like the direct
+  // branches above): the CLI here is a grandchild behind npx — see the
+  // docblock.
   const [cmd, cmdArgs] = guard
     ? [
         guard,
         [
+          '-s',
+          'KILL',
           '-k',
           '1',
           String(Math.ceil((timeout + 5000) / 1000) + 1),
