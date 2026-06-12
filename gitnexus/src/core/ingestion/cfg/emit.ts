@@ -65,7 +65,13 @@ export interface CfgEmitResult {
   cappedFunctions: number;
 }
 
-const basicBlockId = (
+/**
+ * The single BasicBlock id template (module doc). Exported for the M3 taint
+ * emit path (taint/emit.ts), whose TAINTED/SANITIZES edges must address the
+ * SAME persisted block nodes — a re-derived copy of this template would
+ * silently dangle the moment either drifted.
+ */
+export const basicBlockId = (
   filePath: string,
   functionStartLine: number,
   functionStartColumn: number,
@@ -259,9 +265,10 @@ export interface ReachingDefEmitResult {
  * Stable identity for a binding inside edge ids (#2082 M2 KTD3/KTD9):
  * `name:declLine:declCol` for declared bindings, `name@module` for synthetic
  * ones. Distinct same-name bindings never share a key; identifier characters
- * cannot contain the id separators.
+ * cannot contain the id separators. Exported for the M3 taint emit path —
+ * TAINTED/SANITIZES ids key bindings with the same discipline.
  */
-const bindingKey = (b: BindingEntry): string =>
+export const bindingKey = (b: BindingEntry): string =>
   b.synthetic ? `${b.name}@module` : `${b.name}:${b.declLine}:${b.declColumn}`;
 
 /**

@@ -47,6 +47,15 @@ describe('VALID_RELATION_TYPES', () => {
     expect(VALID_RELATION_TYPES.has('calls')).toBe(false); // case-sensitive
     expect(VALID_RELATION_TYPES.has('DROP_TABLE')).toBe(false);
   });
+
+  it('taint edge types stay OUT of the impact allow-list (#2083 M3 KTD9a)', () => {
+    // impact's BFS traverses symbol space; TAINTED/SANITIZES live in
+    // block-space (BasicBlock→BasicBlock) and would be unreachable noise
+    // there. The `explain` tool is the dedicated taint consumer. Pinned
+    // explicitly so a future "add all emitted types" sweep can't drag them in.
+    expect(VALID_RELATION_TYPES.has('TAINTED')).toBe(false);
+    expect(VALID_RELATION_TYPES.has('SANITIZES')).toBe(false);
+  });
 });
 
 // ─── Valid node labels ───────────────────────────────────────────────

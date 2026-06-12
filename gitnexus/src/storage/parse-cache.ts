@@ -184,7 +184,16 @@ export const computeChunkHash = (
   // option-blind-key trap. `def` marks an unset (default) value so two
   // default-cap runs share a key. The emit-time edge cap is deliberately
   // absent — see the PdgCacheKey doc comment.
-  const ns = `pdg:1;maxFn=${opts.maxFunctionLines ?? 'def'}`;
+  //
+  // NAMESPACE VERSION (`pdg:2`): bumped when the worker-emitted
+  // `cfgSideChannel` SHAPE changes for pdg-mode runs only — pdg:1→2 in #2083
+  // M3 U1 (TsHarvester emits taint `sites` on StatementFacts). Invalidates
+  // pdg-mode chunks and their durable parsedfile-cache entries; flag-off
+  // chunk keys never reach this line and stay byte-identical, so non-pdg
+  // users pay nothing. Deliberately NOT a SCHEMA_BUMP — that gates the whole
+  // cache version and would force a full cold re-parse on EVERY user (the M1
+  // bump comment above records that cost).
+  const ns = `pdg:2;maxFn=${opts.maxFunctionLines ?? 'def'}`;
   return sha256Hex(`${ns}\n${joined}`);
 };
 

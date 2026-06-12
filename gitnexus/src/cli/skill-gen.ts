@@ -654,6 +654,9 @@ const renderSkillMarkdown = (
     `2. \`query({query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
   );
   lines.push('3. Read key files listed above for implementation details');
+  lines.push(
+    '4. `explain({target: "<file or symbol>"})` — persisted taint findings (source→sink data flows), when indexed with `--pdg`',
+  );
   lines.push('');
 
   return lines.join('\n');

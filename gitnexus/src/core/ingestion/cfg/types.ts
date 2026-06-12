@@ -43,6 +43,92 @@ export interface BindingEntry {
 }
 
 /**
+ * One occurrence of a binding inside a call/new site's argument position
+ * (#2083 M3 U1). A bare `number` is a DIRECT occurrence (binding index into
+ * {@link FunctionCfg.bindings}); a `[bindingIdx, viaSiteIdx]` tuple marks an
+ * occurrence that reaches this argument THROUGH the nested site at
+ * `viaSiteIdx` (an index into the SAME statement's {@link StatementFacts.sites}
+ * array). The tag is load-bearing for sanitizer interposition (plan KTD4a):
+ * a flat per-arg binding set cannot distinguish `exec(escape(x))` (kill) from
+ * `exec(x)` (finding) — the single most common safe pattern would
+ * false-positive without it.
+ */
+export type SiteArgOccurrence = number | readonly [number, number];
+
+/**
+ * One call site, constructor call, or value-position member read harvested
+ * from a statement (#2083 M3 U1, plan KTD2). Worker-side substrate for the M3
+ * taint pass: the M2 facts carry no expression structure, and the main thread
+ * cannot re-parse (the #1983 OOM shape). Spec-AGNOSTIC — records structure
+ * only, never source/sink/sanitizer-ness (matching is a main-thread concern).
+ *
+ * Integer indices: binding fields (`receiver`/`object`/`resultDefs`/arg
+ * occurrences) index {@link FunctionCfg.bindings}; site references (`parent`,
+ * via-tags) index the OWNING statement's `sites` array. JSON-plain; NO field
+ * here may be named `nodeId` (durable parsedfile-store reviver hazard — see
+ * {@link BindingEntry}).
+ */
+export interface SiteRecord {
+  readonly kind: 'call' | 'new' | 'member-read';
+  /**
+   * Dotted callee path for call/new sites whose callee chain is rooted at an
+   * identifier/`this`/`super` (`child_process.exec`, `req.body.toString`).
+   * Optional chaining is normalized (`a?.b()` ⇒ `a.b`); string-literal
+   * subscripts fold into the path (`cp["exec"]` ⇒ `cp.exec`). Absent when the
+   * chain is not statically resolvable (dynamic key, call-rooted chain).
+   */
+  readonly callee?: string;
+  /**
+   * Binding index of the callee chain's ROOT identifier when the callee is a
+   * member chain (`userInput.trim()` ⇒ `userInput`). Method calls launder
+   * taint without it (plan KTD5 receiver-position TITO). Absent for bare
+   * calls (`exec(x)`) and non-identifier roots.
+   */
+  readonly receiver?: number;
+  /**
+   * Per-argument-position occurrence entries (trailing empty positions are
+   * trimmed; absent when no argument carries a binding occurrence). For
+   * `template: true` sites every substitution occurrence aggregates at
+   * position 0 (tagged templates have no positional argument list).
+   */
+  readonly args?: ReadonlyArray<readonly SiteArgOccurrence[]>;
+  /**
+   * Bindings defined by a declarator/assignment whose ENTIRE value (after
+   * unwrapping parens/`await`/`as`/`!`) is this call — `const b = escape(t)`
+   * ⇒ `[b]`. Per-declarator: `const a = t, b = escape(t)` attaches `[b]`
+   * only. Kill placement (KTD4b) keys on this: a sanitizer kills exactly the
+   * defs that receive its result directly.
+   */
+  readonly resultDefs?: readonly number[];
+  /**
+   * `[siteIdx, argIdx]` of the innermost enclosing call/new site argument
+   * position this site occurs in (`exec(escape(x))` ⇒ escape's parent is
+   * `[execSiteIdx, 0]`). Absent for top-level sites.
+   */
+  readonly parent?: readonly [number, number];
+  /**
+   * Index of the FIRST spread argument (`exec(...args)` ⇒ 0). Presence means
+   * position matching must degrade soundly (any sink position ≥ this index —
+   * plan KTD2/U2). A number (not boolean) because the matcher needs the index.
+   */
+  readonly spread?: number;
+  /** Tagged-template call (`sql\`…${id}\``) — argument positions are not positional. */
+  readonly template?: boolean;
+  /**
+   * String-literal first argument when the callee is bare `require` —
+   * CommonJS aliases resolve like ESM imports on the main thread (KTD7).
+   */
+  readonly requireArg?: string;
+  /** Member read: binding index of the object root (`req.body` ⇒ `req`). */
+  readonly object?: number;
+  /**
+   * Member read: property name (`req.body` ⇒ `'body'`; `req["body"]`
+   * included; dynamic `req[key]` is never recorded — documented KTD10 FN).
+   */
+  readonly property?: string;
+}
+
+/**
  * Def/use facts for one harvested statement (or construct header), in
  * execution order within its block (#2082 M2 U1). `defs`/`uses` are indices
  * into {@link FunctionCfg.bindings}. A compound assignment / update expression
@@ -57,12 +143,19 @@ export interface BindingEntry {
  * treating them as must-defs would falsely kill the prior def on the
  * not-taken path (a taint false negative on core JS idioms). Optional —
  * absent means none.
+ *
+ * `sites` (#2083 M3 U1): call/member-read structure for the taint pass —
+ * see {@link SiteRecord}. Optional and omit-when-empty; absent on pre-M3
+ * channels and on statements with no calls or member reads. Sites inside
+ * nested functions are NOT recorded (consistent with def/use invisibility —
+ * the enclosing `arr.forEach(...)` call IS, with receiver `arr`).
  */
 export interface StatementFacts {
   readonly line: number;
   readonly defs: readonly number[];
   readonly uses: readonly number[];
   readonly mayDefs?: readonly number[];
+  readonly sites?: readonly SiteRecord[];
 }
 
 /** A basic block: a maximal straight-line run of statements between leaders. */

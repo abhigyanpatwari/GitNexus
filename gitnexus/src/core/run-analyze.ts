@@ -49,6 +49,11 @@ import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
 } from './ingestion/cfg/emit.js';
+import {
+  DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_TAINT_HOPS,
+} from './ingestion/taint/propagate.js';
+import { taintModelVersion } from './ingestion/taint/typescript-model.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
   extractChangedSubgraph,
@@ -141,6 +146,13 @@ export interface AnalyzeOptions {
   /** Per-function REACHING_DEF edge cap (#2082 M2). Forwarded to
    *  `PipelineOptions.pdgMaxReachingDefEdgesPerFunction`. */
   pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function taint findings cap (#2083 M3). Forwarded to
+   *  `PipelineOptions.pdgMaxTaintFindingsPerFunction`. No CLI flag or rc key
+   *  (KTD8) — programmatic / server path only, like the other pdg caps. */
+  pdgMaxTaintFindingsPerFunction?: number;
+  /** Per-finding taint hop cap (#2083 M3, KTD6). Forwarded to
+   *  `PipelineOptions.pdgMaxTaintHops`. No CLI flag or rc key (KTD8). */
+  pdgMaxTaintHops?: number;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -343,7 +355,12 @@ export const collectBranchCacheKeys = async (
  */
 type PdgOptions = Pick<
   AnalyzeOptions,
-  'pdg' | 'pdgMaxFunctionLines' | 'pdgMaxEdgesPerFunction' | 'pdgMaxReachingDefEdgesPerFunction'
+  | 'pdg'
+  | 'pdgMaxFunctionLines'
+  | 'pdgMaxEdgesPerFunction'
+  | 'pdgMaxReachingDefEdgesPerFunction'
+  | 'pdgMaxTaintFindingsPerFunction'
+  | 'pdgMaxTaintHops'
 >;
 
 export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
@@ -354,6 +371,17 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         maxReachingDefEdgesPerFunction:
           options.pdgMaxReachingDefEdgesPerFunction ??
           DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+        // #2083 M3: taint caps + model identity. The key-union comparator in
+        // pdgModeMismatch picks these up structurally — an M2-era stamp lacks
+        // all three, so the first M3 run over an M2 `--pdg` index trips a full
+        // writeback that populates TAINTED/SANITIZES rows without `--force`.
+        maxTaintFindingsPerFunction:
+          options.pdgMaxTaintFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+        maxTaintHops: options.pdgMaxTaintHops ?? DEFAULT_PDG_MAX_TAINT_HOPS,
+        // Built-in model digest (KTD7/R7): persisted findings must never
+        // outlive the model that produced them — ANY model-content change
+        // ships as a new digest and repopulates the taint edges.
+        taintModelVersion,
       }
     : undefined;
 
@@ -753,6 +781,8 @@ export async function runFullAnalysis(
       pdgMaxFunctionLines: options.pdgMaxFunctionLines,
       pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
       pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+      pdgMaxTaintHops: options.pdgMaxTaintHops,
       fetchWrappers: options.fetchWrappers,
     },
   );
