@@ -536,6 +536,7 @@ ANCHORED ("target" = file path or symbol/function name): full hop detail for tha
 
 CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
+- Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both — a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).
 - Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))) — the largest false-negative class.
 - Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
 - Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
