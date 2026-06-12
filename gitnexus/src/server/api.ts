@@ -1580,7 +1580,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
   app.delete('/api/analyze/:jobId', requireLocalhostOrigin, (req, res) => {
-    const job = jobManager.getJob(req.params.jobId);
+    const jobId = req.params.jobId as string;
+    const job = jobManager.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -1589,7 +1590,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
-    jobManager.cancelJob(req.params.jobId, 'Cancelled by user');
+    jobManager.cancelJob(jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 
@@ -1738,7 +1739,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // DELETE /api/embed/:jobId — cancel embedding job
   app.delete('/api/embed/:jobId', requireLocalhostOrigin, (req, res) => {
-    const job = embedJobManager.getJob(req.params.jobId);
+    const jobId = req.params.jobId as string;
+    const job = embedJobManager.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -1747,7 +1749,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
-    embedJobManager.cancelJob(req.params.jobId, 'Cancelled by user');
+    embedJobManager.cancelJob(jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 
