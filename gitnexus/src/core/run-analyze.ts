@@ -24,6 +24,7 @@ import {
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
+  deleteAllInterprocTaintPaths,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -1002,6 +1003,15 @@ export async function runFullAnalysis(
       //    from the fresh pipeline output below. Required for the
       //    "Leiden runs on the FULL graph" correctness invariant.
       await deleteAllCommunitiesAndProcesses();
+      // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+      //     — their validity is a whole-program property (an A→C flow can be
+      //     invalidated by a change to an intermediate function on a third
+      //     file), so endpoint-writability extraction can't refresh them.
+      //     extractChangedSubgraph re-includes all of them from the fresh
+      //     graph (isGraphWideRelType), mirroring Community/Process.
+      if (options.pdg === true) {
+        await deleteAllInterprocTaintPaths();
+      }
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
       //    only that. Unchanged-file rows in the DB stay untouched. Pass

@@ -55,6 +55,16 @@ import type { KnowledgeGraph } from '../graph/types.js';
 const isGraphWide = (label: string): boolean => label === 'Community' || label === 'Process';
 
 /**
+ * Relationship types whose VALIDITY is a whole-program property, not a
+ * function of their endpoints' files (#2084 M4 U6). `TAINT_PATH` (cross-
+ * function taint) can be invalidated by a change to an INTERMEDIATE function
+ * on a third file, so the endpoint-writability rule below would skip a stale
+ * A→C edge. These are always extracted (and the orchestrator delete-alls them
+ * first, like Community/Process) so they rebuild from the fresh graph.
+ */
+const isGraphWideRelType = (type: string): boolean => type === 'TAINT_PATH';
+
+/**
  * Build a Map<nodeId, filePath> for every File-bound node in the graph.
  * Graph-wide nodes (Community/Process) have no filePath and are filtered.
  */
@@ -84,7 +94,11 @@ export const extractChangedSubgraph = (
   });
 
   fullGraph.forEachRelationship((r: GraphRelationship) => {
-    if (writableNodeIds.has(r.sourceId) || writableNodeIds.has(r.targetId)) {
+    if (
+      writableNodeIds.has(r.sourceId) ||
+      writableNodeIds.has(r.targetId) ||
+      isGraphWideRelType(r.type)
+    ) {
       sub.addRelationship(r);
     }
   });
