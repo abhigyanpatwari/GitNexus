@@ -1,7 +1,7 @@
 /**
  * Direct CLI Tool Commands
  *
- * Exposes GitNexus tools (query, context, impact, cypher) as direct CLI commands.
+ * Exposes GitNexus tools (query, context, impact, cypher, check) as direct CLI commands.
  * Bypasses MCP entirely — invokes LocalBackend directly for minimal overhead.
  *
  * Usage:
@@ -225,4 +225,44 @@ export async function detectChangesCommand(options?: {
     branch: options?.branch,
   });
   output(formatDetectChangesResult(result));
+}
+
+export async function checkCommand(options?: {
+  cycles?: boolean;
+  json?: boolean;
+  repo?: string;
+  branch?: string;
+}): Promise<void> {
+  if (!options?.cycles) {
+    process.stderr.write('Usage: gitnexus check --cycles [--json]\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('check', {
+      cycles: true,
+      repo: options.repo,
+      branch: options.branch,
+    });
+    if (result?.error) {
+      output(result);
+      process.exitCode = 1;
+      return;
+    }
+    if (options.json) {
+      output(result);
+    } else if (result.cycleCount === 0) {
+      output('No circular imports found.');
+    } else {
+      output(
+        result.cycles.map((cycle: { files: string[] }) => cycle.files.join(' -> ')).join('\n'),
+      );
+    }
+    if (result.cycleCount > 0) process.exitCode = 1;
+  } catch (error) {
+    output({ error: error instanceof Error ? error.message : String(error) });
+    process.exitCode = 1;
+  }
 }

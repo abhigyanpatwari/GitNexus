@@ -83,6 +83,22 @@ export interface PipelineOptions {
    */
   pdgMaxReachingDefEdgesPerFunction?: number;
   /**
+   * Per-function taint findings cap for the scope-resolution taint pass
+   * (#2083 M3). `undefined` ⇒ `DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION`
+   * (200); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the
+   * parse-cache chunk key; recorded resolved in `RepoMeta.pdg` so a cap
+   * change forces a full writeback. No CLI flag or rc key (KTD8) —
+   * programmatic / server path only, like the other pdg caps.
+   */
+  pdgMaxTaintFindingsPerFunction?: number;
+  /**
+   * Per-finding taint hop cap (#2083 M3, KTD6 — bounds the persisted
+   * hop-encoded `reason`). `undefined` ⇒ `DEFAULT_PDG_MAX_TAINT_HOPS` (32);
+   * `0` ⇒ no cap (unlimited). Same emit-time-only / RepoMeta-stamped /
+   * no-CLI-flag discipline as `pdgMaxTaintFindingsPerFunction`.
+   */
+  pdgMaxTaintHops?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to

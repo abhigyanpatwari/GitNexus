@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createRequire } from 'node:module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -85,6 +86,46 @@ const PLUGIN_HOOK_DB_PROBE = path.resolve(
   'hooks',
   'hook-db-lock-probe.cjs',
 );
+
+// ─── Host guard precheck for orphan-reaping tests (#2163) ───────────
+//
+// The reaping lanes depend on a host coreutils `timeout`/`gtimeout` that
+// passes the probe's `-k` self-test. Without one, the SIGTERM-immune fake
+// child simply survives and the aliveness poll times out — a red that says
+// nothing about WHY. Resolve the guard once through the probe's own exported
+// resolver (the exact candidate list + self-test the hook child will use,
+// with any dev-shell GITNEXUS_HOOK_TIMEOUT_PATH override cleared to mirror
+// the `''` these tests pass to the hook) and assert on it with an explicit
+// message. Chosen form: precheck ASSERTION, not skipIf — a skip would
+// silently drop the incident-mechanism coverage on a misconfigured host
+// (green-but-vacuous lane), while a red with a one-line actionable cause
+// keeps the contract honest. GitHub ubuntu runners always ship coreutils,
+// so CI behavior is unchanged.
+const GUARD_PRECHECK_MSG =
+  'precheck: no self-test-passing coreutils timeout/gtimeout on this host — ' +
+  'orphan reaping cannot work here (the wrapper IS the reaping mechanism). ' +
+  'Install coreutils or expose one via GITNEXUS_HOOK_TIMEOUT_PATH.';
+
+let hostGuardMemo: string | null | undefined;
+function resolveHostGuardForReapingTests(): string | null {
+  if (hostGuardMemo !== undefined) return hostGuardMemo;
+  const saved = process.env.GITNEXUS_HOOK_TIMEOUT_PATH;
+  process.env.GITNEXUS_HOOK_TIMEOUT_PATH = '';
+  try {
+    // createRequire: the probe is a CJS module; this also exercises the real
+    // export surface the adapters consume (#2163 follow-up). Unix-only — the
+    // resolver's self-test spawns /bin/sh — and all callers below live in
+    // linux-gated describes.
+    const probe = createRequire(import.meta.url)(CJS_HOOK_DB_PROBE) as {
+      resolveUnixGuardTimeout: () => string | null;
+    };
+    hostGuardMemo = probe.resolveUnixGuardTimeout();
+  } finally {
+    if (saved === undefined) delete process.env.GITNEXUS_HOOK_TIMEOUT_PATH;
+    else process.env.GITNEXUS_HOOK_TIMEOUT_PATH = saved;
+  }
+  return hostGuardMemo;
+}
 
 // ─── Test fixtures: temporary .gitnexus directory ───────────────────
 
@@ -1127,6 +1168,8 @@ describe.skipIf(process.platform !== 'linux')(
     // outlives the hook and SIGKILLs the child within ~3s — making this also
     // a direct regression test for the wrapper's `-k` capability.
     it('CJS: SIGKILLed hook leaves no immortal lsof child', async () => {
+      // Guard-availability precheck — see resolveHostGuardForReapingTests.
+      expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
       const { spawn } = await import('child_process');
       const lbugPath = path.join(gitNexusDir, 'lbug');
       fs.writeFileSync(lbugPath, '');
@@ -1205,7 +1248,10 @@ describe.skipIf(process.platform !== 'linux')(
         }
         expect(alive).toBe(false);
       } finally {
-        if (lsofPid > 0) {
+        // PID-reuse guard (#2169 review): re-run the detection loop's
+        // /proc/<pid>/cmdline identity check before the cleanup SIGKILL, so
+        // a PID already reaped and recycled by the OS is never signalled.
+        if (lsofPid > 0 && isFakeLsofAlive()) {
           try {
             process.kill(lsofPid, 'SIGKILL');
           } catch {
@@ -1244,6 +1290,8 @@ describe.skipIf(process.platform !== 'linux')(
     // candidate list; failing its self-test falls through to the built-in
     // coreutils guard, which still reaps the orphan within ~3s.
     it('CJS: env guard pointing at a directory falls through to a working built-in guard', async () => {
+      // Guard-availability precheck — see resolveHostGuardForReapingTests.
+      expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
       const { spawn } = await import('child_process');
       const lbugPath = path.join(gitNexusDir, 'lbug');
       fs.writeFileSync(lbugPath, '');
@@ -1318,7 +1366,10 @@ describe.skipIf(process.platform !== 'linux')(
         }
         expect(alive).toBe(false);
       } finally {
-        if (lsofPid > 0) {
+        // PID-reuse guard (#2169 review): re-run the detection loop's
+        // /proc/<pid>/cmdline identity check before the cleanup SIGKILL, so
+        // a PID already reaped and recycled by the OS is never signalled.
+        if (lsofPid > 0 && isFakeLsofAlive()) {
           try {
             process.kill(lsofPid, 'SIGKILL');
           } catch {
@@ -1349,6 +1400,510 @@ describe.skipIf(process.platform !== 'linux')(
     }, 30000);
   },
 );
+
+// ─── Behavior: SIGKILLed hook cannot strand the augment CLI (#2163 f-up) ──
+
+describe.skipIf(process.platform !== 'linux')(
+  'Orphaned augment CLI is reaped by the timeout wrapper (#2163 follow-up)',
+  () => {
+    // Same incident mechanism as the lsof reaping suite above, one layer up:
+    // the augment CLI is the longest-lived hook child (7s local / 12s npx
+    // inner budgets), so a hook SIGKILLed mid-augment used to strand it with
+    // nothing left to signal it. These tests pin GITNEXUS_HOOK_CLI_PATH, so
+    // they exercise the DIRECT-EXEC branch only (the CLI is the guard's
+    // direct child): the fake CLI here is SIGTERM-immune and sleeps 30s;
+    // with the wrap in place the guard SIGTERMs it at 8s (= ceil(7000/1000)
+    // +1) and the `-k` escalation SIGKILLs it 1s later, so it must be gone
+    // well inside the 12s poll window. (The npx branch reaps differently —
+    // `-s KILL` group-kills at budget because the CLI is a grandchild there;
+    // see the staged npx suite below.) With runGitNexusCli's wrap reverted,
+    // nothing can reap it and the poll times out → red. The antigravity
+    // adapter shares the identical runGitNexusCli shape and is pinned at
+    // source level (see 'Augment CLI guard wrap (source)').
+    for (const [label, hookPath] of [
+      ['CJS', CJS_HOOK],
+      ['Plugin', PLUGIN_HOOK],
+    ] as const) {
+      it(`${label}: SIGKILLed hook leaves no immortal augment CLI child`, async () => {
+        // Guard-availability precheck — see resolveHostGuardForReapingTests.
+        expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
+        const { spawn } = await import('child_process');
+        // REQUIRED: a real lbug file routes the probe through the fake lsof
+        // (empty output → no holder PIDs → probe false) so the augment runs
+        // through the same probe-then-spawn flow as production.
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        const pidFile = path.join(os.tmpdir(), `gn-hook-clipid-${process.pid}-${label}`);
+        fs.rmSync(pidFile, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusPidFile: pidFile,
+          gitnexusSleepMs: 30000,
+          gitnexusIgnoreSigterm: true,
+          lsofOutput: '',
+          psOutput: '',
+        });
+        let cliPid = 0;
+        let hookChild: ReturnType<typeof spawn> | null = null;
+
+        const isFakeCliAlive = () => {
+          try {
+            process.kill(cliPid, 0);
+          } catch {
+            return false; // ESRCH — reaped
+          }
+          // PID-reuse guard: only count it alive while the cmdline still
+          // points at our fake CLI.
+          try {
+            return fs.readFileSync(`/proc/${cliPid}/cmdline`, 'utf-8').includes(binDir);
+          } catch {
+            return false;
+          }
+        };
+
+        try {
+          hookChild = spawn(process.execPath, [hookPath], {
+            stdio: ['pipe', 'ignore', 'ignore'],
+            env: {
+              ...hookEnv(binDir),
+              // '1', NOT '0' — see the slot-gate test above.
+              GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+              // Hermeticity: a dev-shell GITNEXUS_HOOK_TIMEOUT_PATH=disabled
+              // would unwrap the CLI and fake-red this test. Empty string
+              // falls through to the built-in candidates (the path under test).
+              GITNEXUS_HOOK_TIMEOUT_PATH: '',
+            },
+          });
+          hookChild.stdin!.end(
+            JSON.stringify({
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            }),
+          );
+
+          // The fake CLI writes its PID as its FIRST statement; poll tightly.
+          const spawnDeadline = Date.now() + 8000;
+          while (Date.now() < spawnDeadline) {
+            try {
+              const raw = fs.readFileSync(pidFile, 'utf-8').trim();
+              if (raw) {
+                cliPid = Number.parseInt(raw, 10);
+                break;
+              }
+            } catch {
+              /* not written yet */
+            }
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          expect(cliPid).toBeGreaterThan(0);
+
+          // Kill the hook while its augment CLI child is alive.
+          hookChild.kill('SIGKILL');
+
+          // Wrapper budget for the 7000ms call site is 8s, plus 1s `-k`
+          // grace — poll past that with margin, far short of the 30s sleep.
+          const reapDeadline = Date.now() + 12000;
+          let alive = isFakeCliAlive();
+          while (alive && Date.now() < reapDeadline) {
+            await new Promise((r) => setTimeout(r, 100));
+            alive = isFakeCliAlive();
+          }
+          expect(alive).toBe(false);
+        } finally {
+          // PID-reuse guard (#2169 review): re-run the detection loop's
+          // /proc/<pid>/cmdline identity check before the cleanup SIGKILL,
+          // so a PID already reaped and recycled by the OS is never
+          // signalled.
+          if (cliPid > 0 && isFakeCliAlive()) {
+            try {
+              process.kill(cliPid, 'SIGKILL');
+            } catch {
+              /* already gone */
+            }
+          }
+          try {
+            hookChild?.kill('SIGKILL');
+          } catch {
+            /* ignore */
+          }
+          // The hook claims a slot before probing; it died holding it.
+          const lockDir = path.join(gitNexusDir, '.hook-locks');
+          try {
+            for (const f of fs.readdirSync(lockDir)) fs.unlinkSync(path.join(lockDir, f));
+          } catch {
+            /* ignore */
+          }
+          try {
+            fs.rmdirSync(lockDir);
+          } catch {
+            /* ignore */
+          }
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(pidFile, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      }, 30000);
+    }
+  },
+);
+
+// ─── Behavior: npx branch — SIGKILLed hook cannot strand the CLI grandchild ──
+
+describe.skipIf(process.platform !== 'linux')(
+  'Orphaned npx-branch CLI grandchild is reaped by the -s KILL wrapper (#2163 follow-up)',
+  () => {
+    // The npx branch has a DEEPER topology than the direct-exec suite above:
+    // guard → npx → CLI, so the CLI is the guard's GRANDCHILD. Under the
+    // TERM-first `-k 1` guard the budget's group SIGTERM kills the obedient
+    // npx parent; `timeout` reaps its direct child and exits IMMEDIATELY, so
+    // its `-k` SIGKILL never fires — and a SIGTERM-immune CLI grandchild
+    // survives unbounded (reproduced on coreutils 9.x). The `-s KILL`
+    // wrapped arm instead SIGKILLs the whole process group at budget
+    // (13s = ceil((7000+5000)/1000)+1 here), which nothing can ignore.
+    // Reverting the npx arm to plain `-k 1` TERM-first makes this test red.
+    //
+    // Topology notes: the hook is STAGED into a bare temp dir together with
+    // its sibling helpers (the install-shaped copy, like the antigravity e2e
+    // suite uses), so resolveCliPath() finds no local dist/ and no
+    // resolvable gitnexus package; with GITNEXUS_HOOK_CLI_PATH cleared the
+    // npx fallback branch is the one that runs. A fake `npx` injected on
+    // PATH then spawns the SIGTERM-immune fake CLI as its own child and
+    // waits on it, mirroring the real npx process tree.
+    it('CJS (staged): SIGKILLed hook leaves no immortal CLI grandchild behind npx', async () => {
+      // Guard-availability precheck — see resolveHostGuardForReapingTests.
+      expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
+      const { spawn } = await import('child_process');
+      // REQUIRED: a real lbug file routes the probe through the fake lsof
+      // (empty output → no holder PIDs → probe false) so the augment runs
+      // through the same probe-then-spawn flow as production.
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      const pidFile = path.join(os.tmpdir(), `gn-hook-npxclipid-${process.pid}`);
+      fs.rmSync(pidFile, { force: true });
+      // Route self-proof (#2169 review): written by the fake npx as its first
+      // statement, so the test fails loudly if a future resolveCliPath /
+      // hookEnv change silently re-routes the augment to the direct arm.
+      const npxMarkerPath = path.join(os.tmpdir(), `gn-hook-npxmarker-${process.pid}`);
+      fs.rmSync(npxMarkerPath, { force: true });
+      const binDir = createHookToolDir({
+        gitnexusPidFile: pidFile,
+        gitnexusSleepMs: 30000,
+        gitnexusIgnoreSigterm: true,
+        lsofOutput: '',
+        psOutput: '',
+      });
+      // Fake npx: spawns the fake CLI as the guard's grandchild and waits on
+      // it like real npx; npx itself stays SIGTERM-obedient (Node default).
+      fs.writeFileSync(
+        path.join(binDir, 'npx'),
+        `#!/usr/bin/env node\n` +
+          `require('fs').writeFileSync(${JSON.stringify(npxMarkerPath)}, String(process.pid));\n` +
+          `const { spawn } = require('child_process');\n` +
+          `const child = spawn(process.execPath, [${JSON.stringify(
+            path.join(binDir, 'gitnexus-cli.js'),
+          )}], { stdio: 'ignore' });\n` +
+          `child.on('exit', (code) => process.exit(code === null ? 1 : code));\n`,
+        { mode: 0o755 },
+      );
+      // Stage the hook + its sibling helpers into a bare dir with no dist/
+      // and no reachable node_modules/gitnexus, so resolveCliPath() → ''.
+      const stagedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-staged-hook-'));
+      const hookSrcDir = path.dirname(CJS_HOOK);
+      for (const f of [
+        'gitnexus-hook.cjs',
+        'hook-lock.cjs',
+        'hook-db-lock-probe.cjs',
+        'resolve-analyze-cmd.cjs',
+      ]) {
+        fs.copyFileSync(path.join(hookSrcDir, f), path.join(stagedDir, f));
+      }
+      const stagedHook = path.join(stagedDir, 'gitnexus-hook.cjs');
+      let cliPid = 0;
+      let hookChild: ReturnType<typeof spawn> | null = null;
+
+      const isFakeCliAlive = () => {
+        try {
+          process.kill(cliPid, 0);
+        } catch {
+          return false; // ESRCH — reaped
+        }
+        // PID-reuse guard: only count it alive while the cmdline still
+        // points at our fake CLI.
+        try {
+          return fs.readFileSync(`/proc/${cliPid}/cmdline`, 'utf-8').includes(binDir);
+        } catch {
+          return false;
+        }
+      };
+
+      try {
+        hookChild = spawn(process.execPath, [stagedHook], {
+          stdio: ['pipe', 'ignore', 'ignore'],
+          env: {
+            ...hookEnv(binDir),
+            // Force the npx fallback: no CLI-path override (empty string
+            // fails resolveCliPath's trim check), and nothing for the staged
+            // copy's require.resolve to find via NODE_PATH.
+            GITNEXUS_HOOK_CLI_PATH: '',
+            NODE_PATH: '',
+            // '1', NOT '0' — see the slot-gate test above.
+            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+            // Hermeticity: fall through to the built-in guard candidates.
+            GITNEXUS_HOOK_TIMEOUT_PATH: '',
+          },
+        });
+        hookChild.stdin!.end(
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: tmpDir,
+          }),
+        );
+
+        // The fake CLI writes its PID as its FIRST statement; poll tightly.
+        const spawnDeadline = Date.now() + 8000;
+        while (Date.now() < spawnDeadline) {
+          try {
+            const raw = fs.readFileSync(pidFile, 'utf-8').trim();
+            if (raw) {
+              cliPid = Number.parseInt(raw, 10);
+              break;
+            }
+          } catch {
+            /* not written yet */
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(cliPid).toBeGreaterThan(0);
+        // The augment really took the npx fallback arm, not the direct arm.
+        expect(fs.existsSync(npxMarkerPath)).toBe(true);
+
+        // Kill the hook while the npx → CLI chain is alive (orphan topology).
+        hookChild.kill('SIGKILL');
+
+        // The npx call site's wrapper budget is 13s (= ceil((7000+5000)/
+        // 1000)+1) from the guard's start; the group SIGKILL lands then.
+        // Poll past it with margin, far short of the CLI's 30s sleep.
+        const reapDeadline = Date.now() + 18000;
+        let alive = isFakeCliAlive();
+        while (alive && Date.now() < reapDeadline) {
+          await new Promise((r) => setTimeout(r, 100));
+          alive = isFakeCliAlive();
+        }
+        expect(alive).toBe(false);
+      } finally {
+        // PID-reuse guard (#2169 review): re-run the detection loop's
+        // /proc/<pid>/cmdline identity check before the cleanup SIGKILL, so
+        // a PID already reaped and recycled by the OS is never signalled.
+        if (cliPid > 0 && isFakeCliAlive()) {
+          try {
+            process.kill(cliPid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }
+        try {
+          hookChild?.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        // The hook claims a slot before probing; it died holding it.
+        const lockDir = path.join(gitNexusDir, '.hook-locks');
+        try {
+          for (const f of fs.readdirSync(lockDir)) fs.unlinkSync(path.join(lockDir, f));
+        } catch {
+          /* ignore */
+        }
+        try {
+          fs.rmdirSync(lockDir);
+        } catch {
+          /* ignore */
+        }
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(pidFile, { force: true });
+        fs.rmSync(npxMarkerPath, { force: true });
+        fs.rmSync(stagedDir, { recursive: true, force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    }, 45000);
+  },
+);
+
+// ─── Wrapping equivalence: disabled guard ⇒ pre-wrap augment behavior ──
+
+describe.skipIf(process.platform === 'win32')(
+  'Augment CLI guard wrap degrades cleanly when disabled (#2163 follow-up)',
+  () => {
+    // T6-style equivalence pin for the AUGMENT path: with the wrapper
+    // explicitly off (the `disabled` sentinel, NOT a bogus path — invalid
+    // values fall through to the real candidate list by design) the augment
+    // path must behave exactly as it did before the wrap existed: the probe
+    // fails open on an idle DB, the CLI runs unwrapped, and its context is
+    // emitted verbatim. (The wrapped arm's equivalence is covered by the
+    // whole existing augment suite, which now runs under the host's real
+    // guard on the Linux/macOS lanes.)
+    for (const [label, hookPath] of [
+      ['CJS', CJS_HOOK],
+      ['Plugin', PLUGIN_HOOK],
+    ] as const) {
+      it(`${label}: augment runs and emits context with the wrapper disabled`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-nowrap-aug-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+          lsofOutput: '',
+          psOutput: '',
+        });
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                GITNEXUS_HOOK_TIMEOUT_PATH: 'disabled',
+              },
+            },
+          );
+          const output = parseHookOutput(result.stdout);
+          expect(output).not.toBeNull();
+          expect(output!.additionalContext).toContain('[GitNexus] 1 related symbol found');
+          expect(fs.existsSync(markerPath)).toBe(true);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+    }
+  },
+);
+
+// ─── Source: augment CLI guard wrap present in every adapter (#2163 f-up) ──
+
+describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
+  const ANTIGRAVITY_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'hooks',
+    'antigravity',
+    'gitnexus-antigravity-hook.cjs',
+  );
+
+  // The cursor integration is deliberately ABSENT from this list: it does
+  // not install hook-db-lock-probe.cjs (see gitnexus-cursor-integration/
+  // README.md "What's installed manually vs. automated"), so there is no
+  // resolver sibling to require — wrapping its augment child is the
+  // "cursor probe" item on the #2163 follow-up list.
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+    ['Antigravity', ANTIGRAVITY_HOOK],
+  ] as const) {
+    it(`${label}: runGitNexusCli wraps via resolveUnixGuardTimeout with a ceil(ms/1000)+1 budget`, () => {
+      const source = fs.readFileSync(hookPath, 'utf-8');
+      const start = source.indexOf('function runGitNexusCli');
+      expect(start).toBeGreaterThanOrEqual(0);
+      const end = source.indexOf('\nfunction ', start + 1);
+      const fn = source.slice(start, end === -1 ? undefined : end);
+      // Consults the probe's exported resolver (memo shared with the probe),
+      // and never on Windows — the npx.cmd / gitnexus.cmd argv stay exactly
+      // as before the wrap. The typeof check is the probe version-skew guard
+      // (#2169 review): an old probe without the resolveUnixGuardTimeout
+      // export must degrade to the unwrapped argv, not throw a TypeError
+      // that the caller's catch swallows into a silently dead augment.
+      expect(fn).toMatch(
+        /isWin \|\| typeof resolveUnixGuardTimeout !== 'function'\s*\?\s*null\s*:\s*resolveUnixGuardTimeout\(\)/,
+      );
+      // Coreutils `-k 1` escalation…
+      expect(fn).toContain("'-k',");
+      // …with a budget STRICTLY above each branch's inner spawnSync timeout:
+      // ceil(inner/1000)+1 for both the direct (timeout) and npx
+      // (timeout + 5000) call sites. The direct-budget formula is counted
+      // exactly — once per wrapped direct-exec branch (the Plugin adapter has
+      // two: GITNEXUS_HOOK_CLI_PATH and the PATH-direct `gitnexus` branch,
+      // its most common production path) — so a partial revert of any single
+      // branch cannot pass unnoticed.
+      const directBudgetCount = (fn.match(/Math\.ceil\(timeout \/ 1000\) \+ 1/g) ?? []).length;
+      expect(directBudgetCount).toBe(label === 'Plugin' ? 2 : 1);
+      expect(fn).toMatch(/Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1/);
+      // Argv-order pin (#2169 review): the budget token must appear BEFORE
+      // the command word — `timeout … <budget> <cmd>` — or coreutils would
+      // parse the command word as its DURATION argument. Token presence and
+      // the counts above alone would let a transposed argv pass. Every
+      // direct-exec budget must be immediately followed by its command token
+      // (process.execPath, or the PATH-direct 'gitnexus' on Plugin), and the
+      // npx budget by 'npx'.
+      const directOrderCount = (
+        fn.match(
+          /String\(Math\.ceil\(timeout \/ 1000\) \+ 1\),\s*(?:process\.execPath|'gitnexus')/g,
+        ) ?? []
+      ).length;
+      expect(directOrderCount).toBe(label === 'Plugin' ? 2 : 1);
+      expect(fn).toMatch(/String\(Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1\),\s*'npx'/);
+      // npx-branch grandchild containment (#2169 review): the npx wrapped
+      // arm must SIGKILL the process group at budget (`-s KILL`) — a group
+      // SIGTERM there kills only the obedient npx parent, `timeout` returns
+      // before its `-k` escalation fires, and a SIGTERM-immune CLI
+      // grandchild escapes unbounded.
+      expect(fn).toMatch(
+        /'-s',\s*'KILL',\s*'-k',\s*'1',\s*String\(Math\.ceil\(\(timeout \+ 5000\)/,
+      );
+      // …and the direct-exec arm(s) must NOT lead with `-s KILL`: TERM-first
+      // is gentler and sufficient there (the CLI is the guard's direct
+      // child), so `-s` appears exactly once — in the npx arm.
+      expect((fn.match(/'-s',/g) ?? []).length).toBe(1);
+    });
+  }
+
+  for (const [label, probePath] of [
+    ['CJS', CJS_HOOK_DB_PROBE],
+    ['Plugin', PLUGIN_HOOK_DB_PROBE],
+  ] as const) {
+    it(`${label} probe exports resolveUnixGuardTimeout`, () => {
+      const source = fs.readFileSync(probePath, 'utf-8');
+      const exportsSlice = source.slice(source.indexOf('module.exports'));
+      expect(exportsSlice).toContain('resolveUnixGuardTimeout');
+    });
+  }
+});
+
+// ─── Source: cursor hook slot-skip diagnostic (#2163 follow-up) ─────
+
+describe('Cursor hook slot-skip diagnostic (source, #2163 follow-up)', () => {
+  const CURSOR_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    'gitnexus-cursor-integration',
+    'hooks',
+    'gitnexus-hook.cjs',
+  );
+
+  it('debug-gates the slot-saturated skip under the cursor truthy convention', () => {
+    const source = fs.readFileSync(CURSOR_HOOK, 'utf-8');
+    const idx = source.indexOf('augment skipped: hook slots saturated');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    // Must sit inside the cursor hook's own debug gate (truthy
+    // `process.env.GITNEXUS_DEBUG`, unlike the claude adapters' strict
+    // '1'/'true' gate) so the default path stays silent.
+    const before = source.slice(Math.max(0, idx - 600), idx);
+    expect(before).toContain('process.env.GITNEXUS_DEBUG');
+  });
+});
 
 // ─── Integration: PreToolUse augmentation filtering (#1492) ─────────
 
@@ -1877,7 +2432,10 @@ describe.skipIf(process.platform === 'win32')(
       // that passes the `-k` self-test and then reports coreutils budget
       // expiry (exit 124) must map to "unresponsive holder" → fail-closed
       // skip. The fake guard distinguishes the self-test invocation
-      // (`-k 1 1 /bin/sh -c :`) from a real wrap by the /bin/sh argv token.
+      // (`-k 1 1 /bin/sh -c 'exit 42'`) from a real wrap by the `exit 42`
+      // argv token, and PROPAGATES the requested status — the self-test now
+      // demands exit-status propagation (status 42), not just exit 0
+      // (#2169 review).
       it(`${label}: guard exit 124 (budget expiry) → fail-closed skip`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-guard124-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
@@ -1892,7 +2450,7 @@ describe.skipIf(process.platform === 'win32')(
         const fakeGuard = path.join(binDir, 'guard-exit-124');
         fs.writeFileSync(
           fakeGuard,
-          `#!/usr/bin/env node\nif (process.argv.includes('/bin/sh')) process.exit(0);\nprocess.exit(124);\n`,
+          `#!/usr/bin/env node\nif (process.argv.includes('exit 42')) process.exit(42);\nprocess.exit(124);\n`,
           { mode: 0o755 },
         );
         try {
@@ -1948,7 +2506,7 @@ describe.skipIf(process.platform === 'win32')(
         const fakeGuard = path.join(binDir, 'guard-sigkill');
         fs.writeFileSync(
           fakeGuard,
-          `#!/usr/bin/env node\nif (process.argv.includes('/bin/sh')) process.exit(0);\nprocess.kill(process.pid, 'SIGKILL');\n`,
+          `#!/usr/bin/env node\nif (process.argv.includes('exit 42')) process.exit(42);\nprocess.kill(process.pid, 'SIGKILL');\n`,
           { mode: 0o755 },
         );
         try {
@@ -1975,6 +2533,62 @@ describe.skipIf(process.platform === 'win32')(
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      // F5-4 (#2169 review; F5-3 was taken by the #2165 slot-gate test
+      // above): an always-exit-0 stub (/bin/true shape) at
+      // GITNEXUS_HOOK_TIMEOUT_PATH must be REJECTED by the self-test. The
+      // old self-test only demanded exit 0, which such a stub satisfies
+      // without ever RUNNING the wrapped command — once adopted it instantly
+      // "succeeds" every wrapped spawn with empty output, turning the probe
+      // into a constant no-owner answer and, worse, the augment into a
+      // silent no-op (status 0 + empty stderr passes the success check with
+      // no context, so the feature dies without a trace). The propagation
+      // self-test (`sh -c 'exit 42'` must yield 42) rejects the stub;
+      // resolution falls through to the built-in candidates (or, with none
+      // usable, to the unwrapped status quo) and the augment runs for real.
+      it(`${label}: always-exit-0 stub guard is rejected → augment still runs and emits context`, () => {
+        const markerPath = path.join(os.tmpdir(), `gn-hook-stubguard-${process.pid}-${label}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+          lsofOutput: '',
+          psOutput: '',
+        });
+        // Models /bin/true: exits 0 for ANY argv without running anything.
+        const stubGuard = path.join(binDir, 'true-stub');
+        fs.writeFileSync(stubGuard, `#!/usr/bin/env node\nprocess.exit(0);\n`, { mode: 0o755 });
+        try {
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Grep',
+              tool_input: { pattern: 'validateUser' },
+              cwd: tmpDir,
+            },
+            undefined,
+            {
+              env: {
+                ...hookEnv(binDir),
+                GITNEXUS_HOOK_TIMEOUT_PATH: stubGuard,
+                // '1', NOT '0' — see the slot-gate test above.
+                GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+              },
+            },
+          );
+          const output = parseHookOutput(result.stdout);
+          expect(output).not.toBeNull();
+          expect(output!.additionalContext).toContain('[GitNexus] 1 related symbol found');
+          expect(fs.existsSync(markerPath)).toBe(true);
         } finally {
           fs.rmSync(lbugPath, { force: true });
           fs.rmSync(markerPath, { force: true });

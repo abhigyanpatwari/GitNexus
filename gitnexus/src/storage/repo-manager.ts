@@ -158,6 +158,24 @@ export interface RepoMeta {
      * type for that reason; resolved (always present) on every M2+ write.
      */
     maxReachingDefEdgesPerFunction?: number;
+    /**
+     * Per-function taint findings cap, resolved (0 = unlimited; #2083 M3).
+     * ABSENT on an M1/M2-era stamp — like `maxReachingDefEdgesPerFunction`,
+     * that absence is what trips `pdgModeMismatch` on the first M3 run and
+     * forces the full writeback that populates TAINTED/SANITIZES rows.
+     */
+    maxTaintFindingsPerFunction?: number;
+    /** Per-finding taint hop cap, resolved (0 = unlimited; #2083 M3 KTD6 —
+     *  bounds the persisted hop-encoded `reason`). Optional for the same
+     *  M2-era-stamp upgrade reason as the findings cap. */
+    maxTaintHops?: number;
+    /**
+     * Digest of the built-in taint model the persisted findings were
+     * produced under (#2083 M3 KTD7/R7). Any model-content change ships a
+     * new digest → mismatch → full writeback repopulates taint edges
+     * without `--force`. Optional: absent on pre-M3 stamps.
+     */
+    taintModelVersion?: string;
   };
 }
 

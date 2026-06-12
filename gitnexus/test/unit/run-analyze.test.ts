@@ -8,6 +8,7 @@ import {
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from '../../src/core/embedding-mode.js';
 import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 describe('run-analyze module', () => {
@@ -330,13 +331,20 @@ describe('deriveEmbeddingCap', () => {
 });
 
 describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
-  // M2 (#2082) added the resolved REACHING_DEF cap to the stamp; these tests
-  // model M2 STEADY-STATE equality. The M1-era-stamp (field absent) upgrade
-  // path is pinned in pdg-mode-flip.test.ts.
+  // M2 (#2082) added the resolved REACHING_DEF cap to the stamp; M3 (#2083)
+  // added the two taint caps + the built-in model digest. These tests model
+  // M3 STEADY-STATE equality — this object is the DELIBERATE pin of the
+  // resolved-record shape, updated per milestone. The era-stamp (field
+  // absent) upgrade paths are pinned in pdg-mode-flip.test.ts.
   const DEFAULTS = {
     maxFunctionLines: 2000,
     maxEdgesPerFunction: 5000,
     maxReachingDefEdgesPerFunction: 4000,
+    maxTaintFindingsPerFunction: 200,
+    maxTaintHops: 32,
+    // Content digest, not a tunable cap — pinned via the exported constant
+    // (its VALUE changes whenever the built-in model changes, by design).
+    taintModelVersion,
   };
 
   it('resolvePdgConfig: pdg-off run resolves to undefined (the meta field is omitted)', async () => {
@@ -354,8 +362,17 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
         pdgMaxFunctionLines: 0,
         pdgMaxEdgesPerFunction: 0,
         pdgMaxReachingDefEdgesPerFunction: 0,
+        pdgMaxTaintFindingsPerFunction: 0,
+        pdgMaxTaintHops: 0,
       }),
-    ).toEqual({ maxFunctionLines: 0, maxEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 });
+    ).toEqual({
+      maxFunctionLines: 0,
+      maxEdgesPerFunction: 0,
+      maxReachingDefEdgesPerFunction: 0,
+      maxTaintFindingsPerFunction: 0,
+      maxTaintHops: 0,
+      taintModelVersion, // not a cap — always stamped on a pdg-on run
+    });
   });
 
   it('legacy meta (no recorded stamp) + plain run → no mismatch', async () => {
@@ -391,5 +408,11 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
     expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxFunctionLines: 500 })).toBe(true);
     // 0 = unlimited differs from the 2000-line default, too.
     expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxFunctionLines: 0 })).toBe(true);
+    // The M3 taint caps participate identically (#2083).
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxTaintFindingsPerFunction: 1 })).toBe(true);
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxTaintHops: 1 })).toBe(true);
+    expect(pdgModeMismatch(DEFAULTS, { pdg: true, pdgMaxTaintFindingsPerFunction: 200 })).toBe(
+      false, // explicit default ≡ default
+    );
   });
 });
