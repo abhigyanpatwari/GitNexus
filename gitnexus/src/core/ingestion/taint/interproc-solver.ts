@@ -105,7 +105,17 @@ interface TaintedParam {
   readonly truncated: boolean;
 }
 
-const pkey = (fnId: string, param: number): string => `${fnId}#${param}`;
+/**
+ * Taint-state key — `(function, parameter, SOURCE)`. The source discriminator
+ * is load-bearing: without it, a parameter tainted by source A is marked
+ * visited and a later flow from source B to the SAME parameter is dropped
+ * before it can fire that function's sink, silently losing B→sink (the
+ * multi-source collapse — the recurring M3 bug class). Including the source
+ * keeps each origin's flow independent; the lattice stays finite (`fn × param ×
+ * source`), so the monotone worklist still terminates and is cycle-safe.
+ */
+const pkey = (fnId: string, param: number, sourceFnId: string): string =>
+  `${fnId}#${param}#${sourceFnId}`;
 
 /**
  * Run the interprocedural taint fixpoint. `summaries` is keyed by function node
@@ -168,9 +178,9 @@ export function solveInterprocTaint(
     findingsByKey.set(key, { sourceFnId, sinkFnId, sinkKind, hops, hopsTruncated: truncated });
   };
 
-  /** Mark (fnId, paramIndex) tainted; enqueue on first taint or shorter path. */
+  /** Mark (fnId, paramIndex, source) tainted; enqueue on first taint. */
   const taint = (tp: TaintedParam): void => {
-    const key = pkey(tp.fnId, tp.paramIndex);
+    const key = pkey(tp.fnId, tp.paramIndex, tp.sourceFnId);
     if (tainted.has(key)) return; // monotone: first taint wins (cycle-safe)
     tainted.set(key, tp);
     queue.push(tp);

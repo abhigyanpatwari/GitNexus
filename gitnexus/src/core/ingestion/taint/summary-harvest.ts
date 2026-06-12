@@ -257,6 +257,35 @@ export function harvestFunctionSummary(
     for (const d of [...facts.defs, ...(facts.mayDefs ?? [])]) {
       enqueue({ bindingIdx: d, point, seedId: -1, exclusions: new Set() });
     }
+    // DIRECT source-in-call-arg (`runIt(req.body)`): no intermediate binding is
+    // defined, so the floor seed above records nothing. Climb the source
+    // member-read's `parent` chain — each enclosing call/new site is a
+    // `sourceToCallArg` (the cross-function fixpoint seed). A sink ancestor is
+    // M3's intra-procedural concern and harmless to also record here.
+    for (const src of sm.sources) {
+      let cur: SiteRecord | undefined = facts.sites?.[src.siteIndex];
+      const guard = new Set<number>([src.siteIndex]);
+      while (cur?.parent) {
+        const [siteIdx, argPos] = cur.parent;
+        if (guard.has(siteIdx)) break;
+        guard.add(siteIdx);
+        const ancestor = facts.sites?.[siteIdx];
+        if (!ancestor) break;
+        if (ancestor.kind === 'call' || ancestor.kind === 'new') {
+          const tail = calleeTail(ancestor.callee);
+          const scKey = `${facts.line}:${argPos}:${tail ?? ''}`;
+          if (!sourceCallArg.has(scKey)) {
+            sourceCallArg.set(scKey, {
+              sourceKind: src.entry.kind,
+              callLine: facts.line,
+              argIndex: argPos,
+              ...(tail ? { calleeName: tail } : {}),
+            });
+          }
+        }
+        cur = ancestor;
+      }
+    }
   }
 
   // ── forward reachability ──────────────────────────────────────────────────

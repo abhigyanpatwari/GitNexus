@@ -101,6 +101,33 @@ describe('solveInterprocTaint — multi-hop TITO', () => {
   });
 });
 
+describe('solveInterprocTaint — multi-source discrimination', () => {
+  it('two distinct sources into one sink function both fire (no collapse)', () => {
+    // A and A2 both pass a source into B's param 0, which sinks it. Without
+    // source-discriminated state, B.param0 is visited once and only the first
+    // source's finding survives — the M3 multi-source collapse bug class.
+    const B = summary('Function:b.ts:B', {
+      paramCount: 1,
+      paramToSink: [{ param: 0, sinkKind: 'command-injection' }],
+    });
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [{ sourceKind: 'remote-input', callLine: 1, argIndex: 0, calleeName: 'B' }],
+    });
+    const A2 = summary('Function:a2.ts:A2', {
+      paramCount: 0,
+      sourceToCallArg: [{ sourceKind: 'remote-input', callLine: 1, argIndex: 0, calleeName: 'B' }],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: A.fnId, calleeId: B.fnId, calleeName: 'B' },
+      { callerId: A2.fnId, calleeId: B.fnId, calleeName: 'B' },
+    ];
+    const r = solveInterprocTaint(map(A, A2, B), edges);
+    const sources = new Set(r.findings.map((f) => f.sourceFnId));
+    expect(sources).toEqual(new Set([A.fnId, A2.fnId]));
+  });
+});
+
 describe('solveInterprocTaint — recursion / cycles', () => {
   it('terminates on direct recursion', () => {
     // R taints its own param 0 → arg 0 of itself, and sinks param 0.

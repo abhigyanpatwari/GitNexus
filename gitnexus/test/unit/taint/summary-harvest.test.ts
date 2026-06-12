@@ -87,6 +87,18 @@ describe('harvestFunctionSummary — param→sink', () => {
   });
 });
 
+describe('harvestFunctionSummary — source→callee-arg (fixpoint seed)', () => {
+  it('records a source passed directly into a callee argument', () => {
+    const f = harvest(`function f() { runIt(req.body); }`);
+    expect(f.sourceToCallArg.some((s) => s.argIndex === 0 && s.calleeName === 'runIt')).toBe(true);
+  });
+
+  it('records a source passed via a local into a callee argument', () => {
+    const f = harvest(`function f() { const u = req.body; runIt(u); }`);
+    expect(f.sourceToCallArg.some((s) => s.calleeName === 'runIt')).toBe(true);
+  });
+});
+
 describe('harvestFunctionSummary — source→return', () => {
   it('records a generated source returned directly', () => {
     const f = harvest(`function f() { return req.body; }`);
