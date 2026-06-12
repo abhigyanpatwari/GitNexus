@@ -141,15 +141,12 @@ sync_from_host /host/.codex/config.toml   /home/node/.codex/config.toml   644
 # Seed $HOME/.claude.json from the host, but NOT as a straight copy. That file
 # mixes two kinds of state. Some is portable account and onboarding state we
 # want to keep: hasCompletedOnboarding, oauthAccount, userID, projects,
-# tipsHistory. The rest describes how Claude is installed on the host, and that
-# part is never valid here. This image installs Claude with `npm install -g`,
-# but the host's `installMethod` (for example "native") makes Claude look for
-# ~/.local/bin/claude and fail with
-# "claude command not found at /home/node/.local/bin/claude". The fix strips the
-# machine-specific fields and forces hasCompletedOnboarding, while handling a
-# host file that isn't a JSON object. That logic lives in seed-claude-config.cjs
-# so it can be unit-tested and prettier-checked
-# (translate-plugin-registries.test.cjs).
+# tipsHistory. The rest describes how Claude is installed on the HOST, and that
+# part is never valid here — for example the host's `installMethod` value only
+# makes sense for the host's binary. The fix strips the machine-specific fields
+# and forces hasCompletedOnboarding, while handling a host file that isn't a
+# JSON object. That logic lives in seed-claude-config.cjs so it can be
+# unit-tested and prettier-checked (translate-plugin-registries.test.cjs).
 node "$SCRIPT_DIR/seed-claude-config.cjs"
 
 # Codex auth. Some hosts store credentials in the OS keyring instead of on disk

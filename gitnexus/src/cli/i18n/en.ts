@@ -143,6 +143,7 @@ export const en = {
   'help.command.cypher.description': 'Execute raw Cypher query against the knowledge graph',
   'help.command.detectChanges.description':
     'Map git diff hunks to indexed symbols and affected execution flows',
+  'help.command.check.description': 'Run structural checks against the indexed graph',
   'help.command.evalServer.description':
     'Start lightweight HTTP server for fast tool calls during evaluation',
   'help.command.group.description': 'Manage repository groups for cross-index impact analysis',
@@ -241,6 +242,7 @@ export const en = {
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.detectChanges.scope': 'What to analyze: unstaged, staged, all, or compare',
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
+  'help.option.check.cycles': 'Detect circular imports and fail when any are found',
   'help.option.evalServer.host':
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',

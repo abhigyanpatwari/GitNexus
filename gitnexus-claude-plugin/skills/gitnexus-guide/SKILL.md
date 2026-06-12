@@ -38,7 +38,8 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
 | `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
-| `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                   |
+| `explain`        | Persisted taint findings — source→sink data flows (needs `analyze --pdg`) |
+| `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                    |
 
 ### Paginating `list_repos`
 
@@ -70,6 +71,16 @@ list_repos { offset: 400 }  → repos 401–437,                 hasMore false  
 ```
 
 Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). Out-of-range or malformed `limit`/`offset` (non-integer, `limit` outside `[1, 200]`, `offset < 0`) are rejected with a clear error — `limit` above the max is rejected, not silently capped. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
+
+### Taint findings (`explain`)
+
+`explain` returns intra-procedural taint findings (`TAINTED` edges) recorded by `gitnexus analyze --pdg` — each with a sink category (command-injection, code-injection, path-traversal, sql-injection, xss), source/sink lines, and the ordered hop path with the variable carried on each hop.
+
+- `explain {}` — enumerate all findings for the repo (bounded by `limit`, deterministic order)
+- `explain { target: "src/vuln.ts" }` — findings in a file (suffix path match accepted)
+- `explain { target: "runUserCommand" }` — findings in a function (resolved like `context`; ambiguous names return ranked candidates)
+
+A repo indexed without `--pdg` returns a clear "no taint layer" note. Caveats: findings are intra-procedural only — cross-function, closure/callback, property/field, and implicit flows are not modeled, so the absence of a finding is **not** proof of safety. `SANITIZES` (sanitizer-kill) edges are queryable via `cypher`.
 
 ## Resources Reference
 

@@ -23,7 +23,12 @@ describe('source/sink/sanitizer registry seam (#2080)', () => {
   });
 
   it('register then get round-trips the spec', () => {
-    const ts = spec({ sinks: [{ name: 'eval' }], sources: [{ name: 'req.body', args: [0] }] });
+    // U2 (#2083) extended the M0 entry shapes: sinks carry a `kind` category
+    // and sources are member-read entries — this test was updated deliberately.
+    const ts = spec({
+      sinks: [{ name: 'eval', kind: 'code-injection', global: true }],
+      sources: [{ kind: 'remote-input', objects: ['req'], properties: ['body'] }],
+    });
     registerSourceSinkConfig('typescript', ts);
     expect(getSourceSinkConfig('typescript')).toBe(ts);
     expect(registeredTaintLanguages()).toEqual(['typescript']);
@@ -35,8 +40,10 @@ describe('source/sink/sanitizer registry seam (#2080)', () => {
   });
 
   it('re-registering the same language id overwrites (last-write-wins)', () => {
-    const first = spec({ sinks: [{ name: 'eval' }] });
-    const second = spec({ sinks: [{ name: 'exec' }] });
+    const first = spec({ sinks: [{ name: 'eval', kind: 'code-injection', global: true }] });
+    const second = spec({
+      sinks: [{ name: 'exec', kind: 'command-injection', module: 'child_process' }],
+    });
     registerSourceSinkConfig('typescript', first);
     registerSourceSinkConfig('typescript', second);
     expect(getSourceSinkConfig('typescript')).toBe(second);

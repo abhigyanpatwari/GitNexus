@@ -40,7 +40,16 @@ import {
   isEmitSafeCfg,
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+  REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
+import {
+  emitFileTaint,
+  DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_TAINT_HOPS,
+  type TaintEmitLimits,
+} from '../../taint/emit.js';
+import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
+import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
@@ -273,6 +282,14 @@ interface RunScopeResolutionInput {
   /** Per-function REACHING_DEF edge cap (#2082 M2). `undefined` ⇒
    *  {@link DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION}; `0` ⇒ no cap. */
   readonly pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function taint findings cap (#2083 M3, consumed by the U4 taint
+   *  emit step in the pdg window). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION` (200); `0` ⇒ no cap. */
+  readonly pdgMaxTaintFindingsPerFunction?: number;
+  /** Per-finding taint hop cap (#2083 M3 KTD6 — bounds the hop-encoded
+   *  `reason`; consumed by the U4 taint emit step). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_TAINT_HOPS` (32); `0` ⇒ no cap. */
+  readonly pdgMaxTaintHops?: number;
   /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
@@ -713,6 +730,11 @@ export function runScopeResolution(
   // pair can't bracket them; without this accumulator the M2 cost would
   // silently disappear into `emit=` and field regressions would be invisible.
   let pdgMs = 0;
+  // M3 (#2083 U4): accumulated taint time (match + taint-side solve +
+  // propagate + TAINTED/SANITIZES emit), a sibling of `pdgMs` for the same
+  // reason — it interleaves per file inside `emit=`, so only an accumulator
+  // can bracket it. Printed as the PROF `taint=` segment.
+  let taintMs = 0;
   if (input.pdg === true) {
     let cfgBlocks = 0;
     let cfgEdges = 0;
@@ -721,6 +743,47 @@ export function runScopeResolution(
     let rdDropped = 0;
     let rdFacts = 0;
     let rdTruncated = 0;
+    // ── M3 taint setup (#2083 U4) ────────────────────────────────────────
+    // Explicit model-registration seam (idempotent, cheap) — the registry
+    // stays empty on non-pdg runs, preserving default-run parity. The
+    // registry is keyed by `SupportedLanguages` enum VALUES ('typescript' /
+    // 'javascript'), and `ScopeResolver.language` IS a `SupportedLanguages`
+    // member registered under those same constants — the join is direct
+    // equality, no mapping table. A language without a registered spec
+    // (python, go, …) skips taint entirely: no work, no warn spam (KTD8).
+    registerBuiltinTaintModels();
+    const taintSpec = getSourceSinkConfig(provider.language);
+    // Taint-side solver fact cap: the SAME derivation emitFileReachingDefs
+    // uses for the RD projection (edge cap × headroom factor, 0 ⇒ unlimited),
+    // so taint coverage and RD coverage truncate together — a function is
+    // never a taint coverage gap while its RD projection computed, and the
+    // RD layer's per-function truncation warn already names it.
+    const rdEdgeCap =
+      input.pdgMaxReachingDefEdgesPerFunction ?? DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION;
+    const taintLimits: TaintEmitLimits = {
+      maxFindingsPerFunction:
+        input.pdgMaxTaintFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+      maxHops: input.pdgMaxTaintHops ?? DEFAULT_PDG_MAX_TAINT_HOPS,
+      maxFacts: rdEdgeCap > 0 ? rdEdgeCap * REACHING_DEF_FACTS_PER_EDGE_CAP : 0,
+    };
+    // Cross-file aggregate of EVERY TaintEmitResult counter (the M2 emit
+    // result shipped with two fields dropped on the floor — R4 forbids that
+    // here; gaps/drops feed the unconditional warn below, volume feeds the
+    // per-language debug line).
+    const taintTotals = {
+      analyzed: 0,
+      noMatch: 0,
+      unsafeSites: 0,
+      gapTruncated: 0,
+      gapOverflow: 0,
+      gapNoFacts: 0,
+      findings: 0,
+      kills: 0,
+      dropped: 0,
+      hopsTruncated: 0,
+      gapExamples: [] as string[],
+      dropExamples: [] as string[],
+    };
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
@@ -777,6 +840,39 @@ export function runScopeResolution(
         rdDropped += rd.droppedEdges;
         rdFacts += rd.facts;
         rdTruncated += rd.truncatedFunctions;
+
+        // M3 (#2083 U4): taint over the SAME validated CFGs, inside the SAME
+        // per-file try (a taint throw costs this file's taint layer only —
+        // its CFG/REACHING_DEF edges above are already in the graph). Skipped
+        // entirely when the language has no registered model.
+        if (taintSpec !== undefined) {
+          const t1 = PROF ? performance.now() : 0;
+          const taint = emitFileTaint(
+            graph,
+            wellFormed,
+            pf.parsedImports,
+            taintSpec,
+            taintLimits,
+            (message) => logger.warn(message), // unconditional — R4/R6
+          );
+          if (PROF) taintMs += performance.now() - t1;
+          taintTotals.analyzed += taint.functionsAnalyzed;
+          taintTotals.noMatch += taint.functionsSkippedNoMatch;
+          taintTotals.unsafeSites += taint.functionsSkippedUnsafeSites;
+          taintTotals.gapTruncated += taint.functionsCoverageGap.truncated;
+          taintTotals.gapOverflow += taint.functionsCoverageGap.overflow;
+          taintTotals.gapNoFacts += taint.functionsCoverageGap['no-facts'];
+          taintTotals.findings += taint.findingsEmitted;
+          taintTotals.kills += taint.killsEmitted;
+          taintTotals.dropped += taint.findingsDropped;
+          taintTotals.hopsTruncated += taint.hopsTruncatedFindings;
+          for (const ex of taint.coverageGapExamples) {
+            if (taintTotals.gapExamples.length < 5) taintTotals.gapExamples.push(ex);
+          }
+          for (const ex of taint.droppedExamples) {
+            if (taintTotals.dropExamples.length < 5) taintTotals.dropExamples.push(ex);
+          }
+        }
       } catch (err) {
         // Last-resort isolation, mirroring the worker-side per-file try/catch:
         // a shape the predicate misses must cost this one file's CFG, not
@@ -798,8 +894,53 @@ export function runScopeResolution(
           (cfgDroppedEdges > 0 ? `, ${cfgDroppedEdges} edges dropped (per-function cap)` : '') +
           `; ${rdEdges} REACHING_DEF edges (${rdFacts} facts)` +
           (rdDropped > 0 ? `, ${rdDropped} REACHING_DEF edges dropped (per-function cap)` : '') +
-          (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : ''),
+          (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : '') +
+          // M3 volume telemetry — only for languages with a registered model.
+          (taintSpec !== undefined
+            ? `; taint: ${taintTotals.findings} TAINTED, ${taintTotals.kills} SANITIZES ` +
+              `(${taintTotals.analyzed} function(s) analyzed, ` +
+              `${taintTotals.noMatch} skipped: no source/sink match` +
+              (taintTotals.hopsTruncated > 0
+                ? `, ${taintTotals.hopsTruncated} finding(s) with truncated hop paths`
+                : '') +
+              `)`
+            : ''),
       );
+    }
+    // R4: taint coverage gaps and cap drops surface UNCONDITIONALLY (never
+    // logger.debug, never input.onWarn) at the per-language aggregate, with
+    // counts and up to 5 example functions. Per-function warns above cover
+    // the rare/actionable cases (unsafe sites, cap drops); solver-status gaps
+    // were already per-function-warned by the RD layer (same solver, same
+    // fact cap), so this aggregate is their single taint-side surface.
+    if (taintSpec !== undefined) {
+      const gapCount =
+        taintTotals.unsafeSites +
+        taintTotals.gapTruncated +
+        taintTotals.gapOverflow +
+        taintTotals.gapNoFacts;
+      if (gapCount > 0 || taintTotals.dropped > 0) {
+        const parts: string[] = [];
+        if (gapCount > 0) {
+          parts.push(
+            `${gapCount} function(s) skipped for taint ` +
+              `(${taintTotals.gapTruncated} fact-limit, ${taintTotals.gapOverflow} overflow, ` +
+              `${taintTotals.gapNoFacts} no-facts, ${taintTotals.unsafeSites} malformed sites)` +
+              (taintTotals.gapExamples.length > 0
+                ? ` — e.g. ${taintTotals.gapExamples.join(', ')}`
+                : ''),
+          );
+        }
+        if (taintTotals.dropped > 0) {
+          parts.push(
+            `${taintTotals.dropped} finding(s) dropped by the per-function cap` +
+              (taintTotals.dropExamples.length > 0
+                ? ` — e.g. ${taintTotals.dropExamples.join(', ')}`
+                : ''),
+          );
+        }
+        logger.warn(`[taint] lang=${provider.language}: ${parts.join('; ')}`);
+      }
     }
   }
 
@@ -813,7 +954,8 @@ export function runScopeResolution(
         ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
         // pdg ⊆ emit: the M2 reaching-defs share of the emit bucket (#2082 U4).
-        (input.pdg === true ? ` pdg=${pdgMs.toFixed(0)}ms` : '') +
+        // taint ⊆ emit likewise: the M3 match+solve+propagate+emit share (#2083 U4).
+        (input.pdg === true ? ` pdg=${pdgMs.toFixed(0)}ms taint=${taintMs.toFixed(0)}ms` : '') +
         ` total=${ns(tStart, tEnd).toFixed(0)}ms` +
         ` (${parsedFiles.length} files)`,
     );

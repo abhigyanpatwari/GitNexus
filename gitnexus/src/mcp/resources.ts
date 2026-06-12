@@ -335,6 +335,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - query: Process-grouped code intelligence (execution flows related to a concept)');
   lines.push('  - context: 360-degree symbol view (categorized refs, process participation)');
   lines.push('  - impact: Blast radius analysis (what breaks if you change a symbol)');
+  lines.push(
+    '  - explain: Persisted taint findings — source→sink data flows with per-hop variables (requires analyze --pdg)',
+  );
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
   lines.push('  - rename: Multi-file coordinated rename with confidence tags');
   lines.push('  - cypher: Raw graph queries');
