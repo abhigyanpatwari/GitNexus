@@ -23,6 +23,7 @@ const baseFacts: Facts = {
   paramToCallArg: [{ param: 1, callLine: 10, argIndex: 0, calleeName: 'helper' }],
   paramToSink: [{ param: 0, sinkKind: 'sql-injection' }],
   sourceToReturn: [{ sourceKind: 'remote-input' }],
+  sourceToCallArg: [{ sourceKind: 'remote-input', callLine: 7, argIndex: 0, calleeName: 'sink' }],
 };
 
 describe('ownFactsDigest', () => {
@@ -111,6 +112,7 @@ describe('FunctionSummary plain-data', () => {
       paramToCallArg: [],
       paramToSink: [],
       sourceToReturn: [],
+      sourceToCallArg: [],
       version: 'deadbeef',
     };
     expect(structuredClone(s)).toEqual(s);

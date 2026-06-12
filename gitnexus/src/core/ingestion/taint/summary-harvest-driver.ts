@@ -125,7 +125,8 @@ export function harvestFileSummaries(
       facts.paramToReturn.length === 0 &&
       facts.paramToCallArg.length === 0 &&
       facts.paramToSink.length === 0 &&
-      facts.sourceToReturn.length === 0
+      facts.sourceToReturn.length === 0 &&
+      facts.sourceToCallArg.length === 0
     ) {
       continue;
     }

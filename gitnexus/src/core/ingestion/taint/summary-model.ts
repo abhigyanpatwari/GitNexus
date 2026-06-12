@@ -89,6 +89,20 @@ export interface SourceToReturn {
 }
 
 /**
+ * A modelled source generated in this function flows into argument `argIndex`
+ * of a call at `callLine`. This SEEDS the interprocedural fixpoint: the source
+ * taints the callee's parameter, which the callee's summary then carries to a
+ * sink (one or more hops away). The cross-function analogue of an intra-
+ * procedural `source → sink` partial flow whose sink lives in the callee.
+ */
+export interface SourceToCallArg {
+  readonly sourceKind: SourceKind;
+  readonly callLine: number;
+  readonly argIndex: number;
+  readonly calleeName?: string;
+}
+
+/**
  * The compact taint abstraction of one function. All arrays are deterministically
  * sorted by the harvester and deduped, so two structurally-equal summaries
  * serialise identically (the {@link summaryVersion} contract).
@@ -110,6 +124,8 @@ export interface FunctionSummary {
   readonly paramToSink: readonly ParamToSink[];
   /** Generative source→return models. */
   readonly sourceToReturn: readonly SourceToReturn[];
+  /** Generative source→callee-arg seeds (fixpoint entry points). */
+  readonly sourceToCallArg: readonly SourceToCallArg[];
   /**
    * Content version stamp — `hash(own-facts ∪ sorted callee versions)`. The
    * incremental cache key (Infer's content-keyed summary): equal across two
@@ -140,7 +156,12 @@ function fnv1a(input: string): string {
 export function ownFactsDigest(
   s: Pick<
     FunctionSummary,
-    'paramCount' | 'paramToReturn' | 'paramToCallArg' | 'paramToSink' | 'sourceToReturn'
+    | 'paramCount'
+    | 'paramToReturn'
+    | 'paramToCallArg'
+    | 'paramToSink'
+    | 'sourceToReturn'
+    | 'sourceToCallArg'
   >,
 ): string {
   const parts: string[] = [`p${s.paramCount}`];
@@ -156,6 +177,11 @@ export function ownFactsDigest(
   );
   parts.push(...s.paramToSink.map((k) => `k:${k.param}:${k.sinkKind}`).sort());
   parts.push(...s.sourceToReturn.map((g) => `g:${g.sourceKind}`).sort());
+  parts.push(
+    ...s.sourceToCallArg
+      .map((g) => `s:${g.sourceKind}:${g.callLine}:${g.argIndex}:${g.calleeName ?? ''}`)
+      .sort(),
+  );
   return fnv1a(parts.join('|'));
 }
 

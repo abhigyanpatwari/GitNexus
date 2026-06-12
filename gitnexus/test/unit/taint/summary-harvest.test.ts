@@ -12,7 +12,10 @@ import { describe, it, expect } from 'vitest';
 import { cfgOf, importsFor } from '../../helpers/ts-cfg-harness.js';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import { computeReachingDefs } from '../../../src/core/ingestion/cfg/reaching-defs.js';
-import { buildTaintImportIndex, matchFunctionSites } from '../../../src/core/ingestion/taint/match.js';
+import {
+  buildTaintImportIndex,
+  matchFunctionSites,
+} from '../../../src/core/ingestion/taint/match.js';
 import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import { harvestFunctionSummary } from '../../../src/core/ingestion/taint/summary-harvest.js';
 
@@ -60,7 +63,9 @@ describe('harvestFunctionSummary — param→callee-arg', () => {
     const f = harvest(`function f(x: string) { helper(x); }`);
     const ca = f.paramToCallArg;
     expect(ca.length).toBeGreaterThanOrEqual(1);
-    expect(ca.some((c) => c.param === 0 && c.argIndex === 0 && c.calleeName === 'helper')).toBe(true);
+    expect(ca.some((c) => c.param === 0 && c.argIndex === 0 && c.calleeName === 'helper')).toBe(
+      true,
+    );
   });
 
   it('records the correct argument index', () => {

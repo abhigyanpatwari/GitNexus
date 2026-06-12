@@ -32,6 +32,7 @@ import {
   crossFilePhase,
   scopeResolutionPhase,
   pruneLocalSymbolsPhase,
+  taintSummariesPhase,
   mroPhase,
   communitiesPhase,
   processesPhase,
@@ -223,6 +224,10 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(crossFilePhase)
       .register(scopeResolutionPhase)
       .register(pruneLocalSymbolsPhase)
+      // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
+      // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
+      // phase depends on it (a filtered-out dep would throw in getPhaseOutput).
+      .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })

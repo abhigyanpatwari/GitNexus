@@ -55,6 +55,7 @@ import type {
   ParamToCallArg,
   ParamToReturn,
   ParamToSink,
+  SourceToCallArg,
   SourceToReturn,
 } from './summary-model.js';
 
@@ -65,6 +66,7 @@ export interface HarvestedSummaryFacts {
   readonly paramToCallArg: readonly ParamToCallArg[];
   readonly paramToSink: readonly ParamToSink[];
   readonly sourceToReturn: readonly SourceToReturn[];
+  readonly sourceToCallArg: readonly SourceToCallArg[];
 }
 
 export interface HarvestResult {
@@ -81,6 +83,7 @@ const EMPTY_FACTS: HarvestedSummaryFacts = {
   paramToCallArg: [],
   paramToSink: [],
   sourceToReturn: [],
+  sourceToCallArg: [],
 };
 
 const KIND_ORDER: readonly SinkKind[] = [
@@ -150,10 +153,8 @@ export function harvestFunctionSummary(
   const sinkPosBySite = new Map<string, Map<number, Set<number>>>(); // stmtKey → site → argPositions
   const sinkKindByEntry = new Map<string, Map<number, SinkKind[]>>(); // stmtKey → site → kinds at any pos
   const sanitizerResultDefKinds = new Map<string, Map<number, SinkKind[]>>(); // stmtKey → resultDef binding → kinds
-  const sourceStmtKeys = new Set<string>();
   for (const sm of matches.statements) {
     const stmtKey = `${sm.blockIndex}:${sm.statementIndex}`;
-    if (sm.sources.length > 0) sourceStmtKeys.add(stmtKey);
     if (sm.sinks.length > 0) {
       const bySite = new Map<number, Set<number>>();
       const kindBySite = new Map<number, SinkKind[]>();
@@ -197,6 +198,7 @@ export function harvestFunctionSummary(
   const paramReturn = new Map<number, Set<SinkKind>>(); // param → neutralized intersection
   const paramReturnSeen = new Set<number>();
   const paramCallArg = new Map<string, ParamToCallArg>();
+  const sourceCallArg = new Map<string, SourceToCallArg>();
   const paramSink = new Set<string>();
   const paramSinkOut: ParamToSink[] = [];
   const sourceReturn = new Set<SinkKind | 'remote-input'>();
@@ -213,7 +215,7 @@ export function harvestFunctionSummary(
   };
 
   // ── seeds: each param at its entry def point + each source statement ───────
-  const seedCount = paramCount; // seedId 0..paramCount-1 = params; -1 = source
+  // seedId 0..paramCount-1 = params; -1 = source.
   const queue: SeedTaint[] = [];
   const visited = new Set<string>();
   const enqueue = (t: SeedTaint): void => {
@@ -244,7 +246,11 @@ export function harvestFunctionSummary(
     const stmtKey = `${sm.blockIndex}:${sm.statementIndex}`;
     const facts = cfg.blocks[sm.blockIndex]?.statements?.[sm.statementIndex];
     if (!facts) continue;
-    const point: ProgramPoint = { blockIndex: sm.blockIndex, stmtIndex: sm.statementIndex, line: facts.line };
+    const point: ProgramPoint = {
+      blockIndex: sm.blockIndex,
+      stmtIndex: sm.statementIndex,
+      line: facts.line,
+    };
     if (returnUseStmtKeys.has(stmtKey)) {
       for (const src of sm.sources) sourceReturn.add(src.entry.kind);
     }
@@ -275,13 +281,26 @@ export function harvestFunctionSummary(
       useStmt.sites?.forEach((site, siteIndex) => {
         const argHits = occurrencesInArgs(site, b);
         for (const argPos of argHits) {
+          const callLine = useStmt.line;
+          const tail = calleeTail(site.callee);
           if (t.seedId >= 0) {
-            const callLine = useStmt.line;
-            const tail = calleeTail(site.callee);
             const caKey = `${t.seedId}:${callLine}:${argPos}:${tail ?? ''}`;
             if (!paramCallArg.has(caKey)) {
               paramCallArg.set(caKey, {
                 param: t.seedId,
+                callLine,
+                argIndex: argPos,
+                ...(tail ? { calleeName: tail } : {}),
+              });
+            }
+          } else {
+            // Source-seeded: a generated source flowing into a call argument is
+            // a fixpoint SEED (it taints the callee's param). One source kind
+            // today ('remote-input'); when more exist the seed must carry it.
+            const scKey = `${callLine}:${argPos}:${tail ?? ''}`;
+            if (!sourceCallArg.has(scKey)) {
+              sourceCallArg.set(scKey, {
+                sourceKind: 'remote-input',
                 callLine,
                 argIndex: argPos,
                 ...(tail ? { calleeName: tail } : {}),
@@ -312,7 +331,11 @@ export function harvestFunctionSummary(
           added && added.length > 0 ? new Set([...t.exclusions, ...added]) : t.exclusions;
         enqueue({
           bindingIdx: d,
-          point: { blockIndex: fact.use.blockIndex, stmtIndex: fact.use.stmtIndex, line: useStmt.line },
+          point: {
+            blockIndex: fact.use.blockIndex,
+            stmtIndex: fact.use.stmtIndex,
+            line: useStmt.line,
+          },
           seedId: t.seedId,
           exclusions,
         });
@@ -337,16 +360,30 @@ export function harvestFunctionSummary(
   );
 
   const paramToSink = paramSinkOut.sort(
-    (a, b) => a.param - b.param || (kindRank.get(a.sinkKind) ?? 99) - (kindRank.get(b.sinkKind) ?? 99),
+    (a, b) =>
+      a.param - b.param || (kindRank.get(a.sinkKind) ?? 99) - (kindRank.get(b.sinkKind) ?? 99),
   );
 
   const sourceToReturn: SourceToReturn[] =
     sourceReturn.size > 0 ? [{ sourceKind: 'remote-input' }] : [];
-  void seedCount;
+
+  const sourceToCallArg = [...sourceCallArg.values()].sort(
+    (a, b) =>
+      a.callLine - b.callLine ||
+      a.argIndex - b.argIndex ||
+      (a.calleeName ?? '').localeCompare(b.calleeName ?? ''),
+  );
 
   return {
     status: 'computed',
-    facts: { paramCount, paramToReturn, paramToCallArg, paramToSink, sourceToReturn },
+    facts: {
+      paramCount,
+      paramToReturn,
+      paramToCallArg,
+      paramToSink,
+      sourceToReturn,
+      sourceToCallArg,
+    },
   };
 }
 
