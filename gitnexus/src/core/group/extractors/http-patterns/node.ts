@@ -94,13 +94,20 @@ const FETCH_WITH_OPTIONS_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
-// ─── Consumer: axios.get/post/... ────────────────────────────────────
+// ─── Consumer: axios.get/post/... (and configured client aliases) ────
+// The `@obj` identifier is captured but NOT pinned to "axios" in the
+// query: the plugin filters it against a configurable client-identifier
+// set in `scanBundle` (default {"axios"}). This lets projects that wrap
+// their HTTP client behind a helper — e.g. uni-app / luch-request style
+// `import request from "@/utils/request"; request.get("/x")` — opt that
+// wrapper name in via `detect.http_client_aliases` in group.yaml without
+// recompiling the tree-sitter query per config.
 const AXIOS_SPEC: PatternSpec<Record<string, never>> = {
   meta: {},
   query: `
     (call_expression
       function: (member_expression
-        object: (identifier) @obj (#eq? @obj "axios")
+        object: (identifier) @obj
         property: (property_identifier) @http_method (#match? @http_method "^(get|post|put|delete|patch)$"))
       arguments: (arguments . [(string) (template_string)] @path))
   `,
@@ -295,7 +302,16 @@ function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNod
   return null;
 }
 
-function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection[] {
+/** Built-in HTTP client identifier recognized for member-style calls
+ *  (`axios.get(url)`). Extra identifiers are opted in per group via
+ *  `detect.http_client_aliases`. */
+const DEFAULT_HTTP_CLIENTS = ['axios'] as const;
+
+function scanBundle(
+  bundle: NodePatternBundle,
+  tree: Parser.Tree,
+  clientIds: ReadonlySet<string> = new Set(DEFAULT_HTTP_CLIENTS),
+): HttpDetection[] {
   const out: HttpDetection[] = [];
 
   // NestJS: collect `@Controller('prefix')` class decorators, keyed by
@@ -407,16 +423,22 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
     });
   }
 
-  // Consumer: axios.<verb>(url)
+  // Consumer: <client>.<verb>(url) — axios by default, plus any client
+  // identifiers opted in via `detect.http_client_aliases`. The query
+  // matches any `ident.<verb>(string)`; we filter the object identifier
+  // against `clientIds` here so the recognized-client set is config-driven
+  // without recompiling the tree-sitter query.
   for (const match of runCompiledPatterns(bundle.axios, tree)) {
+    const objNode = match.captures.obj;
     const methodNode = match.captures.http_method;
     const pathNode = match.captures.path;
-    if (!methodNode || !pathNode) continue;
+    if (!objNode || !methodNode || !pathNode) continue;
+    if (!clientIds.has(objNode.text)) continue;
     const path = unquoteLiteral(pathNode.text);
     if (path === null) continue;
     out.push({
       role: 'consumer',
-      framework: 'axios',
+      framework: objNode.text,
       method: methodNode.text.toUpperCase(),
       path,
       name: null,
@@ -483,20 +505,48 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
   return out;
 }
 
+/** Opaque per-repo context this plugin builds in `prepareRepo`: the set
+ *  of HTTP client identifiers recognized for member-style consumer calls. */
+interface NodeHttpRepoContext {
+  clientIds: ReadonlySet<string>;
+}
+
+/** Build the recognized-client set from the orchestrator-supplied aliases.
+ *  Never throws (the orchestrator already guards prepareRepo). */
+function prepareNodeRepoContext(args: {
+  httpClientAliases?: readonly string[];
+}): NodeHttpRepoContext {
+  const ids = new Set<string>(DEFAULT_HTTP_CLIENTS);
+  for (const alias of args.httpClientAliases ?? []) {
+    if (typeof alias === 'string' && alias.trim()) ids.add(alias.trim());
+  }
+  return { clientIds: ids };
+}
+
+/** Resolve the client set from whatever `prepareRepo` produced, falling
+ *  back to the built-in default when context is absent. */
+function resolveClientIds(repoContext?: unknown): ReadonlySet<string> {
+  const ctx = repoContext as NodeHttpRepoContext | undefined;
+  return ctx?.clientIds ?? new Set(DEFAULT_HTTP_CLIENTS);
+}
+
 export const JAVASCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'javascript-http',
   language: JavaScript,
-  scan: (tree) => scanBundle(JAVASCRIPT_BUNDLE, tree),
+  prepareRepo: (args) => prepareNodeRepoContext(args),
+  scan: (tree, repoContext) => scanBundle(JAVASCRIPT_BUNDLE, tree, resolveClientIds(repoContext)),
 };
 
 export const TYPESCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'typescript-http',
   language: TypeScript.typescript,
-  scan: (tree) => scanBundle(TYPESCRIPT_BUNDLE, tree),
+  prepareRepo: (args) => prepareNodeRepoContext(args),
+  scan: (tree, repoContext) => scanBundle(TYPESCRIPT_BUNDLE, tree, resolveClientIds(repoContext)),
 };
 
 export const TSX_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'tsx-http',
   language: TypeScript.tsx,
-  scan: (tree) => scanBundle(TSX_BUNDLE, tree),
+  prepareRepo: (args) => prepareNodeRepoContext(args),
+  scan: (tree, repoContext) => scanBundle(TSX_BUNDLE, tree, resolveClientIds(repoContext)),
 };

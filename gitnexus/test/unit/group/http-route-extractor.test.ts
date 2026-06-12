@@ -1340,6 +1340,50 @@ export const deleteUser = (id: string) => axios.delete(\`/api/users/\${id}\`);
       ).toBeDefined();
     });
 
+    it('does NOT detect a wrapped client (request.get) without configured aliases', async () => {
+      const dir = path.join(tmpDir, 'wrapped-no-alias');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'api/user.js'),
+        `
+import request from '@/utils/request.js';
+export function getUsers() { return request.get('/api/users'); }
+`,
+      );
+
+      // Default extractor (no aliases): only built-in clients (axios) are
+      // recognized, so the wrapped \`request.get\` must NOT become a consumer.
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeUndefined();
+    });
+
+    it('detects a wrapped client (request.get) when opted in via http_client_aliases', async () => {
+      const dir = path.join(tmpDir, 'wrapped-with-alias');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'api/user.js'),
+        `
+import request from '@/utils/request.js';
+export function getUsers() { return request.get('/api/users'); }
+export function removeUser(id) { return request.delete(\`/api/users/\${id}\`); }
+`,
+      );
+
+      // Extractor configured with the wrapper name (mirrors group.yaml
+      // \`detect.http_client_aliases: [request]\`).
+      const aliasExtractor = new HttpRouteExtractor(['request']);
+      const contracts = await aliasExtractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const getRoute = consumers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(getRoute).toBeDefined();
+      expect(getRoute?.meta.framework).toBe('request');
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
+      ).toBeDefined();
+    });
+
     it('extracts jQuery $.get and $.post shorthand', async () => {
       const dir = path.join(tmpDir, 'jquery-shorthand');
       fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });

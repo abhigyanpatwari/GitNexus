@@ -90,6 +90,13 @@ export interface HttpLanguagePlugin {
     parser: Parser;
     readFile: (rel: string) => string | null;
     parseSource: (parser: Parser, src: string) => Parser.Tree | null;
+    /**
+     * Extra HTTP client identifiers (besides built-in defaults like
+     * `axios`) opted in via `detect.http_client_aliases` in group.yaml.
+     * Plugins that recognize wrapped HTTP clients (e.g. a project's
+     * `request` helper) use these to widen consumer detection.
+     */
+    httpClientAliases?: readonly string[];
   }): RepoContext | undefined;
   /**
    * Scan a parsed tree and return zero or more HTTP detections. Plugins
