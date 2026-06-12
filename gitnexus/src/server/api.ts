@@ -39,6 +39,7 @@ import { requireLocalhostOrigin } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
+import { isRfc1918PrivateIpv4 } from './private-ip.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -95,21 +96,7 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   // Only allow HTTP(S) origins — reject ftp://, file://, etc.
   if (protocol !== 'http:' && protocol !== 'https:') return false;
 
-  const octets = hostname.split('.').map(Number);
-  if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
-    return false;
-  }
-
-  const [a, b] = octets;
-
-  // 10.0.0.0/8
-  if (a === 10) return true;
-  // 172.16.0.0/12  →  172.16.x.x – 172.31.x.x
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  // 192.168.0.0/16
-  if (a === 192 && b === 168) return true;
-
-  return false;
+  return isRfc1918PrivateIpv4(hostname);
 };
 
 type GraphStreamRecord =

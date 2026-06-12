@@ -3,6 +3,7 @@
  */
 
 import type { Request, Response } from 'express';
+import { isRfc1918PrivateIpv4, isValidIpv4Address } from './private-ip.js';
 
 /**
  * Restrict a route to localhost browser origins. Non-browser requests (no
@@ -28,17 +29,11 @@ export function requireLocalhostOrigin(req: Request, res: Response, next: () => 
       return;
     }
 
-    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+    if (!isValidIpv4Address(hostname)) {
       throw new Error('Unsupported origin hostname');
     }
 
-    const octets = hostname.split('.').map(Number);
-    if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
-      throw new Error('Unsupported origin hostname');
-    }
-
-    const [a, b] = octets;
-    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
+    if (isRfc1918PrivateIpv4(hostname)) {
       next();
       return;
     }
