@@ -42,6 +42,29 @@ function summary(
 
 const map = (...ss: FunctionSummary[]) => new Map(ss.map((s) => [s.fnId, s]));
 
+describe('solveInterprocTaint — seed path respects maxHops (#2084 review P2-7)', () => {
+  it('caps the seed path at maxHops:1 (truncated prefix, not a 2-entry path)', () => {
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [{ sourceKind: 'remote-input', callLine: 1, argIndex: 0, calleeName: 'B' }],
+    });
+    const B = summary('Function:b.ts:B', {
+      paramCount: 1,
+      paramToSink: [{ param: 0, sinkKind: 'command-injection' }],
+    });
+    const r = solveInterprocTaint(
+      map(A, B),
+      [{ callerId: A.fnId, calleeId: B.fnId, calleeName: 'B' }],
+      {
+        maxHops: 1,
+      },
+    );
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0].hops.length).toBeLessThanOrEqual(1);
+    expect(r.findings[0].hopsTruncated).toBe(true);
+  });
+});
+
 describe('solveInterprocTaint — one-hop source→callee-sink', () => {
   it('finds a source passed into a callee that sinks it', () => {
     // A: source flows into helper(arg0); B(helper): param0 → sink.

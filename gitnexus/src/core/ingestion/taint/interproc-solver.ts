@@ -248,16 +248,19 @@ export function solveInterprocTaint(
         const callee = summaries.get(edge.calleeId);
         if (!callee) continue;
         if (sc.argIndex >= callee.paramCount) continue; // arity guard
-        const hops: InterprocHop[] = [
-          { fnId: callerId },
+        // Build the seed path through the capped append so `maxHops` truncates
+        // the prefix (#2084 review P2-7), not a 2-entry path flagged truncated.
+        const seed = appendHop(
+          [{ fnId: callerId }],
           { fnId: edge.calleeId, callLine: sc.callLine, argIndex: sc.argIndex },
-        ];
+          maxHops,
+        );
         taint({
           fnId: edge.calleeId,
           paramIndex: sc.argIndex,
           sourceFnId: callerId,
-          hops,
-          truncated: hops.length > maxHops,
+          hops: seed.hops,
+          truncated: seed.truncated,
           neutralized: new Set(sc.neutralized ?? []),
         });
       }
@@ -313,17 +316,15 @@ export function solveInterprocTaint(
             : calleesByName(callerId, d.toCallee)) {
             const callee = summaries.get(tc.calleeId);
             if (!callee || d.argIndex >= callee.paramCount) continue;
-            const hops: InterprocHop[] = [
-              { fnId: g.calleeId },
-              { fnId: callerId },
-              { fnId: tc.calleeId, argIndex: d.argIndex },
-            ];
+            // Capped successive append so `maxHops` truncates the prefix (P2-7).
+            const h1 = appendHop([{ fnId: g.calleeId }], { fnId: callerId }, maxHops);
+            const h2 = appendHop(h1.hops, { fnId: tc.calleeId, argIndex: d.argIndex }, maxHops);
             taint({
               fnId: tc.calleeId,
               paramIndex: d.argIndex,
               sourceFnId: g.calleeId,
-              hops,
-              truncated: hops.length > maxHops,
+              hops: h2.hops,
+              truncated: h1.truncated || h2.truncated,
               neutralized: new Set(),
             });
           }
