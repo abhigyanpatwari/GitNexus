@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
+  edgeSet,
   FIXTURES,
   getNodesByLabel,
   getRelationships,
@@ -41,17 +42,22 @@ describe('Zig basic resolution', () => {
     expect(methods).toContain('reset');
   });
 
-  // IMPORTS (and CALLS) edges are produced by the scope-resolution pipeline,
-  // which requires the provider to implement `emitScopeCaptures` /
-  // `interpretImport`. Zig is classified `experimental` and does not provide
-  // those hooks yet — the import RESOLVER itself (relative paths +
-  // build.zig.zon, see test/unit/zig-import-resolver.test.ts) is wired into
-  // the resolver factory and becomes live the moment the hooks land.
-  // Un-skip when Zig gains scope-resolution hooks.
-  it.skip('resolves the relative @import("./pioneer.zig") to pioneer.zig', () => {
+  it('resolves the relative @import("./pioneer.zig") to pioneer.zig', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const internal = imports.filter((e) => e.targetFilePath.endsWith('pioneer.zig'));
     expect(internal.length).toBeGreaterThan(0);
     expect(internal[0].sourceFilePath).toContain('main.zig');
+  });
+
+  it('emits a CALLS edge for the free call main → helper', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(edgeSet(calls)).toContain('main → helper');
+  });
+
+  it('emits a CALLS edge for the receiver-bound method call main → tick', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // `var p = pioneer.Pioneer{…}; p.tick()` — constructor-inferred receiver
+    // type through the namespace import, dispatched onto Pioneer.tick.
+    expect(edgeSet(calls)).toContain('main → tick');
   });
 });

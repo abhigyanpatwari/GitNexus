@@ -11,9 +11,13 @@
  *     `@import("std")` and external packages are deliberately external.
  *   - namedBindingExtractor: omitted — `const Foo = @import("x").Foo` is a
  *     const declaration, not import-statement syntax.
- *   - scope-resolution hooks (emitScopeCaptures, interpretImport, …) are
- *     omitted — Zig is classified `experimental` and uses the generic
- *     fallback resolution path.
+ *   - scope-resolution hooks (Ring 3): `emitScopeCaptures` walks the file via
+ *     `zig/query.ts` (containers as Class scopes, container-nested fns
+ *     relabeled @declaration.method, plain-variable groups filtered for
+ *     container/import bindings); `interpretImport` maps
+ *     `const x = @import("…")` to a namespace import; receiver dispatch
+ *     rides the `self`-parameter convention. The emit-side wiring lives in
+ *     `zig/scope-resolver.ts` (SCOPE_RESOLVERS registry).
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -34,6 +38,14 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { zigVariableConfig } from '../variable-extractors/configs/zig.js';
 import { zigTypeConfig } from '../type-extractors/zig.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import {
+  emitZigScopeCaptures,
+  interpretZigImport,
+  interpretZigTypeBinding,
+  zigArityCompatibility,
+  zigBindingScopeFor,
+  zigReceiverBinding,
+} from './zig/index.js';
 
 const ZIG_CONTAINER_TYPES = new Set(['struct_declaration', 'enum_declaration', 'union_declaration']);
 
@@ -75,4 +87,14 @@ export const zigProvider = defineLanguage({
     if (isZigContainerMethod(functionNode)) return 'Method';
     return defaultLabel;
   },
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──
+  emitScopeCaptures: emitZigScopeCaptures,
+  interpretImport: interpretZigImport,
+  interpretTypeBinding: interpretZigTypeBinding,
+  bindingScopeFor: zigBindingScopeFor,
+  receiverBinding: zigReceiverBinding,
+  // Provider contract is (def, callsite); the ScopeResolver contract is
+  // (callsite, def) — same function, adapted argument order.
+  arityCompatibility: (def, callsite) => zigArityCompatibility(callsite, def),
 });

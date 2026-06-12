@@ -31,7 +31,7 @@ const ZIG_STDLIB_NAMES = new Set(['std', 'builtin', 'root']);
 export function resolveZigImportInternal(
   currentFile: string,
   importPath: string,
-  allFiles: Set<string>,
+  allFiles: ReadonlySet<string>,
   buildZon?: ZigBuildZonConfig | null,
 ): string | null {
   // Stdlib / compiler builtin / root — not resolvable from source files alone.
@@ -68,10 +68,7 @@ export function resolveZigImportInternal(
       if (normalized !== null) {
         // Conventional Zig layout: <pkg_root>/src/<name>.zig (matches the
         // package's primary module name) or <pkg_root>/src/main.zig.
-        const candidates = [
-          `${normalized}/src/${importPath}.zig`,
-          `${normalized}/src/main.zig`,
-        ];
+        const candidates = [`${normalized}/src/${importPath}.zig`, `${normalized}/src/main.zig`];
         for (const c of candidates) {
           if (allFiles.has(c)) return c;
         }
