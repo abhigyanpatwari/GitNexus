@@ -51,6 +51,7 @@
     "inputType": "Input type",
     "githubUrl": "GitHub URL",
     "gitlabUrl": "GitLab URL",
+    "azureDevOpsUrl": "Azure DevOps",
     "localFolder": "Local Folder",
     "starting": "Starting analysis...",
     "analyzeRepository": "Analyze Repository",
@@ -60,6 +61,8 @@
     "githubRepositoryUrl": "GitHub Repository URL",
     "gitlabRepositoryUrl": "GitLab Repository URL",
     "gitlabSupported": "Supports GitLab.com and self-hosted GitLab instances.",
+    "azureDevOpsRepositoryUrl": "Azure DevOps Repository URL",
+    "azureDevOpsSupported": "Format: https://dev.azure.com/organization/project/_git/repository",
     "localFolderPath": "Local Folder Path",
     "hideBackground": "Hide (analysis continues in background)",
     "upload": {
