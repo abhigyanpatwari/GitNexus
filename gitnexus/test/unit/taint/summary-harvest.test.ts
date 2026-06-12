@@ -1,0 +1,120 @@
+/**
+ * U1 (#2084 M4) — per-function taint summary harvest.
+ *
+ * Fixtures parse REAL TypeScript through the shared CFG/import harness, so the
+ * harvester consumes the exact `FunctionCfg` / `FunctionDefUse` /
+ * `FunctionSiteMatches` structures the pipeline produces. The four summary
+ * edge categories are asserted directly: param→return, param→callee-arg,
+ * param→sink, source→return.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { cfgOf, importsFor } from '../../helpers/ts-cfg-harness.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import { computeReachingDefs } from '../../../src/core/ingestion/cfg/reaching-defs.js';
+import { buildTaintImportIndex, matchFunctionSites } from '../../../src/core/ingestion/taint/match.js';
+import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
+import { harvestFunctionSummary } from '../../../src/core/ingestion/taint/summary-harvest.js';
+
+const SPEC: SourceSinkSanitizerSpec = {
+  sources: [{ kind: 'remote-input', objects: ['req'], properties: ['body', 'query', 'params'] }],
+  sinks: [
+    { name: 'exec', kind: 'command-injection', args: [0], global: true },
+    { name: 'query', kind: 'sql-injection', args: [0], anyReceiver: true },
+  ],
+  sanitizers: [{ name: 'escape', neutralizes: ['command-injection'], global: true }],
+};
+
+function harvest(code: string, spec: SourceSinkSanitizerSpec = SPEC, fnIndex = 0) {
+  const cfg: FunctionCfg = cfgOf(code, fnIndex);
+  const defUse = computeReachingDefs(cfg);
+  const matches = matchFunctionSites(cfg, spec, buildTaintImportIndex(importsFor(code)));
+  return harvestFunctionSummary(cfg, defUse, matches).facts;
+}
+
+describe('harvestFunctionSummary — param→return', () => {
+  it('records a param flowing straight to return', () => {
+    const f = harvest(`function f(x: string) { return x; }`);
+    expect(f.paramCount).toBe(1);
+    expect(f.paramToReturn).toEqual([{ param: 0 }]);
+  });
+
+  it('records a param returned through a local assignment', () => {
+    const f = harvest(`function f(x: string) { const y = x; return y; }`);
+    expect(f.paramToReturn).toEqual([{ param: 0 }]);
+  });
+
+  it('records receiver-TITO return (x.trim())', () => {
+    const f = harvest(`function f(x: string) { return x.trim(); }`);
+    expect(f.paramToReturn.map((r) => r.param)).toContain(0);
+  });
+
+  it('does not record an unrelated param', () => {
+    const f = harvest(`function f(x: string, y: string) { return x; }`);
+    expect(f.paramToReturn.map((r) => r.param)).toEqual([0]);
+  });
+});
+
+describe('harvestFunctionSummary — param→callee-arg', () => {
+  it('records a param flowing into a callee argument', () => {
+    const f = harvest(`function f(x: string) { helper(x); }`);
+    const ca = f.paramToCallArg;
+    expect(ca.length).toBeGreaterThanOrEqual(1);
+    expect(ca.some((c) => c.param === 0 && c.argIndex === 0 && c.calleeName === 'helper')).toBe(true);
+  });
+
+  it('records the correct argument index', () => {
+    const f = harvest(`function f(x: string) { helper(a, x); }`);
+    expect(f.paramToCallArg.some((c) => c.param === 0 && c.argIndex === 1)).toBe(true);
+  });
+});
+
+describe('harvestFunctionSummary — param→sink', () => {
+  it('records a param reaching a modelled sink', () => {
+    const f = harvest(`function f(x: string) { exec(x); }`);
+    expect(f.paramToSink).toEqual([{ param: 0, sinkKind: 'command-injection' }]);
+  });
+
+  it('a sanitizer neutralises the matching sink kind', () => {
+    const f = harvest(`function f(x: string) { const y = escape(x); exec(y); }`);
+    // escape neutralises command-injection on the path to exec → no param→sink.
+    expect(f.paramToSink).toEqual([]);
+  });
+});
+
+describe('harvestFunctionSummary — source→return', () => {
+  it('records a generated source returned directly', () => {
+    const f = harvest(`function f() { return req.body; }`);
+    expect(f.sourceToReturn).toEqual([{ sourceKind: 'remote-input' }]);
+  });
+
+  it('records a generated source returned via a local', () => {
+    const f = harvest(`function f() { const u = req.body; return u; }`);
+    expect(f.sourceToReturn).toEqual([{ sourceKind: 'remote-input' }]);
+  });
+
+  it('is empty when no source is present', () => {
+    const f = harvest(`function f(x: string) { return x; }`);
+    expect(f.sourceToReturn).toEqual([]);
+  });
+});
+
+describe('harvestFunctionSummary — edges & gaps', () => {
+  it('empty summary for a param-less, site-less function', () => {
+    const f = harvest(`function f() { const a = 1; return a; }`);
+    expect(f.paramToReturn).toEqual([]);
+    expect(f.paramToCallArg).toEqual([]);
+    expect(f.paramToSink).toEqual([]);
+    expect(f.sourceToReturn).toEqual([]);
+  });
+
+  it('reports a coverage gap when reaching-defs is not computed', () => {
+    // A hand-built CFG with no bindings → reaching-defs returns no-facts.
+    const cfg = cfgOf(`function f(x: string) { return x; }`);
+    const bare = { ...cfg, bindings: undefined } as FunctionCfg;
+    const defUse = computeReachingDefs(bare);
+    const matches = matchFunctionSites(bare, SPEC, buildTaintImportIndex([]));
+    const r = harvestFunctionSummary(bare, defUse, matches);
+    expect(r.status).toBe('coverage-gap');
+  });
+});

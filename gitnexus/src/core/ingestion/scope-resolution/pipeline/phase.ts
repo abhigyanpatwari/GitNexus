@@ -42,6 +42,7 @@ import {
   forceGc,
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
+import type { FunctionSummary } from '../../taint/summary-model.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -64,6 +65,12 @@ export interface ScopeResolutionOutput {
       readonly referenceEdgesEmitted: number;
     }
   >;
+  /**
+   * Per-function taint summaries harvested in the pdg window (#2084 M4 U1),
+   * across all languages. Empty unless `--pdg` and a registered taint model.
+   * The `taintSummaries` phase composes these over the `CALLS` graph.
+   */
+  readonly functionSummaries: readonly FunctionSummary[];
 }
 
 const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
@@ -73,6 +80,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   referenceEdgesEmitted: 0,
   resolutionOutcomes: [],
   perLanguage: new Map(),
+  functionSummaries: [],
 });
 
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
@@ -143,6 +151,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalRefs = 0;
     let anyRan = false;
     const resolutionOutcomes: ResolutionOutcome[] = [];
+    // M4 (#2084 U1): per-function taint summaries accumulated across every
+    // language pass; the cross-function fixpoint phase reads this output.
+    const functionSummaries: FunctionSummary[] = [];
     const perLanguage = new Map<
       SupportedLanguages,
       {
@@ -434,6 +445,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
       processedScopeFiles += langFileCount;
       anyRan = true;
+      functionSummaries.push(...stats.functionSummaries);
       totalFiles += stats.filesProcessed;
       totalImports += stats.importsEmitted;
       totalRefs += stats.referenceEdgesEmitted;
@@ -480,6 +492,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       referenceEdgesEmitted: totalRefs,
       resolutionOutcomes,
       perLanguage,
+      functionSummaries,
     };
   },
 };
