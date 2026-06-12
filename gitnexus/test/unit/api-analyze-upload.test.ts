@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { createAnalyzeUploadHandler } from '../../src/server/analyze-upload.js';
-import { requireLocalhostOrigin } from '../../src/server/middleware.js';
+import { requireLocalhostOrigin, createLocalhostOriginGuard } from '../../src/server/middleware.js';
 
 const BOUNDARY = '----gitnexusuploadtest';
 
@@ -275,17 +275,11 @@ describe('requireLocalhostOrigin', () => {
     return { passed, status };
   }
 
-  it('passes localhost / 127.0.0.1 / no-origin', () => {
+  it('passes localhost / 127.0.0.1 / [::1] / no-origin', () => {
     expect(call('http://localhost:5173').passed).toBe(true);
     expect(call('http://127.0.0.1:4747').passed).toBe(true);
+    expect(call('http://[::1]:4747').passed).toBe(true);
     expect(call(undefined).passed).toBe(true);
-  });
-
-  it('passes RFC1918 private network origins', () => {
-    expect(call('http://10.0.0.1:4173').passed).toBe(true);
-    expect(call('http://172.16.1.21:4173').passed).toBe(true);
-    expect(call('http://172.31.255.254:4173').passed).toBe(true);
-    expect(call('http://192.168.1.100:4173').passed).toBe(true);
   });
 
   it('rejects a public/cross origin with 403', () => {
@@ -294,15 +288,62 @@ describe('requireLocalhostOrigin', () => {
     expect(r.status).toBe(403);
   });
 
-  it('rejects non-RFC1918 172.x origins with 403', () => {
-    expect(call('http://172.15.10.1:4173').passed).toBe(false);
-    expect(call('http://172.32.10.1:4173').passed).toBe(false);
+  it('rejects RFC1918 origins when no boundHost is set (default guard)', () => {
+    expect(call('http://10.0.0.1:4173').passed).toBe(false);
+    expect(call('http://172.16.1.21:4173').passed).toBe(false);
+    expect(call('http://192.168.1.100:4173').passed).toBe(false);
   });
 
   it('rejects malformed and non-private hostnames with 403', () => {
-    expect(call('http://10.0.0.256:4173').passed).toBe(false);
-    expect(call('http://192.167.1.1:4173').passed).toBe(false);
-    expect(call('http://192.169.1.1:4173').passed).toBe(false);
     expect(call('http://my-local-server.local:4173').passed).toBe(false);
+    expect(call('ftp://localhost:4173').passed).toBe(false);
+    expect(call('null').passed).toBe(false);
+  });
+});
+
+describe('createLocalhostOriginGuard (bound host)', () => {
+  function callWith(boundHost: string, origin: string | undefined): { passed: boolean; status: number } {
+    const guard = createLocalhostOriginGuard(boundHost);
+    let passed = false;
+    let status = 0;
+    const req = { headers: origin === undefined ? {} : { origin } } as never;
+    const res = {
+      status: (c: number) => {
+        status = c;
+        return { json: () => {} };
+      },
+    } as never;
+    guard(req, res, () => {
+      passed = true;
+    });
+    return { passed, status };
+  }
+
+  it('allows origin matching the bound host', () => {
+    expect(callWith('192.168.1.100', 'http://192.168.1.100:4747').passed).toBe(true);
+    expect(callWith('10.0.0.5', 'http://10.0.0.5:4173').passed).toBe(true);
+    expect(callWith('172.16.1.21', 'http://172.16.1.21:4173').passed).toBe(true);
+  });
+
+  it('still allows loopback regardless of bound host', () => {
+    expect(callWith('192.168.1.100', 'http://localhost:5173').passed).toBe(true);
+    expect(callWith('192.168.1.100', 'http://127.0.0.1:4747').passed).toBe(true);
+    expect(callWith('192.168.1.100', 'http://[::1]:4747').passed).toBe(true);
+  });
+
+  it('rejects other RFC1918 origins that do not match bound host', () => {
+    expect(callWith('192.168.1.100', 'http://192.168.1.101:4747').passed).toBe(false);
+    expect(callWith('192.168.1.100', 'http://10.0.0.1:4747').passed).toBe(false);
+    expect(callWith('10.0.0.5', 'http://172.16.1.21:4747').passed).toBe(false);
+  });
+
+  it('rejects public origins even when bound to LAN', () => {
+    const r = callWith('192.168.1.100', 'https://gitnexus.vercel.app');
+    expect(r.passed).toBe(false);
+    expect(r.status).toBe(403);
+  });
+
+  it('passes no-origin (non-browser) requests', () => {
+    expect(callWith('192.168.1.100', undefined).passed).toBe(true);
   });
 });

@@ -35,7 +35,7 @@ import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-import { requireLocalhostOrigin } from './middleware.js';
+import { createLocalhostOriginGuard } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
@@ -720,6 +720,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
+  // Same-host origin guard for write routes. Only allows loopback and the
+  // server's own bound host — scoped to prevent CSRF from other LAN devices.
+  const requireLocalhostOrigin = createLocalhostOriginGuard(host);
+
   // No explicit OPTIONS route is registered. The Chromium Private Network
   // Access header is set by the global middleware above (pre-cors), and
   // `cors()` itself handles OPTIONS preflights for every path. Registering a
@@ -944,7 +948,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
   // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
   // delete; tighten if abuse is observed.
-  app.delete('/api/repo', createRouteLimiter(), async (req, res) => {
+  app.delete('/api/repo', createRouteLimiter(), requireLocalhostOrigin, async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1467,10 +1471,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // slashes, so it is dropped. Analyzing a local path the operator names
         // is the tool's intended capability (same as the CLI); the dangerous
         // part was cross-origin reach, which is closed by requireLocalhostOrigin
-        // on this route. We only require an absolute path here and let the
-        // analyze worker surface a clear error if it does not exist. (We do NOT
-        // realpath/stat the path in-route: that would be a user-controlled
-        // filesystem read — CodeQL js/path-injection — for no security gain.)
+        // on this route (scoped to the server's own bound host — other LAN
+        // devices are NOT trusted). We only require an absolute path here and
+        // let the analyze worker surface a clear error if it does not exist.
+        // (We do NOT realpath/stat the path in-route: that would be a
+        // user-controlled filesystem read — CodeQL js/path-injection — for no
+        // security gain.)
         if (repoLocalPath && !path.isAbsolute(repoLocalPath)) {
           res.status(400).json({ error: '"path" must be an absolute path' });
           return;
@@ -1573,7 +1579,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/analyze/:jobId/progress', jobManager);
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
-  app.delete('/api/analyze/:jobId', (req, res) => {
+  app.delete('/api/analyze/:jobId', requireLocalhostOrigin, (req, res) => {
     const job = jobManager.getJob(req.params.jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
@@ -1592,7 +1598,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const embedJobManager = new JobManager();
 
   // POST /api/embed — trigger server-side embedding generation
-  app.post('/api/embed', createRouteLimiter({ limit: 20 }), async (req, res) => {
+  app.post('/api/embed', createRouteLimiter({ limit: 20 }), requireLocalhostOrigin, async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
@@ -1731,7 +1737,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobManager);
 
   // DELETE /api/embed/:jobId — cancel embedding job
-  app.delete('/api/embed/:jobId', (req, res) => {
+  app.delete('/api/embed/:jobId', requireLocalhostOrigin, (req, res) => {
     const job = embedJobManager.getJob(req.params.jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
