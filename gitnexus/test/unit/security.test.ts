@@ -56,6 +56,15 @@ describe('VALID_RELATION_TYPES', () => {
     expect(VALID_RELATION_TYPES.has('TAINTED')).toBe(false);
     expect(VALID_RELATION_TYPES.has('SANITIZES')).toBe(false);
   });
+
+  it('TAINT_PATH stays OUT of the impact allow-list (#2084 M4 KTD9a)', () => {
+    // Cross-function TAINT_PATH (Function→Function) is the interprocedural
+    // analogue of TAINTED — surfaced ONLY via `explain` (its interprocedural
+    // findings), never impact()'s BFS. Pinned so a future allow-all sweep
+    // can't drag it in, and the set size stays fixed at 16.
+    expect(VALID_RELATION_TYPES.has('TAINT_PATH')).toBe(false);
+    expect(VALID_RELATION_TYPES.size).toBe(16);
+  });
 });
 
 // ─── Valid node labels ───────────────────────────────────────────────
