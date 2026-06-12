@@ -388,6 +388,27 @@ withTestLbugDB(
         const ip = res.findings.filter((f) => f.interprocedural === true);
         expect(ip.some((f) => (f.sink as { function?: string })?.function === 'runIt')).toBe(true);
       });
+
+      it('totalFindings counts the full interproc layer and truncated is set on overflow (#2084 review P2-4)', async () => {
+        // The fixture yields multiple interproc findings; limit:1 must page to 1
+        // while totalFindings reports the true (un-capped) count and truncated is set.
+        const full = (await backend.callTool('explain', {})) as {
+          findings: unknown[];
+          totalFindings: number;
+        };
+        const ipFull = full.findings.filter((f: any) => f.interprocedural === true).length;
+        expect(ipFull).toBeGreaterThan(1);
+
+        const paged = (await backend.callTool('explain', { limit: 1 })) as {
+          findings: unknown[];
+          totalFindings: number;
+          truncated?: boolean;
+        };
+        expect(paged.findings.length).toBe(1);
+        expect(paged.truncated).toBe(true);
+        // totalFindings reflects the real interproc total, not the 1-row slice.
+        expect(paged.totalFindings).toBeGreaterThanOrEqual(ipFull);
+      });
     });
   },
   {
