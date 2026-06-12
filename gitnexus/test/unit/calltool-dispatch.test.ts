@@ -307,6 +307,44 @@ describe('LocalBackend.callTool', () => {
     expect(result).toHaveProperty('definitions');
   });
 
+  it('checks cycles using only non-synthetic import edges', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      { source: 'src/a.ts', target: 'src/b.ts' },
+      { source: 'src/b.ts', target: 'src/a.ts' },
+    ]);
+
+    const result = await backend.callTool('check', { cycles: true });
+
+    expect(result).toEqual({
+      status: 'cycles_found',
+      cycleCount: 1,
+      cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
+    });
+    const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(query).toContain("r.reason <> 'swift-scope: implicit module visibility'");
+    expect(query).toContain("r.reason <> 'markdown-link'");
+    expect(query).toContain('LIMIT 100001');
+  });
+
+  it('uses the advertised cycles default when check arguments are omitted', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    await expect(backend.callTool('check', undefined)).resolves.toEqual({
+      status: 'clean',
+      cycleCount: 0,
+      cycles: [],
+    });
+  });
+
+  it('fails closed when the import-edge safety limit is reached', async () => {
+    (executeParameterized as any).mockResolvedValue({ length: 100_001 });
+
+    await expect(backend.callTool('check', { cycles: true })).resolves.toEqual({
+      error: 'Import graph exceeds the 100000 edge safety limit.',
+      truncated: true,
+    });
+  });
+
   it('includes FTS-unavailable warning when ftsAvailable is false (#1403)', async () => {
     const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
     vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });

@@ -22,26 +22,10 @@
 #     --format '{{json .Manifest.Digest}}'
 FROM mcr.microsoft.com/devcontainers/typescript-node@sha256:7c2e711a4f7b02f32d2da16192d5e05aa7c95279be4ce889cff5df316f251c1d
 
-# Build args. We deliberately set no version defaults here. devcontainer.json
-# `build.args` is the single source of truth for versions. A standalone
-# `docker build .devcontainer/` (for example, a CI smoke test) must pass each
-# version with --build-arg. Without a default, the build fails loudly instead of
-# silently drifting from the version pinned in devcontainer.json.
-ARG CLAUDE_CODE_VERSION
-ARG CODEX_VERSION
-# Cursor is pinned by version plus a per-arch tarball sha256 hash. The install
-# step below verifies that hash. All three values live in devcontainer.json
-# build.args. They follow the same rule as the others: one source of truth, and
-# no default so the build fails loudly if a value is missing.
-ARG CURSOR_VERSION
-ARG CURSOR_SHA256_X64
-ARG CURSOR_SHA256_ARM64
 # Bun is installed via the official remote script (bun.sh/install), pinned by
-# version. UNLIKE Cursor and the npm packages, this install path runs an
-# UNVERIFIED remote script — there is no tarball-hash check. Chosen explicitly
-# at request time over the pin-by-sha256 alternative for install-script
-# simplicity. To harden later, switch to a pinned tarball + per-arch sha256 in
-# the Cursor style (release artifacts at github.com/oven-sh/bun/releases).
+# version. Claude Code and Cursor also use official install scripts (no version
+# to pin). To harden Bun: switch to a pinned tarball + per-arch sha256
+# (release artifacts at github.com/oven-sh/bun/releases).
 ARG BUN_VERSION
 ARG TZ=UTC
 ARG USERNAME=node
@@ -50,10 +34,7 @@ ARG USERNAME=node
 # read them. We deliberately do not set CLAUDE_CONFIG_DIR here. Its one true
 # value lives in devcontainer.json `containerEnv`, and the runtime value wins
 # anyway.
-ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION} \
-    CODEX_VERSION=${CODEX_VERSION} \
-    CURSOR_VERSION=${CURSOR_VERSION} \
-    BUN_VERSION=${BUN_VERSION} \
+ENV BUN_VERSION=${BUN_VERSION} \
     BUN_INSTALL=/home/${USERNAME}/.bun \
     TZ=${TZ} \
     DEVCONTAINER=true \
@@ -86,51 +67,19 @@ RUN mkdir -p \
 
 USER ${USERNAME}
 
-# Install Claude Code and the Codex CLI globally, as the `node` user. The base
-# image sets /usr/local/share/npm-global as the npm-global prefix and makes the
-# `npm` group writable by `node`. So `npm install -g` works without sudo. Both
-# versions come from build args. To upgrade, bump them in devcontainer.json and
-# rebuild.
-RUN npm install -g \
-        @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-        @openai/codex@${CODEX_VERSION}
+# Install Claude Code via the official native installer. Downloads the latest
+# self-contained binary for the running platform and places it at
+# ~/.local/bin/claude — no Node.js runtime dependency, no version to pin.
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Install the Cursor CLI. It is pinned and hash-verified, and we run no remote
-# script. The cursor.com/install script just detects os/arch, downloads a
-# versioned tarball from
-# downloads.cursor.com/lab/<version>/<os>/<arch>/agent-cli-package.tar.gz,
-# extracts it, and symlinks `agent`/`cursor-agent` into ~/.local/bin. We do that
-# ourselves against a PINNED version plus a per-arch sha256 hash. So the build
-# runs no unverified remote code. This matches how we pin the base image and npm
-# packages by digest (issue #1451). The download is fail-closed: if the hash
-# does not match, the build aborts.
-#
-# To bump: set CURSOR_VERSION and both CURSOR_SHA256_* in devcontainer.json
-# build.args. Get each arch's hash with:
-#   curl -fSL https://downloads.cursor.com/lab/<ver>/linux/<x64|arm64>/agent-cli-package.tar.gz | sha256sum
-#
-# TARGETARCH is the per-platform build arg that BuildKit sets automatically. It
-# must be (re)declared in this stage to be visible. When the build is a
-# non-BuildKit `docker build`, TARGETARCH is unset, so we fall back to `dpkg
-# --print-architecture`.
-ARG TARGETARCH
-RUN set -eux; \
-    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
-    case "$arch" in \
-        amd64) cursor_arch=x64;   cursor_sha="${CURSOR_SHA256_X64}";; \
-        arm64) cursor_arch=arm64; cursor_sha="${CURSOR_SHA256_ARM64}";; \
-        *) echo "unsupported architecture for Cursor: $arch" >&2; exit 1;; \
-    esac; \
-    url="https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz"; \
-    curl -fSL --retry 3 --max-time 120 -o /tmp/cursor.tgz "$url"; \
-    echo "${cursor_sha}  /tmp/cursor.tgz" | sha256sum -c -; \
-    dir="/home/${USERNAME}/.local/share/cursor-agent/versions/${CURSOR_VERSION}"; \
-    install -d "$dir" "/home/${USERNAME}/.local/bin"; \
-    tar --strip-components=1 -xzf /tmp/cursor.tgz -C "$dir"; \
-    test -x "$dir/cursor-agent"; \
-    ln -sf "$dir/cursor-agent" "/home/${USERNAME}/.local/bin/agent"; \
-    ln -sf "$dir/cursor-agent" "/home/${USERNAME}/.local/bin/cursor-agent"; \
-    rm -f /tmp/cursor.tgz
+# Install the Codex CLI globally via npm. No version pinned — @latest at build
+# time. (Codex has no native binary installer; npm is the canonical method.)
+RUN npm install -g @openai/codex
+
+# Install the Cursor agent CLI via the official install script. Downloads the
+# latest agent-cli-package for the running platform and places `cursor-agent`
+# and `agent` into ~/.local/bin — no version or hash to pin.
+RUN curl -fsSL https://cursor.com/install | bash
 
 # Install Bun via the official remote installer, pinned by version. The first
 # positional arg to `bash` is the release tag (`bun-vX.Y.Z`), so a specific
