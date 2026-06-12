@@ -154,15 +154,31 @@ export function solveInterprocTaint(
   const maxHops =
     limits?.maxHops && limits.maxHops > 0 ? limits.maxHops : DEFAULT_MAX_INTERPROC_HOPS;
 
-  // Adjacency: callerId → outgoing call edges. The summary's call-arg edges
-  // resolve against this by callee NAME.
+  // Adjacency built ONCE (#2084 review P3-8): callerId → outgoing edges, AND
+  // callerId → calleeName → edges. The summary's call-arg edges resolve by
+  // callee NAME, so the per-name index turns each resolution into an O(1)
+  // lookup instead of a per-worklist-step `.filter` allocation (the
+  // build-index-once pattern).
   const callsByCaller = new Map<string, InterprocCallEdge[]>();
+  const callsByCallerName = new Map<string, Map<string, InterprocCallEdge[]>>();
   for (const e of callEdges) {
     const list = callsByCaller.get(e.callerId);
     if (list) list.push(e);
     else callsByCaller.set(e.callerId, [e]);
+    let byName = callsByCallerName.get(e.callerId);
+    if (!byName) {
+      byName = new Map();
+      callsByCallerName.set(e.callerId, byName);
+    }
+    const named = byName.get(e.calleeName);
+    if (named) named.push(e);
+    else byName.set(e.calleeName, [e]);
   }
   let unmatchedCallSites = 0;
+
+  /** Edges to `name` from `callerId` (O(1)); empty if none — non-counting. */
+  const calleesByName = (callerId: string, name: string): InterprocCallEdge[] =>
+    callsByCallerName.get(callerId)?.get(name) ?? [];
 
   // Resolve a caller's call-arg edge (by callee name) to concrete callee edges.
   // An unknown callee name (chain not statically resolvable) conservatively
@@ -177,7 +193,7 @@ export function solveInterprocTaint(
       return [];
     }
     if (calleeName === undefined) return candidates;
-    const named = candidates.filter((c) => c.calleeName === calleeName);
+    const named = calleesByName(callerId, calleeName);
     if (named.length === 0) {
       unmatchedCallSites++;
       return [];
@@ -271,9 +287,7 @@ export function solveInterprocTaint(
   // `genReturns` = functions whose RETURN carries a generated source. Seed with
   // `sourceToReturn`; a caller that returns the result of a generative call is
   // itself generative (transitive — `wrap(){ return getInput() }`). Small
-  // monotone fixpoint over a name-resolved call graph.
-  const calleesByName = (callerId: string, name: string): InterprocCallEdge[] =>
-    (callsByCaller.get(callerId) ?? []).filter((e) => e.calleeName === name);
+  // monotone fixpoint over the name-resolved call graph (`calleesByName`).
   const genReturns = new Set<string>();
   for (const [id, s] of summaries) if (s.sourceToReturn.length > 0) genReturns.add(id);
   let grChanged = true;
