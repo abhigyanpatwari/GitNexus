@@ -65,6 +65,15 @@ export interface ParamToCallArg {
   readonly callLine: number;
   readonly argIndex: number;
   readonly calleeName?: string;
+  /**
+   * Sink kinds neutralised on EVERY harvested path from the param to this call
+   * argument (intersection-over-paths, #2084 review P1-2). A sanitizer between
+   * the param and the callee arg (`relay(x){ const y=escape(x); sinkFn(y); }`)
+   * must carry across the boundary so the callee's `paramToSink` of a
+   * neutralised kind does not fire (the cross-function false positive). Absent
+   * means none neutralised.
+   */
+  readonly neutralized?: readonly SinkKind[];
 }
 
 /** `param i` flows to the function's return value (a `return <expr>` use). */
@@ -105,6 +114,9 @@ export interface SourceToCallArg {
   readonly callLine: number;
   readonly argIndex: number;
   readonly calleeName?: string;
+  /** Sink kinds neutralised on EVERY path from the generated source to this
+   *  call argument (intersection; #2084 review P1-2 — see {@link ParamToCallArg}). */
+  readonly neutralized?: readonly SinkKind[];
 }
 
 /**
@@ -177,14 +189,20 @@ export function ownFactsDigest(
   );
   parts.push(
     ...s.paramToCallArg
-      .map((c) => `c:${c.param}:${c.callLine}:${c.argIndex}:${c.calleeName ?? ''}`)
+      .map(
+        (c) =>
+          `c:${c.param}:${c.callLine}:${c.argIndex}:${c.calleeName ?? ''}:${[...(c.neutralized ?? [])].sort().join(',')}`,
+      )
       .sort(),
   );
   parts.push(...s.paramToSink.map((k) => `k:${k.param}:${k.sinkKind}`).sort());
   parts.push(...s.sourceToReturn.map((g) => `g:${g.sourceKind}`).sort());
   parts.push(
     ...s.sourceToCallArg
-      .map((g) => `s:${g.sourceKind}:${g.callLine}:${g.argIndex}:${g.calleeName ?? ''}`)
+      .map(
+        (g) =>
+          `s:${g.sourceKind}:${g.callLine}:${g.argIndex}:${g.calleeName ?? ''}:${[...(g.neutralized ?? [])].sort().join(',')}`,
+      )
       .sort(),
   );
   return fnv1a(parts.join('|'));

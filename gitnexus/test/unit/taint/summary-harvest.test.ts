@@ -87,6 +87,24 @@ describe('harvestFunctionSummary — param→sink', () => {
   });
 });
 
+describe('harvestFunctionSummary — call-arg sanitizer exclusions (#2084 review P1-2)', () => {
+  it('carries the neutralized kind onto a param→callee-arg edge', () => {
+    // x → escape(x) → y → helper(y): the call-arg edge to the user fn `helper`
+    // records that command-injection was neutralised on the path.
+    const f = harvest(`function f(x: string) { const y = escape(x); helper(y); }`);
+    const edge = f.paramToCallArg.find((c) => c.calleeName === 'helper');
+    expect(edge).toBeDefined();
+    expect(edge!.neutralized).toEqual(['command-injection']);
+  });
+
+  it('records no neutralized when the param reaches the call directly', () => {
+    const f = harvest(`function f(x: string) { helper(x); }`);
+    const edge = f.paramToCallArg.find((c) => c.calleeName === 'helper');
+    expect(edge).toBeDefined();
+    expect(edge!.neutralized).toBeUndefined();
+  });
+});
+
 describe('harvestFunctionSummary — source→callee-arg (fixpoint seed)', () => {
   it('records a source passed directly into a callee argument', () => {
     const f = harvest(`function f() { runIt(req.body); }`);

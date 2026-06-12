@@ -119,6 +119,14 @@ interface TaintedParam {
   /** Hop chain from source to this `(fnId, paramIndex)` entry. */
   readonly hops: readonly InterprocHop[];
   readonly truncated: boolean;
+  /**
+   * Sink kinds neutralised on the composed path to here (#2084 review P1-2) —
+   * UNION along the hop chain (a sanitizer at any upstream call-arg stays
+   * neutralised downstream). A `paramToSink` of a kind in this set does NOT
+   * fire (the cross-function sanitizer). Mutable in spirit: on revisit by a
+   * less-neutralised path the stored set INTERSECTS (mirrors `propagate.ts`).
+   */
+  readonly neutralized: ReadonlySet<SinkKind>;
 }
 
 /**
@@ -194,22 +202,43 @@ export function solveInterprocTaint(
     findingsByKey.set(key, { sourceFnId, sinkFnId, sinkKind, hops, hopsTruncated: truncated });
   };
 
-  /** Mark (fnId, paramIndex, source) tainted; enqueue on first taint. */
-  const taint = (tp: TaintedParam): void => {
-    const key = pkey(tp.fnId, tp.paramIndex, tp.sourceFnId);
-    if (tainted.has(key)) return; // monotone: first taint wins (cycle-safe)
-    tainted.set(key, tp);
-    queue.push(tp);
-    // Fire any sink on this newly-tainted parameter.
+  /** Fire every `paramToSink` of `tp`'s param, except kinds it neutralised. */
+  const fireSinks = (tp: TaintedParam): void => {
     const summary = summaries.get(tp.fnId);
     if (!summary) return;
     for (const ps of summary.paramToSink) {
-      if (ps.param === tp.paramIndex) {
-        // `tp.hops` already terminates at this (tainted) function — it IS the
-        // source→sink chain, no extra hop to append.
-        recordFinding(tp.sourceFnId, tp.fnId, ps.sinkKind, tp.hops, tp.truncated);
-      }
+      if (ps.param !== tp.paramIndex) continue;
+      if (tp.neutralized.has(ps.sinkKind)) continue; // sanitised across the boundary (P1-2)
+      // `tp.hops` already terminates at this (tainted) function — it IS the
+      // source→sink chain, no extra hop to append.
+      recordFinding(tp.sourceFnId, tp.fnId, ps.sinkKind, tp.hops, tp.truncated);
     }
+  };
+
+  /**
+   * Mark (fnId, paramIndex, source) tainted; enqueue. On a fresh key, taint +
+   * fire sinks. On revisit, INTERSECT the neutralised set (a kind stays
+   * neutralised only if EVERY path neutralises it — the sound direction); if it
+   * shrank, re-enqueue + re-fire so a less-neutralised path's sinks surface
+   * (the shrink-reprocess guard, mirroring `propagate.ts:deriveTaint`). Without
+   * it, a first more-neutralised path would freeze out a real finding (FN).
+   */
+  const taint = (tp: TaintedParam): void => {
+    const key = pkey(tp.fnId, tp.paramIndex, tp.sourceFnId);
+    const existing = tainted.get(key);
+    if (existing) {
+      const inter = new Set<SinkKind>();
+      for (const k of existing.neutralized) if (tp.neutralized.has(k)) inter.add(k);
+      if (inter.size >= existing.neutralized.size) return; // no shrink — cycle-safe
+      const merged: TaintedParam = { ...existing, neutralized: inter };
+      tainted.set(key, merged);
+      queue.push(merged);
+      fireSinks(merged);
+      return;
+    }
+    tainted.set(key, tp);
+    queue.push(tp);
+    fireSinks(tp);
   };
 
   // ── seeds: every source→callee-arg, resolved against CALLS ────────────────
@@ -229,6 +258,7 @@ export function solveInterprocTaint(
           sourceFnId: callerId,
           hops,
           truncated: hops.length > maxHops,
+          neutralized: new Set(sc.neutralized ?? []),
         });
       }
     }
@@ -252,12 +282,19 @@ export function solveInterprocTaint(
           { fnId: edge.calleeId, callLine: pc.callLine, argIndex: pc.argIndex },
           maxHops,
         );
+        // Union the edge's neutralised kinds onto the composed path (a
+        // sanitizer between this param and the callee arg stays neutralised).
+        const neutralized =
+          pc.neutralized && pc.neutralized.length > 0
+            ? new Set<SinkKind>([...tp.neutralized, ...pc.neutralized])
+            : tp.neutralized;
         taint({
           fnId: edge.calleeId,
           paramIndex: pc.argIndex,
           sourceFnId: tp.sourceFnId,
           hops: next.hops,
           truncated: tp.truncated || next.truncated,
+          neutralized,
         });
       }
     }

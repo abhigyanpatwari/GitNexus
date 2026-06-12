@@ -202,6 +202,22 @@ export function harvestFunctionSummary(
   const paramReturnSeen = new Set<number>();
   const paramCallArg = new Map<string, ParamToCallArg>();
   const sourceCallArg = new Map<string, SourceToCallArg>();
+  // Intersection-over-paths of the neutralized kinds reaching each call-arg
+  // edge (#2084 review P1-2, deepening correction a). MUST intersect, not
+  // first-write-wins: a second, un-sanitized occurrence path to the same edge
+  // (`relay(x){ exec(x); exec(escape(x)); }`) shrinks the set to ∅ — mirror
+  // `recordReturn`. `*Seen` tracks first-write so the initial set is a copy.
+  const paramCallArgKinds = new Map<string, Set<SinkKind>>();
+  const sourceCallArgKinds = new Map<string, Set<SinkKind>>();
+  const intersectKinds = (
+    store: Map<string, Set<SinkKind>>,
+    key: string,
+    incoming: ReadonlySet<SinkKind>,
+  ): void => {
+    const cur = store.get(key);
+    if (cur === undefined) store.set(key, new Set(incoming));
+    else for (const k of [...cur]) if (!incoming.has(k)) cur.delete(k);
+  };
   const paramSink = new Set<string>();
   const paramSinkOut: ParamToSink[] = [];
   const sourceReturn = new Set<SinkKind | 'remote-input'>();
@@ -325,6 +341,9 @@ export function harvestFunctionSummary(
                 ...(tail ? { calleeName: tail } : {}),
               });
             }
+            // Carry the sanitizer exclusions on the path INTO this call arg,
+            // intersected over occurrence paths (P1-2).
+            intersectKinds(paramCallArgKinds, caKey, t.exclusions);
           } else {
             // Source-seeded: a generated source flowing into a call argument is
             // a fixpoint SEED (it taints the callee's param). One source kind
@@ -338,6 +357,7 @@ export function harvestFunctionSummary(
                 ...(tail ? { calleeName: tail } : {}),
               });
             }
+            intersectKinds(sourceCallArgKinds, scKey, t.exclusions);
           }
           // matched sink at this position?
           const sinkPositions = sinkBySite?.get(siteIndex);
@@ -383,13 +403,18 @@ export function harvestFunctionSummary(
     }))
     .sort((a, b) => a.param - b.param);
 
-  const paramToCallArg = [...paramCallArg.values()].sort(
-    (a, b) =>
-      a.param - b.param ||
-      a.callLine - b.callLine ||
-      a.argIndex - b.argIndex ||
-      (a.calleeName ?? '').localeCompare(b.calleeName ?? ''),
-  );
+  const paramToCallArg = [...paramCallArg.entries()]
+    .map(([key, edge]) => {
+      const kinds = paramCallArgKinds.get(key);
+      return kinds && kinds.size > 0 ? { ...edge, neutralized: sortSinkKinds(kinds) } : edge;
+    })
+    .sort(
+      (a, b) =>
+        a.param - b.param ||
+        a.callLine - b.callLine ||
+        a.argIndex - b.argIndex ||
+        (a.calleeName ?? '').localeCompare(b.calleeName ?? ''),
+    );
 
   const paramToSink = paramSinkOut.sort(
     (a, b) => a.param - b.param || sinkKindRank(a.sinkKind) - sinkKindRank(b.sinkKind),
@@ -398,12 +423,17 @@ export function harvestFunctionSummary(
   const sourceToReturn: SourceToReturn[] =
     sourceReturn.size > 0 ? [{ sourceKind: 'remote-input' }] : [];
 
-  const sourceToCallArg = [...sourceCallArg.values()].sort(
-    (a, b) =>
-      a.callLine - b.callLine ||
-      a.argIndex - b.argIndex ||
-      (a.calleeName ?? '').localeCompare(b.calleeName ?? ''),
-  );
+  const sourceToCallArg = [...sourceCallArg.entries()]
+    .map(([key, edge]) => {
+      const kinds = sourceCallArgKinds.get(key);
+      return kinds && kinds.size > 0 ? { ...edge, neutralized: sortSinkKinds(kinds) } : edge;
+    })
+    .sort(
+      (a, b) =>
+        a.callLine - b.callLine ||
+        a.argIndex - b.argIndex ||
+        (a.calleeName ?? '').localeCompare(b.calleeName ?? ''),
+    );
 
   return {
     status: 'computed',

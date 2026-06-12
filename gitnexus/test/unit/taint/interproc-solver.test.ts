@@ -101,6 +101,109 @@ describe('solveInterprocTaint — multi-hop TITO', () => {
   });
 });
 
+describe('solveInterprocTaint — cross-function sanitizer exclusions (#2084 review P1-2)', () => {
+  it('a neutralized call-arg edge suppresses the callee sink of that kind', () => {
+    // A's source flows into relay; relay forwards it to helper with
+    // command-injection neutralised on the path; helper sinks command-injection.
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [
+        { sourceKind: 'remote-input', callLine: 1, argIndex: 0, calleeName: 'relay' },
+      ],
+    });
+    const relay = summary('Function:relay.ts:relay', {
+      paramCount: 1,
+      paramToCallArg: [
+        {
+          param: 0,
+          callLine: 2,
+          argIndex: 0,
+          calleeName: 'helper',
+          neutralized: ['command-injection'],
+        },
+      ],
+    });
+    const helper = summary('Function:h.ts:helper', {
+      paramCount: 1,
+      paramToSink: [{ param: 0, sinkKind: 'command-injection' }],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: A.fnId, calleeId: relay.fnId, calleeName: 'relay' },
+      { callerId: relay.fnId, calleeId: helper.fnId, calleeName: 'helper' },
+    ];
+    const r = solveInterprocTaint(map(A, relay, helper), edges);
+    expect(r.findings).toHaveLength(0);
+  });
+
+  it('neutralization is kind-scoped — a different sink kind still fires', () => {
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [
+        { sourceKind: 'remote-input', callLine: 1, argIndex: 0, calleeName: 'relay' },
+      ],
+    });
+    const relay = summary('Function:relay.ts:relay', {
+      paramCount: 1,
+      paramToCallArg: [
+        { param: 0, callLine: 2, argIndex: 0, calleeName: 'helper', neutralized: ['xss'] },
+      ],
+    });
+    const helper = summary('Function:h.ts:helper', {
+      paramCount: 1,
+      paramToSink: [{ param: 0, sinkKind: 'sql-injection' }],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: A.fnId, calleeId: relay.fnId, calleeName: 'relay' },
+      { callerId: relay.fnId, calleeId: helper.fnId, calleeName: 'helper' },
+    ];
+    const r = solveInterprocTaint(map(A, relay, helper), edges);
+    expect(r.findings.some((f) => f.sinkKind === 'sql-injection')).toBe(true);
+  });
+
+  it('shrink-reprocess: a less-neutralized second path re-fires the sink (no FN)', () => {
+    // helper.param0 is reached from A's source two ways: via relay1 (neutralizes
+    // command-injection) and via relay2 (neutralizes nothing). The un-sanitized
+    // path must still produce the finding (intersection on revisit → ∅).
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [
+        { sourceKind: 'remote-input', callLine: 1, argIndex: 0, calleeName: 'relay1' },
+        { sourceKind: 'remote-input', callLine: 2, argIndex: 0, calleeName: 'relay2' },
+      ],
+    });
+    const relay1 = summary('Function:r1.ts:relay1', {
+      paramCount: 1,
+      paramToCallArg: [
+        {
+          param: 0,
+          callLine: 1,
+          argIndex: 0,
+          calleeName: 'helper',
+          neutralized: ['command-injection'],
+        },
+      ],
+    });
+    const relay2 = summary('Function:r2.ts:relay2', {
+      paramCount: 1,
+      paramToCallArg: [{ param: 0, callLine: 1, argIndex: 0, calleeName: 'helper' }],
+    });
+    const helper = summary('Function:h.ts:helper', {
+      paramCount: 1,
+      paramToSink: [{ param: 0, sinkKind: 'command-injection' }],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: A.fnId, calleeId: relay1.fnId, calleeName: 'relay1' },
+      { callerId: A.fnId, calleeId: relay2.fnId, calleeName: 'relay2' },
+      { callerId: relay1.fnId, calleeId: helper.fnId, calleeName: 'helper' },
+      { callerId: relay2.fnId, calleeId: helper.fnId, calleeName: 'helper' },
+    ];
+    const r = solveInterprocTaint(map(A, relay1, relay2, helper), edges);
+    expect(
+      r.findings.some((f) => f.sinkFnId === helper.fnId && f.sinkKind === 'command-injection'),
+    ).toBe(true);
+  });
+});
+
 describe('solveInterprocTaint — multi-source discrimination', () => {
   it('two distinct sources into one sink function both fire (no collapse)', () => {
     // A and A2 both pass a source into B's param 0, which sinks it. Without
