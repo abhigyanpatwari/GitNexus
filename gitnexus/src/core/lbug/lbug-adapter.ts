@@ -1871,8 +1871,19 @@ export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: nu
       await conn.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`);
       edgesDeleted = count;
     }
-  } catch {
-    // Table may not exist yet on a freshly-initialized DB — fine.
+  } catch (err) {
+    // A missing table on a freshly-initialized DB is the benign, expected case
+    // (the count query above is what throws). Any OTHER failure (lock, disk,
+    // native error) would leave stale TAINT_PATH rows that the subsequent
+    // re-extract then DUPLICATES (CodeRelation has no PK), so it must not be
+    // swallowed silently — log it so a real delete failure is diagnosable.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+      logger.warn(
+        `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
+          `re-write (${msg}) — stale cross-function findings may persist or duplicate`,
+      );
+    }
   } finally {
     if (countResult) await closeQueryResults(countResult);
   }

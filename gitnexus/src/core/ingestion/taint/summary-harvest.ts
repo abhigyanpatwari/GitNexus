@@ -45,12 +45,26 @@
  * ACTUAL binding occurrences (a tainted binding present in a return's uses, a
  * call's arg list, or a matched sink position), never the floor — the floor
  * governs only onward def-tainting, keeping the recorded edges precise.
+ *
+ * ## Known limitation — destructured / rest params (documented FN)
+ *
+ * Param indices are assigned by ORDINAL over the flattened param-binding list,
+ * which equals the FORMAL parameter position only when every param is a simple
+ * identifier. A destructured or rest param contributes several bindings (or
+ * shifts the count), so a simple param positioned AFTER one
+ * (`function f([a, b], x) { sink(x) }`) gets a summary port index that does not
+ * match the formal argument position the interprocedural solver joins against
+ * — a cross-function false negative for that function. The precise fix needs a
+ * formal-param index threaded from the worker harvest (`BindingEntry`), a
+ * cache-namespace-affecting change deferred with the other documented FN
+ * classes (closures, fields — see the taint skill). Functions with all-simple
+ * params (the common case) are unaffected.
  */
 
 import type { FunctionCfg, SiteRecord } from '../cfg/types.js';
 import { pointKey, type FunctionDefUse, type ProgramPoint } from '../cfg/reaching-defs.js';
 import type { FunctionSiteMatches } from './match.js';
-import type { SinkKind } from './source-sink-config.js';
+import { sinkKindRank, sortSinkKinds, type SinkKind } from './source-sink-config.js';
 import type {
   ParamToCallArg,
   ParamToReturn,
@@ -85,17 +99,6 @@ const EMPTY_FACTS: HarvestedSummaryFacts = {
   sourceToReturn: [],
   sourceToCallArg: [],
 };
-
-const KIND_ORDER: readonly SinkKind[] = [
-  'code-injection',
-  'command-injection',
-  'path-traversal',
-  'sql-injection',
-  'xss',
-];
-const kindRank = new Map<SinkKind, number>(KIND_ORDER.map((k, i) => [k, i]));
-const sortKinds = (kinds: Iterable<SinkKind>): SinkKind[] =>
-  [...new Set(kinds)].sort((a, b) => (kindRank.get(a) ?? 99) - (kindRank.get(b) ?? 99));
 
 /** Last segment of a dotted callee path (`child_process.exec` ⇒ `exec`). */
 const calleeTail = (callee: string | undefined): string | undefined =>
@@ -376,7 +379,7 @@ export function harvestFunctionSummary(
   const paramToReturn: ParamToReturn[] = [...paramReturn.entries()]
     .map(([param, kinds]) => ({
       param,
-      ...(kinds.size > 0 ? { neutralized: sortKinds(kinds) } : {}),
+      ...(kinds.size > 0 ? { neutralized: sortSinkKinds(kinds) } : {}),
     }))
     .sort((a, b) => a.param - b.param);
 
@@ -389,8 +392,7 @@ export function harvestFunctionSummary(
   );
 
   const paramToSink = paramSinkOut.sort(
-    (a, b) =>
-      a.param - b.param || (kindRank.get(a.sinkKind) ?? 99) - (kindRank.get(b.sinkKind) ?? 99),
+    (a, b) => a.param - b.param || sinkKindRank(a.sinkKind) - sinkKindRank(b.sinkKind),
   );
 
   const sourceToReturn: SourceToReturn[] =

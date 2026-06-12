@@ -34,12 +34,19 @@
  * and Infer all rely on it). SCC condensation would only refine the PROCESSING
  * ORDER; correctness and termination do not require it.
  *
- * ## Context-insensitivity
+ * ## Context-insensitivity & the name-join over-approximation
  *
  * One summary per function, applied at every call site — return/param merging
- * is accepted (the security-conservative direction). Known precision losses
- * (call-site conflation, shared dispatch, callbacks) are the documented M4
- * trade-offs; refinements are deferred (plan KTD).
+ * is accepted (the security-conservative direction). The call-arg→callee join
+ * is by callee NAME (not line), so when one caller invokes two DISTINCT
+ * same-named callees (`x.handler(src)` and `y.handler(clean)`), a source that
+ * flowed into ONE of them taints BOTH callees' parameter — an extra finding on
+ * the callee the source did not reach. This is sound (over-attribution, never a
+ * missed flow — the conservative direction for a security tool) and is the
+ * documented price of dropping the fragile line-based join; the `explain` tool
+ * surfaces it ("may over-attribute among same-named callees"). Other known
+ * precision losses (call-site conflation, shared dispatch, callbacks) are the
+ * documented M4 trade-offs; refinements are deferred (plan KTD).
  */
 
 import type { SinkKind } from './source-sink-config.js';

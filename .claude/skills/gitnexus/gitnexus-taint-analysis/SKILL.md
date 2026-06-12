@@ -113,7 +113,13 @@ The largest is **closures/callbacks** (`arr.forEach(() => sink(y))`) — taint
 into a callback is dropped without per-library models (true of CodeQL's JS libs
 too). Also deferred: field/property flows (`obj.x = taint; sink(obj.y)`),
 field-sensitive access paths, guard-style sanitizers, implicit/control-dependence
-flows, promise/async-await threading. Absence of a finding is NOT proof of safety.
+flows, promise/async-await threading, and **destructured/rest params before a
+tainted simple param** (the summary port index is the binding ordinal, not the
+formal arg position — needs a formal-param index threaded from the worker
+`BindingEntry`). The interprocedural join is also context-insensitive: when one
+caller invokes two distinct **same-named callees**, a flow into one
+over-attributes to both (sound — over-report, never a missed flow). Absence of a
+finding is NOT proof of safety.
 
 ## GitNexus-specific gotchas
 

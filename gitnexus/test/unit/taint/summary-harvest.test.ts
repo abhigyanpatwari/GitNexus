@@ -116,6 +116,27 @@ describe('harvestFunctionSummary — source→return', () => {
   });
 });
 
+describe('harvestFunctionSummary — documented limitations', () => {
+  it('all-simple params map to their formal argument position', () => {
+    const f = harvest(`function f(a: string, b: string) { exec(b); }`);
+    // `b` is formal param 1 — the index the interproc solver joins against.
+    expect(f.paramToSink).toEqual([{ param: 1, sinkKind: 'command-injection' }]);
+  });
+
+  it('destructured param before a simple param shifts the index (known FN, pinned)', () => {
+    // `function f([a, b], x)` — formal positions are [a,b]=0, x=1. The harvest
+    // assigns by binding ordinal (a=0, b=1, x=2), so x's port is 2, not the
+    // formal 1 the solver joins against → documented cross-function FN. Pinned
+    // so the behaviour is a known boundary, not a silent surprise; the proper
+    // fix (formal-param index from the worker) is deferred.
+    const f = harvest(`function f([a, b]: string[], x: string) { exec(x); }`);
+    const xSink = f.paramToSink.find((s) => s.sinkKind === 'command-injection');
+    expect(xSink).toBeDefined();
+    // Current (limited) behaviour: ordinal index 2, NOT the formal index 1.
+    expect(xSink!.param).toBe(2);
+  });
+});
+
 describe('harvestFunctionSummary — edges & gaps', () => {
   it('empty summary for a param-less, site-less function', () => {
     const f = harvest(`function f() { const a = 1; return a; }`);

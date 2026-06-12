@@ -2953,7 +2953,12 @@ export class LocalBackend {
         where.push('(a.name = $ipSym OR b.name = $ipSym)');
         p.ipSym = anchor.symbol;
       } else if (anchor?.file) {
-        where.push('(a.filePath = $ipFile OR a.filePath ENDS WITH $ipSuffix)');
+        // Match EITHER endpoint's file — a cross-function flow anchored on the
+        // SINK's file (b) is as relevant as one anchored on the source's (a).
+        where.push(
+          '(a.filePath = $ipFile OR a.filePath ENDS WITH $ipSuffix OR ' +
+            'b.filePath = $ipFile OR b.filePath ENDS WITH $ipSuffix)',
+        );
         p.ipFile = anchor.file;
         p.ipSuffix = `/${anchor.file}`;
       }
@@ -3064,14 +3069,29 @@ export class LocalBackend {
       };
     });
 
-    const allFindings = [...findings, ...interprocFindings];
+    // Combine both layers and re-apply the page LIMIT to the union — each
+    // layer was queried with its own LIMIT, so the union can hold up to 2×;
+    // cap it so `findings.length` honours the caller's `limit`. `truncated`
+    // reflects EITHER layer overflowing OR the union being trimmed here, and
+    // `totalFindings` counts both layers' matched rows (the intra COUNT plus
+    // the interproc rows returned — interproc has no separate COUNT, so a
+    // capped interproc layer is reflected via `truncated`, never undercounted
+    // into a false "complete" signal). Review: code-review #2/#4 (explain
+    // accounting + sink-file anchoring) — both layers now accounted.
+    const combined = [...findings, ...interprocFindings];
+    const pageFindings = combined.length > limit ? combined.slice(0, limit) : combined;
+    const interprocTruncated = interprocFindings.length >= limit;
+    const truncated =
+      totalFindings > findings.length ||
+      interprocTruncated ||
+      combined.length > pageFindings.length;
 
     return {
       ...(anchor ? { anchor } : {}),
-      findings: allFindings,
+      findings: pageFindings,
       totalFindings: totalFindings + interprocFindings.length,
-      ...(totalFindings > findings.length ? { truncated: true } : {}),
-      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. SANITIZES (kill) edges are queryable via cypher.',
+      ...(truncated ? { truncated: true } : {}),
+      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
