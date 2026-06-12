@@ -1873,20 +1873,25 @@ export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: nu
     }
   } catch (err) {
     // A missing table on a freshly-initialized DB is the benign, expected case
-    // (the count query above is what throws). Any OTHER failure (lock, disk,
-    // native error) would leave stale TAINT_PATH rows that the subsequent
-    // re-extract then DUPLICATES (CodeRelation has no PK), so it must not be
-    // swallowed silently — log it so a real delete failure is diagnosable.
+    // (the count query above is what throws) — stay silent. Any OTHER failure
+    // (lock, disk, native error) would leave stale TAINT_PATH rows that the
+    // subsequent re-extract then DUPLICATES (CodeRelation has no PK), so it
+    // must ABORT the writeback (#2084 review P2-5): re-throw so the caller's
+    // crash-recovery dirty flag forces a clean full rebuild on the next run,
+    // rather than silently writing duplicate cross-function findings.
     const msg = err instanceof Error ? err.message : String(err);
-    if (!/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
-      logger.warn(
-        `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
-          `re-write (${msg}) — stale cross-function findings may persist or duplicate`,
-      );
+    if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+      if (countResult) await closeQueryResults(countResult);
+      return { edgesDeleted };
     }
-  } finally {
     if (countResult) await closeQueryResults(countResult);
+    throw new Error(
+      `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
+        `re-write (${msg}) — aborting to avoid duplicate cross-function findings; ` +
+        `the next run will full-rebuild`,
+    );
   }
+  if (countResult) await closeQueryResults(countResult);
   return { edgesDeleted };
 };
 
