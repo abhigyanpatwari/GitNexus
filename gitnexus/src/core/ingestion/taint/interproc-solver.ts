@@ -264,6 +264,75 @@ export function solveInterprocTaint(
     }
   }
 
+  // ── generative return composition (#2084 review P1-1) ─────────────────────
+  // `genReturns` = functions whose RETURN carries a generated source. Seed with
+  // `sourceToReturn`; a caller that returns the result of a generative call is
+  // itself generative (transitive — `wrap(){ return getInput() }`). Small
+  // monotone fixpoint over a name-resolved call graph.
+  const calleesByName = (callerId: string, name: string): InterprocCallEdge[] =>
+    (callsByCaller.get(callerId) ?? []).filter((e) => e.calleeName === name);
+  const genReturns = new Set<string>();
+  for (const [id, s] of summaries) if (s.sourceToReturn.length > 0) genReturns.add(id);
+  let grChanged = true;
+  while (grChanged) {
+    grChanged = false;
+    for (const [callerId, s] of summaries) {
+      if (genReturns.has(callerId)) continue;
+      for (const cr of s.callResults) {
+        if (cr.dest.to !== 'return') continue;
+        if (calleesByName(callerId, cr.calleeName).some((e) => genReturns.has(e.calleeId))) {
+          genReturns.add(callerId);
+          grChanged = true;
+          break;
+        }
+      }
+    }
+  }
+  // Compose: a caller using a generative call's result either FIRES (the result
+  // hits a sink) or SEEDS (the result flows into another call's arg). The
+  // generated source's origin is the generative callee.
+  for (const [callerId, s] of summaries) {
+    for (const cr of s.callResults) {
+      const generative = calleesByName(callerId, cr.calleeName).filter((e) =>
+        genReturns.has(e.calleeId),
+      );
+      if (generative.length === 0) continue;
+      for (const g of generative) {
+        const d = cr.dest;
+        if (d.to === 'sink') {
+          recordFinding(
+            g.calleeId,
+            callerId,
+            d.sinkKind,
+            [{ fnId: g.calleeId }, { fnId: callerId }],
+            2 > maxHops,
+          );
+        } else if (d.to === 'callArg') {
+          for (const tc of d.toCallee === undefined
+            ? (callsByCaller.get(callerId) ?? [])
+            : calleesByName(callerId, d.toCallee)) {
+            const callee = summaries.get(tc.calleeId);
+            if (!callee || d.argIndex >= callee.paramCount) continue;
+            const hops: InterprocHop[] = [
+              { fnId: g.calleeId },
+              { fnId: callerId },
+              { fnId: tc.calleeId, argIndex: d.argIndex },
+            ];
+            taint({
+              fnId: tc.calleeId,
+              paramIndex: d.argIndex,
+              sourceFnId: g.calleeId,
+              hops,
+              truncated: hops.length > maxHops,
+              neutralized: new Set(),
+            });
+          }
+        }
+        // dest:'return' is already folded into `genReturns` above.
+      }
+    }
+  }
+
   // ── propagation worklist ──────────────────────────────────────────────────
   let head = 0;
   while (head < queue.length) {

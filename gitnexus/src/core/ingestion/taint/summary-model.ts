@@ -76,11 +76,21 @@ export interface ParamToCallArg {
   readonly neutralized?: readonly SinkKind[];
 }
 
-/** `param i` flows to the function's return value (a `return <expr>` use). */
+/**
+ * `param i` flows to the function's return value (a `return <expr>` use).
+ *
+ * RESERVED — not yet consumed by the fixpoint (#2084 review P1-1). The M3
+ * statement-level floor already treats every call as propagate-through, so it
+ * taints a callee's RESULT whenever the caller passes tainted input; param→
+ * return recall is therefore already covered, and consuming `paramToReturn`
+ * would only add PRECISION (avoiding the floor's over-approximation for
+ * functions that don't actually return their param) — a larger refactor
+ * deferred. Harvested + version-stamped so the precision pass can land without
+ * a cache-namespace bump.
+ */
 export interface ParamToReturn {
   readonly param: ParamIndex;
-  /** Sink kinds neutralised on EVERY path param→return (intersection); the
-   *  solver subtracts these when this return feeds a downstream sink. */
+  /** Sink kinds neutralised on EVERY path param→return (intersection). */
   readonly neutralized?: readonly SinkKind[];
 }
 
@@ -94,10 +104,32 @@ export interface ParamToSink {
  * The function itself GENERATES a source (a modelled source read, e.g.
  * `req.body`) that reaches its return value — calling it yields tainted data
  * with no tainted input required. The generative analogue of Pysa's
- * `TaintSource[...]` return model.
+ * `TaintSource[...]` return model. CONSUMED by the fixpoint via the caller's
+ * {@link CallResult} edges (#2084 review P1-1): a caller that uses such a
+ * function's result composes this into a finding/propagation. This is the
+ * genuinely-additive recall the floor cannot cover (the source is inside the
+ * callee — the caller passes no tainted input for the floor to propagate).
  */
 export interface SourceToReturn {
   readonly sourceKind: SourceKind;
+}
+
+/**
+ * What a user-function call's RESULT flows into, in the CALLER (#2084 review
+ * P1-1). Recorded when a call to a (potentially generative) user function has
+ * its return value used by the caller. The fixpoint composes it with the
+ * callee's {@link SourceToReturn}: if the callee returns a generated source,
+ * the caller's downstream use of the result is tainted.
+ */
+export type CallResultDest =
+  | { readonly to: 'sink'; readonly sinkKind: SinkKind }
+  | { readonly to: 'return' }
+  | { readonly to: 'callArg'; readonly toCallee?: string; readonly argIndex: ParamIndex };
+
+/** The result of a call to `calleeName` flows to `dest` in this function. */
+export interface CallResult {
+  readonly calleeName: string;
+  readonly dest: CallResultDest;
 }
 
 /**
@@ -143,12 +175,15 @@ export interface FunctionSummary {
   readonly sourceToReturn: readonly SourceToReturn[];
   /** Generative source→callee-arg seeds (fixpoint entry points). */
   readonly sourceToCallArg: readonly SourceToCallArg[];
+  /** Caller-side call-result flows — compose with callee `sourceToReturn`. */
+  readonly callResults: readonly CallResult[];
   /**
    * Content version stamp — `hash(own-facts ∪ sorted callee versions)`. The
    * incremental cache key (Infer's content-keyed summary): equal across two
    * runs iff the function's own taint facts AND every callee summary it depends
-   * on are unchanged. Set by the fixpoint once callee versions are known; the
-   * harvester emits the own-facts portion via {@link ownFactsDigest}.
+   * on are unchanged. NOTE (#2084 review P1-1): callee-version composition is
+   * RESERVED — the harvester stamps the own-facts portion only
+   * ({@link ownFactsDigest}); the fixpoint does not yet recompose it.
    */
   readonly version: string;
 }
@@ -179,6 +214,7 @@ export function ownFactsDigest(
     | 'paramToSink'
     | 'sourceToReturn'
     | 'sourceToCallArg'
+    | 'callResults'
   >,
 ): string {
   const parts: string[] = [`p${s.paramCount}`];
@@ -203,6 +239,20 @@ export function ownFactsDigest(
         (g) =>
           `s:${g.sourceKind}:${g.callLine}:${g.argIndex}:${g.calleeName ?? ''}:${[...(g.neutralized ?? [])].sort().join(',')}`,
       )
+      .sort(),
+  );
+  parts.push(
+    ...s.callResults
+      .map((cr) => {
+        const d = cr.dest;
+        const dest =
+          d.to === 'sink'
+            ? `sink:${d.sinkKind}`
+            : d.to === 'return'
+              ? 'return'
+              : `arg:${d.toCallee ?? ''}:${d.argIndex}`;
+        return `cr:${cr.calleeName}:${dest}`;
+      })
       .sort(),
   );
   return fnv1a(parts.join('|'));

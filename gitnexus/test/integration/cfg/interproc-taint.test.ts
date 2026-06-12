@@ -76,6 +76,18 @@ describe('U9 — end-to-end interprocedural taint (--pdg)', () => {
     expect(found, 'expected a multi-hop TAINT_PATH from handle2 → runIt').toBe(true);
   });
 
+  it('composes a generative sourceToReturn flow getInput → handleGen (#2084 review P1-1)', async () => {
+    const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
+    const nameOf = (id: string): string => {
+      const n = result.graph.getNode(id);
+      return typeof n?.properties.name === 'string' ? n.properties.name : '';
+    };
+    const found = taintPaths(result).some(
+      (p) => nameOf(p.sourceId) === 'getInput' && nameOf(p.targetId) === 'handleGen',
+    );
+    expect(found, 'expected a generative TAINT_PATH from getInput → handleGen').toBe(true);
+  });
+
   it('without --pdg: emits ZERO TAINT_PATH edges (opt-in gate / golden parity)', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {});
     expect(taintPaths(result)).toHaveLength(0);

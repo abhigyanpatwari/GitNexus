@@ -78,11 +78,12 @@ resolved `CALLS` graph.
 
 | Edge | Meaning | Analogue |
 |------|---------|----------|
-| `param→return` | a param flows to the return value | TITO (Pysa `TaintInTaintOut`) |
-| `param→callee-arg` | a param flows into arg *j* of a call | TITO into callee |
+| `param→return` | a param flows to the return value | TITO — **reserved** (the floor already covers its recall; precision pass deferred) |
+| `param→callee-arg` | a param flows into arg *j* of a call (carries the path's neutralized sink kinds) | TITO into callee |
 | `param→sink` | a param reaches a modelled sink | partial/triggered sink |
-| `source→return` | the function generates+returns a source | generative (`TaintSource`) |
+| `source→return` | the function generates+returns a source | generative — **composed** via the caller's `callResults` |
 | `source→callee-arg` | a generated source flows into a call | fixpoint SEED |
+| `callResults` | a user-function call's result flows to a sink/return/callee-arg in the caller | composes with callee `source→return` |
 
 **The fixpoint** (`taint/interproc-solver.ts`): the unit is `(function,
 parameter, source)`. Seed from `source→callee-arg`, propagate via

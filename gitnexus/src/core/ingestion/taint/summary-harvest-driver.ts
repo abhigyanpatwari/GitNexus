@@ -12,8 +12,8 @@
  *    id with no fragile re-derivation;
  * 2. runs the pure {@link harvestFunctionSummary} over the same RD facts +
  *    matched sites the M3 taint pass uses;
- * 3. stamps a provisional own-facts `version` (the fixpoint recomputes the
- *    composed version once callee versions are known).
+ * 3. stamps the own-facts `version` (#2084 review P1-1: callee-version
+ *    composition is RESERVED — the fixpoint does not recompute it today).
  *
  * ## The Function↔CFG join (load-bearing)
  *
@@ -126,7 +126,8 @@ export function harvestFileSummaries(
       facts.paramToCallArg.length === 0 &&
       facts.paramToSink.length === 0 &&
       facts.sourceToReturn.length === 0 &&
-      facts.sourceToCallArg.length === 0
+      facts.sourceToCallArg.length === 0 &&
+      facts.callResults.length === 0
     ) {
       continue;
     }

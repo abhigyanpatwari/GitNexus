@@ -117,6 +117,42 @@ describe('harvestFunctionSummary — source→callee-arg (fixpoint seed)', () =>
   });
 });
 
+describe('harvestFunctionSummary — call-result seeds (#2084 review P1-1)', () => {
+  it('records a generative call result reaching a sink via a local', () => {
+    const f = harvest(`function f() { const t = getInput(); exec(t); }`);
+    expect(f.callResults.some((cr) => cr.calleeName === 'getInput' && cr.dest.to === 'sink')).toBe(
+      true,
+    );
+  });
+
+  it('records a call result flowing into another callee arg', () => {
+    const f = harvest(`function f() { const t = getInput(); forward(t); }`);
+    expect(
+      f.callResults.some(
+        (cr) =>
+          cr.calleeName === 'getInput' &&
+          cr.dest.to === 'callArg' &&
+          cr.dest.toCallee === 'forward',
+      ),
+    ).toBe(true);
+  });
+
+  it('records a bare `return getInput()` as a call result → return', () => {
+    const f = harvest(`function f() { return getInput(); }`);
+    expect(
+      f.callResults.some((cr) => cr.calleeName === 'getInput' && cr.dest.to === 'return'),
+    ).toBe(true);
+  });
+
+  it('does not record call results for sink/sanitizer calls', () => {
+    const f = harvest(`function f(x: string) { exec(escape(x)); }`);
+    // exec is a sink, escape is a sanitizer — neither is a user-fn call result.
+    expect(f.callResults.some((cr) => cr.calleeName === 'exec' || cr.calleeName === 'escape')).toBe(
+      false,
+    );
+  });
+});
+
 describe('harvestFunctionSummary — source→return', () => {
   it('records a generated source returned directly', () => {
     const f = harvest(`function f() { return req.body; }`);

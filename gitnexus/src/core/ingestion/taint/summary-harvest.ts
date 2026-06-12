@@ -66,6 +66,7 @@ import { pointKey, type FunctionDefUse, type ProgramPoint } from '../cfg/reachin
 import type { FunctionSiteMatches } from './match.js';
 import { sinkKindRank, sortSinkKinds, type SinkKind } from './source-sink-config.js';
 import type {
+  CallResult,
   ParamToCallArg,
   ParamToReturn,
   ParamToSink,
@@ -81,6 +82,7 @@ export interface HarvestedSummaryFacts {
   readonly paramToSink: readonly ParamToSink[];
   readonly sourceToReturn: readonly SourceToReturn[];
   readonly sourceToCallArg: readonly SourceToCallArg[];
+  readonly callResults: readonly CallResult[];
 }
 
 export interface HarvestResult {
@@ -98,6 +100,7 @@ const EMPTY_FACTS: HarvestedSummaryFacts = {
   paramToSink: [],
   sourceToReturn: [],
   sourceToCallArg: [],
+  callResults: [],
 };
 
 /** Last segment of a dotted callee path (`child_process.exec` ⇒ `exec`). */
@@ -108,10 +111,13 @@ const calleeTail = (callee: string | undefined): string | undefined =>
 interface SeedTaint {
   readonly bindingIdx: number;
   readonly point: ProgramPoint;
-  /** Index into `seeds` — the param index, or -1 for a source seed. */
+  /** Param index (≥0), or -1 for a source seed, or -2 for a call-result seed. */
   readonly seedId: number;
   /** Sink kinds neutralised on the path to here (monotone over the floor). */
   readonly exclusions: ReadonlySet<SinkKind>;
+  /** For a call-result seed (#2084 review P1-1): the user function whose RESULT
+   *  this taint flows from. When set, reaches record {@link CallResult} edges. */
+  readonly originCallee?: string;
 }
 
 /**
@@ -156,8 +162,14 @@ export function harvestFunctionSummary(
   const sinkPosBySite = new Map<string, Map<number, Set<number>>>(); // stmtKey → site → argPositions
   const sinkKindByEntry = new Map<string, Map<number, SinkKind[]>>(); // stmtKey → site → kinds at any pos
   const sanitizerResultDefKinds = new Map<string, Map<number, SinkKind[]>>(); // stmtKey → resultDef binding → kinds
+  // Matched sink/sanitizer sites (`stmtKey:siteIndex`) — EXCLUDED from the
+  // call-result seed (#2084 review P1-1): their result semantics are already
+  // modelled (a sanitizer's result rides U2 exclusions; a sink returns void).
+  const modeledSites = new Set<string>();
   for (const sm of matches.statements) {
     const stmtKey = `${sm.blockIndex}:${sm.statementIndex}`;
+    for (const s of sm.sinks) modeledSites.add(`${stmtKey}:${s.siteIndex}`);
+    for (const s of sm.sanitizers) modeledSites.add(`${stmtKey}:${s.siteIndex}`);
     if (sm.sinks.length > 0) {
       const bySite = new Map<number, Set<number>>();
       const kindBySite = new Map<number, SinkKind[]>();
@@ -221,6 +233,19 @@ export function harvestFunctionSummary(
   const paramSink = new Set<string>();
   const paramSinkOut: ParamToSink[] = [];
   const sourceReturn = new Set<SinkKind | 'remote-input'>();
+  // Caller-side call-result flows (#2084 review P1-1), deduped by a structural key.
+  const callResults = new Map<string, CallResult>();
+  const recordCallResult = (cr: CallResult): void => {
+    const d = cr.dest;
+    const destKey =
+      d.to === 'sink'
+        ? `sink:${d.sinkKind}`
+        : d.to === 'return'
+          ? 'return'
+          : `arg:${d.toCallee ?? ''}:${d.argIndex}`;
+    const key = `${cr.calleeName}|${destKey}`;
+    if (!callResults.has(key)) callResults.set(key, cr);
+  };
 
   /** Record param→return, intersecting neutralized kinds across paths. */
   const recordReturn = (param: number, exclusions: ReadonlySet<SinkKind>): void => {
@@ -238,7 +263,9 @@ export function harvestFunctionSummary(
   const queue: SeedTaint[] = [];
   const visited = new Set<string>();
   const enqueue = (t: SeedTaint): void => {
-    const key = `${t.seedId}:${t.bindingIdx}:${pointKey(t.point)}:${[...t.exclusions].sort().join(',')}`;
+    // originCallee discriminates call-result seeds (all share seedId -2) so two
+    // distinct callees' results on the same binding are not collapsed.
+    const key = `${t.seedId}:${t.originCallee ?? ''}:${t.bindingIdx}:${pointKey(t.point)}:${[...t.exclusions].sort().join(',')}`;
     if (visited.has(key)) return;
     visited.add(key);
     queue.push(t);
@@ -307,6 +334,74 @@ export function harvestFunctionSummary(
     }
   }
 
+  // Call-result seeds (#2084 review P1-1): a call to a (potentially generative)
+  // USER function is a NEW taint origin — `matchFunctionSites` only sources
+  // member-reads, so the result of `getInput()` is invisible today. Seed every
+  // call/new site that is NOT a matched sink/sanitizer and carries a resolvable
+  // callee name; the worklist then records a CallResult edge when the result
+  // reaches a sink / return / another call arg. The fixpoint composes it with
+  // the callee's `sourceToReturn` (the floor cannot — the source is in the
+  // callee, so the caller passes no tainted input).
+  //
+  // Documented limitation: a result passed DIRECTLY into a modelled sink with
+  // no binding (`exec(getInput())`) is not recorded as `dest:sink` — the sink
+  // is occurrence-gated by `matchFunctionSites` and a bare call result is not a
+  // binding occurrence, so `exec` reads as a plain call (recorded `dest:callArg`
+  // to a callee with no summary → uncomposed). The binding form
+  // (`const t = getInput(); exec(t)`) is the supported path.
+  for (const block of cfg.blocks) {
+    block.statements?.forEach((facts, stmtIdx) => {
+      const stmtKey = `${block.index}:${stmtIdx}`;
+      const point: ProgramPoint = { blockIndex: block.index, stmtIndex: stmtIdx, line: facts.line };
+      facts.sites?.forEach((site, siteIndex) => {
+        if (site.kind !== 'call' && site.kind !== 'new') return;
+        if (modeledSites.has(`${stmtKey}:${siteIndex}`)) return; // sink/sanitizer — modelled
+        const tail = calleeTail(site.callee);
+        if (tail === undefined) return; // unresolvable callee — cannot compose
+        // Binding case (`const t = getInput(); …`): seed the result bindings.
+        for (const d of site.resultDefs ?? []) {
+          enqueue({ bindingIdx: d, point, seedId: -2, exclusions: new Set(), originCallee: tail });
+        }
+        // Direct case (`exec(getInput())` / `return getInput()`): no result
+        // binding — climb the call's parent chain (or detect a bare return).
+        if ((site.resultDefs?.length ?? 0) === 0) {
+          if (site.parent === undefined && returnUseStmtKeys.has(stmtKey)) {
+            recordCallResult({ calleeName: tail, dest: { to: 'return' } });
+          }
+          let cur: SiteRecord | undefined = site;
+          const guard = new Set<number>([siteIndex]);
+          while (cur?.parent) {
+            const [ancIdx, argPos] = cur.parent;
+            if (guard.has(ancIdx)) break;
+            guard.add(ancIdx);
+            const ancestor = facts.sites?.[ancIdx];
+            if (!ancestor) break;
+            const ancKey = `${stmtKey}:${ancIdx}`;
+            const sinkPositions = sinkPosBySite.get(stmtKey)?.get(ancIdx);
+            if (sinkPositions?.has(argPos)) {
+              for (const kind of sinkKindByEntry.get(stmtKey)?.get(ancIdx) ?? []) {
+                recordCallResult({ calleeName: tail, dest: { to: 'sink', sinkKind: kind } });
+              }
+            } else if (
+              !modeledSites.has(ancKey) &&
+              (ancestor.kind === 'call' || ancestor.kind === 'new')
+            ) {
+              recordCallResult({
+                calleeName: tail,
+                dest: {
+                  to: 'callArg',
+                  ...(calleeTail(ancestor.callee) ? { toCallee: calleeTail(ancestor.callee) } : {}),
+                  argIndex: argPos,
+                },
+              });
+            }
+            cur = ancestor;
+          }
+        }
+      });
+    });
+  }
+
   // ── forward reachability ──────────────────────────────────────────────────
   let head = 0;
   while (head < queue.length) {
@@ -319,7 +414,9 @@ export function harvestFunctionSummary(
 
       // (1) return reach
       if (returnUseStmtKeys.has(useKey) && useStmt.uses.includes(b)) {
-        if (t.seedId >= 0) recordReturn(t.seedId, t.exclusions);
+        if (t.originCallee !== undefined) {
+          recordCallResult({ calleeName: t.originCallee, dest: { to: 'return' } });
+        } else if (t.seedId >= 0) recordReturn(t.seedId, t.exclusions);
         else sourceReturn.add('remote-input');
       }
 
@@ -331,7 +428,14 @@ export function harvestFunctionSummary(
         for (const argPos of argHits) {
           const callLine = useStmt.line;
           const tail = calleeTail(site.callee);
-          if (t.seedId >= 0) {
+          if (t.originCallee !== undefined) {
+            // Call-result seed (#2084 review P1-1): the result of a call to
+            // `originCallee` flows into THIS call's arg `argPos`.
+            recordCallResult({
+              calleeName: t.originCallee,
+              dest: { to: 'callArg', ...(tail ? { toCallee: tail } : {}), argIndex: argPos },
+            });
+          } else if (t.seedId >= 0) {
             const caKey = `${t.seedId}:${callLine}:${argPos}:${tail ?? ''}`;
             if (!paramCallArg.has(caKey)) {
               paramCallArg.set(caKey, {
@@ -361,13 +465,21 @@ export function harvestFunctionSummary(
           }
           // matched sink at this position?
           const sinkPositions = sinkBySite?.get(siteIndex);
-          if (sinkPositions?.has(argPos) && t.seedId >= 0) {
+          if (sinkPositions?.has(argPos)) {
             for (const kind of kindBySite?.get(siteIndex) ?? []) {
               if (t.exclusions.has(kind)) continue;
-              const sKey = `${t.seedId}:${kind}`;
-              if (!paramSink.has(sKey)) {
-                paramSink.add(sKey);
-                paramSinkOut.push({ param: t.seedId, sinkKind: kind });
+              if (t.originCallee !== undefined) {
+                // A generated source returned by `originCallee` reaches a sink.
+                recordCallResult({
+                  calleeName: t.originCallee,
+                  dest: { to: 'sink', sinkKind: kind },
+                });
+              } else if (t.seedId >= 0) {
+                const sKey = `${t.seedId}:${kind}`;
+                if (!paramSink.has(sKey)) {
+                  paramSink.add(sKey);
+                  paramSinkOut.push({ param: t.seedId, sinkKind: kind });
+                }
               }
             }
           }
@@ -390,6 +502,7 @@ export function harvestFunctionSummary(
           },
           seedId: t.seedId,
           exclusions,
+          ...(t.originCallee !== undefined ? { originCallee: t.originCallee } : {}),
         });
       }
     }
@@ -435,6 +548,20 @@ export function harvestFunctionSummary(
         (a.calleeName ?? '').localeCompare(b.calleeName ?? ''),
     );
 
+  const callResultsOut = [...callResults.values()].sort((a, b) => {
+    const ord = (cr: CallResult): string => {
+      const d = cr.dest;
+      const dest =
+        d.to === 'sink'
+          ? `1sink:${d.sinkKind}`
+          : d.to === 'return'
+            ? '2return'
+            : `0arg:${d.toCallee ?? ''}:${d.argIndex}`;
+      return `${cr.calleeName}|${dest}`;
+    };
+    return ord(a).localeCompare(ord(b));
+  });
+
   return {
     status: 'computed',
     facts: {
@@ -444,6 +571,7 @@ export function harvestFunctionSummary(
       paramToSink,
       sourceToReturn,
       sourceToCallArg,
+      callResults: callResultsOut,
     },
   };
 }

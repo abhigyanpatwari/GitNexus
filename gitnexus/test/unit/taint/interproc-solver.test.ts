@@ -29,6 +29,7 @@ function summary(
     paramToSink: facts.paramToSink ?? [],
     sourceToReturn: facts.sourceToReturn ?? [],
     sourceToCallArg: facts.sourceToCallArg ?? [],
+    callResults: facts.callResults ?? [],
   };
   return {
     fnId,
@@ -201,6 +202,93 @@ describe('solveInterprocTaint — cross-function sanitizer exclusions (#2084 rev
     expect(
       r.findings.some((f) => f.sinkFnId === helper.fnId && f.sinkKind === 'command-injection'),
     ).toBe(true);
+  });
+});
+
+describe('solveInterprocTaint — generative sourceToReturn composition (#2084 review P1-1)', () => {
+  it('composes a generative call result that hits a sink in the caller', () => {
+    // getInput() returns a source; handler does exec(getInput()) — recorded as
+    // a callResult{getInput, dest:sink}. No tainted INPUT, so only return
+    // composition finds it.
+    const getInput = summary('Function:g.ts:getInput', {
+      paramCount: 0,
+      sourceToReturn: [{ sourceKind: 'remote-input' }],
+    });
+    const handler = summary('Function:h.ts:handler', {
+      paramCount: 0,
+      callResults: [
+        { calleeName: 'getInput', dest: { to: 'sink', sinkKind: 'command-injection' } },
+      ],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: handler.fnId, calleeId: getInput.fnId, calleeName: 'getInput' },
+    ];
+    const r = solveInterprocTaint(map(getInput, handler), edges);
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0]).toMatchObject({
+      sourceFnId: getInput.fnId,
+      sinkFnId: handler.fnId,
+      sinkKind: 'command-injection',
+    });
+  });
+
+  it('composes a generative result flowing into another callee arg → sink', () => {
+    // handler: forward(getInput()); forward(z){ exec(z) }.
+    const getInput = summary('Function:g.ts:getInput', {
+      paramCount: 0,
+      sourceToReturn: [{ sourceKind: 'remote-input' }],
+    });
+    const forward = summary('Function:f.ts:forward', {
+      paramCount: 1,
+      paramToSink: [{ param: 0, sinkKind: 'command-injection' }],
+    });
+    const handler = summary('Function:h.ts:handler', {
+      paramCount: 0,
+      callResults: [
+        { calleeName: 'getInput', dest: { to: 'callArg', toCallee: 'forward', argIndex: 0 } },
+      ],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: handler.fnId, calleeId: getInput.fnId, calleeName: 'getInput' },
+      { callerId: handler.fnId, calleeId: forward.fnId, calleeName: 'forward' },
+    ];
+    const r = solveInterprocTaint(map(getInput, forward, handler), edges);
+    expect(r.findings.some((f) => f.sinkFnId === forward.fnId)).toBe(true);
+  });
+
+  it('transitively marks a relay that RETURNS a generative result as generative', () => {
+    // wrap(){ return getInput() } then handler does exec(wrap()).
+    const getInput = summary('Function:g.ts:getInput', {
+      paramCount: 0,
+      sourceToReturn: [{ sourceKind: 'remote-input' }],
+    });
+    const wrap = summary('Function:w.ts:wrap', {
+      paramCount: 0,
+      callResults: [{ calleeName: 'getInput', dest: { to: 'return' } }],
+    });
+    const handler = summary('Function:h.ts:handler', {
+      paramCount: 0,
+      callResults: [{ calleeName: 'wrap', dest: { to: 'sink', sinkKind: 'xss' } }],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: wrap.fnId, calleeId: getInput.fnId, calleeName: 'getInput' },
+      { callerId: handler.fnId, calleeId: wrap.fnId, calleeName: 'wrap' },
+    ];
+    const r = solveInterprocTaint(map(getInput, wrap, handler), edges);
+    expect(r.findings.some((f) => f.sinkFnId === handler.fnId && f.sinkKind === 'xss')).toBe(true);
+  });
+
+  it('does NOT compose when the callee is not generative', () => {
+    const pure = summary('Function:p.ts:pure', { paramCount: 0 }); // no sourceToReturn
+    const handler = summary('Function:h.ts:handler', {
+      paramCount: 0,
+      callResults: [{ calleeName: 'pure', dest: { to: 'sink', sinkKind: 'command-injection' } }],
+    });
+    const edges: InterprocCallEdge[] = [
+      { callerId: handler.fnId, calleeId: pure.fnId, calleeName: 'pure' },
+    ];
+    const r = solveInterprocTaint(map(pure, handler), edges);
+    expect(r.findings).toHaveLength(0);
   });
 });
 
