@@ -168,6 +168,8 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
         // #243: resolved default branch threaded into the --skills regen path.
         defaultBranch: 'main',
         noStats: true,
+        // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
+        hasPdg: false,
       });
     } finally {
       exitSpy.mockRestore();
