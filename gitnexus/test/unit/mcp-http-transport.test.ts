@@ -17,12 +17,12 @@
 import http from 'http';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { createAuthMiddleware } from '../../src/mcp/http-transport.js';
 import {
+  createAuthMiddleware,
   createStreamableHttpHandler,
   createSseHandlers,
-  mountMCPEndpoints,
-} from '../../src/server/mcp-http.js';
+} from '../../src/mcp/http-transport.js';
+import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
 
 // ─── Mock backend factory ──────────────────────────────────────────────
 
