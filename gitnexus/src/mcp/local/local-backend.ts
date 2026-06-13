@@ -77,6 +77,23 @@ function looksLikeFilePath(target: string): boolean {
   const lower = target.toLowerCase();
   return SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
+
+/**
+ * Resolve a string tool param from its canonical name or legacy alias (#2175).
+ * Returns the first NON-BLANK string of [canonical, legacy] — the canonical (new)
+ * name is preferred when it carries a real value, otherwise the legacy value is used.
+ * A blank/whitespace new value therefore does NOT clobber a valid legacy value (e.g. a
+ * gradually-migrating client that always emits the new key, blank when unset). A
+ * non-string value (the MCP envelope is not schema-validated, so clients can send any
+ * JSON type) and an all-blank input resolve to `undefined`, so the caller returns a
+ * friendly required-param error instead of throwing `TypeError` on `.trim()`.
+ */
+function resolveAliasString(canonical: unknown, legacy: unknown): string | undefined {
+  for (const value of [canonical, legacy]) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1242,6 +1259,16 @@ export class LocalBackend {
     }
 
     const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+
+    // #2175: Claude Code drops a tool-call argument named exactly "query", so the
+    // query/cypher tools advertise "search_query"/"statement" while still accepting the
+    // legacy "query" key for backward compat. The alias is resolved with `?? ` (new name
+    // wins) at every consumer site rather than by mutating params here, so precedence is
+    // uniform and there is no hidden mutation: query()/cypher() read it directly, the
+    // legacy "search" alias routes through query(), and the cross-repo group-forward
+    // resolves it self-contained in callToolAtGroupRepo. This is permanent compatibility
+    // — third-party MCP clients may legitimately send "query", so the alias is not slated
+    // for removal even if Claude Code's argument handling later changes.
     if (
       (method === 'impact' || method === 'query' || method === 'context') &&
       typeof p.repo === 'string' &&
@@ -1345,7 +1372,8 @@ export class LocalBackend {
   private async query(
     repo: RepoHandle,
     params: {
-      query: string;
+      query?: string;
+      search_query?: string;
       task_context?: string;
       goal?: string;
       limit?: number;
@@ -1353,8 +1381,12 @@ export class LocalBackend {
       include_content?: boolean;
     },
   ): Promise<any> {
-    if (!params.query?.trim()) {
-      return { error: 'query parameter is required and cannot be empty.' };
+    // #2175: each consumer resolves the search_query/query alias itself (there is no
+    // chokepoint mutation in callTool). This also serves the GroupService port, which
+    // reaches query() carrying only the legacy `query` key.
+    const rawQuery = resolveAliasString(params.search_query, params.query);
+    if (!rawQuery?.trim()) {
+      return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
     }
 
     await this.ensureInitialized(repo);
@@ -1362,7 +1394,7 @@ export class LocalBackend {
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
-    const searchQuery = params.query.trim();
+    const searchQuery = rawQuery.trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
     // observable sub-step of the search pipeline so production latency can
@@ -1932,7 +1964,9 @@ export class LocalBackend {
 
   private async cypher(
     repo: RepoHandle,
-    request: { query: string; params?: Record<string, unknown> },
+    // #2175: "statement" is the advertised param; "query" is the legacy alias,
+    // still accepted (and the field the internal executeCypher() passes). New wins.
+    request: { query?: string; statement?: string; params?: Record<string, unknown> },
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
@@ -1945,8 +1979,15 @@ export class LocalBackend {
       };
     }
 
+    const cypherText = resolveAliasString(request.statement, request.query) ?? '';
+    if (!cypherText.trim()) {
+      // Mirror query()'s friendly required-param error instead of letting an empty
+      // string fall through to a raw LadybugDB prepare error (#2175 review).
+      return { error: 'statement (or legacy query) parameter is required and cannot be empty.' };
+    }
+
     try {
-      const result = await executeParameterized(repo.lbugPath, request.query, request.params ?? {});
+      const result = await executeParameterized(repo.lbugPath, cypherText, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
@@ -4820,7 +4861,10 @@ export class LocalBackend {
     if (method === 'query') {
       const queryArgs: Record<string, unknown> = {
         name: groupName,
-        query: params.query,
+        // #2175: resolve the search_query alias here (new name wins, same rule as the
+        // local query() handler) so the group path is self-contained and does not depend
+        // on params being normalized upstream. groupQuery() reads `query`.
+        query: resolveAliasString(params.search_query, params.query),
       };
       if (typeof params.task_context === 'string') queryArgs.task_context = params.task_context;
       if (typeof params.goal === 'string') queryArgs.goal = params.goal;

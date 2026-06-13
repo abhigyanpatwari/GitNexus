@@ -134,7 +134,7 @@ Your AI agent gets these tools automatically:
 | `rename`         | Multi-file coordinated rename with graph + text search           | Optional     |
 | `cypher`         | Raw Cypher graph queries                                         | Optional     |
 
-> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({query: "auth", repo: "my-app"})`.
+> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({search_query: "auth", repo: "my-app"})`.
 
 ## MCP Resources
 

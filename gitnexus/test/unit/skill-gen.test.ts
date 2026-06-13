@@ -650,7 +650,9 @@ describe('generateSkillFiles — file output', () => {
     );
     expect(content).not.toMatch(/gitnexus_(context|query|impact|detect_changes|rename|cypher)/);
     expect(content).toContain('context({name:');
-    expect(content).toContain('query({query:');
+    // #2175: advertise the renamed param, not the legacy "query" key.
+    expect(content).toContain('query({search_query:');
+    expect(content).not.toContain('query({query:');
   });
 
   /**
