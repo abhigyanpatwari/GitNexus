@@ -101,6 +101,12 @@ describe('LadybugDB Schema', () => {
         expect(REL_TYPES).toContain(t);
       }
     });
+
+    it('includes the control-dependence edge types (issue #2085 M5)', () => {
+      for (const t of ['CDG', 'POST_DOMINATE']) {
+        expect(REL_TYPES).toContain(t);
+      }
+    });
   });
 
   describe('node schema DDL', () => {

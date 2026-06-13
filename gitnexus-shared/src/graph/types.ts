@@ -157,7 +157,17 @@ export type RelationshipType =
   | 'SANITIZES'
   /** Materialized source→sink taint path. Working name — final name/representation
    *  is confirmed when M3/M4 emits it; no persisted edge exists before then. */
-  | 'TAINT_PATH';
+  | 'TAINT_PATH'
+  /** Control-dependence edge (PDG, issue #2085 M5): block `dependent` (target)
+   *  executes only because the branch at block `controller` (source) took a
+   *  given side. The branch sense (`'T'` | `'F'`) rides the relation's existing
+   *  `reason` column — mirroring how `CFG` stores its edge kind there — since
+   *  the single `CodeRelation` table has no dedicated label column. */
+  | 'CDG'
+  /** Debug-only post-dominator-tree edge (#2085 M5): a block → its immediate
+   *  post-dominator, emitted behind the `GITNEXUS_PDG_EMIT_POST_DOMINATE` env
+   *  flag for inspection. Never emitted in a normal `--pdg` run. */
+  | 'POST_DOMINATE';
 
 export interface GraphNode {
   id: string;
