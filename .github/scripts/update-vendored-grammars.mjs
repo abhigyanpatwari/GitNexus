@@ -63,7 +63,8 @@ function loadManifestGrammars() {
   }
   return Object.fromEntries(
     Object.entries(raw.grammars || {}).map(([key, g]) => {
-      if (!g.name) throw new Error(`manifest entry '${key}' is missing a 'name' field (${MANIFEST})`);
+      if (!g.name)
+        throw new Error(`manifest entry '${key}' is missing a 'name' field (${MANIFEST})`);
       return [
         key,
         {

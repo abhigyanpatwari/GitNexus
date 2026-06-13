@@ -85,8 +85,12 @@ describe('shared vendored-grammars manifest', () => {
     path.dirname(fileURLToPath(import.meta.url)),
     '../../../.github/vendored-grammars.json',
   );
-  const manifest: { grammars: Record<string, { name: string; upstream: { npm?: string; github?: string }; hold?: string }> } =
-    JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const manifest: {
+    grammars: Record<
+      string,
+      { name: string; upstream: { npm?: string; github?: string }; hold?: string }
+    >;
+  } = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
   it('reshapes every manifest entry into the GRAMMARS shape, losing no information', () => {
     expect(Object.keys(mod.GRAMMARS).sort()).toEqual(Object.keys(manifest.grammars).sort());
