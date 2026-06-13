@@ -25,6 +25,7 @@ import {
   createSseHandlers,
   isLoopbackOrigin,
   computeAllowedHosts,
+  resolveAuthToken,
 } from '../../src/mcp/http-transport.js';
 import { createMCPServer, installSignalShutdown, SHUTDOWN_EXIT_CODES } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
@@ -633,6 +634,31 @@ describe('isLoopbackOrigin', () => {
     expect(isLoopbackOrigin('http://192.168.1.50:3000')).toBe(false);
     expect(isLoopbackOrigin('null')).toBe(false);
     expect(isLoopbackOrigin('not a url')).toBe(false);
+  });
+});
+
+// ─── resolveAuthToken (U9) ───────────────────────────────────────────
+
+describe('resolveAuthToken', () => {
+  it('uses the --auth-token flag when set, preferring it over the env var', () => {
+    expect(resolveAuthToken('flag', {})).toBe('flag');
+    expect(resolveAuthToken('flag', { GITNEXUS_MCP_AUTH_TOKEN: 'env' })).toBe('flag');
+  });
+
+  it('falls back to GITNEXUS_MCP_AUTH_TOKEN', () => {
+    expect(resolveAuthToken(undefined, { GITNEXUS_MCP_AUTH_TOKEN: 'env' })).toBe('env');
+  });
+
+  it('treats empty/whitespace as no token (no silent auth bypass)', () => {
+    expect(resolveAuthToken('', {})).toBeUndefined();
+    expect(resolveAuthToken('   ', {})).toBeUndefined();
+    expect(resolveAuthToken(undefined, { GITNEXUS_MCP_AUTH_TOKEN: '' })).toBeUndefined();
+    expect(resolveAuthToken(undefined, { GITNEXUS_MCP_AUTH_TOKEN: '  ' })).toBeUndefined();
+  });
+
+  it('returns undefined when neither is set, and trims a real token', () => {
+    expect(resolveAuthToken(undefined, {})).toBeUndefined();
+    expect(resolveAuthToken('  tok  ', {})).toBe('tok');
   });
 });
 

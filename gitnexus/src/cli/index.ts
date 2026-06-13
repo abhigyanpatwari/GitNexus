@@ -155,7 +155,7 @@ program
   )
   .option(
     '--auth-token <token>',
-    'Require this bearer token in the Authorization header (only with --http). If omitted, no auth (warn on non-loopback bind).',
+    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. If omitted, no auth (warns on non-loopback bind).',
   )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 

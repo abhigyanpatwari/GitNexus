@@ -98,11 +98,12 @@ export const mcpCommand = async (options?: {
       );
       process.exit(1);
     }
-    const { startMcpHttpServer } = await import('../mcp/http-transport.js');
+    // Dynamic import keeps express/cors out of mcp.ts's static graph (stdio sentinel).
+    const { startMcpHttpServer, resolveAuthToken } = await import('../mcp/http-transport.js');
     await startMcpHttpServer(backend, {
       port,
       host: options.host ?? '127.0.0.1',
-      authToken: options.authToken,
+      authToken: resolveAuthToken(options.authToken, process.env),
     });
     return;
   }

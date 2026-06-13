@@ -157,6 +157,19 @@ export function computeAllowedHosts(host: string, port: number): string[] | unde
   return hosts.flatMap((h) => [h, `${h}:${port}`]);
 }
 
+/**
+ * Resolves the MCP HTTP bearer token from the `--auth-token` flag or the
+ * `GITNEXUS_MCP_AUTH_TOKEN` env var (the flag wins). An empty or whitespace-only
+ * value is treated as "no token" so a blank env var cannot silently disable auth
+ * (and slip past the non-loopback hard-fail).
+ */
+export function resolveAuthToken(
+  optToken: string | undefined,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  return (optToken ?? env.GITNEXUS_MCP_AUTH_TOKEN)?.trim() || undefined;
+}
+
 /** Builds the SDK transport DNS-rebinding options from a bind host/port. */
 function dnsRebindingOptions(
   host: string | undefined,
