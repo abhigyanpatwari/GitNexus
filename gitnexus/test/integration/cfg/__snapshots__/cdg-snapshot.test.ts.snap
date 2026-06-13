@@ -56,15 +56,15 @@ exports[`AC1 — CDG snapshot on the M1 fixture > matches the committed control-
   },
   {
     "cdg": [
-      "5->3:T",
-      "5->4:T",
+      "5->3:F",
+      "5->4:F",
     ],
     "startLine": 69,
   },
   {
     "cdg": [
       "2->3:T",
-      "2->4:T",
+      "2->4:F",
     ],
     "startLine": 80,
   },
@@ -79,9 +79,9 @@ exports[`AC1 — CDG snapshot on the M1 fixture > matches the committed control-
   },
   {
     "cdg": [
-      "3->7:T",
+      "3->7:F",
       "4->5:T",
-      "4->6:T",
+      "4->6:F",
     ],
     "startLine": 102,
   },

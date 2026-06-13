@@ -38,37 +38,58 @@ export interface ControlDepEdge {
 }
 
 /**
- * Map a CFG edge kind to a CDG branch label (KTD4). The taken/positive senses
- * (`cond-true`, a `switch` case dispatch, a loop back-edge) are 'T'; the
- * not-taken/fallthrough senses are 'F'. Unconditional jumps
- * (`break`/`continue`/`return`/`throw`/`seq`/`finally-*`) come from
- * single-successor or non-predicate blocks and only reach this pass when they
- * leave a guarded region; they default to 'T'. Per-case `switch` value labels
- * are deferred to #2086 — every case is 'T' in M5.
+ * Per-controller branch-arm senses, derived from the controller block's OUTGOING
+ * edge kinds. The CFG edge kind alone cannot name a branch sense: the M1 visitor
+ * emits an explicit `cond-true`/`cond-false` only for a `then`/`else` arm, but a
+ * condition's FALL-THROUGH false arm (no-`else`, or a guard's `if (!ok) return;`)
+ * is wired as `seq`, and an `if` ending a loop body falls through as `loop-back`
+ * — while a `do/while` bottom-test's TRUE arm is also a `loop-back`. So `seq`
+ * and `loop-back` are genuinely ambiguous in isolation (issue #2188 F1).
+ *
+ * The fix reads the sense from the CONTROLLER's structure: a 2-way branch emits
+ * exactly one explicitly-sensed arm (`cond-true`/`switch-case` ⇒ true, or
+ * `cond-false` ⇒ false), and its other (ambiguous) arm is the COMPLEMENT. This
+ * map records which explicit senses each block emits so {@link labelFor} can
+ * resolve an ambiguous edge against its sibling.
  */
-function branchSense(kind: CfgEdgeKind): CdgLabel {
-  switch (kind) {
-    case 'cond-false':
-    case 'fallthrough':
-      return 'F';
-    case 'cond-true':
-    case 'switch-case':
-    case 'loop-back':
-    case 'break':
-    case 'continue':
-    case 'return':
-    case 'throw':
-    case 'seq':
-    case 'finally-return':
-    case 'finally-break':
-    case 'finally-continue':
-      return 'T';
-    default: {
-      // Exhaustiveness: a new CfgEdgeKind must consciously pick a sense here.
-      const _exhaustive: never = kind;
-      return 'T';
-    }
+interface ArmSenses {
+  hasTrueArm: boolean; // emits a cond-true or switch-case edge
+  hasFalseArm: boolean; // emits a cond-false edge
+}
+
+function buildArmSenses(cfg: FunctionCfg): ArmSenses[] {
+  const n = cfg.blocks.length;
+  const senses: ArmSenses[] = Array.from({ length: n }, () => ({
+    hasTrueArm: false,
+    hasFalseArm: false,
+  }));
+  for (const e of cfg.edges) {
+    if (e.from < 0 || e.from >= n) continue;
+    if (e.kind === 'cond-true' || e.kind === 'switch-case') senses[e.from].hasTrueArm = true;
+    else if (e.kind === 'cond-false') senses[e.from].hasFalseArm = true;
   }
+  return senses;
+}
+
+/**
+ * The CDG label ('T'|'F') for a control-dependence edge, given the controlling
+ * block's arm senses. An explicitly-sensed edge is taken at face value; an
+ * ambiguous fall-through edge (`seq`/`loop-back`/`fallthrough`/jump) is the
+ * COMPLEMENT of the controller's explicit sibling arm. Per-case `switch` value
+ * labels are deferred to #2086 — every `switch-case` is 'T' in M5.
+ */
+function labelFor(kind: CfgEdgeKind, controller: ArmSenses): CdgLabel {
+  if (kind === 'cond-true' || kind === 'switch-case') return 'T';
+  if (kind === 'cond-false') return 'F';
+  // Ambiguous structural kind: take the complement of the controller's explicit
+  // arm. A block with a true arm reaches here via its false fall-through; a
+  // do/while bottom-test (false arm = cond-false) reaches here via its true
+  // loop-back. With neither explicit arm (a degenerate / exit-unreachable
+  // region — see #2188 F2, where the dependence itself is unsound) the sense is
+  // indeterminate; default 'F' since fall-through is the common case.
+  if (controller.hasTrueArm) return 'F';
+  if (controller.hasFalseArm) return 'T';
+  return 'F';
 }
 
 /**
@@ -83,6 +104,7 @@ export function computeControlDependence(
   const tree = postDom ?? computePostDominators(cfg);
   const { ipdom } = tree;
   const n = cfg.blocks.length;
+  const armSenses = buildArmSenses(cfg);
 
   const out: ControlDepEdge[] = [];
   const seen = new Set<string>();
@@ -96,7 +118,10 @@ export function computeControlDependence(
     // This guard is exactly AC2: a dependence exists IFF post-dominance fails.
     if (postDominates(tree, b, a)) continue;
 
-    const label = branchSense(e.kind);
+    // Sense is read from the CONTROLLER's arms, not this edge's kind alone —
+    // seq/loop-back fall-through false arms would otherwise mislabel as 'T'
+    // (#2188 F1).
+    const label = labelFor(e.kind, armSenses[a]);
     const stop = ipdom[a]; // walk up to ipdom(A), EXCLUSIVE (NO_IPDOM ⇒ to root)
     let cur = b;
     let steps = 0;

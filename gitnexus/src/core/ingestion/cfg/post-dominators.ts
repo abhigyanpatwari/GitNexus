@@ -19,8 +19,17 @@
  * makes EXIT the unique reverse-CFG root. Blocks that cannot reach EXIT in the
  * forward CFG (an exit-less infinite loop) are not reverse-reachable from it and
  * have NO post-dominator: their `ipdom` is {@link NO_IPDOM}. The control-
- * dependence pass treats "no post-dominator" as "does not post-dominate"
- * (KTD5) — a sound over-approximation that never drops a real dependence.
+ * dependence pass treats "no post-dominator" as "does not post-dominate" (KTD5).
+ *
+ * NOTE (issue #2188 F2): this is NOT a fully sound over-approximation. Inside a
+ * region where NO block reaches EXIT, every `ipdom` is `NO_IPDOM`, so the
+ * Ferrante walk degenerates to one edge per control point — it can both DROP a
+ * real control dependence and INVENT a spurious one. This does not arise for the
+ * current TS visitor (every loop is given a structural `header → loopExit`
+ * `cond-false` edge, so EXIT stays reverse-reachable), but it is unsound for
+ * hand-built CFGs and any future language visitor lacking that exit edge.
+ * Nontermination-sensitive post-dominance (a virtual root over the
+ * non-terminating SCCs) would be the correct treatment — tracked for follow-up.
  */
 import type { FunctionCfg } from './types.js';
 

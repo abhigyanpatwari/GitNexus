@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeControlDependence,
   type ControlDepEdge,
+  type CdgLabel,
 } from '../../../src/core/ingestion/cfg/control-dependence.js';
 import {
   computePostDominators,
@@ -13,12 +14,18 @@ import type {
   CfgEdgeKind,
   FunctionCfg,
 } from '../../../src/core/ingestion/cfg/types.js';
+import Parser from 'tree-sitter';
+import TypeScript from 'tree-sitter-typescript';
+import { collectFunctionCfgs } from '../../../src/core/ingestion/cfg/collect.js';
+import { getProvider } from '../../../src/core/ingestion/languages/index.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
 // U3 (#2085 M5) — Ferrante §3.1.1 control dependence over the post-dom tree.
-// Hand-built CFG literals, zero tree-sitter dependency. The labelled expected
-// edge sets ARE the spec; the property test (AC2) cross-checks the tree-walk
-// against an INDEPENDENT brute-force reference derived straight from the
-// post-dominance definition, so an algorithm bug cannot pass both.
+// Hand-built CFG literals plus real-parser regression tests. The labelled
+// expected edge sets ARE the spec; the property test (AC2) cross-checks the
+// tree-walk against a reference that computes post-dominance INDEPENDENTLY (by
+// node-removal reachability, sharing NO code with post-dominators.ts), so a
+// post-dominator *direction* bug cannot pass both (#2188 F4).
 
 // ── hand-built CFG helper (edges carry a kind so labels can be asserted) ─────
 
@@ -52,24 +59,65 @@ const ser = (e: ControlDepEdge): string => `${e.controllerBlock}->${e.dependentB
 const serAll = (edges: readonly ControlDepEdge[]): string[] => edges.map(ser);
 
 /**
- * Independent reference: N is control-dependent on A iff some CFG edge A→B has
- * N post-dominating B while N does NOT strictly post-dominate A (Ferrante's
- * definition, computed by membership rather than a tree walk). Returns the set
- * of distinct "A->N" pairs (label-agnostic — the pure definition has no sense).
+ * Build a successor adjacency list for a CFG (in-range edges only).
  */
-function referencePairs(cfg: FunctionCfg): Set<string> {
-  const tree = computePostDominators(cfg);
+function succsOf(cfg: FunctionCfg): number[][] {
   const n = cfg.blocks.length;
   const succs: number[][] = Array.from({ length: n }, () => []);
   for (const e of cfg.edges)
     if (e.from >= 0 && e.from < n && e.to >= 0 && e.to < n) succs[e.from].push(e.to);
+  return succs;
+}
+
+/**
+ * INDEPENDENT post-dominance via node-removal reachability — shares NO code with
+ * post-dominators.ts (that is the whole point: it must catch a CHK *direction*
+ * bug that a shared-substrate reference would mirror, #2188 F4). `p`
+ * post-dominates `b` iff every path from `b` to EXIT passes through `p`:
+ * reflexive (`p === b`), else true exactly when EXIT is unreachable from `b`
+ * once `p` is removed (AND `b` can reach EXIT at all). Defined only for the
+ * exit-reachable fixtures used below — the exit-unreachable case is the known
+ * unsound region (#2188 F2) and is deliberately excluded from the AC2 set.
+ */
+function independentPostDom(cfg: FunctionCfg, succs: number[][], p: number, b: number): boolean {
+  if (p === b) return true;
+  const exit = cfg.exitIndex;
+  const reach = (avoid: number): boolean => {
+    if (b === avoid) return false;
+    const seen = new Set<number>([b]);
+    const stack = [b];
+    while (stack.length) {
+      const x = stack.pop()!;
+      if (x === exit) return true;
+      for (const y of succs[x]) {
+        if (y === avoid || seen.has(y)) continue;
+        seen.add(y);
+        stack.push(y);
+      }
+    }
+    return false;
+  };
+  // p post-dominates b ⇔ b reaches EXIT, but cannot reach it with p removed.
+  return reach(-1) && !reach(p);
+}
+
+/**
+ * Reference control-dependence pairs from the Ferrante definition, using the
+ * INDEPENDENT post-dominance above: N is control-dependent on A iff some CFG
+ * edge A→B has N post-dominating B while N does NOT strictly post-dominate A.
+ * Label-agnostic (distinct "A->N" pairs) — the pure definition has no sense.
+ */
+function referencePairs(cfg: FunctionCfg): Set<string> {
+  const n = cfg.blocks.length;
+  const succs = succsOf(cfg);
+  const pd = (x: number, y: number): boolean => independentPostDom(cfg, succs, x, y);
   const pairs = new Set<string>();
   for (let a = 0; a < n; a++) {
     for (const b of succs[a]) {
-      if (postDominates(tree, b, a)) continue; // edge is not a control point
+      if (pd(b, a)) continue; // edge is not a control point
       for (let nn = 0; nn < n; nn++) {
-        const nPostDomB = postDominates(tree, nn, b);
-        const nStrictlyPostDomA = nn !== a && postDominates(tree, nn, a);
+        const nPostDomB = pd(nn, b);
+        const nStrictlyPostDomA = nn !== a && pd(nn, a);
         if (nPostDomB && !nStrictlyPostDomA) pairs.add(`${a}->${nn}`);
       }
     }
@@ -145,19 +193,24 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
     expect(serAll(edges).sort()).toEqual(['1->2:T', '1->3:T', '1->4:T']);
   });
 
-  it('exit-less loop (KTD5): terminates, emits only in-range edges, over-approximates soundly', () => {
+  it('exit-less loop (KTD5): terminates and stays in-range, but the result is KNOWN-UNSOUND (#2188 F2)', () => {
     // No block can reach EXIT (block 3), so every ipdom is NO_IPDOM and the
-    // post-dominance guard never fires — the Ferrante walk treats every edge as
-    // a control point. This is the KTD5 sound over-approximation: it must never
-    // hang (the walk hits NO_IPDOM immediately) and never emit an out-of-range
-    // block. Pinned at the CDG level (post-dominators.test.ts covers the tree).
+    // Ferrante walk degenerates to one edge per control point. The termination /
+    // in-range invariants MUST hold (the walk hits NO_IPDOM immediately). The
+    // emitted dependence SET, however, is NOT a sound over-approximation: it both
+    // drops real dependences and invents spurious ones in exit-unreachable
+    // regions (#2188 F2). This test pins the degenerate output to document that
+    // behavior, NOT to bless it; the labels here are likewise indeterminate
+    // (no controller carries an explicit cond-true/cond-false arm, so the
+    // fall-through complement resolves to 'F'). The current TS visitor never
+    // produces such a region (every loop gets a structural header→loopExit edge).
     const cfg = mkCfg(4, [
       [0, 1, 'seq'],
       [1, 2, 'seq'],
       [2, 1, 'loop-back'],
     ]);
     const edges = computeControlDependence(cfg);
-    expect(serAll(edges).sort()).toEqual(['0->1:T', '1->2:T', '2->1:T']);
+    expect(serAll(edges).sort()).toEqual(['0->1:F', '1->2:F', '2->1:F']);
     for (const e of edges) {
       expect(e.controllerBlock).toBeGreaterThanOrEqual(0);
       expect(e.controllerBlock).toBeLessThan(cfg.blocks.length);
@@ -202,14 +255,10 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [2, 1, 'loop-back'],
         [1, 3, 'cond-false'],
       ]),
-      // exit-less loop: no block reaches EXIT (block 3) — all ipdom = NO_IPDOM.
-      // Verifies the tree-walk and the brute-force reference still agree under
-      // KTD5's over-approximation (every edge a control point).
-      exitLessLoop: mkCfg(4, [
-        [0, 1, 'seq'],
-        [1, 2, 'seq'],
-        [2, 1, 'loop-back'],
-      ]),
+      // NOTE: the exit-unreachable case is deliberately NOT an AC2 fixture — its
+      // dependence set is unsound (#2188 F2), so asserting walk == independent
+      // reference would (correctly) fail. It has its own characterization test
+      // above that documents the degenerate behavior.
       // nested if: outer branch (0) → inner branch (1) or outer-else (5);
       // inner branch → 2/3 → inner join (4); 4 and 5 → outer join (6, exit).
       nestedIf: mkCfg(
@@ -271,5 +320,60 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         }
       },
     );
+  });
+});
+
+describe('#2188 F1 — branch-label correctness on the REAL TS visitor (regression)', () => {
+  // The label is the AC3 "under what condition does X run?" answer. The bug:
+  // branchSense inferred it from the edge KIND alone, but the M1 visitor wires a
+  // condition's fall-through FALSE arm as `seq`/`loop-back` (not `cond-false`),
+  // so guard clauses / loop break got 'T' instead of 'F'. These tests run the
+  // REAL parser+visitor (the hand-built tests above used a fictional `cond-false`
+  // edge and could not catch the regression).
+  const tsVisitor = getProvider(SupportedLanguages.TypeScript).cfgVisitor;
+  const parser = new Parser();
+  if (tsVisitor) parser.setLanguage(TypeScript.typescript);
+
+  function cdgOf(code: string): { cfg: FunctionCfg; edges: readonly ControlDepEdge[] } {
+    if (!tsVisitor) throw new Error('no cfgVisitor');
+    const cfgs = collectFunctionCfgs(parser.parse(code).rootNode, tsVisitor, 't.ts').cfgs;
+    expect(cfgs.length).toBe(1);
+    return { cfg: cfgs[0], edges: computeControlDependence(cfgs[0]) };
+  }
+  const labelOf = (
+    edges: readonly ControlDepEdge[],
+    controller: number,
+    dependent: number,
+  ): CdgLabel | undefined =>
+    edges.find((e) => e.controllerBlock === controller && e.dependentBlock === dependent)?.label;
+
+  it("guard clause: post-guard body runs on the guard's FALSE (seq) arm → 'F'", () => {
+    const { cfg, edges } = cdgOf(`function f(x){ if (!ok(x)) return; use(x); }`);
+    const guard = cfg.blocks.find((b) => b.text.includes('ok(x)'))!;
+    const use = cfg.blocks.find((b) => b.text.includes('use(x)'))!;
+    expect(labelOf(edges, guard.index, use.index)).toBe('F');
+  });
+
+  it("do/while: body runs on the bottom-test's TRUE (loop-back) arm → 'T'", () => {
+    const { cfg, edges } = cdgOf(`function f(){ do { body(); } while (c()); }`);
+    const test = cfg.blocks.find((b) => b.text.includes('c()'))!;
+    const body = cfg.blocks.find((b) => b.text.includes('body()'))!;
+    expect(labelOf(edges, test.index, body.index)).toBe('T');
+  });
+
+  it("while+break: post-break tail runs on the if's FALSE (seq) arm → 'F'", () => {
+    const { cfg, edges } = cdgOf(`function f(o,i){ while (o) { if (i) break; tail(); } }`);
+    const ifCond = cfg.blocks.find((b) => b.text === '(i)')!;
+    const tail = cfg.blocks.find((b) => b.text.includes('tail()'))!;
+    expect(labelOf(edges, ifCond.index, tail.index)).toBe('F');
+  });
+
+  it("if/else still labels both arms correctly (no regression) → then 'T', else 'F'", () => {
+    const { cfg, edges } = cdgOf(`function f(x){ if (x) { a(); } else { b(); } }`);
+    const cond = cfg.blocks.find((b) => b.text === '(x)')!;
+    const thenB = cfg.blocks.find((b) => b.text.includes('a()'))!;
+    const elseB = cfg.blocks.find((b) => b.text.includes('b()'))!;
+    expect(labelOf(edges, cond.index, thenB.index)).toBe('T');
+    expect(labelOf(edges, cond.index, elseB.index)).toBe('F');
   });
 });
