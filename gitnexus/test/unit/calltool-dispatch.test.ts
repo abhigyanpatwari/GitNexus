@@ -85,6 +85,13 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
+// #2175: lets the @group-forward path be exercised without real group.yaml infra.
+// No existing test in this file uses an @repo, so this mock is inert for them.
+const { resolveAtMemberMock } = vi.hoisted(() => ({ resolveAtMemberMock: vi.fn() }));
+vi.mock('../../src/core/group/resolve-at-member.js', () => ({
+  resolveAtGroupMemberRepoPath: resolveAtMemberMock,
+}));
+
 import {
   LocalBackend,
   REPO_ID_HASH_LENGTH,
@@ -518,6 +525,62 @@ describe('LocalBackend.callTool', () => {
     expect(result).not.toHaveProperty('error');
     const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
     expect(passedCypher).toBe('MATCH (n) RETURN n LIMIT 1');
+  });
+
+  it('query tool returns error for empty search_query (new key) (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '' });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('query tool returns error for whitespace-only search_query (new key) (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '   ' });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('search legacy alias accepts the new search_query parameter (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('search', { search_query: 'auth' });
+    expect(result).toHaveProperty('processes');
+    expect(result).not.toHaveProperty('error');
+  });
+
+  it('cypher tool returns a friendly required error when neither statement nor query is given (#2175)', async () => {
+    const result = await backend.callTool('cypher', {});
+    expect(result.error).toContain('statement');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  // #2175 review: the @group-forward path reads `query` from the forwarded args, so it
+  // must resolve the search_query alias itself (new name wins, mirroring query()).
+  it('group-mode query forwards the resolved search_query alias (#2175)', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupQuerySpy = vi
+      .spyOn(backend.getGroupService(), 'groupQuery')
+      .mockResolvedValue({ ok: true } as any);
+
+    await backend.callTool('query', {
+      search_query: 'alias-wins',
+      query: 'legacy-loses',
+      repo: '@grp',
+    });
+
+    expect(groupQuerySpy).toHaveBeenCalledTimes(1);
+    expect((groupQuerySpy.mock.calls[0][0] as any).query).toBe('alias-wins');
+    groupQuerySpy.mockRestore();
+  });
+
+  it('group-mode query still forwards a legacy-only query (#2175)', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupQuerySpy = vi
+      .spyOn(backend.getGroupService(), 'groupQuery')
+      .mockResolvedValue({ ok: true } as any);
+
+    await backend.callTool('query', { query: 'legacy', repo: '@grp' });
+
+    expect((groupQuerySpy.mock.calls[0][0] as any).query).toBe('legacy');
+    groupQuerySpy.mockRestore();
   });
 
   it('dispatches context tool', async () => {
