@@ -34,6 +34,7 @@ let mod: {
   GRAMMARS: Record<string, Grammar>;
   detect: (deps?: DetectDeps) => Array<Record<string, unknown>>;
   apply: (key: string, opts?: { dryRun?: boolean; deps?: DetectDeps }) => string;
+  loadManifestGrammars: (raw?: unknown) => Record<string, Grammar>;
 };
 let tmp: string;
 
@@ -140,6 +141,13 @@ describe('shared vendored-grammars manifest', () => {
       .map((g) => g.name)
       .sort();
     expect(manifestNames).toEqual(physical);
+  });
+
+  it('rejects a path-traversal grammar name at load (defense-in-depth)', () => {
+    // `name` is joined into vendor/<name> paths and apply() writes there.
+    expect(() => mod.loadManifestGrammars({ grammars: { evil: { name: '../etc' } } })).toThrow(
+      /invalid grammar name/,
+    );
   });
 });
 

@@ -147,6 +147,20 @@ class ManifestClassification(TestCase):
                     readiness.load_vendored_manifest()
         self.assertIn("not valid JSON", str(ctx.exception))
 
+    def test_path_traversal_grammar_name_is_rejected(self):
+        import pathlib
+        import tempfile
+
+        bad = '{"grammars": {"evil": {"name": "../etc"}}}'
+        with tempfile.TemporaryDirectory() as d:
+            gh = pathlib.Path(d) / ".github"
+            gh.mkdir()
+            (gh / "vendored-grammars.json").write_text(bad, encoding="utf-8")
+            with mock.patch.object(readiness, "REPO_ROOT", pathlib.Path(d)):
+                with self.assertRaises(SystemExit) as ctx:
+                    readiness.load_vendored_manifest()
+        self.assertIn("invalid grammar name", str(ctx.exception))
+
 
 class AssertCurrent(TestCase):
     """The offline #1922 ABI gate (--assert-current) must stay hermetic — it reads

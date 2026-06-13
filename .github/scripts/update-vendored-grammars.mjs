@@ -50,21 +50,31 @@ const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION
 // `{ upstream: { npm | github } }` form into the flat `{ npm? , github? }` shape the
 // rest of this script consumes. This is a local file read (import-safe, no network).
 const MANIFEST = path.join(REPO_ROOT, '.github', 'vendored-grammars.json');
-function loadManifestGrammars() {
-  // Fail loud with a pointer, not a bare ENOENT/SyntaxError: this runs at import.
-  let raw;
-  try {
-    raw = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
-  } catch (e) {
-    throw new Error(
-      `Could not load the vendored-grammars manifest at ${MANIFEST} ` +
-        `(shared source of truth — see CONTRIBUTING.md → CI automation contracts): ${e.message}`,
-    );
+// `raw` is injectable for testing; production reads the manifest file.
+function loadManifestGrammars(raw = null) {
+  if (raw === null) {
+    // Fail loud with a pointer, not a bare ENOENT/SyntaxError: this runs at import.
+    try {
+      raw = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
+    } catch (e) {
+      throw new Error(
+        `Could not load the vendored-grammars manifest at ${MANIFEST} ` +
+          `(shared source of truth — see CONTRIBUTING.md → CI automation contracts): ${e.message}`,
+      );
+    }
   }
   return Object.fromEntries(
     Object.entries(raw.grammars || {}).map(([key, g]) => {
       if (!g.name)
         throw new Error(`manifest entry '${key}' is missing a 'name' field (${MANIFEST})`);
+      // Defense-in-depth: `name` is joined into gitnexus/vendor/<name> paths (and
+      // apply() WRITES there), so reject anything that isn't a plain grammar name
+      // before it can traverse the filesystem (#2187).
+      if (!/^tree-sitter-[a-z0-9-]+$/.test(g.name))
+        throw new Error(
+          `manifest entry '${key}' has an invalid grammar name '${g.name}' ` +
+            `(must match tree-sitter-[a-z0-9-]+)`,
+        );
       return [
         key,
         {
@@ -326,4 +336,13 @@ if (isMain) {
   }
 }
 
-export { detect, apply, resolveUpstream, readAbi, vendoredVersion, GRAMMARS, COMPATIBLE_ABI };
+export {
+  detect,
+  apply,
+  resolveUpstream,
+  readAbi,
+  vendoredVersion,
+  loadManifestGrammars,
+  GRAMMARS,
+  COMPATIBLE_ABI,
+};

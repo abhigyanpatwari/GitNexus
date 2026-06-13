@@ -147,6 +147,15 @@ def load_vendored_manifest() -> dict[str, dict]:
                 f"vendored-grammars manifest entry {key!r} is missing a 'name' field "
                 f"({manifest_path})."
             )
+        # Defense-in-depth: `name` is joined into gitnexus/vendor/<name> paths, so
+        # reject anything that isn't a plain grammar name before it can traverse
+        # the filesystem (e.g. "../etc"). The live trust boundary already prevents
+        # exploitation, but validate at the single load chokepoint anyway (#2187).
+        if not re.fullmatch(r"tree-sitter-[a-z0-9-]+", name):
+            raise SystemExit(
+                f"vendored-grammars manifest entry {key!r} has an invalid grammar "
+                f"name {name!r} (must match tree-sitter-[a-z0-9-]+)."
+            )
         out[name] = {"hold": g.get("hold")}
     return out
 
