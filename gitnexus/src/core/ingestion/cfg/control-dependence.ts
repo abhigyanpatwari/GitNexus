@@ -37,6 +37,17 @@ export interface ControlDepEdge {
   readonly label: CdgLabel;
 }
 
+export interface ControlDepResult {
+  /** Deduped, sorted (controller, dependent, label) control-dependence edges. */
+  readonly edges: readonly ControlDepEdge[];
+  /**
+   * True when the `maxEdges` ceiling was reached; `edges` is then a
+   * deterministic prefix (CFG-edge iteration order, sorted), never a silent
+   * drop. Mirrors {@link computeReachingDefs}'s `truncated`.
+   */
+  readonly truncated: boolean;
+}
+
 /**
  * Per-controller branch-arm senses, derived from the controller block's OUTGOING
  * edge kinds. The CFG edge kind alone cannot name a branch sense: the M1 visitor
@@ -100,16 +111,23 @@ function labelFor(kind: CfgEdgeKind, controller: ArmSenses): CdgLabel {
 export function computeControlDependence(
   cfg: FunctionCfg,
   postDom?: PostDomTree,
-): readonly ControlDepEdge[] {
+  // Heap-safety ceiling on materialized edges, mirroring computeReachingDefs'
+  // `maxFacts` (#2188 review): the pre-dedup walk is O(edges × post-dom depth),
+  // so bound it before it can spike. `0` ⇒ unbounded. On overflow `edges` is a
+  // deterministic prefix and `truncated` is set — never a silent drop.
+  maxEdges: number = 0,
+): ControlDepResult {
   const tree = postDom ?? computePostDominators(cfg);
   const { ipdom } = tree;
   const n = cfg.blocks.length;
   const armSenses = buildArmSenses(cfg);
+  const cap = maxEdges > 0 ? maxEdges : Infinity;
 
   const out: ControlDepEdge[] = [];
   const seen = new Set<string>();
+  let truncated = false;
 
-  for (const e of cfg.edges) {
+  scan: for (const e of cfg.edges) {
     const a = e.from;
     const b = e.to;
     if (a < 0 || a >= n || b < 0 || b >= n) continue;
@@ -129,6 +147,13 @@ export function computeControlDependence(
     while (cur !== NO_IPDOM && cur !== stop && steps <= n) {
       const key = `${a}:${cur}:${label}`;
       if (!seen.has(key)) {
+        // Check BEFORE pushing so `truncated` means a genuine overflow (a new
+        // unique edge had to be dropped), not merely "reached the ceiling" —
+        // exactly `cap` edges is a full, non-truncated result.
+        if (out.length >= cap) {
+          truncated = true;
+          break scan;
+        }
         seen.add(key);
         out.push({ controllerBlock: a, dependentBlock: cur, label });
       }
@@ -143,5 +168,5 @@ export function computeControlDependence(
       x.dependentBlock - y.dependentBlock ||
       (x.label < y.label ? -1 : x.label > y.label ? 1 : 0),
   );
-  return out;
+  return { edges: out, truncated };
 }

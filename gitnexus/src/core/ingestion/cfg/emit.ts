@@ -58,6 +58,20 @@ export const DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION = 4000;
 export const DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION = 5000;
 
 /**
+ * Heap-safety ceiling on {@link computeControlDependence}'s pre-dedup
+ * materialization (#2188 review). The walk is O(edges × post-dom depth), and its
+ * `out` IS the deduped-edge quantity the per-function cap trims — so, UNLIKE
+ * REACHING_DEF's facts ceiling, this is deliberately NOT derived from the
+ * runtime edge cap (doing so would pre-truncate the very set the cap reports on,
+ * losing the exact dropped count). A fixed, generous multiple of the default
+ * edge cap: far above any real function — a catastrophe backstop only. When hit,
+ * the per-function cap reporting plus the `truncated` flag keep it observable
+ * (never a silent drop).
+ */
+export const DEFAULT_PDG_MAX_CDG_MATERIALIZATION_PER_FUNCTION =
+  8 * DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION;
+
+/**
  * Env flag that additionally emits diagnostic `POST_DOMINATE` edges
  * (block → its immediate post-dominator) alongside CDG (#2085 M5 KTD8). Off in
  * every normal `--pdg` run — these are for inspecting the post-dom tree, not a
@@ -513,7 +527,21 @@ export function emitFileCdg(
     // Compute the post-dom tree once and feed it to the control-dependence
     // pass (avoids recomputing it) and to the optional POST_DOMINATE emit.
     const tree = computePostDominators(cfg);
-    const cdgEdges = computeControlDependence(cfg, tree);
+    // Bound the pre-dedup materialization (heap parity with REACHING_DEF). The
+    // fixed ceiling is a catastrophe backstop; the per-function edge cap below
+    // remains the reporting authority. A ceiling hit is surfaced, not silent.
+    const { edges: cdgEdges, truncated } = computeControlDependence(
+      cfg,
+      tree,
+      DEFAULT_PDG_MAX_CDG_MATERIALIZATION_PER_FUNCTION,
+    );
+    if (truncated) {
+      onWarn?.(
+        `[cdg] ${filePath}:${functionStartLine}: control-dependence materialization ` +
+          `ceiling (${DEFAULT_PDG_MAX_CDG_MATERIALIZATION_PER_FUNCTION}) reached — ` +
+          `edge counts for this function are a floor`,
+      );
+    }
 
     let emittedForFn = 0;
     for (const edge of cdgEdges) {

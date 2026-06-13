@@ -135,7 +135,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       [2, 3, 'seq'],
       [3, 4, 'seq'],
     ]);
-    const edges = computeControlDependence(cfg);
+    const { edges } = computeControlDependence(cfg);
     expect(serAll(edges).sort()).toEqual(['0->1:T', '0->2:F']);
     // the join (3) post-dominates the branch, so it depends on nothing
     expect(edges.some((e) => e.dependentBlock === 3)).toBe(false);
@@ -151,7 +151,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       [2, 4, 'return'],
       [3, 4, 'seq'],
     ]);
-    const edges = computeControlDependence(cfg);
+    const { edges } = computeControlDependence(cfg);
     // use(x) (block 3) runs only when the guard condition is false → label 'F'
     expect(serAll(edges).sort()).toEqual(['1->2:T', '1->3:F']);
   });
@@ -161,7 +161,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       [0, 1, 'seq'],
       [1, 2, 'seq'],
     ]);
-    expect(computeControlDependence(cfg)).toEqual([]);
+    expect(computeControlDependence(cfg).edges).toEqual([]);
   });
 
   it('while loop: the body depends on the header, and the header is control-dependent on itself', () => {
@@ -172,7 +172,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       [2, 1, 'loop-back'],
       [1, 3, 'cond-false'],
     ]);
-    const edges = computeControlDependence(cfg);
+    const { edges } = computeControlDependence(cfg);
     // body(2) control-dep on header(1); header(1) control-dep on itself (the
     // loop predicate gates its own re-execution — standard PDG behavior).
     expect(serAll(edges).sort()).toEqual(['1->1:T', '1->2:T']);
@@ -189,7 +189,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       [3, 5, 'break'],
       [4, 5, 'break'],
     ]);
-    const edges = computeControlDependence(cfg);
+    const { edges } = computeControlDependence(cfg);
     expect(serAll(edges).sort()).toEqual(['1->2:T', '1->3:T', '1->4:T']);
   });
 
@@ -209,7 +209,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       [1, 2, 'seq'],
       [2, 1, 'loop-back'],
     ]);
-    const edges = computeControlDependence(cfg);
+    const { edges } = computeControlDependence(cfg);
     expect(serAll(edges).sort()).toEqual(['0->1:F', '1->2:F', '2->1:F']);
     for (const e of edges) {
       expect(e.controllerBlock).toBeGreaterThanOrEqual(0);
@@ -228,8 +228,8 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [2, 3, 'seq'],
         [3, 4, 'seq'],
       ]);
-    expect(serAll(computeControlDependence(make()))).toEqual(
-      serAll(computeControlDependence(make())),
+    expect(serAll(computeControlDependence(make()).edges)).toEqual(
+      serAll(computeControlDependence(make()).edges),
     );
   });
 
@@ -290,7 +290,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       '%s: tree-walk pair set equals the brute-force reference',
       (name) => {
         const cfg = fixtures[name];
-        const edges = computeControlDependence(cfg);
+        const { edges } = computeControlDependence(cfg);
         const walkPairs = new Set(edges.map((e) => `${e.controllerBlock}->${e.dependentBlock}`));
         expect(walkPairs).toEqual(referencePairs(cfg));
       },
@@ -301,7 +301,7 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
       (name) => {
         const cfg = fixtures[name];
         const tree = computePostDominators(cfg);
-        const edges = computeControlDependence(cfg);
+        const { edges } = computeControlDependence(cfg);
         for (const e of cfg.edges) {
           const failsPostDom = !postDominates(tree, e.to, e.from);
           // does THIS edge's source appear as a controller with at least one
@@ -323,6 +323,40 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
   });
 });
 
+describe('computeControlDependence — maxEdges materialization ceiling (#2188)', () => {
+  // A switch dispatch yields three deduped CDG edges (1->2/3/4, all 'T').
+  const switchCfg = (): FunctionCfg =>
+    mkCfg(6, [
+      [0, 1, 'seq'],
+      [1, 2, 'switch-case'],
+      [1, 3, 'switch-case'],
+      [1, 4, 'switch-case'],
+      [2, 5, 'break'],
+      [3, 5, 'break'],
+      [4, 5, 'break'],
+    ]);
+
+  it('stops at the ceiling and reports truncated (deterministic prefix)', () => {
+    const r = computeControlDependence(switchCfg(), undefined, 2);
+    expect(r.truncated).toBe(true);
+    expect(r.edges).toHaveLength(2);
+    // the prefix is still sorted/deduped, a valid subset of the full result
+    for (const e of r.edges) expect(['T', 'F']).toContain(e.label);
+  });
+
+  it('maxEdges of 0 means unbounded (full result, not truncated)', () => {
+    const r = computeControlDependence(switchCfg(), undefined, 0);
+    expect(r.truncated).toBe(false);
+    expect(serAll(r.edges).sort()).toEqual(['1->2:T', '1->3:T', '1->4:T']);
+  });
+
+  it('a ceiling at/above the true count is not truncated', () => {
+    const r = computeControlDependence(switchCfg(), undefined, 3);
+    expect(r.truncated).toBe(false);
+    expect(r.edges).toHaveLength(3);
+  });
+});
+
 describe('#2188 F1 — branch-label correctness on the REAL TS visitor (regression)', () => {
   // The label is the AC3 "under what condition does X run?" answer. The bug:
   // branchSense inferred it from the edge KIND alone, but the M1 visitor wires a
@@ -338,7 +372,7 @@ describe('#2188 F1 — branch-label correctness on the REAL TS visitor (regressi
     if (!tsVisitor) throw new Error('no cfgVisitor');
     const cfgs = collectFunctionCfgs(parser.parse(code).rootNode, tsVisitor, 't.ts').cfgs;
     expect(cfgs.length).toBe(1);
-    return { cfg: cfgs[0], edges: computeControlDependence(cfgs[0]) };
+    return { cfg: cfgs[0], edges: computeControlDependence(cfgs[0]).edges };
   }
   const labelOf = (
     edges: readonly ControlDepEdge[],

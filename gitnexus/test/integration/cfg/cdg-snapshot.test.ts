@@ -29,7 +29,7 @@ function cfgsOfFile(file: string): readonly FunctionCfg[] {
 
 /** Deterministic rendering: startLine + sorted controller->dependent:label. */
 function serialize(cfg: FunctionCfg): Record<string, unknown> {
-  const edges = computeControlDependence(cfg);
+  const { edges } = computeControlDependence(cfg);
   return {
     startLine: cfg.functionStartLine,
     cdg: edges.map((e) => `${e.controllerBlock}->${e.dependentBlock}:${e.label}`),
@@ -46,7 +46,7 @@ describe('AC1 — CDG snapshot on the M1 fixture', () => {
   it('every CDG edge references in-range blocks with a valid T/F label (AC2 sanity)', () => {
     for (const cfg of cfgsOfFile('ten-functions.ts')) {
       const tree = computePostDominators(cfg);
-      for (const e of computeControlDependence(cfg, tree)) {
+      for (const e of computeControlDependence(cfg, tree).edges) {
         expect(e.controllerBlock).toBeGreaterThanOrEqual(0);
         expect(e.controllerBlock).toBeLessThan(cfg.blocks.length);
         expect(e.dependentBlock).toBeGreaterThanOrEqual(0);
