@@ -159,6 +159,8 @@ export const en = {
     'Cross-repo impact for a symbol in one member repo of a group',
   'help.command.group.query.description': 'Search execution flows across all repos in a group',
   'help.command.group.contracts.description': 'Inspect Contract Registry',
+  'help.option.setup.codingAgent':
+    'Configure only these coding agents (comma-separated or repeatable)',
   'help.option.analyze.force': 'Force full re-index even if up to date',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':

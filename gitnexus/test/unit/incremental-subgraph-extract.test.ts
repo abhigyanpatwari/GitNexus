@@ -93,6 +93,24 @@ describe('extractChangedSubgraph', () => {
     expect(sub.nodes).toEqual([]);
     expect(sub.relationships).toEqual([]);
   });
+
+  it('always includes TAINT_PATH edges even between two unchanged files (#2084 M4 U6)', () => {
+    // A cross-function TAINT_PATH whose endpoints (a.ts, c.ts) are both
+    // unchanged, but an intermediate function on the changed b.ts invalidated
+    // the flow. Endpoint-writability alone would skip it (stale finding);
+    // TAINT_PATH is graph-wide so it is always re-extracted (the orchestrator
+    // delete-alls the old rows first). A plain CALLS edge between the same
+    // unchanged files stays excluded — only TAINT_PATH gets this treatment.
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('a:handle', '/repo/a.ts'));
+    g.addNode(makeFileNode('c:sink', '/repo/c.ts'));
+    g.addRelationship(makeRel('tp1', 'a:handle', 'c:sink', 'TAINT_PATH'));
+    g.addRelationship(makeRel('call1', 'a:handle', 'c:sink', 'CALLS'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/b.ts']));
+
+    expect(sub.relationships.map((r) => r.id)).toEqual(['tp1']);
+  });
 });
 
 describe('computeEffectiveWriteSet (Finding 1)', () => {

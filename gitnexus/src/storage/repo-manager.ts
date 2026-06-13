@@ -170,6 +170,16 @@ export interface RepoMeta {
      *  M2-era-stamp upgrade reason as the findings cap. */
     maxTaintHops?: number;
     /**
+     * Per-run cross-function caps, resolved (0 = unlimited; #2084 M4 review
+     * P1-3). ABSENT on an M3-era stamp — that absence trips `pdgModeMismatch`
+     * on the first run that adds them and forces the full writeback that
+     * re-materialises TAINT_PATH within bounds. Optional for that upgrade
+     * reason; resolved (always present) on every post-fix write.
+     */
+    maxInterprocFindings?: number;
+    maxInterprocHops?: number;
+    maxInterprocEdges?: number;
+    /**
      * Digest of the built-in taint model the persisted findings were
      * produced under (#2083 M3 KTD7/R7). Any model-content change ships a
      * new digest → mismatch → full writeback repopulates taint edges
