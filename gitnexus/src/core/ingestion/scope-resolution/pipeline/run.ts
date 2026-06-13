@@ -37,10 +37,12 @@ import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import {
   emitFileCfgs,
   emitFileReachingDefs,
+  emitFileCdg,
   isEmitSafeCfg,
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
 import {
@@ -289,6 +291,9 @@ interface RunScopeResolutionInput {
   /** Per-function REACHING_DEF edge cap (#2082 M2). `undefined` ⇒
    *  {@link DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION}; `0` ⇒ no cap. */
   readonly pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function CDG (control-dependence) edge cap (#2085 M5). `undefined` ⇒
+   *  {@link DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION}; `0` ⇒ no cap. */
+  readonly pdgMaxCdgEdgesPerFunction?: number;
   /** Per-function taint findings cap (#2083 M3, consumed by the U4 taint
    *  emit step in the pdg window). `undefined` ⇒
    *  `DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION` (200); `0` ⇒ no cap. */
@@ -771,6 +776,8 @@ export function runScopeResolution(
     let rdDropped = 0;
     let rdFacts = 0;
     let rdTruncated = 0;
+    let cdgEdges = 0;
+    let cdgDropped = 0;
     // ── M3 taint setup (#2083 U4) ────────────────────────────────────────
     // Explicit model-registration seam (idempotent, cheap) — the registry
     // stays empty on non-pdg runs, preserving default-run parity. The
@@ -877,6 +884,22 @@ export function runScopeResolution(
         rdFacts += rd.facts;
         rdTruncated += rd.truncatedFunctions;
 
+        // M5 (#2085 U5): control dependence over the SAME validated CFGs.
+        // Independent of taint — runs for every `--pdg` language (post-dom +
+        // Ferrante are language-agnostic, no source/sink model needed). Pure
+        // compute; the bounded (controller, dependent, label) projection is
+        // persisted and its time folds into the `pdg=` PROF segment next to RD.
+        const tCdg = PROF ? performance.now() : 0;
+        const cdg = emitFileCdg(
+          graph,
+          wellFormed,
+          input.pdgMaxCdgEdgesPerFunction ?? DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
+          (message) => logger.warn(message), // unconditional — R6, no silent truncation
+        );
+        if (PROF) pdgMs += performance.now() - tCdg;
+        cdgEdges += cdg.edges;
+        cdgDropped += cdg.droppedEdges;
+
         // M3 (#2083 U4): taint over the SAME validated CFGs, inside the SAME
         // per-file try (a taint throw costs this file's taint layer only —
         // its CFG/REACHING_DEF edges above are already in the graph). Skipped
@@ -950,6 +973,8 @@ export function runScopeResolution(
           `; ${rdEdges} REACHING_DEF edges (${rdFacts} facts)` +
           (rdDropped > 0 ? `, ${rdDropped} REACHING_DEF edges dropped (per-function cap)` : '') +
           (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : '') +
+          `; ${cdgEdges} CDG edges` +
+          (cdgDropped > 0 ? `, ${cdgDropped} CDG edges dropped (per-function cap)` : '') +
           // M3 volume telemetry — only for languages with a registered model.
           (taintSpec !== undefined
             ? `; taint: ${taintTotals.findings} TAINTED, ${taintTotals.kills} SANITIZES ` +

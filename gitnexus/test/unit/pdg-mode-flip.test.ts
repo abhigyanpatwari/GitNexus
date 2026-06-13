@@ -140,6 +140,42 @@ describe('pdgModeMismatch — M3→M4 interproc-cap stamp upgrade (#2084 review 
   });
 });
 
+describe('pdgModeMismatch — pre-M5→M5 CDG-cap stamp upgrade (#2085 M5, pure)', () => {
+  it('resolvePdgConfig stamps the resolved CDG cap', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(stamp?.maxCdgEdgesPerFunction).toBe(5000);
+  });
+
+  it('a pre-M5 stamp (no CDG key) mismatches a CDG-aware request — upgrade forces full writeback', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    // What an M4-era run wrote: every cap through the interproc set + model
+    // digest, but NO maxCdgEdgesPerFunction. The key-union comparator sees
+    // 5000 !== undefined and trips the full writeback that materialises CDG
+    // edges for every file without --force.
+    const m4Stamp = {
+      maxFunctionLines: 2000,
+      maxEdgesPerFunction: 5000,
+      maxReachingDefEdgesPerFunction: 4000,
+      maxTaintFindingsPerFunction: 200,
+      maxTaintHops: 32,
+      maxInterprocFindings: 2000,
+      maxInterprocHops: 32,
+      maxInterprocEdges: 1000,
+      taintModelVersion,
+    };
+    expect(pdgModeMismatch(m4Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('a CDG cap change alone trips the mismatch', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxCdgEdgesPerFunction: 10 })).toBe(true);
+    // explicit default ≡ default (resolution before comparison)
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxCdgEdgesPerFunction: 5000 })).toBe(false);
+  });
+});
+
 describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
   it('the symbol-overlap id-prefix filter excludes exactly the BasicBlock rows', async () => {
     const repo = await setupMiniRepo();
@@ -215,6 +251,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxFunctionLines: 2000,
         maxEdgesPerFunction: 5000,
         maxReachingDefEdgesPerFunction: 4000,
+        maxCdgEdgesPerFunction: 5000,
         maxTaintFindingsPerFunction: 200,
         maxTaintHops: 32,
         maxInterprocFindings: 2000,
@@ -270,6 +307,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxFunctionLines: 2000,
         maxEdgesPerFunction: 1,
         maxReachingDefEdgesPerFunction: 4000,
+        maxCdgEdgesPerFunction: 5000,
         maxTaintFindingsPerFunction: 200,
         maxTaintHops: 32,
         maxInterprocFindings: 2000,

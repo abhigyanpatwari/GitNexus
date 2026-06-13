@@ -159,6 +159,14 @@ export interface RepoMeta {
      */
     maxReachingDefEdgesPerFunction?: number;
     /**
+     * Emit-side per-function CDG (control-dependence) edge cap, resolved
+     * (0 = unlimited; #2085 M5). ABSENT on any pre-M5 stamp — that absence is
+     * what trips `pdgModeMismatch` on the first CDG-aware run and forces the
+     * full writeback that materialises CDG edges. Optional for that upgrade
+     * reason; resolved (always present) on every M5+ write.
+     */
+    maxCdgEdgesPerFunction?: number;
+    /**
      * Per-function taint findings cap, resolved (0 = unlimited; #2083 M3).
      * ABSENT on an M1/M2-era stamp — like `maxReachingDefEdgesPerFunction`,
      * that absence is what trips `pdgModeMismatch` on the first M3 run and

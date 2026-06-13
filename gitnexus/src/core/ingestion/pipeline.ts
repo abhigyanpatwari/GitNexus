@@ -84,6 +84,15 @@ export interface PipelineOptions {
    */
   pdgMaxReachingDefEdgesPerFunction?: number;
   /**
+   * Per-function CDG (control-dependence) edge cap for the scope-resolution
+   * emit step (#2085 M5). `undefined` ⇒ `DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION`
+   * (5000); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the
+   * parse-cache chunk key; recorded resolved in `RepoMeta.pdg` so introducing
+   * CDG (an absent stamp key) forces a full writeback for pre-CDG `--pdg`
+   * indexes. No CLI flag — programmatic / server path only.
+   */
+  pdgMaxCdgEdgesPerFunction?: number;
+  /**
    * Per-function taint findings cap for the scope-resolution taint pass
    * (#2083 M3). `undefined` ⇒ `DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION`
    * (200); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the

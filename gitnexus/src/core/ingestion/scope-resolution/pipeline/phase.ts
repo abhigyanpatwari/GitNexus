@@ -375,6 +375,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           pdg: ctx.options?.pdg === true,
           pdgMaxEdgesPerFunction: ctx.options?.pdgMaxEdgesPerFunction,
           pdgMaxReachingDefEdgesPerFunction: ctx.options?.pdgMaxReachingDefEdgesPerFunction,
+          pdgMaxCdgEdgesPerFunction: ctx.options?.pdgMaxCdgEdgesPerFunction,
           pdgMaxTaintFindingsPerFunction: ctx.options?.pdgMaxTaintFindingsPerFunction,
           pdgMaxTaintHops: ctx.options?.pdgMaxTaintHops,
           recordResolutionOutcome: (outcome) => {
