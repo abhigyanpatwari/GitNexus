@@ -1253,7 +1253,10 @@ export class LocalBackend {
     // is resolved in its handler, which also serves the internal executeCypher() path.)
     if (method === 'query' || method === 'search') {
       const searchQuery = p.search_query;
-      if (typeof searchQuery === 'string' && (p.query === undefined || p.query === null || p.query === '')) {
+      if (
+        typeof searchQuery === 'string' &&
+        (p.query === undefined || p.query === null || p.query === '')
+      ) {
         p.query = searchQuery;
       }
     }

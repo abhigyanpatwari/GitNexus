@@ -504,7 +504,10 @@ describe('LocalBackend.callTool', () => {
 
   it('cypher tool prefers statement over the legacy query when both are given (#2175)', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    await backend.callTool('cypher', { statement: 'MATCH (a) RETURN a', query: 'MATCH (b) RETURN b' });
+    await backend.callTool('cypher', {
+      statement: 'MATCH (a) RETURN a',
+      query: 'MATCH (b) RETURN b',
+    });
     const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
     expect(passedCypher).toBe('MATCH (a) RETURN a');
   });
