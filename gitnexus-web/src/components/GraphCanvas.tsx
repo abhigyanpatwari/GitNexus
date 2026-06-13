@@ -198,7 +198,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {
-    if (!graph) return;
+    // Skip layout work in chat-only mode: `graph` is non-null but empty, the
+    // overlay covers the canvas, and this guard also future-proofs against a
+    // transient where a populated graph is set while mode is still chat-only.
+    if (!graph || graphMode === 'chatOnly') return;
 
     let sigmaGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
 
@@ -223,7 +226,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     }
 
     setSigmaGraph(sigmaGraph);
-  }, [graph, nodeById, setSigmaGraph, graphViewMode]);
+  }, [graph, graphMode, nodeById, setSigmaGraph, graphViewMode]);
 
   // Update node visibility when filters change
   useEffect(() => {

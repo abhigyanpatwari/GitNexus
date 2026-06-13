@@ -1166,6 +1166,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodeReferences([]);
       setCodePanelOpen(false);
       setCodeReferenceFocus(null);
+      // Reset graph-load mode up front so a FAILED switch can't leave the
+      // previous repo's stale chat-only overlay showing (#2178). The success
+      // path re-derives the mode from the connect result below.
+      setGraphMode('full');
+      setChatOnlyNodeCount(null);
 
       let connectedRepo: BackendRepo | undefined;
       let pNameStr = repoName || 'server-project';
@@ -1300,8 +1305,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Load the full graph for the current repo after a chat-only connection.
   // This is the escape hatch behind the chat-only empty state (#2178). It
-  // forces `skipGraph: false` so the size-based auto-detect cannot re-skip it,
-  // and persists `?skipGraph=0` so a refresh keeps the graph for this project.
+  // forces `skipGraph: false` so the size-based auto-detect cannot re-skip it.
+  // The override is session-scoped (deliberately NOT persisted to the URL): a
+  // persisted `?skipGraph=0` would leak onto a different repo via the other
+  // connect entry points and could silently re-trigger the hang on refresh.
   const loadGraphInFlightRef = useRef(false);
   const loadGraphAnyway = useCallback(async (): Promise<void> => {
     if (!serverBaseUrl) return;
@@ -1344,10 +1351,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setGraphMode(built.graphMode);
       // Full download succeeded → leave chat-only mode; clear the cached count.
       setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
-
-      const urlObj = new URL(window.location.href);
-      urlObj.searchParams.set('skipGraph', '0');
-      window.history.replaceState(null, '', urlObj.toString());
 
       setProgress(null);
       setViewMode('exploring');

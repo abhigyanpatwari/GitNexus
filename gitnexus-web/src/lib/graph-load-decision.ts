@@ -12,32 +12,45 @@
 export interface SkipGraphDecisionInput {
   /**
    * Explicit user/URL choice, if any. `true` forces chat-only, `false` forces a
-   * full graph download, `undefined` defers to auto-detection by node count.
+   * full graph download, `undefined` defers to auto-detection by size.
    */
   explicit: boolean | undefined;
   /** Node count reported by the backend (`repoInfo.stats.nodes`), if known. */
   nodeCount: number | null | undefined;
-  /** Auto-detect threshold (LARGE_GRAPH_NODE_THRESHOLD). */
+  /** Node auto-detect threshold (LARGE_GRAPH_NODE_THRESHOLD). */
   threshold: number;
+  /** Edge count reported by the backend (`repoInfo.stats.edges`), if known. */
+  edgeCount?: number | null | undefined;
+  /** Edge auto-detect threshold (LARGE_GRAPH_EDGE_THRESHOLD). */
+  edgeThreshold?: number;
 }
+
+const isOver = (count: number | null | undefined, threshold: number | undefined): boolean =>
+  typeof threshold === 'number' &&
+  typeof count === 'number' &&
+  Number.isFinite(count) &&
+  count > threshold;
 
 /**
  * Decide whether to skip the graph download.
  *
  * - An explicit boolean choice always wins (override in both directions).
- * - Otherwise auto-detect: skip when the node count is known AND strictly
- *   greater than the threshold.
- * - A missing/unknown node count fails open to a full download (we never skip
- *   purely because we couldn't read the size).
+ * - Otherwise auto-detect: skip when EITHER the node count OR the edge count is
+ *   known and strictly greater than its threshold. Edges matter because the
+ *   browser force-layout cliff is edge-driven and GitNexus graphs carry more
+ *   edges than nodes — an edge-heavy but node-light repo can still hang.
+ * - Missing/unknown counts fail open to a full download (we never skip purely
+ *   because we couldn't read the size).
  */
 export function decideSkipGraph({
   explicit,
   nodeCount,
   threshold,
+  edgeCount,
+  edgeThreshold,
 }: SkipGraphDecisionInput): boolean {
   if (typeof explicit === 'boolean') return explicit;
-  if (typeof nodeCount !== 'number' || !Number.isFinite(nodeCount)) return false;
-  return nodeCount > threshold;
+  return isOver(nodeCount, threshold) || isOver(edgeCount, edgeThreshold);
 }
 
 /**

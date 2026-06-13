@@ -175,9 +175,13 @@ const AppContent = () => {
 
     tryConnect()
       .then(async (result) => {
+        // Set serverBaseUrl BEFORE handleServerConnect: the latter transitions
+        // to 'exploring' (rendering the chat-only overlay + its "Load graph
+        // anyway" button) and then awaits agent init, leaving a window where
+        // loadGraphAnyway would silently no-op on a still-null serverBaseUrl.
+        setServerBaseUrl(baseUrl);
         await handleServerConnect(result);
         setProgress(null);
-        setServerBaseUrl(baseUrl);
         fetchRepos()
           .then((repos) => setAvailableRepos(repos))
           .catch((e) => console.warn('Failed to fetch repo list:', e));
@@ -264,18 +268,14 @@ const AppContent = () => {
           // Retry once after 1s if the repo isn't found yet (server may still
           // be reinitializing after the worker completed).
           const url = serverBaseUrl ?? 'http://localhost:4747';
-          // Honor an explicit ?skipGraph override; otherwise auto-detect by size
-          // so a freshly-analyzed large repo doesn't hang the browser (#2178).
-          const skipGraph = parseSkipGraphParam(
-            new URLSearchParams(window.location.search).get('skipGraph'),
-          );
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
               const repos = await fetchRepos();
               setAvailableRepos(repos);
-              const result = await connectToServer(url, undefined, undefined, repoName, {
-                skipGraph,
-              });
+              // Auto-detect by size for a freshly-analyzed repo (#2178). A stale
+              // ?skipGraph from a previously-viewed repo must NOT leak in here —
+              // that would bypass the size guard and could re-trigger the hang.
+              const result = await connectToServer(url, undefined, undefined, repoName);
               await handleServerConnect(result);
               setServerBaseUrl(normalizeServerUrl(url));
               setProgress(null);

@@ -10,5 +10,12 @@ interface Window {
      * LARGE_GRAPH_NODE_THRESHOLD in config/ui-constants.ts. See issue #2178.
      */
     largeGraphNodeThreshold?: number;
+    /**
+     * Edge-count above which the WebUI connects in chat-only mode by default.
+     * The browser force-layout cliff is edge-driven, so this guards edge-heavy
+     * repos that fall under the node threshold. Falls back to
+     * LARGE_GRAPH_EDGE_THRESHOLD in config/ui-constants.ts. See issue #2178.
+     */
+    largeGraphEdgeThreshold?: number;
   };
 }

@@ -6,6 +6,7 @@ import {
 } from '../../src/lib/graph-load-decision';
 
 const THRESHOLD = 25_000;
+const EDGE_THRESHOLD = 50_000;
 
 describe('decideSkipGraph', () => {
   it('auto-detects: skips when node count exceeds the threshold', () => {
@@ -48,6 +49,55 @@ describe('decideSkipGraph', () => {
     expect(decideSkipGraph({ explicit: undefined, nodeCount: NaN, threshold: THRESHOLD })).toBe(
       false,
     );
+  });
+
+  it('skips on the edge count even when nodes are under the node threshold', () => {
+    // Edge-heavy, node-light repo: 20K nodes (< 25K) but 80K edges (> 50K).
+    expect(
+      decideSkipGraph({
+        explicit: undefined,
+        nodeCount: 20_000,
+        threshold: THRESHOLD,
+        edgeCount: 80_000,
+        edgeThreshold: EDGE_THRESHOLD,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not skip when both node and edge counts are under their thresholds', () => {
+    expect(
+      decideSkipGraph({
+        explicit: undefined,
+        nodeCount: 5_000,
+        threshold: THRESHOLD,
+        edgeCount: 10_000,
+        edgeThreshold: EDGE_THRESHOLD,
+      }),
+    ).toBe(false);
+  });
+
+  it('explicit choice overrides the edge auto-detect too', () => {
+    expect(
+      decideSkipGraph({
+        explicit: false,
+        nodeCount: 1,
+        threshold: THRESHOLD,
+        edgeCount: 999_999,
+        edgeThreshold: EDGE_THRESHOLD,
+      }),
+    ).toBe(false);
+  });
+
+  it('fails open when edge count is unknown and nodes are under threshold', () => {
+    expect(
+      decideSkipGraph({
+        explicit: undefined,
+        nodeCount: 5_000,
+        threshold: THRESHOLD,
+        edgeCount: undefined,
+        edgeThreshold: EDGE_THRESHOLD,
+      }),
+    ).toBe(false);
   });
 });
 

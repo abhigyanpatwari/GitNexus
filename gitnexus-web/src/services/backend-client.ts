@@ -8,7 +8,7 @@
 
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
-import { LARGE_GRAPH_NODE_THRESHOLD } from '../config/ui-constants';
+import { LARGE_GRAPH_NODE_THRESHOLD, LARGE_GRAPH_EDGE_THRESHOLD } from '../config/ui-constants';
 import { decideSkipGraph } from '../lib/graph-load-decision';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -935,6 +935,8 @@ export async function connectToServer(
     explicit: opts?.skipGraph,
     nodeCount: repoInfo.stats?.nodes,
     threshold: LARGE_GRAPH_NODE_THRESHOLD,
+    edgeCount: repoInfo.stats?.edges,
+    edgeThreshold: LARGE_GRAPH_EDGE_THRESHOLD,
   });
 
   if (skipGraph) {

@@ -282,6 +282,40 @@ describe('connectToServer skipGraph (chat-only mode)', () => {
     expect(result.graphSkipped).toBe(false);
     expect(graphRequests(fetchMock).length).toBeGreaterThan(0);
   });
+
+  it('auto-detects an edge-heavy repo (nodes under, edges over the threshold)', async () => {
+    // 10K nodes (< 25K node threshold) but 80K edges (> 50K edge threshold).
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              name: 'edgy-repo',
+              path: '/repos/edgy-repo',
+              repoPath: '/repos/edgy-repo',
+              indexedAt: '2026-06-13T00:00:00Z',
+              stats: { nodes: 10_000, edges: 80_000 },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connectToServer(
+      'http://localhost:4747',
+      undefined,
+      undefined,
+      'edgy-repo',
+    );
+
+    expect(result.graphSkipped).toBe(true);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/api/graph'))).toHaveLength(0);
+  });
 });
 
 describe('DEFAULT_BACKEND_URL resolution', () => {

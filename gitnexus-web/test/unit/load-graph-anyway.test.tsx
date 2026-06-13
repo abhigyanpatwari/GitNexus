@@ -58,8 +58,9 @@ describe('loadGraphAnyway (chat-only escape hatch, #2178)', () => {
     expect(result.current.graph?.nodeCount).toBe(1);
     const graphCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/api/graph'));
     expect(graphCalls.length).toBeGreaterThan(0);
-    // Persists the override so a refresh keeps the graph for this project.
-    expect(window.location.search).toContain('skipGraph=0');
+    // The override is session-scoped — deliberately NOT persisted to the URL, so
+    // it cannot leak onto a different repo or re-trigger the hang on F5 (#2178).
+    expect(window.location.search).not.toContain('skipGraph');
   });
 
   it('no-ops when there is no server connection', async () => {
