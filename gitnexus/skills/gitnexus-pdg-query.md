@@ -70,9 +70,10 @@ so don't hard-code one sense.
 - **BasicBlock↔symbol join is reconstructed.** No `Function→BasicBlock` edge:
   the block is matched by its id-prefix (`BasicBlock:<file>:<fnStartLine>:…`)
   plus `startLine` within the symbol's span. BasicBlock `startLine` is **1-based**
-  while the symbol node's `startLine`/`endLine` are **0-based** — the upper bound
-  is widened by one (`<= symEnd + 1`) so a guard/def/use on the function's
-  **final line** is not dropped. Same-line / nested functions anchor coarsely.
+  while the symbol node's `startLine`/`endLine` are **0-based**, so **both** bounds
+  are shifted `+1` (`[symStart+1, symEnd+1]`): the upper `+1` keeps a guard/def/use
+  on the function's **final line**, the lower `+1` excludes an adjacent function's
+  block on the line directly **above**. Same-line / nested functions anchor coarsely.
 - **No PDG layer ⇒ a note, not an error.** If the repo wasn't indexed with
   `--pdg` the tool returns `{ results: [], note: "no PDG layer …" }` (cheap meta
   probe on `RepoMeta.pdg.maxCdgEdgesPerFunction` / `maxReachingDefEdgesPerFunction`).

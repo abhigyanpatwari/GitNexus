@@ -129,6 +129,15 @@ withTestLbugDB(
         expect(result).toHaveProperty('error');
         expect(result.error).toMatch(/not found/i);
       });
+
+      it('a call with no arguments returns a clean validation error, not a crash (#2188)', async () => {
+        // An MCP client may send {"name":"pdg_query"} with no `arguments` field;
+        // the dispatch then hands `params: undefined` to the impl. It must
+        // default to {} and surface the mode-validation error, not a TypeError.
+        const result = await backend.callTool('pdg_query');
+        expect(result).toHaveProperty('error');
+        expect(result.error).toMatch(/mode/i);
+      });
     });
   },
   {
@@ -264,6 +273,82 @@ withTestLbugDB(
           indexedAt: new Date().toISOString(),
           lastCommit: 'def456',
           stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
+
+// ─── Block 3: symbol-anchor line-base off-by-one (#2188 review) ──────
+//
+// Hand-seeded with controlled line numbers (no parser dependency): `targetFn`
+// occupies 0-based symbol lines 10–14, and a neighbor function sits directly
+// above it with its last block on 1-based line 10 — the line right above
+// targetFn's declaration (1-based line 11). BasicBlock startLine is 1-based
+// while the symbol span is 0-based, so the anchor window must be [11,15] (both
+// bounds shifted +1). The pre-fix window [10,15] (lower bound left 0-based)
+// over-includes the neighbor's line-10 block. This pins the lower-bound +1.
+
+withTestLbugDB(
+  'pdg-query-adjacency',
+  (handle) => {
+    describe('pdg_query symbol anchoring (#2188 lower-bound off-by-one)', () => {
+      let backend: LocalBackend;
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized in afterSetup');
+        backend = ext._backend;
+      });
+
+      it('excludes a neighbor function block on the line directly above the target', async () => {
+        const result = await backend.callTool('pdg_query', {
+          mode: 'controls',
+          target: 'targetFn',
+        });
+        expect(result).not.toHaveProperty('error');
+        // Only targetFn's own control edge — the neighbor's line-10 edge is out
+        // of the [11,15] window after the lower-bound +1 fix.
+        expect(result.results).toHaveLength(1);
+        expect(result.results[0].dependent.text).toMatch(/doThing/);
+        expect(result.results[0].functionLine).toBe(11);
+        expect(result.results.some((e: any) => /aboveDep/.test(e.dependent.text))).toBe(false);
+      });
+    });
+  },
+  {
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const nodeStmts = [
+        `CREATE (fn:Function {id: 'func:targetFn', name: 'targetFn', filePath: 'src/adj.ts', startLine: 10, endLine: 14, isExported: true, content: 'function targetFn(x) {}', description: 'adjacency regression'})`,
+        // targetFn's blocks (fnStartLine segment '11', 1-based startLines 12/13)
+        `CREATE (b:BasicBlock {id: 'BasicBlock:src/adj.ts:11:0:0', filePath: 'src/adj.ts', startLine: 12, endLine: 12, text: 'if (x)'})`,
+        `CREATE (b:BasicBlock {id: 'BasicBlock:src/adj.ts:11:0:1', filePath: 'src/adj.ts', startLine: 13, endLine: 13, text: 'doThing();'})`,
+        // neighbor function's blocks (fnStartLine segment '9', 1-based startLine 10)
+        `CREATE (b:BasicBlock {id: 'BasicBlock:src/adj.ts:9:0:0', filePath: 'src/adj.ts', startLine: 10, endLine: 10, text: 'if (above)'})`,
+        `CREATE (b:BasicBlock {id: 'BasicBlock:src/adj.ts:9:0:1', filePath: 'src/adj.ts', startLine: 10, endLine: 10, text: 'aboveDep();'})`,
+      ];
+      for (const s of nodeStmts) await adapter.executePrepared(s, {});
+      const cdgEdge = (src: string, dst: string) =>
+        adapter.executePrepared(
+          `MATCH (a:BasicBlock {id: $src}), (b:BasicBlock {id: $dst})
+           CREATE (a)-[:CodeRelation {type: 'CDG', confidence: 1.0, reason: 'T', step: 0}]->(b)`,
+          { src, dst },
+        );
+      await cdgEdge('BasicBlock:src/adj.ts:11:0:0', 'BasicBlock:src/adj.ts:11:0:1');
+      await cdgEdge('BasicBlock:src/adj.ts:9:0:0', 'BasicBlock:src/adj.ts:9:0:1');
+
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'adj-repo',
+          path: '/adj/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'adj789',
+          stats: { files: 1, nodes: 5, communities: 0, processes: 0 },
         },
       ]);
       const backend = new LocalBackend();

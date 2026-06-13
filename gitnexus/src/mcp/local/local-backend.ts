@@ -3182,14 +3182,16 @@ export class LocalBackend {
    * (`a` — controller for CDG, def for REACHING_DEF) is filtered by the
    * BasicBlock id-prefix (`basicBlockId` template) plus its `startLine` within
    * the symbol's span. BasicBlock `startLine` is 1-based while symbol-node
-   * `startLine` is 0-based, so the upper bound is WIDENED by one (`<= symEnd+1`)
-   * — without it a guard/def/use on the function's final line is dropped
-   * (#2188 review). Both endpoints share the function (intra-procedural), so
-   * filtering the source endpoint suffices.
+   * `startLine`/`endLine` are 0-based, so BOTH bounds are shifted +1
+   * (`[symStart+1, symEnd+1]`) onto the block basis: the upper +1 keeps a
+   * guard/def/use on the function's final line, and the lower +1 excludes an
+   * adjacent function's block on the line directly above (#2188 review). Both
+   * endpoints share the function (intra-procedural), so filtering the source
+   * endpoint suffices.
    */
   private async _pdgQueryImpl(
     repo: RepoHandle,
-    params: { mode?: string; target?: string; variable?: string; limit?: number },
+    params: { mode?: string; target?: string; variable?: string; limit?: number } = {},
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
@@ -3281,11 +3283,13 @@ export class LocalBackend {
         typeof sym.endLine === 'number' &&
         sym.endLine >= sym.startLine
       ) {
-        // 1-based BasicBlock startLine vs 0-based symbol span ⇒ widen +1 so a
-        // block on the function's final line is included (#2188 review).
+        // BasicBlock startLine is 1-based; the symbol span is 0-based. Shift
+        // BOTH bounds +1 so the window is the function's true block span: the
+        // lower +1 excludes a neighbor's block on the line directly above, the
+        // upper +1 keeps a guard/def/use on the final line (#2188 review).
         anchorClause =
           'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
-        queryParams.symStart = sym.startLine;
+        queryParams.symStart = sym.startLine + 1;
         queryParams.symEnd = sym.endLine + 1;
         anchor.startLine = sym.startLine;
         anchor.endLine = sym.endLine;

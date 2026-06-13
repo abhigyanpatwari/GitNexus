@@ -593,7 +593,7 @@ Findings are deliberately NOT part of impact()'s traversal or the web schema —
     description: `Query the persisted Program Dependence Graph recorded by \`gitnexus analyze --pdg\` — control dependence (CDG) and data dependence (REACHING_DEF) at basic-block granularity. The control/data analog of \`explain\` (which is the taint consumer).
 
 MODES:
-- \`controls\` — "under what condition does X run?". Returns, for the anchored function, each control-dependence edge: the controlling predicate block, the dependent block, and the branch sense ('T' = the predicate's true/taken arm, 'F' = its false/fall-through arm). The 'F' edges into an early return/throw ARE guard clauses (e.g. \`if (!ok) return;\` — subsumes the #559 guard heuristic).
+- \`controls\` — "under what condition does X run?". Returns, for the anchored function, each control-dependence edge: the controlling predicate block, the dependent block, and the branch sense ('T' = the predicate's true/taken arm, 'F' = its false/fall-through arm). An edge into an early return/throw block is flagged \`guard: true\` (subsumes the #559 guard heuristic); the branch sense of a guard depends on its predicate — \`if (!ok) return;\` rides the 'T' arm — so don't filter guards by a fixed label.
 - \`flows\` — "where does variable Y flow?". Returns REACHING_DEF def→use edges for the anchored function; pass \`variable\` to filter to one binding.
 
 WHEN TO USE: comprehension ("what guards this statement?"), data-flow tracing within a function, guard-clause discovery. Requires \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no PDG layer" note, not an error.
