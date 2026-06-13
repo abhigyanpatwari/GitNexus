@@ -1242,6 +1242,22 @@ export class LocalBackend {
     }
 
     const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+
+    // #2175: Claude Code drops a tool-call argument named exactly "query", so the
+    // query/cypher tools advertise "search_query"/"statement". Accept the legacy
+    // "query" key for backward compat by normalizing the alias onto the canonical
+    // internal field before dispatch. Doing it here (the shared callTool chokepoint)
+    // covers all three query consumers in one place: the local query() handler, the
+    // cross-repo group-forward path (callToolAtGroupRepo reads params.query), and the
+    // legacy "search" alias. The new name wins when both are supplied. (cypher's alias
+    // is resolved in its handler, which also serves the internal executeCypher() path.)
+    if (method === 'query' || method === 'search') {
+      const searchQuery = p.search_query;
+      if (typeof searchQuery === 'string' && (p.query === undefined || p.query === null || p.query === '')) {
+        p.query = searchQuery;
+      }
+    }
+
     if (
       (method === 'impact' || method === 'query' || method === 'context') &&
       typeof p.repo === 'string' &&
@@ -1345,7 +1361,8 @@ export class LocalBackend {
   private async query(
     repo: RepoHandle,
     params: {
-      query: string;
+      query?: string;
+      search_query?: string;
       task_context?: string;
       goal?: string;
       limit?: number;
@@ -1353,8 +1370,12 @@ export class LocalBackend {
       include_content?: boolean;
     },
   ): Promise<any> {
-    if (!params.query?.trim()) {
-      return { error: 'query parameter is required and cannot be empty.' };
+    // Alias resolution normally happens at the callTool chokepoint (#2175); the
+    // search_query ?? query fallback here is defense-in-depth for any caller that
+    // reaches query() without that path (e.g. the GroupService port).
+    const rawQuery = params.search_query ?? params.query;
+    if (!rawQuery?.trim()) {
+      return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
     }
 
     await this.ensureInitialized(repo);
@@ -1362,7 +1383,7 @@ export class LocalBackend {
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
-    const searchQuery = params.query.trim();
+    const searchQuery = rawQuery.trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
     // observable sub-step of the search pipeline so production latency can
@@ -1932,7 +1953,9 @@ export class LocalBackend {
 
   private async cypher(
     repo: RepoHandle,
-    request: { query: string; params?: Record<string, unknown> },
+    // #2175: "statement" is the advertised param; "query" is the legacy alias,
+    // still accepted (and the field the internal executeCypher() passes). New wins.
+    request: { query?: string; statement?: string; params?: Record<string, unknown> },
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
@@ -1945,8 +1968,10 @@ export class LocalBackend {
       };
     }
 
+    const cypherText = request.statement ?? request.query ?? '';
+
     try {
-      const result = await executeParameterized(repo.lbugPath, request.query, request.params ?? {});
+      const result = await executeParameterized(repo.lbugPath, cypherText, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';

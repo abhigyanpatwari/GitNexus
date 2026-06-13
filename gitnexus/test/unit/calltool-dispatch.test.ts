@@ -433,12 +433,14 @@ describe('LocalBackend.callTool', () => {
 
   it('query tool returns error for empty query', async () => {
     const result = await backend.callTool('query', { query: '' });
-    expect(result.error).toContain('query parameter is required');
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
   });
 
   it('query tool returns error for whitespace-only query', async () => {
     const result = await backend.callTool('query', { query: '   ' });
-    expect(result.error).toContain('query parameter is required');
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
   });
 
   it('dispatches cypher tool and blocks write queries', async () => {
@@ -457,6 +459,62 @@ describe('LocalBackend.callTool', () => {
     expect(result).toHaveProperty('markdown');
     expect(result).toHaveProperty('row_count');
     expect(result.row_count).toBe(1);
+  });
+
+  // ── #2175: backward-compatible parameter-alias dispatch ──────────────────
+  // Claude Code drops a tool-call argument named exactly "query", so the query
+  // and cypher tools advertise search_query / statement. The handlers must accept
+  // the new names AND keep accepting the legacy "query" key (verified by the
+  // existing tests above, which still pass { query: ... }).
+
+  it('query tool accepts the new search_query parameter (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('query', { search_query: 'auth' });
+    expect(result).toHaveProperty('processes');
+    expect(result).toHaveProperty('definitions');
+    expect(result).not.toHaveProperty('error');
+  });
+
+  it('query tool prefers search_query over the legacy query when both are given (#2175)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (executeParameterized as any).mockResolvedValue([]);
+
+    await backend.callTool('query', { search_query: 'newName', query: 'oldName' });
+
+    // bm25Search passes the resolved search text as arg 0 to searchFTSFromLbug.
+    const lastTerm = String(vi.mocked(searchFTSFromLbug).mock.calls.at(-1)?.[0] ?? '');
+    expect(lastTerm).toBe('newName');
+  });
+
+  it('query tool returns error when neither search_query nor query is provided (#2175)', async () => {
+    const result = await backend.callTool('query', {});
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('cypher tool accepts the new statement parameter (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
+    const result = await backend.callTool('cypher', {
+      statement: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
+    });
+    expect(result).toHaveProperty('markdown');
+    expect(result).toHaveProperty('row_count');
+    expect(result.row_count).toBe(1);
+  });
+
+  it('cypher tool prefers statement over the legacy query when both are given (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('cypher', { statement: 'MATCH (a) RETURN a', query: 'MATCH (b) RETURN b' });
+    const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(passedCypher).toBe('MATCH (a) RETURN a');
+  });
+
+  it('executeCypher (internal API) still works via the legacy query field (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([{ name: 'x' }]);
+    const result = await backend.executeCypher('test-project', 'MATCH (n) RETURN n LIMIT 1');
+    expect(result).not.toHaveProperty('error');
+    const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(passedCypher).toBe('MATCH (n) RETURN n LIMIT 1');
   });
 
   it('dispatches context tool', async () => {
