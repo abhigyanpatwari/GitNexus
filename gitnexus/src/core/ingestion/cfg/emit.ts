@@ -21,6 +21,8 @@
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
 import { computeReachingDefs } from './reaching-defs.js';
+import { computeControlDependence } from './control-dependence.js';
+import { computePostDominators, NO_IPDOM } from './post-dominators.js';
 import type { BindingEntry, FunctionCfg } from './types.js';
 
 /**
@@ -40,6 +42,24 @@ export const DEFAULT_MAX_CFG_EDGES_PER_FUNCTION = 5000;
  * facts. `0` ⇒ unlimited; `undefined` ⇒ this default.
  */
 export const DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION = 4000;
+
+/**
+ * Default per-function CDG edge cap (#2085 M5). CDG edge count is bounded by
+ * (blocks × control-nesting-depth) — comparable to the CFG edge count — so it
+ * reuses the CFG default of 5000. Counts DEDUPED (controller, dependent, label)
+ * edges (the pure {@link computeControlDependence} already dedups). `0` ⇒
+ * unlimited; `undefined` ⇒ this default. Folded into the `RepoMeta.pdg` stamp
+ * (U5) so introducing CDG forces a full writeback for pre-CDG `--pdg` indexes.
+ */
+export const DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION = 5000;
+
+/**
+ * Env flag that additionally emits diagnostic `POST_DOMINATE` edges
+ * (block → its immediate post-dominator) alongside CDG (#2085 M5 KTD8). Off in
+ * every normal `--pdg` run — these are for inspecting the post-dom tree, not a
+ * queryable product surface. Accepts `1`/`true` (case-insensitive).
+ */
+export const POST_DOMINATE_DEBUG_ENV = 'GITNEXUS_PDG_EMIT_POST_DOMINATE';
 
 /**
  * Fact-materialization headroom over the edge cap (#2082 M2 U3/F3): facts are
@@ -412,6 +432,122 @@ export function emitFileReachingDefs(
       });
       result.edges++;
       emittedForFn++;
+    }
+  }
+
+  return result;
+}
+
+export interface CdgEmitResult {
+  /** Deduped (controller, dependent, label) CDG edges persisted. */
+  edges: number;
+  /** CDG edges dropped by the per-function edge cap. */
+  droppedEdges: number;
+  /** Functions that hit the CDG edge cap. */
+  cappedFunctions: number;
+  /** Diagnostic POST_DOMINATE edges emitted (0 unless the debug env is set). */
+  postDominateEdges: number;
+}
+
+/** Whether the POST_DOMINATE debug env flag is enabled (`1`/`true`). */
+const postDominateDebugEnabled = (): boolean => {
+  const v = process.env[POST_DOMINATE_DEBUG_ENV];
+  return v === '1' || v?.toLowerCase() === 'true';
+};
+
+/**
+ * Compute control dependence per function and persist the bounded CDG
+ * projection (#2085 M5 U4). Mirrors {@link emitFileReachingDefs}: the pure
+ * {@link computeControlDependence} already dedups to (controller, dependent,
+ * label), so the per-function cap applies to deduped edges and overflow logs
+ * one unconditional `onWarn` naming the dropped count — no silent truncation
+ * (R6/R7). The branch label ('T'|'F') rides the `reason` column (KTD3),
+ * mirroring how CFG stores its edge kind.
+ *
+ * When {@link POST_DOMINATE_DEBUG_ENV} is set, also emits diagnostic
+ * `POST_DOMINATE` edges (block → its immediate post-dominator). These are NOT
+ * capped or counted against the CDG budget — they exist only for inspecting the
+ * post-dom tree and never appear in a normal run.
+ */
+export function emitFileCdg(
+  graph: KnowledgeGraph,
+  cfgs: readonly FunctionCfg[],
+  maxEdgesPerFunction: number = DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
+  onWarn?: (message: string) => void,
+): CdgEmitResult {
+  const result: CdgEmitResult = {
+    edges: 0,
+    droppedEdges: 0,
+    cappedFunctions: 0,
+    postDominateEdges: 0,
+  };
+  const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
+  const emitPostDom = postDominateDebugEnabled();
+
+  for (const cfg of cfgs) {
+    const { filePath, functionStartLine, functionStartColumn } = cfg;
+    // Compute the post-dom tree once and feed it to the control-dependence
+    // pass (avoids recomputing it) and to the optional POST_DOMINATE emit.
+    const tree = computePostDominators(cfg);
+    const cdgEdges = computeControlDependence(cfg, tree);
+
+    let emittedForFn = 0;
+    for (const edge of cdgEdges) {
+      if (emittedForFn >= cap) {
+        const dropped = cdgEdges.length - emittedForFn;
+        result.droppedEdges += dropped;
+        result.cappedFunctions++;
+        onWarn?.(
+          `[cdg] ${filePath}:${functionStartLine}: per-function CDG edge cap ` +
+            `(${maxEdgesPerFunction}) reached — dropped ${dropped} of ${cdgEdges.length} edges`,
+        );
+        break;
+      }
+      const sourceId = basicBlockId(
+        filePath,
+        functionStartLine,
+        functionStartColumn,
+        edge.controllerBlock,
+      );
+      const targetId = basicBlockId(
+        filePath,
+        functionStartLine,
+        functionStartColumn,
+        edge.dependentBlock,
+      );
+      graph.addRelationship({
+        id: generateId(
+          'CDG',
+          `${filePath}:${functionStartLine}:${functionStartColumn}:` +
+            `${edge.controllerBlock}->${edge.dependentBlock}:${edge.label}`,
+        ),
+        type: 'CDG',
+        sourceId,
+        targetId,
+        confidence: 1.0,
+        reason: edge.label, // 'T' | 'F' — queryable, mirrors CFG's kind-in-reason
+      });
+      result.edges++;
+      emittedForFn++;
+    }
+
+    if (emitPostDom) {
+      for (let b = 0; b < tree.ipdom.length; b++) {
+        const ip = tree.ipdom[b];
+        if (ip === NO_IPDOM) continue;
+        graph.addRelationship({
+          id: generateId(
+            'POST_DOMINATE',
+            `${filePath}:${functionStartLine}:${functionStartColumn}:${b}->${ip}`,
+          ),
+          type: 'POST_DOMINATE',
+          sourceId: basicBlockId(filePath, functionStartLine, functionStartColumn, b),
+          targetId: basicBlockId(filePath, functionStartLine, functionStartColumn, ip),
+          confidence: 1.0,
+          reason: '',
+        });
+        result.postDominateEdges++;
+      }
     }
   }
 
