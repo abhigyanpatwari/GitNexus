@@ -298,3 +298,59 @@ describe('apply(--dry-run): resolves + validates but writes nothing', () => {
     expect(readFileSync(pkgPath, 'utf8')).toBe(before); // untouched
   });
 });
+
+describe('apply() error branches throw ApplyExit (CLI maps to exit codes)', () => {
+  const dartPkg = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../vendor/tree-sitter-dart/package.json',
+  );
+  // catch + return the thrown error's exit code (apply() throws instead of calling
+  // process.exit, so the error branches are exercisable in-process).
+  const codeOf = (fn: () => unknown): number => {
+    try {
+      fn();
+    } catch (e) {
+      return (e as { code?: number }).code ?? -1;
+    }
+    throw new Error('expected apply() to throw');
+  };
+
+  it('unknown grammar key → exit code 2', () => {
+    expect(codeOf(() => mod.apply('nope', { deps: {} }))).toBe(2);
+  });
+
+  it('held grammar (c) → exit code 3 (short-circuits before the newer check)', () => {
+    expect(codeOf(() => mod.apply('c', { deps: {} }))).toBe(3);
+  });
+
+  it('ABI-incompatible candidate (15) → exit code 3', () => {
+    const code = codeOf(() =>
+      mod.apply('dart', {
+        deps: {
+          vendoredVersion: () => '0.0.0', // newer than upstream → reaches the ABI gate
+          resolveUpstream: () => ({ version: '9.9.9', ref: '9.9.9abc', kind: 'github' }),
+          fetchSource: () => 'unused',
+          readAbi: () => 15,
+        },
+      }),
+    );
+    expect(code).toBe(3);
+  });
+
+  it('not-newer (already current) → returns the current version, no throw, no write', () => {
+    const before = readFileSync(dartPkg, 'utf8');
+    const deps = {
+      vendoredVersion: () => '9.9.9-gabc1234',
+      resolveUpstream: () => ({
+        version: '9.9.9-gabc1234',
+        ref: 'abc1234',
+        kind: 'github' as const,
+      }),
+      fetchSource: () => 'unused',
+      readAbi: () => 14,
+    };
+    // No dryRun: the not-newer path returns `have` before any fetch/copy.
+    expect(mod.apply('dart', { deps })).toBe('9.9.9-gabc1234');
+    expect(readFileSync(dartPkg, 'utf8')).toBe(before); // untouched
+  });
+});

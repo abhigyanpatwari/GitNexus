@@ -106,6 +106,17 @@ const clean = (v) =>
 // (#2187 review). Comparing up.version on both sides removes that asymmetry.
 const isNewer = (up, have) => !have || up.version !== have;
 
+// apply() throws this (instead of calling process.exit) so its error branches are
+// exercisable in-process by tests; the CLI entrypoint maps `.code` back to the
+// original exit code, keeping the monitor's subprocess contract identical (#2187).
+class ApplyExit extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'ApplyExit';
+    this.code = code;
+  }
+}
+
 function vendoredVersion(g) {
   const p = path.join(VENDOR, g.name, 'package.json');
   return clean(JSON.parse(fs.readFileSync(p, 'utf8')).version);
@@ -256,32 +267,28 @@ function apply(key, opts = {}) {
   const fetchSrc = deps.fetchSource || fetchSource;
   const readAbiFn = deps.readAbi || readAbi;
   const g = GRAMMARS[key];
-  if (!g) {
-    console.error(`unknown grammar '${key}'`);
-    process.exit(2);
-  }
-  if (g.hold) {
-    console.error(
+  if (!g) throw new ApplyExit(`unknown grammar '${key}'`, 2);
+  if (g.hold)
+    throw new ApplyExit(
       `${key}: report-only (${g.hold}); not auto-applied. Re-vendor manually if intended.`,
+      3,
     );
-    process.exit(3);
-  }
   const have = getVendored(g);
   const up = resolveUp(g);
   const newer = isNewer(up, have);
   if (!newer) {
+    // Already current: nothing to apply. Return (exit 0 via the CLI) — NOT an error.
     console.error(`${key}: already current (${have}); nothing to apply.`);
-    process.exit(0);
+    return have;
   }
   const srcRoot = fetchSrc(g, up.ref);
   const abi = readAbiFn(srcRoot);
-  if (abi == null || !COMPATIBLE_ABI.has(abi)) {
-    console.error(
+  if (abi == null || !COMPATIBLE_ABI.has(abi))
+    throw new ApplyExit(
       `${key}: candidate ${up.version} is ABI ${abi ?? 'unknown'} — not tree-sitter@0.21.1 ` +
         `compatible (need 13/14); refusing to re-vendor. Handle manually.`,
+      3,
     );
-    process.exit(3);
-  }
 
   if (dryRun) {
     console.log(
@@ -330,7 +337,15 @@ if (isMain) {
   const dryRun = args.includes('--dry-run');
   if (args[0] === '--apply') {
     // `--apply <grammar> [--dry-run]` — --dry-run previews without writing.
-    apply(args[1], { dryRun });
+    // Map apply()'s thrown ApplyExit back to the original exit codes (0/2/3) so
+    // the monitor workflow's subprocess (which only distinguishes zero vs non-zero)
+    // sees identical behavior.
+    try {
+      apply(args[1], { dryRun });
+    } catch (e) {
+      console.error(e.message);
+      process.exit(e instanceof ApplyExit ? e.code : 1);
+    }
   } else {
     process.stdout.write(JSON.stringify(detect(), null, 2) + '\n');
   }
