@@ -1037,32 +1037,41 @@ const analyzeCommandImpl = async (
     process.env.GITNEXUS_EMBEDDING_DIMS = dims;
   }
 
-  // Helpful confirmation + UX guard. http-client.isHttpMode() requires BOTH
-  // URL and MODEL; warn if only one was supplied. Mask the URL through
-  // safeUrl() — a base URL may carry credentials in userinfo
-  // (http://user:pass@host) or a query token (?api_key=…), which must not
-  // land in stdout/CI logs. The auth token is never printed.
-  if (process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL) {
+  // Custom-endpoint UX, emitting at most ONE message that reflects THIS run's
+  // intent (not ambient env). Order matters — the first matching branch wins:
+  //   1. flags given but --embeddings absent: the endpoint won't be used, so
+  //      say only that (no contradictory "Using…" line).
+  //   2. embeddings enabled + a complete endpoint (flags or env): confirm it,
+  //      masking the URL via safeUrl() since a base URL may carry credentials
+  //      in userinfo (http://user:pass@host) or a query token (?api_key=…)
+  //      that must not land in stdout/CI logs. The auth token is never printed.
+  //   3. embeddings enabled but only one of URL/MODEL supplied via flags:
+  //      http-client.isHttpMode() needs BOTH, so warn about the fallback.
+  // Gating on embeddingsEnabled also stops the old behaviour of printing
+  // "Using custom embedding endpoint" on every analyze run whenever the env
+  // vars happened to be set.
+  if (anyHttpEmbedFlag && !embeddingsEnabled) {
+    console.log(
+      '  Note: --embedding-* flags only apply when --embeddings is also passed; ' +
+        'no embeddings will be generated this run.\n',
+    );
+  } else if (
+    embeddingsEnabled &&
+    process.env.GITNEXUS_EMBEDDING_URL &&
+    process.env.GITNEXUS_EMBEDDING_MODEL
+  ) {
     console.log(
       `  Using custom embedding endpoint: ${safeUrl(process.env.GITNEXUS_EMBEDDING_URL)} ` +
         `(model: ${process.env.GITNEXUS_EMBEDDING_MODEL})\n`,
     );
   } else if (
+    embeddingsEnabled &&
     anyHttpEmbedFlag &&
     (process.env.GITNEXUS_EMBEDDING_URL || process.env.GITNEXUS_EMBEDDING_MODEL)
   ) {
     console.log(
       '  Note: custom HTTP embeddings require BOTH --embedding-base-url and --embedding-model ' +
         '(or the matching env vars). Falling back to local ONNX embeddings.\n',
-    );
-  }
-
-  // HTTP embedding flags only take effect during the embedding phase, which
-  // is gated by --embeddings. Warn rather than silently no-op.
-  if (anyHttpEmbedFlag && !embeddingsEnabled) {
-    console.log(
-      '  Note: --embedding-* flags only apply when --embeddings is also passed; ' +
-        'no embeddings will be generated this run.\n',
     );
   }
 
