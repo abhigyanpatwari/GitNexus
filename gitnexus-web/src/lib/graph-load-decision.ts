@@ -41,6 +41,22 @@ export function decideSkipGraph({
 }
 
 /**
+ * Whether to prompt for confirmation before loading the full graph from the
+ * chat-only escape hatch ("Load graph anyway"). Confirm whenever the node count
+ * is large OR unknown — never silently re-load a graph we cannot size, which
+ * would risk re-introducing the original browser hang (#2178). Skip the prompt
+ * only when the count is known to be at or below the threshold (a small repo
+ * that was force-skipped via `?skipGraph=1`).
+ */
+export function shouldConfirmGraphLoad(
+  nodeCount: number | null | undefined,
+  threshold: number,
+): boolean {
+  if (typeof nodeCount !== 'number' || !Number.isFinite(nodeCount)) return true;
+  return nodeCount > threshold;
+}
+
+/**
  * Parse the `?skipGraph` URL parameter into the tri-state used by
  * {@link decideSkipGraph}. Accepts `1`/`true` (chat-only) and `0`/`false`
  * (full graph), case-insensitively. Anything else — including a missing

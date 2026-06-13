@@ -74,4 +74,98 @@ describe('loadGraphAnyway (chat-only escape hatch, #2178)', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('guards against a concurrent double-invocation (only one download)', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/graph')) return Promise.resolve(graphNdjsonResponse());
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+      result.current.setCurrentRepo('big-repo');
+      result.current.setGraphMode('chatOnly');
+    });
+
+    await act(async () => {
+      // Fire twice synchronously — the second call must be dropped by the guard.
+      const a = result.current.loadGraphAnyway();
+      const b = result.current.loadGraphAnyway();
+      await Promise.all([a, b]);
+    });
+
+    const graphCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/api/graph'));
+    expect(graphCalls).toHaveLength(1);
+  });
+
+  it('stays in chat-only mode when the full-graph download fails', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/graph'))
+        return Promise.resolve(new Response('{"error":"boom"}', { status: 500 }));
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+      result.current.setCurrentRepo('big-repo');
+      result.current.setGraphMode('chatOnly');
+    });
+
+    await act(async () => {
+      await result.current.loadGraphAnyway();
+    });
+
+    // Failure leaves the user in chat-only mode (overlay reappears), view restored.
+    expect(result.current.graphMode).toBe('chatOnly');
+    expect(result.current.viewMode).toBe('exploring');
+    expect(window.location.search).not.toContain('skipGraph=0');
+  });
+});
+
+describe('switchRepo auto-detect (chat-only, #2178)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('enters chat-only mode and captures the node count for a large repo', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/repos'))
+        return Promise.resolve(
+          new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+        );
+      if (url.includes('/api/graph')) return Promise.resolve(graphNdjsonResponse());
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+    });
+
+    await act(async () => {
+      await result.current.switchRepo('big-repo');
+    });
+
+    // 300K nodes > threshold → auto-skip, empty graph, count captured, no graph download.
+    expect(result.current.graphMode).toBe('chatOnly');
+    expect(result.current.graph?.nodeCount).toBe(0);
+    expect(result.current.chatOnlyNodeCount).toBe(300_000);
+    const graphCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/api/graph'));
+    expect(graphCalls).toHaveLength(0);
+  });
 });

@@ -10,7 +10,7 @@ import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { getActiveProviderConfig } from './core/llm/settings-service';
-import { createKnowledgeGraph } from './core/graph/graph';
+import { buildGraphFromConnectResult } from './lib/apply-connect-result';
 import {
   connectToServer,
   fetchRepos,
@@ -32,6 +32,7 @@ const AppContent = () => {
     setViewMode,
     setGraph,
     setGraphMode,
+    setChatOnlyNodeCount,
     setProgress,
     setProjectName,
     progress,
@@ -69,19 +70,13 @@ const AppContent = () => {
       setCurrentRepo(projectName);
 
       // Build KnowledgeGraph from server data for visualization. In chat-only
-      // mode the graph download was skipped, so keep an empty (but non-null)
-      // graph and flag the mode so the UI shows the chat-only empty state.
-      const graph = createKnowledgeGraph();
-      if (!result.graphSkipped) {
-        for (const node of result.nodes) {
-          graph.addNode(node);
-        }
-        for (const rel of result.relationships) {
-          graph.addRelationship(rel);
-        }
-      }
-      setGraph(graph);
-      setGraphMode(result.graphSkipped ? 'chatOnly' : 'full');
+      // mode the graph download was skipped, so the shared builder keeps an
+      // empty (but non-null) graph and flags the mode so the UI shows the
+      // chat-only empty state, with the node count captured for its notice.
+      const built = buildGraphFromConnectResult(result);
+      setGraph(built.graph);
+      setGraphMode(built.graphMode);
+      setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
 
       // Persist the active project in the URL for bookmarkability and F5 refresh resilience
       const urlObj = new URL(window.location.href);
@@ -105,6 +100,7 @@ const AppContent = () => {
       setViewMode,
       setGraph,
       setGraphMode,
+      setChatOnlyNodeCount,
       setProjectName,
       setCurrentRepo,
       initializeAgent,
@@ -268,11 +264,18 @@ const AppContent = () => {
           // Retry once after 1s if the repo isn't found yet (server may still
           // be reinitializing after the worker completed).
           const url = serverBaseUrl ?? 'http://localhost:4747';
+          // Honor an explicit ?skipGraph override; otherwise auto-detect by size
+          // so a freshly-analyzed large repo doesn't hang the browser (#2178).
+          const skipGraph = parseSkipGraphParam(
+            new URLSearchParams(window.location.search).get('skipGraph'),
+          );
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
               const repos = await fetchRepos();
               setAvailableRepos(repos);
-              const result = await connectToServer(url, undefined, undefined, repoName);
+              const result = await connectToServer(url, undefined, undefined, repoName, {
+                skipGraph,
+              });
               await handleServerConnect(result);
               setServerBaseUrl(normalizeServerUrl(url));
               setProgress(null);

@@ -28,6 +28,7 @@ import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 import { useTranslation } from 'react-i18next';
 import { LARGE_GRAPH_NODE_THRESHOLD } from '../config/ui-constants';
+import { shouldConfirmGraphLoad } from '../lib/graph-load-decision';
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
@@ -57,8 +58,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     graphViewMode,
     setGraphViewMode,
     graphMode,
-    availableRepos,
-    projectName,
+    chatOnlyNodeCount,
     loadGraphAnyway,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
@@ -261,23 +261,24 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     resetZoom();
   }, [setSelectedNode, setSigmaSelectedNode, resetZoom]);
 
-  // Chat-only mode (#2178): the graph download was skipped for a large project.
-  // Derive the node count from the connected repo's stats to size the notice.
-  const chatOnlyNodeCount = useMemo(() => {
-    if (graphMode !== 'chatOnly') return null;
-    const repo = availableRepos.find((r) => r.name === projectName);
-    return repo?.stats?.nodes ?? null;
-  }, [graphMode, availableRepos, projectName]);
-
+  // Chat-only mode (#2178): the graph download was skipped. `chatOnlyNodeCount`
+  // comes from app state (captured at connect time), so it is authoritative and
+  // available immediately — not derived from the async `availableRepos` list.
   const handleLoadGraphAnyway = useCallback(() => {
-    // Warn before re-triggering a potentially browser-hanging download.
+    // Warn before re-triggering a potentially browser-hanging download. Confirm
+    // whenever the count is large OR unknown — never silently re-load a graph we
+    // can't size, which would risk re-introducing the original #2178 hang. Skip
+    // the prompt only when the count is known to be below the threshold (a small
+    // repo force-skipped via ?skipGraph=1).
+    const needsConfirm = shouldConfirmGraphLoad(chatOnlyNodeCount, LARGE_GRAPH_NODE_THRESHOLD);
     if (
-      chatOnlyNodeCount != null &&
-      chatOnlyNodeCount > LARGE_GRAPH_NODE_THRESHOLD &&
+      needsConfirm &&
       typeof window !== 'undefined' &&
       typeof window.confirm === 'function' &&
       !window.confirm(
-        t('canvas.chatOnly.loadAnywayWarning', { count: chatOnlyNodeCount.toLocaleString() }),
+        chatOnlyNodeCount != null
+          ? t('canvas.chatOnly.loadAnywayWarning', { count: chatOnlyNodeCount.toLocaleString() })
+          : t('canvas.chatOnly.loadAnywayWarningUnknown'),
       )
     ) {
       return;

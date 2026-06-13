@@ -7,6 +7,7 @@ import {
   type BackendRepo,
 } from '../services/backend-client';
 import { useBackend } from '../hooks/useBackend';
+import { parseSkipGraphParam } from '../lib/graph-load-decision';
 import { OnboardingGuide } from './OnboardingGuide';
 import { AnalyzeOnboarding } from './AnalyzeOnboarding';
 import { RepoLanding } from './RepoLanding';
@@ -205,6 +206,11 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
     (async () => {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
+      // Honor an explicit ?skipGraph override on the landing-screen connect;
+      // otherwise auto-detect by repo size (#2178).
+      const skipGraph = parseSkipGraphParam(
+        new URLSearchParams(window.location.search).get('skipGraph'),
+      );
       try {
         const result = await connectToServer(
           detectedBackendUrl,
@@ -225,6 +231,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
           },
           abortController.signal,
           repoName,
+          { skipGraph },
         );
         if (onServerConnect) {
           await onServerConnect(result, detectedBackendUrl);

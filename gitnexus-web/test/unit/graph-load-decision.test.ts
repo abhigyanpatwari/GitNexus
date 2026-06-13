@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { decideSkipGraph, parseSkipGraphParam } from '../../src/lib/graph-load-decision';
+import {
+  decideSkipGraph,
+  parseSkipGraphParam,
+  shouldConfirmGraphLoad,
+} from '../../src/lib/graph-load-decision';
 
 const THRESHOLD = 25_000;
 
@@ -67,5 +71,25 @@ describe('parseSkipGraphParam', () => {
     expect(parseSkipGraphParam('')).toBeUndefined();
     expect(parseSkipGraphParam('yes')).toBeUndefined();
     expect(parseSkipGraphParam('2')).toBeUndefined();
+  });
+});
+
+describe('shouldConfirmGraphLoad', () => {
+  it('confirms for a large repo', () => {
+    expect(shouldConfirmGraphLoad(300_000, THRESHOLD)).toBe(true);
+    expect(shouldConfirmGraphLoad(THRESHOLD + 1, THRESHOLD)).toBe(true);
+  });
+
+  it('does NOT confirm for a small repo at or below the threshold', () => {
+    expect(shouldConfirmGraphLoad(500, THRESHOLD)).toBe(false);
+    expect(shouldConfirmGraphLoad(THRESHOLD, THRESHOLD)).toBe(false);
+  });
+
+  it('confirms (fail-safe) when the node count is unknown', () => {
+    // The key regression guard: an unknown count must NOT silently re-load,
+    // which would risk re-introducing the #2178 hang.
+    expect(shouldConfirmGraphLoad(null, THRESHOLD)).toBe(true);
+    expect(shouldConfirmGraphLoad(undefined, THRESHOLD)).toBe(true);
+    expect(shouldConfirmGraphLoad(NaN, THRESHOLD)).toBe(true);
   });
 });

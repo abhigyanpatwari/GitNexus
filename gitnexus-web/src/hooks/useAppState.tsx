@@ -10,7 +10,7 @@ import {
 } from 'react';
 import type { GraphNode, NodeLabel, PipelineProgress } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
-import { createKnowledgeGraph } from '../core/graph/graph';
+import { buildGraphFromConnectResult } from '../lib/apply-connect-result';
 import type {
   LLMSettings,
   AgentStreamChunk,
@@ -130,6 +130,9 @@ interface AppState {
   // Graph load mode (full download vs chat-only / skipped graph)
   graphMode: GraphMode;
   setGraphMode: (mode: GraphMode) => void;
+  // Connected repo's node count while in chat-only mode (null when unknown)
+  chatOnlyNodeCount: number | null;
+  setChatOnlyNodeCount: (count: number | null) => void;
 
   // Query state
   highlightedNodeIds: Set<string>;
@@ -246,6 +249,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setGraphViewMode,
     graphMode,
     setGraphMode,
+    chatOnlyNodeCount,
+    setChatOnlyNodeCount,
   } = useGraphState();
 
   // Right Panel
@@ -1213,15 +1218,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         connectedRepo = result.repoInfo;
         pNameStr = pName;
 
-        // In chat-only mode the graph download was skipped; keep an empty
-        // (but non-null) graph so existing `graph?.` consumers stay happy.
-        const newGraph = createKnowledgeGraph();
-        if (!result.graphSkipped) {
-          for (const node of result.nodes) newGraph.addNode(node);
-          for (const rel of result.relationships) newGraph.addRelationship(rel);
-        }
-        setGraph(newGraph);
-        setGraphMode(result.graphSkipped ? 'chatOnly' : 'full');
+        // In chat-only mode the graph download was skipped; the shared builder
+        // keeps an empty (but non-null) graph so existing `graph?.` consumers
+        // stay happy, and reports the mode + node count in lockstep.
+        const built = buildGraphFromConnectResult(result);
+        setGraph(built.graph);
+        setGraphMode(built.graphMode);
+        setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
       } catch (err: unknown) {
         console.error('Repo switch failed:', err);
         setProgress({
@@ -1279,6 +1282,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setProjectName,
       setGraph,
       setGraphMode,
+      setChatOnlyNodeCount,
       initializeAgent,
       startEmbeddingsWithFallback,
       setHighlightedNodeIds,
@@ -1298,8 +1302,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // This is the escape hatch behind the chat-only empty state (#2178). It
   // forces `skipGraph: false` so the size-based auto-detect cannot re-skip it,
   // and persists `?skipGraph=0` so a refresh keeps the graph for this project.
+  const loadGraphInFlightRef = useRef(false);
   const loadGraphAnyway = useCallback(async (): Promise<void> => {
     if (!serverBaseUrl) return;
+    // Guard against a double-trigger (rapid double-click or a racing
+    // programmatic call) starting two concurrent full-graph downloads.
+    if (loadGraphInFlightRef.current) return;
+    loadGraphInFlightRef.current = true;
     const repo = repoRef.current;
 
     setProgress({
@@ -1330,11 +1339,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         { awaitAnalysis: true, skipGraph: false },
       );
 
-      const newGraph = createKnowledgeGraph();
-      for (const node of result.nodes) newGraph.addNode(node);
-      for (const rel of result.relationships) newGraph.addRelationship(rel);
-      setGraph(newGraph);
-      setGraphMode('full');
+      const built = buildGraphFromConnectResult(result);
+      setGraph(built.graph);
+      setGraphMode(built.graphMode);
+      // Full download succeeded → leave chat-only mode; clear the cached count.
+      setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
 
       const urlObj = new URL(window.location.href);
       urlObj.searchParams.set('skipGraph', '0');
@@ -1344,10 +1353,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setViewMode('exploring');
     } catch (err) {
       console.error('Load graph anyway failed:', err);
+      // Stay in chat-only mode (the overlay reappears) and return to the view.
       setProgress(null);
       setViewMode('exploring');
+    } finally {
+      loadGraphInFlightRef.current = false;
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setGraph, setGraphMode]);
+  }, [serverBaseUrl, setProgress, setViewMode, setGraph, setGraphMode, setChatOnlyNodeCount]);
 
   const removeCodeReference = useCallback(
     (id: string) => {
@@ -1409,6 +1421,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setGraphViewMode,
     graphMode,
     setGraphMode,
+    chatOnlyNodeCount,
+    setChatOnlyNodeCount,
     highlightedNodeIds,
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,

@@ -2,6 +2,9 @@ import { createContext, useContext, useCallback, useMemo, useState, ReactNode } 
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../core/graph/types';
 import { DEFAULT_VISIBLE_LABELS, DEFAULT_VISIBLE_EDGES, type EdgeType } from '../../lib/constants';
+import type { GraphMode } from '../../lib/apply-connect-result';
+
+export type { GraphMode };
 
 interface GraphStateContextValue {
   graph: KnowledgeGraph | null;
@@ -26,9 +29,15 @@ interface GraphStateContextValue {
    */
   graphMode: GraphMode;
   setGraphMode: (mode: GraphMode) => void;
+  /**
+   * Node count of the connected repo when in chat-only mode (from the connect
+   * result's repo stats), or null when unknown. Used to size and gate the
+   * chat-only empty-state notice and its "load anyway" warning without waiting
+   * on the async `availableRepos` list. See #2178.
+   */
+  chatOnlyNodeCount: number | null;
+  setChatOnlyNodeCount: (count: number | null) => void;
 }
-
-export type GraphMode = 'full' | 'chatOnly';
 
 const GraphStateContext = createContext<GraphStateContextValue | null>(null);
 
@@ -41,6 +50,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [graphViewMode, setGraphViewMode] = useState<'force' | 'tree' | 'circles'>('force');
   const [graphMode, setGraphMode] = useState<GraphMode>('full');
+  const [chatOnlyNodeCount, setChatOnlyNodeCount] = useState<number | null>(null);
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels((prev) =>
@@ -72,6 +82,8 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       setGraphViewMode,
       graphMode,
       setGraphMode,
+      chatOnlyNodeCount,
+      setChatOnlyNodeCount,
     }),
     [
       graph,
@@ -82,6 +94,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       highlightedNodeIds,
       graphViewMode,
       graphMode,
+      chatOnlyNodeCount,
     ],
   );
 

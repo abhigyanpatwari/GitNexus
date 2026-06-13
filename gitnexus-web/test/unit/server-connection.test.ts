@@ -315,6 +315,34 @@ describe('DEFAULT_BACKEND_URL resolution', () => {
   });
 });
 
+describe('LARGE_GRAPH_NODE_THRESHOLD resolution', () => {
+  afterEach(() => {
+    delete window.__GITNEXUS_CONFIG__;
+    vi.resetModules();
+  });
+
+  it('defaults to 25000 when no config is injected', async () => {
+    delete window.__GITNEXUS_CONFIG__;
+    const { LARGE_GRAPH_NODE_THRESHOLD } = await import('../../src/config/ui-constants');
+    expect(LARGE_GRAPH_NODE_THRESHOLD).toBe(25_000);
+  });
+
+  it('uses a valid positive override', async () => {
+    window.__GITNEXUS_CONFIG__ = { largeGraphNodeThreshold: 100_000 };
+    const { LARGE_GRAPH_NODE_THRESHOLD } = await import('../../src/config/ui-constants');
+    expect(LARGE_GRAPH_NODE_THRESHOLD).toBe(100_000);
+  });
+
+  it('ignores NaN, zero, and negative overrides (falls back to default)', async () => {
+    for (const bad of [NaN, 0, -10]) {
+      window.__GITNEXUS_CONFIG__ = { largeGraphNodeThreshold: bad };
+      vi.resetModules();
+      const { LARGE_GRAPH_NODE_THRESHOLD } = await import('../../src/config/ui-constants');
+      expect(LARGE_GRAPH_NODE_THRESHOLD, `override=${bad}`).toBe(25_000);
+    }
+  });
+});
+
 describe('validateBackendUrl', () => {
   it('allows http:// URLs', () => {
     expect(() => validateBackendUrl('http://localhost:4747')).not.toThrow();
