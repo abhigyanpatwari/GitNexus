@@ -15,7 +15,7 @@
  * Security considerations:
  * - Default binds to 127.0.0.1 (loopback only).
  * - Use --auth-token to enable Bearer Token authentication.
- * - Use --host 0.0.0.0 to expose to all interfaces (requires --auth-token; warns otherwise).
+ * - Use --host 0.0.0.0 to expose to all interfaces (requires --auth-token — refuses to start otherwise).
  * - CORS is restricted to loopback origins when no auth token is configured.
  * - PNA (Private Network Access) header is emitted only in response to browser preflight requests.
  */
@@ -442,13 +442,15 @@ export async function startMcpHttpServer(
 ): Promise<HttpServer> {
   const { port, host, authToken } = options;
 
-  // Warn when binding to a non-loopback address without auth protection.
-  if (!authToken && host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
-    logger.warn(
-      { host, port },
-      'GitNexus MCP HTTP server is binding to a non-loopback address WITHOUT --auth-token. ' +
-        'Anyone who can reach this host can query your indexed repos. ' +
-        'Pass --auth-token or bind --host 127.0.0.1.',
+  // Refuse to start an unauthenticated server on a non-loopback interface — that
+  // would silently expose every indexed repo to anyone who can reach the host.
+  // Loopback binds stay open by default; non-loopback binds require a token.
+  if (!authToken && !isLoopbackHost(host)) {
+    throw new Error(
+      `Refusing to start the MCP HTTP server on a non-loopback host (${host}) without ` +
+        'authentication — it would expose all indexed repos to anyone who can reach it. ' +
+        'Pass --auth-token (or set GITNEXUS_MCP_AUTH_TOKEN), or bind --host 127.0.0.1. ' +
+        'This applies to --host 0.0.0.0 and --host :: as well.',
     );
   }
 

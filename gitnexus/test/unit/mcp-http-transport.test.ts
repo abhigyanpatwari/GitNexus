@@ -26,6 +26,7 @@ import {
   isLoopbackOrigin,
   computeAllowedHosts,
   resolveAuthToken,
+  startMcpHttpServer,
 } from '../../src/mcp/http-transport.js';
 import { createMCPServer, installSignalShutdown, SHUTDOWN_EXIT_CODES } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
@@ -291,6 +292,30 @@ describe('startMcpHttpServer', () => {
       'Access-Control-Request-Private-Network': 'true',
     });
     expect(get.headers['access-control-allow-private-network']).toBeUndefined();
+  });
+
+  it('U8: refuses to start on a non-loopback host without a token', async () => {
+    const backend = createMockBackend();
+    await expect(
+      startMcpHttpServer(backend as never, { host: '0.0.0.0', port: 0 }),
+    ).rejects.toThrow(/non-loopback/i);
+    await expect(
+      startMcpHttpServer(backend as never, { host: '::', port: 0 }),
+    ).rejects.toThrow(/non-loopback/i);
+    await expect(
+      startMcpHttpServer(backend as never, { host: '192.168.1.50', port: 0 }),
+    ).rejects.toThrow();
+  });
+
+  it('U8: starts on a non-loopback host when a token is provided', async () => {
+    const backend = createMockBackend();
+    const server = await startMcpHttpServer(backend as never, {
+      host: '0.0.0.0',
+      port: 0,
+      authToken: 'tok',
+    });
+    servers.push({ server, cleanup: async () => {} });
+    expect(server.listening).toBe(true);
   });
 
   it('U6: rejects a POST /mcp carrying a disallowed Host header (DNS-rebinding protection)', async () => {
