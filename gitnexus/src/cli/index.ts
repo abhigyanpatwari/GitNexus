@@ -41,6 +41,15 @@ program
   .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
   .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
 
+// Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook
+// before it overwrites the var, so the postAction hook can restore it. The
+// analyzeCommand env snapshot is taken AFTER this hook runs, so it cannot undo
+// the hook's write on its own — without this restore a CLI --embedding-dims
+// would leak into a later in-process program.parseAsync (tests / long-running
+// hosts). Single-shot CLI exits the process, making the restore a no-op there.
+let dimsEnvBaseline: string | undefined;
+let dimsEnvCaptured = false;
+
 program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
@@ -143,32 +152,40 @@ program
   )
   .addHelpText('after', () => t('help.analyze.environment'))
   .hook('preAction', (thisCommand: Command) => {
-    // Set GITNEXUS_EMBEDDING_* env vars from CLI flags BEFORE lazy-importing
-    // analyze.ts, because schema.ts reads EMBEDDING_DIMS at module-load time
-    // via a static-import chain (analyze.ts → run-analyze.ts → schema.ts).
-    // Waiting until analyzeCommandImpl to set them is too late.
-    const opts = thisCommand.opts();
-    if (opts['embeddingBaseUrl'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_URL = String(opts['embeddingBaseUrl']).trim();
-    }
-    if (opts['embeddingModel'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_MODEL = String(opts['embeddingModel']).trim();
-    }
-    if (opts['embeddingAuthToken'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_API_KEY = String(opts['embeddingAuthToken']).trim();
-    }
-    if (opts['embeddingDims'] !== undefined) {
-      // Validate + normalize BEFORE writing the env var: schema.ts reads it at
-      // module-load (during the lazy import below) and throws on a bad value,
-      // which — on the synchronous program.parse() path, before the analyze
-      // fatal-handlers are installed — would surface as a raw unhandled
-      // rejection instead of this friendly message.
-      const dims = normalizeEmbeddingDims(String(opts['embeddingDims']));
+    // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
+    // module-load time during the lazy import('./analyze.js') below (via the
+    // static chain analyze.ts → run-analyze.ts → schema.ts), so deferring to
+    // analyzeCommandImpl would be too late. URL / MODEL / API_KEY are read
+    // lazily at runtime (readConfig), so analyzeCommandImpl is their sole
+    // setter — keeping them out of this hook means they fall under the impl's
+    // env snapshot/restore and don't leak across in-process invocations.
+    const dimsOpt = thisCommand.opts()['embeddingDims'];
+    if (dimsOpt !== undefined) {
+      // Validate + normalize BEFORE writing the env var: schema.ts throws on a
+      // bad value at module-load, which — on the synchronous program.parse()
+      // path, before the analyze fatal-handlers are installed — would surface
+      // as a raw unhandled rejection instead of this friendly message.
+      const dims = normalizeEmbeddingDims(String(dimsOpt));
       if (dims === null) {
         process.stderr.write(`\n  ${EMBEDDING_DIMS_ERROR}\n\n`);
         process.exit(1);
       }
+      dimsEnvBaseline = process.env.GITNEXUS_EMBEDDING_DIMS;
+      dimsEnvCaptured = true;
       process.env.GITNEXUS_EMBEDDING_DIMS = dims;
+    }
+  })
+  .hook('postAction', () => {
+    // Restore the pre-hook GITNEXUS_EMBEDDING_DIMS so a CLI override doesn't
+    // persist into a later program.parseAsync in the same process. (Fires on a
+    // microtask after a successful parse; the crash path never reaches here,
+    // but the hook validates dims before writing, so there's nothing to undo.)
+    if (!dimsEnvCaptured) return;
+    dimsEnvCaptured = false;
+    if (dimsEnvBaseline === undefined) {
+      delete process.env.GITNEXUS_EMBEDDING_DIMS;
+    } else {
+      process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
     }
   })
   .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
