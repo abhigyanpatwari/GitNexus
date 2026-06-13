@@ -21,6 +21,7 @@ import {
   type BackendRepo,
 } from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
+import { parseSkipGraphParam } from './lib/graph-load-decision';
 import { formatBackendError } from './i18n/error-messages';
 import { useTranslation } from 'react-i18next';
 
@@ -123,6 +124,9 @@ const AppContent = () => {
     const params = new URLSearchParams(window.location.search);
     const serverUrlParam = params.get('server');
     const projectParam = params.get('project');
+    // `?skipGraph=1` forces chat-only, `?skipGraph=0` forces a full graph;
+    // absent → auto-detect by node count. Bookmarkable / survives F5 (#2178).
+    const skipGraphParam = parseSkipGraphParam(params.get('skipGraph'));
 
     if (!serverUrlParam && !projectParam) return;
     autoConnectRan.current = true;
@@ -169,7 +173,7 @@ const AppContent = () => {
         },
         undefined,
         projectParam || undefined,
-        { awaitAnalysis: true }, // enable backend hold-queue for repos still being analyzed
+        { awaitAnalysis: true, skipGraph: skipGraphParam }, // hold-queue + chat-only control (#2178)
       );
     };
 

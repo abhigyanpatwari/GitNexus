@@ -1238,9 +1238,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       }
 
       if (pNameStr) {
-        // Persist the selected project in the URL so a refresh re-opens it
+        // Persist the selected project in the URL so a refresh re-opens it.
+        // Drop any `?skipGraph` override: a deliberate repo switch should make a
+        // fresh per-repo decision (auto-detect) on the next refresh rather than
+        // carry the previous repo's forced mode (#2178).
         const urlObj = new URL(window.location.href);
         urlObj.searchParams.set('project', pNameStr);
+        urlObj.searchParams.delete('skipGraph');
         window.history.replaceState(null, '', urlObj.toString());
       }
 
