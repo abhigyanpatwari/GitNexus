@@ -22,8 +22,7 @@ import io
 import json
 import pathlib
 import re
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 # ── Load the hyphenated script as a module ───────────────────────────────
 _SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
@@ -94,7 +93,7 @@ def _render_report() -> tuple[str, int]:
     return report, code
 
 
-class ManifestClassification(unittest.TestCase):
+class ManifestClassification(TestCase):
     def test_manifest_matches_physical_vendor_dirs(self):
         """Consistency guard: the manifest set == the gitnexus/vendor/tree-sitter-*
         dirs. Vendoring a grammar without a manifest entry (or vice-versa) fails —
@@ -149,7 +148,7 @@ class ManifestClassification(unittest.TestCase):
         self.assertIn("not valid JSON", str(ctx.exception))
 
 
-class AssertCurrent(unittest.TestCase):
+class AssertCurrent(TestCase):
     """The offline #1922 ABI gate (--assert-current) must stay hermetic — it reads
     vendored ABIs from the repo, never the network. (Regression guard: a prior
     revision routed vendored grammars through vendored_drift_summary, which fetches
@@ -194,7 +193,7 @@ class AssertCurrent(unittest.TestCase):
         self.assertIn("outside current runtime range", buf.getvalue())
 
 
-class ReportRendering(unittest.TestCase):
+class ReportRendering(TestCase):
     @classmethod
     def setUpClass(cls):
         cls.report, cls.code = _render_report()
@@ -255,7 +254,7 @@ class ReportRendering(unittest.TestCase):
         self.fail(f"no matrix row for {name}")
 
 
-class OfflineMode(unittest.TestCase):
+class OfflineMode(TestCase):
     """--offline must render the report touching ZERO network — vendored ABIs come
     from the repo, npm columns are marked unverified. This is what makes the
     network-dependent report deterministically testable in air-gapped CI."""
@@ -294,4 +293,4 @@ class OfflineMode(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
