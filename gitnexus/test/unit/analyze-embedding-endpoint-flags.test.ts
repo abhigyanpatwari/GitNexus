@@ -30,10 +30,12 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
 // These tests invoke analyzeCommand directly (programmatic-call path), which
 // bypasses the commander preAction hook. So they exercise analyzeCommandImpl's
 // own validation/normalization and the confirmation-message gating — the
-// direct-call half of the fixes. The hook half (and its postAction DIMS
-// baseline restore) only fires on the program.parse path and is covered by
-// code-read; the canonical dims normalization is unit-tested in
-// embedding-dims.test.ts.
+// direct-call half of the fixes. The hook half — the dims crash-path on the
+// REAL program.parse path — is exercised end-to-end in
+// test/integration/analyze-embedding-flags-e2e.test.ts (it would have caught
+// the original raw-crash regression). The canonical dims normalization is
+// unit-tested in embedding-dims.test.ts. (The postAction DIMS baseline restore
+// is in-process-parseAsync-only and remains covered by code-read.)
 const EMBED_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
