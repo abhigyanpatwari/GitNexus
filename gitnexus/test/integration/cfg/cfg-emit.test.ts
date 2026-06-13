@@ -10,7 +10,12 @@ import {
 } from '../../../src/core/ingestion/cfg/emit.js';
 import { getProvider } from '../../../src/core/ingestion/languages/index.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import type { CfgVisitor, FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import type {
+  BasicBlockData,
+  CfgEdgeData,
+  CfgVisitor,
+  FunctionCfg,
+} from '../../../src/core/ingestion/cfg/types.js';
 import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
 import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
 
@@ -417,6 +422,51 @@ describe('U4 (#2085 M5) — emitFileCdg', () => {
     expect(rels.length).toBe(r.edges);
     expect(r.droppedEdges).toBe(0);
     expect(onWarn).not.toHaveBeenCalled();
+  });
+
+  it('skips CDG for a CFG whose EXIT is unreachable from all blocks (#2188 unsound guard)', () => {
+    // Hand-built exit-less loop: 0=entry → 1 ⇄ 2 spin forever; 3=exit is
+    // disconnected. Post-dominance would be unsound there, so CDG is skipped —
+    // while a normal sibling function in the same batch still emits CDG.
+    const blocks: BasicBlockData[] = [0, 1, 2, 3].map((i) => ({
+      index: i,
+      startLine: i + 1,
+      endLine: i + 1,
+      text: '',
+      kind: i === 0 ? 'entry' : i === 3 ? 'exit' : 'normal',
+    }));
+    const edges: CfgEdgeData[] = [
+      { from: 0, to: 1, kind: 'seq' },
+      { from: 1, to: 2, kind: 'seq' },
+      { from: 2, to: 1, kind: 'seq' },
+    ];
+    const unsound: FunctionCfg = {
+      filePath: 'spin.ts',
+      functionStartLine: 1,
+      functionStartColumn: 0,
+      entryIndex: 0,
+      exitIndex: 3,
+      blocks,
+      edges,
+    };
+    const sound = cfgsOf(
+      `function f(x: number) { if (x) { a(); } else { b(); } c(); }`,
+      'sound.ts',
+    )[0];
+
+    const { graph, rels } = recordingGraph();
+    const onWarn = vi.fn();
+    const r = emitFileCdg(graph, [unsound, sound], 0, onWarn);
+
+    expect(r.skippedUnsoundFunctions).toBe(1);
+    // No CDG edge originates from the unsound function...
+    expect(rels.some((e) => e.sourceId.startsWith('BasicBlock:spin.ts:'))).toBe(false);
+    // ...but the sound sibling still emitted CDG normally.
+    expect(rels.length).toBeGreaterThan(0);
+    expect(rels.every((e) => e.sourceId.startsWith('BasicBlock:sound.ts:'))).toBe(true);
+    expect(r.edges).toBe(rels.length);
+    expect(onWarn).toHaveBeenCalledTimes(1);
+    expect(onWarn.mock.calls[0][0]).toContain('EXIT not reachable');
   });
 
   it('emits POST_DOMINATE debug edges only when the env flag is set (KTD8)', () => {

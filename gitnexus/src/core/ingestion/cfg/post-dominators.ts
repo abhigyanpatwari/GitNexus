@@ -161,3 +161,58 @@ export function postDominates(tree: PostDomTree, p: number, b: number): boolean 
   }
   return false;
 }
+
+/**
+ * Precondition for SOUND post-dominance (#2188 review): EXIT must be reachable
+ * (forward) from every block that is itself reachable from ENTRY. When it
+ * fails — an entry-reachable region that cannot reach EXIT, e.g. a
+ * non-terminating loop or a multi-terminal CFG a future language visitor might
+ * emit — the EXIT-rooted reverse walk degenerates (every such block gets
+ * {@link NO_IPDOM}), which both DROPS real control dependences and INVENTS
+ * spurious ones (the unsoundness documented in the module header). Consumers
+ * ({@link emitFileCdg}) check this and skip CDG for the function rather than
+ * persist an unsound projection — CFG and REACHING_DEF, which do not depend on
+ * post-dominance, are unaffected.
+ *
+ * The current TS visitor always satisfies this (every loop is given a
+ * structural `header → loopExit` edge, keeping EXIT reverse-reachable), so this
+ * is a guard for future visitors and hand-built CFGs, not a behavior change
+ * today. Pure and O(V+E).
+ */
+export function isExitReachableFromAllBlocks(cfg: FunctionCfg): boolean {
+  const n = cfg.blocks.length;
+  if (n === 0) return true;
+  const { entryIndex, exitIndex } = cfg;
+  if (entryIndex < 0 || entryIndex >= n || exitIndex < 0 || exitIndex >= n) return false;
+
+  const succ: number[][] = Array.from({ length: n }, () => []);
+  const pred: number[][] = Array.from({ length: n }, () => []);
+  for (const e of cfg.edges) {
+    if (e.from < 0 || e.from >= n || e.to < 0 || e.to >= n) continue;
+    succ[e.from].push(e.to);
+    pred[e.to].push(e.from);
+  }
+
+  const reach = (start: number, adj: readonly number[][]): Uint8Array => {
+    const seen = new Uint8Array(n);
+    const stack = [start];
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const b = stack.pop() as number;
+      for (const next of adj[b]) {
+        if (!seen[next]) {
+          seen[next] = 1;
+          stack.push(next);
+        }
+      }
+    }
+    return seen;
+  };
+
+  const fromEntry = reach(entryIndex, succ); // forward-reachable from ENTRY
+  const canReachExit = reach(exitIndex, pred); // can reach EXIT (reverse from EXIT)
+  for (let i = 0; i < n; i++) {
+    if (fromEntry[i] && !canReachExit[i]) return false;
+  }
+  return true;
+}

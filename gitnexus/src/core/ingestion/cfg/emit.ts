@@ -22,7 +22,11 @@ import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
 import { computeReachingDefs } from './reaching-defs.js';
 import { computeControlDependence } from './control-dependence.js';
-import { computePostDominators, NO_IPDOM } from './post-dominators.js';
+import {
+  computePostDominators,
+  isExitReachableFromAllBlocks,
+  NO_IPDOM,
+} from './post-dominators.js';
 import type { BindingEntry, FunctionCfg } from './types.js';
 
 /**
@@ -447,6 +451,12 @@ export interface CdgEmitResult {
   cappedFunctions: number;
   /** Diagnostic POST_DOMINATE edges emitted (0 unless the debug env is set). */
   postDominateEdges: number;
+  /**
+   * Functions skipped because EXIT was not reachable from every entry-reachable
+   * block — post-dominance would be unsound (#2188 review). CFG/REACHING_DEF for
+   * those functions are kept; only their CDG projection is omitted.
+   */
+  skippedUnsoundFunctions: number;
 }
 
 /** Whether the POST_DOMINATE debug env flag is enabled (`1`/`true`). */
@@ -480,12 +490,26 @@ export function emitFileCdg(
     droppedEdges: 0,
     cappedFunctions: 0,
     postDominateEdges: 0,
+    skippedUnsoundFunctions: 0,
   };
   const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
   const emitPostDom = postDominateDebugEnabled();
 
   for (const cfg of cfgs) {
     const { filePath, functionStartLine, functionStartColumn } = cfg;
+    // Sound post-dominance requires EXIT reachable from every entry-reachable
+    // block (#2188 review). A CFG that violates it — a future visitor's
+    // multi-terminal / non-terminating shape — would yield a CDG that both
+    // drops real and invents spurious dependences, so skip CDG for it. CFG and
+    // REACHING_DEF (emitted elsewhere, independent of post-dominance) are kept.
+    if (!isExitReachableFromAllBlocks(cfg)) {
+      result.skippedUnsoundFunctions++;
+      onWarn?.(
+        `[cdg] ${filePath}:${functionStartLine}: EXIT not reachable from all ` +
+          `blocks — CDG skipped for this function (CFG/REACHING_DEF unaffected)`,
+      );
+      continue;
+    }
     // Compute the post-dom tree once and feed it to the control-dependence
     // pass (avoids recomputing it) and to the optional POST_DOMINATE emit.
     const tree = computePostDominators(cfg);

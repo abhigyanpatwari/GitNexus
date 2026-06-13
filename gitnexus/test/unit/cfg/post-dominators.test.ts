@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computePostDominators,
+  isExitReachableFromAllBlocks,
   postDominates,
 } from '../../../src/core/ingestion/cfg/post-dominators.js';
 import type {
@@ -162,5 +163,68 @@ describe('computePostDominators — ipdom on the reverse CFG', () => {
     const a = computePostDominators(make());
     const b = computePostDominators(make());
     expect(a.ipdom).toEqual(b.ipdom);
+  });
+});
+
+// ── post-dominance soundness precondition (#2188 review) ────────────────────
+// EXIT must be reachable (forward) from every block reachable from ENTRY, else
+// the EXIT-rooted reverse walk degenerates and CDG is unsound. The current TS
+// visitor always satisfies this; the guard protects future / hand-built CFGs.
+describe('isExitReachableFromAllBlocks', () => {
+  it('holds for a normal single-EXIT diamond (every block reaches EXIT)', () => {
+    const cfg = mkCfg(5, [
+      [0, 1],
+      [0, 2],
+      [1, 3],
+      [2, 3],
+      [3, 4],
+    ]);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('holds for a loop whose header has a structural edge to EXIT', () => {
+    // 0=entry → 1=header; header → 2=body → back to header; header → 3=exit.
+    const cfg = mkCfg(4, [
+      [0, 1],
+      [1, 2],
+      [2, 1],
+      [1, 3],
+    ]);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('fails when an entry-reachable region cannot reach EXIT (exit-less loop)', () => {
+    // 0=entry → 1; 1↔2 spin forever with no edge to 3=exit. EXIT is unreachable
+    // from the {1,2} region → post-dominance would be unsound there.
+    const cfg = mkCfg(4, [
+      [0, 1],
+      [1, 2],
+      [2, 1],
+    ]);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(false);
+  });
+
+  it('fails for the review counterexample (A→B, A→L, B→X→L→A; EXIT disconnected)', () => {
+    // Indices: 0=A(entry), 1=B, 2=X, 3=L, 4=EXIT (disconnected). The A/B/X/L
+    // cycle never reaches EXIT, so the precondition must reject it.
+    const cfg = mkCfg(5, [
+      [0, 1],
+      [0, 3],
+      [1, 2],
+      [2, 3],
+      [3, 0],
+    ]);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(false);
+  });
+
+  it('ignores blocks unreachable from ENTRY (they need not reach EXIT)', () => {
+    // 0=entry → 1=exit directly; 2 is an island unreachable from entry. The
+    // island does not violate the precondition (it is never analyzed).
+    const cfg = mkCfg(3, [[0, 1]], { entry: 0, exit: 1 });
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('holds for the single-block CFG (entry === exit)', () => {
+    expect(isExitReachableFromAllBlocks(mkCfg(1, [], { entry: 0, exit: 0 }))).toBe(true);
   });
 });
