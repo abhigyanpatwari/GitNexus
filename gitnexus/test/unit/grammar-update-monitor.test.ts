@@ -216,6 +216,45 @@ describe('detect() classification (offline, injected deps)', () => {
   });
 });
 
+describe('detect()/apply() agree on "newer" for github grammars', () => {
+  // github grammars carry up.version = `<base>-g<sha7>` (the provenance string apply()
+  // writes). detect() must compare the same up.version (not the bare sha7) so it stops
+  // reporting a false "update" once the bot has re-vendored once (#2187 review).
+  const PROV = '1.0.0-gabc1234';
+  // deps for dart (github); other grammars get a harmless npm-shaped upstream so the
+  // detect() loop completes — we only inspect dart.
+  const dartDeps = (vendored: string): DetectDeps => ({
+    vendoredVersion: (g) => (g.name === 'tree-sitter-dart' ? vendored : '0.0.0'),
+    resolveUpstream: (g) =>
+      g.name === 'tree-sitter-dart'
+        ? { version: PROV, ref: 'abc1234def0', kind: 'github' }
+        : { version: '9.9.9', ref: '9.9.9', kind: 'npm' },
+    fetchSource: (g) => g.name,
+    readAbi: () => 14,
+  });
+  const dartRow = (vendored: string) =>
+    must(
+      mod.detect(dartDeps(vendored)).find((r) => r.grammar === 'dart'),
+      'no detect row for dart',
+    );
+
+  it('equal provenance → update:false (the asymmetry that is fixed)', () => {
+    expect(dartRow(PROV).update).toBe(false);
+  });
+
+  it('first-vendoring (plain version vs provenance) → update:true (not suppressed)', () => {
+    // vendored is the plain pre-bot version; up.version is `<base>-g<sha7>` → still newer.
+    expect(dartRow('1.0.0').update).toBe(true);
+  });
+
+  it('upstream sha advanced → update:true', () => {
+    expect(dartRow('1.0.0-g0000000').update).toBe(true);
+  });
+  // The detect⇄apply agreement on the equal-provenance (already-current) case is
+  // asserted in U12's apply() tests — apply()'s not-newer path currently calls
+  // process.exit(0), which can't be exercised in-process until U12 makes it return.
+});
+
 describe('apply(--dry-run): resolves + validates but writes nothing', () => {
   it('returns the candidate version without mutating the vendored package.json', () => {
     const pkgPath = path.resolve(

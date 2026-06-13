@@ -87,6 +87,15 @@ const clean = (v) =>
     .replace(/^[v^~]/, '')
     .trim();
 
+// Shared "is the candidate newer than what we ship?" check, used by BOTH detect()
+// and apply() so they can never disagree. up.version is the comparable identity for
+// both kinds: a plain semver for npm, and the `<base>-g<sha7>` provenance string for
+// github (which apply() also writes to package.json). detect() previously compared
+// the bare sha7 for github, so after the bot re-vendored a github grammar once it
+// reported a perpetual false "update available" while apply() saw "already current"
+// (#2187 review). Comparing up.version on both sides removes that asymmetry.
+const isNewer = (up, have) => !have || up.version !== have;
+
 function vendoredVersion(g) {
   const p = path.join(VENDOR, g.name, 'package.json');
   return clean(JSON.parse(fs.readFileSync(p, 'utf8')).version);
@@ -180,7 +189,7 @@ function detect(deps = {}) {
       report.push({ grammar: key, error: String(err.message || err) });
       continue;
     }
-    const newer = up.kind === 'npm' ? up.version !== have : !have || up.ref.slice(0, 7) !== have;
+    const newer = isNewer(up, have);
     let abi = null;
     if (newer) {
       try {
@@ -249,7 +258,7 @@ function apply(key, opts = {}) {
   }
   const have = getVendored(g);
   const up = resolveUp(g);
-  const newer = up.kind === 'npm' ? up.version !== have : !have || up.version !== have;
+  const newer = isNewer(up, have);
   if (!newer) {
     console.error(`${key}: already current (${have}); nothing to apply.`);
     process.exit(0);
