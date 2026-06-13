@@ -8,6 +8,26 @@ export const DEFAULT_BACKEND_URL =
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
 export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
+/**
+ * Default node-count above which the WebUI connects in chat-only mode (skips
+ * the full graph download). Grounded in sigma.js/graphology prior art: ~10K
+ * nodes render smoothly, complex-styled rendering struggles past ~5K, and the
+ * force-layout degrades beyond ~50K edges. GitNexus renders labeled nodes with
+ * force layout and has ~1.7x more edges than nodes, so the edge cliff is crossed
+ * around ~25-30K nodes. Override at deploy time via
+ * window.__GITNEXUS_CONFIG__.largeGraphNodeThreshold. See issue #2178.
+ */
+const DEFAULT_LARGE_GRAPH_NODE_THRESHOLD = 25_000;
+
+export const LARGE_GRAPH_NODE_THRESHOLD = ((): number => {
+  const override =
+    typeof window !== 'undefined' ? window.__GITNEXUS_CONFIG__?.largeGraphNodeThreshold : undefined;
+  // Ignore non-finite, NaN, or non-positive overrides — fall back to the default.
+  return typeof override === 'number' && Number.isFinite(override) && override > 0
+    ? override
+    : DEFAULT_LARGE_GRAPH_NODE_THRESHOLD;
+})();
+
 /** Minimum Node.js version required by the gitnexus CLI (injected by Vite from package.json engines). */
 declare const __REQUIRED_NODE_VERSION__: string;
 export const REQUIRED_NODE_VERSION = __REQUIRED_NODE_VERSION__;
