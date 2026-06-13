@@ -12,7 +12,7 @@
  * module-level cache (unixGuardTimeoutCache) is on the macOS/Unix path, which
  * these Linux tests never reach.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'fs';
 import os from 'os';
@@ -27,6 +27,13 @@ type Probe = {
   linuxProcScanFindGitNexusServer?: (dbPathAbs: string, myPid: number) => string;
 };
 const probe = createRequire(import.meta.url)(PROBE_PATH) as Probe;
+
+// The probe now exports linuxProcScanFindGitNexusServer unconditionally (F1
+// white-box verdict assertions). Narrow it once here to a non-optional typed
+// fn so the per-test call sites stay assertion-free; a dedicated test below
+// pins that the export really is a function.
+type ScanVerdictFn = (dbPathAbs: string, myPid: number) => string;
+const scanVerdictFn = probe.linuxProcScanFindGitNexusServer as ScanVerdictFn;
 
 const isLinux = process.platform === 'linux';
 
@@ -196,23 +203,66 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
     expect(owned).toBe(false);
   });
 
-  // ── D3: 4 KB+ cmdline cap ─────────────────────────────────────────
+  // ── D3: 4 KB+ cmdline cap — escalation must really iterate (F2) ────
+  //
+  // The cmdline shape here is deliberate (Codex): the `gitnexus` token sits in
+  // the SECOND argv (a SHORT node_modules/gitnexus path, well inside the first
+  // 4 KB chunk) so `if (!hasGitNexus) break` does NOT abort the read; a ~9 KB
+  // pad argv then pushes the trailing `mcp` mode token PAST 4096, so the first
+  // 4 KB chunk has gitnexus-but-no-mode and the loop MUST escalate to a second
+  // read to find `mcp`. Setting GITNEXUS_HOOK_PROC_CMDLINE_MAX=4096 makes the
+  // chunk size 4 KB so escalation actually happens (the 16 KB default would read
+  // the whole line in one shot and the loop would never iterate — the old test's
+  // latent no-op).
 
-  it('owned even when the mode token sits far past 4 KB (read escalation, no miss)', () => {
-    // A realistic worst case: an absurdly long interpreter path pushes the
-    // trailing `mcp` token well beyond the 4 KB floor. The bounded escalation
-    // must still reach it (gitnexus token visible early → keep reading).
-    const longPad = '/very/long/path'.repeat(600); // ~9 KB, > 4096
-    const script = `${longPad}/node_modules/gitnexus/dist/cli/index.js`;
-    const { owned } = runScan((lbug) => [
-      {
-        pid: 10001,
-        comm: 'MainThread',
-        cmdline: ['node', script, 'mcp'],
-        fdTargets: [lbug],
-      },
-    ]);
+  // gitnexus token early (well under 4 KB), mode token forced past 4 KB by pad.
+  const GITNEXUS_SHORT = '/nm/node_modules/gitnexus/dist/cli/index.js';
+  const PAD_PAST_4K = 'x'.repeat(9000); // pushes the trailing `mcp` well past 4096
+
+  it('owned even when the mode token sits far past 4 KB → escalation iterates and finds it', () => {
+    const readSyncSpy = vi.spyOn(fs, 'readSync');
+    cleanups.push(() => readSyncSpy.mockRestore());
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10001,
+          comm: 'MainThread',
+          // node | SHORT gitnexus path (<4KB) | 9KB pad | mcp  → mcp lands >4096
+          cmdline: ['node', GITNEXUS_SHORT, PAD_PAST_4K, 'mcp'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
     expect(owned).toBe(true);
+    // White-box proof the escalation actually re-read: with a 4 KB chunk over a
+    // >4 KB cmdline, readSync must have been called more than once for this pid.
+    // (A "just bump the cap" pseudo-fix that read everything in one go would
+    // leave this at 1 and fail.)
+    expect(readSyncSpy.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('discrimination: same gitnexus cmdline but mode token past HARD_CEIL → not-owned', () => {
+    // Negative control proving the escalation has a real upper bound (HARD_CEIL
+    // = 256 KiB) and the positive test above is not just "always escalates". The
+    // gitnexus token is early so escalation runs, but a >256 KiB pad keeps the
+    // `mcp` token beyond the ceiling, so the bounded read stops before reaching
+    // it → isGitNexusServerCommand sees no mode token → not a candidate →
+    // not-owned. (A broken "escalate forever" impl would wrongly read to `mcp`
+    // and report owned, failing this assertion.)
+    const padPastCeil = 'x'.repeat(300000); // > HARD_CEIL (262144)
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10002,
+          comm: 'MainThread',
+          cmdline: ['node', GITNEXUS_SHORT, padPastCeil, 'mcp'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(false);
   });
 
   it('does not over-read: a giant non-gitnexus cmdline is bounded and yields not-owned', () => {
@@ -228,22 +278,153 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
     expect(owned).toBe(false);
   });
 
-  // ── D4: EACCES on a candidate's fd dir → fail-closed (owned) ──────
+  // ── D3b: cmdline escalation respects the scan budget (F3) ─────────
   //
-  // A fake-procfs symlink cannot reliably reproduce EACCES on a directory in
-  // CI (it depends on running as non-root and on mount options). We exercise
-  // the dispatch decision via a real chmod 000 fd dir when we are NOT root
-  // (most CI), and document the logic-path otherwise. The probe treats any
-  // readdir error on a candidate's fd dir OTHER than ENOENT as fail-closed.
+  // A single pathological candidate whose `mcp` token sits far past the chunk
+  // size used to be able to read up to HARD_CEIL (256 KiB) inside one
+  // readLinuxCmdline call before the scan-level budget was re-checked. F3 wires
+  // outOfBudget into the escalation loop: when the deadline trips mid-read it
+  // returns the CMDLINE_TIMEOUT *Symbol* (NOT '' — '' would flow through
+  // isGitNexusServerCommand as a non-candidate and silently drop a possible
+  // owner, a fail-OPEN), and the Phase 1 caller maps that Symbol to the 'timeout'
+  // verdict (fail-CLOSED). We drive the deadline deterministically by advancing
+  // a Date.now spy after the first escalation read.
 
-  it('candidate fd dir unreadable (non-ENOENT) → fail-closed (owned)', () => {
+  it('escalation that exceeds the budget mid-read → verdict timeout (sentinel, not silent drop)', () => {
+    const scan = scanVerdictFn;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-f3-'));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const lbugPath = path.join(dir, 'lbug');
+    fs.writeFileSync(lbugPath, '');
+    // gitnexus token early (escalation will start), mode token pushed past 4 KB
+    // so a SECOND read is required — between those reads we trip the clock.
+    const procRoot = createFakeProcRoot([
+      {
+        pid: 10200,
+        comm: 'MainThread',
+        cmdline: ['node', GITNEXUS_SHORT, 'x'.repeat(9000), 'mcp'],
+        fdTargets: [lbugPath],
+      },
+    ]);
+    cleanups.push(() => fs.rmSync(procRoot, { recursive: true, force: true }));
+    setEnv({
+      GITNEXUS_HOOK_PROC_ROOT: procRoot,
+      GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096',
+      GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1000', // positive, so the scan starts
+    });
+
+    // Deterministic clock: the scan captures `start` (call #1) and runs its
+    // Phase-0/1 entry budget checks in-budget; once the escalation loop is under
+    // way we jump Date.now() past the 1000 ms budget so the loop's in-read
+    // outOfBudget() returns the CMDLINE_TIMEOUT sentinel. The threshold (>4) is
+    // chosen so the early checks (start capture, per-entry + Phase-1 pre-read
+    // checks) stay at base and only the escalation's mid-loop check trips.
+    const base = Date.now();
+    let nowCalls = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls > 4 ? base + 5000 : base;
+    });
+    cleanups.push(() => nowSpy.mockRestore());
+
+    const verdict = scan(lbugPath, 1);
+    // The load-bearing assertion: a mid-escalation budget trip yields the
+    // 'timeout' verdict (via the Symbol sentinel) — NOT a silent non-candidate
+    // drop (which would be 'not-owned' here and a fail-OPEN if this were a real
+    // cross-budget owner).
+    expect(verdict).toBe('timeout');
+    nowSpy.mockRestore();
+  });
+
+  // ── D5: GITNEXUS_HOOK_PROC_ROOT is honored ONLY under a test runner (F4) ──
+  //
+  // Production hooks run as `node <probe>.cjs` with neither VITEST nor
+  // NODE_ENV=test set; vitest injects both into every worker (verified). F4
+  // gates getProcRoot() on that signal so a production env that leaked
+  // GITNEXUS_HOOK_PROC_ROOT (pointing at an empty/bad tree) cannot turn Linux
+  // owner detection OFF (no pids -> not-owned -> fail-OPEN, the #1492 class).
+  // These tests run inside vitest, so the gate is OPEN and injection works (the
+  // entire fake-procfs suite above already depends on that). Here we prove the
+  // gate is load-bearing: with the test signals stripped, the override is
+  // ignored and the scan falls back to the real /proc (so our fake lbug is NOT
+  // found there -> not-owned), and with them present the override is honored.
+
+  it('honors GITNEXUS_HOOK_PROC_ROOT under the vitest test signal (gate open)', () => {
+    // Sanity: in this vitest worker VITEST/NODE_ENV are set, so the fake root is
+    // honored and a fake owner is detected — same mechanism the whole suite uses.
+    const { owned } = runScan((lbug) => [
+      {
+        pid: 10300,
+        comm: 'MainThread',
+        cmdline: GITNEXUS_MCP_ARGV('/x/node_modules/gitnexus/dist/cli/index.js'),
+        fdTargets: [lbug],
+      },
+    ]);
+    expect(owned).toBe(true);
+  });
+
+  it('ignores GITNEXUS_HOOK_PROC_ROOT when the test signal is absent (gate closed → real /proc)', () => {
+    // Strip BOTH test signals so getProcRoot() falls back to /proc even though
+    // GITNEXUS_HOOK_PROC_ROOT points at our fake tree. The fake lbug is not an
+    // fd under the real /proc, so the scan returns not-owned: proof the override
+    // is inert in a non-test (production-shaped) context.
+    const savedVitest = process.env.VITEST;
+    const savedNodeEnv = process.env.NODE_ENV;
+    cleanups.push(() => {
+      if (savedVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = savedVitest;
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = savedNodeEnv;
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-f4-'));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const lbugPath = path.join(dir, 'lbug');
+    fs.writeFileSync(lbugPath, '');
+    const procRoot = createFakeProcRoot([
+      {
+        pid: 10400,
+        comm: 'MainThread',
+        cmdline: GITNEXUS_MCP_ARGV('/x/node_modules/gitnexus/dist/cli/index.js'),
+        fdTargets: [lbugPath],
+      },
+    ]);
+    cleanups.push(() => fs.rmSync(procRoot, { recursive: true, force: true }));
+    setEnv({ GITNEXUS_HOOK_PROC_ROOT: procRoot });
+    // Now drop the test signals — must happen AFTER setEnv so the gate sees them gone.
+    delete process.env.VITEST;
+    delete process.env.NODE_ENV;
+    const verdict = scanVerdictFn(lbugPath, 1);
+    // Gate closed -> getProcRoot() returns '/proc'; our fake lbug fd is not in
+    // the real /proc, so no owner is found.
+    expect(verdict).toBe('not-owned');
+    expect(probe.hasGitNexusDbLockedByGitNexusServer(lbugPath, 1)).toBe(false);
+  });
+
+  // ── D4: unreadable candidate fd dir → honest tri-state verdict (F1) ──
+  //
+  // /proc/<pid>/fd is owner-only (mode 0500). A cross-user/root `gitnexus mcp`
+  // serving a DIFFERENT repo clears Phase 0+1 (cmdline matches) and then EACCES
+  // here — but its dev+ino was never compared against THIS lbug. The OLD code
+  // returned 'owned' for every non-ENOENT readdir error, falsely claiming
+  // ownership and permanently suppressing augment for a repo that process does
+  // not lock. F1 splits the failure shapes:
+  //   - EACCES / EPERM      -> 'timeout'  (unverifiable; fail-closed HONESTLY)
+  //   - EIO / ESTALE        -> 'timeout'  (transient I/O; fail-closed)
+  //   - ENOTDIR / other     -> continue   (not a real fd dir; treat as non-owner)
+  // The dispatcher collapses owned+timeout to boolean true, so these assert the
+  // exported tri-state verdict directly — a boolean check could not tell the F1
+  // fix from the old bug.
+
+  it('exports linuxProcScanFindGitNexusServer for white-box verdict assertions', () => {
+    expect(typeof probe.linuxProcScanFindGitNexusServer).toBe('function');
+  });
+
+  it('candidate fd dir EACCES → verdict timeout (honest fail-closed, NOT owned)', () => {
     if (process.getuid && process.getuid() === 0) {
-      // root bypasses chmod perms; assert the documented contract holds by
-      // construction instead (a non-ENOENT readdir error → 'owned'). We model
-      // the unreadable dir by pointing fd at a non-directory so readdir throws
-      // ENOTDIR (a non-ENOENT error), which must map to owned.
-      const { owned } = runScanFdEnotdir();
-      expect(owned).toBe(true);
+      // root bypasses chmod 000, so a real EACCES is not reproducible on this
+      // host. This disk-based test no-ops under root; the uid-agnostic spy
+      // tests below cover every F1 errno branch (EACCES/EPERM/EIO/ESTALE/
+      // ENOTDIR) regardless of who runs the suite.
       return;
     }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-eacces-'));
@@ -267,14 +448,106 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
     );
     fs.chmodSync(fdDir, 0o000); // EACCES on readdir
     setEnv({ GITNEXUS_HOOK_PROC_ROOT: procRoot });
+    // White-box: assert the verdict is 'timeout' (NOT 'owned' — the F1 point).
+    const verdict = scanVerdictFn(lbugPath, 1);
+    expect(verdict).toBe('timeout');
+    // And the dispatcher still fails closed (boolean true) on that timeout.
     const owned = probe.hasGitNexusDbLockedByGitNexusServer(lbugPath, 1);
     expect(owned).toBe(true);
   });
+
+  // uid-agnostic coverage of every F1 fd-readdir errno branch. chmod 000 yields
+  // no EACCES for root, so the disk-based tests above no-op there — these spy
+  // fs.readdirSync to throw a chosen errno only for the candidate's fd dir (the
+  // procRoot enumeration calls through), pinning the F1 split in CI regardless
+  // of the runner's uid.
+  for (const { code, expected } of [
+    { code: 'EACCES', expected: 'timeout' },
+    { code: 'EPERM', expected: 'timeout' },
+    { code: 'EIO', expected: 'timeout' },
+    { code: 'ESTALE', expected: 'timeout' },
+    { code: 'ENOTDIR', expected: 'not-owned' },
+  ] as const) {
+    it(`candidate fd readdir ${code} → verdict ${expected} (uid-agnostic spy)`, () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-fderr-'));
+      cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+      const lbugPath = path.join(dir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      const procRoot = path.join(dir, 'proc');
+      const fdDir = path.join(procRoot, '11001', 'fd');
+      fs.mkdirSync(fdDir, { recursive: true });
+      fs.writeFileSync(path.join(procRoot, '11001', 'comm'), 'MainThread\n');
+      fs.writeFileSync(
+        path.join(procRoot, '11001', 'cmdline'),
+        ['node', '/x/node_modules/gitnexus/dist/cli/index.js', 'mcp'].join('\0') + '\0',
+      );
+      setEnv({ GITNEXUS_HOOK_PROC_ROOT: procRoot });
+      const realReaddir = fs.readdirSync.bind(fs);
+      const spy = vi.spyOn(fs, 'readdirSync').mockImplementation((p, ...rest) => {
+        if (typeof p === 'string' && p.endsWith(`${path.sep}fd`)) {
+          const err = new Error(`mock ${code}`) as NodeJS.ErrnoException;
+          err.code = code;
+          throw err;
+        }
+        return (realReaddir as (...a: unknown[]) => unknown)(p, ...rest);
+      });
+      cleanups.push(() => spy.mockRestore());
+      // White-box: assert the exported tri-state verdict directly (the
+      // dispatcher would collapse timeout+owned to the same boolean).
+      expect(scanVerdictFn(lbugPath, 1)).toBe(expected);
+      spy.mockRestore();
+    });
+  }
+
+  it('candidate fd path is a FILE (ENOTDIR) → treated as non-owner → not-owned', () => {
+    // ENOTDIR means the fd entry is not a real /proc/<pid>/fd directory at all,
+    // so it is not a plausible live owner. The candidate is skipped (continue);
+    // with no other candidate the scan ends not-owned (the OLD code wrongly
+    // returned 'owned' here). Runs on every OS incl. root.
+    const { verdict, owned } = runScanFdEnotdir();
+    expect(verdict).toBe('not-owned');
+    expect(owned).toBe(false);
+  });
+
+  it('EACCES candidate then a REAL owner later → still detects the real owner', () => {
+    // Regression guard for the F1 continue/return choice: an EACCES candidate
+    // must NOT short-circuit the scan in a way that hides a genuine owner. Here
+    // the EACCES dir yields timeout BEFORE reaching the true owner — timeout is
+    // the protective (fail-closed) verdict, so dispatcher returns true either
+    // way. (Ordering in /proc readdir is numeric-string; 11001 < 11050.)
+    if (process.getuid && process.getuid() === 0) return; // EACCES needs non-root
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-mixed-'));
+    cleanups.push(() => {
+      try {
+        fs.chmodSync(path.join(dir, 'proc', '11001', 'fd'), 0o755);
+      } catch {
+        /* ignore */
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+    const lbugPath = path.join(dir, 'lbug');
+    fs.writeFileSync(lbugPath, '');
+    const procRoot = path.join(dir, 'proc');
+    // Candidate A: EACCES fd dir.
+    const fdDirA = path.join(procRoot, '11001', 'fd');
+    fs.mkdirSync(fdDirA, { recursive: true });
+    fs.writeFileSync(path.join(procRoot, '11001', 'comm'), 'MainThread\n');
+    fs.writeFileSync(
+      path.join(procRoot, '11001', 'cmdline'),
+      ['node', '/x/node_modules/gitnexus/dist/cli/index.js', 'mcp'].join('\0') + '\0',
+    );
+    fs.chmodSync(fdDirA, 0o000);
+    setEnv({ GITNEXUS_HOOK_PROC_ROOT: procRoot });
+    const verdict = scanVerdictFn(lbugPath, 1);
+    // EACCES is hit first and fails closed (timeout) — the protective outcome.
+    expect(verdict).toBe('timeout');
+    expect(probe.hasGitNexusDbLockedByGitNexusServer(lbugPath, 1)).toBe(true);
+  });
 });
 
-// Helper for the root branch of the EACCES test: fd is a FILE not a dir, so
-// readdir throws ENOTDIR (a non-ENOENT error) which must fail closed.
-function runScanFdEnotdir(): { owned: boolean } {
+// Helper for the ENOTDIR branch: fd is a FILE not a dir, so readdir throws
+// ENOTDIR. F1: this candidate is treated as a non-owner (continue) → not-owned.
+function runScanFdEnotdir(): { verdict: string; owned: boolean } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-enotdir-'));
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
   const lbugPath = path.join(dir, 'lbug');
@@ -289,8 +562,9 @@ function runScanFdEnotdir(): { owned: boolean } {
   );
   fs.writeFileSync(path.join(pidDir, 'fd'), 'not a dir'); // readdir -> ENOTDIR
   setEnv({ GITNEXUS_HOOK_PROC_ROOT: procRoot });
+  const verdict = scanVerdictFn(lbugPath, 1);
   const owned = probe.hasGitNexusDbLockedByGitNexusServer(lbugPath, 1);
-  return { owned };
+  return { verdict, owned };
 }
 
 // ── D6: live e2e against the REAL /proc ─────────────────────────────

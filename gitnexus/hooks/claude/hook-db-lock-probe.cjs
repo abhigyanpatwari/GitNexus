@@ -68,6 +68,16 @@ function isGitNexusServerCommand(command) {
   return hasServerMode && hasGitNexus;
 }
 
+// GITNEXUS_DEBUG-gated stderr diagnostics. Reuses the exact gating predicate the
+// Windows ps1-load warning already uses (===' 1' / ==='true') so there is one
+// debug convention in this file, and writes via process.stderr.write (NOT a
+// spawn) so it never perturbs the windowsHide spawn-count invariant.
+function debugLog(msg) {
+  if (process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true') {
+    process.stderr.write(`[GitNexus hook] ${msg}\n`);
+  }
+}
+
 function resolveHookBinary(tool) {
   const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
   const fromEnv = process.env[envKey];
@@ -267,9 +277,25 @@ function hasGitNexusServerOwnerWindows(dbPathAbs, myPid) {
 // The procfs root every Linux scan path reads from. Production is always /proc;
 // GITNEXUS_HOOK_PROC_ROOT only exists so unit tests can inject a fixture tree
 // (comm + cmdline + fd symlinks) and assert the three-phase logic without
-// scanning the real, ~hundreds-of-process /proc of the test host. Unset env =>
-// /proc, so the production path is byte-for-byte the historical behavior.
+// scanning the real, ~hundreds-of-process /proc of the test host.
+//
+// Test-only gate (F4): the override is honored ONLY under a test runner —
+// vitest injects VITEST="true" and NODE_ENV="test" into every worker (verified;
+// a production hook is `node <file>.cjs` with neither set). Without the gate, a
+// production env that accidentally leaked GITNEXUS_HOOK_PROC_ROOT (pointing at an
+// empty/bad tree) would make readdirSync find no pids -> 'not-owned' -> Linux
+// owner detection silently OFF (fail-OPEN: augment races the real server for the
+// lbug, the #1492 class). Gating to the test signal makes that leak inert in
+// production (always /proc) while the fake-procfs unit tests, which run under
+// vitest, still inject freely. Unset env (or non-test context) => /proc, so the
+// production path is byte-for-byte the historical behavior.
+function isTestContext() {
+  return (
+    process.env.VITEST === 'true' || process.env.VITEST === '1' || process.env.NODE_ENV === 'test'
+  );
+}
 function getProcRoot() {
+  if (!isTestContext()) return '/proc';
   const raw = process.env.GITNEXUS_HOOK_PROC_ROOT;
   return raw && String(raw).trim() ? String(raw) : '/proc';
 }
@@ -328,6 +354,17 @@ function readProcComm(procRoot, pidStr) {
   }
 }
 
+// Timeout sentinel for readLinuxCmdline (F3). MUST be distinct from the
+// "unreadable/empty" return value (''): '' flows through isGitNexusServerCommand
+// as a NON-candidate (both regexes are false on ''), so the Phase 1 caller
+// `continue`s past it — correct for a raced/openSync-failed pid, but a FAIL-OPEN
+// bug if it ever meant "I ran out of budget mid-read" (a real owner whose
+// escalation timed out would be silently dropped, racing the lbug -> #1492). A
+// unique Symbol can never collide with any cmdline string, so the caller can
+// branch on it explicitly and map a mid-read timeout to the tri-state 'timeout'
+// (fail-CLOSED) instead of swallowing it as a non-candidate.
+const CMDLINE_TIMEOUT = Symbol('gitnexus.cmdline.timeout');
+
 // Bounded /proc/<pid>/cmdline read for Phase 1. openSync+readSync (not
 // readFileSync) so a D-state holder cannot stall the hook on a huge or
 // never-EOF argv: we read at most `cap` bytes and stop. cmdline separates argv
@@ -343,7 +380,15 @@ function readProcComm(procRoot, pidStr) {
 // mode token appears or the file ends — so a genuine server is never missed for
 // want of a few more bytes, while non-candidates still pay only the initial
 // bounded read.
-function readLinuxCmdline(procRoot, pidStr, cap) {
+//
+// Budget (F3): the escalation loop above is the one place a SINGLE pathological
+// candidate could read up to HARD_CEIL (256 KiB) before the next scan-level
+// budget check, weakening the timeout contract. `outOfBudget` (the scan's shared
+// deadline callback) is checked once per escalation iteration; on expiry we
+// return CMDLINE_TIMEOUT (NOT '') so the caller can fail-closed honestly rather
+// than mistake the partial read for a non-candidate. Reads that simply can't
+// open / error out still return '' (genuinely "not a readable candidate").
+function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
   const file = path.join(procRoot, pidStr, 'cmdline');
   let fd;
   try {
@@ -374,6 +419,11 @@ function readLinuxCmdline(procRoot, pidStr, cap) {
       if (bytes < chunkCap) break; // EOF: full cmdline read, definitive
       if (!hasGitNexus) break; // not a candidate; do not escalate the read
       if (offset >= HARD_CEIL) break; // bounded escalation only
+      // Budget gate the escalation: a single huge-argv candidate must not burn
+      // the whole scan deadline before we re-check. Return the timeout sentinel
+      // (never '') so the caller fails closed instead of treating us as a
+      // non-candidate.
+      if (typeof outOfBudget === 'function' && outOfBudget()) return CMDLINE_TIMEOUT;
       chunkCap = cap; // keep reading more in cap-sized chunks
     }
     return collected.toString('utf8').replace(/\0+/g, ' ').trim();
@@ -448,7 +498,12 @@ function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
 
     // Phase 1: bounded cmdline read + isGitNexusServerCommand prefilter.
     if (outOfBudget()) return 'timeout';
-    const cmdline = readLinuxCmdline(procRoot, ent.name, cmdlineCap);
+    const cmdline = readLinuxCmdline(procRoot, ent.name, cmdlineCap, outOfBudget);
+    // F3: a mid-read budget timeout returns the CMDLINE_TIMEOUT sentinel (a
+    // Symbol, never a string). Fail CLOSED on it rather than letting it fall
+    // through isGitNexusServerCommand as a non-candidate — a real owner whose
+    // escalation timed out must not be silently dropped (would fail-OPEN).
+    if (cmdline === CMDLINE_TIMEOUT) return 'timeout';
     if (!isGitNexusServerCommand(cmdline)) continue;
     candidates.push(ent.name);
   }
@@ -461,14 +516,56 @@ function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
     try {
       fds = fs.readdirSync(fdDir);
     } catch (err) {
-      // A candidate already matched the GitNexus-server cmdline, so an
-      // unreadable fd dir is almost always a cross-user server (EACCES): we
-      // cannot prove it does NOT hold the lbug, and the candidate is a strong
-      // owner signal. Fail-closed (treat as owner) for any error other than
-      // ENOENT (the process raced away -> genuinely not an owner). Documented
-      // tradeoff (#2180 edge): a cross-user gitnexus server skips augment.
-      if (err && err.code === 'ENOENT') continue;
-      return 'owned';
+      // F1: the old code returned 'owned' for EVERY non-ENOENT error. That was
+      // a correctness bug: /proc/<pid>/fd is owner-only (mode 0500), so a
+      // cross-user/root `gitnexus mcp` serving a DIFFERENT repo passes Phase 0+1
+      // (its cmdline matches) and then EACCES'es here — yet its dev+ino was
+      // NEVER compared against THIS lbug. Claiming 'owned' lets it permanently,
+      // silently suppress augment for a repo it does not actually lock. We now
+      // distinguish the failure shapes (all still fail-closed where we can't
+      // prove non-ownership, but 'timeout' is the HONEST verdict for
+      // "inconclusive", not the false-positive 'owned'):
+      const code = err && err.code;
+      if (code === 'ENOENT') {
+        // Process raced away between the candidate scan and now -> genuinely no
+        // longer an owner. Move on.
+        continue;
+      }
+      if (code === 'EACCES' || code === 'EPERM') {
+        // Permission-denied fd dir: cannot read fds, so ownership is
+        // UNVERIFIABLE. Fail closed honestly via 'timeout' (the dispatcher maps
+        // timeout -> true, same protective skip as before) WITHOUT lying that we
+        // confirmed ownership. Do NOT degrade to not-owned/fail-open: if this
+        // really is the owner, fail-open re-opens the #1492 lbug race; augment
+        // is optional context, so a conservative skip costs little.
+        debugLog(
+          `fd dir unreadable for candidate pid ${pidStr} (${code}); ownership ` +
+            `unverifiable, probe inconclusive -> fail-closed (timeout)`,
+        );
+        return 'timeout';
+      }
+      if (code === 'EIO' || code === 'ESTALE') {
+        // Genuine transient I/O against this candidate's fd dir — not evidence
+        // it does NOT hold the lbug. Treat as inconclusive and fail closed
+        // (timeout) rather than continue, so a real owner mid-I/O-blip is not
+        // dropped (would fail-open).
+        debugLog(
+          `fd dir transient I/O error for candidate pid ${pidStr} (${code}); ` +
+            `probe inconclusive -> fail-closed (timeout)`,
+        );
+        return 'timeout';
+      }
+      // Any other shape (ENOTDIR — fd path is not a directory at all, so this
+      // is not a plausible live-procfs owner — and the long tail) is treated as
+      // "this candidate is not an owner": move to the next candidate instead of
+      // the old blanket 'owned'. If no other candidate owns the lbug the scan
+      // ends not-owned (dispatcher fail-open) — acceptable because ENOTDIR means
+      // the fd entry is structurally not a real /proc/<pid>/fd.
+      debugLog(
+        `fd dir not a readable directory for candidate pid ${pidStr} ` +
+          `(${code || 'unknown'}); treating candidate as non-owner -> continue`,
+      );
+      continue;
     }
     for (const fd of fds) {
       if (outOfBudget()) return 'timeout';
@@ -573,6 +670,13 @@ function hasGitNexusDbLockedByGitNexusServer(dbPath, myPid) {
 
 module.exports = {
   hasGitNexusDbLockedByGitNexusServer,
+  // Exported for white-box unit tests that must assert the tri-state verdict
+  // ('owned' | 'not-owned' | 'timeout') directly — the dispatcher collapses
+  // timeout and owned to the same boolean true, so the boolean API alone cannot
+  // distinguish the F1 EACCES->timeout fix from the old EACCES->owned bug. The
+  // Probe interface already declares this optional. Linux-only by contract; the
+  // name is pinned by a source-contract test.
+  linuxProcScanFindGitNexusServer,
   // #2163 follow-up: the hook adapters wrap the augment CLI in the same
   // guard. Returns a self-tested wrapper path — the built-in candidates are
   // always absolute; a GITNEXUS_HOOK_TIMEOUT_PATH override is adopted as the
