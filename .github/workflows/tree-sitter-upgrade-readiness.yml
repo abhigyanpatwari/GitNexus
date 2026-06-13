@@ -39,14 +39,18 @@ permissions:
   contents: read
 
 jobs:
-  readiness:
+  report:
     name: Check upgrade readiness
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Least privilege: rendering the report needs no write. The issue mutation
+    # lives in the schedule-only `upsert-issue` job below, so PR runs (incl. forks)
+    # never receive `issues: write` (#2187 review).
     permissions:
       contents: read
-      # Needed to open/update the tracking issue on scheduled runs.
-      issues: write
+    outputs:
+      report: ${{ steps.readiness.outputs.report }}
+      exit_code: ${{ steps.readiness.outputs.exit_code }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -96,13 +100,22 @@ jobs:
         run: |
           echo "::warning::Tree-sitter 0.25 upgrade has blockers. See job output for the full readiness report."
 
-      - name: Upsert tracking issue on scheduled runs
-        if: >
-          github.event_name == 'schedule' &&
-          steps.readiness.outputs.exit_code != '0'
+  # Issue mutation is isolated here so `issues: write` is only ever granted on the
+  # scheduled run (never on PRs). Consumes the report + exit_code via job outputs.
+  upsert-issue:
+    name: Upsert tracking issue
+    needs: report
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Upsert tracking issue on blockers
+        if: needs.report.outputs.exit_code != '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          REPORT: ${{ steps.readiness.outputs.report }}
+          REPORT: ${{ needs.report.outputs.report }}
         with:
           script: |
             const title = 'Tree-sitter 0.25 upgrade readiness';
@@ -179,10 +192,8 @@ jobs:
               core.info(`Opened issue #${created.number}`);
             }
 
-      - name: Close tracking issue on clean scheduled runs
-        if: >
-          github.event_name == 'schedule' &&
-          steps.readiness.outputs.exit_code == '0'
+      - name: Close tracking issue on clean runs
+        if: needs.report.outputs.exit_code == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
