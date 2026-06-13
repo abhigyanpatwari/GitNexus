@@ -2799,6 +2799,103 @@ export class LocalBackend {
   }
 
   /**
+   * Resolve a `target` (file path OR symbol/function name) into a BasicBlock
+   * SOURCE-block anchor, shared by `explain` (TAINTED) and `pdg_query`
+   * (CDG/REACHING_DEF) — both reconstruct the symbol↔block join the same way
+   * (there is no Function→BasicBlock edge). #2188 review: extracted from two
+   * near-identical copies that had DRIFTED — `_explainImpl` used a 0-based,
+   * un-widened span window that dropped a function's final-line block and could
+   * leak a neighbor's line-above block; this single resolver applies the correct
+   * `[symStart+1, symEnd+1]` window (1-based BasicBlock startLine vs 0-based
+   * symbol span) to BOTH callers.
+   *
+   * Returns a BARE `anchorClause` (no leading `AND`) so each caller composes its
+   * own `WHERE`; `early` carries the not-found/ambiguous payload (caller returns
+   * it verbatim). `target` / symbol names flow only through `queryParams` bind
+   * params — never interpolated into Cypher.
+   */
+  private async resolveBlockAnchor(
+    repo: RepoHandle,
+    target: string,
+    toolName: 'explain' | 'pdg_query',
+  ): Promise<{
+    anchorClause: string;
+    queryParams: Record<string, unknown>;
+    anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
+    early?: Record<string, unknown>;
+  }> {
+    if (looksLikeFilePath(target)) {
+      return {
+        anchorClause:
+          '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)',
+        queryParams: {
+          idPrefix: `BasicBlock:${target}:`,
+          targetPath: target,
+          targetSuffix: `/${target}`,
+        },
+        anchor: { file: target },
+      };
+    }
+    const outcome = await this.resolveSymbolCandidates(repo, { name: target }, {});
+    if (outcome.kind === 'not_found') {
+      return {
+        anchorClause: '',
+        queryParams: {},
+        anchor: { file: '' },
+        early: { error: `Symbol '${target}' not found` },
+      };
+    }
+    if (outcome.kind === 'ambiguous') {
+      return {
+        anchorClause: '',
+        queryParams: {},
+        anchor: { file: '' },
+        early: {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call ${toolName} with the file path, or disambiguate via context() first.`,
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        },
+      };
+    }
+    const sym = outcome.symbol;
+    const idPrefix = `BasicBlock:${sym.filePath}:`;
+    if (
+      typeof sym.startLine === 'number' &&
+      typeof sym.endLine === 'number' &&
+      sym.endLine >= sym.startLine
+    ) {
+      // BasicBlock startLine is 1-based; the symbol span is 0-based. Shift BOTH
+      // bounds +1 so the window is the function's true block span: the lower +1
+      // excludes a neighbor's block on the line directly above, the upper +1
+      // keeps a guard/def/use on the final line (#2188 review).
+      return {
+        anchorClause:
+          'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
+        queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+        anchor: {
+          file: sym.filePath,
+          symbol: sym.name,
+          startLine: sym.startLine,
+          endLine: sym.endLine,
+        },
+      };
+    }
+    // No usable span — degrade to the file-level filter (documented).
+    return {
+      anchorClause: 'a.id STARTS WITH $idPrefix',
+      queryParams: { idPrefix },
+      anchor: { file: sym.filePath, symbol: sym.name },
+    };
+  }
+
+  /**
    * Explain tool (#2083 M3 U6) — persisted taint-finding explanation.
    * WAL-aware wrapper mirroring `context`.
    */
@@ -2880,63 +2977,8 @@ export class LocalBackend {
     // Resolve the optional anchor into a WHERE clause on the SOURCE block.
     const target = typeof params.target === 'string' ? params.target.trim() : '';
     let anchorClause = '';
-    const queryParams: Record<string, unknown> = {};
+    let queryParams: Record<string, unknown> = {};
     let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number } | undefined;
-
-    // Build the anchor as a file filter (used only when `target` is path-ish).
-    const buildFileAnchor = (): void => {
-      // Exact path via the BasicBlock id-prefix template, OR a
-      // path-separator-aligned suffix so partial paths work like context()'s
-      // file_path hint ("vuln.ts" ⇒ "src/vuln.ts", never "devuln.ts").
-      anchorClause =
-        'AND (a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)';
-      queryParams.idPrefix = `BasicBlock:${target}:`;
-      queryParams.targetPath = target;
-      queryParams.targetSuffix = `/${target}`;
-      anchor = { file: target as string };
-    };
-
-    // Resolve `target` as a symbol into the anchor. Returns an early-return
-    // payload (not_found / ambiguous) or undefined on success.
-    const resolveSymbolAnchor = async (): Promise<Record<string, unknown> | undefined> => {
-      const outcome = await this.resolveSymbolCandidates(repo, { name: target as string }, {});
-      if (outcome.kind === 'not_found') {
-        return { error: `Symbol '${target}' not found` };
-      }
-      if (outcome.kind === 'ambiguous') {
-        return {
-          status: 'ambiguous',
-          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call explain with the file path, or disambiguate via context() first.`,
-          candidates: outcome.candidates.map((c) => ({
-            uid: c.id,
-            name: c.name,
-            kind: c.type,
-            filePath: c.filePath,
-            line: c.startLine,
-            score: Number(c.score.toFixed(2)),
-          })),
-        };
-      }
-      const sym = outcome.symbol;
-      queryParams.idPrefix = `BasicBlock:${sym.filePath}:`;
-      anchor = { file: sym.filePath, symbol: sym.name };
-      if (
-        typeof sym.startLine === 'number' &&
-        typeof sym.endLine === 'number' &&
-        sym.endLine >= sym.startLine
-      ) {
-        anchorClause =
-          'AND a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
-        queryParams.symStart = sym.startLine;
-        queryParams.symEnd = sym.endLine;
-        anchor.startLine = sym.startLine;
-        anchor.endLine = sym.endLine;
-      } else {
-        // No usable span — degrade to the file-level filter (documented).
-        anchorClause = 'AND a.id STARTS WITH $idPrefix';
-      }
-      return undefined;
-    };
 
     // Bounded by construction: the BasicBlock→BasicBlock partition holds only
     // the sparse pdg layers, TAINTED rows are per-function-capped at analyze
@@ -2945,7 +2987,7 @@ export class LocalBackend {
     const runAnchoredQuery = async (): Promise<{ rows: unknown[]; totalFindings: number }> => {
       const matchClause = `
       MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
-      WHERE r.type = 'TAINTED' ${anchorClause}`;
+      WHERE r.type = 'TAINTED'${anchorClause ? ` AND ${anchorClause}` : ''}`;
       const [qRows, countRows] = await Promise.all([
         executeParameterized(
           repo.lbugPath,
@@ -2970,14 +3012,14 @@ export class LocalBackend {
     };
 
     if (target) {
-      if (looksLikeFilePath(target)) {
-        buildFileAnchor();
-      } else {
-        // A bare or dotted symbol name (`UserController.create`) — resolve as a
-        // symbol rather than silently file-anchoring to an empty result.
-        const early = await resolveSymbolAnchor();
-        if (early) return early;
-      }
+      // Shared symbol↔block anchor resolver (#2188): file id-prefix OR symbol
+      // span, with the corrected [symStart+1, symEnd+1] window. A bare/dotted
+      // symbol name resolves as a symbol rather than silently file-anchoring.
+      const resolved = await this.resolveBlockAnchor(repo, target, 'explain');
+      if (resolved.early) return resolved.early;
+      anchorClause = resolved.anchorClause;
+      queryParams = resolved.queryParams;
+      anchor = resolved.anchor;
     }
 
     const { rows, totalFindings } = await runAnchoredQuery();
@@ -3244,62 +3286,15 @@ export class LocalBackend {
       return { mode, results: [], total: 0, note: NO_PDG_NOTE };
     }
 
-    // Resolve the anchor on the SOURCE block (file id-prefix OR symbol span).
-    let anchorClause = '';
-    const queryParams: Record<string, unknown> = {};
-    // Definitely assigned below: both the file-path and symbol branches set it
-    // before the return, and the not-found/ambiguous/no-layer paths return
-    // earlier — so it is never undefined here (no `| undefined`, #2188 CodeQL).
-    let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
-
-    if (looksLikeFilePath(target)) {
-      anchorClause =
-        '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)';
-      queryParams.idPrefix = `BasicBlock:${target}:`;
-      queryParams.targetPath = target;
-      queryParams.targetSuffix = `/${target}`;
-      anchor = { file: target };
-    } else {
-      const outcome = await this.resolveSymbolCandidates(repo, { name: target }, {});
-      if (outcome.kind === 'not_found') {
-        return { error: `Symbol '${target}' not found` };
-      }
-      if (outcome.kind === 'ambiguous') {
-        return {
-          status: 'ambiguous',
-          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call pdg_query with the file path, or disambiguate via context() first.`,
-          candidates: outcome.candidates.map((c) => ({
-            uid: c.id,
-            name: c.name,
-            kind: c.type,
-            filePath: c.filePath,
-            line: c.startLine,
-            score: Number(c.score.toFixed(2)),
-          })),
-        };
-      }
-      const sym = outcome.symbol;
-      queryParams.idPrefix = `BasicBlock:${sym.filePath}:`;
-      anchor = { file: sym.filePath, symbol: sym.name };
-      if (
-        typeof sym.startLine === 'number' &&
-        typeof sym.endLine === 'number' &&
-        sym.endLine >= sym.startLine
-      ) {
-        // BasicBlock startLine is 1-based; the symbol span is 0-based. Shift
-        // BOTH bounds +1 so the window is the function's true block span: the
-        // lower +1 excludes a neighbor's block on the line directly above, the
-        // upper +1 keeps a guard/def/use on the final line (#2188 review).
-        anchorClause =
-          'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
-        queryParams.symStart = sym.startLine + 1;
-        queryParams.symEnd = sym.endLine + 1;
-        anchor.startLine = sym.startLine;
-        anchor.endLine = sym.endLine;
-      } else {
-        anchorClause = 'a.id STARTS WITH $idPrefix';
-      }
-    }
+    // Resolve the anchor on the SOURCE block via the shared resolver also used
+    // by explain (#2188): file id-prefix OR symbol span on the corrected
+    // [symStart+1, symEnd+1] window. `target` is required, so the early cases
+    // (not-found/ambiguous) return here and `anchor`/`anchorClause` are always
+    // set below (anchor stays non-optional — no `| undefined` — #2188 CodeQL).
+    const resolved = await this.resolveBlockAnchor(repo, target, 'pdg_query');
+    if (resolved.early) return resolved.early;
+    const { anchorClause, anchor } = resolved;
+    const queryParams = resolved.queryParams;
 
     // Optional variable filter (flows mode) — REACHING_DEF stores the variable
     // name in `reason`.

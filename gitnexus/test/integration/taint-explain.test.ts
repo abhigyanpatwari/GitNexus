@@ -479,3 +479,84 @@ withTestLbugDB(
     },
   },
 );
+
+// ─── Block 4: symbol-anchor window correctness (#2188 _explainImpl off-by-one) ──
+//
+// Hand-seeded with controlled line numbers (no parser dependency). `tailFn`
+// occupies 0-based symbol lines 10–14, so its BasicBlocks land on 1-based lines
+// 11–15 and the correct anchor window is [symStart+1, symEnd+1] = [11,15]. The
+// pre-fix _explainImpl used [symStart, symEnd] = [10,14], which both DROPPED a
+// taint source on the function's final line (1-based 15) and LEAKED a neighbor's
+// block on the line directly above (1-based 10). One query proves both bounds —
+// and FAILS on the pre-fix window (it would return the line-10 neighbor instead).
+
+withTestLbugDB(
+  'taint-explain-anchor-window',
+  (handle) => {
+    describe('explain symbol anchoring (#2188 [symStart+1, symEnd+1] window)', () => {
+      let backend: LocalBackend;
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized');
+        backend = ext._backend;
+      });
+
+      it('includes the final-line taint source and excludes the neighbor-above block', async () => {
+        const result = (await backend.callTool('explain', { target: 'tailFn' })) as {
+          findings: Array<{ source?: { line?: number } }>;
+          error?: string;
+        };
+        expect(result).not.toHaveProperty('error');
+        // Only tailFn's own final-line (1-based 15) taint source survives; the
+        // neighbor's line-10 block is below the [11,15] window (lower-bound +1).
+        expect(result.findings).toHaveLength(1);
+        expect(result.findings[0].source?.line).toBe(15);
+        expect(result.findings.some((f) => f.source?.line === 10)).toBe(false);
+      });
+    });
+  },
+  {
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      // tailFn: 0-based span 10–14 ⇒ 1-based blocks on 11–15, window [11,15].
+      await adapter.executePrepared(
+        `CREATE (fn:Function {id: 'func:tailFn', name: 'tailFn', filePath: 'anchor.ts', startLine: 10, endLine: 14, isExported: true, content: 'function tailFn() {}', description: 'anchor-window regression'})`,
+        {},
+      );
+      const block = (id: string, startLine: number, text: string) =>
+        adapter.executePrepared(
+          `CREATE (b:BasicBlock {id: $id, filePath: 'anchor.ts', startLine: $startLine, endLine: $startLine, text: $text})`,
+          { id, startLine, text },
+        );
+      // tailFn's source/sink on its FINAL line (1-based 15 = endLine 14 + 1).
+      await block('BasicBlock:anchor.ts:11:0:5', 15, 'const x = req.body;');
+      await block('BasicBlock:anchor.ts:11:0:6', 15, 'exec(x);');
+      // a neighbor function's block on the line directly ABOVE tailFn (1-based 10).
+      await block('BasicBlock:anchor.ts:9:0:0', 10, 'const y = other();');
+      await block('BasicBlock:anchor.ts:9:0:1', 10, 'use(y);');
+      const tainted = (src: string, dst: string, reason: string) =>
+        adapter.executePrepared(
+          `MATCH (a:BasicBlock {id: $src}), (b:BasicBlock {id: $dst})
+           CREATE (a)-[:CodeRelation {type: 'TAINTED', confidence: 1.0, reason: $reason, step: 0}]->(b)`,
+          { src, dst, reason },
+        );
+      await tainted('BasicBlock:anchor.ts:11:0:5', 'BasicBlock:anchor.ts:11:0:6', 'tail');
+      await tainted('BasicBlock:anchor.ts:9:0:0', 'BasicBlock:anchor.ts:9:0:1', 'neighbor');
+
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'anchor-repo',
+          path: '/anchor/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'aw0001',
+          stats: { files: 1, nodes: 5, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
