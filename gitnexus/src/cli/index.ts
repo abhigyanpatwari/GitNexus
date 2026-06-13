@@ -14,12 +14,21 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();
 
+function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), ...value.split(',')];
+}
+
 program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
 
 program
   .command('setup')
   .description(
     'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+  )
+  .option(
+    '-c, --coding-agent <agents>',
+    'Configure only these coding agents (comma-separated or repeatable)',
+    collectCodingAgents,
   )
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
