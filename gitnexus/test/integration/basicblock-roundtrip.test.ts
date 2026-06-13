@@ -75,8 +75,7 @@ beforeAll(async () => {
       sourceId: BB1,
       targetId: BB2,
       type,
-      reason:
-        type === 'REACHING_DEF' ? 'x' : type === 'CDG' ? 'T' : `${type.toLowerCase()}-edge`,
+      reason: type === 'REACHING_DEF' ? 'x' : type === 'CDG' ? 'T' : `${type.toLowerCase()}-edge`,
     })),
   );
 
@@ -163,7 +162,7 @@ describe('BasicBlock + taint/PDG edge round-trip (#2080)', () => {
     expect(rows[0].to).toBe(BB2);
   });
 
-  it("CDG carries its branch label in reason and is queryable by it (#2085 M5)", async () => {
+  it('CDG carries its branch label in reason and is queryable by it (#2085 M5)', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const rows = await adapter.executeQuery(
       "MATCH (a:BasicBlock)-[r:CodeRelation {type: 'CDG', reason: 'T'}]->(b:BasicBlock) RETURN a.id AS from, b.id AS to",
