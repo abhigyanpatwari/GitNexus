@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,6 +73,35 @@ describe('GRAMMARS registry', () => {
     expect(mod.GRAMMARS.c.hold).toBeTruthy(); // detected/reported, never auto-applied
     for (const k of ['swift', 'kotlin', 'dart', 'proto']) {
       expect(mod.GRAMMARS[k].hold).toBeUndefined();
+    }
+  });
+});
+
+describe('shared vendored-grammars manifest', () => {
+  // The vendored set is sourced from .github/vendored-grammars.json — the single
+  // source of truth shared with check-tree-sitter-upgrade-readiness.py. This guards
+  // against the loader silently skewing from the manifest file (#858 alignment).
+  const manifestPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../.github/vendored-grammars.json',
+  );
+  const manifest: { grammars: Record<string, { name: string; upstream: { npm?: string; github?: string }; hold?: string }> } =
+    JSON.parse(readFileSync(manifestPath, 'utf8'));
+
+  it('reshapes every manifest entry into the GRAMMARS shape, losing no information', () => {
+    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(Object.keys(manifest.grammars).sort());
+    for (const [key, g] of Object.entries(manifest.grammars)) {
+      const entry = mod.GRAMMARS[key];
+      expect(entry.name).toBe(g.name);
+      expect(entry.npm).toBe(g.upstream.npm); // undefined === undefined for github grammars
+      expect(entry.github).toBe(g.upstream.github);
+      expect(entry.hold).toBe(g.hold);
+    }
+  });
+
+  it('each grammar has exactly one upstream source (npm xor github)', () => {
+    for (const g of Object.values(mod.GRAMMARS)) {
+      expect(Boolean(g.npm) !== Boolean(g.github)).toBe(true);
     }
   });
 });

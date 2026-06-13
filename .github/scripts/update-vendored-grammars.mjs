@@ -42,17 +42,25 @@ const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION
 // github grammars (no usable npm release) track the default branch HEAD. A `hold`
 // reason makes a grammar report-only: updates are detected + surfaced but never
 // auto-applied (c is ABI-pinned and must not move without a runtime upgrade).
-const GRAMMARS = {
-  c: {
-    name: 'tree-sitter-c',
-    npm: 'tree-sitter-c',
-    hold: 'ABI-pinned at 0.21.4 (#1242/#858) — needs a tree-sitter runtime upgrade before bumping',
-  },
-  swift: { name: 'tree-sitter-swift', npm: 'tree-sitter-swift' },
-  kotlin: { name: 'tree-sitter-kotlin', npm: 'tree-sitter-kotlin' },
-  dart: { name: 'tree-sitter-dart', github: 'UserNobody14/tree-sitter-dart' },
-  proto: { name: 'tree-sitter-proto', github: 'coder3101/tree-sitter-proto' },
-};
+//
+// The vendored set lives in .github/vendored-grammars.json — the SHARED source of
+// truth this monitor and .github/scripts/check-tree-sitter-upgrade-readiness.py both
+// read, so the two tree-sitter workflows can never disagree about which grammars are
+// vendored or where their upstream lives. We reshape the manifest's
+// `{ upstream: { npm | github } }` form into the flat `{ npm? , github? }` shape the
+// rest of this script consumes. This is a local file read (import-safe, no network).
+const MANIFEST = path.join(REPO_ROOT, '.github', 'vendored-grammars.json');
+const GRAMMARS = Object.fromEntries(
+  Object.entries(JSON.parse(fs.readFileSync(MANIFEST, 'utf8')).grammars).map(([key, g]) => [
+    key,
+    {
+      name: g.name,
+      ...(g.upstream?.npm ? { npm: g.upstream.npm } : {}),
+      ...(g.upstream?.github ? { github: g.upstream.github } : {}),
+      ...(g.hold ? { hold: g.hold } : {}),
+    },
+  ]),
+);
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();
