@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -125,6 +125,21 @@ describe('shared vendored-grammars manifest', () => {
     for (const g of Object.values(mod.GRAMMARS)) {
       expect(Boolean(g.npm) !== Boolean(g.github)).toBe(true);
     }
+  });
+
+  it('the manifest grammar set equals the physical vendor/tree-sitter-* dirs (#858)', () => {
+    // Monitor-side mirror of the Python consistency guard. The monitor is the side
+    // that WRITES files from manifest `name`, so vendoring a grammar (or removing
+    // one) without updating the manifest must fail CI here too.
+    const vendorDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../vendor');
+    const physical = readdirSync(vendorDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name.startsWith('tree-sitter-'))
+      .map((d) => d.name)
+      .sort();
+    const manifestNames = Object.values(manifest.grammars)
+      .map((g) => g.name)
+      .sort();
+    expect(manifestNames).toEqual(physical);
   });
 });
 
