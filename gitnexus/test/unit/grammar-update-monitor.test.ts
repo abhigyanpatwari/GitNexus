@@ -128,21 +128,33 @@ describe('shared vendored-grammars manifest', () => {
   });
 });
 
+// Narrowing accessor: throws a clear error instead of a non-null assertion (`!`),
+// which @typescript-eslint/no-non-null-assertion forbids.
+function must<T>(value: T | undefined, message: string): T {
+  if (value === undefined) throw new Error(message);
+  return value;
+}
+
 describe('detect() classification (offline, injected deps)', () => {
   // Drive the real detect() loop with faked network/fs seams so the load-bearing
   // gates — newer-detection, the ABI gate, and the policy hold — are exercised
   // deterministically without touching live npm/GitHub.
+  const baseResolveUpstream = (g: Grammar): Upstream =>
+    g.npm
+      ? { version: '9.9.9', ref: '9.9.9', kind: 'npm' }
+      : { version: '1.0.0-gabc1234', ref: 'abc1234def0', kind: 'github' };
   const deps: DetectDeps = {
     vendoredVersion: (g) => (g.name === 'tree-sitter-kotlin' ? '9.9.9' : '0.0.0'),
-    resolveUpstream: (g) =>
-      g.npm
-        ? { version: '9.9.9', ref: '9.9.9', kind: 'npm' }
-        : { version: '1.0.0-gabc1234', ref: 'abc1234def0', kind: 'github' },
+    resolveUpstream: baseResolveUpstream,
     fetchSource: (g) => g.name, // pass the name through to the fake readAbi
     readAbi: (name) => (name === 'tree-sitter-swift' ? 15 : 14),
   };
   let report: Array<Record<string, unknown>>;
-  const byKey = (k: string) => report.find((r) => r.grammar === k)!;
+  const byKey = (k: string) =>
+    must(
+      report.find((r) => r.grammar === k),
+      `no detect row for ${k}`,
+    );
   beforeAll(() => {
     report = mod.detect(deps);
   });
@@ -185,14 +197,21 @@ describe('detect() classification (offline, injected deps)', () => {
       ...deps,
       resolveUpstream: (g) => {
         if (g.name === 'tree-sitter-dart') throw new Error('gh api 503');
-        return deps.resolveUpstream!(g);
+        return baseResolveUpstream(g);
       },
     });
-    const dart = report2.find((r) => r.grammar === 'dart')!;
+    const dart = must(
+      report2.find((r) => r.grammar === 'dart'),
+      'no detect row for dart',
+    );
     expect(dart.error).toContain('gh api 503');
     expect(dart.update).toBeUndefined(); // error entry, not a classification
     // The throw on one grammar must not drop the rest.
-    expect(report2.find((r) => r.grammar === 'swift')!.update).toBe(true);
+    const swift = must(
+      report2.find((r) => r.grammar === 'swift'),
+      'no detect row for swift',
+    );
+    expect(swift.update).toBe(true);
     expect(report2).toHaveLength(Object.keys(mod.GRAMMARS).length);
   });
 });
