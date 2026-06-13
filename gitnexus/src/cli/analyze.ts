@@ -41,8 +41,10 @@ import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './opt
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
+import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { safeUrl } from '../core/embeddings/http-client.js';
 import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
@@ -560,6 +562,10 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_EMBEDDING_URL',
+  'GITNEXUS_EMBEDDING_MODEL',
+  'GITNEXUS_EMBEDDING_API_KEY',
+  'GITNEXUS_EMBEDDING_DIMS',
 ] as const;
 
 type AnalyzeEnvSnapshot = Record<(typeof ANALYZE_CLI_ENV_KEYS)[number], string | undefined>;
@@ -677,6 +683,14 @@ export interface AnalyzeOptions {
    * outside the built-in convention still produces `route_map` consumers.
    */
   fetchWrappers?: string[];
+  /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
+  embeddingBaseUrl?: string;
+  /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */
+  embeddingModel?: string;
+  /** Bearer token for the embeddings endpoint. Overrides GITNEXUS_EMBEDDING_API_KEY. Never logged. */
+  embeddingAuthToken?: string;
+  /** Embedding vector dimensions (positive integer string). Overrides GITNEXUS_EMBEDDING_DIMS. */
+  embeddingDims?: string;
 }
 
 /**
@@ -956,6 +970,109 @@ const analyzeCommandImpl = async (
       return;
     }
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
+  }
+
+  // --- Custom HTTP embedding endpoint flags (override GITNEXUS_EMBEDDING_* env vars) ---
+  const anyHttpEmbedFlag =
+    options.embeddingBaseUrl !== undefined ||
+    options.embeddingModel !== undefined ||
+    options.embeddingAuthToken !== undefined ||
+    options.embeddingDims !== undefined;
+
+  if (options.embeddingBaseUrl !== undefined) {
+    const url = options.embeddingBaseUrl.trim();
+    if (url.length === 0) {
+      cliError('  --embedding-base-url must not be empty.\n');
+      process.exitCode = 1;
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      cliError(`  --embedding-base-url is not a valid URL: "${url}".\n`);
+      process.exitCode = 1;
+      return;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      cliError('  --embedding-base-url must use http:// or https://.\n');
+      process.exitCode = 1;
+      return;
+    }
+    // http-client strips trailing slashes; store as given (trimmed).
+    process.env.GITNEXUS_EMBEDDING_URL = url;
+  }
+
+  if (options.embeddingModel !== undefined) {
+    const model = options.embeddingModel.trim();
+    if (model.length === 0) {
+      cliError('  --embedding-model must not be empty.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_EMBEDDING_MODEL = model;
+  }
+
+  if (options.embeddingAuthToken !== undefined) {
+    const token = options.embeddingAuthToken.trim();
+    if (token.length === 0) {
+      cliError('  --embedding-auth-token must not be empty.\n');
+      process.exitCode = 1;
+      return;
+    }
+    // Never log the token value.
+    process.env.GITNEXUS_EMBEDDING_API_KEY = token;
+  }
+
+  // Validate + normalize dims through the same shared helper the preAction
+  // hook uses, so the CLI path, this direct/programmatic-call path, schema.ts
+  // (parseInt) and http-client (/^\d+$/) all agree on one canonical value.
+  if (options.embeddingDims !== undefined) {
+    const dims = normalizeEmbeddingDims(options.embeddingDims);
+    if (dims === null) {
+      cliError(`  ${EMBEDDING_DIMS_ERROR}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_EMBEDDING_DIMS = dims;
+  }
+
+  // Custom-endpoint UX, emitting at most ONE message that reflects THIS run's
+  // intent (not ambient env). Order matters — the first matching branch wins:
+  //   1. flags given but --embeddings absent: the endpoint won't be used, so
+  //      say only that (no contradictory "Using…" line).
+  //   2. embeddings enabled + a complete endpoint (flags or env): confirm it,
+  //      masking the URL via safeUrl() since a base URL may carry credentials
+  //      in userinfo (http://user:pass@host) or a query token (?api_key=…)
+  //      that must not land in stdout/CI logs. The auth token is never printed.
+  //   3. embeddings enabled but only one of URL/MODEL supplied via flags:
+  //      http-client.isHttpMode() needs BOTH, so warn about the fallback.
+  // Gating on embeddingsEnabled also stops the old behaviour of printing
+  // "Using custom embedding endpoint" on every analyze run whenever the env
+  // vars happened to be set.
+  if (anyHttpEmbedFlag && !embeddingsEnabled) {
+    console.log(
+      '  Note: --embedding-* flags only apply when --embeddings is also passed; ' +
+        'no embeddings will be generated this run.\n',
+    );
+  } else if (
+    embeddingsEnabled &&
+    process.env.GITNEXUS_EMBEDDING_URL &&
+    process.env.GITNEXUS_EMBEDDING_MODEL
+  ) {
+    console.log(
+      `  Using custom embedding endpoint: ${safeUrl(process.env.GITNEXUS_EMBEDDING_URL)} ` +
+        `(model: ${process.env.GITNEXUS_EMBEDDING_MODEL})\n`,
+    );
+  } else if (
+    embeddingsEnabled &&
+    anyHttpEmbedFlag &&
+    (process.env.GITNEXUS_EMBEDDING_URL || process.env.GITNEXUS_EMBEDDING_MODEL)
+  ) {
+    console.log(
+      '  Note: custom HTTP embeddings require BOTH --embedding-base-url and --embedding-model ' +
+        '(or the matching env vars). Falling back to local ONNX embeddings.\n',
+    );
   }
 
   if (options.repairFts && options.force) {

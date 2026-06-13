@@ -70,10 +70,12 @@ export const isHttpMode = (): boolean => readConfig() !== null;
 export const getHttpDimensions = (): number | undefined => readConfig()?.dimensions;
 
 /**
- * Return a safe representation of a URL for error messages.
- * Strips query string (may contain tokens) and userinfo.
+ * Return a safe representation of a URL for logs and error messages.
+ * Strips query string (may contain tokens) and userinfo (may contain
+ * credentials), keeping protocol + host + path. Exported so the CLI's
+ * custom-endpoint confirmation can mask the same way.
  */
-const safeUrl = (url: string): string => {
+export const safeUrl = (url: string): string => {
   try {
     const u = new URL(url);
     return `${u.protocol}//${u.host}${u.pathname}`;
