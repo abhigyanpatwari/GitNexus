@@ -6,6 +6,7 @@
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction, createLbugLazyAction } from './lazy-action.js';
+import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
@@ -157,7 +158,17 @@ program
       process.env.GITNEXUS_EMBEDDING_API_KEY = String(opts['embeddingAuthToken']).trim();
     }
     if (opts['embeddingDims'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_DIMS = String(opts['embeddingDims']);
+      // Validate + normalize BEFORE writing the env var: schema.ts reads it at
+      // module-load (during the lazy import below) and throws on a bad value,
+      // which — on the synchronous program.parse() path, before the analyze
+      // fatal-handlers are installed — would surface as a raw unhandled
+      // rejection instead of this friendly message.
+      const dims = normalizeEmbeddingDims(String(opts['embeddingDims']));
+      if (dims === null) {
+        process.stderr.write(`\n  ${EMBEDDING_DIMS_ERROR}\n\n`);
+        process.exit(1);
+      }
+      process.env.GITNEXUS_EMBEDDING_DIMS = dims;
     }
   })
   .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));

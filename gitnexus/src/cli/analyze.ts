@@ -41,6 +41,7 @@ import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './opt
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
+import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
 import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
@@ -1022,9 +1023,17 @@ const analyzeCommandImpl = async (
     process.env.GITNEXUS_EMBEDDING_API_KEY = token;
   }
 
-  // Reuse the positive-integer validator already defined above.
-  if (!setPositiveEnv('--embedding-dims', 'GITNEXUS_EMBEDDING_DIMS', options.embeddingDims)) {
-    return;
+  // Validate + normalize dims through the same shared helper the preAction
+  // hook uses, so the CLI path, this direct/programmatic-call path, schema.ts
+  // (parseInt) and http-client (/^\d+$/) all agree on one canonical value.
+  if (options.embeddingDims !== undefined) {
+    const dims = normalizeEmbeddingDims(options.embeddingDims);
+    if (dims === null) {
+      cliError(`  ${EMBEDDING_DIMS_ERROR}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_EMBEDDING_DIMS = dims;
   }
 
   // Helpful confirmation + UX guard. http-client.isHttpMode() requires BOTH
