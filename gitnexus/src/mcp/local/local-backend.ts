@@ -59,6 +59,8 @@ import {
   LIST_REPOS_MAX_LIMIT,
   EXPLAIN_DEFAULT_LIMIT,
   EXPLAIN_MAX_LIMIT,
+  PDG_QUERY_DEFAULT_LIMIT,
+  PDG_QUERY_MAX_LIMIT,
 } from '../tools.js';
 import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
@@ -1293,6 +1295,8 @@ export class LocalBackend {
         return this.context(repo, params);
       case 'explain':
         return this.explain(repo, params);
+      case 'pdg_query':
+        return this.pdgQuery(repo, params);
       case 'impact':
         return this.impact(repo, params);
       case 'detect_changes':
@@ -3144,6 +3148,235 @@ export class LocalBackend {
       totalFindings: totalFindings + interprocTotal,
       ...(truncated ? { truncated: true } : {}),
       note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
+    };
+  }
+
+  private async pdgQuery(
+    repo: RepoHandle,
+    params: { mode?: string; target?: string; variable?: string; limit?: number },
+  ): Promise<any> {
+    try {
+      return await this._pdgQueryImpl(repo, params);
+    } catch (err: any) {
+      const msg = (err instanceof Error ? err.message : String(err)) || 'pdg_query failed';
+      if (isWalCorruptionError(err)) {
+        return { error: msg, recoverySuggestion: WAL_RECOVERY_SUGGESTION };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Query the persisted PDG (#2086 M6) — the control/data-dependence analog of
+   * `explain`. `controls` reads CDG ("under what condition does X run?", branch
+   * sense 'T'|'F' in `reason`); `flows` reads REACHING_DEF (def→use, variable
+   * name in `reason`). Intra-procedural, basic-block granular.
+   *
+   * Bounded by construction: the BasicBlock→BasicBlock partition holds only the
+   * sparse, per-function-capped pdg layers, the query is anchored to one file/
+   * symbol, and the page is LIMIT-bounded (validated integer, interpolated
+   * because LadybugDB does not parameterize LIMIT). LadybugDB has no rel-
+   * property index, so the anchor IS the bound — there is no anchorless mode.
+   *
+   * Symbol↔block join: there is no Function→BasicBlock edge; the SOURCE block
+   * (`a` — controller for CDG, def for REACHING_DEF) is filtered by the
+   * BasicBlock id-prefix (`basicBlockId` template) plus its `startLine` within
+   * the symbol's span. BasicBlock `startLine` is 1-based while symbol-node
+   * `startLine` is 0-based, so the upper bound is WIDENED by one (`<= symEnd+1`)
+   * — without it a guard/def/use on the function's final line is dropped
+   * (#2188 review). Both endpoints share the function (intra-procedural), so
+   * filtering the source endpoint suffices.
+   */
+  private async _pdgQueryImpl(
+    repo: RepoHandle,
+    params: { mode?: string; target?: string; variable?: string; limit?: number },
+  ): Promise<any> {
+    await this.ensureInitialized(repo);
+
+    // Mode validation — the JSON-schema enum is advisory for MCP clients, so
+    // the backend enforces it (an unhandled mode would otherwise fall through).
+    const mode = params.mode;
+    if (mode !== 'controls' && mode !== 'flows') {
+      return {
+        error: `Invalid "mode": expected "controls" or "flows", got ${JSON.stringify(params.mode)}.`,
+      };
+    }
+
+    const rawLimit = params.limit ?? PDG_QUERY_DEFAULT_LIMIT;
+    if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > PDG_QUERY_MAX_LIMIT) {
+      return {
+        error: `Invalid "limit": expected an integer in [1, ${PDG_QUERY_MAX_LIMIT}], got ${JSON.stringify(params.limit)}.`,
+      };
+    }
+    const limit = rawLimit;
+
+    // PDG queries are always anchored (no rel-property index ⇒ an unanchored
+    // basic-block path scan is unbounded). `target` is required.
+    const target = typeof params.target === 'string' ? params.target.trim() : '';
+    if (!target) {
+      return {
+        error:
+          'pdg_query requires a "target" (a file path or symbol/function name) — PDG queries are always anchored.',
+      };
+    }
+
+    const edgeType = mode === 'controls' ? 'CDG' : 'REACHING_DEF';
+    const NO_PDG_NOTE = `no PDG layer — run gitnexus analyze --pdg to record ${edgeType} edges for this repo`;
+
+    // Cheap meta probe: the layer exists iff the pdg stamp carries the
+    // mode-relevant cap (maxCdgEdgesPerFunction for CDG, maxReachingDef…
+    // for REACHING_DEF). Absent ⇒ the no-layer hint without a DB scan.
+    let pdgStamped: boolean | undefined;
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      if (meta) {
+        pdgStamped =
+          mode === 'controls'
+            ? meta.pdg?.maxCdgEdgesPerFunction !== undefined
+            : meta.pdg?.maxReachingDefEdgesPerFunction !== undefined;
+      }
+    } catch {
+      /* meta unreadable — decide from the DB below */
+    }
+    if (pdgStamped === false) {
+      return { mode, results: [], total: 0, note: NO_PDG_NOTE };
+    }
+
+    // Resolve the anchor on the SOURCE block (file id-prefix OR symbol span).
+    let anchorClause = '';
+    const queryParams: Record<string, unknown> = {};
+    let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number } | undefined;
+
+    if (looksLikeFilePath(target)) {
+      anchorClause =
+        '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)';
+      queryParams.idPrefix = `BasicBlock:${target}:`;
+      queryParams.targetPath = target;
+      queryParams.targetSuffix = `/${target}`;
+      anchor = { file: target };
+    } else {
+      const outcome = await this.resolveSymbolCandidates(repo, { name: target }, {});
+      if (outcome.kind === 'not_found') {
+        return { error: `Symbol '${target}' not found` };
+      }
+      if (outcome.kind === 'ambiguous') {
+        return {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call pdg_query with the file path, or disambiguate via context() first.`,
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        };
+      }
+      const sym = outcome.symbol;
+      queryParams.idPrefix = `BasicBlock:${sym.filePath}:`;
+      anchor = { file: sym.filePath, symbol: sym.name };
+      if (
+        typeof sym.startLine === 'number' &&
+        typeof sym.endLine === 'number' &&
+        sym.endLine >= sym.startLine
+      ) {
+        // 1-based BasicBlock startLine vs 0-based symbol span ⇒ widen +1 so a
+        // block on the function's final line is included (#2188 review).
+        anchorClause =
+          'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd';
+        queryParams.symStart = sym.startLine;
+        queryParams.symEnd = sym.endLine + 1;
+        anchor.startLine = sym.startLine;
+        anchor.endLine = sym.endLine;
+      } else {
+        anchorClause = 'a.id STARTS WITH $idPrefix';
+      }
+    }
+
+    // Optional variable filter (flows mode) — REACHING_DEF stores the variable
+    // name in `reason`.
+    let reasonClause = '';
+    if (mode === 'flows' && typeof params.variable === 'string' && params.variable.trim()) {
+      reasonClause = ' AND r.reason = $variable';
+      queryParams.variable = params.variable.trim();
+    }
+
+    // edgeType is a hardcoded per-mode literal (never user input); `target` /
+    // `variable` flow only through bind params (no Cypher interpolation).
+    const matchClause = `
+      MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+      WHERE r.type = '${edgeType}' AND ${anchorClause}${reasonClause}`;
+    const [rows, countRows] = await Promise.all([
+      executeParameterized(
+        repo.lbugPath,
+        `${matchClause}
+      RETURN a.id AS srcId, a.startLine AS srcLine, b.startLine AS dstLine, b.text AS dstText, r.reason AS reason
+      ORDER BY srcId, dstLine, reason
+      LIMIT ${limit}`,
+        queryParams,
+      ),
+      executeParameterized(
+        repo.lbugPath,
+        `${matchClause}\n      RETURN COUNT(*) AS total`,
+        queryParams,
+      ),
+    ]);
+    const total = Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0);
+
+    // Unreadable meta + anchored miss: one bounded probe distinguishes "no rows
+    // for this anchor" from "no PDG layer at all".
+    if (total === 0 && pdgStamped === undefined) {
+      const probe = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type = '${edgeType}' RETURN r.reason AS reason LIMIT 1`,
+        {},
+      );
+      if (probe.length === 0) return { mode, results: [], total: 0, note: NO_PDG_NOTE };
+    }
+
+    // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` — split
+    // from the RIGHT (filePath may contain ':').
+    const fnLineOf = (id: string): number => {
+      const parts = id.split(':');
+      return Number(parts[parts.length - 3]);
+    };
+
+    const results =
+      mode === 'controls'
+        ? rows.map((r: any) => {
+            const fnLine = fnLineOf(String(r.srcId ?? r[0] ?? ''));
+            const dstText = String(r.dstText ?? r[3] ?? '');
+            // A CDG edge into an early-exit block is a guard clause (subsumes
+            // #559): the controller predicate gates the dependent via `label`.
+            const isGuardExit = /^\s*(return|throw|continue|break)\b/.test(dstText);
+            return {
+              ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+              controller: { line: (r.srcLine ?? r[1]) as number | undefined },
+              dependent: { line: (r.dstLine ?? r[2]) as number | undefined, text: dstText },
+              label: String(r.reason ?? r[4] ?? ''),
+              ...(isGuardExit ? { guard: true } : {}),
+            };
+          })
+        : rows.map((r: any) => {
+            const fnLine = fnLineOf(String(r.srcId ?? r[0] ?? ''));
+            return {
+              ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+              variable: String(r.reason ?? r[4] ?? ''),
+              def: { line: (r.srcLine ?? r[1]) as number | undefined },
+              use: {
+                line: (r.dstLine ?? r[2]) as number | undefined,
+                text: String(r.dstText ?? r[3] ?? ''),
+              },
+            };
+          });
+
+    return {
+      mode,
+      ...(anchor ? { anchor } : {}),
+      results,
+      total,
+      ...(total > results.length ? { truncated: true } : {}),
     };
   }
 
