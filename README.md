@@ -360,7 +360,7 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 | `group_query`     | Search execution flows across all repos in a group               | —            |
 | `group_status`    | Check staleness of repos in a group                              | —            |
 
-> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
+> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({search_query: "auth", repo: "my-app"})`.
 
 **Resources** for instant context:
 
@@ -738,7 +738,7 @@ gitnexus impact get_embeddings --uid "Function:src/embed.py:get_embeddings"  # e
 ### Process-Grouped Search
 
 ```
-query({query: "authentication middleware"})
+query({search_query: "authentication middleware"})
 
 processes:
   - summary: "LoginFlow"

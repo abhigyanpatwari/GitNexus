@@ -130,7 +130,14 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Natural language or keyword search query' },
+        // #2175: the legacy `query` key is still accepted by the handler
+        // (resolveAliasString in local-backend.ts), but is deliberately NOT named in the
+        // advertised property or its description — surfacing "query" in the schema an LLM
+        // reads would nudge it to send `query`, the exact argument Claude Code drops.
+        search_query: {
+          type: 'string',
+          description: 'Natural language or keyword search query.',
+        },
         task_context: {
           type: 'string',
           description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.',
@@ -171,7 +178,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
             'Optional monorepo service root (relative path, "/" separators). In group mode (@repo), prefix-matches symbol file paths; ignored for a normal repo name. Empty string is rejected server-side.',
         },
       },
-      required: ['query'],
+      required: ['search_query'],
     },
   },
   {
@@ -224,7 +231,14 @@ TIPS:
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Cypher query to execute' },
+        // #2175: the legacy `query` key is still accepted by the handler
+        // (resolveAliasString in local-backend.ts), but is deliberately NOT named in the
+        // advertised property or its description — surfacing "query" in the schema an LLM
+        // reads would nudge it to send `query`, the exact argument Claude Code drops.
+        statement: {
+          type: 'string',
+          description: 'Cypher statement to execute.',
+        },
         params: {
           type: 'object',
           description:
@@ -235,7 +249,7 @@ TIPS:
           description: 'Repository name or path. Omit if only one repo is indexed.',
         },
       },
-      required: ['query'],
+      required: ['statement'],
     },
   },
   {

@@ -651,7 +651,7 @@ const renderSkillMarkdown = (
   lines.push('');
   lines.push(`1. \`context({name: "${firstEntry}"})\` \u2014 see callers and callees`);
   lines.push(
-    `2. \`query({query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
+    `2. \`query({search_query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
   );
   lines.push('3. Read key files listed above for implementation details');
   lines.push(

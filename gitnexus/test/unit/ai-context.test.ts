@@ -920,7 +920,10 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     expect(content).not.toMatch(/gitnexus_(impact|query|context|detect_changes|rename|cypher)/);
     expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
     expect(content).toContain('detect_changes()');
-    expect(content).toContain('query({query: "concept"})');
+    // #2175: the generated guidance must advertise the renamed param, never the
+    // legacy "query" key (Claude Code drops a tool arg named exactly "query").
+    expect(content).toContain('query({search_query: "concept"})');
+    expect(content).not.toContain('query({query:');
     expect(content).toContain('context({name: "symbolName"})');
   });
 

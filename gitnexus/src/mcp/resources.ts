@@ -292,7 +292,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   if (repos.length > 1) {
     lines.push('');
     lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
-    lines.push(`# query({query: "auth", repo: "${repos[0].name}"})`);
+    lines.push(`# query({search_query: "auth", repo: "${repos[0].name}"})`);
   }
 
   return lines.join('\n');
