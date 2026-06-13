@@ -29,7 +29,11 @@ import {
   startMcpHttpServer,
   startIdleSweep,
 } from '../../src/mcp/http-transport.js';
-import { createMCPServer, installSignalShutdown, SHUTDOWN_EXIT_CODES } from '../../src/mcp/server.js';
+import {
+  createMCPServer,
+  installSignalShutdown,
+  SHUTDOWN_EXIT_CODES,
+} from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
 
 // ─── Live-HTTP helpers (real req/res for SDK-touching paths) ───────────
@@ -314,9 +318,9 @@ describe('startMcpHttpServer', () => {
     await expect(
       startMcpHttpServer(backend as never, { host: '0.0.0.0', port: 0 }),
     ).rejects.toThrow(/non-loopback/i);
-    await expect(
-      startMcpHttpServer(backend as never, { host: '::', port: 0 }),
-    ).rejects.toThrow(/non-loopback/i);
+    await expect(startMcpHttpServer(backend as never, { host: '::', port: 0 })).rejects.toThrow(
+      /non-loopback/i,
+    );
     await expect(
       startMcpHttpServer(backend as never, { host: '192.168.1.50', port: 0 }),
     ).rejects.toThrow();
