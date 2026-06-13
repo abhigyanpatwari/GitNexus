@@ -80,16 +80,19 @@ function looksLikeFilePath(target: string): boolean {
 
 /**
  * Resolve a string tool param from its canonical name or legacy alias (#2175).
- * The canonical (new) value wins when present — `??` is nullish, so an explicitly
- * empty/whitespace new value still wins and is rejected downstream by the caller's
- * required-param guard (the "new name wins" contract is presence-based, not
- * truthiness-based). A non-string value (the MCP envelope is not schema-validated,
- * so clients can send any JSON type) resolves to `undefined` so the caller returns
- * a friendly required-param error instead of throwing `TypeError` on `.trim()`.
+ * Returns the first NON-BLANK string of [canonical, legacy] — the canonical (new)
+ * name is preferred when it carries a real value, otherwise the legacy value is used.
+ * A blank/whitespace new value therefore does NOT clobber a valid legacy value (e.g. a
+ * gradually-migrating client that always emits the new key, blank when unset). A
+ * non-string value (the MCP envelope is not schema-validated, so clients can send any
+ * JSON type) and an all-blank input resolve to `undefined`, so the caller returns a
+ * friendly required-param error instead of throwing `TypeError` on `.trim()`.
  */
 function resolveAliasString(canonical: unknown, legacy: unknown): string | undefined {
-  const value = canonical ?? legacy;
-  return typeof value === 'string' ? value : undefined;
+  for (const value of [canonical, legacy]) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
 }
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';

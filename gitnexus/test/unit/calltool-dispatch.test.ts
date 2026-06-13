@@ -598,12 +598,54 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('parameter is required');
   });
 
-  it('query tool: an explicitly empty new search_query wins over a valid legacy query (presence-based) (#2175)', async () => {
+  // #2175 review (PR #2186): resolution prefers the first NON-BLANK string, so a blank
+  // new-name value falls back to a valid legacy value instead of clobbering it.
+  it('query tool: a blank new search_query falls back to a valid legacy query (#2175)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (executeParameterized as any).mockResolvedValue([]);
+
     const result = await backend.callTool('query', { search_query: '', query: 'real' });
-    // "new name wins" is presence-based: the empty new value is used and rejected,
-    // rather than silently falling back to the legacy value.
+
+    expect(result).not.toHaveProperty('error');
+    expect(result).toHaveProperty('processes');
+    const lastTerm = String(vi.mocked(searchFTSFromLbug).mock.calls.at(-1)?.[0] ?? '');
+    expect(lastTerm).toBe('real');
+  });
+
+  it('query tool: a whitespace-only new search_query falls back to a valid legacy query (#2175)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('query', { search_query: '   ', query: 'real' });
+
+    expect(result).not.toHaveProperty('error');
+    const lastTerm = String(vi.mocked(searchFTSFromLbug).mock.calls.at(-1)?.[0] ?? '');
+    expect(lastTerm).toBe('real');
+  });
+
+  it('query tool: both keys blank still returns the required error (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '', query: '   ' });
     expect(result.error).toContain('search_query');
     expect(result.error).toContain('parameter is required');
+  });
+
+  it('cypher tool: a blank statement falls back to a valid legacy query (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('cypher', { statement: '', query: 'MATCH (n) RETURN n LIMIT 1' });
+    const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(passedCypher).toBe('MATCH (n) RETURN n LIMIT 1');
+  });
+
+  it('group-mode query: a blank new search_query falls back to the legacy query (#2175)', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupQuerySpy = vi
+      .spyOn(backend.getGroupService(), 'groupQuery')
+      .mockResolvedValue({ ok: true } as any);
+
+    await backend.callTool('query', { search_query: '', query: 'real', repo: '@grp' });
+
+    expect((groupQuerySpy.mock.calls[0][0] as any).query).toBe('real');
+    groupQuerySpy.mockRestore();
   });
 
   it('dispatches context tool', async () => {
