@@ -24,6 +24,7 @@ import {
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
+  deleteAllInterprocTaintPaths,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -53,6 +54,11 @@ import {
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
   DEFAULT_PDG_MAX_TAINT_HOPS,
 } from './ingestion/taint/propagate.js';
+import {
+  DEFAULT_MAX_INTERPROC_HOPS,
+  DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+} from './ingestion/taint/interproc-solver.js';
+import { DEFAULT_PDG_MAX_INTERPROC_EDGES } from './ingestion/taint/interproc-emit.js';
 import { taintModelVersion } from './ingestion/taint/typescript-model.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
@@ -153,6 +159,12 @@ export interface AnalyzeOptions {
   /** Per-finding taint hop cap (#2083 M3, KTD6). Forwarded to
    *  `PipelineOptions.pdgMaxTaintHops`. No CLI flag or rc key (KTD8). */
   pdgMaxTaintHops?: number;
+  /** Per-run cross-function findings/hops/edges caps (#2084 review P1-3).
+   *  Forwarded to the matching `PipelineOptions.pdgMaxInterproc*`; resolved
+   *  into `RepoMeta.pdg`. No CLI flag or rc key (KTD8). */
+  pdgMaxInterprocFindings?: number;
+  pdgMaxInterprocHops?: number;
+  pdgMaxInterprocEdges?: number;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -361,6 +373,9 @@ type PdgOptions = Pick<
   | 'pdgMaxReachingDefEdgesPerFunction'
   | 'pdgMaxTaintFindingsPerFunction'
   | 'pdgMaxTaintHops'
+  | 'pdgMaxInterprocFindings'
+  | 'pdgMaxInterprocHops'
+  | 'pdgMaxInterprocEdges'
 >;
 
 export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
@@ -378,6 +393,12 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         maxTaintFindingsPerFunction:
           options.pdgMaxTaintFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
         maxTaintHops: options.pdgMaxTaintHops ?? DEFAULT_PDG_MAX_TAINT_HOPS,
+        // #2084 review P1-3: cross-function caps. Absent on an M3-era stamp →
+        // pdgModeMismatch trips the first run that adds them (key-union),
+        // forcing the full writeback that re-materialises TAINT_PATH bounded.
+        maxInterprocFindings: options.pdgMaxInterprocFindings ?? DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+        maxInterprocHops: options.pdgMaxInterprocHops ?? DEFAULT_MAX_INTERPROC_HOPS,
+        maxInterprocEdges: options.pdgMaxInterprocEdges ?? DEFAULT_PDG_MAX_INTERPROC_EDGES,
         // Built-in model digest (KTD7/R7): persisted findings must never
         // outlive the model that produced them — ANY model-content change
         // ships as a new digest and repopulates the taint edges.
@@ -783,6 +804,9 @@ export async function runFullAnalysis(
       pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
       pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
       pdgMaxTaintHops: options.pdgMaxTaintHops,
+      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
       fetchWrappers: options.fetchWrappers,
     },
   );
@@ -1002,6 +1026,15 @@ export async function runFullAnalysis(
       //    from the fresh pipeline output below. Required for the
       //    "Leiden runs on the FULL graph" correctness invariant.
       await deleteAllCommunitiesAndProcesses();
+      // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+      //     — their validity is a whole-program property (an A→C flow can be
+      //     invalidated by a change to an intermediate function on a third
+      //     file), so endpoint-writability extraction can't refresh them.
+      //     extractChangedSubgraph re-includes all of them from the fresh
+      //     graph (isGraphWideRelType), mirroring Community/Process.
+      if (options.pdg === true) {
+        await deleteAllInterprocTaintPaths();
+      }
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
       //    only that. Unchanged-file rows in the DB stay untouched. Pass

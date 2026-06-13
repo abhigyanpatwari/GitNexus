@@ -105,7 +105,12 @@ import type {
   MatchedSinkCall,
   StatementMatches,
 } from './match.js';
-import type { SinkKind, SourceKind } from './source-sink-config.js';
+import {
+  SINK_KIND_ORDER as KIND_ORDER,
+  sortSinkKinds as sortKinds,
+  type SinkKind,
+  type SourceKind,
+} from './source-sink-config.js';
 
 /**
  * Default per-function findings cap (U5 config resolution; cfg/emit.ts
@@ -226,17 +231,10 @@ export interface FunctionTaintResult {
   readonly droppedFindings: number;
 }
 
-/** Canonical SinkKind order for deterministic `neutralized` arrays. */
-const KIND_ORDER: readonly SinkKind[] = [
-  'code-injection',
-  'command-injection',
-  'path-traversal',
-  'sql-injection',
-  'xss',
-];
+// Canonical SinkKind order + sort live in source-sink-config.ts (shared with
+// the M4 summary harvest so the deterministic order never drifts); imported
+// above as KIND_ORDER / sortKinds. `kindRank` is the local comparator index.
 const kindRank = new Map<SinkKind, number>(KIND_ORDER.map((k, i) => [k, i]));
-const sortKinds = (kinds: Iterable<SinkKind>): SinkKind[] =>
-  [...new Set(kinds)].sort((a, b) => (kindRank.get(a) ?? 99) - (kindRank.get(b) ?? 99));
 
 const EMPTY_KINDS: ReadonlySet<SinkKind> = new Set();
 

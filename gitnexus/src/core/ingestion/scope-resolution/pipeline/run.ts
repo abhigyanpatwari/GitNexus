@@ -40,6 +40,7 @@ import {
   isEmitSafeCfg,
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
 import {
@@ -50,6 +51,12 @@ import {
 } from '../../taint/emit.js';
 import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
 import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
+import {
+  buildFunctionNodeIndex,
+  harvestFileSummaries,
+  type FunctionNodeIndex,
+} from '../../taint/summary-harvest-driver.js';
+import type { FunctionSummary } from '../../taint/summary-model.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
@@ -303,6 +310,14 @@ interface RunScopeResolutionInput {
    */
   readonly prebuiltNodeLookup?: ReturnType<typeof buildGraphNodeLookup>;
   /**
+   * Functionish-node index built ONCE by the caller and shared across every
+   * language pass (#2084 review P2-6). Like `prebuiltNodeLookup`,
+   * `buildFunctionNodeIndex` is a whole-graph scan and is language-agnostic, so
+   * rebuilding it per language wastes a full scan each time. When omitted
+   * (tests / isolated calls) it is built locally for the pdg-enabled language.
+   */
+  readonly prebuiltFunctionNodeIndex?: FunctionNodeIndex;
+  /**
    * Opaque per-language import-resolution config (e.g. tsconfig path
    * aliases for TypeScript). Loaded once by the caller via
    * `provider.loadResolutionConfig(repoPath)` and threaded into every
@@ -360,6 +375,13 @@ interface RunScopeResolutionStats {
   readonly referenceEdgesEmitted: number;
   readonly referenceSkipped: number;
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
+  /**
+   * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
+   * Empty unless `input.pdg === true` and the language has a registered taint
+   * model. Keyed by resolved `Function`/`Method` node id; the cross-function
+   * fixpoint phase composes them over the complete `CALLS` graph.
+   */
+  readonly functionSummaries: readonly FunctionSummary[];
 }
 
 export function runScopeResolution(
@@ -477,6 +499,7 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       resolutionOutcomes,
+      functionSummaries: [],
     };
   }
 
@@ -730,6 +753,11 @@ export function runScopeResolution(
   // pair can't bracket them; without this accumulator the M2 cost would
   // silently disappear into `emit=` and field regressions would be invisible.
   let pdgMs = 0;
+  // M4 (#2084 U1): per-function taint summaries harvested in the pdg window,
+  // returned on the stats for the cross-function fixpoint phase. Function-scoped
+  // so the return (below the pdg block) can read it; empty on non-pdg runs.
+  const harvestedSummaries: FunctionSummary[] = [];
+  let summaryUnresolved = 0;
   // M3 (#2083 U4): accumulated taint time (match + taint-side solve +
   // propagate + TAINTED/SANITIZES emit), a sibling of `pdgMs` for the same
   // reason — it interleaves per file inside `emit=`, so only an accumulator
@@ -784,6 +812,14 @@ export function runScopeResolution(
       gapExamples: [] as string[],
       dropExamples: [] as string[],
     };
+    // M4 (#2084 U1): per-function summary harvest. The functionish-node index
+    // is built ONCE (whole-graph scan) and reused across every file; summaries
+    // accumulate here and ride out on the stats for the cross-function fixpoint
+    // phase. Only built when the language has a registered taint model.
+    const fnNodeIndex =
+      taintSpec !== undefined
+        ? (input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph))
+        : undefined;
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
@@ -872,6 +908,25 @@ export function runScopeResolution(
           for (const ex of taint.droppedExamples) {
             if (taintTotals.dropExamples.length < 5) taintTotals.dropExamples.push(ex);
           }
+
+          // M4 (#2084 U1): harvest per-function summaries over the SAME
+          // emit-safe CFGs, inside the SAME per-file try. Pure aside from the
+          // read-only node-index lookup; the cross-function fixpoint phase
+          // consumes `harvestedSummaries` once the whole call graph is built.
+          if (fnNodeIndex !== undefined) {
+            const harvest = harvestFileSummaries(
+              fnNodeIndex,
+              wellFormed,
+              pf.parsedImports,
+              taintSpec,
+              // Same fact cap the taint-side RD solve uses (coverage parity).
+              taintLimits.maxFacts && taintLimits.maxFacts > 0
+                ? taintLimits.maxFacts
+                : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+            );
+            harvestedSummaries.push(...harvest.summaries);
+            summaryUnresolved += harvest.unresolved;
+          }
         }
       } catch (err) {
         // Last-resort isolation, mirroring the worker-side per-file try/catch:
@@ -942,6 +997,16 @@ export function runScopeResolution(
         logger.warn(`[taint] lang=${provider.language}: ${parts.join('; ')}`);
       }
     }
+    // M4 (#2084 U1): summary harvest volume + anchor-resolution diagnostics.
+    if (harvestedSummaries.length > 0 || summaryUnresolved > 0) {
+      logger.debug(
+        `[taint-summary] lang=${provider.language}: ${harvestedSummaries.length} function ` +
+          `summary/summaries harvested` +
+          (summaryUnresolved > 0
+            ? `, ${summaryUnresolved} CFG anchor(s) unresolved (same-line collision or missing node)`
+            : ''),
+      );
+    }
   }
 
   if (PROF) {
@@ -971,5 +1036,6 @@ export function runScopeResolution(
     referenceEdgesEmitted: emitted + receiverExtras + unresolvedReceiverExtras + freeCallExtras,
     referenceSkipped: skipped,
     resolutionOutcomes,
+    functionSummaries: harvestedSummaries,
   };
 }

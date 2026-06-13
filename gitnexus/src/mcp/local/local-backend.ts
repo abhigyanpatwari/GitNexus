@@ -2937,20 +2937,100 @@ export class LocalBackend {
 
     const { rows, totalFindings } = await runAnchoredQuery();
 
-    if (totalFindings === 0 && pdgStamped === undefined && !target) {
-      // Meta was unreadable and the repo-wide enumerate found nothing — the
-      // count above WAS the existence probe; surface the layer hint.
+    // M4 (#2084 U7): cross-function findings ride TAINT_PATH edges (Function/
+    // Method → Function/Method), separate from the intra-procedural TAINTED
+    // BasicBlock rows above. Enumerate them too so `explain` is the discovery
+    // surface for interprocedural flows (TAINT_PATH stays out of
+    // VALID_RELATION_TYPES + the web schema, like TAINTED). File-anchored:
+    // filter on the source function's file; symbol-anchored: either endpoint
+    // matches the symbol name; anchorless: all (bounded by LIMIT). Computed
+    // BEFORE the no-taint early returns — a repo with ONLY cross-function
+    // findings (no intra-procedural TAINTED rows) must not look empty.
+    const runInterprocQuery = async (): Promise<{ findings: any[]; total: number }> => {
+      const where: string[] = [`r.type = 'TAINT_PATH'`];
+      const p: Record<string, unknown> = {};
+      if (anchor?.symbol) {
+        where.push('(a.name = $ipSym OR b.name = $ipSym)');
+        p.ipSym = anchor.symbol;
+      } else if (anchor?.file) {
+        // Match EITHER endpoint's file — a cross-function flow anchored on the
+        // SINK's file (b) is as relevant as one anchored on the source's (a).
+        where.push(
+          '(a.filePath = $ipFile OR a.filePath ENDS WITH $ipSuffix OR ' +
+            'b.filePath = $ipFile OR b.filePath ENDS WITH $ipSuffix)',
+        );
+        p.ipFile = anchor.file;
+        p.ipSuffix = `/${anchor.file}`;
+      }
+      const matchClause = `MATCH (a)-[r:CodeRelation]->(b)\n      WHERE ${where.join(' AND ')}`;
+      // Page query + a separate COUNT (#2084 review P2-4): the page is
+      // LIMIT-capped, so its row count cannot stand in for the true total —
+      // run a COUNT with the same WHERE (no LIMIT) like the intra layer does.
+      const [ipRows, ipCountRows] = await Promise.all([
+        executeParameterized(
+          repo.lbugPath,
+          `${matchClause}
+      RETURN a.filePath AS file, a.name AS sourceFn, a.startLine AS sourceLine,
+             b.name AS sinkFn, b.startLine AS sinkLine, r.reason AS reason
+      ORDER BY sourceFn, sinkFn, reason
+      LIMIT ${limit}`,
+          p,
+        ),
+        executeParameterized(repo.lbugPath, `${matchClause}\n      RETURN COUNT(*) AS total`, p),
+      ]);
+      const total = Number((ipCountRows[0] as any)?.total ?? (ipCountRows[0] as any)?.[0] ?? 0);
+      const findings = ipRows.map((r: any) => {
+        const decoded = decodeTaintPath(r.reason ?? r[5]);
+        const hops = decoded.ok
+          ? decoded.hops.map((h) => ({ function: h.variable, line: h.line }))
+          : [];
+        return {
+          interprocedural: true,
+          file: String(r.file ?? r[0] ?? ''),
+          sinkKind: decoded.ok ? (decoded.kind ?? 'unknown') : 'unknown',
+          source: { function: String(r.sourceFn ?? r[1] ?? ''), line: r.sourceLine ?? r[2] },
+          sink: { function: String(r.sinkFn ?? r[3] ?? ''), line: r.sinkLine ?? r[4] },
+          hops,
+          ...(decoded.ok && decoded.truncated ? { pathIncomplete: true } : {}),
+        };
+      });
+      return { findings, total };
+    };
+    const { findings: interprocFindings, total: interprocTotal } = await runInterprocQuery();
+
+    if (
+      totalFindings === 0 &&
+      interprocFindings.length === 0 &&
+      pdgStamped === undefined &&
+      !target
+    ) {
+      // Meta was unreadable and the repo-wide enumerate (both layers) found
+      // nothing — the counts above WERE the existence probe; surface the hint.
       return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
     }
-    if (totalFindings === 0 && pdgStamped === undefined && target) {
+    if (
+      totalFindings === 0 &&
+      interprocFindings.length === 0 &&
+      pdgStamped === undefined &&
+      target
+    ) {
       // Anchored miss with unreadable meta: one extra bounded probe decides
-      // "no findings for this anchor" vs "no taint layer at all".
+      // "no findings for this anchor" vs "no taint layer at all". Probe BOTH
+      // intra (TAINTED) and inter (TAINT_PATH) existence.
       const probe = await executeParameterized(
         repo.lbugPath,
         `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock) WHERE r.type = 'TAINTED' RETURN r.reason AS reason LIMIT 1`,
         {},
       );
-      if (probe.length === 0) {
+      const ipProbe =
+        probe.length === 0
+          ? await executeParameterized(
+              repo.lbugPath,
+              `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type = 'TAINT_PATH' RETURN r.reason AS reason LIMIT 1`,
+              {},
+            )
+          : [];
+      if (probe.length === 0 && ipProbe.length === 0) {
         return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
       }
     }
@@ -2997,12 +3077,32 @@ export class LocalBackend {
       };
     });
 
+    // Combine both layers and re-apply the page LIMIT to the union — each
+    // layer was queried with its own LIMIT, so the union can hold up to 2×;
+    // cap it so `findings.length` honours the caller's `limit`. `truncated`
+    // reflects EITHER layer overflowing OR the union being trimmed here, and
+    // `totalFindings` counts both layers' matched rows (the intra COUNT plus
+    // the interproc rows returned — interproc has no separate COUNT, so a
+    // capped interproc layer is reflected via `truncated`, never undercounted
+    // into a false "complete" signal). Review: code-review #2/#4 (explain
+    // accounting + sink-file anchoring) — both layers now accounted.
+    const combined = [...findings, ...interprocFindings];
+    const pageFindings = combined.length > limit ? combined.slice(0, limit) : combined;
+    // Truncated iff EITHER layer overflowed its own LIMIT (strict `>` — exactly
+    // `limit` rows is not truncated), OR the combined union was trimmed to the
+    // page (#2084 review P2-4). `totalFindings` uses the interproc COUNT, not
+    // the capped slice length, so it never undercounts.
+    const truncated =
+      totalFindings > findings.length ||
+      interprocTotal > interprocFindings.length ||
+      combined.length > pageFindings.length;
+
     return {
       ...(anchor ? { anchor } : {}),
-      findings,
-      totalFindings,
-      ...(totalFindings > findings.length ? { truncated: true } : {}),
-      note: 'Intra-procedural findings only — cross-function, closure/callback, property/field, and implicit flows are not modeled; absence of a finding is not proof of safety. SANITIZES (kill) edges are queryable via cypher.',
+      findings: pageFindings,
+      totalFindings: totalFindings + interprocTotal,
+      ...(truncated ? { truncated: true } : {}),
+      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
