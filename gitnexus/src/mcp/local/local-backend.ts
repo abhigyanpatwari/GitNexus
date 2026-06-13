@@ -3247,7 +3247,10 @@ export class LocalBackend {
     // Resolve the anchor on the SOURCE block (file id-prefix OR symbol span).
     let anchorClause = '';
     const queryParams: Record<string, unknown> = {};
-    let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number } | undefined;
+    // Definitely assigned below: both the file-path and symbol branches set it
+    // before the return, and the not-found/ambiguous/no-layer paths return
+    // earlier — so it is never undefined here (no `| undefined`, #2188 CodeQL).
+    let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
 
     if (looksLikeFilePath(target)) {
       anchorClause =
@@ -3377,7 +3380,7 @@ export class LocalBackend {
 
     return {
       mode,
-      ...(anchor ? { anchor } : {}),
+      anchor,
       results,
       total,
       ...(total > results.length ? { truncated: true } : {}),
