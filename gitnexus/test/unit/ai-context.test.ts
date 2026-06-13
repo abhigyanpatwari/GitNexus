@@ -138,8 +138,7 @@ describe('generateAIContextFiles', () => {
     const content = generateGitNexusContent(
       'TestProject',
       { nodes: 50, edges: 100, processes: 5 },
-      undefined,
-      ['TeamGroup'],
+      { groupNames: ['TeamGroup'] },
     );
     expect(content).toContain('## Cross-Repo Groups');
     expect(content).toContain('node .gitnexus/run.cjs group list');
@@ -153,17 +152,7 @@ describe('generateAIContextFiles', () => {
   it('gates the pdg_query line on hasPdg (#2086 M6 — no existing taint gate to mirror)', () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     // hasPdg=true → the pdg_query line is present.
-    const withPdg = generateGitNexusContent(
-      'PdgProject',
-      stats,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      '.gitnexus/run.cjs',
-      'main',
-      true,
-    );
+    const withPdg = generateGitNexusContent('PdgProject', stats, { hasPdg: true });
     expect(withPdg).toContain('pdg_query');
     expect(withPdg).toContain('under what condition does X run');
     // hasPdg omitted (default false) → no pdg_query line; a non-pdg index must
@@ -917,16 +906,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
 
   it('generated regression-compare example uses the configured default branch (#243)', () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
-    const develop = generateGitNexusContent(
-      'P',
-      stats,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'develop',
-    );
+    const develop = generateGitNexusContent('P', stats, { defaultBranch: 'develop' });
     expect(develop).toContain('base_ref: "develop"');
     expect(develop).not.toContain('base_ref: "main"');
   });
@@ -954,32 +934,14 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
   it('JSON-escapes a markdown/quote-bearing branch so it cannot break the code span (#243)', () => {
     // A branch name with a double-quote must be JSON-escaped, not concatenated
     // raw, so it stays inside the inline code span.
-    const content = generateGitNexusContent(
-      'P',
-      { nodes: 1 },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'we"ird',
-    );
+    const content = generateGitNexusContent('P', { nodes: 1 }, { defaultBranch: 'we"ird' });
     expect(content).toContain('base_ref: "we\\"ird"');
   });
 
   it('a backtick branch cannot break the generated Markdown code span (#1996 P1)', () => {
     // The branch is embedded inside a backtick inline-code span; a stray
     // backtick would close it early. markdownSafeBranch strips it at the sink.
-    const content = generateGitNexusContent(
-      'P',
-      { nodes: 1 },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'main`evil',
-    );
+    const content = generateGitNexusContent('P', { nodes: 1 }, { defaultBranch: 'main`evil' });
     const line = content.split('\n').find((l) => l.includes('base_ref'))!;
     // Even backtick count ⇒ every span is balanced (the regression line opens
     // and closes exactly one).

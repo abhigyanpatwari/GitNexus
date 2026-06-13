@@ -111,30 +111,45 @@ export function markdownSafeBranch(branch: string): string {
   return branch.replace(/`/g, '');
 }
 
+/** Options for {@link generateGitNexusContent} (collapsed from positional
+ *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
+export interface GitNexusContentOptions {
+  generatedSkills?: GeneratedSkillInfo[];
+  groupNames?: string[];
+  noStats?: boolean;
+  skipSkills?: boolean;
+  /** Project-relative path to the runner `gitnexus analyze` drops next to the
+   *  index (#1945). Referenced by docs so a single CLI-neutral command resolves
+   *  the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time. */
+  runnerPath?: string;
+  /** Default branch for the regression-compare example (#243). Configurable so
+   *  projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
+   *  back over their fix on every analyze. The value is embedded inside a
+   *  Markdown inline-code span: validateBranchName rejects backticks upstream,
+   *  and `markdownSafeBranch` strips any remaining backtick here as defense in
+   *  depth, so JSON.stringify's quote/escape handling is sufficient and the
+   *  branch cannot break out of the span (#1996 tri-review P1). */
+  defaultBranch?: string;
+  /** Whether the index was built with `--pdg` (#2086 M6). Gates the pdg_query
+   *  line below — false (default) omits it, so a non-pdg index doesn't advertise
+   *  a tool that only returns a "no PDG layer" note. */
+  hasPdg?: boolean;
+}
+
 export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
-  generatedSkills?: GeneratedSkillInfo[],
-  groupNames?: string[],
-  noStats?: boolean,
-  skipSkills?: boolean,
-  // Project-relative path to the runner `gitnexus analyze` drops next to the
-  // index (#1945). Referenced by docs so a single CLI-neutral command resolves
-  // the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time.
-  runnerPath: string = '.gitnexus/run.cjs',
-  // Default branch for the regression-compare example (#243). Configurable so
-  // projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
-  // back over their fix on every analyze. The value is embedded inside a
-  // Markdown inline-code span: validateBranchName rejects backticks upstream,
-  // and `markdownSafeBranch` strips any remaining backtick here as defense in
-  // depth, so JSON.stringify's quote/escape handling is sufficient and the
-  // branch cannot break out of the span (#1996 tri-review P1).
-  defaultBranch: string = 'main',
-  // Whether the index was built with `--pdg` (#2086 M6). Gates the pdg_query
-  // line below — false (default) omits it, so a non-pdg index doesn't advertise
-  // a tool that only returns a "no PDG layer" note.
-  hasPdg: boolean = false,
+  opts: GitNexusContentOptions = {},
 ): string {
+  const {
+    generatedSkills,
+    groupNames,
+    noStats,
+    skipSkills,
+    runnerPath = '.gitnexus/run.cjs',
+    defaultBranch = 'main',
+    hasPdg = false,
+  } = opts;
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
       ? generatedSkills
@@ -461,17 +476,15 @@ export async function generateAIContextFiles(
     logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
   }
 
-  const content = generateGitNexusContent(
-    projectName,
-    stats,
+  const content = generateGitNexusContent(projectName, stats, {
     generatedSkills,
     groupNames,
-    options?.noStats,
-    options?.skipSkills,
+    noStats: options?.noStats,
+    skipSkills: options?.skipSkills,
     runnerPath,
-    options?.defaultBranch ?? 'main',
-    options?.hasPdg ?? false,
-  );
+    defaultBranch: options?.defaultBranch ?? 'main',
+    hasPdg: options?.hasPdg ?? false,
+  });
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
