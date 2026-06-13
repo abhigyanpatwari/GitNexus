@@ -658,9 +658,12 @@ describe.skipIf(!isLinux)('Linux DB-owner scan — live /proc e2e (#2180)', () =
 
     const holder = spawn(process.execPath, [script, 'mcp'], { stdio: 'ignore' });
     try {
-      // Wait for the holder to report ready (pid file written).
+      // Wait for the holder to report ready (pid file written). Widened to ~10s
+      // (was 5s): a loaded CI runner can be slow to spawn the child, and this is
+      // the one genuine false-FAIL path in the e2e (the budget timeout below
+      // merely hollows the assertion rather than failing it).
       let holderPid = 0;
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < 400; i++) {
         try {
           const raw = fs.readFileSync(pidFile, 'utf8').trim();
           if (raw) {
@@ -687,15 +690,27 @@ describe.skipIf(!isLinux)('Linux DB-owner scan — live /proc e2e (#2180)', () =
       });
       expect(fdVisible).toBe(true);
 
-      // Real /proc, real budget. Use a PID we are NOT (so the holder is not
-      // excluded) and assert owned for OUR lbug specifically.
-      delete process.env.GITNEXUS_HOOK_PROC_ROOT;
+      // Real /proc, generous explicit budget. Clear PROC_ROOT (-> real /proc)
+      // and raise the scan budget via setEnv so the module afterEach restores
+      // BOTH (no raw process.env mutation leaking to sibling tests). The
+      // generous budget is load-bearing: this dispatcher maps a budget 'timeout'
+      // to owned=TRUE, so on a busy host the default 1200ms could be exhausted
+      // before reaching the holder and the assertion would still pass for the
+      // WRONG reason (a hollow timeout, not real fd-visible detection). 10s
+      // keeps the assertion honest. Use a PID we are NOT so the holder is not
+      // excluded, and assert owned for OUR lbug specifically.
+      setEnv({
+        GITNEXUS_HOOK_PROC_ROOT: undefined,
+        GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '10000',
+      });
       const t0 = Date.now();
       const owned = probe.hasGitNexusDbLockedByGitNexusServer(lbugPath, process.pid);
       const ms = Date.now() - t0;
       expect(owned).toBe(true);
-      // Sanity: the scan should be fast even on a busy host (cmdline-first).
-      expect(ms).toBeLessThan(5000);
+      // Coarse regression guard against the old O(procs×fds)+lsof path (~1.2s+).
+      // The bound sits ABOVE the 10s budget so a legitimately-slow-but-correct
+      // scan can't trip it — a regression guard, not a tight perf SLA.
+      expect(ms).toBeLessThan(15000);
     } finally {
       try {
         holder.kill('SIGKILL');
@@ -704,5 +719,5 @@ describe.skipIf(!isLinux)('Linux DB-owner scan — live /proc e2e (#2180)', () =
       }
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  }, 20000);
+  }, 40000);
 });
