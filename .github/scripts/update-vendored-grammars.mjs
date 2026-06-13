@@ -42,17 +42,52 @@ const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION
 // github grammars (no usable npm release) track the default branch HEAD. A `hold`
 // reason makes a grammar report-only: updates are detected + surfaced but never
 // auto-applied (c is ABI-pinned and must not move without a runtime upgrade).
-const GRAMMARS = {
-  c: {
-    name: 'tree-sitter-c',
-    npm: 'tree-sitter-c',
-    hold: 'ABI-pinned at 0.21.4 (#1242/#858) — needs a tree-sitter runtime upgrade before bumping',
-  },
-  swift: { name: 'tree-sitter-swift', npm: 'tree-sitter-swift' },
-  kotlin: { name: 'tree-sitter-kotlin', npm: 'tree-sitter-kotlin' },
-  dart: { name: 'tree-sitter-dart', github: 'UserNobody14/tree-sitter-dart' },
-  proto: { name: 'tree-sitter-proto', github: 'coder3101/tree-sitter-proto' },
-};
+//
+// The vendored set lives in .github/vendored-grammars.json — the SHARED source of
+// truth this monitor and .github/scripts/check-tree-sitter-upgrade-readiness.py both
+// read, so the two tree-sitter workflows can never disagree about which grammars are
+// vendored or where their upstream lives. We reshape the manifest's
+// `{ upstream: { npm | github } }` form into the flat `{ npm? , github? }` shape the
+// rest of this script consumes. This is a local file read (import-safe, no network).
+const MANIFEST = path.join(REPO_ROOT, '.github', 'vendored-grammars.json');
+// `raw` is injectable for testing; production reads the manifest file.
+function loadManifestGrammars(raw = null) {
+  if (raw === null) {
+    // Fail loud with a pointer, not a bare ENOENT/SyntaxError: this runs at import.
+    try {
+      raw = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
+    } catch (e) {
+      throw new Error(
+        `Could not load the vendored-grammars manifest at ${MANIFEST} ` +
+          `(shared source of truth — see CONTRIBUTING.md → CI automation contracts): ${e.message}`,
+      );
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(raw.grammars || {}).map(([key, g]) => {
+      if (!g.name)
+        throw new Error(`manifest entry '${key}' is missing a 'name' field (${MANIFEST})`);
+      // Defense-in-depth: `name` is joined into gitnexus/vendor/<name> paths (and
+      // apply() WRITES there), so reject anything that isn't a plain grammar name
+      // before it can traverse the filesystem (#2187).
+      if (!/^tree-sitter-[a-z0-9-]+$/.test(g.name))
+        throw new Error(
+          `manifest entry '${key}' has an invalid grammar name '${g.name}' ` +
+            `(must match tree-sitter-[a-z0-9-]+)`,
+        );
+      return [
+        key,
+        {
+          name: g.name,
+          ...(g.upstream?.npm ? { npm: g.upstream.npm } : {}),
+          ...(g.upstream?.github ? { github: g.upstream.github } : {}),
+          ...(g.hold ? { hold: g.hold } : {}),
+        },
+      ];
+    }),
+  );
+}
+const GRAMMARS = loadManifestGrammars();
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();
@@ -61,6 +96,26 @@ const clean = (v) =>
   String(v || '')
     .replace(/^[v^~]/, '')
     .trim();
+
+// Shared "is the candidate newer than what we ship?" check, used by BOTH detect()
+// and apply() so they can never disagree. up.version is the comparable identity for
+// both kinds: a plain semver for npm, and the `<base>-g<sha7>` provenance string for
+// github (which apply() also writes to package.json). detect() previously compared
+// the bare sha7 for github, so after the bot re-vendored a github grammar once it
+// reported a perpetual false "update available" while apply() saw "already current"
+// (#2187 review). Comparing up.version on both sides removes that asymmetry.
+const isNewer = (up, have) => !have || up.version !== have;
+
+// apply() throws this (instead of calling process.exit) so its error branches are
+// exercisable in-process by tests; the CLI entrypoint maps `.code` back to the
+// original exit code, keeping the monitor's subprocess contract identical (#2187).
+class ApplyExit extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'ApplyExit';
+    this.code = code;
+  }
+}
 
 function vendoredVersion(g) {
   const p = path.join(VENDOR, g.name, 'package.json');
@@ -136,22 +191,30 @@ function readAbi(srcRoot) {
   return null; // unknown (e.g. parser.c only generated at build time)
 }
 
-function detect() {
+// `deps` injects the network/filesystem seams (vendoredVersion / resolveUpstream /
+// fetchSource / readAbi) so the classification logic — newer-detection, the ABI
+// gate, and the policy-hold gate — can be unit-tested offline with fixtures, never
+// touching live npm/GitHub. Production passes nothing and gets the real functions.
+function detect(deps = {}) {
+  const getVendored = deps.vendoredVersion || vendoredVersion;
+  const resolveUp = deps.resolveUpstream || resolveUpstream;
+  const fetchSrc = deps.fetchSource || fetchSource;
+  const readAbiFn = deps.readAbi || readAbi;
   const report = [];
   for (const [key, g] of Object.entries(GRAMMARS)) {
-    const have = vendoredVersion(g);
+    const have = getVendored(g);
     let up;
     try {
-      up = resolveUpstream(g);
+      up = resolveUp(g);
     } catch (err) {
       report.push({ grammar: key, error: String(err.message || err) });
       continue;
     }
-    const newer = up.kind === 'npm' ? up.version !== have : !have || up.ref.slice(0, 7) !== have;
+    const newer = isNewer(up, have);
     let abi = null;
     if (newer) {
       try {
-        abi = readAbi(fetchSource(g, up.ref));
+        abi = readAbiFn(fetchSrc(g, up.ref));
       } catch {
         /* fetch/abi best-effort; null = unknown */
       }
@@ -190,34 +253,48 @@ const copyFile = (srcRoot, dest, rel) => {
  * notice), LICENSE, and prebuilds/ (the build workflow refreshes those). Bumps the
  * stripped vendor package.json version + provenance — never re-introduces
  * scripts/dependencies (#836/#1728). Returns the new version.
+ *
+ * opts.dryRun resolves + ABI-validates the candidate but writes NOTHING — it logs
+ * what it would re-vendor and returns the version, so the flow can be rehearsed
+ * (locally or in CI) without mutating gitnexus/vendor/. opts.deps injects the
+ * network/fs seams for offline testing (same shape as detect()).
  */
-function apply(key) {
+function apply(key, opts = {}) {
+  const dryRun = opts.dryRun || false;
+  const deps = opts.deps || {};
+  const getVendored = deps.vendoredVersion || vendoredVersion;
+  const resolveUp = deps.resolveUpstream || resolveUpstream;
+  const fetchSrc = deps.fetchSource || fetchSource;
+  const readAbiFn = deps.readAbi || readAbi;
   const g = GRAMMARS[key];
-  if (!g) {
-    console.error(`unknown grammar '${key}'`);
-    process.exit(2);
-  }
-  if (g.hold) {
-    console.error(
+  if (!g) throw new ApplyExit(`unknown grammar '${key}'`, 2);
+  if (g.hold)
+    throw new ApplyExit(
       `${key}: report-only (${g.hold}); not auto-applied. Re-vendor manually if intended.`,
+      3,
     );
-    process.exit(3);
-  }
-  const have = vendoredVersion(g);
-  const up = resolveUpstream(g);
-  const newer = up.kind === 'npm' ? up.version !== have : !have || up.version !== have;
+  const have = getVendored(g);
+  const up = resolveUp(g);
+  const newer = isNewer(up, have);
   if (!newer) {
+    // Already current: nothing to apply. Return (exit 0 via the CLI) — NOT an error.
     console.error(`${key}: already current (${have}); nothing to apply.`);
-    process.exit(0);
+    return have;
   }
-  const srcRoot = fetchSource(g, up.ref);
-  const abi = readAbi(srcRoot);
-  if (abi == null || !COMPATIBLE_ABI.has(abi)) {
-    console.error(
+  const srcRoot = fetchSrc(g, up.ref);
+  const abi = readAbiFn(srcRoot);
+  if (abi == null || !COMPATIBLE_ABI.has(abi))
+    throw new ApplyExit(
       `${key}: candidate ${up.version} is ABI ${abi ?? 'unknown'} — not tree-sitter@0.21.1 ` +
         `compatible (need 13/14); refusing to re-vendor. Handle manually.`,
+      3,
     );
-    process.exit(3);
+
+  if (dryRun) {
+    console.log(
+      `${key}: [dry-run] would re-vendor ${g.name} → ${up.version} (ABI ${abi}); no files written.`,
+    );
+    return up.version;
   }
 
   const dest = path.join(VENDOR, g.name);
@@ -256,11 +333,31 @@ function apply(key) {
 // makes live network calls, so importing must be side-effect-free.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  if (process.argv[2] === '--apply') {
-    apply(process.argv[3]);
+  const args = process.argv.slice(2);
+  const dryRun = args.includes('--dry-run');
+  if (args[0] === '--apply') {
+    // `--apply <grammar> [--dry-run]` — --dry-run previews without writing.
+    // Map apply()'s thrown ApplyExit back to the original exit codes (0/2/3) so
+    // the monitor workflow's subprocess (which only distinguishes zero vs non-zero)
+    // sees identical behavior.
+    try {
+      apply(args[1], { dryRun });
+    } catch (e) {
+      console.error(e.message);
+      process.exit(e instanceof ApplyExit ? e.code : 1);
+    }
   } else {
     process.stdout.write(JSON.stringify(detect(), null, 2) + '\n');
   }
 }
 
-export { detect, apply, resolveUpstream, readAbi, vendoredVersion, GRAMMARS, COMPATIBLE_ABI };
+export {
+  detect,
+  apply,
+  resolveUpstream,
+  readAbi,
+  vendoredVersion,
+  loadManifestGrammars,
+  GRAMMARS,
+  COMPATIBLE_ABI,
+};
