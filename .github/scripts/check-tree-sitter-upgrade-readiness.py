@@ -38,6 +38,14 @@ import urllib.request
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GITNEXUS_DIR = REPO_ROOT / "gitnexus"
 
+# Offline mode: skip ALL network (npm registry + upstream github). Set by the
+# --offline CLI flag or GITNEXUS_TS_READINESS_OFFLINE=1. Lets the script — and its
+# tests — run hermetically in air-gapped CI without hitting live npm/GitHub: the
+# npm-dependent columns render as "n/a (offline)", while vendored-grammar ABIs are
+# still read from gitnexus/vendor/<name>/src/parser.c (no network needed). This is
+# the read-path mirror of --assert-current (which is already offline).
+OFFLINE = os.environ.get("GITNEXUS_TS_READINESS_OFFLINE", "") not in ("", "0", "false")
+
 # ── Upgrade target ──────────────────────────────────────────────────────
 # The runtime version we want to upgrade TO. Update this when the goal
 # changes (e.g. once 0.25 lands and we target 0.26).
@@ -188,6 +196,8 @@ def npm_view_json(pkg: str) -> dict | None:
     being available (it's a batch file on Windows which complicates
     subprocess calls).
     """
+    if OFFLINE:
+        return None
     url = f"https://registry.npmjs.org/{pkg}/latest"
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -244,6 +254,8 @@ def fetch_text(url: str, timeout: int = 8) -> str | None:
     Adds an Authorization header for github.com URLs when GITHUB_TOKEN is
     set (raises the rate limit from 60 to 5 000 requests/hour).
     """
+    if OFFLINE:
+        return None
     headers: dict[str, str] = {}
     # Parse the URL and check the hostname rather than substring-matching
     # on the full URL string (CodeQL py/incomplete-url-substring-sanitization).
@@ -569,8 +581,18 @@ def _classify_grammar(
 def main() -> int:
     blockers: dict[str, str] = {}
     lines: list[str] = []
+    # Label for npm/upstream values we couldn't determine: in --offline mode the
+    # fetch was deliberately skipped (not "failed"), so say so honestly.
+    miss_label = "offline" if OFFLINE else "fetch failed"
     lines.append(md_h("Tree-sitter 0.25 upgrade readiness", 1))
     lines.append("")
+    if OFFLINE:
+        lines.append(
+            "> **Offline mode** — npm registry + upstream GitHub checks were skipped. "
+            "npm-installed grammars show as unverified; vendored-grammar ABIs are read "
+            "from `gitnexus/vendor/`."
+        )
+        lines.append("")
 
     current_runtime = read_current_runtime()
     current_abi_range = RUNTIME_ABI_RANGES.get(current_runtime, (0, 0))
@@ -686,7 +708,7 @@ def main() -> int:
             peer_optional = ts_meta.get("optional", False) if peer_range else True
 
         if fetch_failed:
-            peer_display = "n/a (fetch failed)"
+            peer_display = f"n/a ({miss_label})"
             target_compat = False
             current_compat = False
         else:
@@ -722,8 +744,9 @@ def main() -> int:
         # change-detection working on the raw matrix below.
         upstream_progress: str | None = None
         if fetch_failed:
-            status = "Unknown (fetch failed)"
-            blockers[name] = f"`{name}`: npm registry fetch failed — could not verify peer dep"
+            status = f"Unknown ({miss_label})"
+            reason = "checks skipped (offline)" if OFFLINE else "npm registry fetch failed"
+            blockers[name] = f"`{name}`: {reason} — could not verify peer dep"
         elif name in INTENTIONAL_PINS:
             # An intentional pin is, by definition, a held-back grammar:
             # whatever npm-latest's peer dep says, our shipped version is
@@ -774,7 +797,7 @@ def main() -> int:
         compat_icon = "Yes" if target_compat else "**No**"
         # "?" stays the internal fetch-failed sentinel (compared above); render a
         # labeled token in the matrix so the report never shows a bare "?" (#858).
-        npm_version_cell = "n/a (fetch failed)" if npm_version == "?" else npm_version
+        npm_version_cell = f"n/a ({miss_label})" if npm_version == "?" else npm_version
         raw_matrix.append(
             f"| `{name}` | {pinned_spec} | {npm_version_cell} | {peer_display} | "
             f"{compat_icon} | {abi_display} | {upstream_abi_display} | {status} |"
@@ -826,7 +849,8 @@ def main() -> int:
     lines.append(f"- {len(by_bucket['waiting'])} waiting on an upstream npm release")
     lines.append(f"- {len(by_bucket['blocked'])} blocked on upstream (no fix even on main)")
     if by_bucket['fetch_failed']:
-        lines.append(f"- {len(by_bucket['fetch_failed'])} could not be checked (npm registry unreachable)")
+        why = "checks skipped in offline mode" if OFFLINE else "npm registry unreachable"
+        lines.append(f"- {len(by_bucket['fetch_failed'])} could not be checked ({why})")
     if bump_now:
         lines.append(
             f"- **{len(bump_now)} bump candidate(s) you can take TODAY** (npm-latest "
@@ -909,7 +933,12 @@ def main() -> int:
 
     _emit_bucket(
         "Could not check",
-        "npm registry fetch failed for these grammars. Re-run the workflow to retry.",
+        (
+            "Checks were skipped because the report ran in `--offline` mode. "
+            "Re-run online to verify these grammars."
+            if OFFLINE
+            else "npm registry fetch failed for these grammars. Re-run the workflow to retry."
+        ),
         by_bucket["fetch_failed"],
         lambda r: f"- `{r['name']}` (pinned `{r['pinned_spec']}`)",
     )
@@ -1016,6 +1045,11 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     except Exception:
         pass
+    # `--offline` skips all network so the readiness report renders hermetically
+    # (vendored ABIs from the repo; npm columns marked unverified). Useful for
+    # air-gapped runs and deterministic tests.
+    if "--offline" in sys.argv[1:]:
+        OFFLINE = True
     # `--assert-current` is the offline CI gate (#1922): assert every grammar's
     # ABI loads on the CURRENT runtime. Bare invocation keeps the original
     # target-runtime readiness report behaviour.

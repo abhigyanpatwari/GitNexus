@@ -197,5 +197,43 @@ class ReportRendering(unittest.TestCase):
         self.fail(f"no matrix row for {name}")
 
 
+class OfflineMode(unittest.TestCase):
+    """--offline must render the report touching ZERO network — vendored ABIs come
+    from the repo, npm columns are marked unverified. This is what makes the
+    network-dependent report deterministically testable in air-gapped CI."""
+
+    def _render_offline(self):
+        import urllib.request
+
+        def explode(*a, **k):
+            raise AssertionError("network call attempted in --offline mode")
+
+        buf = io.StringIO()
+        with mock.patch.object(readiness, "OFFLINE", True), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=explode), \
+             contextlib.redirect_stdout(buf):
+            code = readiness.main()
+        return buf.getvalue(), code
+
+    def test_offline_touches_no_network_and_still_renders(self):
+        report, code = self._render_offline()  # raises if any urlopen fires
+        self.assertIn("Offline mode", report)
+        # Vendored grammars are introspected from the repo → real ABI 14, not a miss.
+        for name in readiness.VENDORED_NAMES:
+            row = next(l for l in report.splitlines() if l.startswith(f"| `{name}` |"))
+            cells = [c.strip() for c in row.strip().strip("|").split("|")]
+            self.assertRegex(cells[5], r"^\d+$", f"{name} vendored ABI missing offline")
+
+    def test_offline_marks_npm_grammars_offline_not_fetch_failed(self):
+        report, _ = self._render_offline()
+        self.assertIn("(offline)", report)
+        self.assertNotIn("fetch failed", report)  # honest: skipped, not failed
+
+    def test_offline_report_has_no_bare_question_mark(self):
+        report, _ = self._render_offline()
+        sanitized = report.replace("Satisfies 0.25?", "Satisfies 0.25")
+        self.assertNotIn("?", sanitized)
+
+
 if __name__ == "__main__":
     unittest.main()

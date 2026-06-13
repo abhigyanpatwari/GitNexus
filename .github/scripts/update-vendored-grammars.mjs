@@ -161,13 +161,21 @@ function readAbi(srcRoot) {
   return null; // unknown (e.g. parser.c only generated at build time)
 }
 
-function detect() {
+// `deps` injects the network/filesystem seams (vendoredVersion / resolveUpstream /
+// fetchSource / readAbi) so the classification logic — newer-detection, the ABI
+// gate, and the policy-hold gate — can be unit-tested offline with fixtures, never
+// touching live npm/GitHub. Production passes nothing and gets the real functions.
+function detect(deps = {}) {
+  const getVendored = deps.vendoredVersion || vendoredVersion;
+  const resolveUp = deps.resolveUpstream || resolveUpstream;
+  const fetchSrc = deps.fetchSource || fetchSource;
+  const readAbiFn = deps.readAbi || readAbi;
   const report = [];
   for (const [key, g] of Object.entries(GRAMMARS)) {
-    const have = vendoredVersion(g);
+    const have = getVendored(g);
     let up;
     try {
-      up = resolveUpstream(g);
+      up = resolveUp(g);
     } catch (err) {
       report.push({ grammar: key, error: String(err.message || err) });
       continue;
@@ -176,7 +184,7 @@ function detect() {
     let abi = null;
     if (newer) {
       try {
-        abi = readAbi(fetchSource(g, up.ref));
+        abi = readAbiFn(fetchSrc(g, up.ref));
       } catch {
         /* fetch/abi best-effort; null = unknown */
       }
@@ -215,8 +223,19 @@ const copyFile = (srcRoot, dest, rel) => {
  * notice), LICENSE, and prebuilds/ (the build workflow refreshes those). Bumps the
  * stripped vendor package.json version + provenance — never re-introduces
  * scripts/dependencies (#836/#1728). Returns the new version.
+ *
+ * opts.dryRun resolves + ABI-validates the candidate but writes NOTHING — it logs
+ * what it would re-vendor and returns the version, so the flow can be rehearsed
+ * (locally or in CI) without mutating gitnexus/vendor/. opts.deps injects the
+ * network/fs seams for offline testing (same shape as detect()).
  */
-function apply(key) {
+function apply(key, opts = {}) {
+  const dryRun = opts.dryRun || false;
+  const deps = opts.deps || {};
+  const getVendored = deps.vendoredVersion || vendoredVersion;
+  const resolveUp = deps.resolveUpstream || resolveUpstream;
+  const fetchSrc = deps.fetchSource || fetchSource;
+  const readAbiFn = deps.readAbi || readAbi;
   const g = GRAMMARS[key];
   if (!g) {
     console.error(`unknown grammar '${key}'`);
@@ -228,21 +247,28 @@ function apply(key) {
     );
     process.exit(3);
   }
-  const have = vendoredVersion(g);
-  const up = resolveUpstream(g);
+  const have = getVendored(g);
+  const up = resolveUp(g);
   const newer = up.kind === 'npm' ? up.version !== have : !have || up.version !== have;
   if (!newer) {
     console.error(`${key}: already current (${have}); nothing to apply.`);
     process.exit(0);
   }
-  const srcRoot = fetchSource(g, up.ref);
-  const abi = readAbi(srcRoot);
+  const srcRoot = fetchSrc(g, up.ref);
+  const abi = readAbiFn(srcRoot);
   if (abi == null || !COMPATIBLE_ABI.has(abi)) {
     console.error(
       `${key}: candidate ${up.version} is ABI ${abi ?? 'unknown'} — not tree-sitter@0.21.1 ` +
         `compatible (need 13/14); refusing to re-vendor. Handle manually.`,
     );
     process.exit(3);
+  }
+
+  if (dryRun) {
+    console.log(
+      `${key}: [dry-run] would re-vendor ${g.name} → ${up.version} (ABI ${abi}); no files written.`,
+    );
+    return up.version;
   }
 
   const dest = path.join(VENDOR, g.name);
@@ -281,8 +307,11 @@ function apply(key) {
 // makes live network calls, so importing must be side-effect-free.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  if (process.argv[2] === '--apply') {
-    apply(process.argv[3]);
+  const args = process.argv.slice(2);
+  const dryRun = args.includes('--dry-run');
+  if (args[0] === '--apply') {
+    // `--apply <grammar> [--dry-run]` — --dry-run previews without writing.
+    apply(args[1], { dryRun });
   } else {
     process.stdout.write(JSON.stringify(detect(), null, 2) + '\n');
   }

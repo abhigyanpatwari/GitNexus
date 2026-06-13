@@ -20,10 +20,20 @@ const MOD = pathToFileURL(
   ),
 ).href;
 
+type Grammar = { name: string; npm?: string; github?: string; hold?: string };
+type Upstream = { version: string; ref: string; kind: 'npm' | 'github' };
+type DetectDeps = {
+  vendoredVersion?: (g: Grammar) => string;
+  resolveUpstream?: (g: Grammar) => Upstream;
+  fetchSource?: (g: Grammar, ref: string) => string;
+  readAbi?: (root: string) => number | null;
+};
 let mod: {
   readAbi: (root: string) => number | null;
   COMPATIBLE_ABI: Set<number>;
-  GRAMMARS: Record<string, { name: string; npm?: string; github?: string; hold?: string }>;
+  GRAMMARS: Record<string, Grammar>;
+  detect: (deps?: DetectDeps) => Array<Record<string, unknown>>;
+  apply: (key: string, opts?: { dryRun?: boolean; deps?: DetectDeps }) => string;
 };
 let tmp: string;
 
@@ -107,5 +117,79 @@ describe('shared vendored-grammars manifest', () => {
     for (const g of Object.values(mod.GRAMMARS)) {
       expect(Boolean(g.npm) !== Boolean(g.github)).toBe(true);
     }
+  });
+});
+
+describe('detect() classification (offline, injected deps)', () => {
+  // Drive the real detect() loop with faked network/fs seams so the load-bearing
+  // gates — newer-detection, the ABI gate, and the policy hold — are exercised
+  // deterministically without touching live npm/GitHub.
+  const deps: DetectDeps = {
+    vendoredVersion: (g) => (g.name === 'tree-sitter-kotlin' ? '9.9.9' : '0.0.0'),
+    resolveUpstream: (g) =>
+      g.npm
+        ? { version: '9.9.9', ref: '9.9.9', kind: 'npm' }
+        : { version: '1.0.0-gabc1234', ref: 'abc1234def0', kind: 'github' },
+    fetchSource: (g) => g.name, // pass the name through to the fake readAbi
+    readAbi: (name) => (name === 'tree-sitter-swift' ? 15 : 14),
+  };
+  let report: Array<Record<string, unknown>>;
+  const byKey = (k: string) => report.find((r) => r.grammar === k)!;
+  beforeAll(() => {
+    report = mod.detect(deps);
+  });
+
+  it('flags newer npm + github grammars as updates', () => {
+    expect(byKey('swift').update).toBe(true); // npm 9.9.9 != vendored 0.0.0
+    expect(byKey('dart').update).toBe(true); // github sha differs from vendored
+  });
+
+  it('does not flag a same-version grammar, and skips its ABI fetch', () => {
+    expect(byKey('kotlin').update).toBe(false); // vendored == upstream 9.9.9
+    expect(byKey('kotlin').abi).toBeNull();
+    expect(byKey('kotlin').applicable).toBe(false);
+  });
+
+  it('holds tree-sitter-c: update detected, ABI-compatible, but never applicable', () => {
+    const c = byKey('c');
+    expect(c.update).toBe(true);
+    expect(c.abi).toBe(14);
+    expect(c.abiCompatible).toBe(true);
+    expect(c.hold).toBeTruthy();
+    expect(c.applicable).toBe(false); // policy-hold gate
+  });
+
+  it('refuses an ABI-incompatible candidate (15) — not applicable', () => {
+    const s = byKey('swift');
+    expect(s.abi).toBe(15);
+    expect(s.abiCompatible).toBe(false);
+    expect(s.applicable).toBe(false); // ABI gate
+  });
+
+  it('marks a newer, un-held, ABI-14 grammar applicable', () => {
+    const d = byKey('dart');
+    expect(d.abi).toBe(14);
+    expect(d.applicable).toBe(true);
+  });
+});
+
+describe('apply(--dry-run): resolves + validates but writes nothing', () => {
+  it('returns the candidate version without mutating the vendored package.json', () => {
+    const pkgPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../../vendor/tree-sitter-dart/package.json',
+    );
+    const before = readFileSync(pkgPath, 'utf8');
+    const version = mod.apply('dart', {
+      dryRun: true,
+      deps: {
+        vendoredVersion: () => '0.0.0',
+        resolveUpstream: () => ({ version: '9.9.9', ref: '9.9.9abc', kind: 'github' }),
+        fetchSource: () => 'unused',
+        readAbi: () => 14,
+      },
+    });
+    expect(version).toBe('9.9.9');
+    expect(readFileSync(pkgPath, 'utf8')).toBe(before); // untouched
   });
 });
