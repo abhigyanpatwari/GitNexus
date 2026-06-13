@@ -76,10 +76,15 @@ jobs:
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          # Unguessable per-run heredoc delimiter: the report includes the manifest's
+          # `hold` field, which a fork PR can edit — a fixed delimiter (e.g. DRIFT_EOF)
+          # in a hold value could close the heredoc early and inject $GITHUB_OUTPUT keys.
+          # A random hex delimiter the report cannot contain neutralizes that.
+          DELIM="DRIFT_EOF_$(openssl rand -hex 16)"
           {
-            echo 'report<<DRIFT_EOF'
+            echo "report<<${DELIM}"
             cat drift-report.md
-            echo 'DRIFT_EOF'
+            echo "${DELIM}"
           } >> "$GITHUB_OUTPUT"
           echo "=== Report ==="
           cat drift-report.md
