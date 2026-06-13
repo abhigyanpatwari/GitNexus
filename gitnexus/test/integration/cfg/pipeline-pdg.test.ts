@@ -21,6 +21,7 @@ function counts(result: PipelineResult): {
   reachingDefs: number;
   tainted: number;
   sanitizes: number;
+  cdg: number;
 } {
   let basicBlocks = 0;
   result.graph.forEachNode((n) => {
@@ -30,13 +31,15 @@ function counts(result: PipelineResult): {
   let reachingDefs = 0;
   let tainted = 0;
   let sanitizes = 0;
+  let cdg = 0;
   for (const rel of result.graph.iterRelationships()) {
     if (rel.type === 'CFG') cfgEdges++;
     if (rel.type === 'REACHING_DEF') reachingDefs++;
     if (rel.type === 'TAINTED') tainted++;
     if (rel.type === 'SANITIZES') sanitizes++;
+    if (rel.type === 'CDG') cdg++;
   }
-  return { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes };
+  return { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg };
 }
 
 const tmpDirs: string[] = [];
@@ -138,13 +141,49 @@ describe('U7 — end-to-end --pdg pipeline', () => {
     expect(sawVulnFlow).toBe(true); // the req.body → exec flow, via `cmd`
   }, 60000);
 
-  it('with --pdg off (default): emits zero BasicBlock nodes and zero CFG edges', async () => {
+  // M5 (#2085 U6): control dependence rides the same `--pdg` gate. AC3 — the
+  // CDG edges make "under what condition does block X run?" answerable: each
+  // edge's source is the controlling branch block and its `reason` is the
+  // 'T'|'F' sense. (The dedicated `pdg_query` MCP tool is #2086; here the raw
+  // graph carries the answer.)
+  it('with --pdg on: emits CDG edges (controller→dependent, T/F label) — AC3 answerability', async () => {
+    const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
+    const { cdg } = counts(result);
+    expect(cdg).toBeGreaterThan(0);
+
+    const blockIds = new Set<string>();
+    result.graph.forEachNode((n) => {
+      if (n.label === 'BasicBlock') blockIds.add(n.id);
+    });
+
+    // "What controls block X?" — index CDG edges by dependent block. Every CDG
+    // edge connects two persisted BasicBlocks and carries a T/F label.
+    const controllersOf = new Map<string, { controller: string; label: string }[]>();
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type !== 'CDG') continue;
+      expect(blockIds.has(rel.sourceId)).toBe(true);
+      expect(blockIds.has(rel.targetId)).toBe(true);
+      expect(['T', 'F']).toContain(rel.reason);
+      const list = controllersOf.get(rel.targetId) ?? [];
+      list.push({ controller: rel.sourceId, label: rel.reason });
+      controllersOf.set(rel.targetId, list);
+    }
+    // At least one block has its controlling branch + condition recoverable —
+    // the query "under what condition does this block run?" is answerable.
+    expect(controllersOf.size).toBeGreaterThan(0);
+    for (const [, controls] of controllersOf) {
+      expect(controls.length).toBeGreaterThan(0);
+    }
+  }, 60000);
+
+  it('with --pdg off (default): emits zero BasicBlock nodes and zero CFG/CDG edges', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {});
-    const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes } = counts(result);
+    const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg } = counts(result);
     expect(basicBlocks).toBe(0);
     expect(cfgEdges).toBe(0);
     expect(reachingDefs).toBe(0);
     expect(tainted).toBe(0);
     expect(sanitizes).toBe(0);
+    expect(cdg).toBe(0);
   }, 60000);
 });

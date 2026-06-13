@@ -49,6 +49,7 @@ import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
 } from './ingestion/cfg/emit.js';
 import {
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -152,6 +153,10 @@ export interface AnalyzeOptions {
   /** Per-function REACHING_DEF edge cap (#2082 M2). Forwarded to
    *  `PipelineOptions.pdgMaxReachingDefEdgesPerFunction`. */
   pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function CDG edge cap (#2085 M5). Forwarded to
+   *  `PipelineOptions.pdgMaxCdgEdgesPerFunction`. No CLI flag or rc key —
+   *  programmatic / server path only, like the other pdg caps. */
+  pdgMaxCdgEdgesPerFunction?: number;
   /** Per-function taint findings cap (#2083 M3). Forwarded to
    *  `PipelineOptions.pdgMaxTaintFindingsPerFunction`. No CLI flag or rc key
    *  (KTD8) — programmatic / server path only, like the other pdg caps. */
@@ -371,6 +376,7 @@ type PdgOptions = Pick<
   | 'pdgMaxFunctionLines'
   | 'pdgMaxEdgesPerFunction'
   | 'pdgMaxReachingDefEdgesPerFunction'
+  | 'pdgMaxCdgEdgesPerFunction'
   | 'pdgMaxTaintFindingsPerFunction'
   | 'pdgMaxTaintHops'
   | 'pdgMaxInterprocFindings'
@@ -386,6 +392,12 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         maxReachingDefEdgesPerFunction:
           options.pdgMaxReachingDefEdgesPerFunction ??
           DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+        // #2085 M5: control-dependence cap. Absent on any pre-M5 (M2/M3/M4-era)
+        // stamp → the key-union pdgModeMismatch trips the first CDG-aware run
+        // over an existing `--pdg` index and forces the full writeback that
+        // materialises CDG edges for every file without `--force`.
+        maxCdgEdgesPerFunction:
+          options.pdgMaxCdgEdgesPerFunction ?? DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
         // #2083 M3: taint caps + model identity. The key-union comparator in
         // pdgModeMismatch picks these up structurally — an M2-era stamp lacks
         // all three, so the first M3 run over an M2 `--pdg` index trips a full
@@ -802,6 +814,7 @@ export async function runFullAnalysis(
       pdgMaxFunctionLines: options.pdgMaxFunctionLines,
       pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
       pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
       pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
       pdgMaxTaintHops: options.pdgMaxTaintHops,
       pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
@@ -1423,6 +1436,7 @@ export async function runFullAnalysis(
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
           },
         );
       } catch {

@@ -65,6 +65,15 @@ describe('VALID_RELATION_TYPES', () => {
     expect(VALID_RELATION_TYPES.has('TAINT_PATH')).toBe(false);
     expect(VALID_RELATION_TYPES.size).toBe(16);
   });
+
+  it('CDG control-dependence edge types stay OUT of the impact allow-list (#2085 M5)', () => {
+    // CDG and POST_DOMINATE are BasicBlock→BasicBlock (block space), like the
+    // taint substrate — they must not enter impact()'s symbol-space BFS. Pinned
+    // explicitly (not just via the size==16 guard) so a future "add all emitted
+    // types" sweep can't drag them in, mirroring the TAINTED/TAINT_PATH pins.
+    expect(VALID_RELATION_TYPES.has('CDG')).toBe(false);
+    expect(VALID_RELATION_TYPES.has('POST_DOMINATE')).toBe(false);
+  });
 });
 
 // ─── Valid node labels ───────────────────────────────────────────────

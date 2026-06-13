@@ -72,6 +72,11 @@ export const LIST_REPOS_MAX_LIMIT = 200;
 export const EXPLAIN_DEFAULT_LIMIT = 50;
 export const EXPLAIN_MAX_LIMIT = 200;
 
+// pdg_query result-page bounds (#2086 M6). Mirror the EXPLAIN_* limits — the
+// no-rel-index path means every page must be anchored + LIMIT-bounded.
+export const PDG_QUERY_DEFAULT_LIMIT = 50;
+export const PDG_QUERY_MAX_LIMIT = 200;
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -226,7 +231,8 @@ TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.
 - Community = auto-detected functional area (Leiden algorithm). Properties: heuristicLabel, cohesion, symbolCount, keywords, description, enrichedBy
 - Process = execution flow trace from entry point to terminal. Properties: heuristicLabel, processType, stepCount, communities, entryPointId, terminalId
-- Use heuristicLabel (not label) for human-readable community/process names`,
+- Use heuristicLabel (not label) for human-readable community/process names
+- PDG layers (only when indexed with \`--pdg\`): BasicBlock nodes + CFG / CDG (control dependence, branch sense 'T'|'F' in reason) / REACHING_DEF (def→use, variable in reason) edges, all BasicBlock→BasicBlock. Prefer the \`pdg_query\` tool — it anchors + bounds these for you (raw \`[:CDG*]\`/\`[:REACHING_DEF*]\` path scans are unindexed and unbounded).`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -583,6 +589,58 @@ Findings are deliberately NOT part of impact()'s traversal or the web schema —
     },
   },
   {
+    name: 'pdg_query',
+    description: `Query the persisted Program Dependence Graph recorded by \`gitnexus analyze --pdg\` — control dependence (CDG) and data dependence (REACHING_DEF) at basic-block granularity. The control/data analog of \`explain\` (which is the taint consumer).
+
+MODES:
+- \`controls\` — "under what condition does X run?". Returns, for the anchored function, each control-dependence edge: the controlling predicate block, the dependent block, and the branch sense ('T' = the predicate's true/taken arm, 'F' = its false/fall-through arm). An edge into an early return/throw block is flagged \`guard: true\` (subsumes the #559 guard heuristic); the branch sense of a guard depends on its predicate — \`if (!ok) return;\` rides the 'T' arm — so don't filter guards by a fixed label.
+- \`flows\` — "where does variable Y flow?". Returns REACHING_DEF def→use edges for the anchored function; pass \`variable\` to filter to one binding.
+
+WHEN TO USE: comprehension ("what guards this statement?"), data-flow tracing within a function, guard-clause discovery. Requires \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no PDG layer" note, not an error.
+
+ANCHORING (required): \`target\` is a file path or a symbol/function name (resolved like context()). PDG queries are ALWAYS anchored — there is no whole-repo enumeration (an unanchored basic-block path scan is unbounded; LadybugDB has no rel-property index). A symbol target is line-range granular; an ambiguous name returns ranked candidates, unknown returns not-found.
+
+CONTRACT CAVEATS:
+- CDG labels are binary 'T'/'F' in M5/M6; per-case \`switch\` arm conditions are not yet distinguished (every case dispatch is 'T').
+- Granularity is basic-block, reconstructed to the function via the BasicBlock id + line span (no Function→BasicBlock edge); deeply same-line-packed functions may anchor coarsely.
+- Control/data dependence is intra-procedural (per function). Cross-function flow is taint's domain (\`explain\`).
+- These edges are deliberately NOT part of impact()'s traversal — \`pdg_query\` is the dedicated consumer; raw edges are also queryable via \`cypher\`.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['controls', 'flows'],
+          description:
+            "'controls' = control dependence (CDG: what condition gates X); 'flows' = data dependence (REACHING_DEF: where variable Y flows).",
+        },
+        target: {
+          type: 'string',
+          description:
+            'Required anchor: a file path (e.g. "src/handlers/run.ts" — suffix match accepted) or a symbol/function name (resolved like context()).',
+        },
+        variable: {
+          type: 'string',
+          description:
+            'Optional (flows mode only): restrict REACHING_DEF results to this source-level variable name.',
+        },
+        limit: {
+          type: 'integer',
+          description: `Max edges returned (default: ${PDG_QUERY_DEFAULT_LIMIT}, max: ${PDG_QUERY_MAX_LIMIT}). "total" reports the full matched count; "truncated" is set when the page is smaller.`,
+          default: PDG_QUERY_DEFAULT_LIMIT,
+          minimum: 1,
+          maximum: PDG_QUERY_MAX_LIMIT,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['mode', 'target'],
+    },
+  },
+  {
     name: 'route_map',
     description: `Show API route mappings: which components/hooks fetch which API endpoints, and which handler files serve them.
 
@@ -717,6 +775,7 @@ const BRANCH_SCOPED_TOOLS = new Set([
   'context',
   'detect_changes',
   'explain',
+  'pdg_query',
   'check',
   'impact',
   'rename',

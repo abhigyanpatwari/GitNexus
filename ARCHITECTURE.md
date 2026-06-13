@@ -41,6 +41,8 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | `route_map` | API route → handler → consumer mappings |
 | `tool_map` | MCP/RPC tool definitions and handlers |
 | `shape_check` | Response shape vs consumer property access mismatches |
+| `explain` | Persisted taint findings (source→sink data flows) — needs `analyze --pdg` |
+| `pdg_query` | Control/data dependence — CDG (`mode: controls`) / REACHING_DEF (`mode: flows`) — needs `analyze --pdg` |
 | `group_list` | List repo groups or details for one group |
 | `group_sync` | Rebuild group Contract Registry (`contracts.json`) and bridge graph |
 
@@ -204,9 +206,17 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
 Orchestrator: `runScopeResolution(input, provider)` in `scope-resolution/pipeline/run.ts`.
 Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates the registered `SCOPE_RESOLVERS` over the worker-serialized `ParsedFile`s. (Per-language `emitScopeCaptures` hooks may reuse a cached Tree via the orchestrator's `treeCache`, but in worker-pool runs that cache is empty — Trees can't cross MessageChannels — so they consume the pre-extracted `ParsedFile` instead; § Performance notes.)
 
-### Optional CFG/PDG emission (`--pdg`, #2081 M1)
+### Optional CFG/PDG emission (`--pdg`, #2081–#2086)
 
-On a `--pdg` run, the parse worker builds a per-function control-flow graph from the tree-sitter AST (`LanguageProvider.cfgVisitor`; TypeScript/JavaScript in M1) and serializes it onto `ParsedFile.cfgSideChannel` as plain data. Scope-resolution then emits `BasicBlock` nodes + `CFG` edges from that side-channel **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live** — the only window where the worker-built CFGs are loaded (the store is cleared right after the phase returns). A standalone post-`mro` phase would read an empty store, so the CFG emit deliberately lives in-phase, mirroring the `applyCaptureSideChannel` pattern. The opt-in is off by default (graph byte-identical), folded into the parse-cache key (a pdg-off warm cache is never reused on a `--pdg` run), and bounded by a per-function edge cap that logs any dropped edges. Edge *kind* (`seq`/`cond-true`/`loop-back`/…) rides in the `CFG` relationship's `reason` (CFG is a single `CodeRelation` type, not one type per kind). See `core/ingestion/cfg/`.
+On a `--pdg` run the parse worker builds a per-function control-flow graph from the tree-sitter AST (`LanguageProvider.cfgVisitor`; TypeScript/JavaScript today) and serializes it onto `ParsedFile.cfgSideChannel` as plain data. Scope-resolution then emits the program-dependence layers from that side-channel **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live** — the only window where the worker-built CFGs are loaded (the store is cleared right after the phase returns). A standalone post-`mro` phase would read an empty store, so the emit deliberately lives in-phase, mirroring the `applyCaptureSideChannel` pattern. The opt-in is off by default (graph byte-identical), folded into the parse-cache key (a pdg-off warm cache is never reused on a `--pdg` run), and each layer is bounded by a per-function edge cap that logs any dropped edges. All layers are `BasicBlock → BasicBlock` edges in the single `CodeRelation` table, keyed by `type`; there is **no** `Function → BasicBlock` edge — the symbol↔block join is reconstructed from the BasicBlock id prefix + line span. The layers build on each other:
+
+- **M1 — CFG** (#2081): `BasicBlock` nodes + `CFG` edges. Edge *kind* (`seq`/`cond-true`/`loop-back`/…) rides the `reason` column (CFG is one `CodeRelation` type, not one per kind).
+- **M2 — REACHING_DEF** (#2082): GEN/KILL def→use data dependence from a pure fixpoint solver; the variable name rides `reason`.
+- **M3/M4 — TAINTED / SANITIZES / TAINT_PATH** (#2083–#2084): intra- and inter-procedural taint (source→sink) — the `explain` tool's data.
+- **M5 — CDG** (#2085): Ferrante control dependence over a Cooper–Harvey–Kennedy post-dominator tree (the EXIT-rooted reverse CFG); branch sense (`'T'`/`'F'`) rides `reason`. A CFG whose EXIT is unreachable from some block is skipped for CDG (post-dominance would be unsound) while its CFG/REACHING_DEF layers are kept.
+- **M6 — read surface** (#2086): the `pdg_query` MCP tool answers "what gates X?" (CDG, `mode: controls`) and "where does Y flow?" (REACHING_DEF, `mode: flows`); `explain` is the taint consumer. Both are always anchored + `LIMIT`-bounded (LadybugDB has no rel-property index) and share one `resolveBlockAnchor` helper. These PDG edge types are deliberately kept out of the default `VALID_RELATION_TYPES` / web schema.
+
+See `core/ingestion/cfg/` (emit + the pure CFG / post-dominator / control-dependence / reaching-defs / taint passes) and `mcp/local/local-backend.ts` (`_pdgQueryImpl`, `_explainImpl`, the shared `resolveBlockAnchor`).
 
 ### `ScopeResolver` contract
 
@@ -382,6 +392,8 @@ Defined in `lbug/schema.ts`. Separate node tables per type, single `CodeRelation
 **Node tables:** File, Folder, Function, Class, Interface, Method, Constructor, CodeElement, Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Template, Module, Community, Process, Route, Tool, Section, Embedding.
 
 **Relation types** (`CodeRelation.type`): CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, METHOD_IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF.
+
+**Optional `--pdg` additions** (off by default, opt-in via `gitnexus analyze --pdg`; see _Optional CFG/PDG emission_ above): a `BasicBlock` node table, plus the PDG relation types `CFG`, `REACHING_DEF`, `CDG`, `TAINTED`, `SANITIZES`, and `TAINT_PATH` on the same `CodeRelation` table. These are deliberately kept out of the default `VALID_RELATION_TYPES` / web graph schema — query them via `cypher`, `explain`, or `pdg_query`.
 
 ## Embeddings and search
 
