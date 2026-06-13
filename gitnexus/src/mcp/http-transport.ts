@@ -404,11 +404,15 @@ export async function startMcpHttpServer(
   app.disable('x-powered-by');
 
   // PNA (Chrome 130+ Private Network Access) preflight support.
-  // Only emit the response header when the browser actually sends the preflight request header,
-  // rather than on every response. This prevents arbitrary web pages from making cross-origin
-  // requests to the local server without triggering an explicit preflight flow.
-  app.use((_req: Request, res: Response, next: NextFunction) => {
-    if (_req.headers['access-control-request-private-network'] === '1') {
+  // The browser sends `Access-Control-Request-Private-Network: true` ONLY on the
+  // CORS preflight (an OPTIONS request); emit the matching allow header only then,
+  // never on actual GET/POST responses. Runs before cors() so the header survives
+  // onto the preflight response cors() short-circuits.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (
+      req.method === 'OPTIONS' &&
+      req.headers['access-control-request-private-network'] === 'true'
+    ) {
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
     next();

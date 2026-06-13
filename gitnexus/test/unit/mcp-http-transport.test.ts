@@ -273,6 +273,24 @@ describe('startMcpHttpServer', () => {
     expect(statusCode).toBe(401);
   });
 
+  it('U5: emits the PNA allow header only on an OPTIONS preflight carrying the request header', async () => {
+    const { port, server, cleanup } = await startOnFreePort(); // no auth → loopback CORS
+    servers.push({ server, cleanup });
+
+    const preflight = await request(port, 'OPTIONS', '/mcp', {
+      Origin: 'http://127.0.0.1:9999',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Private-Network': 'true',
+    });
+    expect(preflight.headers['access-control-allow-private-network']).toBe('true');
+
+    // A normal GET carrying the request header must NOT receive the allow header.
+    const get = await request(port, 'GET', '/health', {
+      'Access-Control-Request-Private-Network': 'true',
+    });
+    expect(get.headers['access-control-allow-private-network']).toBeUndefined();
+  });
+
   it('U3: malformed JSON from an authenticated client returns a JSON-RPC parse error (not HTML)', async () => {
     const { port, server, cleanup } = await startOnFreePort('supersecret');
     servers.push({ server, cleanup });
