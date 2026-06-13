@@ -388,7 +388,9 @@ describe('readResource', () => {
     expect(result).toContain('repo parameter');
     // The example must use a registered tool name, not the unregistered
     // `gitnexus_search` / `gitnexus_*` prefix (#2059).
-    expect(result).toContain('query({query: "auth"');
+    // #2175: advertise the renamed param, not the legacy "query" key.
+    expect(result).toContain('query({search_query: "auth"');
+    expect(result).not.toContain('query({query:');
     expect(result).not.toMatch(/gitnexus_/);
   });
 });
