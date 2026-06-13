@@ -251,7 +251,9 @@ class ReportRendering(TestCase):
         for line in self.report.splitlines():
             if line.startswith(f"| `{name}` |"):
                 return line
-        self.fail(f"no matrix row for {name}")
+        # Explicit terminating raise (not self.fail, which CodeQL doesn't model as
+        # NoReturn) so the function has no implicit fall-through return (CodeQL 754).
+        raise AssertionError(f"no matrix row for {name}")
 
 
 class OfflineMode(TestCase):
