@@ -152,6 +152,7 @@ export const zhCN = {
   'help.command.group.impact.description': '分析仓库组中某个成员仓库符号的跨仓库影响',
   'help.command.group.query.description': '跨仓库组所有仓库搜索执行流程',
   'help.command.group.contracts.description': '查看 Contract Registry',
+  'help.option.setup.codingAgent': '仅配置这些编码代理（逗号分隔或重复传入）',
   'help.option.analyze.force': '即使已是最新也强制完整重建索引',
   'help.option.analyze.repairFts': '修复/重建搜索 FTS 索引，不执行完整重新分析',
   'help.option.analyze.embeddings':
