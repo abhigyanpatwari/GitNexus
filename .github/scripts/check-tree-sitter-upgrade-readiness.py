@@ -546,15 +546,17 @@ def _render_vendored_section(
     function coordinates named render phases rather than inlining them (#2187)."""
     if not vendored_grammars:
         return []
-    lines = [
-        md_h(f"Vendored parsers ({len(vendored_grammars)})", 2),
+    # Hoisted out of the list literal below: an implicit string concatenation
+    # inside a list display trips CodeQL py/implicit-string-concatenation-in-list
+    # (it reads as a possibly-missing comma between elements).
+    intro = (
         "These grammars ship from `gitnexus/vendor/` rather than the npm "
         "registry. Their compatibility is governed by the **vendored "
         "ABI** (must lie in the target runtime's range), not by a peer-"
         "dep negotiation. The rationale for each vendored copy lives in "
-        "its own `package.json` `_vendoredBy` field.",
-        "",
-    ]
+        "its own `package.json` `_vendoredBy` field."
+    )
+    lines = [md_h(f"Vendored parsers ({len(vendored_grammars)})", 2), intro, ""]
     for v in sorted(vendored_grammars, key=lambda v: v["name"]):
         sync_label = "in sync with upstream" if v["in_sync"] else "diverged from upstream"
         if v["abi_state"] == "in_range":
