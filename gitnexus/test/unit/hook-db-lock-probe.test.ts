@@ -25,6 +25,8 @@ const PROBE_PATH = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-
 type Probe = {
   hasGitNexusDbLockedByGitNexusServer: (dbPath: string, myPid: number) => boolean;
   linuxProcScanFindGitNexusServer?: (dbPathAbs: string, myPid: number) => string;
+  getCmdlineMaxBytes?: () => number;
+  resolveLinuxProcBudgetMs?: () => number;
 };
 const probe = createRequire(import.meta.url)(PROBE_PATH) as Probe;
 
@@ -91,6 +93,64 @@ function runScan(
 }
 
 const GITNEXUS_MCP_ARGV = (script: string) => ['node', script, 'mcp'];
+
+// ── Numeric env parsing (white-box, #2183 review) ──────────────────────
+//
+// getCmdlineMaxBytes / resolveLinuxProcBudgetMs switched from parseInt(.,10) to
+// Number() so scientific notation ("16e3") parses as 16000 instead of 16. These
+// are platform-independent (pure string->number), so they run on every OS, not
+// just Linux. The load-bearing case is the EMPTY-STRING budget regression guard:
+// a naive parseInt->Number swap would make a set-but-empty
+// GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS="" resolve to Number("")===0 => budget 0 =>
+// immediate fail-CLOSED timeout (augment permanently skipped). The added
+// `&& String(raw).trim()` guard keeps ''/whitespace on the 1200 default.
+describe('numeric env parsing (white-box, #2183 review)', () => {
+  const budget = probe.resolveLinuxProcBudgetMs as () => number;
+  const cmdlineMax = probe.getCmdlineMaxBytes as () => number;
+
+  it('exports the two parse helpers as functions', () => {
+    expect(typeof probe.resolveLinuxProcBudgetMs).toBe('function');
+    expect(typeof probe.getCmdlineMaxBytes).toBe('function');
+  });
+
+  it('budget: "16e3" parses as 16000 (scientific notation), not 16', () => {
+    // parseInt('16e3',10) === 16 (stops at 'e'); Number('16e3') === 16000.
+    setEnv({ GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '16e3' });
+    expect(budget()).toBe(16000);
+  });
+
+  it('budget: set-but-empty "" and whitespace fall back to 1200, NOT 0 (regression guard)', () => {
+    // The deepening catch: without the `&& String(raw).trim()` guard these would
+    // be Number('')===0 => an immediate fail-closed timeout on every hook call.
+    for (const empty of ['', '   ', '\t']) {
+      setEnv({ GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: empty });
+      expect(budget()).toBe(1200);
+    }
+  });
+
+  it('budget: "0" still parses to 0 (the deliberate #2180 immediate-timeout vector)', () => {
+    setEnv({ GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '0' });
+    expect(budget()).toBe(0);
+  });
+
+  it('budget: trailing garbage "123abc" and unset fall back to 1200', () => {
+    setEnv({ GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '123abc' });
+    expect(budget()).toBe(1200);
+    setEnv({ GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: undefined });
+    expect(budget()).toBe(1200);
+  });
+
+  it('cmdline max: "8e3" parses as 8000 (>= floor); "2e3" (=2000, below floor) and ""/unset -> 16384', () => {
+    setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: '8e3' });
+    expect(cmdlineMax()).toBe(8000);
+    setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: '2e3' });
+    expect(cmdlineMax()).toBe(16384);
+    setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: '' });
+    expect(cmdlineMax()).toBe(16384);
+    setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: undefined });
+    expect(cmdlineMax()).toBe(16384);
+  });
+});
 
 describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
   // ── D1: three-phase correctness ──────────────────────────────────

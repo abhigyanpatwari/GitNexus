@@ -310,7 +310,10 @@ function getProcRoot() {
 const PROC_CMDLINE_FLOOR = 4096;
 function getCmdlineMaxBytes() {
   const raw = process.env.GITNEXUS_HOOK_PROC_CMDLINE_MAX;
-  const n = raw && String(raw).trim() ? Number.parseInt(String(raw), 10) : NaN;
+  // Number() (not parseInt) so "8e3" reads as 8000, not 8 (parseInt stops at
+  // 'e'). The `raw && String(raw).trim()` guard keeps empty/whitespace on the
+  // default; trailing garbage ("8abc") now -> NaN -> default (stricter).
+  const n = raw && String(raw).trim() ? Number(String(raw).trim()) : NaN;
   if (Number.isFinite(n) && n >= PROC_CMDLINE_FLOOR) return n;
   return 16384;
 }
@@ -441,11 +444,16 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
 
 function resolveLinuxProcBudgetMs() {
   const raw = process.env.GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS;
-  // Parse first, THEN validate (the old `Number(raw && trim()) ? ... : 1200`
-  // form treated "0" as falsy and silently fell back to 1200 — #2180). A
-  // finite value <= 0 is an explicit, deterministic "no budget" => immediate
-  // timeout (used as a test vector). Non-numeric / unset => default 1200.
-  const n = raw != null ? Number.parseInt(String(raw).trim(), 10) : NaN;
+  // Gate on the STRING's emptiness, NOT the parsed number's truthiness — the
+  // old `Number(raw && trim()) ? ... : 1200` form treated "0" as falsy and
+  // silently fell back to 1200 (#2180). Use Number() (not parseInt) so "16e3"
+  // reads as 16000, not 16 (parseInt stops at 'e'). The `&& String(raw).trim()`
+  // guard is load-bearing: without it a set-but-empty/whitespace value would be
+  // `Number("")===0` => budget 0 => immediate fail-CLOSED timeout (augment
+  // permanently skipped). With it, ''/whitespace => NaN => 1200 default, while a
+  // finite "0" still parses to an explicit, deterministic "no budget" =>
+  // immediate timeout. Non-numeric / unset => default 1200.
+  const n = raw != null && String(raw).trim() ? Number(String(raw).trim()) : NaN;
   if (!Number.isFinite(n)) return 1200;
   return n; // may be <= 0, meaning "out of budget on the first check"
 }
@@ -690,4 +698,11 @@ module.exports = {
   // override to an absolute path. Returns null when the wrapper is
   // disabled/unavailable. Never call on win32 (see its JSDoc).
   resolveUnixGuardTimeout,
+  // Exported for white-box unit tests of the numeric-env parsing (#2183 review):
+  // Number()-not-parseInt so "16e3" reads as 16000, plus the empty/whitespace
+  // guard that keeps a set-but-empty budget on the 1200 default instead of an
+  // immediate fail-closed timeout. Tested directly because the values are
+  // otherwise only observable indirectly through scan timing/escalation.
+  getCmdlineMaxBytes,
+  resolveLinuxProcBudgetMs,
 };
