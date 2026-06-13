@@ -167,6 +167,8 @@ interface AppState {
   setAvailableRepos: (repos: BackendRepo[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
   setCurrentRepo: (repoName: string) => void;
+  /** Download the full graph for the current repo after a chat-only connect (#2178). */
+  loadGraphAnyway: () => Promise<void>;
 
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
@@ -1292,6 +1294,61 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     ],
   );
 
+  // Load the full graph for the current repo after a chat-only connection.
+  // This is the escape hatch behind the chat-only empty state (#2178). It
+  // forces `skipGraph: false` so the size-based auto-detect cannot re-skip it,
+  // and persists `?skipGraph=0` so a refresh keeps the graph for this project.
+  const loadGraphAnyway = useCallback(async (): Promise<void> => {
+    if (!serverBaseUrl) return;
+    const repo = repoRef.current;
+
+    setProgress({
+      phase: 'extracting',
+      percent: 0,
+      message: i18n.t('common:progress.downloadingGraph'),
+      detail: i18n.t('common:progress.validating'),
+    });
+    setViewMode('loading');
+
+    try {
+      const result = await connectToServer(
+        serverBaseUrl,
+        (phase, downloaded, total) => {
+          if (phase === 'downloading') {
+            const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
+            const mb = (downloaded / (1024 * 1024)).toFixed(1);
+            setProgress({
+              phase: 'extracting',
+              percent: pct,
+              message: i18n.t('common:progress.downloadingGraph'),
+              detail: i18n.t('common:progress.downloadedMb', { mb }),
+            });
+          }
+        },
+        undefined,
+        repo,
+        { awaitAnalysis: true, skipGraph: false },
+      );
+
+      const newGraph = createKnowledgeGraph();
+      for (const node of result.nodes) newGraph.addNode(node);
+      for (const rel of result.relationships) newGraph.addRelationship(rel);
+      setGraph(newGraph);
+      setGraphMode('full');
+
+      const urlObj = new URL(window.location.href);
+      urlObj.searchParams.set('skipGraph', '0');
+      window.history.replaceState(null, '', urlObj.toString());
+
+      setProgress(null);
+      setViewMode('exploring');
+    } catch (err) {
+      console.error('Load graph anyway failed:', err);
+      setProgress(null);
+      setViewMode('exploring');
+    }
+  }, [serverBaseUrl, setProgress, setViewMode, setGraph, setGraphMode]);
+
   const removeCodeReference = useCallback(
     (id: string) => {
       setCodeReferences((prev) => {
@@ -1380,6 +1437,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setAvailableRepos,
     switchRepo,
     setCurrentRepo,
+    loadGraphAnyway,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods
