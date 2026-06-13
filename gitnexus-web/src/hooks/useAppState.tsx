@@ -43,7 +43,7 @@ import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import i18n from '../i18n';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
-import { GraphStateProvider, useGraphState } from './app-state/graph';
+import { GraphStateProvider, useGraphState, type GraphMode } from './app-state/graph';
 
 export const AUTO_START_EMBEDDINGS_STORAGE_KEY = 'gitnexus.autoStartEmbeddings';
 
@@ -126,6 +126,10 @@ interface AppState {
   // Graph view mode
   graphViewMode: 'force' | 'tree' | 'circles';
   setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
+
+  // Graph load mode (full download vs chat-only / skipped graph)
+  graphMode: GraphMode;
+  setGraphMode: (mode: GraphMode) => void;
 
   // Query state
   highlightedNodeIds: Set<string>;
@@ -238,6 +242,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setHighlightedNodeIds,
     graphViewMode,
     setGraphViewMode,
+    graphMode,
+    setGraphMode,
   } = useGraphState();
 
   // Right Panel
@@ -1205,10 +1211,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         connectedRepo = result.repoInfo;
         pNameStr = pName;
 
+        // In chat-only mode the graph download was skipped; keep an empty
+        // (but non-null) graph so existing `graph?.` consumers stay happy.
         const newGraph = createKnowledgeGraph();
-        for (const node of result.nodes) newGraph.addNode(node);
-        for (const rel of result.relationships) newGraph.addRelationship(rel);
+        if (!result.graphSkipped) {
+          for (const node of result.nodes) newGraph.addNode(node);
+          for (const rel of result.relationships) newGraph.addRelationship(rel);
+        }
         setGraph(newGraph);
+        setGraphMode(result.graphSkipped ? 'chatOnly' : 'full');
       } catch (err: unknown) {
         console.error('Repo switch failed:', err);
         setProgress({
@@ -1261,6 +1272,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setViewMode,
       setProjectName,
       setGraph,
+      setGraphMode,
       initializeAgent,
       startEmbeddingsWithFallback,
       setHighlightedNodeIds,
@@ -1334,6 +1346,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     graphViewMode,
     setGraphViewMode,
+    graphMode,
+    setGraphMode,
     highlightedNodeIds,
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,

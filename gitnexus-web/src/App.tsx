@@ -30,6 +30,7 @@ const AppContent = () => {
     viewMode,
     setViewMode,
     setGraph,
+    setGraphMode,
     setProgress,
     setProjectName,
     progress,
@@ -66,15 +67,20 @@ const AppContent = () => {
       setProjectName(projectName);
       setCurrentRepo(projectName);
 
-      // Build KnowledgeGraph from server data for visualization
+      // Build KnowledgeGraph from server data for visualization. In chat-only
+      // mode the graph download was skipped, so keep an empty (but non-null)
+      // graph and flag the mode so the UI shows the chat-only empty state.
       const graph = createKnowledgeGraph();
-      for (const node of result.nodes) {
-        graph.addNode(node);
-      }
-      for (const rel of result.relationships) {
-        graph.addRelationship(rel);
+      if (!result.graphSkipped) {
+        for (const node of result.nodes) {
+          graph.addNode(node);
+        }
+        for (const rel of result.relationships) {
+          graph.addRelationship(rel);
+        }
       }
       setGraph(graph);
+      setGraphMode(result.graphSkipped ? 'chatOnly' : 'full');
 
       // Persist the active project in the URL for bookmarkability and F5 refresh resilience
       const urlObj = new URL(window.location.href);
@@ -97,6 +103,7 @@ const AppContent = () => {
     [
       setViewMode,
       setGraph,
+      setGraphMode,
       setProjectName,
       setCurrentRepo,
       initializeAgent,

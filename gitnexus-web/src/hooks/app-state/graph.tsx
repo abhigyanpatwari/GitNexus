@@ -18,7 +18,17 @@ interface GraphStateContextValue {
   setHighlightedNodeIds: (ids: Set<string>) => void;
   graphViewMode: 'force' | 'tree' | 'circles';
   setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
+  /**
+   * Whether the in-memory graph was downloaded ('full') or skipped for a large
+   * project ('chatOnly'). In chat-only mode `graph` is an empty-but-non-null
+   * KnowledgeGraph so existing `graph?.` consumers keep working; this flag is
+   * the explicit signal that drives the chat-only empty-state UI. See #2178.
+   */
+  graphMode: GraphMode;
+  setGraphMode: (mode: GraphMode) => void;
 }
+
+export type GraphMode = 'full' | 'chatOnly';
 
 const GraphStateContext = createContext<GraphStateContextValue | null>(null);
 
@@ -30,6 +40,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [graphViewMode, setGraphViewMode] = useState<'force' | 'tree' | 'circles'>('force');
+  const [graphMode, setGraphMode] = useState<GraphMode>('full');
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels((prev) =>
@@ -59,6 +70,8 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       setHighlightedNodeIds,
       graphViewMode,
       setGraphViewMode,
+      graphMode,
+      setGraphMode,
     }),
     [
       graph,
@@ -68,6 +81,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       depthFilter,
       highlightedNodeIds,
       graphViewMode,
+      graphMode,
     ],
   );
 
