@@ -78,21 +78,55 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     "tree-sitter-proto":      ("coder3101/tree-sitter-proto",        "main",   "src/parser.c"),
 }
 
-# Grammars deliberately held below npm latest. The readiness report surfaces
-# these so reviewers can tell intentional pins apart from drift, and so the
+# npm-installed grammars deliberately held below npm latest. The readiness report
+# surfaces these so reviewers can tell intentional pins apart from drift, and so the
 # context for each pin (which issue motivated it) is visible at a glance.
-# Add an entry whenever you pin a grammar below npm latest.
+# Add an entry whenever you pin an *npm-installed* grammar below npm latest.
+#
+# VENDORED grammars carry their hold in .github/vendored-grammars.json instead (see
+# load_vendored_manifest below) — that file is the source of truth shared with the
+# grammar-update monitor, so a vendored grammar's hold lives in exactly one place.
+# tree-sitter-c is a vendored grammar; its hold is in the manifest, not here.
 INTENTIONAL_PINS: dict[str, str] = {
-    "tree-sitter-c": (
-        "#1242 — last release built against the tree-sitter@0.21 ABI; "
-        "tree-sitter-c@0.23.x prebuilds segfault on Windows under tree-sitter@0.21.1"
-    ),
     "tree-sitter-cpp": (
         "#1242 — last 0.23.x release before tree-sitter-cpp added a runtime "
         "dep on the broken-ABI tree-sitter-c@^0.23.1; pinning here removes "
         "the need for a transitive override"
     ),
 }
+
+
+def load_vendored_manifest() -> dict[str, dict]:
+    """Load the shared vendored-grammar manifest (.github/vendored-grammars.json).
+
+    This file is the single source of truth — shared with
+    .github/scripts/update-vendored-grammars.mjs — for which grammars are
+    *vendored* (shipped from gitnexus/vendor/<name> rather than installed from
+    npm) and any policy ``hold`` (e.g. tree-sitter-c is ABI-pinned, #1242/#858).
+
+    Sharing this set is what keeps the two tree-sitter workflows aligned: the
+    readiness report classifies a grammar as vendored by manifest membership and
+    reads its ABI straight from gitnexus/vendor/<name>/src/parser.c (always in a
+    checkout) instead of node_modules (never populated for vendored grammars) —
+    which is why those grammars used to render bare ``?`` placeholders (#858).
+
+    Returns ``{ grammar_name: {"key", "upstream", "hold"} }``.
+    """
+    manifest_path = REPO_ROOT / ".github" / "vendored-grammars.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    out: dict[str, dict] = {}
+    for key, g in (data.get("grammars") or {}).items():
+        out[g["name"]] = {
+            "key": key,
+            "upstream": g.get("upstream") or {},
+            "hold": g.get("hold"),
+        }
+    return out
+
+
+# Vendored set + holds, keyed by full grammar name (e.g. "tree-sitter-c").
+VENDORED: dict[str, dict] = load_vendored_manifest()
+VENDORED_NAMES: frozenset[str] = frozenset(VENDORED)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -302,10 +336,13 @@ def vendored_drift_summary(
     sha_text = fetch_text(
         f"https://api.github.com/repos/{upstream_repo}/commits/{upstream_branch}"
     )
-    upstream_sha = "?"
+    # Labeled fallback rather than a bare "?": in CI this fetch succeeds, but
+    # offline (or on a transient API miss) the report should say *why* it's
+    # blank instead of leaving a placeholder (#858).
+    upstream_sha = "unknown"
     if sha_text:
         try:
-            upstream_sha = json.loads(sha_text).get("sha", "?")[:12]
+            upstream_sha = json.loads(sha_text).get("sha", "unknown")[:12]
         except json.JSONDecodeError:
             pass
 
@@ -380,13 +417,23 @@ def assert_current() -> int:
 
     for name, (upstream_repo, upstream_branch, parser_path) in sorted(GRAMMARS.items()):
         pinned_spec = pinned_versions.get(name, "—")
-        pin_note = f" [intentional pin: {pinned_spec}]" if name in INTENTIONAL_PINS else ""
+        if name in VENDORED_NAMES and VENDORED[name].get("hold"):
+            pin_note = " [vendored, held]"
+        elif name in INTENTIONAL_PINS:
+            pin_note = f" [intentional pin: {pinned_spec}]"
+        else:
+            pin_note = ""
 
-        if is_vendored_pin(pinned_spec):
+        # Vendored grammars are introspected from gitnexus/vendor/<name>/src/parser.c
+        # (always in a checkout), not node_modules. Membership comes from the shared
+        # manifest — the same set the readiness report + grammar-update monitor use —
+        # so this offline #1922 ABI gate actually covers the vendored grammars
+        # instead of silently skipping them as "not installed" (#858).
+        if name in VENDORED_NAMES:
             v = vendored_drift_summary(name, upstream_repo, upstream_branch, parser_path)
             abi = v["vendored_abi"]
             if abi is None:
-                # Prebuilt-only vendor (e.g. tree-sitter-swift): no parser.c to
+                # Prebuilt-only vendor (e.g. a binary-only grammar): no parser.c to
                 # introspect. The runtime load-smoke covers it instead.
                 skipped.append(f"{name} (vendored, prebuilt — covered by load-smoke)")
                 continue
@@ -545,12 +592,20 @@ def main() -> int:
         # as a separate kind of artefact: their readiness for the runtime
         # upgrade depends on the vendored ABI being in the target range,
         # not on a peer-dep negotiation.
-        if is_vendored_pin(pinned_spec):
+        # A grammar is vendored iff it is in the shared manifest — NOT iff its
+        # package.json spec looks like a file: pin. The 5 vendored grammars
+        # (c/swift/kotlin/dart/proto) aren't in package.json at all, so the old
+        # is_vendored_pin() heuristic misrouted them through the npm path, where
+        # their ABI was read from an absent node_modules entry and rendered "?"
+        # (#858). Manifest membership routes them here, where the ABI is read
+        # from gitnexus/vendor/<name>/src/parser.c — always present in a checkout.
+        if name in VENDORED_NAMES:
             v = vendored_drift_summary(name, upstream_repo, upstream_branch, parser_path)
             v["pinned_spec"] = pinned_spec
-            # Three-state classification: in-range, out-of-range, or
-            # not-introspectable (e.g. tree-sitter-swift ships only
-            # prebuilt .node binaries, no parser.c — assume compatible).
+            hold = VENDORED[name].get("hold")
+            v["hold"] = hold
+            # Three-state ABI classification: in-range, out-of-range, or
+            # not-introspectable (e.g. a prebuilt-only vendor with no parser.c).
             if v["vendored_abi"] is None:
                 v["target_compat"] = True
                 v["abi_state"] = "prebuilt"
@@ -567,13 +622,32 @@ def main() -> int:
                     f"vendored `{name}`: ABI {v['vendored_abi']} outside target range "
                     f"{target_abi_range[0]}..{target_abi_range[1]}"
                 )
+            # A held vendored grammar (e.g. tree-sitter-c, #1242/#858) is
+            # deliberately frozen below a runtime upgrade. Even when its ABI is
+            # in range, it is NOT upgrade-ready until the hold is lifted — surface
+            # the hold and keep it a blocker, mirroring how npm INTENTIONAL_PINS
+            # are treated. The hold reason comes from the shared manifest.
+            if hold:
+                v["target_compat"] = False
+                status = "Vendored — held"
+                blockers[name] = f"vendored `{name}` held: {hold}"
+            # Cell sentinels: never emit a bare "?". A vendored grammar's ABI is
+            # the real LANGUAGE_VERSION when introspectable, else a labeled token.
+            vendored_abi_cell = (
+                str(v["vendored_abi"]) if v["vendored_abi"] is not None else "prebuilt"
+            )
+            upstream_abi_cell = (
+                str(v["upstream_abi"])
+                if v["upstream_abi"] is not None
+                else "n/a (generated at build)"
+            )
             # Keep vendored grammars in the raw matrix so the workflow's
-            # row-diff change-detection picks up status transitions on
-            # them too. npm-only columns get sentinels.
+            # row-diff change-detection picks up status transitions on them too.
+            # npm-only columns get sentinels.
             raw_matrix.append(
                 f"| `{name}` | {pinned_spec} | (vendored) | (vendored) | "
                 f"{'Yes' if v['target_compat'] else '**No**'} | "
-                f"{v['vendored_abi'] or '?'} | {v['upstream_abi'] or '?'} | {status} |"
+                f"{vendored_abi_cell} | {upstream_abi_cell} | {status} |"
             )
             vendored_grammars.append(v)
             continue
@@ -841,14 +915,22 @@ def main() -> int:
                     f"ABI `{v['vendored_abi']}` (**outside** target range "
                     f"{target_abi_range[0]}..{target_abi_range[1]})"
                 )
+            # Never a bare "?": label the case where upstream parser.c is
+            # generated at build time (e.g. tree-sitter-swift) so the report
+            # explains the gap instead of leaving a placeholder (#858).
             upstream_abi_str = (
-                f"ABI `{v['upstream_abi']}`" if v["upstream_abi"] else "ABI `?`"
+                f"ABI `{v['upstream_abi']}`"
+                if v["upstream_abi"] is not None
+                else "ABI `n/a` (generated at build)"
             )
             lines.append(
                 f"- **`{v['name']}`** `{v['vendored_version']}` — {abi_label}, "
                 f"upstream `{v['upstream_repo']}@{v['upstream_sha']}` "
                 f"{upstream_abi_str} · {sync_label}"
             )
+            if v.get("hold"):
+                # A held vendored grammar is reported but never auto-bumped.
+                lines.append(f"  - **Held:** {v['hold']}")
             if v["vendored_by"]:
                 # Show the first sentence — vendor package.json fields tend
                 # to start with the rationale and tail off into install-
