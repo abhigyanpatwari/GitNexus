@@ -363,3 +363,123 @@ withTestLbugDB(
     },
   },
 );
+
+// ─── Block 4: coverage gaps — ambiguous, truncated, Windows-':' path (#2188) ──
+//
+// Hand-seeded edge cases the M6 review flagged as untested.
+
+withTestLbugDB(
+  'pdg-query-gaps',
+  (handle) => {
+    describe('pdg_query coverage gaps (#2188)', () => {
+      let backend: LocalBackend;
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized in afterSetup');
+        backend = ext._backend;
+      });
+
+      it('an ambiguous symbol name returns ranked candidates, not a guess', async () => {
+        const result = await backend.callTool('pdg_query', { mode: 'controls', target: 'dupFn' });
+        expect(result.status).toBe('ambiguous');
+        expect(Array.isArray(result.candidates)).toBe(true);
+        expect(result.candidates.length).toBeGreaterThanOrEqual(2);
+        for (const c of result.candidates) {
+          expect(c).toHaveProperty('uid');
+          expect(c.name).toBe('dupFn');
+          expect(c).toHaveProperty('filePath');
+          expect(typeof c.score).toBe('number');
+        }
+      });
+
+      it('paginates: results capped at limit, total reports the full count, truncated set', async () => {
+        const result = await backend.callTool('pdg_query', {
+          mode: 'controls',
+          target: 'busyFn',
+          limit: 2,
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.results).toHaveLength(2);
+        expect(result.total).toBe(3);
+        expect(result.truncated).toBe(true);
+      });
+
+      it('does not set truncated when the page holds every match', async () => {
+        const result = await backend.callTool('pdg_query', {
+          mode: 'controls',
+          target: 'busyFn',
+          limit: 50,
+        });
+        expect(result.results).toHaveLength(3);
+        expect(result.total).toBe(3);
+        expect(result).not.toHaveProperty('truncated');
+      });
+
+      it("decodes functionLine for a Windows-style filePath containing ':' (split-from-right)", async () => {
+        const result = await backend.callTool('pdg_query', { mode: 'controls', target: 'winFn' });
+        expect(result).not.toHaveProperty('error');
+        expect(result.results.length).toBeGreaterThan(0);
+        // id = BasicBlock:C:/src/win.ts:6:0:0 ⇒ fnLine segment '6' despite the
+        // ':' in the drive letter (fnLineOf splits from the right).
+        expect(result.results[0].functionLine).toBe(6);
+      });
+    });
+  },
+  {
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const fn = (id: string, name: string, filePath: string, startLine: number, endLine: number) =>
+        adapter.executePrepared(
+          `CREATE (fn:Function {id: $id, name: $name, filePath: $filePath, startLine: $startLine, endLine: $endLine, isExported: true, content: 'x', description: 'gap fixture'})`,
+          { id, name, filePath, startLine, endLine },
+        );
+      const block = (id: string, filePath: string, startLine: number, text: string) =>
+        adapter.executePrepared(
+          `CREATE (b:BasicBlock {id: $id, filePath: $filePath, startLine: $startLine, endLine: $startLine, text: $text})`,
+          { id, filePath, startLine, text },
+        );
+      const cdg = (src: string, dst: string) =>
+        adapter.executePrepared(
+          `MATCH (a:BasicBlock {id: $src}), (b:BasicBlock {id: $dst})
+           CREATE (a)-[:CodeRelation {type: 'CDG', confidence: 1.0, reason: 'T', step: 0}]->(b)`,
+          { src, dst },
+        );
+
+      // (1) Ambiguous: two functions sharing a name in different files.
+      await fn('func:dupFn@a', 'dupFn', 'a.ts', 1, 3);
+      await fn('func:dupFn@b', 'dupFn', 'b.ts', 1, 3);
+
+      // (2) Truncated: busyFn (0-based 10–20 ⇒ window [11,21]); one controller
+      // block (line 12) with three CDG dependents.
+      await fn('func:busyFn', 'busyFn', 'busy.ts', 10, 20);
+      await block('BasicBlock:busy.ts:11:0:0', 'busy.ts', 12, 'if (x)');
+      await block('BasicBlock:busy.ts:11:0:1', 'busy.ts', 13, 'a();');
+      await block('BasicBlock:busy.ts:11:0:2', 'busy.ts', 14, 'b();');
+      await block('BasicBlock:busy.ts:11:0:3', 'busy.ts', 15, 'c();');
+      await cdg('BasicBlock:busy.ts:11:0:0', 'BasicBlock:busy.ts:11:0:1');
+      await cdg('BasicBlock:busy.ts:11:0:0', 'BasicBlock:busy.ts:11:0:2');
+      await cdg('BasicBlock:busy.ts:11:0:0', 'BasicBlock:busy.ts:11:0:3');
+
+      // (3) Windows-style path with a ':' (drive letter) inside the block id.
+      await fn('func:winFn', 'winFn', 'C:/src/win.ts', 5, 8);
+      await block('BasicBlock:C:/src/win.ts:6:0:0', 'C:/src/win.ts', 7, 'if (y)');
+      await block('BasicBlock:C:/src/win.ts:6:0:1', 'C:/src/win.ts', 7, 'd();');
+      await cdg('BasicBlock:C:/src/win.ts:6:0:0', 'BasicBlock:C:/src/win.ts:6:0:1');
+
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'gaps-repo',
+          path: '/gaps/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'gap001',
+          stats: { files: 4, nodes: 12, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
