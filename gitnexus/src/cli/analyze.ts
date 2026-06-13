@@ -44,6 +44,7 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { safeUrl } from '../core/embeddings/http-client.js';
 import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
@@ -1037,11 +1038,13 @@ const analyzeCommandImpl = async (
   }
 
   // Helpful confirmation + UX guard. http-client.isHttpMode() requires BOTH
-  // URL and MODEL; warn if only one was supplied. Print the endpoint (URL is
-  // safe to show; token is not).
+  // URL and MODEL; warn if only one was supplied. Mask the URL through
+  // safeUrl() — a base URL may carry credentials in userinfo
+  // (http://user:pass@host) or a query token (?api_key=…), which must not
+  // land in stdout/CI logs. The auth token is never printed.
   if (process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL) {
     console.log(
-      `  Using custom embedding endpoint: ${process.env.GITNEXUS_EMBEDDING_URL} ` +
+      `  Using custom embedding endpoint: ${safeUrl(process.env.GITNEXUS_EMBEDDING_URL)} ` +
         `(model: ${process.env.GITNEXUS_EMBEDDING_MODEL})\n`,
     );
   } else if (
