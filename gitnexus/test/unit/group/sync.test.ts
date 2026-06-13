@@ -1198,9 +1198,8 @@ describe('syncGroup repo pinning (issue #2189)', () => {
   });
 
   it('releases every pin even when the sync throws mid-flight', async () => {
-    const { ManifestExtractor } = await import(
-      '../../../src/core/group/extractors/manifest-extractor.js'
-    );
+    const { ManifestExtractor } =
+      await import('../../../src/core/group/extractors/manifest-extractor.js');
     const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
     const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
     const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
@@ -1215,7 +1214,13 @@ describe('syncGroup repo pinning (issue #2189)', () => {
 
     const config = manyReposConfig(8);
     config.links = [
-      { from: 'app/repo-8', to: 'app/repo-1', type: 'http', contract: 'GET::/api/x', role: 'consumer' },
+      {
+        from: 'app/repo-8',
+        to: 'app/repo-1',
+        type: 'http',
+        contract: 'GET::/api/x',
+        role: 'consumer',
+      },
     ];
 
     try {

@@ -60,9 +60,8 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
   statIfExists: vi.fn().mockResolvedValue(null),
 }));
 
-const { initLbug, closeLbug, isLbugReady, pinRepo, unpinRepo } = await import(
-  '../../src/core/lbug/pool-adapter.js'
-);
+const { initLbug, closeLbug, isLbugReady, pinRepo, unpinRepo } =
+  await import('../../src/core/lbug/pool-adapter.js');
 
 describe('pool-adapter repo pinning (issue #2189)', () => {
   let tmpDir: string;
