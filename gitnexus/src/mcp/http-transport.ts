@@ -222,13 +222,9 @@ export function createStreamableHttpHandler(
 
     if (sessionId && sessions.has(sessionId)) {
       // Existing session — delegate to its transport and refresh activity timestamp.
-      const session = sessions.get(sessionId);
-      if (!session) {
-        res
-          .status(500)
-          .json({ jsonrpc: '2.0', error: { code: -32000, message: 'Internal error' }, id: null });
-        return;
-      }
+      // `has` just returned true and the map is not mutated before `get`, so the
+      // lookup is non-null.
+      const session = sessions.get(sessionId)!;
       session.lastActivity = Date.now();
       await session.transport.handleRequest(req, res, req.body);
     } else if (sessionId) {
