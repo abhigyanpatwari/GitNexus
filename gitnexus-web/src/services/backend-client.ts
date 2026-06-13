@@ -79,7 +79,11 @@ export class BackendError extends Error {
       | 'client'
       | 'not_found'
       | 'timeout'
-      | 'rate_limited',
+      | 'rate_limited'
+      // The write-route same-host Origin guard rejected this request (HTTP 403
+      // with `{ code: 'origin_not_allowed' }`). Distinct from a generic `client`
+      // 403 so the UI can show actionable "open the local UI" guidance.
+      | 'origin_blocked',
     /**
      * Milliseconds until the caller should retry. Populated for rate-limited
      * responses (HTTP 429) from the server's `Retry-After` header. `undefined`
@@ -361,12 +365,16 @@ const assertOk = async (response: Response): Promise<void> => {
   if (response.ok) return;
 
   let message = response.statusText;
+  let bodyCode: string | undefined;
   try {
     const body = await response.json();
     if (body && typeof body.error === 'string') {
       message = body.error;
     } else if (body && typeof body.message === 'string') {
       message = body.message;
+    }
+    if (body && typeof body.code === 'string') {
+      bodyCode = body.code;
     }
   } catch {
     // Response body was not JSON
@@ -377,9 +385,13 @@ const assertOk = async (response: Response): Promise<void> => {
       ? 'not_found'
       : response.status === 429
         ? 'rate_limited'
-        : response.status >= 400 && response.status < 500
-          ? 'client'
-          : 'server';
+        : // The write-route Origin guard returns 403 with this discriminator;
+          // surface it as a distinct code so the UI can give actionable guidance.
+          bodyCode === 'origin_not_allowed'
+          ? 'origin_blocked'
+          : response.status >= 400 && response.status < 500
+            ? 'client'
+            : 'server';
 
   // Retry-After is the standard HTTP signal for when the client may try again.
   // express-rate-limit emits it on 429 with seconds (integer) or HTTP-date.

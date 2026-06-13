@@ -27,6 +27,7 @@ import { EmbeddingStatus } from './EmbeddingStatus';
 import { RepoAnalyzer } from './RepoAnalyzer';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { translateProgressMessage } from '../i18n/progress';
+import { formatBackendError } from '../i18n/error-messages';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -58,7 +59,7 @@ export const Header = ({
   onAnalyzeComplete,
   onReposChanged,
 }: HeaderProps) => {
-  const { t } = useTranslation(['common', 'header']);
+  const { t } = useTranslation(['common', 'header', 'errors']);
   const {
     projectName,
     graph,
@@ -72,6 +73,7 @@ export const Header = ({
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const [showAnalyzer, setShowAnalyzer] = useState(false);
   const [reanalyzing, setReanalyzing] = useState<string | null>(null); // repo name being re-analyzed
+  const [deleteError, setDeleteError] = useState<string | null>(null); // surfaced when a delete is rejected (e.g. origin-blocked 403)
   const [reanalyzeProgress, setReanalyzeProgress] = useState<JobProgress | null>(null);
   const reanalyzeSseRef = useRef<AbortController | null>(null);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
@@ -305,6 +307,7 @@ export const Header = ({
                                   setReanalyzeProgress(null);
                                   reanalyzeSseRef.current = null;
                                 }
+                                setDeleteError(null);
                                 try {
                                   await deleteRepo(repo.name);
                                   const updated = await fetchRepos();
@@ -317,7 +320,11 @@ export const Header = ({
                                     window.location.reload();
                                   }
                                 } catch (err) {
+                                  // Surface the failure instead of silently no-opping —
+                                  // e.g. an origin-blocked 403 when driving a local
+                                  // backend from the hosted UI.
                                   console.error('Failed to delete repo:', err);
+                                  setDeleteError(formatBackendError(err, t));
                                 }
                               }}
                               className="cursor-pointer rounded p-1 text-text-muted/0 transition-all group-hover:text-text-muted hover:!text-red-400"
@@ -327,6 +334,13 @@ export const Header = ({
                             </button>
                           </div>
                         ))}
+                      </div>
+                    )}
+
+                    {/* Surfaced delete failure (e.g. origin-blocked 403) */}
+                    {deleteError && (
+                      <div className="px-3 py-2 text-xs text-red-400" role="alert">
+                        {deleteError}
                       </div>
                     )}
 
