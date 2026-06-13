@@ -36,10 +36,11 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `context`        | 360-degree symbol view — categorized refs, processes it participates in  |
 | `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
-| `check`          | Check graph invariants such as circular imports                          |
 | `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
 | `explain`        | Persisted taint findings — source→sink data flows (needs `analyze --pdg`) |
+| `pdg_query`      | Control/data dependence — what gates X (CDG) / where Y flows (REACHING_DEF); needs `analyze --pdg` |
+| `check`          | Check graph invariants such as circular imports                          |
 | `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                    |
 
 ### Paginating `list_repos`
@@ -82,6 +83,15 @@ Notes: `offset` ≥ `total` returns an empty page (with `total` still reported).
 - `explain { target: "runUserCommand" }` — findings in a function (resolved like `context`; ambiguous names return ranked candidates)
 
 A repo indexed without `--pdg` returns a clear "no taint layer" note. Caveats: findings are intra-procedural only — cross-function, closure/callback, property/field, and implicit flows are not modeled, so the absence of a finding is **not** proof of safety. `SANITIZES` (sanitizer-kill) edges are queryable via `cypher`.
+
+### Control & data dependence (`pdg_query`)
+
+`pdg_query` reads the control/data-dependence layers `gitnexus analyze --pdg` records (CDG + REACHING_DEF, basic-block granular) — the control/data analog of `explain`. It is **always anchored** (a `target` file path or symbol, resolved like `context`) and has two modes:
+
+- `pdg_query { mode: "controls", target: "..." }` — CDG: "under what condition does X run?". Each edge is a controlling predicate block → dependent block with the branch sense (`'T'`/`'F'`) in `reason`; an edge into an early `return`/`throw` is flagged `guard: true` (guard-clause discovery — the sense depends on the predicate, so don't filter guards by a fixed label).
+- `pdg_query { mode: "flows", target: "...", variable?: "..." }` — REACHING_DEF def→use edges within the function; pass `variable` to trace one binding.
+
+A repo indexed without `--pdg` returns a "no PDG layer" note (or "status unknown" when the layer can't be confirmed). Intra-procedural only — cross-function flow is taint's domain (`explain`). The raw CDG/REACHING_DEF edges are also queryable via `cypher`. See the `gitnexus-pdg-query` skill for the full query surface.
 
 ## Resources Reference
 
