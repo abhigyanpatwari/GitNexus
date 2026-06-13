@@ -218,9 +218,15 @@ describe('connectToServer skipGraph (chat-only mode)', () => {
     const { fetchMock } = makeFetchMock(5);
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo', {
-      skipGraph: true,
-    });
+    const result = await connectToServer(
+      'http://localhost:4747',
+      undefined,
+      undefined,
+      'big-repo',
+      {
+        skipGraph: true,
+      },
+    );
 
     expect(result.graphSkipped).toBe(true);
     expect(result.nodes).toEqual([]);
@@ -233,9 +239,15 @@ describe('connectToServer skipGraph (chat-only mode)', () => {
     const { fetchMock } = makeFetchMock(300_000);
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo', {
-      skipGraph: false,
-    });
+    const result = await connectToServer(
+      'http://localhost:4747',
+      undefined,
+      undefined,
+      'big-repo',
+      {
+        skipGraph: false,
+      },
+    );
 
     expect(result.graphSkipped).toBe(false);
     expect(graphRequests(fetchMock).length).toBeGreaterThan(0);

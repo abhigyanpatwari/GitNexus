@@ -5,9 +5,9 @@ const THRESHOLD = 25_000;
 
 describe('decideSkipGraph', () => {
   it('auto-detects: skips when node count exceeds the threshold', () => {
-    expect(
-      decideSkipGraph({ explicit: undefined, nodeCount: 300_000, threshold: THRESHOLD }),
-    ).toBe(true);
+    expect(decideSkipGraph({ explicit: undefined, nodeCount: 300_000, threshold: THRESHOLD })).toBe(
+      true,
+    );
   });
 
   it('auto-detects: keeps the full graph for small projects', () => {
@@ -26,18 +26,18 @@ describe('decideSkipGraph', () => {
   });
 
   it('uses strictly-greater comparison at the threshold boundary', () => {
-    expect(decideSkipGraph({ explicit: undefined, nodeCount: THRESHOLD, threshold: THRESHOLD })).toBe(
-      false,
-    );
+    expect(
+      decideSkipGraph({ explicit: undefined, nodeCount: THRESHOLD, threshold: THRESHOLD }),
+    ).toBe(false);
     expect(
       decideSkipGraph({ explicit: undefined, nodeCount: THRESHOLD + 1, threshold: THRESHOLD }),
     ).toBe(true);
   });
 
   it('fails open to a full download when the node count is unknown', () => {
-    expect(decideSkipGraph({ explicit: undefined, nodeCount: undefined, threshold: THRESHOLD })).toBe(
-      false,
-    );
+    expect(
+      decideSkipGraph({ explicit: undefined, nodeCount: undefined, threshold: THRESHOLD }),
+    ).toBe(false);
     expect(decideSkipGraph({ explicit: undefined, nodeCount: null, threshold: THRESHOLD })).toBe(
       false,
     );

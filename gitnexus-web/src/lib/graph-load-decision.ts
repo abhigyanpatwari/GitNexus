@@ -30,7 +30,11 @@ export interface SkipGraphDecisionInput {
  * - A missing/unknown node count fails open to a full download (we never skip
  *   purely because we couldn't read the size).
  */
-export function decideSkipGraph({ explicit, nodeCount, threshold }: SkipGraphDecisionInput): boolean {
+export function decideSkipGraph({
+  explicit,
+  nodeCount,
+  threshold,
+}: SkipGraphDecisionInput): boolean {
   if (typeof explicit === 'boolean') return explicit;
   if (typeof nodeCount !== 'number' || !Number.isFinite(nodeCount)) return false;
   return nodeCount > threshold;
