@@ -236,22 +236,28 @@ withTestLbugDB(
         backend = ext._backend;
       });
 
-      it('controls returns the no-PDG-layer note (row-existence probe, meta unreadable)', async () => {
+      it('controls returns the status-unknown note when meta is unreadable + probe empty (#2188)', async () => {
+        // Meta is mocked unreadable (null) and the seed has no CDG rows. A
+        // missing layer is indistinguishable from an edge-free one here, so the
+        // note is inconclusive ("status unknown"), not the definitive absence.
         const result = await backend.callTool('pdg_query', { mode: 'controls', target: 'plainFn' });
         expect(result).not.toHaveProperty('error');
         expect(result.results).toEqual([]);
-        expect(result.note).toMatch(/no PDG layer/i);
+        expect(result.note).toMatch(/status unknown/i);
+        expect(result.note).not.toMatch(/no PDG layer/i);
         expect(result.note).toContain('--pdg');
       });
 
-      it('flows returns the no-PDG-layer note too', async () => {
+      it('flows returns the status-unknown note too when meta is unreadable', async () => {
         const result = await backend.callTool('pdg_query', { mode: 'flows', target: 'plain.ts' });
         expect(result).not.toHaveProperty('error');
         expect(result.results).toEqual([]);
-        expect(result.note).toMatch(/no PDG layer/i);
+        expect(result.note).toMatch(/status unknown/i);
       });
 
-      it('a readable meta without a pdg stamp short-circuits to the note', async () => {
+      it('a readable meta without a pdg stamp short-circuits to the DEFINITIVE no-layer note', async () => {
+        // Meta is readable but carries no CDG cap ⇒ the layer truly was never
+        // recorded; this path keeps the definitive "no PDG layer" wording.
         vi.mocked(loadMeta).mockResolvedValueOnce({} as any);
         const result = await backend.callTool('pdg_query', { mode: 'controls', target: 'plainFn' });
         expect(result.results).toEqual([]);

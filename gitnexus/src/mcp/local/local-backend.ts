@@ -3265,7 +3265,12 @@ export class LocalBackend {
     }
 
     const edgeType = mode === 'controls' ? 'CDG' : 'REACHING_DEF';
+    // Definitive: the meta stamp says this layer was never recorded.
     const NO_PDG_NOTE = `no PDG layer — run gitnexus analyze --pdg to record ${edgeType} edges for this repo`;
+    // Inconclusive: meta is unreadable AND a global probe found zero rows of this
+    // edge type — but a genuinely edge-free layer (all-linear functions) looks
+    // identical to a missing one, so don't assert absence (#2188 review).
+    const PDG_LAYER_UNKNOWN_NOTE = `no ${edgeType} edges found for this target; PDG layer status unknown — was this repo indexed with gitnexus analyze --pdg?`;
 
     // Cheap meta probe: the layer exists iff the pdg stamp carries the
     // mode-relevant cap (maxCdgEdgesPerFunction for CDG, maxReachingDef…
@@ -3327,14 +3332,17 @@ export class LocalBackend {
     const total = Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0);
 
     // Unreadable meta + anchored miss: one bounded probe distinguishes "no rows
-    // for this anchor" from "no PDG layer at all".
+    // for this anchor" from "no rows of this edge type at all". With meta
+    // unreadable we cannot tell a missing layer from an edge-free one, so the
+    // note is the inconclusive "status unknown" form, not the definitive
+    // NO_PDG_NOTE (which is reserved for the meta-stamped absence above).
     if (total === 0 && pdgStamped === undefined) {
       const probe = await executeParameterized(
         repo.lbugPath,
         `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type = '${edgeType}' RETURN r.reason AS reason LIMIT 1`,
         {},
       );
-      if (probe.length === 0) return { mode, results: [], total: 0, note: NO_PDG_NOTE };
+      if (probe.length === 0) return { mode, results: [], total: 0, note: PDG_LAYER_UNKNOWN_NOTE };
     }
 
     // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` — split
