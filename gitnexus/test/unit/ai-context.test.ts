@@ -150,6 +150,30 @@ describe('generateAIContextFiles', () => {
     expect(content).not.toMatch(/npx gitnexus group/);
   });
 
+  it('gates the pdg_query line on hasPdg (#2086 M6 — no existing taint gate to mirror)', () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    // hasPdg=true → the pdg_query line is present.
+    const withPdg = generateGitNexusContent(
+      'PdgProject',
+      stats,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      '.gitnexus/run.cjs',
+      'main',
+      true,
+    );
+    expect(withPdg).toContain('pdg_query');
+    expect(withPdg).toContain('under what condition does X run');
+    // hasPdg omitted (default false) → no pdg_query line; a non-pdg index must
+    // not advertise a tool that only returns a "no PDG layer" note.
+    const withoutPdg = generateGitNexusContent('PlainProject', stats);
+    expect(withoutPdg).not.toContain('pdg_query');
+    // the unconditional explain line stays regardless of the pdg flag.
+    expect(withoutPdg).toContain('explain(');
+  });
+
   it('degrades gracefully when the runner copy fails (#1945)', async () => {
     // A read-only/full-disk storage dir must not abort generation. The copy is
     // best-effort + logged; the generated docs still carry the inline bootstrap

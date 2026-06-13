@@ -1436,6 +1436,7 @@ export async function runFullAnalysis(
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
           },
         );
       } catch {

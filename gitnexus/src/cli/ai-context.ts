@@ -35,6 +35,12 @@ export interface AIContextOptions {
    * plain caller that omits it gets "main", preserving prior behavior.
    */
   defaultBranch?: string;
+  /**
+   * Whether the index was built with `--pdg` (#2086 M6). Gates the `pdg_query`
+   * line in the generated block — without the PDG layer the tool only returns a
+   * "no PDG layer" note, so advertising it on a non-`--pdg` index is noise.
+   */
+  hasPdg?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -124,6 +130,10 @@ export function generateGitNexusContent(
   // depth, so JSON.stringify's quote/escape handling is sufficient and the
   // branch cannot break out of the span (#1996 tri-review P1).
   defaultBranch: string = 'main',
+  // Whether the index was built with `--pdg` (#2086 M6). Gates the pdg_query
+  // line below — false (default) omits it, so a non-pdg index doesn't advertise
+  // a tool that only returns a "no PDG layer" note.
+  hasPdg: boolean = false,
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -179,7 +189,11 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use \`query({search_query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
-- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).
+- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
+    hasPdg
+      ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol"})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
+      : ''
+  }
 
 ## Never Do
 
@@ -456,6 +470,7 @@ export async function generateAIContextFiles(
     options?.skipSkills,
     runnerPath,
     options?.defaultBranch ?? 'main',
+    options?.hasPdg ?? false,
   );
   const createdFiles: string[] = [];
 

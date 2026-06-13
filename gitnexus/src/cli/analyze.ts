@@ -1403,6 +1403,7 @@ const analyzeCommandImpl = async (
               // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
+              hasPdg: options.pdg === true,
             },
           );
         }
