@@ -50,17 +50,33 @@ const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION
 // `{ upstream: { npm | github } }` form into the flat `{ npm? , github? }` shape the
 // rest of this script consumes. This is a local file read (import-safe, no network).
 const MANIFEST = path.join(REPO_ROOT, '.github', 'vendored-grammars.json');
-const GRAMMARS = Object.fromEntries(
-  Object.entries(JSON.parse(fs.readFileSync(MANIFEST, 'utf8')).grammars).map(([key, g]) => [
-    key,
-    {
-      name: g.name,
-      ...(g.upstream?.npm ? { npm: g.upstream.npm } : {}),
-      ...(g.upstream?.github ? { github: g.upstream.github } : {}),
-      ...(g.hold ? { hold: g.hold } : {}),
-    },
-  ]),
-);
+function loadManifestGrammars() {
+  // Fail loud with a pointer, not a bare ENOENT/SyntaxError: this runs at import.
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
+  } catch (e) {
+    throw new Error(
+      `Could not load the vendored-grammars manifest at ${MANIFEST} ` +
+        `(shared source of truth — see CONTRIBUTING.md → CI automation contracts): ${e.message}`,
+    );
+  }
+  return Object.fromEntries(
+    Object.entries(raw.grammars || {}).map(([key, g]) => {
+      if (!g.name) throw new Error(`manifest entry '${key}' is missing a 'name' field (${MANIFEST})`);
+      return [
+        key,
+        {
+          name: g.name,
+          ...(g.upstream?.npm ? { npm: g.upstream.npm } : {}),
+          ...(g.upstream?.github ? { github: g.upstream.github } : {}),
+          ...(g.hold ? { hold: g.hold } : {}),
+        },
+      ];
+    }),
+  );
+}
+const GRAMMARS = loadManifestGrammars();
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();

@@ -74,7 +74,8 @@ def _render_report() -> tuple[str, int]:
 
     def fake_fetch_text(url: str, timeout: int = 8):
         if "parser.c" in url:
-            # swift's upstream parser.c is generated at build time → unreachable.
+            # swift's upstream parser.c is generated at build time → unreachable;
+            # the others ship a committed parser.c.
             if "alex-pinkus" in url:
                 return None
             return "#define LANGUAGE_VERSION 14\n#define STATE_COUNT 1\n"
@@ -115,6 +116,24 @@ class ManifestClassification(unittest.TestCase):
         self.assertNotIn("tree-sitter-c", readiness.INTENTIONAL_PINS)
         # cpp stays an npm intentional pin.
         self.assertIn("tree-sitter-cpp", readiness.INTENTIONAL_PINS)
+
+    def test_vendored_names_are_a_subset_of_GRAMMARS(self):
+        # The report + --assert-current iterate the hardcoded GRAMMARS dict for
+        # upstream-drift coords. A vendored grammar present in the manifest but
+        # missing from GRAMMARS would be silently dropped from both — re-creating
+        # the cross-workflow divergence the manifest exists to kill (#858). Guard it.
+        missing = set(readiness.VENDORED_NAMES) - set(readiness.GRAMMARS)
+        self.assertEqual(missing, set(), f"manifest grammars missing from GRAMMARS: {missing}")
+
+    def test_missing_manifest_raises_a_clear_error(self):
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(readiness, "REPO_ROOT", pathlib.Path(d)):
+                with self.assertRaises(SystemExit) as ctx:
+                    readiness.load_vendored_manifest()
+        self.assertIn("vendored-grammars manifest", str(ctx.exception))
 
 
 class ReportRendering(unittest.TestCase):
@@ -157,9 +176,10 @@ class ReportRendering(unittest.TestCase):
         self.assertEqual(self.code, 1)
 
     def test_upstream_abi_miss_uses_labeled_sentinel(self):
-        # fetch_text → None for all upstreams, so every vendored upstream-ABI cell
-        # is the labeled token, never a bare '?'.
-        self.assertIn("n/a (generated at build)", self.report)
+        # swift's upstream parser.c is unreachable (mocked None), so its
+        # upstream-ABI cell is the labeled 'n/a' token, never a bare '?'.
+        cells = [c.strip() for c in self._matrix_row("tree-sitter-swift").strip().strip("|").split("|")]
+        self.assertEqual(cells[6], "n/a")  # Upstream ABI column
 
     def test_row_diff_regex_captures_all_fifteen_grammars(self):
         # The change-detection bot keys on the row regex (group 1 = grammar name).

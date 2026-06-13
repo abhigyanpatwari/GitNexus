@@ -10,9 +10,11 @@ name: Tree-sitter Upgrade Readiness
 #      the report used to render bare "?" placeholders, #858).
 # See .github/scripts/check-tree-sitter-upgrade-readiness.py for the logic.
 #
-# .github/vendored-grammars.json is the SHARED source of truth: this readiness
-# report and grammar-update-monitor.yml both read it, so the two workflows can
-# never disagree about which grammars are vendored or where their upstream lives.
+# .github/vendored-grammars.json is the SHARED source of truth for the vendored
+# SET + policy holds: this readiness report and grammar-update-monitor.yml both
+# read it, so the two workflows can never disagree about which grammars are
+# vendored. (The monitor also resolves upstreams from it; this report keeps its
+# own upstream-drift coords and reads vendored ABIs from gitnexus/vendor/.)
 #
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 

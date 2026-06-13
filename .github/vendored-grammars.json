@@ -1,5 +1,5 @@
 {
-  "_comment": "Single source of truth for vendored tree-sitter grammars. Read by BOTH .github/scripts/update-vendored-grammars.mjs (weekly auto-PR bot) and .github/scripts/check-tree-sitter-upgrade-readiness.py (daily readiness report -> issue #858). Keeping the vendored set + upstream coords + policy holds here keeps the two workflows aligned by construction; a consistency-guard test asserts this set equals the gitnexus/vendor/tree-sitter-* directories. See CONTRIBUTING.md.",
+  "_comment": "Single source of truth for the VENDORED SET + policy holds, read by BOTH .github/scripts/update-vendored-grammars.mjs (weekly auto-PR bot) and .github/scripts/check-tree-sitter-upgrade-readiness.py (daily readiness report -> issue #858). The monitor also resolves each grammar's upstream from the `upstream` field here; the readiness report reads vendored ABIs from gitnexus/vendor/<name>/src/parser.c and keeps its own upstream-drift coords. A consistency-guard test asserts this set equals the gitnexus/vendor/tree-sitter-* directories. See CONTRIBUTING.md.",
   "grammars": {
     "c": {
       "name": "tree-sitter-c",

@@ -113,10 +113,30 @@ def load_vendored_manifest() -> dict[str, dict]:
     Returns ``{ grammar_name: {"key", "upstream", "hold"} }``.
     """
     manifest_path = REPO_ROOT / ".github" / "vendored-grammars.json"
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # Fail loud with a pointer, not a bare traceback: this runs at module import,
+    # so a missing/corrupt manifest would otherwise crash both the script and any
+    # test that imports it with an opaque FileNotFoundError/JSONDecodeError.
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"vendored-grammars manifest not found at {manifest_path}. "
+            f"It is the shared source of truth for vendored grammars "
+            f"(see CONTRIBUTING.md → CI automation contracts)."
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"vendored-grammars manifest at {manifest_path} is not valid JSON: {exc}."
+        ) from exc
     out: dict[str, dict] = {}
     for key, g in (data.get("grammars") or {}).items():
-        out[g["name"]] = {
+        name = g.get("name")
+        if not name:
+            raise SystemExit(
+                f"vendored-grammars manifest entry {key!r} is missing a 'name' field "
+                f"({manifest_path})."
+            )
+        out[name] = {
             "key": key,
             "upstream": g.get("upstream") or {},
             "hold": g.get("hold"),
@@ -294,10 +314,6 @@ def range_includes(spec: str | None, version: str) -> bool:
     if spec.startswith(("^", "~")):
         return satisfies_target(spec, version)
     return spec.strip() == version.strip()
-
-
-def is_vendored_pin(spec: str | None) -> bool:
-    return bool(spec) and spec.startswith(("file:", "git", "http"))
 
 
 def vendored_drift_summary(
@@ -517,12 +533,9 @@ def _classify_grammar(
     suggest it when npm-latest's peer dep also accepts our *current*
     runtime, otherwise the bump would break `npm install`.
     """
-    is_vendored = is_vendored_pin(pinned_spec)
-    behind_latest = (
-        not is_vendored
-        and npm_version != "?"
-        and not range_includes(pinned_spec, npm_version)
-    )
+    # Only npm-path grammars reach this function — vendored grammars are routed
+    # to the vendored branch in main() and `continue` before classification.
+    behind_latest = npm_version != "?" and not range_includes(pinned_spec, npm_version)
     # Intentional pins must never appear as actionable bumps — by definition
     # we're holding them back on purpose. The pin can only be lifted by
     # editing INTENTIONAL_PINS and package.json together.
@@ -550,7 +563,6 @@ def _classify_grammar(
         "behind_latest": behind_latest,
         "bump_now": bump_now,
         "bucket": bucket,
-        "is_vendored": is_vendored,
     }
 
 
@@ -630,16 +642,23 @@ def main() -> int:
             if hold:
                 v["target_compat"] = False
                 status = "Vendored — held"
-                blockers[name] = f"vendored `{name}` held: {hold}"
+                # Compose with any out-of-range reason rather than overwriting it:
+                # both share the blockers[name] key, and the ABI-out-of-range
+                # detail would otherwise be lost from the blockers summary.
+                hold_reason = f"vendored `{name}` held: {hold}"
+                prior = blockers.get(name)
+                blockers[name] = f"{prior}; {hold_reason}" if prior else hold_reason
             # Cell sentinels: never emit a bare "?". A vendored grammar's ABI is
             # the real LANGUAGE_VERSION when introspectable, else a labeled token.
             vendored_abi_cell = (
                 str(v["vendored_abi"]) if v["vendored_abi"] is not None else "prebuilt"
             )
+            # A None upstream ABI means the upstream parser.c couldn't be read —
+            # either it is generated at build time (e.g. swift) or the fetch
+            # missed. We can't tell which here, so use a neutral label rather
+            # than asserting "generated at build". Never a bare "?".
             upstream_abi_cell = (
-                str(v["upstream_abi"])
-                if v["upstream_abi"] is not None
-                else "n/a (generated at build)"
+                str(v["upstream_abi"]) if v["upstream_abi"] is not None else "n/a"
             )
             # Keep vendored grammars in the raw matrix so the workflow's
             # row-diff change-detection picks up status transitions on them too.
@@ -667,7 +686,7 @@ def main() -> int:
             peer_optional = ts_meta.get("optional", False) if peer_range else True
 
         if fetch_failed:
-            peer_display = "? (fetch failed)"
+            peer_display = "n/a (fetch failed)"
             target_compat = False
             current_compat = False
         else:
@@ -683,7 +702,11 @@ def main() -> int:
             # Fallback to default location.
             installed_parser = GITNEXUS_DIR / "node_modules" / name / "src" / "parser.c"
         installed_abi = extract_language_version(installed_parser)
-        abi_display = str(installed_abi) if installed_abi else "?"
+        # Labeled sentinel, never a bare "?": in CI `npm ci` populates
+        # node_modules, but if it's absent (or the parser.c moved) say so plainly
+        # rather than leaving a placeholder that reads like the vendored-grammar
+        # bug this report exists to surface (#858).
+        abi_display = str(installed_abi) if installed_abi else "n/a (not installed)"
 
         # Check upstream (main/master branch) ABI for unreleased work.
         upstream_url = (
@@ -692,7 +715,7 @@ def main() -> int:
         )
         upstream_text = fetch_text(upstream_url)
         upstream_abi = extract_abi_from_text(upstream_text) if upstream_text else None
-        upstream_abi_display = str(upstream_abi) if upstream_abi else "?"
+        upstream_abi_display = str(upstream_abi) if upstream_abi else "n/a"
 
         # Status text + upstream-progress detection. The Status column
         # values are preserved as-is to keep the workflow's row-diff
@@ -749,8 +772,11 @@ def main() -> int:
 
         pinned_spec = pinned_versions.get(name, "—")
         compat_icon = "Yes" if target_compat else "**No**"
+        # "?" stays the internal fetch-failed sentinel (compared above); render a
+        # labeled token in the matrix so the report never shows a bare "?" (#858).
+        npm_version_cell = "n/a (fetch failed)" if npm_version == "?" else npm_version
         raw_matrix.append(
-            f"| `{name}` | {pinned_spec} | {npm_version} | {peer_display} | "
+            f"| `{name}` | {pinned_spec} | {npm_version_cell} | {peer_display} | "
             f"{compat_icon} | {abi_display} | {upstream_abi_display} | {status} |"
         )
 
@@ -878,10 +904,7 @@ def main() -> int:
         "Peer dep is too tight on both the latest npm release and on upstream main. "
         "These need an upstream issue/PR before we can proceed.",
         by_bucket["blocked"],
-        lambda r: (
-            f"- `{r['name']}@{r['npm_version']}` — peer `{r['peer_range'] or 'none'}`"
-            + (" _(vendored)_" if r["is_vendored"] else "")
-        ),
+        lambda r: f"- `{r['name']}@{r['npm_version']}` — peer `{r['peer_range'] or 'none'}`",
     )
 
     _emit_bucket(
