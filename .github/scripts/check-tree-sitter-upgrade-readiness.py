@@ -328,6 +328,20 @@ def range_includes(spec: str | None, version: str) -> bool:
     return spec.strip() == version.strip()
 
 
+def vendored_abi_from_repo(name: str, parser_path: str) -> int | None:
+    """Read a vendored grammar's ABI directly from gitnexus/vendor/<name>.
+
+    Local-only (no network) — the offline half of ``vendored_drift_summary``,
+    factored out so the hermetic ``--assert-current`` gate can introspect vendored
+    ABIs without triggering the upstream-drift fetches it never uses (#858 review).
+    """
+    vendor_dir = GITNEXUS_DIR / "vendor" / name
+    vendored_parser = vendor_dir / parser_path
+    if not vendored_parser.is_file():
+        vendored_parser = vendor_dir / "src" / "parser.c"
+    return extract_language_version(vendored_parser)
+
+
 def vendored_drift_summary(
     name: str, upstream_repo: str, upstream_branch: str, parser_path: str
 ) -> dict:
@@ -352,7 +366,7 @@ def vendored_drift_summary(
     vendored_parser = vendor_dir / parser_path
     if not vendored_parser.is_file():
         vendored_parser = vendor_dir / "src" / "parser.c"
-    vendored_abi = extract_language_version(vendored_parser)
+    vendored_abi = vendored_abi_from_repo(name, parser_path)
 
     upstream_url = (
         f"https://raw.githubusercontent.com/{upstream_repo}/"
@@ -386,7 +400,9 @@ def vendored_drift_summary(
 
     return {
         "name": name,
-        "vendored_version": pkg.get("version", "?"),
+        # Labeled fallback, never a bare "?": a vendor package.json should always
+        # carry a version, but if one is missing the report says so plainly (#858).
+        "vendored_version": pkg.get("version") or "unknown",
         "vendored_by": pkg.get("_vendoredBy"),
         "vendored_abi": vendored_abi,
         "upstream_repo": upstream_repo,
@@ -411,11 +427,13 @@ def assert_current() -> int:
     gate; the runtime load-smoke (`parser-loader-abi.test.ts`) is the
     dynamic half.
 
-    Coverage, reusing the existing helpers:
+    Coverage:
       - npm-installed grammars: ABI from node_modules/<name>/<parser.c>.
-      - vendored grammars (dart/proto/swift): ABI via ``vendored_drift_summary``.
-      - Swift is prebuilt-only (no parser.c) → not introspectable here;
-        treated as "covered by the runtime load-smoke", not asserted.
+      - vendored grammars (c/swift/kotlin/dart/proto): ABI read locally from
+        gitnexus/vendor/<name>/src/parser.c via ``vendored_abi_from_repo`` (no
+        network). All five currently ship a parser.c (ABI 14) and ARE asserted.
+      - A future prebuilt-only vendor (no parser.c) is not introspectable here
+        and is skipped — "covered by the runtime load-smoke" — not asserted.
       - INTENTIONAL_PINS are honored: a pinned grammar is expected to sit at
         an ABI the current runtime loads (that's *why* it's pinned), so it is
         asserted like any other rather than skipped.
@@ -457,9 +475,13 @@ def assert_current() -> int:
         # manifest — the same set the readiness report + grammar-update monitor use —
         # so this offline #1922 ABI gate actually covers the vendored grammars
         # instead of silently skipping them as "not installed" (#858).
+        #
+        # Read the ABI directly from the repo (local, no network): assert_current is
+        # the documented "hermetic and offline" gate, so it must NOT go through
+        # vendored_drift_summary (which fetches upstream parser.c + commit sha — data
+        # this gate never uses).
         if name in VENDORED_NAMES:
-            v = vendored_drift_summary(name, upstream_repo, upstream_branch, parser_path)
-            abi = v["vendored_abi"]
+            abi = vendored_abi_from_repo(name, parser_path)
             if abi is None:
                 # Prebuilt-only vendor (e.g. a binary-only grammar): no parser.c to
                 # introspect. The runtime load-smoke covers it instead.
@@ -967,13 +989,12 @@ def main() -> int:
                     f"ABI `{v['vendored_abi']}` (**outside** target range "
                     f"{target_abi_range[0]}..{target_abi_range[1]})"
                 )
-            # Never a bare "?": label the case where upstream parser.c is
-            # generated at build time (e.g. tree-sitter-swift) so the report
-            # explains the gap instead of leaving a placeholder (#858).
+            # Never a bare "?": when the upstream parser.c can't be read (generated
+            # at build time, or a transient fetch miss — we can't tell which), use
+            # the same neutral `n/a` token as the matrix cell rather than asserting
+            # a cause (#858).
             upstream_abi_str = (
-                f"ABI `{v['upstream_abi']}`"
-                if v["upstream_abi"] is not None
-                else "ABI `n/a` (generated at build)"
+                f"ABI `{v['upstream_abi']}`" if v["upstream_abi"] is not None else "ABI `n/a`"
             )
             lines.append(
                 f"- **`{v['name']}`** `{v['vendored_version']}` — {abi_label}, "

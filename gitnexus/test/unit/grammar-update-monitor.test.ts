@@ -107,9 +107,17 @@ describe('shared vendored-grammars manifest', () => {
     for (const [key, g] of Object.entries(manifest.grammars)) {
       const entry = mod.GRAMMARS[key];
       expect(entry.name).toBe(g.name);
-      expect(entry.npm).toBe(g.upstream.npm); // undefined === undefined for github grammars
-      expect(entry.github).toBe(g.upstream.github);
       expect(entry.hold).toBe(g.hold);
+      // Assert the absent upstream field is explicitly undefined, not just
+      // matching the manifest's absent property (avoids an undefined===undefined
+      // pass that would miss the loader mis-mapping a github coord into `npm`).
+      if (g.upstream.npm) {
+        expect(entry.npm).toBe(g.upstream.npm);
+        expect(entry.github).toBeUndefined();
+      } else {
+        expect(entry.github).toBe(g.upstream.github);
+        expect(entry.npm).toBeUndefined();
+      }
     }
   });
 
@@ -170,6 +178,22 @@ describe('detect() classification (offline, injected deps)', () => {
     const d = byKey('dart');
     expect(d.abi).toBe(14);
     expect(d.applicable).toBe(true);
+  });
+
+  it('records a per-grammar error entry when resolveUpstream throws, without skipping siblings', () => {
+    const report2 = mod.detect({
+      ...deps,
+      resolveUpstream: (g) => {
+        if (g.name === 'tree-sitter-dart') throw new Error('gh api 503');
+        return deps.resolveUpstream!(g);
+      },
+    });
+    const dart = report2.find((r) => r.grammar === 'dart')!;
+    expect(dart.error).toContain('gh api 503');
+    expect(dart.update).toBeUndefined(); // error entry, not a classification
+    // The throw on one grammar must not drop the rest.
+    expect(report2.find((r) => r.grammar === 'swift')!.update).toBe(true);
+    expect(report2).toHaveLength(Object.keys(mod.GRAMMARS).length);
   });
 });
 

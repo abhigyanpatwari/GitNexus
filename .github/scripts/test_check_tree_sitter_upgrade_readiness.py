@@ -135,6 +135,64 @@ class ManifestClassification(unittest.TestCase):
                     readiness.load_vendored_manifest()
         self.assertIn("vendored-grammars manifest", str(ctx.exception))
 
+    def test_malformed_manifest_raises_a_clear_error(self):
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            gh = pathlib.Path(d) / ".github"
+            gh.mkdir()
+            (gh / "vendored-grammars.json").write_text("{ not valid json", encoding="utf-8")
+            with mock.patch.object(readiness, "REPO_ROOT", pathlib.Path(d)):
+                with self.assertRaises(SystemExit) as ctx:
+                    readiness.load_vendored_manifest()
+        self.assertIn("not valid JSON", str(ctx.exception))
+
+
+class AssertCurrent(unittest.TestCase):
+    """The offline #1922 ABI gate (--assert-current) must stay hermetic — it reads
+    vendored ABIs from the repo, never the network. (Regression guard: a prior
+    revision routed vendored grammars through vendored_drift_summary, which fetches
+    upstream parser.c + commit sha, silently breaking the 'hermetic and offline'
+    contract — #858 review.)"""
+
+    def _run_assert_current(self):
+        import urllib.request
+
+        def explode(*a, **k):
+            raise AssertionError("--assert-current attempted a network call")
+
+        buf = io.StringIO()
+        with mock.patch.object(urllib.request, "urlopen", side_effect=explode), \
+             contextlib.redirect_stdout(buf):
+            code = readiness.assert_current()
+        return buf.getvalue(), code
+
+    def test_assert_current_is_network_free_and_passes(self):
+        report, code = self._run_assert_current()  # raises if any urlopen fires
+        self.assertEqual(code, 0)
+        # All 5 vendored grammars are introspected from the repo (ABI 14), not skipped.
+        for name in readiness.VENDORED_NAMES:
+            self.assertIn(f"{name}: vendored ABI", report)
+
+    def test_assert_current_fails_an_out_of_range_vendored_abi(self):
+        # vendored_abi_from_repo is the local-read injection point: force one
+        # grammar out of the current runtime's ABI window and assert the gate trips.
+        real = readiness.vendored_abi_from_repo
+
+        def fake(name, parser_path):
+            return 99 if name == "tree-sitter-dart" else real(name, parser_path)
+
+        import urllib.request
+        buf = io.StringIO()
+        with mock.patch.object(readiness, "vendored_abi_from_repo", side_effect=fake), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=AssertionError("network")), \
+             contextlib.redirect_stdout(buf):
+            code = readiness.assert_current()
+        self.assertEqual(code, 1)
+        self.assertIn("tree-sitter-dart", buf.getvalue())
+        self.assertIn("outside current runtime range", buf.getvalue())
+
 
 class ReportRendering(unittest.TestCase):
     @classmethod
