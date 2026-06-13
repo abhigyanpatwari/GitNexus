@@ -23,6 +23,7 @@ import {
   createAuthMiddleware,
   createStreamableHttpHandler,
   createSseHandlers,
+  isLoopbackOrigin,
 } from '../../src/mcp/http-transport.js';
 import { createMCPServer } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
@@ -569,5 +570,30 @@ describe('McpHttpOptions type validation', () => {
   it('createAuthMiddleware accepts a string authToken', () => {
     const middleware = createAuthMiddleware('test-token');
     expect(typeof middleware).toBe('function');
+  });
+});
+
+// ─── isLoopbackOrigin (U4) ───────────────────────────────────────────
+
+describe('isLoopbackOrigin', () => {
+  it('accepts loopback origins including IPv6 [::1], IPv4-mapped, and the 127/8 block', () => {
+    expect(isLoopbackOrigin('http://localhost:8080')).toBe(true);
+    expect(isLoopbackOrigin('http://127.0.0.1:5000')).toBe(true);
+    expect(isLoopbackOrigin('http://127.0.0.2:3000')).toBe(true);
+    expect(isLoopbackOrigin('http://[::1]:3000')).toBe(true);
+    expect(isLoopbackOrigin('http://[::ffff:127.0.0.1]:3000')).toBe(true);
+  });
+
+  it('treats a missing Origin as allowed (non-browser caller)', () => {
+    expect(isLoopbackOrigin(undefined)).toBe(true);
+  });
+
+  it('rejects non-loopback and look-alike origins', () => {
+    expect(isLoopbackOrigin('http://localhost.evil.com')).toBe(false);
+    expect(isLoopbackOrigin('http://127.0.0.1.evil.com')).toBe(false);
+    expect(isLoopbackOrigin('http://example.com')).toBe(false);
+    expect(isLoopbackOrigin('http://192.168.1.50:3000')).toBe(false);
+    expect(isLoopbackOrigin('null')).toBe(false);
+    expect(isLoopbackOrigin('not a url')).toBe(false);
   });
 });

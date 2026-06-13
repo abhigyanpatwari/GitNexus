@@ -107,6 +107,31 @@ export function createAuthMiddleware(authToken?: string) {
 }
 
 /**
+ * Returns true when an Origin should be allowed by the no-auth (loopback-only)
+ * CORS policy — i.e. it is absent (non-browser caller) or a loopback origin.
+ *
+ * WHATWG URL keeps the brackets on IPv6 literals
+ * (`new URL('http://[::1]/').hostname === '[::1]'`) and canonicalizes the
+ * IPv4-mapped loopback to `[::ffff:7f00:1]`; loopback IPv4 is the whole
+ * 127.0.0.0/8 block — so all of those forms are matched explicitly.
+ */
+export function isLoopbackOrigin(origin: string | undefined): boolean {
+  if (!origin) return true; // no Origin → non-browser caller; CORS is not the control there
+  let hostname: string;
+  try {
+    ({ hostname } = new URL(origin));
+  } catch {
+    return false;
+  }
+  return (
+    hostname === 'localhost' ||
+    hostname === '[::1]' ||
+    hostname === '[::ffff:7f00:1]' ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+  );
+}
+
+/**
  * Creates a reusable StreamableHTTP request handler.
  *
  * Encapsulates the session map and request-dispatch logic as an independent
@@ -395,18 +420,7 @@ export async function startMcpHttpServer(
   const corsOrigin = authToken
     ? true
     : (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
-        if (!origin) {
-          cb(null, true);
-          return;
-        }
-        try {
-          const { hostname } = new URL(origin);
-          const isLoopback =
-            hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-          cb(null, isLoopback);
-        } catch {
-          cb(null, false);
-        }
+        cb(null, isLoopbackOrigin(origin));
       };
 
   app.use(
