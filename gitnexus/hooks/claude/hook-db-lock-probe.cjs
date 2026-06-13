@@ -3,14 +3,36 @@
  * with a command line that looks like a GitNexus MCP/serve server?
  *
  * Backends (no user-installed Sysinternals):
- * - Linux: scan procfs under /proc (per-PID fd entries) via stat(2) (dev+inode); works without lsof;
- *   optional lsof fallback when proc scan finds nothing.
+ * - Linux: cmdline-first procfs scan under /proc, no lsof at all (#2180). Three
+ *   phases, cheapest first: (0) read /proc/<pid>/comm — a tiny task->comm read
+ *   that never touches the target's mm — and keep only PIDs whose comm is a
+ *   plausible node/gitnexus server; (1) read up to GITNEXUS_HOOK_PROC_CMDLINE_MAX
+ *   bytes of /proc/<pid>/cmdline via openSync+readSync (bounded, so a D-state
+ *   holder stuck on mmap_lock or a giant argv can't wedge the hook) and prefilter
+ *   with isGitNexusServerCommand; (2) only for the 0..N survivors, stat their
+ *   /proc/<pid>/fd/* and compare dev+inode against the target lbug. The lbug
+ *   handle is fd-visible (a @ladybugdb/core property), so this finds every real
+ *   owner without scanning every fd of every process.
  * - macOS / *BSD / etc.: trusted lsof + ps (absolute paths first).
  * - Windows: Restart Manager (rstrtmgr) via bundled PowerShell script +
  *   Win32_Process for command lines; trusted powershell.exe under %SystemRoot%.
  *
- * Fail-open on most errors; fail-closed only on lsof ETIMEDOUT (Unix) or
- * PowerShell ETIMEDOUT (Windows), matching the hook contract.
+ * Fail matrix:
+ * - Linux proc scan: owner found -> fail-closed (skip augment); budget exhausted
+ *   (GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS) -> fail-CLOSED (#2180). This is a
+ *   deliberate change from the old "timeout -> fail-open then try lsof" path.
+ *   End-to-end the busy-host outcome is unchanged: the old code's lsof fallback
+ *   ETIMEDOUT'd on the very hosts where the scan ran out of budget and ALSO
+ *   failed closed there — the lsof leg only ever added 1-2s of dead work plus
+ *   the orphan-storm risk it caused (#2163). What changes is that an overloaded
+ *   host now self-throttles immediately (the throttle the incident needed)
+ *   instead of paying for a doomed lsof. Mid-load hosts that used to fall
+ *   through to a successful lsof now answer from the scan directly (faster) or,
+ *   if even the scan can't finish in budget, fail closed (self-throttle) — a
+ *   bounded, documented tradeoff, never an orphan.
+ * - macOS / other Unix: fail-open on most errors; fail-closed only on lsof
+ *   ETIMEDOUT, matching the hook contract.
+ * - Windows: fail-closed only on PowerShell ETIMEDOUT.
  *
  * Unix subprocess containment contract (#2163):
  * - lsof/ps are wrapped in coreutils `timeout`/`gtimeout` when a working
@@ -242,59 +264,226 @@ function hasGitNexusServerOwnerWindows(dbPathAbs, myPid) {
   return false;
 }
 
-function readLinuxCmdline(pidStr) {
+// The procfs root every Linux scan path reads from. Production is always /proc;
+// GITNEXUS_HOOK_PROC_ROOT only exists so unit tests can inject a fixture tree
+// (comm + cmdline + fd symlinks) and assert the three-phase logic without
+// scanning the real, ~hundreds-of-process /proc of the test host. Unset env =>
+// /proc, so the production path is byte-for-byte the historical behavior.
+function getProcRoot() {
+  const raw = process.env.GITNEXUS_HOOK_PROC_ROOT;
+  return raw && String(raw).trim() ? String(raw) : '/proc';
+}
+
+// Max bytes read from /proc/<pid>/cmdline in Phase 1. Bounded by default so a
+// D-state holder wedged on mmap_lock, or a process with a pathological multi-MB
+// argv, can't stall the hook. 16 KiB comfortably clears a realistic
+// `node <abs path to .../node_modules/gitnexus/dist/cli/index.js> mcp` line
+// (the `mcp`/`serve` mode token lives at the very tail, so the cap must be large
+// enough to reach it — see PROC_CMDLINE_FLOOR escalation below). Overridable for
+// tests; never goes below PROC_CMDLINE_FLOOR.
+const PROC_CMDLINE_FLOOR = 4096;
+function getCmdlineMaxBytes() {
+  const raw = process.env.GITNEXUS_HOOK_PROC_CMDLINE_MAX;
+  const n = raw && String(raw).trim() ? Number.parseInt(String(raw), 10) : NaN;
+  if (Number.isFinite(n) && n >= PROC_CMDLINE_FLOOR) return n;
+  return 16384;
+}
+
+// Phase 0 comm prefilter. /proc/<pid>/comm is the kernel task->comm string,
+// capped at 16 bytes INCLUDING the trailing NUL — i.e. at most 15 visible
+// chars, truncated by the kernel with no marker. So a process whose real name
+// is longer than 15 chars shows a 15-char prefix here. The match below is
+// therefore truncation-safe in BOTH directions (a whitelist name that is a
+// prefix of comm, or comm that is a prefix of a whitelist name, both count) to
+// guarantee we never drop a real owner at this cheap stage — Phase 2's dev+ino
+// fd check is the real authority; Phase 0/1 only exist to skip the overwhelming
+// majority (kernel threads, shells, editors) cheaply.
+//
+// The whitelist is calibrated against what a real `gitnexus mcp`/`serve` server
+// actually reports for comm. Observed on production hosts: the server renames
+// its main thread, so comm reads `MainThread` (via @ladybugdb/core's
+// worker_threads setup), NOT `node` — omitting it would blind the probe to
+// every real server (#1492-class owner miss). We also keep the plausible
+// launcher/runtime basenames in case a future build does not rename the thread.
+// Conservative by design: over-collecting a few extra candidates only costs a
+// bounded number of Phase 1 cmdline reads.
+const COMM_CANDIDATES = ['node', 'gitnexus', 'bun', 'deno', 'npm', 'npx', 'MainThread'];
+function commLooksLikeServer(comm) {
+  const c = comm.trim();
+  if (!c) return false;
+  for (const name of COMM_CANDIDATES) {
+    if (name === c || name.startsWith(c) || c.startsWith(name)) return true;
+  }
+  return false;
+}
+
+function readProcComm(procRoot, pidStr) {
   try {
-    return fs.readFileSync(`/proc/${pidStr}/cmdline`, 'utf8').replace(/\0+/g, ' ').trim();
+    return fs
+      .readFileSync(path.join(procRoot, pidStr, 'comm'), 'utf8')
+      .replace(/\0+/g, '')
+      .trim();
   } catch {
     return '';
   }
 }
 
-function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
+// Bounded /proc/<pid>/cmdline read for Phase 1. openSync+readSync (not
+// readFileSync) so a D-state holder cannot stall the hook on a huge or
+// never-EOF argv: we read at most `cap` bytes and stop. cmdline separates argv
+// with NULs; convert to spaces for isGitNexusServerCommand.
+//
+// Owner-miss guard for the 4 KB cap: the `gitnexus` token usually sits in the
+// first path component while the `mcp`/`serve` mode token is the LAST argv, so
+// a naive 4 KB read could clip the mode token off a server launched with a very
+// long interpreter path and silently miss a real owner. We mitigate two ways:
+// (a) the default cap (16 KiB) already clears realistic lines; (b) if the first
+// read fills the cap AND already contains the `gitnexus` token but no mode
+// token yet, we keep reading in bounded chunks (up to a hard ceiling) until the
+// mode token appears or the file ends — so a genuine server is never missed for
+// want of a few more bytes, while non-candidates still pay only the initial
+// bounded read.
+function readLinuxCmdline(procRoot, pidStr, cap) {
+  const file = path.join(procRoot, pidStr, 'cmdline');
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+  } catch {
+    return '';
+  }
+  try {
+    const HARD_CEIL = 262144; // 256 KiB absolute ceiling for the escalation path
+    let collected = Buffer.alloc(0);
+    let offset = 0;
+    let chunkCap = cap;
+    for (;;) {
+      const buf = Buffer.alloc(chunkCap);
+      const bytes = fs.readSync(fd, buf, 0, chunkCap, offset);
+      if (bytes <= 0) break;
+      collected = Buffer.concat([collected, buf.subarray(0, bytes)]);
+      offset += bytes;
+      const text = collected.toString('utf8').replace(/\0+/g, ' ');
+      // Stop early when we can already decide "owner": has both the gitnexus
+      // token and a mode token. Keep going only when gitnexus is present but
+      // the mode token might be just past the boundary.
+      const hasGitNexus =
+        /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(text) ||
+        /node_modules[/\\]gitnexus[/\\]/.test(text);
+      const hasMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(text);
+      if (hasMode) break; // decided (positive); isGitNexusServerCommand re-checks below
+      if (bytes < chunkCap) break; // EOF: full cmdline read, definitive
+      if (!hasGitNexus) break; // not a candidate; do not escalate the read
+      if (offset >= HARD_CEIL) break; // bounded escalation only
+      chunkCap = cap; // keep reading more in cap-sized chunks
+    }
+    return collected.toString('utf8').replace(/\0+/g, ' ').trim();
+  } catch {
+    return '';
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function resolveLinuxProcBudgetMs() {
   const raw = process.env.GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS;
-  const budget = Number(raw && String(raw).trim()) ? Number.parseInt(String(raw), 10) : 1200;
+  // Parse first, THEN validate (the old `Number(raw && trim()) ? ... : 1200`
+  // form treated "0" as falsy and silently fell back to 1200 — #2180). A
+  // finite value <= 0 is an explicit, deterministic "no budget" => immediate
+  // timeout (used as a test vector). Non-numeric / unset => default 1200.
+  const n = raw != null ? Number.parseInt(String(raw).trim(), 10) : NaN;
+  if (!Number.isFinite(n)) return 1200;
+  return n; // may be <= 0, meaning "out of budget on the first check"
+}
+
+// Returns one of: 'owned' (a non-self process with a GitNexus-server cmdline
+// holds the target lbug fd), 'not-owned' (scan completed, no such owner), or
+// 'timeout' (the per-scan budget was exhausted before a verdict). The name is
+// pinned by a source-contract test; only the return TYPE changed (#2180:
+// boolean -> tri-state, so the dispatcher can fail-closed on 'timeout').
+function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
+  const budget = resolveLinuxProcBudgetMs();
+  // A non-positive budget is an explicit, deterministic "no time to scan" =>
+  // immediate timeout (the #2180 test vector, and the only correct reading of
+  // the fixed parse: "0" must NOT mean 1200). Returning before any procfs read
+  // keeps it instantaneous regardless of host load.
+  if (budget <= 0) return 'timeout';
+  const procRoot = getProcRoot();
+  const cmdlineCap = getCmdlineMaxBytes();
   const start = Date.now();
+  const outOfBudget = () => Date.now() - start > budget;
+
   let targetStat;
   try {
     targetStat = fs.statSync(dbPathAbs);
   } catch {
-    return false;
+    // Caller already existsSync'd the path; a stat failure here is a transient
+    // race, treat as no owner (historical semantics).
+    return 'not-owned';
   }
+
   let procEntries;
   try {
-    procEntries = fs.readdirSync('/proc', { withFileTypes: true });
+    procEntries = fs.readdirSync(procRoot, { withFileTypes: true });
   } catch {
-    return false;
+    return 'not-owned';
   }
+
+  // Phase 0 + Phase 1: collect the few PIDs whose comm AND cmdline look like a
+  // GitNexus server, without touching any fd yet.
+  const candidates = [];
   for (const ent of procEntries) {
-    if (Date.now() - start > budget) return false;
+    if (outOfBudget()) return 'timeout';
     if (!ent.isDirectory() || !/^\d+$/.test(ent.name)) continue;
     const pid = Number.parseInt(ent.name, 10);
     if (!Number.isFinite(pid) || pid === myPid) continue;
-    const fdDir = path.join('/proc', ent.name, 'fd');
+
+    // Phase 0: cheap comm prefilter.
+    const comm = readProcComm(procRoot, ent.name);
+    if (!comm) continue; // unreadable comm (kernel thread, raced exit) -> skip
+    if (!commLooksLikeServer(comm)) continue;
+
+    // Phase 1: bounded cmdline read + isGitNexusServerCommand prefilter.
+    if (outOfBudget()) return 'timeout';
+    const cmdline = readLinuxCmdline(procRoot, ent.name, cmdlineCap);
+    if (!isGitNexusServerCommand(cmdline)) continue;
+    candidates.push(ent.name);
+  }
+
+  // Phase 2: only now stat the fds of the (typically 0-2) survivors.
+  for (const pidStr of candidates) {
+    if (outOfBudget()) return 'timeout';
+    const fdDir = path.join(procRoot, pidStr, 'fd');
     let fds;
     try {
       fds = fs.readdirSync(fdDir);
-    } catch {
-      continue;
+    } catch (err) {
+      // A candidate already matched the GitNexus-server cmdline, so an
+      // unreadable fd dir is almost always a cross-user server (EACCES): we
+      // cannot prove it does NOT hold the lbug, and the candidate is a strong
+      // owner signal. Fail-closed (treat as owner) for any error other than
+      // ENOENT (the process raced away -> genuinely not an owner). Documented
+      // tradeoff (#2180 edge): a cross-user gitnexus server skips augment.
+      if (err && err.code === 'ENOENT') continue;
+      return 'owned';
     }
-    let holds = false;
     for (const fd of fds) {
-      if (Date.now() - start > budget) return false;
+      if (outOfBudget()) return 'timeout';
       try {
         const st = fs.statSync(path.join(fdDir, fd));
         if (st.dev === targetStat.dev && st.ino === targetStat.ino) {
-          holds = true;
-          break;
+          return 'owned';
         }
       } catch {
-        /* ignore */
+        /* fd raced closed; ignore */
       }
     }
-    if (!holds) continue;
-    if (isGitNexusServerCommand(readLinuxCmdline(ent.name))) return true;
   }
-  return false;
+
+  return 'not-owned';
 }
 
 function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
@@ -370,8 +559,13 @@ function hasGitNexusDbLockedByGitNexusServer(dbPath, myPid) {
   }
 
   if (process.platform === 'linux') {
-    if (linuxProcScanFindGitNexusServer(dbPathAbs, myPid)) return true;
-    return unixLsofPsFindGitNexusServer(dbPathAbs, myPid);
+    // #2180: cmdline-first procfs scan, no lsof. 'timeout' fails CLOSED
+    // (overloaded host self-throttles — the throttle the orphan-storm incident
+    // needed; the old lsof fallback ETIMEDOUT'd and failed closed on these same
+    // hosts anyway, only slower and with the orphan risk). 'not-owned' is the
+    // only false. See the fail matrix in the file header.
+    const verdict = linuxProcScanFindGitNexusServer(dbPathAbs, myPid);
+    return verdict !== 'not-owned';
   }
 
   return unixLsofPsFindGitNexusServer(dbPathAbs, myPid);

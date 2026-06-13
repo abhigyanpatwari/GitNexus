@@ -27,6 +27,7 @@ import {
   runHook,
   parseHookOutput,
   createHookToolDir,
+  createFakeProcRoot,
   hookEnv,
 } from '../utils/hook-test-helpers.js';
 
@@ -86,6 +87,17 @@ const PLUGIN_HOOK_DB_PROBE = path.resolve(
   'hooks',
   'hook-db-lock-probe.cjs',
 );
+
+// ─── lsof/ps-path lane gate (#2180) ─────────────────────────────────
+//
+// The owner-detection tests below drive the probe through its lsof + ps backend
+// (via the fake lsof/ps in createHookToolDir). That backend is the macOS/other-
+// Unix path; #2180 removed the Linux lsof fallback, so on Linux these tests
+// would no longer exercise the real dispatch (the cmdline-first procfs scan
+// answers instead, and a temp lbug held by nobody is simply not-owned). They
+// remain valid coverage for the macOS lane; Linux gets equivalent three-phase
+// coverage in test/unit/hook-db-lock-probe.test.ts (fake /proc + a live e2e).
+const SKIP_LSOF_PATH = process.platform === 'win32' || process.platform === 'linux';
 
 // ─── Host guard precheck for orphan-reaping tests (#2163) ───────────
 //
@@ -1002,10 +1014,10 @@ describe.skipIf(process.platform === 'win32')(
             {
               env: {
                 ...hookEnv(binDir),
-                // Force the Linux /proc scan to fall through to lsof
-                // immediately. Must be '1' — do NOT "simplify" to '0': the
-                // current parser (`Number(raw && String(raw).trim())`)
-                // treats '0' as falsy and falls back to the 1200ms default.
+                // The slot gate rejects this invocation before the probe runs
+                // at all, so this budget never actually bounds a scan — it is
+                // set low only to keep the test fast in the (asserted-absent)
+                // case the gate ever regressed and let the probe through.
                 GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
               },
             },
@@ -1156,250 +1168,21 @@ describe.skipIf(process.platform === 'win32')(
   },
 );
 
-describe.skipIf(process.platform !== 'linux')(
-  'Orphaned lsof is reaped by the timeout wrapper (#2163)',
-  () => {
-    // T3 — minimal reproduction of the incident mechanism: the hook process
-    // is SIGKILLed (modeling Claude Code's 10s hook timeout) while a slow,
-    // SIGTERM-immune lsof child is still running. Before the fix nothing can
-    // signal that child anymore (and spawnSync's own SIGTERM is ignored
-    // anyway), so it survives its full 30s sleep → test red regardless of
-    // race timing. After the fix the coreutils `timeout -k 1` wrapper
-    // outlives the hook and SIGKILLs the child within ~3s — making this also
-    // a direct regression test for the wrapper's `-k` capability.
-    it('CJS: SIGKILLed hook leaves no immortal lsof child', async () => {
-      // Guard-availability precheck — see resolveHostGuardForReapingTests.
-      expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
-      const { spawn } = await import('child_process');
-      const lbugPath = path.join(gitNexusDir, 'lbug');
-      fs.writeFileSync(lbugPath, '');
-      const pidFile = path.join(os.tmpdir(), `gn-hook-lsofpid-${process.pid}`);
-      fs.rmSync(pidFile, { force: true });
-      const binDir = createHookToolDir({
-        lsofPidFile: pidFile,
-        lsofSleepMs: 30000,
-        lsofIgnoreSigterm: true,
-      });
-      let lsofPid = 0;
-      let hookChild: ReturnType<typeof spawn> | null = null;
-
-      const isFakeLsofAlive = () => {
-        try {
-          process.kill(lsofPid, 0);
-        } catch {
-          return false; // ESRCH — reaped
-        }
-        // PID-reuse guard: only count it alive while the cmdline still
-        // points at our fake lsof.
-        try {
-          return fs.readFileSync(`/proc/${lsofPid}/cmdline`, 'utf-8').includes(binDir);
-        } catch {
-          return false;
-        }
-      };
-
-      try {
-        hookChild = spawn(process.execPath, [CJS_HOOK], {
-          stdio: ['pipe', 'ignore', 'ignore'],
-          env: {
-            ...hookEnv(binDir),
-            // '1', NOT '0' — see the slot-gate test above.
-            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
-            // Hermeticity: hookEnv() spreads process.env, so a stray
-            // GITNEXUS_HOOK_TIMEOUT_PATH=disabled left in a developer shell
-            // would turn the wrapper off and fake-red this test. Empty string
-            // falls through to the built-in candidates (the path under test).
-            GITNEXUS_HOOK_TIMEOUT_PATH: '',
-          },
-        });
-        hookChild.stdin!.end(
-          JSON.stringify({
-            hook_event_name: 'PreToolUse',
-            tool_name: 'Grep',
-            tool_input: { pattern: 'validateUser' },
-            cwd: tmpDir,
-          }),
-        );
-
-        // The fake lsof writes its PID as its FIRST statement; poll tightly.
-        const spawnDeadline = Date.now() + 8000;
-        while (Date.now() < spawnDeadline) {
-          try {
-            const raw = fs.readFileSync(pidFile, 'utf-8').trim();
-            if (raw) {
-              lsofPid = Number.parseInt(raw, 10);
-              break;
-            }
-          } catch {
-            /* not written yet */
-          }
-          await new Promise((r) => setTimeout(r, 10));
-        }
-        expect(lsofPid).toBeGreaterThan(0);
-
-        // Kill the hook while its lsof child is alive.
-        hookChild.kill('SIGKILL');
-
-        const reapDeadline = Date.now() + 5000;
-        let alive = isFakeLsofAlive();
-        while (alive && Date.now() < reapDeadline) {
-          await new Promise((r) => setTimeout(r, 100));
-          alive = isFakeLsofAlive();
-        }
-        expect(alive).toBe(false);
-      } finally {
-        // PID-reuse guard (#2169 review): re-run the detection loop's
-        // /proc/<pid>/cmdline identity check before the cleanup SIGKILL, so
-        // a PID already reaped and recycled by the OS is never signalled.
-        if (lsofPid > 0 && isFakeLsofAlive()) {
-          try {
-            process.kill(lsofPid, 'SIGKILL');
-          } catch {
-            /* already gone */
-          }
-        }
-        try {
-          hookChild?.kill('SIGKILL');
-        } catch {
-          /* ignore */
-        }
-        // The hook claims a slot before probing now; it died holding it.
-        const lockDir = path.join(gitNexusDir, '.hook-locks');
-        try {
-          for (const f of fs.readdirSync(lockDir)) fs.unlinkSync(path.join(lockDir, f));
-        } catch {
-          /* ignore */
-        }
-        try {
-          fs.rmdirSync(lockDir);
-        } catch {
-          /* ignore */
-        }
-        fs.rmSync(lbugPath, { force: true });
-        fs.rmSync(pidFile, { force: true });
-        fs.rmSync(binDir, { recursive: true, force: true });
-      }
-    }, 30000);
-
-    // F3 (#2165 review): GITNEXUS_HOOK_TIMEOUT_PATH pointing at an EXISTING
-    // but unusable path (here: a directory) must not silently disable orphan
-    // containment. Before the fix, fs.existsSync() accepted the directory as
-    // THE candidate, its self-test failed, and the wrapper was memoized off —
-    // no fall-through — so the SIGTERM-immune lsof below survived its full
-    // 30s sleep. After the fix the env candidate merely goes first in the
-    // candidate list; failing its self-test falls through to the built-in
-    // coreutils guard, which still reaps the orphan within ~3s.
-    it('CJS: env guard pointing at a directory falls through to a working built-in guard', async () => {
-      // Guard-availability precheck — see resolveHostGuardForReapingTests.
-      expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
-      const { spawn } = await import('child_process');
-      const lbugPath = path.join(gitNexusDir, 'lbug');
-      fs.writeFileSync(lbugPath, '');
-      const pidFile = path.join(os.tmpdir(), `gn-hook-lsofpid-dirguard-${process.pid}`);
-      fs.rmSync(pidFile, { force: true });
-      const guardDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-guard-dir-'));
-      const binDir = createHookToolDir({
-        lsofPidFile: pidFile,
-        lsofSleepMs: 30000,
-        lsofIgnoreSigterm: true,
-      });
-      let lsofPid = 0;
-      let hookChild: ReturnType<typeof spawn> | null = null;
-
-      const isFakeLsofAlive = () => {
-        try {
-          process.kill(lsofPid, 0);
-        } catch {
-          return false; // ESRCH — reaped
-        }
-        try {
-          return fs.readFileSync(`/proc/${lsofPid}/cmdline`, 'utf-8').includes(binDir);
-        } catch {
-          return false;
-        }
-      };
-
-      try {
-        hookChild = spawn(process.execPath, [CJS_HOOK], {
-          stdio: ['pipe', 'ignore', 'ignore'],
-          env: {
-            ...hookEnv(binDir),
-            // '1', NOT '0' — see the slot-gate test above.
-            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
-            // Exists but is a directory — spawning it fails the lazy
-            // self-test, forcing the fall-through path under test.
-            GITNEXUS_HOOK_TIMEOUT_PATH: guardDir,
-          },
-        });
-        hookChild.stdin!.end(
-          JSON.stringify({
-            hook_event_name: 'PreToolUse',
-            tool_name: 'Grep',
-            tool_input: { pattern: 'validateUser' },
-            cwd: tmpDir,
-          }),
-        );
-
-        const spawnDeadline = Date.now() + 8000;
-        while (Date.now() < spawnDeadline) {
-          try {
-            const raw = fs.readFileSync(pidFile, 'utf-8').trim();
-            if (raw) {
-              lsofPid = Number.parseInt(raw, 10);
-              break;
-            }
-          } catch {
-            /* not written yet */
-          }
-          await new Promise((r) => setTimeout(r, 10));
-        }
-        expect(lsofPid).toBeGreaterThan(0);
-
-        // Kill the hook while its lsof child is alive (the incident topology).
-        hookChild.kill('SIGKILL');
-
-        const reapDeadline = Date.now() + 5000;
-        let alive = isFakeLsofAlive();
-        while (alive && Date.now() < reapDeadline) {
-          await new Promise((r) => setTimeout(r, 100));
-          alive = isFakeLsofAlive();
-        }
-        expect(alive).toBe(false);
-      } finally {
-        // PID-reuse guard (#2169 review): re-run the detection loop's
-        // /proc/<pid>/cmdline identity check before the cleanup SIGKILL, so
-        // a PID already reaped and recycled by the OS is never signalled.
-        if (lsofPid > 0 && isFakeLsofAlive()) {
-          try {
-            process.kill(lsofPid, 'SIGKILL');
-          } catch {
-            /* already gone */
-          }
-        }
-        try {
-          hookChild?.kill('SIGKILL');
-        } catch {
-          /* ignore */
-        }
-        const lockDir = path.join(gitNexusDir, '.hook-locks');
-        try {
-          for (const f of fs.readdirSync(lockDir)) fs.unlinkSync(path.join(lockDir, f));
-        } catch {
-          /* ignore */
-        }
-        try {
-          fs.rmdirSync(lockDir);
-        } catch {
-          /* ignore */
-        }
-        fs.rmSync(lbugPath, { force: true });
-        fs.rmSync(pidFile, { force: true });
-        fs.rmSync(guardDir, { recursive: true, force: true });
-        fs.rmSync(binDir, { recursive: true, force: true });
-      }
-    }, 30000);
-  },
-);
+// ─── #2180: the probe no longer spawns lsof on Linux ───────────────
+//
+// The 'Orphaned lsof is reaped by the timeout wrapper (#2163)' suite that
+// lived here (T3 + the env-guard-points-at-a-directory fall-through test)
+// drove the Linux probe to spawn a SIGTERM-immune fake lsof and asserted the
+// coreutils `timeout -k 1` wrapper reaped it after the hook was SIGKILLed.
+// #2180 replaced the O(procs×fds) scan + lsof fallback with a pure cmdline-
+// first procfs scan and DELETED the Linux lsof leg entirely, so the probe can
+// no longer create an lsof orphan on Linux by construction — there is nothing
+// left for those tests to exercise. The wrapper-reaping mechanism they pinned
+// is still covered where it still applies: the augment CLI child (the
+// direct-exec and npx-grandchild reaping suites below) and the macOS/other-
+// Unix lsof+ps path (the `Ladybug DB owner guard` suite, now relaned off
+// Linux). The env-guard fall-through self-test behaviour is still pinned by
+// the bad-wrapper / dir-guard guard-resolution tests in that relaned suite.
 
 // ─── Behavior: SIGKILLed hook cannot strand the augment CLI (#2163 f-up) ──
 
@@ -1428,11 +1211,16 @@ describe.skipIf(process.platform !== 'linux')(
         // Guard-availability precheck — see resolveHostGuardForReapingTests.
         expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
         const { spawn } = await import('child_process');
-        // REQUIRED: a real lbug file routes the probe through the fake lsof
-        // (empty output → no holder PIDs → probe false) so the augment runs
-        // through the same probe-then-spawn flow as production.
+        // REQUIRED: a real lbug file means the probe runs. #2180 removed the
+        // Linux lsof fallback, so we route the probe at an EMPTY fake /proc
+        // (no gitnexus server holding the fd → not-owned) so the augment runs
+        // through the same probe-then-spawn flow as production. (Pre-#2180 this
+        // used GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS:'1' to fall through to a fake
+        // lsof; that path no longer exists on Linux — a '1' budget now fails
+        // CLOSED and would skip the augment entirely.)
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
+        const emptyProcRoot = createFakeProcRoot([]);
         const pidFile = path.join(os.tmpdir(), `gn-hook-clipid-${process.pid}-${label}`);
         fs.rmSync(pidFile, { force: true });
         const binDir = createHookToolDir({
@@ -1465,8 +1253,11 @@ describe.skipIf(process.platform !== 'linux')(
             stdio: ['pipe', 'ignore', 'ignore'],
             env: {
               ...hookEnv(binDir),
-              // '1', NOT '0' — see the slot-gate test above.
-              GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+              // #2180: empty fake /proc → scan completes as not-owned → augment
+              // runs (the path under test). Generous budget so the scan never
+              // times out and fails closed.
+              GITNEXUS_HOOK_PROC_ROOT: emptyProcRoot,
+              GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '5000',
               // Hermeticity: a dev-shell GITNEXUS_HOOK_TIMEOUT_PATH=disabled
               // would unwrap the CLI and fake-red this test. Empty string
               // falls through to the built-in candidates (the path under test).
@@ -1542,6 +1333,7 @@ describe.skipIf(process.platform !== 'linux')(
           fs.rmSync(lbugPath, { force: true });
           fs.rmSync(pidFile, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
+          fs.rmSync(emptyProcRoot, { recursive: true, force: true });
         }
       }, 30000);
     }
@@ -1574,11 +1366,14 @@ describe.skipIf(process.platform !== 'linux')(
       // Guard-availability precheck — see resolveHostGuardForReapingTests.
       expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
       const { spawn } = await import('child_process');
-      // REQUIRED: a real lbug file routes the probe through the fake lsof
-      // (empty output → no holder PIDs → probe false) so the augment runs
-      // through the same probe-then-spawn flow as production.
+      // REQUIRED: a real lbug file means the probe runs. #2180 removed the
+      // Linux lsof fallback, so we route the probe at an EMPTY fake /proc
+      // (not-owned) so the augment runs through the same probe-then-spawn flow
+      // as production. (Pre-#2180 this used BUDGET_MS:'1' to fall through to a
+      // fake lsof; that path no longer exists on Linux.)
       const lbugPath = path.join(gitNexusDir, 'lbug');
       fs.writeFileSync(lbugPath, '');
+      const emptyProcRoot = createFakeProcRoot([]);
       const pidFile = path.join(os.tmpdir(), `gn-hook-npxclipid-${process.pid}`);
       fs.rmSync(pidFile, { force: true });
       // Route self-proof (#2169 review): written by the fake npx as its first
@@ -1647,8 +1442,10 @@ describe.skipIf(process.platform !== 'linux')(
             // copy's require.resolve to find via NODE_PATH.
             GITNEXUS_HOOK_CLI_PATH: '',
             NODE_PATH: '',
-            // '1', NOT '0' — see the slot-gate test above.
-            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '1',
+            // #2180: empty fake /proc → not-owned → augment runs. Generous
+            // budget so the scan completes rather than failing closed.
+            GITNEXUS_HOOK_PROC_ROOT: emptyProcRoot,
+            GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS: '5000',
             // Hermeticity: fall through to the built-in guard candidates.
             GITNEXUS_HOOK_TIMEOUT_PATH: '',
           },
@@ -1726,6 +1523,7 @@ describe.skipIf(process.platform !== 'linux')(
         fs.rmSync(npxMarkerPath, { force: true });
         fs.rmSync(stagedDir, { recursive: true, force: true });
         fs.rmSync(binDir, { recursive: true, force: true });
+        fs.rmSync(emptyProcRoot, { recursive: true, force: true });
       }
     }, 45000);
   },
@@ -1988,7 +1786,7 @@ describe('PreToolUse augmentation filtering (integration)', () => {
     // exit 0 — so strict hook runners (e.g. Codex `PreToolUse`) never see
     // unexpected output. GITNEXUS_DEBUG is forced off to keep the assertion
     // deterministic regardless of the ambient environment.
-    it.skipIf(process.platform === 'win32')(
+    it.skipIf(SKIP_LSOF_PATH)(
       `${label}: skips augment SILENTLY when a GitNexus MCP process owns the repo DB`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-called-${process.pid}-${label}`);
@@ -2028,7 +1826,7 @@ describe('PreToolUse augmentation filtering (integration)', () => {
     // Issue #1913: the skip reason remains recoverable for operators who opt in
     // via GITNEXUS_DEBUG=1 — stdout stays empty (no augment ran), the diagnostic
     // appears on stderr.
-    it.skipIf(process.platform === 'win32')(
+    it.skipIf(SKIP_LSOF_PATH)(
       `${label}: surfaces the MCP-owner skip reason only under GITNEXUS_DEBUG`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-dbg-${process.pid}-${label}`);
@@ -2071,7 +1869,7 @@ describe('PreToolUse augmentation filtering (integration)', () => {
     // have emitted on these; this guards the unified strict gate (incl. the
     // main() catch handler) across the claude/plugin copies.
     for (const debugValue of ['0', 'false']) {
-      it.skipIf(process.platform === 'win32')(
+      it.skipIf(SKIP_LSOF_PATH)(
         `${label}: MCP-owner skip stays SILENT with GITNEXUS_DEBUG='${debugValue}' (strict contract)`,
         () => {
           const markerPath = path.join(
@@ -2114,14 +1912,22 @@ describe('PreToolUse augmentation filtering (integration)', () => {
   }
 });
 
-describe.skipIf(process.platform === 'win32')(
+describe.skipIf(SKIP_LSOF_PATH)(
   'Ladybug DB owner guard — production-shaped ps + failure modes (#1493)',
   () => {
-    // These tests assert owner *detection*: a positive skip is signalled by the
-    // `[GitNexus] augment skipped` diagnostic. Since #1913 made that diagnostic
-    // debug-gated (silent by default for strict hook runners), they run with
-    // GITNEXUS_DEBUG=1 so the discriminator remains observable. Default-silence
-    // itself is covered by the 'augmentation filtering' describe above.
+    // These tests assert owner *detection* via the lsof + ps backend: a positive
+    // skip is signalled by the `[GitNexus] augment skipped` diagnostic. Since
+    // #1913 made that diagnostic debug-gated (silent by default for strict hook
+    // runners), they run with GITNEXUS_DEBUG=1 so the discriminator remains
+    // observable. Default-silence itself is covered by the 'augmentation
+    // filtering' describe above.
+    //
+    // #2180: skipped on Linux (SKIP_LSOF_PATH) — Linux no longer routes through
+    // lsof/ps, so these would no longer exercise the real dispatch there. They
+    // stay as the macOS/other-Unix lsof+ps lane; the equivalent Linux owner-
+    // detection (incl. the EACCES / cross-user fail-closed edge and the budget
+    // timeout fail-closed) is covered directly against a fake /proc in
+    // test/unit/hook-db-lock-probe.test.ts.
     for (const [label, hookPath] of [
       ['CJS', CJS_HOOK],
       ['Plugin', PLUGIN_HOOK],

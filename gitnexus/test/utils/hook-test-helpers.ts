@@ -161,6 +161,57 @@ process.exit(0);
   return binDir;
 }
 
+// ─── Fake /proc root for the Linux cmdline-first DB-owner scan (#2180) ──
+//
+// linuxProcScanFindGitNexusServer reads every path under GITNEXUS_HOOK_PROC_ROOT
+// (defaulting to /proc in production). These helpers build a fixture tree so the
+// three-phase scan (comm -> cmdline -> fd dev+ino) can be unit-tested without
+// touching the test host's real, hundreds-of-process /proc — which is both slow
+// and nondeterministic (other gitnexus servers may be running). fd entries are
+// real symlinks to real files, so fs.statSync on them yields real dev+ino the
+// scan can compare against the target lbug.
+
+export interface FakeProcEntry {
+  pid: number | string;
+  /** /proc/<pid>/comm contents (kernel caps at 15 visible chars; caller models truncation). */
+  comm: string;
+  /** argv tokens; joined with NUL like the real /proc/<pid>/cmdline. */
+  cmdline: string[];
+  /** Absolute paths this pid "holds" open — each becomes an fd symlink target. */
+  fdTargets?: string[];
+  /** When true, make /proc/<pid>/fd unreadable-shaped by omitting it entirely so readdir throws ENOENT; for EACCES use the logic-path test instead. */
+  noFdDir?: boolean;
+}
+
+/**
+ * Build a fake /proc tree under a fresh temp dir and return its path (use as
+ * GITNEXUS_HOOK_PROC_ROOT). Caller is responsible for rm-ing the returned dir.
+ */
+export function createFakeProcRoot(entries: FakeProcEntry[]): string {
+  const procRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-fakeproc-'));
+  for (const e of entries) {
+    const pidDir = path.join(procRoot, String(e.pid));
+    fs.mkdirSync(pidDir, { recursive: true });
+    fs.writeFileSync(path.join(pidDir, 'comm'), `${e.comm}\n`);
+    fs.writeFileSync(path.join(pidDir, 'cmdline'), e.cmdline.join('\0') + '\0');
+    if (!e.noFdDir) {
+      const fdDir = path.join(pidDir, 'fd');
+      fs.mkdirSync(fdDir, { recursive: true });
+      const targets = e.fdTargets ?? [];
+      targets.forEach((target, i) => {
+        // Real symlink so statSync(link) follows to the real file's dev+ino —
+        // exactly what the scan compares against the target lbug.
+        try {
+          fs.symlinkSync(target, path.join(fdDir, String(i + 3)));
+        } catch {
+          /* best-effort; a missing target just won't match */
+        }
+      });
+    }
+  }
+  return procRoot;
+}
+
 /** A full env that points a spawned hook at the fake tool dir from createHookToolDir. */
 export function hookEnv(binDir: string) {
   return {
