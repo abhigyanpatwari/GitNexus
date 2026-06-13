@@ -1,31 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isValidIpv4Address, isRfc1918PrivateIpv4 } from '../../src/server/private-ip.js';
-
-describe('isValidIpv4Address', () => {
-  it('accepts valid IPv4 addresses', () => {
-    expect(isValidIpv4Address('0.0.0.0')).toBe(true);
-    expect(isValidIpv4Address('127.0.0.1')).toBe(true);
-    expect(isValidIpv4Address('192.168.1.1')).toBe(true);
-    expect(isValidIpv4Address('255.255.255.255')).toBe(true);
-    expect(isValidIpv4Address('10.0.0.1')).toBe(true);
-  });
-
-  it('rejects invalid octets (>255)', () => {
-    expect(isValidIpv4Address('256.0.0.1')).toBe(false);
-    expect(isValidIpv4Address('10.0.0.256')).toBe(false);
-    expect(isValidIpv4Address('999.999.999.999')).toBe(false);
-  });
-
-  it('rejects non-IPv4 strings', () => {
-    expect(isValidIpv4Address('localhost')).toBe(false);
-    expect(isValidIpv4Address('[::1]')).toBe(false);
-    expect(isValidIpv4Address('::1')).toBe(false);
-    expect(isValidIpv4Address('')).toBe(false);
-    expect(isValidIpv4Address('10.0.0')).toBe(false);
-    expect(isValidIpv4Address('10.0.0.1.2')).toBe(false);
-    expect(isValidIpv4Address('abc.def.ghi.jkl')).toBe(false);
-  });
-});
+import { isRfc1918PrivateIpv4 } from '../../src/server/private-ip.js';
 
 describe('isRfc1918PrivateIpv4', () => {
   it('accepts 10.0.0.0/8 range', () => {

@@ -5,10 +5,6 @@ const parseIpv4Octets = (hostname: string): number[] | null => {
   return octets;
 };
 
-export const isValidIpv4Address = (hostname: string): boolean => {
-  return parseIpv4Octets(hostname) !== null;
-};
-
 export const isRfc1918PrivateIpv4 = (hostname: string): boolean => {
   const octets = parseIpv4Octets(hostname);
   if (octets === null) return false;
