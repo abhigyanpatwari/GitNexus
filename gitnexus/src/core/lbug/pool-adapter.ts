@@ -103,6 +103,24 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = 8;
 
+/**
+ * Repos exempt from AUTOMATIC eviction (LRU + idle timeout) until explicitly
+ * unpinned. Used by bounded multi-repo operations like `group sync`, which
+ * initializes one pool per repo and then resolves cross-repo manifest/workspace
+ * links against ALL of those pools after the init loop. Without pinning, a
+ * group larger than MAX_POOL_SIZE would LRU-evict the earliest repos before
+ * resolution runs, leaving the deferred executor closures pointing at dead pool
+ * entries (issue #2189).
+ *
+ * Pins block only automatic eviction — explicit teardown (closeOne / closeLbug)
+ * always closes the entry and clears its pin. Callers must pair pinRepo with
+ * unpinRepo (closeOne also clears the pin as a teardown safety net). While all
+ * pooled repos are pinned, evictLRU finds no eligible victim and the pool may
+ * transiently exceed MAX_POOL_SIZE — the same soft-cap behavior that already
+ * occurs when every entry is checked out.
+ */
+const pinnedRepos = new Set<string>();
+
 // Behavior-neutral RSS tracing for the FTS evict→reload memory repro
 // (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
 // in the pool init/close hot path: it writes ONLY to stderr (stdout is the MCP
@@ -145,6 +163,7 @@ function ensureIdleTimer(): void {
   idleTimer = setInterval(() => {
     const now = Date.now();
     for (const [repoId, entry] of pool) {
+      if (pinnedRepos.has(repoId)) continue;
       if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
         closeOne(repoId);
       }
@@ -167,7 +186,30 @@ export const touchRepo = (repoId: string): void => {
 };
 
 /**
- * Evict the least-recently-used repo if pool is at capacity
+ * Pin a repo so it is exempt from automatic eviction (LRU + idle timeout)
+ * until unpinned. Idempotent. Pinning a repo that is not yet (or no longer)
+ * in the pool is allowed — the pin takes effect for whatever entry currently
+ * holds, or later holds, that repoId. Pairs with unpinRepo; closeOne also
+ * clears the pin on teardown. See the pinnedRepos docstring for the contract.
+ */
+export const pinRepo = (repoId: string): void => {
+  pinnedRepos.add(repoId);
+};
+
+/**
+ * Remove a repo's eviction exemption. Idempotent — unpinning a repo that was
+ * never pinned is a no-op. Does NOT close the repo's pool; it only makes the
+ * entry eligible for automatic eviction again.
+ */
+export const unpinRepo = (repoId: string): void => {
+  pinnedRepos.delete(repoId);
+};
+
+/**
+ * Evict the least-recently-used repo if pool is at capacity.
+ * Pinned repos are never chosen as the eviction victim — when every eligible
+ * entry is pinned, no eviction occurs and the pool transiently exceeds
+ * MAX_POOL_SIZE (see the pinnedRepos docstring).
  */
 function evictLRU(): void {
   if (pool.size < MAX_POOL_SIZE) return;
@@ -175,6 +217,7 @@ function evictLRU(): void {
   let oldestId: string | null = null;
   let oldestTime = Infinity;
   for (const [id, entry] of pool) {
+    if (pinnedRepos.has(id)) continue;
     if (entry.checkedOut === 0 && entry.lastUsed < oldestTime) {
       oldestTime = entry.lastUsed;
       oldestId = id;
@@ -243,6 +286,11 @@ function closeOne(repoId: string): void {
   }
 
   pool.delete(repoId);
+
+  // Clear any eviction pin — the entry is gone, so the pin is meaningless and
+  // would otherwise leak across operations in a long-lived process. Teardown
+  // is authoritative: an explicit close always wins over a pin.
+  pinnedRepos.delete(repoId);
 
   // Notify listeners AFTER the pool entry is gone so any cache-invalidation
   // they perform is consistent with `isLbugReady(repoId) === false`.
