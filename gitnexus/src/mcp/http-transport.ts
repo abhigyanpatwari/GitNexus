@@ -27,6 +27,7 @@ import cors from 'cors';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMCPServer, installSignalShutdown } from './server.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { logger } from '../core/logger.js';
@@ -240,8 +241,11 @@ export function createStreamableHttpHandler(
     } else if (req.method === 'POST') {
       // No session ID — new client. Only accept initialize requests to avoid
       // orphaned Server instances that can never be reclaimed by the TTL sweep.
-      const body = req.body as Record<string, unknown> | undefined;
-      if (body?.method !== 'initialize') {
+      // Use the SDK's isInitializeRequest so a single-element JSON-RPC batch is
+      // recognised too, rather than a brittle `body.method === 'initialize'` check.
+      const body = req.body as unknown;
+      const messages = Array.isArray(body) ? body : [body];
+      if (!messages.some(isInitializeRequest)) {
         res.status(400).json({
           jsonrpc: '2.0',
           error: {

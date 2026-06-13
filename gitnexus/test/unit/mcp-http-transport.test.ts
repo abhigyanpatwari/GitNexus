@@ -77,6 +77,20 @@ async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void>
   }
 }
 
+/** A schema-complete JSON-RPC initialize request (passes the SDK isInitializeRequest). */
+function validInitialize(id = 1): Record<string, unknown> {
+  return {
+    jsonrpc: '2.0',
+    method: 'initialize',
+    id,
+    params: {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1.0.0' },
+    },
+  };
+}
+
 // ─── Mock backend factory ──────────────────────────────────────────────
 
 function createMockBackend(overrides: Record<string, unknown> = {}): unknown {
@@ -331,7 +345,7 @@ describe('startMcpHttpServer', () => {
         Accept: 'application/json, text/event-stream',
         Host: 'evil.example.com:1234',
       },
-      JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }),
+      JSON.stringify(validInitialize()),
     );
 
     expect(res.status).toBe(403);
@@ -369,7 +383,7 @@ describe('createStreamableHttpHandler', () => {
     const req = {
       headers: {},
       method: 'POST',
-      body: { jsonrpc: '2.0', method: 'initialize', id: 1, params: {} },
+      body: validInitialize(),
     } as Request;
 
     const res = {
@@ -487,7 +501,7 @@ describe('createStreamableHttpHandler', () => {
       'POST',
       '/mcp',
       { 'Content-Type': 'application/json', Accept: 'application/json' },
-      JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }),
+      JSON.stringify(validInitialize()),
     );
 
     expect(res.status).toBe(406);
@@ -495,6 +509,40 @@ describe('createStreamableHttpHandler', () => {
     expect(closed).toBeGreaterThan(0); // the connected Server was closed, not leaked
 
     await close();
+    await cleanup();
+  });
+
+  it('U10: treats a single-element JSON-RPC batch initialize as initialize (no 400)', async () => {
+    const backend = createMockBackend();
+    const { handler, cleanup } = createStreamableHttpHandler(backend as never);
+    const req = {
+      headers: {},
+      method: 'POST',
+      body: [validInitialize()],
+    } as unknown as Request;
+    const res = createMockRes();
+    // Past the init gate, the SDK transport runs against the mock res and may throw;
+    // we only assert the gate did NOT short-circuit with a 400.
+    try {
+      await handler(req, res);
+    } catch {
+      /* SDK write on the mock res */
+    }
+    expect(res._status).not.toBe(400);
+    await cleanup();
+  });
+
+  it('U10: a non-initialize JSON-RPC batch still returns 400', async () => {
+    const backend = createMockBackend();
+    const { handler, cleanup } = createStreamableHttpHandler(backend as never);
+    const req = {
+      headers: {},
+      method: 'POST',
+      body: [{ jsonrpc: '2.0', method: 'tools/list', id: 2, params: {} }],
+    } as unknown as Request;
+    const res = createMockRes();
+    await handler(req, res);
+    expect(res._status).toBe(400);
     await cleanup();
   });
 });
