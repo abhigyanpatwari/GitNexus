@@ -81,7 +81,10 @@ export function createLocalhostOriginGuard(boundHost?: string) {
     } catch {
       /* malformed origin → reject */
     }
-    res.status(403).json({ error: 'This endpoint is restricted to same-host origins' });
+    res.status(403).json({
+      error: 'This endpoint is restricted to same-host origins',
+      code: 'origin_not_allowed',
+    });
   };
 }
 

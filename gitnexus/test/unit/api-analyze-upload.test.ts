@@ -305,21 +305,26 @@ describe('createLocalhostOriginGuard (bound host)', () => {
   function callWith(
     boundHost: string,
     origin: string | undefined,
-  ): { passed: boolean; status: number } {
+  ): { passed: boolean; status: number; body?: { error?: string; code?: string } } {
     const guard = createLocalhostOriginGuard(boundHost);
     let passed = false;
     let status = 0;
+    let body: { error?: string; code?: string } | undefined;
     const req = { headers: origin === undefined ? {} : { origin } } as never;
     const res = {
       status: (c: number) => {
         status = c;
-        return { json: () => {} };
+        return {
+          json: (b: { error?: string; code?: string }) => {
+            body = b;
+          },
+        };
       },
     } as never;
     guard(req, res, () => {
       passed = true;
     });
-    return { passed, status };
+    return { passed, status, body };
   }
 
   it('allows origin matching the bound host', () => {
@@ -367,6 +372,12 @@ describe('createLocalhostOriginGuard (bound host)', () => {
     const r = callWith('192.168.1.100', 'https://gitnexus.vercel.app');
     expect(r.passed).toBe(false);
     expect(r.status).toBe(403);
+  });
+
+  it('tags the rejection 403 with a machine-readable code', () => {
+    const r = callWith('192.168.1.100', 'https://gitnexus.vercel.app');
+    expect(r.status).toBe(403);
+    expect(r.body?.code).toBe('origin_not_allowed');
   });
 
   it('passes no-origin (non-browser) requests', () => {
