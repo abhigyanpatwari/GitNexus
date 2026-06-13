@@ -118,7 +118,10 @@ def load_vendored_manifest() -> dict[str, dict]:
     checkout) instead of node_modules (never populated for vendored grammars) —
     which is why those grammars used to render bare ``?`` placeholders (#858).
 
-    Returns ``{ grammar_name: {"key", "upstream", "hold"} }``.
+    Returns ``{ grammar_name: {"hold": str | None} }`` — the readiness script only
+    consumes the names (membership) and the ``hold``; upstream-drift coords live in
+    the script's own ``GRAMMARS`` map, and the manifest ``key``/``upstream`` fields
+    are the monitor's concern (kept out of this return to avoid phantom data).
     """
     manifest_path = REPO_ROOT / ".github" / "vendored-grammars.json"
     # Fail loud with a pointer, not a bare traceback: this runs at module import,
@@ -144,11 +147,7 @@ def load_vendored_manifest() -> dict[str, dict]:
                 f"vendored-grammars manifest entry {key!r} is missing a 'name' field "
                 f"({manifest_path})."
             )
-        out[name] = {
-            "key": key,
-            "upstream": g.get("upstream") or {},
-            "hold": g.get("hold"),
-        }
+        out[name] = {"hold": g.get("hold")}
     return out
 
 
