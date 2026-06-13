@@ -113,10 +113,15 @@ export function createAuthMiddleware(authToken?: string) {
  * factory, reused by both startMcpHttpServer (POST /mcp) and the web-UI server
  * route mount in server/mcp-http.ts (/api/mcp).
  */
-export function createStreamableHttpHandler(backend: LocalBackend): {
+export function createStreamableHttpHandler(
+  backend: LocalBackend,
+  opts: { createServer?: () => Server } = {},
+): {
   handler: (req: Request, res: Response) => Promise<void>;
   cleanup: () => Promise<void>;
 } {
+  // Seam: tests inject createServer to observe the per-session Server lifecycle.
+  const createServer = opts.createServer ?? ((): Server => createMCPServer(backend));
   const sessions = new Map<string, MCPSession>();
 
   // Periodically evict idle sessions (guard against network drops where onclose never fires).
@@ -186,7 +191,7 @@ export function createStreamableHttpHandler(backend: LocalBackend): {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
       });
-      const server = createMCPServer(backend);
+      const server = createServer();
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
 
@@ -196,6 +201,14 @@ export function createStreamableHttpHandler(backend: LocalBackend): {
         transport.onclose = () => {
           sessions.delete(sid);
         };
+      } else {
+        // The SDK rejected this request (e.g. 406 on a missing/invalid Accept header,
+        // 415 on a bad Content-Type) before assigning a session id. The Server was
+        // already connected but will never be stored, so the TTL sweep and cleanup()
+        // can't reclaim it — close it now to avoid an orphaned-Server leak.
+        try {
+          await server.close();
+        } catch {}
       }
     } else {
       res.status(400).json({

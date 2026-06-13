@@ -15,14 +15,63 @@
  */
 
 import http from 'http';
+import type { AddressInfo } from 'net';
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import {
   createAuthMiddleware,
   createStreamableHttpHandler,
   createSseHandlers,
 } from '../../src/mcp/http-transport.js';
+import { createMCPServer } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
+
+// ─── Live-HTTP helpers (real req/res for SDK-touching paths) ───────────
+
+async function listen(app: express.Express): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  const port = (server.address() as AddressInfo).port;
+  return {
+    port,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+interface HttpResult {
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}
+
+function request(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string> = {},
+  body?: string,
+): Promise<HttpResult> {
+  return new Promise<HttpResult>((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => (data += chunk.toString()));
+      res.on('end', () =>
+        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: data }),
+      );
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const start = Date.now();
+  while (!predicate() && Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 // ─── Mock backend factory ──────────────────────────────────────────────
 
@@ -321,6 +370,45 @@ describe('createStreamableHttpHandler', () => {
       error: { code: -32000, message: 'No valid session. Send a POST to initialize.' },
     });
 
+    await cleanup();
+  });
+
+  it('U1: closes the orphaned Server when the SDK rejects an initialize before a session id', async () => {
+    const backend = createMockBackend();
+    let closed = 0;
+    // Inject createServer so we can observe the per-session Server's close().
+    const { handler, cleanup } = createStreamableHttpHandler(backend as never, {
+      createServer: () => {
+        const s = createMCPServer(backend as never);
+        const orig = s.close.bind(s);
+        s.close = (async () => {
+          closed += 1;
+          return orig();
+        }) as typeof s.close;
+        return s;
+      },
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.all('/mcp', (req, res) => void handler(req, res).catch(() => {}));
+    const { port, close } = await listen(app);
+
+    // POST initialize but with Accept: application/json ONLY (no text/event-stream):
+    // the SDK returns 406 BEFORE assigning transport.sessionId, exercising the orphan path.
+    const res = await request(
+      port,
+      'POST',
+      '/mcp',
+      { 'Content-Type': 'application/json', Accept: 'application/json' },
+      JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }),
+    );
+
+    expect(res.status).toBe(406);
+    await waitFor(() => closed > 0);
+    expect(closed).toBeGreaterThan(0); // the connected Server was closed, not leaked
+
+    await close();
     await cleanup();
   });
 });
