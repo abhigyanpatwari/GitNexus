@@ -405,7 +405,10 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
     let offset = 0;
     let chunkCap = cap;
     for (;;) {
-      const buf = Buffer.alloc(chunkCap);
+      // allocUnsafe is safe here: readSync fills exactly [0, bytes), only
+      // buf.subarray(0, bytes) is consumed, and Buffer.concat deep-copies that
+      // slice into `collected`, so the uninitialized tail never reaches decode.
+      const buf = Buffer.allocUnsafe(chunkCap);
       const bytes = fs.readSync(fd, buf, 0, chunkCap, offset);
       if (bytes <= 0) break;
       collected = Buffer.concat([collected, buf.subarray(0, bytes)]);
