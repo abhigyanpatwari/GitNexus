@@ -168,13 +168,34 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
     expect(isLbugReady('p-7')).toBe(true);
   });
 
-  it('pinRepo / unpinRepo are idempotent and tolerate unknown repoIds', () => {
+  it('reference-counts leases: two pins need two unpins before eviction (Finding 1)', async () => {
+    // Fill the pool to capacity, all leased.
+    for (let i = 1; i <= 4; i++) {
+      await init(`rc-${i}`);
+      pinRepo(`rc-${i}`);
+    }
+    await init('rc-shared');
+    pinRepo('rc-shared'); // lease 1
+    pinRepo('rc-shared'); // lease 2 (two holders)
+
+    // Release ONE lease — a holder remains, so rc-shared stays exempt even
+    // under eviction pressure.
+    unpinRepo('rc-shared');
+    await init('rc-extra'); // evictLRU finds no unpinned victim → pool grows
+    expect(isLbugReady('rc-shared')).toBe(true);
+
+    // Release the LAST lease — now rc-shared (oldest unpinned) is evictable.
+    unpinRepo('rc-shared');
+    await init('rc-extra2');
+    expect(isLbugReady('rc-shared')).toBe(false);
+  });
+
+  it('unpinRepo floors at zero and tolerates unknown repoIds', () => {
     expect(() => {
-      pinRepo('ghost');
-      pinRepo('ghost'); // double-pin is a no-op (Set semantics)
-      unpinRepo('ghost'); // single unpin fully clears
-      unpinRepo('ghost'); // unpinning an unpinned repo is a no-op
-      unpinRepo('never-touched'); // unknown repoId is a no-op
+      unpinRepo('never-touched'); // unknown repoId → no-op
+      pinRepo('floor-x');
+      unpinRepo('floor-x'); // count 0 → key deleted
+      unpinRepo('floor-x'); // already gone → no-op, never a negative count
     }).not.toThrow();
   });
 });
