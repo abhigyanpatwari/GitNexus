@@ -13,6 +13,7 @@
     "timeout": "The server took too long to respond. Try again in a moment.",
     "rateLimited": "Too many requests. Try again in {{seconds}}s.",
     "notFound": "The requested repository or resource was not found.",
+    "originBlocked": "This action isn't available from the hosted UI. Open GitNexus from the server's own address (e.g. http://localhost:4747) to continue.",
     "client": "Request failed: {{message}}",
     "server": "Server error: {{message}}"
   }
