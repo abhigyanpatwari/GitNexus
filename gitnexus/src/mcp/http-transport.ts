@@ -419,9 +419,10 @@ export async function startMcpHttpServer(
   );
 
   const auth = createAuthMiddleware(authToken);
-  // Body parser applied per-route after auth, so unauthenticated requests
-  // never trigger the 10 MB parse. Malformed JSON from authenticated clients
-  // is caught by the route-level error handler.
+  // Body parser applied per-route after auth, so unauthenticated requests never
+  // trigger the 10 MB parse. Malformed/oversized JSON from authenticated clients
+  // is converted to a JSON-RPC error envelope by the terminal error handler
+  // registered after the routes (see below).
   const jsonBody = express.json({ limit: '10mb' });
 
   // Health check — no auth required; safe to expose for probes and orchestrators.
@@ -461,6 +462,34 @@ export async function startMcpHttpServer(
           id: null,
         });
       }
+    });
+  });
+
+  // Terminal error handler: body-parser failures (malformed or oversized JSON)
+  // reach here via next(err). Without it, Express's default handler returns an
+  // HTML error page — leaking a stack trace and absolute install paths when
+  // NODE_ENV is unset (the default for a CLI) — instead of the JSON-RPC envelope
+  // every other path uses.
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const e = (err ?? {}) as { type?: string; status?: number; statusCode?: number };
+    const isBodyParseError =
+      e.type === 'entity.parse.failed' ||
+      e.type === 'entity.too.large' ||
+      err instanceof SyntaxError;
+    logger.error({ err }, 'MCP HTTP request error');
+    if (res.headersSent) return;
+    if (isBodyParseError) {
+      res.status(e.status ?? e.statusCode ?? 400).json({
+        jsonrpc: '2.0',
+        error: { code: -32700, message: 'Parse error' },
+        id: null,
+      });
+      return;
+    }
+    res.status(500).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Internal MCP server error' },
+      id: null,
     });
   });
 

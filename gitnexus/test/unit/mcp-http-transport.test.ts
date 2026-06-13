@@ -271,6 +271,27 @@ describe('startMcpHttpServer', () => {
 
     expect(statusCode).toBe(401);
   });
+
+  it('U3: malformed JSON from an authenticated client returns a JSON-RPC parse error (not HTML)', async () => {
+    const { port, server, cleanup } = await startOnFreePort('supersecret');
+    servers.push({ server, cleanup });
+
+    const res = await request(
+      port,
+      'POST',
+      '/mcp',
+      { 'Content-Type': 'application/json', Authorization: 'Bearer supersecret' },
+      '{ this is not valid json ',
+    );
+
+    expect(res.status).toBe(400);
+    expect(String(res.headers['content-type'] ?? '')).toMatch(/application\/json/);
+    expect(JSON.parse(res.body)).toMatchObject({
+      jsonrpc: '2.0',
+      error: { code: -32700, message: 'Parse error' },
+      id: null,
+    });
+  });
 });
 
 // ─── createStreamableHttpHandler ──────────────────────────────────────
