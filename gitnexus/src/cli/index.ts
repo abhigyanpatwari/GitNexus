@@ -142,7 +142,21 @@ program
 
 program
   .command('mcp')
-  .description('Start MCP server (stdio) — serves all indexed repos')
+  .description(
+    'Start MCP server. Default: stdio. Use --http for a remote HTTP server ' +
+      '(Streamable HTTP at POST /mcp + legacy SSE at GET /sse, POST /messages).',
+  )
+  .option('--http', 'Serve MCP over HTTP instead of stdio (for remote clients)')
+  .option('-p, --port <port>', 'HTTP port (only with --http). Default: 3000', '3000')
+  .option(
+    '--host <host>',
+    'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
+    '127.0.0.1',
+  )
+  .option(
+    '--auth-token <token>',
+    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+  )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program
