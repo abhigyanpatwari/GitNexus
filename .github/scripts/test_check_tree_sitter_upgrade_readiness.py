@@ -35,11 +35,10 @@ readiness = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(readiness)  # type: ignore[union-attr]
 
 # The exact row-diff regex the workflow's change-detection bot uses
-# (.github/workflows/tree-sitter-upgrade-readiness.yml). Kept in lockstep so a
-# matrix format change that would silently break change-detection fails here.
-_ROW_DIFF_RE = re.compile(
-    r"\| `(tree-sitter-[^`]+)` \|.*?\| (\S+(?:\s\S+)*?) \|$", re.M
-)
+# (.github/workflows/tree-sitter-upgrade-readiness.yml) — byte-identical so a matrix
+# format change that would silently break change-detection fails here. Group 2 is
+# ONLY the Status cell ([^|]+? before the final `|$`).
+_ROW_DIFF_RE = re.compile(r"\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
 
 
 def _physical_vendor_grammars() -> set[str]:
@@ -279,14 +278,18 @@ class ReportRendering(TestCase):
         cells = [c.strip() for c in self._matrix_row("tree-sitter-swift").strip().strip("|").split("|")]
         self.assertEqual(cells[6], "n/a")  # Upstream ABI column
 
-    def test_row_diff_regex_captures_all_fifteen_grammars(self):
-        # The change-detection bot keys on the row regex (group 1 = grammar name).
-        # It must still match every row after the format change (vendored rows use
-        # '(vendored)' sentinels + real ABI) so status transitions keep being
-        # detected. self.rows maps name -> full row tail (the bot's group 2).
+    def test_row_diff_regex_captures_all_fifteen_grammar_statuses(self):
+        # The change-detection bot keys on this regex: group 1 = grammar name,
+        # group 2 = the Status cell ONLY (not the whole tail). It must match every
+        # row after the format change so status transitions keep being detected.
         self.assertEqual(len(self.rows), 15)
         for name in readiness.VENDORED_NAMES:
             self.assertIn(name, self.rows)
+        # group 2 is the Status cell — held c renders exactly "Vendored — held",
+        # and no captured status contains a pipe (proves cell-scoped capture).
+        self.assertEqual(self.rows["tree-sitter-c"], "Vendored — held")
+        for status in self.rows.values():
+            self.assertNotIn("|", status)
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

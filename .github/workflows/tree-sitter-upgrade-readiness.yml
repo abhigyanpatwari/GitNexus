@@ -145,7 +145,11 @@ jobs:
               //   | `tree-sitter-foo` | ... | Blocking |
               const parseRows = (md) => {
                 const map = {};
-                for (const m of md.matchAll(/\| `(tree-sitter-[^`]+)` \|.*?\| (\S+(?:\s\S+)*?) \|$/gm)) {
+                // Group 2 captures ONLY the Status cell ([^|]+? before the final
+                // `|$`), so change-detection fires on status transitions, not on
+                // unrelated cell drift (e.g. an upstream-ABI bump). Mirror this in
+                // _ROW_DIFF_RE in test_check_tree_sitter_upgrade_readiness.py.
+                for (const m of md.matchAll(/\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$/gm)) {
                   map[m[1]] = m[2].trim();
                 }
                 return map;
