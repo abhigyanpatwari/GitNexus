@@ -1105,6 +1105,168 @@ service OrderService {
   });
 });
 
+// Lifecycle wiring for issue #2189: syncGroup must pin every repo it
+// initializes (so a group larger than MAX_POOL_SIZE survives deferred
+// manifest/workspace resolution) and release those pins on completion AND on
+// error. The eviction-survival MECHANISM itself is proven against real
+// evictLRU in test/unit/lbug-pool-pinning.test.ts; these tests prove the sync
+// loop drives that mechanism correctly. (A full end-to-end proof through the
+// real pool — real symbolUid instead of synthetic after >5 repos — would
+// require a real or fully-native-mocked LadybugDB stack; mechanism + wiring
+// coverage stands in for it here.)
+describe('syncGroup repo pinning (issue #2189)', () => {
+  const manyReposConfig = (count: number): GroupConfig => {
+    const repos: Record<string, string> = {};
+    for (let i = 1; i <= count; i++) repos[`app/repo-${i}`] = `repo-${i}`;
+    return {
+      version: 1,
+      name: 'test',
+      description: '',
+      repos,
+      links: [],
+      packages: {},
+      detect: {
+        http: true,
+        grpc: false,
+        thrift: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+        workspace_deps: false,
+      },
+      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    };
+  };
+
+  const okHandle = async (_name: string, groupPath: string): Promise<RepoHandle> => ({
+    id: groupPath.replace(/\//g, '-'),
+    path: groupPath,
+    repoPath: '/tmp/' + groupPath,
+    storagePath: '/tmp/' + groupPath + '/.gitnexus',
+  });
+
+  it('pins every successfully initialized repo (more than MAX_POOL_SIZE)', async () => {
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+    const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {});
+    vi.spyOn(poolAdapter, 'unpinRepo').mockImplementation(() => {});
+
+    try {
+      await syncGroup(manyReposConfig(8), {
+        resolveRepoHandle: okHandle,
+        skipWrite: true,
+      });
+
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]).sort();
+      const expectedIds = Array.from({ length: 8 }, (_, i) => `app-repo-${i + 1}`).sort();
+      expect(pinnedIds).toEqual(expectedIds);
+    } finally {
+      initSpy.mockRestore();
+      execSpy.mockRestore();
+      closeSpy.mockRestore();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('releases every pin on successful completion', async () => {
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+    const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {});
+    const unpinSpy = vi.spyOn(poolAdapter, 'unpinRepo').mockImplementation(() => {});
+
+    try {
+      await syncGroup(manyReposConfig(8), {
+        resolveRepoHandle: okHandle,
+        skipWrite: true,
+      });
+
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]).sort();
+      const unpinnedIds = unpinSpy.mock.calls.map((c) => c[0]).sort();
+      // Every pinned repo is unpinned in the finally — no leak across the sync.
+      expect(unpinnedIds).toEqual(pinnedIds);
+    } finally {
+      initSpy.mockRestore();
+      execSpy.mockRestore();
+      closeSpy.mockRestore();
+      pinSpy.mockRestore();
+      unpinSpy.mockRestore();
+    }
+  });
+
+  it('releases every pin even when the sync throws mid-flight', async () => {
+    const { ManifestExtractor } = await import(
+      '../../../src/core/group/extractors/manifest-extractor.js'
+    );
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+    const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {});
+    const unpinSpy = vi.spyOn(poolAdapter, 'unpinRepo').mockImplementation(() => {});
+    // Force an uncaught throw AFTER the init loop (inside the outer try) so the
+    // finally's cleanup path runs under error conditions.
+    const manifestSpy = vi
+      .spyOn(ManifestExtractor.prototype, 'extractFromManifest')
+      .mockRejectedValue(new Error('manifest boom'));
+
+    const config = manyReposConfig(8);
+    config.links = [
+      { from: 'app/repo-8', to: 'app/repo-1', type: 'http', contract: 'GET::/api/x', role: 'consumer' },
+    ];
+
+    try {
+      await expect(
+        syncGroup(config, { resolveRepoHandle: okHandle, skipWrite: true }),
+      ).rejects.toThrow('manifest boom');
+
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]).sort();
+      const unpinnedIds = unpinSpy.mock.calls.map((c) => c[0]).sort();
+      expect(pinnedIds.length).toBe(8);
+      expect(unpinnedIds).toEqual(pinnedIds);
+    } finally {
+      initSpy.mockRestore();
+      execSpy.mockRestore();
+      closeSpy.mockRestore();
+      pinSpy.mockRestore();
+      unpinSpy.mockRestore();
+      manifestSpy.mockRestore();
+    }
+  });
+
+  it('does not pin a repo that fails to resolve', async () => {
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+    const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {});
+    vi.spyOn(poolAdapter, 'unpinRepo').mockImplementation(() => {});
+
+    try {
+      await syncGroup(manyReposConfig(3), {
+        // repo-2 fails to resolve (returns null) → marked missing, never pinned.
+        resolveRepoHandle: async (_name, groupPath) =>
+          groupPath === 'app/repo-2' ? null : okHandle(_name, groupPath),
+        skipWrite: true,
+      });
+
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]);
+      expect(pinnedIds).toContain('app-repo-1');
+      expect(pinnedIds).toContain('app-repo-3');
+      expect(pinnedIds).not.toContain('app-repo-2');
+    } finally {
+      initSpy.mockRestore();
+      execSpy.mockRestore();
+      closeSpy.mockRestore();
+      pinSpy.mockRestore();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
 describe('stableRepoPoolId', () => {
   it('returns lowercase name when no collision', () => {
     const entry: RegistryEntry = {

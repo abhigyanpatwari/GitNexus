@@ -1,7 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
-import { initLbug, closeLbug, executeParameterized } from '../lbug/pool-adapter.js';
+import {
+  initLbug,
+  closeLbug,
+  executeParameterized,
+  pinRepo,
+  unpinRepo,
+} from '../lbug/pool-adapter.js';
 import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
 import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
@@ -120,6 +126,12 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         try {
           await initLbug(poolId, lbugPath);
           openPoolIds.push(poolId);
+          // Pin so this repo survives LRU/idle eviction while later repos
+          // initialize. Deferred manifest/workspace resolution below queries
+          // every repo's pool via the executor closures; without the pin, a
+          // group larger than MAX_POOL_SIZE would evict the earliest repos
+          // before resolution runs (issue #2189). Released in the finally.
+          pinRepo(poolId);
 
           const executor: CypherExecutor = (query, params) =>
             executeParameterized(poolId, query, params ?? {});
@@ -253,6 +265,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   } finally {
     for (const id of [...new Set(openPoolIds)]) {
+      // Unpin BEFORE closing so the pin is released even if closeLbug's
+      // best-effort close swallows an error (closeOne also clears the pin, so
+      // this is belt-and-suspenders). Pins must never outlive the sync in a
+      // long-lived process (the MCP server) — issue #2189.
+      unpinRepo(id);
       await closeLbug(id).catch(() => {});
     }
   }
