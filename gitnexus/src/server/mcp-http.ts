@@ -1,16 +1,17 @@
 /**
  * MCP over HTTP
  *
- * 将 GitNexus MCP 服务器挂载到 Express，使用 StreamableHTTP 传输协议。
- * 每个连接的客户端都有自己的有状态会话；LocalBackend 在所有会话间共享
- * （线程安全 — 每个仓库懒加载 LadybugDB）。
+ * Mounts GitNexus MCP server onto Express using the StreamableHTTP transport.
+ * Each connected client gets its own stateful session; LocalBackend is shared
+ * across all sessions (thread-safe — each repo lazily loads its LadybugDB).
  *
- * 会话在显式关闭或 SESSION_TTL_MS 空闲后被清理
- * （防止网络断开后 onclose 从未触发的情况）。
+ * Sessions are evicted on explicit close or after SESSION_TTL_MS of inactivity
+ * (guards against network drops where onclose never fires).
  *
- * 新导出的工厂函数可被 http-transport.ts 中的专用 MCP-only 服务器复用：
- * - createStreamableHttpHandler(backend): 封装 StreamableHTTPServerTransport 会话逻辑
- * - createSseHandlers(backend, messagesPath): 封装遗留 SSEServerTransport 会话逻辑
+ * Exported factory functions are reused by the dedicated HTTP-only server in
+ * http-transport.ts:
+ * - createStreamableHttpHandler(backend): wraps StreamableHTTPServerTransport session logic
+ * - createSseHandlers(backend, messagesPath): wraps legacy SSEServerTransport session logic
  */
 
 import type { Express, Request, Response } from 'express';
@@ -31,19 +32,22 @@ interface MCPSession {
 interface SSESession {
   server: Server;
   transport: SSEServerTransport;
+  lastActivity: number;
 }
 
-/** 会话空闲 30 分钟后被驱逐 */
+/** Sessions idle longer than this are evicted. */
 const SESSION_TTL_MS = 30 * 60 * 1000;
-/** 清理扫描每 5 分钟运行一次 */
+/** Cleanup sweep runs every 5 minutes. */
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+/** Hard cap on concurrent sessions — guards against initialize-flood DoS. */
+const MAX_SESSIONS = 1000;
 
 /**
- * 创建可复用的 StreamableHTTP 请求处理器。
+ * Creates a reusable StreamableHTTP request handler.
  *
- * 将现有的会话映射和 handleMcpRequest 逻辑封装为独立工厂，
- * 既可被 mountMCPEndpoints（/api/mcp 路由）调用，
- * 也可被专用 HTTP-only 服务器（http-transport.ts）调用。
+ * Encapsulates the session map and handleMcpRequest logic as an independent factory,
+ * callable from both mountMCPEndpoints (/api/mcp route) and the dedicated
+ * HTTP-only server (http-transport.ts).
  */
 export function createStreamableHttpHandler(backend: LocalBackend): {
   handler: (req: Request, res: Response) => Promise<void>;
@@ -51,7 +55,7 @@ export function createStreamableHttpHandler(backend: LocalBackend): {
 } {
   const sessions = new Map<string, MCPSession>();
 
-  // 定期清理空闲会话（防止网络断开导致 onclose 未触发）
+  // Periodically evict idle sessions (guard against network drops where onclose never fires).
   const cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, session] of sessions) {
@@ -71,19 +75,50 @@ export function createStreamableHttpHandler(backend: LocalBackend): {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (sessionId && sessions.has(sessionId)) {
-      // 已有会话 — 委托给其传输
-      const session = sessions.get(sessionId)!;
+      // Existing session — delegate to its transport and refresh activity timestamp.
+      const session = sessions.get(sessionId);
+      if (!session) {
+        res
+          .status(500)
+          .json({ jsonrpc: '2.0', error: { code: -32000, message: 'Internal error' }, id: null });
+        return;
+      }
       session.lastActivity = Date.now();
       await session.transport.handleRequest(req, res, req.body);
     } else if (sessionId) {
-      // 未知/过期的会话 ID — 告知客户端重新初始化（符合 MCP 规范）
+      // Unknown / expired session ID — tell the client to re-initialize (per MCP spec).
       res.status(404).json({
         jsonrpc: '2.0',
         error: { code: -32001, message: 'Session not found. Re-initialize.' },
         id: null,
       });
     } else if (req.method === 'POST') {
-      // 无会话 ID — 新客户端初始化
+      // No session ID — new client. Only accept initialize requests to avoid
+      // orphaned Server instances that can never be reclaimed by the TTL sweep.
+      const body = req.body as Record<string, unknown> | undefined;
+      if (body?.method !== 'initialize') {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'First request must be initialize. No session ID provided.',
+          },
+          id: null,
+        });
+        return;
+      }
+
+      // Reject when the session cap is reached — prevents memory exhaustion via
+      // an initialize flood (each session holds a live Server + Transport).
+      if (sessions.size >= MAX_SESSIONS) {
+        res.status(503).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Server at session capacity. Try again later.' },
+          id: null,
+        });
+        return;
+      }
+
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
       });
@@ -93,8 +128,9 @@ export function createStreamableHttpHandler(backend: LocalBackend): {
 
       if (transport.sessionId) {
         sessions.set(transport.sessionId, { server, transport, lastActivity: Date.now() });
+        const sid = transport.sessionId;
         transport.onclose = () => {
-          sessions.delete(transport.sessionId!);
+          sessions.delete(sid);
         };
       }
     } else {
@@ -121,13 +157,16 @@ export function createStreamableHttpHandler(backend: LocalBackend): {
 }
 
 /**
- * 创建遗留 SSE 传输处理器。
+ * Creates legacy SSE transport handlers.
  *
- * GET /sse（或自定义路径）建立 SSE 流；
- * POST /messages（或自定义路径）接收客户端发来的 JSON-RPC 消息。
+ * GET /sse (or custom path) establishes the SSE stream;
+ * POST /messages (or custom path) receives client JSON-RPC messages.
  *
- * @param backend       LocalBackend 实例
- * @param messagesPath  客户端 POST 消息的路径（默认 '/messages'）
+ * Includes the same idle-TTL eviction as createStreamableHttpHandler to prevent
+ * memory leaks when clients drop without closing the SSE connection cleanly.
+ *
+ * @param backend       LocalBackend instance
+ * @param messagesPath  Path clients POST messages to (default: '/messages')
  */
 export function createSseHandlers(
   backend: LocalBackend,
@@ -139,12 +178,29 @@ export function createSseHandlers(
 } {
   const sseSessions = new Map<string, SSESession>();
 
+  // Periodically evict stale SSE sessions — mirrors the streamable handler's sweep.
+  // Guards against network drops where the socket 'close' event never fires.
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sseSessions) {
+      if (now - session.lastActivity > SESSION_TTL_MS) {
+        try {
+          session.server.close();
+        } catch {}
+        sseSessions.delete(id);
+      }
+    }
+  }, CLEANUP_INTERVAL_MS);
+  if (cleanupTimer && typeof cleanupTimer === 'object' && 'unref' in cleanupTimer) {
+    (cleanupTimer as NodeJS.Timeout).unref();
+  }
+
   const sseHandler = async (req: Request, res: Response): Promise<void> => {
-    // SSEServerTransport(endpoint, res): endpoint 是客户端将用来 POST 的路径
+    // SSEServerTransport(endpoint, res): endpoint is the path clients POST to.
     const transport = new SSEServerTransport(messagesPath, res);
     const server = createMCPServer(backend);
 
-    sseSessions.set(transport.sessionId, { server, transport });
+    sseSessions.set(transport.sessionId, { server, transport, lastActivity: Date.now() });
 
     transport.onclose = () => {
       sseSessions.delete(transport.sessionId);
@@ -157,7 +213,7 @@ export function createSseHandlers(
       } catch {}
     });
 
-    // connect() 调用 transport.start()，它发送 SSE 'endpoint' 事件
+    // connect() calls transport.start(), which sends the SSE 'endpoint' event.
     await server.connect(transport);
   };
 
@@ -176,11 +232,16 @@ export function createSseHandlers(
       return;
     }
 
-    // express.json() 已解析请求体 — 将其作为第 3 个参数传入，避免 SDK 重读已耗尽的流
+    // Refresh activity timestamp so the TTL sweep does not evict an active session.
+    entry.lastActivity = Date.now();
+
+    // express.json() has already parsed the body — pass it as the third argument
+    // to avoid the SDK re-reading the already-consumed stream.
     await entry.transport.handlePostMessage(req, res, req.body);
   };
 
   const cleanup = async (): Promise<void> => {
+    clearInterval(cleanupTimer);
     for (const { server } of sseSessions.values()) {
       try {
         await Promise.resolve(server.close());

@@ -141,8 +141,8 @@ program
   .option('-p, --port <port>', 'HTTP port (only with --http). Default: 3000', '3000')
   .option(
     '--host <host>',
-    'HTTP bind address (only with --http). Default: 0.0.0.0 (all interfaces). Use 127.0.0.1 for loopback only.',
-    '0.0.0.0',
+    'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
+    '127.0.0.1',
   )
   .option(
     '--auth-token <token>',

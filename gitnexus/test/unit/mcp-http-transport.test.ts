@@ -1,20 +1,21 @@
 /**
- * Unit Tests: MCP HTTP 传输
+ * Unit Tests: MCP HTTP Transport
  *
- * 覆盖以下内容：
- * - createAuthMiddleware：无鉴权/鉴权通过/鉴权失败场景
- * - startMcpHttpServer：启动服务器、/health 端点（无需鉴权）
- * - createStreamableHttpHandler：Streamable HTTP 会话初始化、未知会话 404
- * - createSseHandlers：SSE 消息路由、未知 sessionId 404
- * - mountMCPEndpoints 重构安全性：仍返回 cleanup 函数并注册 /api/mcp
+ * Coverage:
+ * - createAuthMiddleware: no-auth / valid token / invalid token scenarios
+ * - startMcpHttpServer: port-0 smoke test (health endpoint, unauthenticated POST → 401)
+ * - createStreamableHttpHandler: new-session initialization, unknown session 404
+ * - createSseHandlers: message routing, unknown sessionId 404
+ * - mountMCPEndpoints refactor safety: still returns cleanup fn and registers /api/mcp
  *
- * 说明：
- * - node_modules 可能未安装；测试依赖 MCP SDK mock 而非真实 SDK 实例
- * - HTTP 服务器测试使用 port: 0（由 OS 分配临时端口），绑定 127.0.0.1
- * - 每个测试后关闭服务器并调用 cleanup，避免句柄泄漏
+ * Notes:
+ * - node_modules may not be installed; tests that exercise the MCP SDK rely on mocks.
+ * - HTTP server tests use port 0 (OS-assigned ephemeral port) bound to 127.0.0.1.
+ * - Each test closes the server and calls cleanup() to avoid handle leaks.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import http from 'http';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { createAuthMiddleware } from '../../src/mcp/http-transport.js';
 import {
@@ -23,7 +24,7 @@ import {
   mountMCPEndpoints,
 } from '../../src/server/mcp-http.js';
 
-// ─── Mock backend 工厂 ─────────────────────────────────────────────────
+// ─── Mock backend factory ──────────────────────────────────────────────
 
 function createMockBackend(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -42,7 +43,7 @@ function createMockBackend(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
-// ─── Mock req/res 工厂 ─────────────────────────────────────────────────
+// ─── Mock req/res factory ──────────────────────────────────────────────
 
 function createMockReq(headers: Record<string, string> = {}): Request {
   return { headers } as unknown as Request;
@@ -65,10 +66,10 @@ function createMockRes(): Response & { _status: number; _body: unknown } {
   return res as unknown as Response & { _status: number; _body: unknown };
 }
 
-// ─── createAuthMiddleware 测试 ─────────────────────────────────────────
+// ─── createAuthMiddleware ──────────────────────────────────────────────
 
 describe('createAuthMiddleware', () => {
-  it('未设置 authToken 时直接调用 next（无鉴权）', () => {
+  it('calls next immediately when authToken is not set', () => {
     const middleware = createAuthMiddleware(undefined);
     const req = createMockReq();
     const res = createMockRes();
@@ -80,7 +81,7 @@ describe('createAuthMiddleware', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('正确提供 Bearer Token 时调用 next', () => {
+  it('calls next when the correct Bearer token is supplied', () => {
     const middleware = createAuthMiddleware('my-secret-token');
     const req = createMockReq({ authorization: 'Bearer my-secret-token' });
     const res = createMockRes();
@@ -92,9 +93,9 @@ describe('createAuthMiddleware', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('缺少 Authorization 头时返回 401', () => {
+  it('returns 401 when Authorization header is missing', () => {
     const middleware = createAuthMiddleware('my-secret-token');
-    const req = createMockReq(); // 无头
+    const req = createMockReq(); // no headers
     const res = createMockRes();
     const next = vi.fn() as NextFunction;
 
@@ -108,7 +109,7 @@ describe('createAuthMiddleware', () => {
     });
   });
 
-  it('提供错误 Token 时返回 401', () => {
+  it('returns 401 when the wrong token is supplied', () => {
     const middleware = createAuthMiddleware('my-secret-token');
     const req = createMockReq({ authorization: 'Bearer wrong-token' });
     const res = createMockRes();
@@ -120,9 +121,9 @@ describe('createAuthMiddleware', () => {
     expect(res._status).toBe(401);
   });
 
-  it('提供无效格式头（无 Bearer 前缀）时返回 401', () => {
+  it('returns 401 when Authorization header is missing the "Bearer " prefix', () => {
     const middleware = createAuthMiddleware('my-secret-token');
-    const req = createMockReq({ authorization: 'my-secret-token' }); // 缺少 "Bearer "
+    const req = createMockReq({ authorization: 'my-secret-token' });
     const res = createMockRes();
     const next = vi.fn() as NextFunction;
 
@@ -133,14 +134,103 @@ describe('createAuthMiddleware', () => {
   });
 });
 
-// ─── createStreamableHttpHandler 测试 ────────────────────────────────
+// ─── startMcpHttpServer smoke tests ───────────────────────────────────
+
+describe('startMcpHttpServer', () => {
+  const servers: Array<{ server: http.Server; cleanup: () => Promise<void> }> = [];
+
+  afterEach(async () => {
+    for (const { server, cleanup } of servers.splice(0)) {
+      await cleanup().catch(() => {});
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  /**
+   * Starts the MCP HTTP server on an OS-assigned port (port 0), returns the
+   * bound port, a node http.Server handle, and the cleanup function.
+   */
+  async function startOnFreePort(authToken?: string): Promise<{
+    port: number;
+    server: http.Server;
+    cleanup: () => Promise<void>;
+  }> {
+    const backend = createMockBackend();
+
+    // Wrap startMcpHttpServer to capture the returned http.Server.
+    const { startMcpHttpServer: start } = await import('../../src/mcp/http-transport.js');
+    const resolvedServer = await start(backend as never, {
+      port: 0,
+      host: '127.0.0.1',
+      authToken,
+    });
+
+    const address = resolvedServer.address();
+    const port =
+      address && typeof address === 'object'
+        ? address.port
+        : (() => {
+            throw new Error('no port');
+          })();
+
+    const cleanup = async (): Promise<void> => {
+      // afterEach closes the server handle.
+    };
+
+    return { port, server: resolvedServer, cleanup };
+  }
+
+  it('GET /health returns 200 { status: "ok" }', async () => {
+    const { port, server, cleanup } = await startOnFreePort();
+    servers.push({ server, cleanup });
+
+    const body = await new Promise<string>((resolve, reject) => {
+      http
+        .get(`http://127.0.0.1:${port}/health`, (res) => {
+          let data = '';
+          res.on('data', (chunk: string) => (data += chunk));
+          res.on('end', () => resolve(data));
+        })
+        .on('error', reject);
+    });
+
+    expect(JSON.parse(body)).toEqual({ status: 'ok' });
+  });
+
+  it('POST /mcp without auth token returns 401 when --auth-token is configured', async () => {
+    const { port, server, cleanup } = await startOnFreePort('supersecret');
+    servers.push({ server, cleanup });
+
+    const statusCode = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/mcp',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        },
+        (res) => {
+          res.resume(); // drain
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }));
+      req.end();
+    });
+
+    expect(statusCode).toBe(401);
+  });
+});
+
+// ─── createStreamableHttpHandler ──────────────────────────────────────
 
 describe('createStreamableHttpHandler', () => {
-  it('为 POST 请求且无 session id 时尝试建立新会话', async () => {
+  it('attempts to create a new session for a POST with no session id', async () => {
     const backend = createMockBackend();
     const { handler, cleanup } = createStreamableHttpHandler(backend as never);
 
-    // 模拟 POST 请求（无 session id）
     const req = {
       headers: {},
       method: 'POST',
@@ -157,18 +247,38 @@ describe('createStreamableHttpHandler', () => {
       end: vi.fn(),
     } as unknown as Response;
 
-    // handler 内部会调用 StreamableHTTPServerTransport，由于无真实 SDK，可能抛错
-    // 这里测试函数签名和调用不崩溃（不测试完整协议握手）
+    // The handler calls StreamableHTTPServerTransport internally; without the real
+    // SDK installed the call may throw — that is acceptable in unit tests.
     try {
       await handler(req, res);
     } catch {
-      // 预期：SDK 未安装时可能报错，这在 unit test 中是可接受的
+      // Expected when SDK is not installed.
     }
 
     await cleanup();
   });
 
-  it('未知 session id 时返回 404', async () => {
+  it('returns 400 when POST has no session id and body method is not initialize', async () => {
+    const backend = createMockBackend();
+    const { handler, cleanup } = createStreamableHttpHandler(backend as never);
+
+    const req = {
+      headers: {},
+      method: 'POST',
+      body: { jsonrpc: '2.0', method: 'tools/list', id: 2, params: {} },
+    } as Request;
+
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._body).toMatchObject({ jsonrpc: '2.0', error: { code: -32000 } });
+
+    await cleanup();
+  });
+
+  it('returns 404 for an unknown session id', async () => {
     const backend = createMockBackend();
     const { handler, cleanup } = createStreamableHttpHandler(backend as never);
 
@@ -191,7 +301,7 @@ describe('createStreamableHttpHandler', () => {
     await cleanup();
   });
 
-  it('GET 请求且无 session id 时返回 400', async () => {
+  it('returns 400 for a GET with no session id', async () => {
     const backend = createMockBackend();
     const { handler, cleanup } = createStreamableHttpHandler(backend as never);
 
@@ -215,10 +325,10 @@ describe('createStreamableHttpHandler', () => {
   });
 });
 
-// ─── createSseHandlers 测试 ───────────────────────────────────────────
+// ─── createSseHandlers ────────────────────────────────────────────────
 
 describe('createSseHandlers', () => {
-  it('未知 sessionId 时 messageHandler 返回 404', async () => {
+  it('returns 404 from messageHandler when sessionId is unknown', async () => {
     const backend = createMockBackend();
     const { messageHandler, cleanup } = createSseHandlers(backend as never, '/messages');
 
@@ -241,7 +351,7 @@ describe('createSseHandlers', () => {
     await cleanup();
   });
 
-  it('无 sessionId 时 messageHandler 返回 404', async () => {
+  it('returns 404 from messageHandler when no sessionId is provided', async () => {
     const backend = createMockBackend();
     const { messageHandler, cleanup } = createSseHandlers(backend as never, '/messages');
 
@@ -260,7 +370,7 @@ describe('createSseHandlers', () => {
     await cleanup();
   });
 
-  it('cleanup 调用不会抛出异常', async () => {
+  it('cleanup does not throw', async () => {
     const backend = createMockBackend();
     const { cleanup } = createSseHandlers(backend as never, '/messages');
 
@@ -268,10 +378,10 @@ describe('createSseHandlers', () => {
   });
 });
 
-// ─── mountMCPEndpoints 重构安全性测试 ────────────────────────────────
+// ─── mountMCPEndpoints refactor safety ───────────────────────────────
 
 describe('mountMCPEndpoints', () => {
-  it('返回一个 cleanup 函数', () => {
+  it('returns a cleanup function', () => {
     const backend = createMockBackend();
     const mockApp = {
       all: vi.fn(),
@@ -282,7 +392,7 @@ describe('mountMCPEndpoints', () => {
     expect(typeof cleanup).toBe('function');
   });
 
-  it('注册 /api/mcp 路由', () => {
+  it('registers the /api/mcp route', () => {
     const backend = createMockBackend();
     const allCalls: Array<[string, ...unknown[]]> = [];
     const mockApp = {
@@ -297,7 +407,7 @@ describe('mountMCPEndpoints', () => {
     expect(registeredPaths).toContain('/api/mcp');
   });
 
-  it('cleanup 函数可被调用而不抛出异常', async () => {
+  it('cleanup function resolves without throwing', async () => {
     const backend = createMockBackend();
     const mockApp = {
       all: vi.fn(),
@@ -309,16 +419,15 @@ describe('mountMCPEndpoints', () => {
   });
 });
 
-// ─── McpHttpOptions 接口测试 ──────────────────────────────────────────
+// ─── McpHttpOptions type validation ──────────────────────────────────
 
-describe('McpHttpOptions 类型验证', () => {
-  it('createAuthMiddleware 接受 undefined authToken', () => {
-    // 确保 TypeScript 类型正确：authToken 是可选的
+describe('McpHttpOptions type validation', () => {
+  it('createAuthMiddleware accepts undefined authToken', () => {
     const middleware = createAuthMiddleware();
     expect(typeof middleware).toBe('function');
   });
 
-  it('createAuthMiddleware 接受字符串 authToken', () => {
+  it('createAuthMiddleware accepts a string authToken', () => {
     const middleware = createAuthMiddleware('test-token');
     expect(typeof middleware).toBe('function');
   });

@@ -85,15 +85,23 @@ export const mcpCommand = async (options?: {
     );
   }
 
-  // 根据选项决定启动模式：HTTP 服务器或 stdio（默认）
+  // Start HTTP server or fall back to stdio (default).
   if (options?.http) {
-    // 动态导入 HTTP 传输模块（保持静态导入闭包为叶子节点）
-    // http-transport.ts 间接引入 express/cors/SDK HTTP 传输，
-    // 必须在 sentinel 安装后才能加载
+    // Dynamically import the HTTP transport module AFTER the sentinel installs.
+    // http-transport.ts pulls in express/cors/MCP SDK HTTP transport; these must
+    // not load before installGlobalStdoutSentinel() runs (see module doc above).
+    const port = Number(options.port ?? 3000);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      logger.error(
+        { port: options.port },
+        `Invalid --port value: "${options.port ?? ''}". Must be an integer between 1 and 65535.`,
+      );
+      process.exit(1);
+    }
     const { startMcpHttpServer } = await import('../mcp/http-transport.js');
     await startMcpHttpServer(backend, {
-      port: Number(options.port ?? 3000),
-      host: options.host ?? '0.0.0.0',
+      port,
+      host: options.host ?? '127.0.0.1',
       authToken: options.authToken,
     });
     return;
