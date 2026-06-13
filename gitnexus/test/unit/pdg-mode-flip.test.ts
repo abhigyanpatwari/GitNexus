@@ -104,6 +104,42 @@ describe('pdgModeMismatch — M2→M3 stamp upgrade (#2083 M3 U5, pure)', () => 
   });
 });
 
+describe('pdgModeMismatch — M3→M4 interproc-cap stamp upgrade (#2084 review P1-3, pure)', () => {
+  it('resolvePdgConfig stamps the three resolved interproc caps', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(stamp?.maxInterprocFindings).toBe(2000);
+    expect(stamp?.maxInterprocHops).toBe(32);
+    expect(stamp?.maxInterprocEdges).toBe(1000);
+  });
+
+  it('an M3-era stamp (no interproc keys) mismatches a post-fix request — upgrade forces full writeback', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    // What an M3 run wrote: every taint cap + model digest, but none of the
+    // interproc caps. The key-union comparator sees 2000 !== undefined and
+    // trips the full writeback that re-materialises TAINT_PATH within bounds.
+    const m3Stamp = {
+      maxFunctionLines: 2000,
+      maxEdgesPerFunction: 5000,
+      maxReachingDefEdgesPerFunction: 4000,
+      maxTaintFindingsPerFunction: 200,
+      maxTaintHops: 32,
+      taintModelVersion: 'deadbeefcafe',
+    };
+    expect(pdgModeMismatch(m3Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('an interproc cap change alone trips the mismatch', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocFindings: 10 })).toBe(true);
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocEdges: 50 })).toBe(true);
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocHops: 8 })).toBe(true);
+    // explicit default ≡ default (resolution before comparison)
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocFindings: 2000 })).toBe(false);
+  });
+});
+
 describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
   it('the symbol-overlap id-prefix filter excludes exactly the BasicBlock rows', async () => {
     const repo = await setupMiniRepo();
@@ -181,6 +217,9 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxReachingDefEdgesPerFunction: 4000,
         maxTaintFindingsPerFunction: 200,
         maxTaintHops: 32,
+        maxInterprocFindings: 2000,
+        maxInterprocHops: 32,
+        maxInterprocEdges: 1000,
         taintModelVersion,
       });
       expect(stamped!.incrementalInProgress).toBeUndefined(); // cleared on success
@@ -233,6 +272,9 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxReachingDefEdgesPerFunction: 4000,
         maxTaintFindingsPerFunction: 200,
         maxTaintHops: 32,
+        maxInterprocFindings: 2000,
+        maxInterprocHops: 32,
+        maxInterprocEdges: 1000,
         taintModelVersion,
       });
       // The CFG layer survives a rebuild under a tighter edge cap (blocks are

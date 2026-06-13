@@ -525,18 +525,19 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
   },
   {
     name: 'explain',
-    description: `Explain persisted taint findings: intra-procedural source→sink data flows (TAINTED edges) recorded by \`gitnexus analyze --pdg\`.
+    description: `Explain persisted taint findings recorded by \`gitnexus analyze --pdg\`: intra-procedural source→sink data flows (TAINTED edges, statement-level hops) AND cross-function flows (TAINT_PATH edges, function-level hops, marked \`interprocedural: true\`).
 
-Each finding carries the sink category (command-injection, code-injection, path-traversal, sql-injection, xss), the source/sink lines, and the ordered hop path with the variable carried on each hop (decoded from the persisted path encoding).
+Each finding carries the sink category (command-injection, code-injection, path-traversal, sql-injection, xss) and the ordered hop path. Intra-procedural findings carry source/sink lines and the variable on each hop; interprocedural findings carry the source and sink FUNCTION names and the chain of functions the taint crossed (decoded from the persisted path encoding).
 
 WHEN TO USE: Security review — "what taint findings exist in this repo / file / function?". Requires the repo to be indexed with \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no taint layer" note, not an error.
 
 ANCHORLESS (no "target"): enumerates all persisted findings for the repo — bounded ("limit", deterministic order), with "totalFindings" and a "truncated" flag.
-ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates, unknown names return not-found. Symbol anchoring is line-range granular (findings whose source block starts inside the symbol's span).
+ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates, unknown names return not-found. Symbol anchoring is line-range granular for intra-procedural findings; cross-function findings match when the symbol is the source OR sink function.
 
-CONTRACT CAVEATS (intra-procedural M3 scope — absent flows are NOT proof of safety):
-- Cross-function flows are not modeled (a flow through a helper function is invisible).
-- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))).
+CONTRACT CAVEATS (absent flows are NOT proof of safety):
+- Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
+- Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both — a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).
+- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))) — the largest false-negative class.
 - Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
 - Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
 - CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).

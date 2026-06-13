@@ -342,3 +342,140 @@ withTestLbugDB(
     },
   },
 );
+
+// ─── Block 3: interprocedural TAINT_PATH findings (#2084 M4 U7) ───────
+//
+// Seeds the cross-file interproc-repo fixture's emit output (Function nodes +
+// TAINT_PATH edges) into a real DB and proves `explain` surfaces the
+// cross-function findings (marked `interprocedural: true`) with decoded
+// function-level hops + the sink kind.
+
+const INTERPROC_FIXTURE = path.join(__dirname, 'cfg', 'fixtures', 'interproc-repo');
+
+withTestLbugDB(
+  'taint-explain-interproc',
+  (handle) => {
+    describe('explain tool — cross-function TAINT_PATH findings', () => {
+      let backend: LocalBackend;
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized');
+        backend = ext._backend;
+      });
+
+      it('anchorless enumerate includes interprocedural findings', async () => {
+        const res = (await backend.callTool('explain', {})) as {
+          findings: Array<Record<string, unknown>>;
+        };
+        const ip = res.findings.filter((f) => f.interprocedural === true);
+        expect(ip.length).toBeGreaterThan(0);
+        // handle → runIt, command-injection, with function-level hops.
+        const hr = ip.find(
+          (f) =>
+            (f.source as { function?: string })?.function === 'handle' &&
+            (f.sink as { function?: string })?.function === 'runIt',
+        );
+        expect(hr, 'expected an interprocedural handle → runIt finding').toBeDefined();
+        expect(hr!.sinkKind).toBe('command-injection');
+        expect(Array.isArray(hr!.hops)).toBe(true);
+        expect((hr!.hops as unknown[]).length).toBeGreaterThan(0);
+      });
+
+      it('symbol-anchored on the sink function surfaces the cross-function finding', async () => {
+        const res = (await backend.callTool('explain', { target: 'runIt' })) as {
+          findings: Array<Record<string, unknown>>;
+        };
+        const ip = res.findings.filter((f) => f.interprocedural === true);
+        expect(ip.some((f) => (f.sink as { function?: string })?.function === 'runIt')).toBe(true);
+      });
+
+      it('totalFindings counts the full interproc layer and truncated is set on overflow (#2084 review P2-4)', async () => {
+        // The fixture yields multiple interproc findings; limit:1 must page to 1
+        // while totalFindings reports the true (un-capped) count and truncated is set.
+        const full = (await backend.callTool('explain', {})) as {
+          findings: unknown[];
+          totalFindings: number;
+        };
+        const ipFull = full.findings.filter((f: any) => f.interprocedural === true).length;
+        expect(ipFull).toBeGreaterThan(1);
+
+        const paged = (await backend.callTool('explain', { limit: 1 })) as {
+          findings: unknown[];
+          totalFindings: number;
+          truncated?: boolean;
+        };
+        expect(paged.findings.length).toBe(1);
+        expect(paged.truncated).toBe(true);
+        // totalFindings reflects the real interproc total, not the 1-row slice.
+        expect(paged.totalFindings).toBeGreaterThanOrEqual(ipFull);
+      });
+    });
+  },
+  {
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-explain-ip-'));
+      try {
+        fs.cpSync(INTERPROC_FIXTURE, repoDir, { recursive: true });
+        const pipelineResult = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+
+        // Persist Function/Method nodes (TAINT_PATH endpoints).
+        const seenIds = new Set<string>();
+        pipelineResult.graph.forEachNode((n) => {
+          if (n.label !== 'Function' && n.label !== 'Method') return;
+          if (seenIds.has(n.id)) return;
+          seenIds.add(n.id);
+        });
+        for (const n of pipelineResult.graph.iterNodes()) {
+          if (n.label !== 'Function' && n.label !== 'Method') continue;
+          await adapter.executePrepared(
+            `CREATE (x:${n.label} {id: $id, name: $name, filePath: $filePath, startLine: $startLine, endLine: $endLine})`,
+            {
+              id: n.id,
+              name: n.properties.name ?? '',
+              filePath: n.properties.filePath ?? '',
+              startLine: n.properties.startLine ?? 0,
+              endLine: n.properties.endLine ?? 0,
+            },
+          );
+        }
+        let tpEdges = 0;
+        for (const rel of pipelineResult.graph.iterRelationships()) {
+          if (rel.type !== 'TAINT_PATH') continue;
+          await adapter.executePrepared(
+            // The fixture's endpoints are all top-level Function nodes; Kuzu
+            // rejects an untyped node match in a rel CREATE (read MATCH is fine).
+            `MATCH (a:Function {id: $src}), (b:Function {id: $dst})
+             CREATE (a)-[:CodeRelation {type: 'TAINT_PATH', confidence: $confidence, reason: $reason, step: 0}]->(b)`,
+            {
+              src: rel.sourceId,
+              dst: rel.targetId,
+              confidence: rel.confidence ?? 0.6,
+              reason: rel.reason ?? '',
+            },
+          );
+          tpEdges++;
+        }
+        if (tpEdges === 0) {
+          throw new Error('interproc fixture produced no TAINT_PATH edges — fixpoint regressed?');
+        }
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'interproc-repo',
+          path: '/interproc/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'ip0001',
+          stats: { files: 2, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);

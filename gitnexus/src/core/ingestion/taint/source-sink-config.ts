@@ -117,3 +117,33 @@ export interface SourceSinkSanitizerSpec {
   readonly sinks: readonly TaintSinkEntry[];
   readonly sanitizers: readonly TaintSanitizerEntry[];
 }
+
+/**
+ * Canonical deterministic ordering of {@link SinkKind} values. The single
+ * source of this order — the intra-procedural propagation engine
+ * (`propagate.ts`) and the M4 summary harvest (`summary-harvest.ts`) both sort
+ * `neutralized`/exclusion sets by it so their deterministic outputs (and the
+ * summary version stamp) stay stable. Lives here, next to the `SinkKind`
+ * union, so the two consumers never drift.
+ */
+export const SINK_KIND_ORDER: readonly SinkKind[] = [
+  'code-injection',
+  'command-injection',
+  'path-traversal',
+  'sql-injection',
+  'xss',
+];
+
+const SINK_KIND_RANK = new Map<SinkKind, number>(SINK_KIND_ORDER.map((k, i) => [k, i]));
+
+/** Dedupe + sort sink kinds by {@link SINK_KIND_ORDER} (deterministic). */
+export function sortSinkKinds(kinds: Iterable<SinkKind>): SinkKind[] {
+  return [...new Set(kinds)].sort(
+    (a, b) => (SINK_KIND_RANK.get(a) ?? 99) - (SINK_KIND_RANK.get(b) ?? 99),
+  );
+}
+
+/** Rank of a sink kind in {@link SINK_KIND_ORDER} (for comparator chaining). */
+export function sinkKindRank(kind: SinkKind): number {
+  return SINK_KIND_RANK.get(kind) ?? 99;
+}

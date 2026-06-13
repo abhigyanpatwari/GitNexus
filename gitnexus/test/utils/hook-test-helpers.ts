@@ -87,6 +87,12 @@ function writeExecutable(filePath: string, content: string) {
 export function createHookToolDir(options: {
   gitnexusStderr?: string;
   gitnexusMarkerPath?: string;
+  /** Fake gitnexus CLI writes its own PID here as its FIRST statement, minimizing detection latency for augment orphan-reaping tests (#2163 follow-up). */
+  gitnexusPidFile?: string;
+  /** Fake gitnexus CLI sleeps this long instead of exiting — models a hung augment child. */
+  gitnexusSleepMs?: number;
+  /** Fake gitnexus CLI traps SIGTERM as a no-op before sleeping — models an unkillable CLI that only SIGKILL can end (#2163 follow-up). */
+  gitnexusIgnoreSigterm?: boolean;
   lsofOutput?: string;
   lsofOutputLines?: string[];
   psOutput?: string;
@@ -103,7 +109,19 @@ export function createHookToolDir(options: {
   const gitnexusStderr = JSON.stringify(options.gitnexusStderr ?? '');
   const markerPath = JSON.stringify(options.gitnexusMarkerPath ?? '');
 
-  const fakeGitNexus = `#!/usr/bin/env node\nconst fs = require('fs');\nconst marker = ${markerPath};\nif (marker) fs.writeFileSync(marker, 'called');\nprocess.stderr.write(${gitnexusStderr});\n`;
+  // Composable prologue (mirrors the fake-lsof one below): pidFile write MUST
+  // stay the first statement (see the option docs above); the SIGTERM trap
+  // MUST be installed before any sleep.
+  const fakeGitNexus =
+    `#!/usr/bin/env node\nconst fs = require('fs');\n` +
+    (options.gitnexusPidFile != null
+      ? `fs.writeFileSync(${JSON.stringify(options.gitnexusPidFile)}, String(process.pid));\n`
+      : '') +
+    (options.gitnexusIgnoreSigterm ? `process.on('SIGTERM', () => {});\n` : '') +
+    `const marker = ${markerPath};\nif (marker) fs.writeFileSync(marker, 'called');\n` +
+    (options.gitnexusSleepMs != null
+      ? `setTimeout(() => {}, ${Number(options.gitnexusSleepMs)});\n`
+      : `process.stderr.write(${gitnexusStderr});\n`);
   writeExecutable(path.join(binDir, 'gitnexus'), fakeGitNexus);
   writeExecutable(path.join(binDir, 'gitnexus-cli.js'), fakeGitNexus);
 
