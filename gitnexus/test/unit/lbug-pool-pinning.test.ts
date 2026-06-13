@@ -198,4 +198,26 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
       unpinRepo('floor-x'); // already gone → no-op, never a negative count
     }).not.toThrow();
   });
+
+  it('pinRepo returns a disposer that releases exactly once and composes with refcount', async () => {
+    for (let i = 1; i <= 4; i++) {
+      await init(`d-${i}`);
+      pinRepo(`d-${i}`);
+    }
+    await init('d-shared');
+    const release1 = pinRepo('d-shared'); // lease 1
+    const release2 = pinRepo('d-shared'); // lease 2
+
+    release1();
+    release1(); // double-call is a no-op — must NOT decrement lease 2
+
+    // lease 2 still held → d-shared survives eviction pressure.
+    await init('d-extra');
+    expect(isLbugReady('d-shared')).toBe(true);
+
+    // Release the last lease via its own disposer → now evictable.
+    release2();
+    await init('d-extra2');
+    expect(isLbugReady('d-shared')).toBe(false);
+  });
 });

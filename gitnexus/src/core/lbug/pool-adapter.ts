@@ -199,12 +199,25 @@ export const touchRepo = (repoId: string): void => {
  * Leasing a repoId before it enters the pool is allowed and protects the entry
  * once it is created, but the lease does NOT survive a teardown: closeOne
  * force-clears the count, so a later re-init of the same repoId starts
- * unpinned. Each pinRepo MUST be balanced by exactly one unpinRepo (the repo
+ * unpinned. Each pinRepo MUST be balanced by exactly one release (the repo
  * stays exempt until the last lease is released). See the pinnedRepos docstring
  * for the full contract.
+ *
+ * Returns a `release` disposer (mirroring addPoolCloseListener) that releases
+ * THIS lease exactly once — calling it twice is a no-op, so it can never
+ * over-decrement a sibling holder's count. Prefer the disposer
+ * (`const release = pinRepo(id); try { … } finally { release(); }`) so the
+ * pin/release pair is leak-proof; unpinRepo remains available for callers that
+ * pair explicitly.
  */
-export const pinRepo = (repoId: string): void => {
+export const pinRepo = (repoId: string): (() => void) => {
   pinnedRepos.set(repoId, (pinnedRepos.get(repoId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unpinRepo(repoId);
+  };
 };
 
 /**
