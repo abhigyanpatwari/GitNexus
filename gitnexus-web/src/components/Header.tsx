@@ -63,6 +63,7 @@ export const Header = ({
   const {
     projectName,
     graph,
+    graphMode,
     openChatPanel,
     isRightPanelOpen,
     rightPanelTab,
@@ -467,8 +468,9 @@ export const Header = ({
           <span className="hidden sm:inline">✨</span>
         </a>
 
-        {/* Stats */}
-        {graph && (
+        {/* Stats — hidden in chat-only mode, where the empty-but-non-null graph
+            would otherwise show a misleading "0 nodes / 0 edges" (#2178). */}
+        {graph && graphMode !== 'chatOnly' && (
           <div className="mr-2 flex items-center gap-4 text-xs text-text-muted">
             <span>{t('common:counts.nodes', { count: nodeCount })}</span>
             <span>{t('common:counts.edges', { count: edgeCount })}</span>

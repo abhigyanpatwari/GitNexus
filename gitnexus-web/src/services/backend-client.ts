@@ -8,6 +8,8 @@
 
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
+import { LARGE_GRAPH_NODE_THRESHOLD, LARGE_GRAPH_EDGE_THRESHOLD } from '../config/ui-constants';
+import { decideSkipGraph } from '../lib/graph-load-decision';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +95,24 @@ export class BackendError extends Error {
   ) {
     super(message);
     this.name = 'BackendError';
+  }
+}
+
+/**
+ * Thrown by the graph stream parser when the streamed node/relationship count
+ * crosses the size limit mid-download (#2178). It is the backstop for the case
+ * pre-fetch stats can't cover (absent/stale `stats.nodes`/`stats.edges` on a
+ * genuinely large repo). `connectToServer` catches it and falls into chat-only
+ * mode instead of letting the full graph hang the browser.
+ */
+export class GraphTooLargeError extends Error {
+  constructor(
+    message: string,
+    public readonly nodeCount: number,
+    public readonly relationshipCount: number,
+  ) {
+    super(message);
+    this.name = 'GraphTooLargeError';
   }
 }
 
@@ -539,13 +559,18 @@ export const fetchRepoInfo = async (
   return { ...data, repoPath: data.repoPath ?? data.path };
 };
 
-/** Fetch the graph (nodes + relationships). Content stripped by default. */
+/** Fetch the graph (nodes + relationships). Content stripped by default.
+ * `maxNodes`/`maxEdges` arm a streaming circuit breaker (#2178): if the streamed
+ * count crosses either limit, the download aborts with a GraphTooLargeError
+ * instead of materializing a graph that would hang the browser. Off by default. */
 export const fetchGraph = async (
   repo?: string,
   opts?: {
     includeContent?: boolean;
     signal?: AbortSignal;
     onProgress?: (downloaded: number, total: number | null) => void;
+    maxNodes?: number;
+    maxEdges?: number;
   },
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : '', 'stream=true']
@@ -558,7 +583,7 @@ export const fetchGraph = async (
 
   const contentType = response.headers.get('Content-Type') || '';
   if (contentType.includes('application/x-ndjson')) {
-    return parseNdjsonGraphResponse(response, opts?.onProgress);
+    return parseNdjsonGraphResponse(response, opts?.onProgress, opts?.maxNodes, opts?.maxEdges);
   }
 
   if (!opts?.onProgress || !response.body) {
@@ -592,6 +617,8 @@ export const fetchGraph = async (
 const parseNdjsonGraphResponse = async (
   response: Response,
   onProgress?: (downloaded: number, total: number | null) => void,
+  maxNodes?: number,
+  maxEdges?: number,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   if (!response.body) {
     throw new BackendError('No response body', response.status, 'server');
@@ -605,6 +632,14 @@ const parseNdjsonGraphResponse = async (
   const relationships: GraphRelationship[] = [];
   let buffer = '';
   let downloaded = 0;
+
+  // Streaming circuit breaker (#2178): enforce the size limits mid-download as a
+  // backstop when pre-fetch stats were missing. Same `> threshold` comparison as
+  // decideSkipGraph. Throwing immediately after the offending push means a later
+  // error record in the same chunk is never reached — the breaker wins.
+  const overLimit = (): boolean =>
+    (typeof maxNodes === 'number' && nodes.length > maxNodes) ||
+    (typeof maxEdges === 'number' && relationships.length > maxEdges);
 
   const parseLine = (line: string) => {
     const trimmed = line.trim();
@@ -628,6 +663,20 @@ const parseNdjsonGraphResponse = async (
     }
   };
 
+  const tripBreaker = async () => {
+    // Free the socket promptly; never let a cancel rejection mask the breaker.
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore — we're aborting anyway
+    }
+    throw new GraphTooLargeError(
+      `Graph exceeds the size limit (nodes=${nodes.length}, relationships=${relationships.length})`,
+      nodes.length,
+      relationships.length,
+    );
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -640,11 +689,13 @@ const parseNdjsonGraphResponse = async (
     buffer = lines.pop() || '';
     for (const line of lines) {
       parseLine(line);
+      if (overLimit()) await tripBreaker();
     }
   }
 
   buffer += decoder.decode();
   parseLine(buffer);
+  if (overLimit()) await tripBreaker();
 
   return { nodes, relationships };
 };
@@ -904,6 +955,14 @@ export interface ConnectResult {
   nodes: GraphNode[];
   relationships: GraphRelationship[];
   repoInfo: BackendRepo;
+  /**
+   * True when the graph download was skipped (chat-only mode) — either because
+   * the caller asked for it or because the project exceeded the auto-detect
+   * node threshold. When true, `nodes`/`relationships` are empty and graph
+   * visualization is unavailable, but AI chat and all backend-API features
+   * work normally. See issue #2178.
+   */
+  graphSkipped: boolean;
 }
 
 /**
@@ -911,13 +970,15 @@ export interface ConnectResult {
  * Content is NOT included (use readFile/grep for file access).
  * Pass `awaitAnalysis: true` when the repo may still be cloning/analyzing —
  * this enables the backend hold-queue and a 5-minute fetch timeout.
+ * Pass `skipGraph: true`/`false` to force chat-only / full-graph mode; omit it
+ * to auto-detect from the project's node count (LARGE_GRAPH_NODE_THRESHOLD).
  */
 export async function connectToServer(
   url: string,
   onProgress?: (phase: string, downloaded: number, total: number | null) => void,
   signal?: AbortSignal,
   repoName?: string,
-  opts?: { awaitAnalysis?: boolean },
+  opts?: { awaitAnalysis?: boolean; skipGraph?: boolean },
 ): Promise<ConnectResult> {
   const baseUrl = normalizeServerUrl(url);
   setBackendUrl(baseUrl);
@@ -925,11 +986,45 @@ export async function connectToServer(
   onProgress?.('validating', 0, null);
   const repoInfo = await fetchRepoInfo(repoName, { awaitAnalysis: opts?.awaitAnalysis });
 
-  onProgress?.('downloading', 0, null);
-  const { nodes, relationships } = await fetchGraph(repoName, {
-    signal,
-    onProgress: (downloaded, total) => onProgress?.('downloading', downloaded, total),
+  // Decide whether to skip the (potentially huge) graph download. The AI chat
+  // talks to the backend HTTP API directly and does not need the in-memory
+  // graph, so for large projects — or when the caller explicitly asked for
+  // chat-only mode — we connect instantly without materializing the graph.
+  // repoInfo is already fetched above, so the node-count check costs no extra
+  // round-trip. See issue #2178.
+  const skipGraph = decideSkipGraph({
+    explicit: opts?.skipGraph,
+    nodeCount: repoInfo.stats?.nodes,
+    threshold: LARGE_GRAPH_NODE_THRESHOLD,
+    edgeCount: repoInfo.stats?.edges,
+    edgeThreshold: LARGE_GRAPH_EDGE_THRESHOLD,
   });
 
-  return { nodes, relationships, repoInfo };
+  if (skipGraph) {
+    return { nodes: [], relationships: [], repoInfo, graphSkipped: true };
+  }
+
+  // Arm the streaming circuit breaker for auto-detect downloads as a backstop
+  // for the no-stats fail-open case (#2178). An explicit "load anyway"
+  // (skipGraph === false) opts out — the user has accepted the cost.
+  const enforceLimits = opts?.skipGraph !== false;
+
+  onProgress?.('downloading', 0, null);
+  try {
+    const { nodes, relationships } = await fetchGraph(repoName, {
+      signal,
+      onProgress: (downloaded, total) => onProgress?.('downloading', downloaded, total),
+      maxNodes: enforceLimits ? LARGE_GRAPH_NODE_THRESHOLD : undefined,
+      maxEdges: enforceLimits ? LARGE_GRAPH_EDGE_THRESHOLD : undefined,
+    });
+    return { nodes, relationships, repoInfo, graphSkipped: false };
+  } catch (err) {
+    // The breaker tripped mid-stream → fall into chat-only, the same result the
+    // pre-fetch skip path produces. Re-throw every other error (genuine
+    // BackendErrors must still surface to the caller's catch).
+    if (err instanceof GraphTooLargeError) {
+      return { nodes: [], relationships: [], repoInfo, graphSkipped: true };
+    }
+    throw err;
+  }
 }

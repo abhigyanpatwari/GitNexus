@@ -27,6 +27,8 @@ import type { GraphNode } from 'gitnexus-shared';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 import { useTranslation } from 'react-i18next';
+import { LARGE_GRAPH_NODE_THRESHOLD } from '../config/ui-constants';
+import { shouldConfirmGraphLoad } from '../lib/graph-load-decision';
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
@@ -55,6 +57,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     animatedNodes,
     graphViewMode,
     setGraphViewMode,
+    graphMode,
+    chatOnlyNodeCount,
+    loadGraphAnyway,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -193,7 +198,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {
-    if (!graph) return;
+    // Skip layout work in chat-only mode: `graph` is non-null but empty, the
+    // overlay covers the canvas, and this guard also future-proofs against a
+    // transient where a populated graph is set while mode is still chat-only.
+    if (!graph || graphMode === 'chatOnly') return;
 
     let sigmaGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
 
@@ -218,7 +226,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     }
 
     setSigmaGraph(sigmaGraph);
-  }, [graph, nodeById, setSigmaGraph, graphViewMode]);
+  }, [graph, graphMode, nodeById, setSigmaGraph, graphViewMode]);
 
   // Update node visibility when filters change
   useEffect(() => {
@@ -255,6 +263,37 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     setSigmaSelectedNode(null);
     resetZoom();
   }, [setSelectedNode, setSigmaSelectedNode, resetZoom]);
+
+  // Chat-only mode (#2178): the graph download was skipped. `chatOnlyNodeCount`
+  // comes from app state (captured at connect time), so it is authoritative and
+  // available immediately — not derived from the async `availableRepos` list.
+  const handleLoadGraphAnyway = useCallback(() => {
+    // Warn before re-triggering a potentially browser-hanging download. Confirm
+    // whenever the count is large OR unknown — never silently re-load a graph we
+    // can't size, which would risk re-introducing the original #2178 hang. Skip
+    // the prompt only when the count is known to be below the threshold (a small
+    // repo force-skipped via ?skipGraph=1).
+    const needsConfirm = shouldConfirmGraphLoad(chatOnlyNodeCount, LARGE_GRAPH_NODE_THRESHOLD);
+    if (needsConfirm) {
+      // Fail SAFE, not open: if there's no usable confirm dialog (some embedded
+      // webviews) or it throws, treat it as declined rather than loading a
+      // graph we couldn't warn about (#2178).
+      const canPrompt = typeof window !== 'undefined' && typeof window.confirm === 'function';
+      if (!canPrompt) return;
+      let confirmed = false;
+      try {
+        confirmed = window.confirm(
+          chatOnlyNodeCount != null
+            ? t('canvas.chatOnly.loadAnywayWarning', { count: chatOnlyNodeCount.toLocaleString() })
+            : t('canvas.chatOnly.loadAnywayWarningUnknown'),
+        );
+      } catch {
+        return;
+      }
+      if (!confirmed) return;
+    }
+    void loadGraphAnyway();
+  }, [chatOnlyNodeCount, loadGraphAnyway, t]);
 
   return (
     <div className="relative h-full w-full bg-void">
@@ -323,6 +362,32 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         ref={containerRef}
         className="sigma-container h-full w-full cursor-grab active:cursor-grabbing"
       />
+
+      {/* Chat-only empty state (#2178): graph download was skipped for a large
+          project. Chat works normally; offer an explicit "load anyway" escape. */}
+      {graphMode === 'chatOnly' && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center p-6">
+          <div className="max-w-md rounded-xl border border-border-subtle bg-elevated/95 p-6 text-center shadow-lg backdrop-blur-sm">
+            <h3 className="text-lg font-semibold text-text-primary">
+              {t('canvas.chatOnly.title')}
+            </h3>
+            <p className="mt-2 text-sm text-text-secondary">
+              {chatOnlyNodeCount != null
+                ? t('canvas.chatOnly.descriptionWithCount', {
+                    count: chatOnlyNodeCount.toLocaleString(),
+                  })
+                : t('canvas.chatOnly.description')}
+            </p>
+            <p className="mt-2 text-xs text-text-muted">{t('canvas.chatOnly.citationNote')}</p>
+            <button
+              onClick={handleLoadGraphAnyway}
+              className="mt-4 rounded-md border border-accent/30 bg-accent/20 px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/30"
+            >
+              {t('canvas.chatOnly.loadAnyway')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Hovered node tooltip - only show when NOT selected */}
       {hoveredNodeName && !sigmaSelectedNode && (
