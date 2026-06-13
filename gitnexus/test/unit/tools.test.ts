@@ -99,16 +99,23 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
-  it('query tool requires "query" parameter', () => {
+  it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
-    expect(queryTool.inputSchema.required).toContain('query');
-    expect(queryTool.inputSchema.properties.query).toBeDefined();
-    expect(queryTool.inputSchema.properties.query.type).toBe('string');
+    expect(queryTool.inputSchema.required).toContain('search_query');
+    // The legacy "query" key must NOT be advertised — Claude Code drops it (#2175).
+    expect(queryTool.inputSchema.required).not.toContain('query');
+    expect(queryTool.inputSchema.properties.query).toBeUndefined();
+    expect(queryTool.inputSchema.properties.search_query).toBeDefined();
+    expect(queryTool.inputSchema.properties.search_query.type).toBe('string');
   });
 
-  it('cypher tool requires "query" parameter', () => {
+  it('cypher tool requires "statement" parameter (renamed from "query" for #2175)', () => {
     const cypherTool = GITNEXUS_TOOLS.find((t) => t.name === 'cypher')!;
-    expect(cypherTool.inputSchema.required).toContain('query');
+    expect(cypherTool.inputSchema.required).toContain('statement');
+    expect(cypherTool.inputSchema.required).not.toContain('query');
+    expect(cypherTool.inputSchema.properties.query).toBeUndefined();
+    expect(cypherTool.inputSchema.properties.statement).toBeDefined();
+    expect(cypherTool.inputSchema.properties.statement.type).toBe('string');
     expect(cypherTool.inputSchema.properties.params).toBeDefined();
     expect(cypherTool.inputSchema.properties.params.type).toBe('object');
     expect(cypherTool.inputSchema.properties.params.description).toContain('prepared statement');
