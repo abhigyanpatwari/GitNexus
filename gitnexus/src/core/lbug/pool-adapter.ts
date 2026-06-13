@@ -237,6 +237,16 @@ export const unpinRepo = (repoId: string): void => {
 };
 
 /**
+ * Maximum number of repos a bounded multi-repo operation (e.g. group sync's
+ * windowed manifest resolution) should hold resident at once. Equals
+ * MAX_POOL_SIZE today, but exposed under an intent-named accessor so callers
+ * size their working set against "max repos a bounded op should hold" rather
+ * than coupling to the LRU eviction-cap constant, which may be tuned
+ * independently.
+ */
+export const getMaxResidentRepos = (): number => MAX_POOL_SIZE;
+
+/**
  * Evict the least-recently-used repo if pool is at capacity.
  * Pinned repos are never chosen as the eviction victim — when every eligible
  * entry is pinned, no eviction occurs and the pool transiently exceeds
