@@ -29,7 +29,12 @@
 
 import { installGlobalStdoutSentinel } from '../mcp/stdio-context.js';
 
-export const mcpCommand = async () => {
+export const mcpCommand = async (options?: {
+  http?: boolean;
+  port?: string;
+  host?: string;
+  authToken?: string;
+}) => {
   // Install the global stdout sentinel as the very first thing — before
   // ANY other module loads. The static-import closure above is leaf-only
   // (stdio-context → stdio-capture, zero non-`node:` deps), so this is
@@ -78,6 +83,37 @@ export const mcpCommand = async () => {
       { repoCount: repos.length, repos: repos.map((r) => r.name) },
       'GitNexus: MCP server starting',
     );
+  }
+
+  // Start HTTP server or fall back to stdio (default).
+  if (options?.http) {
+    // Dynamically import the HTTP transport module AFTER the sentinel installs.
+    // http-transport.ts pulls in express/cors/MCP SDK HTTP transport; these must
+    // not load before installGlobalStdoutSentinel() runs (see module doc above).
+    const port = Number(options.port ?? 3000);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      logger.error(
+        { port: options.port },
+        `Invalid --port value: "${options.port ?? ''}". Must be an integer between 1 and 65535.`,
+      );
+      process.exit(1);
+    }
+    // Dynamic import keeps express/cors out of mcp.ts's static graph (stdio sentinel).
+    const { startMcpHttpServer, resolveAuthToken } = await import('../mcp/http-transport.js');
+    try {
+      await startMcpHttpServer(backend, {
+        port,
+        host: options.host ?? '127.0.0.1',
+        authToken: resolveAuthToken(options.authToken, process.env),
+      });
+    } catch (err) {
+      logger.error(
+        { err: err instanceof Error ? err.message : err },
+        'Failed to start the MCP HTTP server',
+      );
+      process.exit(1);
+    }
+    return;
   }
 
   // Start MCP server (serves all repos, discovers new ones lazily)

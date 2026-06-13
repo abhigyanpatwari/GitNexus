@@ -46,6 +46,7 @@ const COMMAND_DESCRIPTION_KEYS = {
 
 const OPTION_DESCRIPTION_KEYS = {
   '|-V, --version': 'help.option.version',
+  'setup|-c, --coding-agent <agents>': 'help.option.setup.codingAgent',
   'analyze|-f, --force': 'help.option.analyze.force',
   'analyze|--repair-fts': 'help.option.analyze.repairFts',
   'analyze|--embeddings [limit]': 'help.option.analyze.embeddings',
@@ -69,6 +70,10 @@ const OPTION_DESCRIPTION_KEYS = {
   'analyze|--embedding-device <device>': 'help.option.analyze.embeddingDevice',
   'index|-f, --force': 'help.option.index.force',
   'index|--allow-non-git': 'help.option.index.allowNonGit',
+  'mcp|--http': 'help.option.mcp.http',
+  'mcp|-p, --port <port>': 'help.option.port',
+  'mcp|--host <host>': 'help.option.mcp.host',
+  'mcp|--auth-token <token>': 'help.option.mcp.authToken',
   'serve|-p, --port <port>': 'help.option.port',
   'serve|--host <host>': 'help.option.serve.host',
   'uninstall|-f, --force': 'help.option.uninstall.force',

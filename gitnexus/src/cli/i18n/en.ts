@@ -122,7 +122,8 @@ export const en = {
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   'help.command.serve.description': 'Start local HTTP server for web UI connection',
-  'help.command.mcp.description': 'Start MCP server (stdio) — serves all indexed repos',
+  'help.command.mcp.description':
+    'Start MCP server. Default: stdio. Use --http for a remote HTTP server (Streamable HTTP at POST /mcp + legacy SSE at GET /sse, POST /messages).',
   'help.command.list.description': 'List all indexed repositories',
   'help.command.status.description': 'Show index status for current repo',
   'help.command.doctor.description':
@@ -159,6 +160,8 @@ export const en = {
     'Cross-repo impact for a symbol in one member repo of a group',
   'help.command.group.query.description': 'Search execution flows across all repos in a group',
   'help.command.group.contracts.description': 'Inspect Contract Registry',
+  'help.option.setup.codingAgent':
+    'Configure only these coding agents (comma-separated or repeatable)',
   'help.option.analyze.force': 'Force full re-index even if up to date',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':
@@ -197,6 +200,11 @@ export const en = {
   'help.option.index.allowNonGit': 'Allow registering folders that are not Git repositories',
   'help.option.port': 'Port number',
   'help.option.serve.host': 'Bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)',
+  'help.option.mcp.http': 'Serve MCP over HTTP instead of stdio (for remote clients)',
+  'help.option.mcp.host':
+    'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
+  'help.option.mcp.authToken':
+    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',

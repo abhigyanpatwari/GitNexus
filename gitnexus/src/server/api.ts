@@ -35,10 +35,11 @@ import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-import { requireLocalhostOrigin } from './middleware.js';
+import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
+import { isRfc1918PrivateIpv4 } from './private-ip.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -95,21 +96,7 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   // Only allow HTTP(S) origins — reject ftp://, file://, etc.
   if (protocol !== 'http:' && protocol !== 'https:') return false;
 
-  const octets = hostname.split('.').map(Number);
-  if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
-    return false;
-  }
-
-  const [a, b] = octets;
-
-  // 10.0.0.0/8
-  if (a === 10) return true;
-  // 172.16.0.0/12  →  172.16.x.x – 172.31.x.x
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  // 192.168.0.0/16
-  if (a === 192 && b === 168) return true;
-
-  return false;
+  return isRfc1918PrivateIpv4(hostname);
 };
 
 type GraphStreamRecord =
@@ -733,6 +720,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
+  // Same-host origin guard for write routes. Only allows loopback and the
+  // server's own bound host — scoped to prevent CSRF from other LAN devices.
+  const requireLocalhostOrigin = createLocalhostOriginGuard(host);
+
+  // A wildcard bind (`0.0.0.0`/`::`) has no single host identity for the
+  // same-host check, so browser write routes accept only loopback origins.
+  // Warn the operator so a remote-access deployment isn't silently write-blocked.
+  if (host && normalizeBoundHost(host) === undefined) {
+    logger.warn(
+      { host },
+      `[gitnexus serve] Bound to a wildcard address (${host}); browser write routes ` +
+        `accept only loopback origins (localhost/127.0.0.1/[::1]). To allow writes from a ` +
+        `specific LAN address, bind --host <that-address> instead of a wildcard.`,
+    );
+  }
+
   // No explicit OPTIONS route is registered. The Chromium Private Network
   // Access header is set by the global middleware above (pre-cors), and
   // `cors()` itself handles OPTIONS preflights for every path. Registering a
@@ -957,7 +960,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
   // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
   // delete; tighten if abuse is observed.
-  app.delete('/api/repo', createRouteLimiter(), async (req, res) => {
+  app.delete('/api/repo', createRouteLimiter(), requireLocalhostOrigin, async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1480,10 +1483,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // slashes, so it is dropped. Analyzing a local path the operator names
         // is the tool's intended capability (same as the CLI); the dangerous
         // part was cross-origin reach, which is closed by requireLocalhostOrigin
-        // on this route. We only require an absolute path here and let the
-        // analyze worker surface a clear error if it does not exist. (We do NOT
-        // realpath/stat the path in-route: that would be a user-controlled
-        // filesystem read — CodeQL js/path-injection — for no security gain.)
+        // on this route (scoped to the server's own bound host — other LAN
+        // devices are NOT trusted). We only require an absolute path here and
+        // let the analyze worker surface a clear error if it does not exist.
+        // (We do NOT realpath/stat the path in-route: that would be a
+        // user-controlled filesystem read — CodeQL js/path-injection — for no
+        // security gain.)
         if (repoLocalPath && !path.isAbsolute(repoLocalPath)) {
           res.status(400).json({ error: '"path" must be an absolute path' });
           return;
@@ -1586,8 +1591,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/analyze/:jobId/progress', jobManager);
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
-  app.delete('/api/analyze/:jobId', (req, res) => {
-    const job = jobManager.getJob(req.params.jobId);
+  app.delete('/api/analyze/:jobId', requireLocalhostOrigin, (req, res) => {
+    const jobId = req.params.jobId as string;
+    const job = jobManager.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -1596,7 +1602,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
-    jobManager.cancelJob(req.params.jobId, 'Cancelled by user');
+    jobManager.cancelJob(jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 
@@ -1605,122 +1611,127 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const embedJobManager = new JobManager();
 
   // POST /api/embed — trigger server-side embedding generation
-  app.post('/api/embed', createRouteLimiter({ limit: 20 }), async (req, res) => {
-    try {
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-
-      // Check shared repo lock — prevent concurrent analyze + embed on same repo
-      const repoLockPath = entry.storagePath;
-      const lockErr = acquireRepoLock(repoLockPath);
-      if (lockErr) {
-        res.status(409).json({ error: lockErr });
-        return;
-      }
-
-      const job = embedJobManager.createJob({ repoPath: entry.storagePath });
-      embedJobManager.updateJob(job.id, {
-        repoName: entry.name,
-        status: 'analyzing' as any,
-        progress: { phase: 'analyzing', percent: 0, message: 'Starting embedding generation...' },
-      });
-
-      // 30-minute timeout for embedding jobs (same as analyze jobs)
-      const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
-      const embedTimeout = setTimeout(() => {
-        const current = embedJobManager.getJob(job.id);
-        if (current && current.status !== 'complete' && current.status !== 'failed') {
-          releaseRepoLock(repoLockPath);
-          embedJobManager.updateJob(job.id, {
-            status: 'failed',
-            error: 'Embedding timed out (30 minute limit)',
-          });
+  app.post(
+    '/api/embed',
+    createRouteLimiter({ limit: 20 }),
+    requireLocalhostOrigin,
+    async (req, res) => {
+      try {
+        const entry = await resolveRepo(requestedRepo(req));
+        if (!entry) {
+          res.status(404).json({ error: 'Repository not found' });
+          return;
         }
-      }, EMBED_TIMEOUT_MS);
 
-      // Run embedding pipeline asynchronously
-      (async () => {
-        try {
-          const lbugPath = path.join(entry.storagePath, 'lbug');
-          await withLbugDb(lbugPath, async () => {
-            const { runEmbeddingPipeline } =
-              await import('../core/embeddings/embedding-pipeline.js');
-            // Fetch existing content hashes for incremental embedding.
-            // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
-            const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
-            const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
-            if (existingEmbeddings && existingEmbeddings.size > 0) {
-              console.log(
-                `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
-              );
-            }
-            await runEmbeddingPipeline(
-              executeQuery,
-              executeWithReusedStatement,
-              (p) => {
-                embedJobManager.updateJob(job.id, {
-                  progress: {
-                    phase:
-                      p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
-                    percent: p.percent,
-                    message:
-                      p.phase === 'loading-model'
-                        ? 'Loading embedding model...'
-                        : p.phase === 'embedding'
-                          ? `Embedding nodes (${p.percent}%)...`
-                          : p.phase === 'indexing'
-                            ? 'Creating vector index...'
-                            : p.phase === 'ready'
-                              ? 'Embeddings complete'
-                              : `${p.phase} (${p.percent}%)`,
-                  },
-                });
-              },
-              {}, // config: use defaults
-              undefined, // skipNodeIds
-              undefined, // context
-              existingEmbeddings,
-            );
+        // Check shared repo lock — prevent concurrent analyze + embed on same repo
+        const repoLockPath = entry.storagePath;
+        const lockErr = acquireRepoLock(repoLockPath);
+        if (lockErr) {
+          res.status(409).json({ error: lockErr });
+          return;
+        }
 
-            // Flush WAL so subsequent /api/search requests see the new
-            // embeddings immediately (#1149). In the CLI path closeLbug()
-            // handles this during process exit, but the server keeps the
-            // connection open for other routes — a CHECKPOINT is enough.
-            await flushWAL();
-          });
+        const job = embedJobManager.createJob({ repoPath: entry.storagePath });
+        embedJobManager.updateJob(job.id, {
+          repoName: entry.name,
+          status: 'analyzing' as any,
+          progress: { phase: 'analyzing', percent: 0, message: 'Starting embedding generation...' },
+        });
 
-          clearTimeout(embedTimeout);
-          releaseRepoLock(repoLockPath);
-          // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
+        // 30-minute timeout for embedding jobs (same as analyze jobs)
+        const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
+        const embedTimeout = setTimeout(() => {
           const current = embedJobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
-            embedJobManager.updateJob(job.id, { status: 'complete' });
-          }
-        } catch (err: any) {
-          clearTimeout(embedTimeout);
-          releaseRepoLock(repoLockPath);
-          const current = embedJobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
+          if (current && current.status !== 'complete' && current.status !== 'failed') {
+            releaseRepoLock(repoLockPath);
             embedJobManager.updateJob(job.id, {
               status: 'failed',
-              error: err.message || 'Embedding generation failed',
+              error: 'Embedding timed out (30 minute limit)',
             });
           }
-        }
-      })();
+        }, EMBED_TIMEOUT_MS);
 
-      res.status(202).json({ jobId: job.id, status: 'analyzing' });
-    } catch (err: any) {
-      if (err.message?.includes('already in progress')) {
-        res.status(409).json({ error: err.message });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to start embedding generation' });
+        // Run embedding pipeline asynchronously
+        (async () => {
+          try {
+            const lbugPath = path.join(entry.storagePath, 'lbug');
+            await withLbugDb(lbugPath, async () => {
+              const { runEmbeddingPipeline } =
+                await import('../core/embeddings/embedding-pipeline.js');
+              // Fetch existing content hashes for incremental embedding.
+              // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
+              const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
+              const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
+              if (existingEmbeddings && existingEmbeddings.size > 0) {
+                console.log(
+                  `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
+                );
+              }
+              await runEmbeddingPipeline(
+                executeQuery,
+                executeWithReusedStatement,
+                (p) => {
+                  embedJobManager.updateJob(job.id, {
+                    progress: {
+                      phase:
+                        p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
+                      percent: p.percent,
+                      message:
+                        p.phase === 'loading-model'
+                          ? 'Loading embedding model...'
+                          : p.phase === 'embedding'
+                            ? `Embedding nodes (${p.percent}%)...`
+                            : p.phase === 'indexing'
+                              ? 'Creating vector index...'
+                              : p.phase === 'ready'
+                                ? 'Embeddings complete'
+                                : `${p.phase} (${p.percent}%)`,
+                    },
+                  });
+                },
+                {}, // config: use defaults
+                undefined, // skipNodeIds
+                undefined, // context
+                existingEmbeddings,
+              );
+
+              // Flush WAL so subsequent /api/search requests see the new
+              // embeddings immediately (#1149). In the CLI path closeLbug()
+              // handles this during process exit, but the server keeps the
+              // connection open for other routes — a CHECKPOINT is enough.
+              await flushWAL();
+            });
+
+            clearTimeout(embedTimeout);
+            releaseRepoLock(repoLockPath);
+            // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
+            const current = embedJobManager.getJob(job.id);
+            if (!current || current.status !== 'failed') {
+              embedJobManager.updateJob(job.id, { status: 'complete' });
+            }
+          } catch (err: any) {
+            clearTimeout(embedTimeout);
+            releaseRepoLock(repoLockPath);
+            const current = embedJobManager.getJob(job.id);
+            if (!current || current.status !== 'failed') {
+              embedJobManager.updateJob(job.id, {
+                status: 'failed',
+                error: err.message || 'Embedding generation failed',
+              });
+            }
+          }
+        })();
+
+        res.status(202).json({ jobId: job.id, status: 'analyzing' });
+      } catch (err: any) {
+        if (err.message?.includes('already in progress')) {
+          res.status(409).json({ error: err.message });
+        } else {
+          res.status(500).json({ error: err.message || 'Failed to start embedding generation' });
+        }
       }
-    }
-  });
+    },
+  );
 
   // GET /api/embed/:jobId — poll embedding job status
   app.get('/api/embed/:jobId', (req, res) => {
@@ -1744,8 +1755,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobManager);
 
   // DELETE /api/embed/:jobId — cancel embedding job
-  app.delete('/api/embed/:jobId', (req, res) => {
-    const job = embedJobManager.getJob(req.params.jobId);
+  app.delete('/api/embed/:jobId', requireLocalhostOrigin, (req, res) => {
+    const jobId = req.params.jobId as string;
+    const job = embedJobManager.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -1754,7 +1766,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
-    embedJobManager.cancelJob(req.params.jobId, 'Cancelled by user');
+    embedJobManager.cancelJob(jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 

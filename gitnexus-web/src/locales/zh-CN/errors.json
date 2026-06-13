@@ -13,6 +13,7 @@
     "timeout": "服务器响应超时，请稍后重试。",
     "rateLimited": "请求过于频繁，请在 {{seconds}} 秒后重试。",
     "notFound": "未找到请求的仓库或资源。",
+    "originBlocked": "此操作无法从托管界面执行。请通过服务器自身地址（例如 http://localhost:4747）打开 GitNexus 后再继续。",
     "client": "请求失败：{{message}}",
     "server": "服务器错误：{{message}}"
   }
