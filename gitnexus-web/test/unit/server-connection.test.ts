@@ -3,10 +3,31 @@ import {
   connectToServer,
   fetchGraph,
   getBackendUrl,
+  GraphTooLargeError,
   normalizeServerUrl,
   setBackendUrl,
   validateBackendUrl,
 } from '../../src/services/backend-client';
+
+// ── NDJSON stream helpers for the U3 circuit-breaker tests ──
+const ndjsonStream = (lines: string[]): ReadableStream<Uint8Array> => {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const l of lines) controller.enqueue(encoder.encode(l));
+      controller.close();
+    },
+  });
+};
+const ndjsonResponse = (lines: string[]): Response =>
+  new Response(ndjsonStream(lines), {
+    status: 200,
+    headers: { 'Content-Type': 'application/x-ndjson' },
+  });
+const nodeLine = (i: number): string =>
+  `{"type":"node","data":{"id":"n${i}","label":"Function","properties":{"name":"f${i}"}}}\n`;
+const relLine = (i: number): string =>
+  `{"type":"relationship","data":{"id":"r${i}","type":"CALLS","sourceId":"n0","targetId":"n${i}"}}\n`;
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
@@ -431,5 +452,124 @@ describe('setBackendUrl', () => {
     setBackendUrl('http://localhost:4747');
     expect(() => setBackendUrl('javascript:alert(1)')).toThrow();
     expect(getBackendUrl()).toBe('http://localhost:4747');
+  });
+});
+
+describe('fetchGraph streaming size breaker (#2178)', () => {
+  it('throws GraphTooLargeError when node count exceeds maxNodes', async () => {
+    setBackendUrl('http://localhost:4747');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(ndjsonResponse([nodeLine(0), nodeLine(1), nodeLine(2)])),
+    );
+    await expect(fetchGraph('repo', { maxNodes: 2 })).rejects.toBeInstanceOf(GraphTooLargeError);
+  });
+
+  it('completes when node count is at or below maxNodes (== not >)', async () => {
+    setBackendUrl('http://localhost:4747');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ndjsonResponse([nodeLine(0), nodeLine(1)])));
+    const result = await fetchGraph('repo', { maxNodes: 2 });
+    expect(result.nodes).toHaveLength(2);
+  });
+
+  it('trips on the edge counter for a node-light stream', async () => {
+    setBackendUrl('http://localhost:4747');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(ndjsonResponse([nodeLine(0), relLine(1), relLine(2), relLine(3)])),
+    );
+    await expect(fetchGraph('repo', { maxNodes: 1000, maxEdges: 2 })).rejects.toBeInstanceOf(
+      GraphTooLargeError,
+    );
+  });
+
+  it('never trips when no limits are passed (default behavior unchanged)', async () => {
+    setBackendUrl('http://localhost:4747');
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(ndjsonResponse([nodeLine(0), nodeLine(1), nodeLine(2), relLine(3)])),
+    );
+    const result = await fetchGraph('repo');
+    expect(result.nodes).toHaveLength(3);
+    expect(result.relationships).toHaveLength(1);
+  });
+
+  it('breaker wins over a later error record in the same stream', async () => {
+    setBackendUrl('http://localhost:4747');
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          ndjsonResponse([
+            nodeLine(0),
+            nodeLine(1),
+            nodeLine(2),
+            '{"type":"error","error":"late boom"}\n',
+          ]),
+        ),
+    );
+    await expect(fetchGraph('repo', { maxNodes: 2 })).rejects.toBeInstanceOf(GraphTooLargeError);
+  });
+});
+
+describe('connectToServer streaming breaker (no-stats fail-open backstop, #2178)', () => {
+  afterEach(() => {
+    delete window.__GITNEXUS_CONFIG__;
+    vi.resetModules();
+  });
+
+  // Re-import with a tiny threshold so a 3-record stream exercises the breaker.
+  const setupTinyThreshold = async () => {
+    window.__GITNEXUS_CONFIG__ = { largeGraphNodeThreshold: 2, largeGraphEdgeThreshold: 2 };
+    vi.resetModules();
+    const mod = await import('../../src/services/backend-client');
+    mod.setBackendUrl('http://localhost:4747');
+    return mod;
+  };
+
+  const repoNoStats = () =>
+    new Response(
+      JSON.stringify({ name: 'r', path: '/r', repoPath: '/r', indexedAt: '2026-06-13T00:00:00Z' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+
+  it('falls into chat-only when an auto-detect stream exceeds the threshold (absent stats)', async () => {
+    const { connectToServer: connect } = await setupTinyThreshold();
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoNoStats());
+      if (url.includes('/api/graph'))
+        return Promise.resolve(ndjsonResponse([nodeLine(0), nodeLine(1), nodeLine(2)]));
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connect('http://localhost:4747', undefined, undefined, 'r');
+    expect(result.graphSkipped).toBe(true);
+    expect(result.nodes).toEqual([]);
+    expect(result.relationships).toEqual([]);
+  });
+
+  it('does NOT enforce the breaker for an explicit load-anyway (skipGraph:false)', async () => {
+    const { connectToServer: connect } = await setupTinyThreshold();
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoNoStats());
+      if (url.includes('/api/graph'))
+        return Promise.resolve(ndjsonResponse([nodeLine(0), nodeLine(1), nodeLine(2)]));
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connect('http://localhost:4747', undefined, undefined, 'r', {
+      skipGraph: false,
+    });
+    expect(result.graphSkipped).toBe(false);
+    expect(result.nodes).toHaveLength(3);
   });
 });
