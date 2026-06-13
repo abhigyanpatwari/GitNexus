@@ -422,8 +422,9 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
       // Budget gate the escalation: a single huge-argv candidate must not burn
       // the whole scan deadline before we re-check. Return the timeout sentinel
       // (never '') so the caller fails closed instead of treating us as a
-      // non-candidate.
-      if (typeof outOfBudget === 'function' && outOfBudget()) return CMDLINE_TIMEOUT;
+      // non-candidate. The sole caller (linuxProcScanFindGitNexusServer) always
+      // passes outOfBudget, so no presence guard is needed.
+      if (outOfBudget()) return CMDLINE_TIMEOUT;
       chunkCap = cap; // keep reading more in cap-sized chunks
     }
     return collected.toString('utf8').replace(/\0+/g, ' ').trim();
