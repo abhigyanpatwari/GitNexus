@@ -187,10 +187,13 @@ export const touchRepo = (repoId: string): void => {
 
 /**
  * Pin a repo so it is exempt from automatic eviction (LRU + idle timeout)
- * until unpinned. Idempotent. Pinning a repo that is not yet (or no longer)
- * in the pool is allowed — the pin takes effect for whatever entry currently
- * holds, or later holds, that repoId. Pairs with unpinRepo; closeOne also
- * clears the pin on teardown. See the pinnedRepos docstring for the contract.
+ * until explicitly unpinned or until closeOne removes it on teardown.
+ * Idempotent. The repoId must match the key passed to initLbug (e.g. group
+ * sync pins by handle.id — the same id it inits with). Pinning a repoId before
+ * it enters the pool is allowed and protects the entry once it is created, but
+ * the pin does NOT survive a teardown: closeOne clears it, so a later re-init
+ * of the same repoId starts unpinned. Pairs with unpinRepo. See the
+ * pinnedRepos docstring for the full contract.
  */
 export const pinRepo = (repoId: string): void => {
   pinnedRepos.add(repoId);
