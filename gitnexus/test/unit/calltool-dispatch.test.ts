@@ -583,6 +583,29 @@ describe('LocalBackend.callTool', () => {
     groupQuerySpy.mockRestore();
   });
 
+  // #2175 review: the MCP envelope is not schema-validated, so a client can send a
+  // non-string value for a string param. Resolve it to a friendly required-param error
+  // rather than throwing TypeError on `.trim()` (query() and cypher() both).
+  it('query tool returns a friendly error (no throw) for a non-string search_query (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: 123 as any });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('cypher tool returns a friendly error (no throw) for a non-string statement (#2175)', async () => {
+    const result = await backend.callTool('cypher', { statement: 123 as any });
+    expect(result.error).toContain('statement');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('query tool: an explicitly empty new search_query wins over a valid legacy query (presence-based) (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '', query: 'real' });
+    // "new name wins" is presence-based: the empty new value is used and rejected,
+    // rather than silently falling back to the legacy value.
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
   it('dispatches context tool', async () => {
     (executeParameterized as any).mockResolvedValue([
       {

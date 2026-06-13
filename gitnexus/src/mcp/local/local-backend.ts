@@ -77,6 +77,20 @@ function looksLikeFilePath(target: string): boolean {
   const lower = target.toLowerCase();
   return SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
+
+/**
+ * Resolve a string tool param from its canonical name or legacy alias (#2175).
+ * The canonical (new) value wins when present — `??` is nullish, so an explicitly
+ * empty/whitespace new value still wins and is rejected downstream by the caller's
+ * required-param guard (the "new name wins" contract is presence-based, not
+ * truthiness-based). A non-string value (the MCP envelope is not schema-validated,
+ * so clients can send any JSON type) resolves to `undefined` so the caller returns
+ * a friendly required-param error instead of throwing `TypeError` on `.trim()`.
+ */
+function resolveAliasString(canonical: unknown, legacy: unknown): string | undefined {
+  const value = canonical ?? legacy;
+  return typeof value === 'string' ? value : undefined;
+}
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1364,10 +1378,10 @@ export class LocalBackend {
       include_content?: boolean;
     },
   ): Promise<any> {
-    // Alias resolution normally happens at the callTool chokepoint (#2175); the
-    // search_query ?? query fallback here is defense-in-depth for any caller that
-    // reaches query() without that path (e.g. the GroupService port).
-    const rawQuery = params.search_query ?? params.query;
+    // #2175: each consumer resolves the search_query/query alias itself (there is no
+    // chokepoint mutation in callTool). This also serves the GroupService port, which
+    // reaches query() carrying only the legacy `query` key.
+    const rawQuery = resolveAliasString(params.search_query, params.query);
     if (!rawQuery?.trim()) {
       return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
     }
@@ -1962,7 +1976,7 @@ export class LocalBackend {
       };
     }
 
-    const cypherText = request.statement ?? request.query ?? '';
+    const cypherText = resolveAliasString(request.statement, request.query) ?? '';
     if (!cypherText.trim()) {
       // Mirror query()'s friendly required-param error instead of letting an empty
       // string fall through to a raw LadybugDB prepare error (#2175 review).
@@ -4844,10 +4858,10 @@ export class LocalBackend {
     if (method === 'query') {
       const queryArgs: Record<string, unknown> = {
         name: groupName,
-        // #2175: resolve the search_query alias here (new name wins, same `?? ` rule as
-        // the local query() handler) so the group path is self-contained and does not
-        // depend on params being normalized upstream. groupQuery() reads `query`.
-        query: params.search_query ?? params.query,
+        // #2175: resolve the search_query alias here (new name wins, same rule as the
+        // local query() handler) so the group path is self-contained and does not depend
+        // on params being normalized upstream. groupQuery() reads `query`.
+        query: resolveAliasString(params.search_query, params.query),
       };
       if (typeof params.task_context === 'string') queryArgs.task_context = params.task_context;
       if (typeof params.goal === 'string') queryArgs.goal = params.goal;
