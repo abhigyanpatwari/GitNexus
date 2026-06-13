@@ -27,6 +27,7 @@ import {
   computeAllowedHosts,
   resolveAuthToken,
   startMcpHttpServer,
+  startIdleSweep,
 } from '../../src/mcp/http-transport.js';
 import { createMCPServer, installSignalShutdown, SHUTDOWN_EXIT_CODES } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
@@ -707,6 +708,39 @@ describe('isLoopbackOrigin', () => {
     expect(isLoopbackOrigin('http://192.168.1.50:3000')).toBe(false);
     expect(isLoopbackOrigin('null')).toBe(false);
     expect(isLoopbackOrigin('not a url')).toBe(false);
+  });
+});
+
+// ─── startIdleSweep (U12) ────────────────────────────────────────────
+
+describe('startIdleSweep', () => {
+  it('closes and evicts sessions idle beyond the TTL, keeping fresh ones', () => {
+    vi.useFakeTimers();
+    try {
+      const ttlMs = 30 * 60 * 1000;
+      const intervalMs = 5 * 60 * 1000;
+      const now = Date.now();
+      const closed: string[] = [];
+      const make = (id: string, lastActivity: number) => ({
+        server: { close: () => closed.push(id) } as unknown as ReturnType<typeof createMCPServer>,
+        lastActivity,
+      });
+      const map = new Map([
+        ['stale', make('stale', now - 60 * 60 * 1000)],
+        ['fresh', make('fresh', now)],
+      ]);
+
+      const timer = startIdleSweep(map, ttlMs, intervalMs);
+      vi.advanceTimersByTime(intervalMs + 1);
+
+      expect(map.has('stale')).toBe(false);
+      expect(map.has('fresh')).toBe(true);
+      expect(closed).toEqual(['stale']);
+
+      clearInterval(timer);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

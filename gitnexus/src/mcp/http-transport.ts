@@ -182,6 +182,33 @@ function dnsRebindingOptions(
 }
 
 /**
+ * Starts a periodic sweep that closes and evicts sessions idle longer than
+ * `ttlMs`, returning the (unref'd) timer. Shared by both transport factories to
+ * guard against network drops where the per-session onclose never fires.
+ */
+export function startIdleSweep<T extends { server: Server; lastActivity: number }>(
+  sessions: Map<string, T>,
+  ttlMs: number,
+  intervalMs: number,
+): NodeJS.Timeout {
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (now - session.lastActivity > ttlMs) {
+        try {
+          session.server.close();
+        } catch {}
+        sessions.delete(id);
+      }
+    }
+  }, intervalMs);
+  if (timer && typeof timer === 'object' && 'unref' in timer) {
+    (timer as NodeJS.Timeout).unref();
+  }
+  return timer;
+}
+
+/**
  * Creates a reusable StreamableHTTP request handler.
  *
  * Encapsulates the session map and request-dispatch logic as an independent
@@ -200,22 +227,7 @@ export function createStreamableHttpHandler(
   // DNS-rebinding protection (Host-header allowlist) when the bind host is known.
   const dnsRebinding = dnsRebindingOptions(opts.host, opts.port);
   const sessions = new Map<string, MCPSession>();
-
-  // Periodically evict idle sessions (guard against network drops where onclose never fires).
-  const cleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [id, session] of sessions) {
-      if (now - session.lastActivity > SESSION_TTL_MS) {
-        try {
-          session.server.close();
-        } catch {}
-        sessions.delete(id);
-      }
-    }
-  }, CLEANUP_INTERVAL_MS);
-  if (cleanupTimer && typeof cleanupTimer === 'object' && 'unref' in cleanupTimer) {
-    (cleanupTimer as NodeJS.Timeout).unref();
-  }
+  const cleanupTimer = startIdleSweep(sessions, SESSION_TTL_MS, CLEANUP_INTERVAL_MS);
 
   const handler = async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
@@ -335,23 +347,7 @@ export function createSseHandlers(
   // DNS-rebinding protection (Host-header allowlist) when the bind host is known.
   const dnsRebinding = dnsRebindingOptions(opts.host, opts.port);
   const sseSessions = new Map<string, SSESession>();
-
-  // Periodically evict stale SSE sessions — mirrors the streamable handler's sweep.
-  // Guards against network drops where the socket 'close' event never fires.
-  const cleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [id, session] of sseSessions) {
-      if (now - session.lastActivity > SESSION_TTL_MS) {
-        try {
-          session.server.close();
-        } catch {}
-        sseSessions.delete(id);
-      }
-    }
-  }, CLEANUP_INTERVAL_MS);
-  if (cleanupTimer && typeof cleanupTimer === 'object' && 'unref' in cleanupTimer) {
-    (cleanupTimer as NodeJS.Timeout).unref();
-  }
+  const cleanupTimer = startIdleSweep(sseSessions, SESSION_TTL_MS, CLEANUP_INTERVAL_MS);
 
   const sseHandler = async (req: Request, res: Response): Promise<void> => {
     // Cap concurrent SSE sessions — mirrors the streamable handler's MAX_SESSIONS
@@ -412,12 +408,13 @@ export function createSseHandlers(
 
   const cleanup = async (): Promise<void> => {
     clearInterval(cleanupTimer);
-    for (const { server } of sseSessions.values()) {
+    const closers = [...sseSessions.values()].map(async ({ server }) => {
       try {
         await Promise.resolve(server.close());
       } catch {}
-    }
+    });
     sseSessions.clear();
+    await Promise.allSettled(closers);
   };
 
   return { sseHandler, messageHandler, cleanup };
