@@ -107,10 +107,10 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
-  // Auth token is intentionally CLI/env-only (no embeddingsAuthToken key) to avoid secrets in committed .gitnexusrc.
-  embeddingsBaseurl: { target: 'embeddingsBaseurl', kind: 'string' },
-  embeddingsModel: { target: 'embeddingsModel', kind: 'string' },
-  embeddingsDims: { target: 'embeddingsDims', kind: 'numeric-string' },
+  // Auth token is intentionally CLI/env-only (no embeddingAuthToken key) to avoid secrets in committed .gitnexusrc.
+  embeddingBaseUrl: { target: 'embeddingBaseUrl', kind: 'string' },
+  embeddingModel: { target: 'embeddingModel', kind: 'string' },
+  embeddingDims: { target: 'embeddingDims', kind: 'numeric-string' },
 };
 
 /** Top-level container key for the nested form; not itself an `AnalyzeOptions` field. */

@@ -682,13 +682,13 @@ export interface AnalyzeOptions {
    */
   fetchWrappers?: string[];
   /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
-  embeddingsBaseurl?: string;
+  embeddingBaseUrl?: string;
   /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */
-  embeddingsModel?: string;
+  embeddingModel?: string;
   /** Bearer token for the embeddings endpoint. Overrides GITNEXUS_EMBEDDING_API_KEY. Never logged. */
-  embeddingsAuthToken?: string;
+  embeddingAuthToken?: string;
   /** Embedding vector dimensions (positive integer string). Overrides GITNEXUS_EMBEDDING_DIMS. */
-  embeddingsDims?: string;
+  embeddingDims?: string;
 }
 
 /**
@@ -972,15 +972,15 @@ const analyzeCommandImpl = async (
 
   // --- Custom HTTP embedding endpoint flags (override GITNEXUS_EMBEDDING_* env vars) ---
   const anyHttpEmbedFlag =
-    options.embeddingsBaseurl !== undefined ||
-    options.embeddingsModel !== undefined ||
-    options.embeddingsAuthToken !== undefined ||
-    options.embeddingsDims !== undefined;
+    options.embeddingBaseUrl !== undefined ||
+    options.embeddingModel !== undefined ||
+    options.embeddingAuthToken !== undefined ||
+    options.embeddingDims !== undefined;
 
-  if (options.embeddingsBaseurl !== undefined) {
-    const url = options.embeddingsBaseurl.trim();
+  if (options.embeddingBaseUrl !== undefined) {
+    const url = options.embeddingBaseUrl.trim();
     if (url.length === 0) {
-      cliError('  --embeddings-baseurl must not be empty.\n');
+      cliError('  --embedding-base-url must not be empty.\n');
       process.exitCode = 1;
       return;
     }
@@ -988,12 +988,12 @@ const analyzeCommandImpl = async (
     try {
       parsed = new URL(url);
     } catch {
-      cliError(`  --embeddings-baseurl is not a valid URL: "${url}".\n`);
+      cliError(`  --embedding-base-url is not a valid URL: "${url}".\n`);
       process.exitCode = 1;
       return;
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      cliError('  --embeddings-baseurl must use http:// or https://.\n');
+      cliError('  --embedding-base-url must use http:// or https://.\n');
       process.exitCode = 1;
       return;
     }
@@ -1001,20 +1001,20 @@ const analyzeCommandImpl = async (
     process.env.GITNEXUS_EMBEDDING_URL = url;
   }
 
-  if (options.embeddingsModel !== undefined) {
-    const model = options.embeddingsModel.trim();
+  if (options.embeddingModel !== undefined) {
+    const model = options.embeddingModel.trim();
     if (model.length === 0) {
-      cliError('  --embeddings-model must not be empty.\n');
+      cliError('  --embedding-model must not be empty.\n');
       process.exitCode = 1;
       return;
     }
     process.env.GITNEXUS_EMBEDDING_MODEL = model;
   }
 
-  if (options.embeddingsAuthToken !== undefined) {
-    const token = options.embeddingsAuthToken.trim();
+  if (options.embeddingAuthToken !== undefined) {
+    const token = options.embeddingAuthToken.trim();
     if (token.length === 0) {
-      cliError('  --embeddings-auth-token must not be empty.\n');
+      cliError('  --embedding-auth-token must not be empty.\n');
       process.exitCode = 1;
       return;
     }
@@ -1023,7 +1023,7 @@ const analyzeCommandImpl = async (
   }
 
   // Reuse the positive-integer validator already defined above.
-  if (!setPositiveEnv('--embeddings-dims', 'GITNEXUS_EMBEDDING_DIMS', options.embeddingsDims)) {
+  if (!setPositiveEnv('--embedding-dims', 'GITNEXUS_EMBEDDING_DIMS', options.embeddingDims)) {
     return;
   }
 
@@ -1035,9 +1035,12 @@ const analyzeCommandImpl = async (
       `  Using custom embedding endpoint: ${process.env.GITNEXUS_EMBEDDING_URL} ` +
         `(model: ${process.env.GITNEXUS_EMBEDDING_MODEL})\n`,
     );
-  } else if (anyHttpEmbedFlag && (process.env.GITNEXUS_EMBEDDING_URL || process.env.GITNEXUS_EMBEDDING_MODEL)) {
+  } else if (
+    anyHttpEmbedFlag &&
+    (process.env.GITNEXUS_EMBEDDING_URL || process.env.GITNEXUS_EMBEDDING_MODEL)
+  ) {
     console.log(
-      '  Note: custom HTTP embeddings require BOTH --embeddings-baseurl and --embeddings-model ' +
+      '  Note: custom HTTP embeddings require BOTH --embedding-base-url and --embedding-model ' +
         '(or the matching env vars). Falling back to local ONNX embeddings.\n',
     );
   }
@@ -1046,7 +1049,7 @@ const analyzeCommandImpl = async (
   // is gated by --embeddings. Warn rather than silently no-op.
   if (anyHttpEmbedFlag && !embeddingsEnabled) {
     console.log(
-      '  Note: --embeddings-* flags only apply when --embeddings is also passed; ' +
+      '  Note: --embedding-* flags only apply when --embeddings is also passed; ' +
         'no embeddings will be generated this run.\n',
     );
   }

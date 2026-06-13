@@ -122,21 +122,21 @@ program
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
   .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
   .option(
-    '--embeddings-baseurl <url>',
+    '--embedding-base-url <url>',
     'OpenAI-compatible embeddings base URL including the /v1 suffix ' +
       '(e.g. http://10.219.32.29:11434/v1 for Ollama). Overrides GITNEXUS_EMBEDDING_URL.',
   )
   .option(
-    '--embeddings-model <model>',
+    '--embedding-model <model>',
     'Embedding model name (e.g. qwen3-embedding:8b). Overrides GITNEXUS_EMBEDDING_MODEL.',
   )
   .option(
-    '--embeddings-auth-token <token>',
+    '--embedding-auth-token <token>',
     'Bearer token for the embeddings endpoint (omit for unauthenticated servers like Ollama). ' +
       'Overrides GITNEXUS_EMBEDDING_API_KEY.',
   )
   .option(
-    '--embeddings-dims <number>',
+    '--embedding-dims <number>',
     'Embedding vector dimensions (positive integer; e.g. 4096 for Qwen3-Embedding-8B). ' +
       'Must match what the index was built with. Overrides GITNEXUS_EMBEDDING_DIMS.',
   )
@@ -147,17 +147,17 @@ program
     // via a static-import chain (analyze.ts → run-analyze.ts → schema.ts).
     // Waiting until analyzeCommandImpl to set them is too late.
     const opts = thisCommand.opts();
-    if (opts['embeddingsBaseurl'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_URL = String(opts['embeddingsBaseurl']).trim();
+    if (opts['embeddingBaseUrl'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_URL = String(opts['embeddingBaseUrl']).trim();
     }
-    if (opts['embeddingsModel'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_MODEL = String(opts['embeddingsModel']).trim();
+    if (opts['embeddingModel'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_MODEL = String(opts['embeddingModel']).trim();
     }
-    if (opts['embeddingsAuthToken'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_API_KEY = String(opts['embeddingsAuthToken']).trim();
+    if (opts['embeddingAuthToken'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_API_KEY = String(opts['embeddingAuthToken']).trim();
     }
-    if (opts['embeddingsDims'] !== undefined) {
-      process.env.GITNEXUS_EMBEDDING_DIMS = String(opts['embeddingsDims']);
+    if (opts['embeddingDims'] !== undefined) {
+      process.env.GITNEXUS_EMBEDDING_DIMS = String(opts['embeddingDims']);
     }
   })
   .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
