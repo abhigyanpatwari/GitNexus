@@ -26,7 +26,7 @@ import {
   isLoopbackOrigin,
   computeAllowedHosts,
 } from '../../src/mcp/http-transport.js';
-import { createMCPServer } from '../../src/mcp/server.js';
+import { createMCPServer, installSignalShutdown, SHUTDOWN_EXIT_CODES } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
 
 // ─── Live-HTTP helpers (real req/res for SDK-touching paths) ───────────
@@ -633,6 +633,30 @@ describe('isLoopbackOrigin', () => {
     expect(isLoopbackOrigin('http://192.168.1.50:3000')).toBe(false);
     expect(isLoopbackOrigin('null')).toBe(false);
     expect(isLoopbackOrigin('not a url')).toBe(false);
+  });
+});
+
+// ─── shutdown signal wiring (U7) ─────────────────────────────────────
+
+describe('shutdown exit codes (U7)', () => {
+  it('wires SIGINT → 130 and SIGTERM → 143 via the shared installSignalShutdown', () => {
+    const handlers: Record<string, (...a: unknown[]) => void> = {};
+    const exits: number[] = [];
+
+    installSignalShutdown(
+      (code = 0) => {
+        exits.push(code);
+      },
+      (event, listener) => {
+        handlers[event] = listener;
+      },
+    );
+
+    handlers.SIGINT('SIGINT');
+    handlers.SIGTERM('SIGTERM');
+
+    expect(SHUTDOWN_EXIT_CODES).toEqual({ SIGINT: 130, SIGTERM: 143 });
+    expect(exits).toEqual([130, 143]);
   });
 });
 

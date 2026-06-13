@@ -27,7 +27,7 @@ import cors from 'cors';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { createMCPServer } from './server.js';
+import { createMCPServer, installSignalShutdown } from './server.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { logger } from '../core/logger.js';
 
@@ -575,7 +575,7 @@ export async function startMcpHttpServer(
       reject(err);
     });
 
-    const shutdown = async (): Promise<void> => {
+    const shutdown = async (exitCode: number): Promise<void> => {
       server.close();
       await streamable.cleanup();
       await sse.cleanup();
@@ -584,10 +584,11 @@ export async function startMcpHttpServer(
       } catch {}
       const { flushLoggerSync } = await import('../core/logger.js');
       flushLoggerSync();
-      process.exit(0);
+      process.exit(exitCode);
     };
 
-    process.once('SIGINT', () => void shutdown());
-    process.once('SIGTERM', () => void shutdown());
+    // Use the shared signal wiring so SIGINT exits 130 and SIGTERM exits 143
+    // (the repo's POSIX 128+signal convention), not a misleading exit(0).
+    installSignalShutdown((exitCode = 0) => void shutdown(exitCode));
   });
 }
