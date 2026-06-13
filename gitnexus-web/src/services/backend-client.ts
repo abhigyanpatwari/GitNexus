@@ -8,6 +8,8 @@
 
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
+import { LARGE_GRAPH_NODE_THRESHOLD } from '../config/ui-constants';
+import { decideSkipGraph } from '../lib/graph-load-decision';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -892,6 +894,14 @@ export interface ConnectResult {
   nodes: GraphNode[];
   relationships: GraphRelationship[];
   repoInfo: BackendRepo;
+  /**
+   * True when the graph download was skipped (chat-only mode) — either because
+   * the caller asked for it or because the project exceeded the auto-detect
+   * node threshold. When true, `nodes`/`relationships` are empty and graph
+   * visualization is unavailable, but AI chat and all backend-API features
+   * work normally. See issue #2178.
+   */
+  graphSkipped: boolean;
 }
 
 /**
@@ -899,13 +909,15 @@ export interface ConnectResult {
  * Content is NOT included (use readFile/grep for file access).
  * Pass `awaitAnalysis: true` when the repo may still be cloning/analyzing —
  * this enables the backend hold-queue and a 5-minute fetch timeout.
+ * Pass `skipGraph: true`/`false` to force chat-only / full-graph mode; omit it
+ * to auto-detect from the project's node count (LARGE_GRAPH_NODE_THRESHOLD).
  */
 export async function connectToServer(
   url: string,
   onProgress?: (phase: string, downloaded: number, total: number | null) => void,
   signal?: AbortSignal,
   repoName?: string,
-  opts?: { awaitAnalysis?: boolean },
+  opts?: { awaitAnalysis?: boolean; skipGraph?: boolean },
 ): Promise<ConnectResult> {
   const baseUrl = normalizeServerUrl(url);
   setBackendUrl(baseUrl);
@@ -913,11 +925,27 @@ export async function connectToServer(
   onProgress?.('validating', 0, null);
   const repoInfo = await fetchRepoInfo(repoName, { awaitAnalysis: opts?.awaitAnalysis });
 
+  // Decide whether to skip the (potentially huge) graph download. The AI chat
+  // talks to the backend HTTP API directly and does not need the in-memory
+  // graph, so for large projects — or when the caller explicitly asked for
+  // chat-only mode — we connect instantly without materializing the graph.
+  // repoInfo is already fetched above, so the node-count check costs no extra
+  // round-trip. See issue #2178.
+  const skipGraph = decideSkipGraph({
+    explicit: opts?.skipGraph,
+    nodeCount: repoInfo.stats?.nodes,
+    threshold: LARGE_GRAPH_NODE_THRESHOLD,
+  });
+
+  if (skipGraph) {
+    return { nodes: [], relationships: [], repoInfo, graphSkipped: true };
+  }
+
   onProgress?.('downloading', 0, null);
   const { nodes, relationships } = await fetchGraph(repoName, {
     signal,
     onProgress: (downloaded, total) => onProgress?.('downloading', downloaded, total),
   });
 
-  return { nodes, relationships, repoInfo };
+  return { nodes, relationships, repoInfo, graphSkipped: false };
 }

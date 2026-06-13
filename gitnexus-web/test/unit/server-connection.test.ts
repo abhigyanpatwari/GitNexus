@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  connectToServer,
   fetchGraph,
   getBackendUrl,
   normalizeServerUrl,
@@ -169,6 +170,105 @@ describe('fetchGraph', () => {
     await expect(fetchGraph('big-repo')).rejects.toMatchObject({
       message: 'stream failed',
     });
+  });
+});
+
+describe('connectToServer skipGraph (chat-only mode)', () => {
+  const repoInfo = (nodes: number | undefined) => ({
+    name: 'big-repo',
+    path: '/repos/big-repo',
+    repoPath: '/repos/big-repo',
+    indexedAt: '2026-06-13T00:00:00Z',
+    ...(nodes !== undefined ? { stats: { nodes, edges: nodes * 2 } } : {}),
+  });
+
+  // Routes /api/repo to the repo info and /api/graph to the supplied handler;
+  // any other path returns an empty 200 so the breaker stays closed.
+  const makeFetchMock = (nodes: number | undefined) => {
+    const graphHandler = vi.fn(
+      () =>
+        new Response('{"nodes":[],"relationships":[]}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(repoInfo(nodes)), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      if (url.includes('/api/graph')) {
+        return Promise.resolve(graphHandler());
+      }
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    return { fetchMock, graphHandler };
+  };
+
+  const graphRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([u]: unknown[]) => String(u).includes('/api/graph'));
+
+  it('skips the graph download when skipGraph is true (even for a tiny repo)', async () => {
+    const { fetchMock } = makeFetchMock(5);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo', {
+      skipGraph: true,
+    });
+
+    expect(result.graphSkipped).toBe(true);
+    expect(result.nodes).toEqual([]);
+    expect(result.relationships).toEqual([]);
+    expect(result.repoInfo.name).toBe('big-repo');
+    expect(graphRequests(fetchMock)).toHaveLength(0);
+  });
+
+  it('downloads the graph when skipGraph is false (even for a huge repo)', async () => {
+    const { fetchMock } = makeFetchMock(300_000);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo', {
+      skipGraph: false,
+    });
+
+    expect(result.graphSkipped).toBe(false);
+    expect(graphRequests(fetchMock).length).toBeGreaterThan(0);
+  });
+
+  it('auto-detects a large project and skips the graph (no explicit flag)', async () => {
+    const { fetchMock } = makeFetchMock(300_000);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo');
+
+    expect(result.graphSkipped).toBe(true);
+    expect(graphRequests(fetchMock)).toHaveLength(0);
+  });
+
+  it('downloads the graph for a small project (no explicit flag)', async () => {
+    const { fetchMock } = makeFetchMock(500);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo');
+
+    expect(result.graphSkipped).toBe(false);
+    expect(graphRequests(fetchMock).length).toBeGreaterThan(0);
+  });
+
+  it('fails open to a full download when node stats are missing', async () => {
+    const { fetchMock } = makeFetchMock(undefined);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await connectToServer('http://localhost:4747', undefined, undefined, 'big-repo');
+
+    expect(result.graphSkipped).toBe(false);
+    expect(graphRequests(fetchMock).length).toBeGreaterThan(0);
   });
 });
 
