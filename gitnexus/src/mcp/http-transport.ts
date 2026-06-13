@@ -248,11 +248,13 @@ export function createStreamableHttpHandler(
 export function createSseHandlers(
   backend: LocalBackend,
   messagesPath = '/messages',
+  opts: { maxSessions?: number } = {},
 ): {
   sseHandler: (req: Request, res: Response) => Promise<void>;
   messageHandler: (req: Request, res: Response) => Promise<void>;
   cleanup: () => Promise<void>;
 } {
+  const maxSessions = opts.maxSessions ?? MAX_SESSIONS;
   const sseSessions = new Map<string, SSESession>();
 
   // Periodically evict stale SSE sessions — mirrors the streamable handler's sweep.
@@ -273,6 +275,18 @@ export function createSseHandlers(
   }
 
   const sseHandler = async (req: Request, res: Response): Promise<void> => {
+    // Cap concurrent SSE sessions — mirrors the streamable handler's MAX_SESSIONS
+    // guard so a flood of held-open GET /sse connections cannot allocate unbounded
+    // Server instances before the idle sweep reclaims them.
+    if (sseSessions.size >= maxSessions) {
+      res.status(503).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Server at session capacity. Try again later.' },
+        id: null,
+      });
+      return;
+    }
+
     // SSEServerTransport(endpoint, res): endpoint is the path clients POST to.
     const transport = new SSEServerTransport(messagesPath, res);
     const server = createMCPServer(backend);

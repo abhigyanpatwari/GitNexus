@@ -464,6 +464,36 @@ describe('createSseHandlers', () => {
 
     await expect(cleanup()).resolves.not.toThrow();
   });
+
+  it('U2: returns 503 (and allocates no Server) when the SSE session cap is reached', async () => {
+    const backend = createMockBackend();
+    // maxSessions 0 → the cap is hit immediately, so the guard fires before any
+    // SSEServerTransport / Server is allocated.
+    const { sseHandler, messageHandler, cleanup } = createSseHandlers(
+      backend as never,
+      '/messages',
+      { maxSessions: 0 },
+    );
+
+    const res = createMockRes();
+    await sseHandler(createMockReq(), res);
+
+    expect(res._status).toBe(503);
+    expect(res._body).toMatchObject({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Server at session capacity. Try again later.' },
+    });
+
+    // No session was created — any message routes to the 404 path.
+    const msgRes = createMockRes();
+    await messageHandler(
+      { query: { sessionId: 'anything' }, headers: {}, body: {} } as unknown as Request,
+      msgRes,
+    );
+    expect(msgRes._status).toBe(404);
+
+    await cleanup();
+  });
 });
 
 // ─── mountMCPEndpoints refactor safety ───────────────────────────────
