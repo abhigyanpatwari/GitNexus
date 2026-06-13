@@ -439,6 +439,12 @@ describe('U4 (#2085 M5) — emitFileCdg', () => {
       expect(rOn.postDominateEdges).toBe(pd.length);
       // CDG edge count is unchanged by the debug flag
       expect(rOn.edges).toBe(rOff.edges);
+
+      // the case-insensitive 'true' OR-branch of postDominateDebugEnabled
+      process.env[POST_DOMINATE_DEBUG_ENV] = 'TRUE';
+      const onTrue = recordingGraph();
+      const rOnTrue = emitFileCdg(onTrue.graph, cfgs);
+      expect(rOnTrue.postDominateEdges).toBeGreaterThan(0);
     } finally {
       if (prev === undefined) delete process.env[POST_DOMINATE_DEBUG_ENV];
       else process.env[POST_DOMINATE_DEBUG_ENV] = prev;

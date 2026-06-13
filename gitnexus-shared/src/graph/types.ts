@@ -166,7 +166,11 @@ export type RelationshipType =
   | 'CDG'
   /** Debug-only post-dominator-tree edge (#2085 M5): a block → its immediate
    *  post-dominator, emitted behind the `GITNEXUS_PDG_EMIT_POST_DOMINATE` env
-   *  flag for inspection. Never emitted in a normal `--pdg` run. */
+   *  flag for inspection. Never emitted in a normal `--pdg` run. Note: as a
+   *  member of this exported union it is a forward-compatibility commitment —
+   *  removing it later is a breaking schema change — and it is deliberately
+   *  excluded from `VALID_RELATION_TYPES` so it never enters impact-style
+   *  symbol-space traversal (same posture as the taint substrate edges). */
   | 'POST_DOMINATE';
 
 export interface GraphNode {

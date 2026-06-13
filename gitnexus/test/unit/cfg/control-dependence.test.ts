@@ -145,6 +145,27 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
     expect(serAll(edges).sort()).toEqual(['1->2:T', '1->3:T', '1->4:T']);
   });
 
+  it('exit-less loop (KTD5): terminates, emits only in-range edges, over-approximates soundly', () => {
+    // No block can reach EXIT (block 3), so every ipdom is NO_IPDOM and the
+    // post-dominance guard never fires — the Ferrante walk treats every edge as
+    // a control point. This is the KTD5 sound over-approximation: it must never
+    // hang (the walk hits NO_IPDOM immediately) and never emit an out-of-range
+    // block. Pinned at the CDG level (post-dominators.test.ts covers the tree).
+    const cfg = mkCfg(4, [
+      [0, 1, 'seq'],
+      [1, 2, 'seq'],
+      [2, 1, 'loop-back'],
+    ]);
+    const edges = computeControlDependence(cfg);
+    expect(serAll(edges).sort()).toEqual(['0->1:T', '1->2:T', '2->1:T']);
+    for (const e of edges) {
+      expect(e.controllerBlock).toBeGreaterThanOrEqual(0);
+      expect(e.controllerBlock).toBeLessThan(cfg.blocks.length);
+      expect(e.dependentBlock).toBeGreaterThanOrEqual(0);
+      expect(e.dependentBlock).toBeLessThan(cfg.blocks.length);
+    }
+  });
+
   it('is deterministic (stable sorted order across runs)', () => {
     const make = (): FunctionCfg =>
       mkCfg(5, [
@@ -180,6 +201,14 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [1, 2, 'cond-true'],
         [2, 1, 'loop-back'],
         [1, 3, 'cond-false'],
+      ]),
+      // exit-less loop: no block reaches EXIT (block 3) — all ipdom = NO_IPDOM.
+      // Verifies the tree-walk and the brute-force reference still agree under
+      // KTD5's over-approximation (every edge a control point).
+      exitLessLoop: mkCfg(4, [
+        [0, 1, 'seq'],
+        [1, 2, 'seq'],
+        [2, 1, 'loop-back'],
       ]),
       // nested if: outer branch (0) → inner branch (1) or outer-else (5);
       // inner branch → 2/3 → inner join (4); 4 and 5 → outer join (6, exit).
