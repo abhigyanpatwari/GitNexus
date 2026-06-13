@@ -204,7 +204,7 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  initializeAgent: (overrideProjectName?: string) => Promise<void>;
+  initializeAgent: (overrideProjectName?: string, opts?: { chatOnly?: boolean }) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
@@ -604,13 +604,24 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatStateRef = useRef<'idle' | 'streaming' | 'aborting'>('idle');
 
+  // Mirror graphMode into a ref so initializeAgent's deferred callers (lazy chat
+  // init, settings-driven re-init) can read the current mode without re-creating
+  // the callback; connect-flow callers pass an explicit chatOnly flag. (#2178)
+  const graphModeRef = useRef(graphMode);
+  useEffect(() => {
+    graphModeRef.current = graphMode;
+  }, [graphMode]);
+
   const initializeAgent = useCallback(
-    async (overrideProjectName?: string): Promise<void> => {
+    async (overrideProjectName?: string, opts?: { chatOnly?: boolean }): Promise<void> => {
       const config = getActiveProviderConfig();
       if (!config) {
         setAgentError('Please configure an LLM provider in settings');
         return;
       }
+      // Explicit flag from connect-flow callers (race-safe); otherwise fall back
+      // to live mode via the ref so deferred callers stay correct too. (#2178)
+      const chatOnly = opts?.chatOnly ?? graphModeRef.current === 'chatOnly';
 
       setIsAgentInitializing(true);
       setAgentError(null);
@@ -641,7 +652,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             backendReadFile(filePath, { repo }).then((r) => r.content),
         };
 
-        agentRef.current = createGraphRAGAgent(config, backend, codebaseContext);
+        agentRef.current = createGraphRAGAgent(config, backend, codebaseContext, chatOnly);
         setIsAgentReady(true);
         setAgentError(null);
         if (import.meta.env.DEV) {
@@ -1174,6 +1185,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       let connectedRepo: BackendRepo | undefined;
       let pNameStr = repoName || 'server-project';
+      let connectedChatOnly = false;
 
       try {
         const result: ConnectResult = await connectToServer(
@@ -1230,6 +1242,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setGraph(built.graph);
         setGraphMode(built.graphMode);
         setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
+        connectedChatOnly = built.graphMode === 'chatOnly';
       } catch (err: unknown) {
         console.error('Repo switch failed:', err);
         setProgress({
@@ -1266,7 +1279,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Re-initialize agent with the new repo's graph context
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(pNameStr);
+          await initializeAgent(pNameStr, { chatOnly: connectedChatOnly });
         }
         setViewMode('exploring');
         startEmbeddingsWithFallback();
@@ -1372,6 +1385,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       setProgress(null);
       setViewMode('exploring');
+
+      // The graph is now loaded — re-init the agent so its system prompt drops
+      // the chat-only note (#2178, KTD2). Guarded on a configured provider, like
+      // switchRepo; runs inside the mounted/stale guard above.
+      if (getActiveProviderConfig()) {
+        await initializeAgent(repo, { chatOnly: false });
+      }
     } catch (err) {
       if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
       console.error('Load graph anyway failed:', err);
@@ -1382,7 +1402,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       if (loadGraphAbortRef.current === controller) loadGraphAbortRef.current = null;
       loadGraphInFlightRef.current = false;
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setGraph, setGraphMode, setChatOnlyNodeCount]);
+  }, [
+    serverBaseUrl,
+    setProgress,
+    setViewMode,
+    setGraph,
+    setGraphMode,
+    setChatOnlyNodeCount,
+    initializeAgent,
+  ]);
 
   const removeCodeReference = useCallback(
     (id: string) => {

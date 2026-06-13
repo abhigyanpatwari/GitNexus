@@ -33,7 +33,11 @@ import type {
   AgentStreamChunk,
   AgentHistoryMessage,
 } from './types';
-import { type CodebaseContext, buildDynamicSystemPrompt } from './context-builder';
+import {
+  type CodebaseContext,
+  buildDynamicSystemPrompt,
+  CHAT_ONLY_PROMPT_NOTE,
+} from './context-builder';
 import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
 import {
   DeepSeekChatOpenAI,
@@ -357,14 +361,20 @@ export const createGraphRAGAgent = (
   config: ProviderConfig,
   backend: GraphRAGBackend,
   codebaseContext?: CodebaseContext,
+  chatOnly = false,
 ) => {
   const model = createChatModel(config);
   const tools = createGraphRAGTools(backend);
 
-  // Use dynamic prompt if context is provided, otherwise use base prompt
+  // Use dynamic prompt if context is provided, otherwise use base prompt. The
+  // chat-only note (graph not loaded, #2178) must apply in BOTH branches — when
+  // codebaseContext is absent, buildDynamicSystemPrompt is never called, so
+  // append the note here too.
   const systemPrompt = codebaseContext
-    ? buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, codebaseContext)
-    : BASE_SYSTEM_PROMPT;
+    ? buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, codebaseContext, chatOnly)
+    : chatOnly
+      ? `${BASE_SYSTEM_PROMPT}${CHAT_ONLY_PROMPT_NOTE}`
+      : BASE_SYSTEM_PROMPT;
 
   // Log the full prompt for debugging
   if (import.meta.env.DEV) {

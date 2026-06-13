@@ -29,6 +29,9 @@
     "configureAI": "Configure AI",
     "connecting": "Connecting"
   },
+  "chatOnly": {
+    "banner": "Graph not loaded (large project). Chat works normally; inline node citations won't highlight in the graph view."
+  },
   "roles": {
     "you": "You",
     "assistant": "Nexus AI"

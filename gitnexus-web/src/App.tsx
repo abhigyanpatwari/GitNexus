@@ -86,10 +86,11 @@ const AppContent = () => {
       // Transition directly to exploring view
       setViewMode('exploring');
 
-      // Initialize agent with backend queries, then start embeddings
+      // Initialize agent with backend queries, then start embeddings. Pass the
+      // chat-only flag so the agent's prompt matches the loaded/skipped graph (#2178).
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(projectName);
+          await initializeAgent(projectName, { chatOnly: result.graphSkipped });
         }
         startEmbeddingsWithFallback();
       } catch (err) {

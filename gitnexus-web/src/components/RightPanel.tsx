@@ -23,6 +23,7 @@ export const RightPanel = () => {
     isRightPanelOpen,
     setRightPanelOpen,
     graph,
+    graphMode,
     addCodeReference,
     // LLM / chat state
     chatMessages,
@@ -283,6 +284,14 @@ export const RightPanel = () => {
             </div>
           </div>
 
+          {/* Chat-only notice: the graph wasn't loaded for this large project, so
+              inline node citations won't pin in the (absent) graph view (#2178). */}
+          {graphMode === 'chatOnly' && (
+            <div className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-[11px] text-amber-200/90">
+              {t('chat:chatOnly.banner')}
+            </div>
+          )}
+
           {/* Status / errors */}
           {agentError && (
             <div className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -292,7 +301,7 @@ export const RightPanel = () => {
           )}
 
           {/* Messages */}
-          <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
+          <div ref={scrollContainerRef} className="flex-1 scrollbar-thin overflow-y-auto p-4">
             {chatMessages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center px-4 text-center">
                 <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
@@ -417,7 +426,7 @@ export const RightPanel = () => {
                 onKeyDown={handleKeyDown}
                 placeholder={t('chat:input.placeholder')}
                 rows={1}
-                className="scrollbar-thin min-h-[36px] flex-1 resize-none border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                className="min-h-[36px] flex-1 resize-none scrollbar-thin border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
                 style={{ height: '36px', overflowY: 'hidden' }}
               />
               <button
