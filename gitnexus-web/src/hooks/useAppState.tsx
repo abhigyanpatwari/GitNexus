@@ -1310,6 +1310,16 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // persisted `?skipGraph=0` would leak onto a different repo via the other
   // connect entry points and could silently re-trigger the hang on refresh.
   const loadGraphInFlightRef = useRef(false);
+  // Cancels the in-flight load-anyway download; mountedRef gates post-await
+  // state writes so an unmount mid-download can't setState on a dead instance.
+  const loadGraphAbortRef = useRef<AbortController | null>(null);
+  const loadGraphMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      loadGraphMountedRef.current = false;
+      loadGraphAbortRef.current?.abort();
+    };
+  }, []);
   const loadGraphAnyway = useCallback(async (): Promise<void> => {
     if (!serverBaseUrl) return;
     // Guard against a double-trigger (rapid double-click or a racing
@@ -1317,6 +1327,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     if (loadGraphInFlightRef.current) return;
     loadGraphInFlightRef.current = true;
     const repo = repoRef.current;
+    const controller = new AbortController();
+    loadGraphAbortRef.current = controller;
 
     setProgress({
       phase: 'extracting',
@@ -1341,10 +1353,16 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             });
           }
         },
-        undefined,
+        controller.signal,
         repo,
         { awaitAnalysis: true, skipGraph: false },
       );
+
+      // Bail if we unmounted, or if a concurrent switchRepo changed the active
+      // repo while this load was in flight (the late result must not clobber the
+      // new repo's state). Guard keyed on the ref — an abort surfaces as a
+      // BackendError, not a DOMException AbortError.
+      if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
 
       const built = buildGraphFromConnectResult(result);
       setGraph(built.graph);
@@ -1355,11 +1373,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setProgress(null);
       setViewMode('exploring');
     } catch (err) {
+      if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
       console.error('Load graph anyway failed:', err);
       // Stay in chat-only mode (the overlay reappears) and return to the view.
       setProgress(null);
       setViewMode('exploring');
     } finally {
+      if (loadGraphAbortRef.current === controller) loadGraphAbortRef.current = null;
       loadGraphInFlightRef.current = false;
     }
   }, [serverBaseUrl, setProgress, setViewMode, setGraph, setGraphMode, setChatOnlyNodeCount]);

@@ -131,6 +131,76 @@ describe('loadGraphAnyway (chat-only escape hatch, #2178)', () => {
     expect(result.current.viewMode).toBe('exploring');
     expect(window.location.search).not.toContain('skipGraph=0');
   });
+
+  it('discards a stale result when the active repo changed mid-load', async () => {
+    let resolveGraph: (r: Response) => void = () => {};
+    const graphPromise = new Promise<Response>((res) => {
+      resolveGraph = res;
+    });
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/graph')) return graphPromise;
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+      result.current.setCurrentRepo('repo-A');
+      result.current.setGraphMode('chatOnly');
+    });
+
+    let loadPromise: Promise<void> = Promise.resolve();
+    act(() => {
+      loadPromise = result.current.loadGraphAnyway(); // captures repo-A
+    });
+    // A concurrent switch changes the active repo while the load is in flight.
+    act(() => {
+      result.current.setCurrentRepo('repo-B');
+    });
+    await act(async () => {
+      resolveGraph(graphNdjsonResponse());
+      await loadPromise;
+    });
+
+    // The stale repo-A result must NOT flip the (now repo-B) view to full.
+    expect(result.current.graphMode).toBe('chatOnly');
+  });
+
+  it('does not throw or apply state when unmounted mid-load', async () => {
+    let resolveGraph: (r: Response) => void = () => {};
+    const graphPromise = new Promise<Response>((res) => {
+      resolveGraph = res;
+    });
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/graph')) return graphPromise;
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result, unmount } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+      result.current.setCurrentRepo('big-repo');
+      result.current.setGraphMode('chatOnly');
+    });
+
+    let loadPromise: Promise<void> = Promise.resolve();
+    act(() => {
+      loadPromise = result.current.loadGraphAnyway();
+    });
+    unmount(); // fires cleanup: mountedRef=false + abort
+    await act(async () => {
+      resolveGraph(graphNdjsonResponse());
+      await loadPromise; // resolves without setState-after-unmount throwing
+    });
+  });
 });
 
 describe('switchRepo auto-detect (chat-only, #2178)', () => {

@@ -274,17 +274,23 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     // the prompt only when the count is known to be below the threshold (a small
     // repo force-skipped via ?skipGraph=1).
     const needsConfirm = shouldConfirmGraphLoad(chatOnlyNodeCount, LARGE_GRAPH_NODE_THRESHOLD);
-    if (
-      needsConfirm &&
-      typeof window !== 'undefined' &&
-      typeof window.confirm === 'function' &&
-      !window.confirm(
-        chatOnlyNodeCount != null
-          ? t('canvas.chatOnly.loadAnywayWarning', { count: chatOnlyNodeCount.toLocaleString() })
-          : t('canvas.chatOnly.loadAnywayWarningUnknown'),
-      )
-    ) {
-      return;
+    if (needsConfirm) {
+      // Fail SAFE, not open: if there's no usable confirm dialog (some embedded
+      // webviews) or it throws, treat it as declined rather than loading a
+      // graph we couldn't warn about (#2178).
+      const canPrompt = typeof window !== 'undefined' && typeof window.confirm === 'function';
+      if (!canPrompt) return;
+      let confirmed = false;
+      try {
+        confirmed = window.confirm(
+          chatOnlyNodeCount != null
+            ? t('canvas.chatOnly.loadAnywayWarning', { count: chatOnlyNodeCount.toLocaleString() })
+            : t('canvas.chatOnly.loadAnywayWarningUnknown'),
+        );
+      } catch {
+        return;
+      }
+      if (!confirmed) return;
     }
     void loadGraphAnyway();
   }, [chatOnlyNodeCount, loadGraphAnyway, t]);
