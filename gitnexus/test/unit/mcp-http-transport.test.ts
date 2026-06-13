@@ -24,6 +24,7 @@ import {
   createStreamableHttpHandler,
   createSseHandlers,
   isLoopbackOrigin,
+  computeAllowedHosts,
 } from '../../src/mcp/http-transport.js';
 import { createMCPServer } from '../../src/mcp/server.js';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
@@ -289,6 +290,25 @@ describe('startMcpHttpServer', () => {
       'Access-Control-Request-Private-Network': 'true',
     });
     expect(get.headers['access-control-allow-private-network']).toBeUndefined();
+  });
+
+  it('U6: rejects a POST /mcp carrying a disallowed Host header (DNS-rebinding protection)', async () => {
+    const { port, server, cleanup } = await startOnFreePort(); // 127.0.0.1 → protection ON
+    servers.push({ server, cleanup });
+
+    const res = await request(
+      port,
+      'POST',
+      '/mcp',
+      {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Host: 'evil.example.com:1234',
+      },
+      JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }),
+    );
+
+    expect(res.status).toBe(403);
   });
 
   it('U3: malformed JSON from an authenticated client returns a JSON-RPC parse error (not HTML)', async () => {
@@ -613,5 +633,32 @@ describe('isLoopbackOrigin', () => {
     expect(isLoopbackOrigin('http://192.168.1.50:3000')).toBe(false);
     expect(isLoopbackOrigin('null')).toBe(false);
     expect(isLoopbackOrigin('not a url')).toBe(false);
+  });
+});
+
+// ─── computeAllowedHosts (U6) ────────────────────────────────────────
+
+describe('computeAllowedHosts', () => {
+  it('returns all loopback host forms (bare + :port) for a loopback bind', () => {
+    expect(computeAllowedHosts('127.0.0.1', 3000)).toEqual([
+      '127.0.0.1',
+      '127.0.0.1:3000',
+      'localhost',
+      'localhost:3000',
+      '[::1]',
+      '[::1]:3000',
+    ]);
+  });
+
+  it('returns the specific host (bare + :port) for a non-loopback, non-wildcard bind', () => {
+    expect(computeAllowedHosts('192.168.1.50', 8080)).toEqual([
+      '192.168.1.50',
+      '192.168.1.50:8080',
+    ]);
+  });
+
+  it('returns undefined (protection off) for wildcard binds', () => {
+    expect(computeAllowedHosts('0.0.0.0', 3000)).toBeUndefined();
+    expect(computeAllowedHosts('::', 3000)).toBeUndefined();
   });
 });

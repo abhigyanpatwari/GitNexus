@@ -131,6 +131,42 @@ export function isLoopbackOrigin(origin: string | undefined): boolean {
   );
 }
 
+/** True for the exact loopback bind addresses. */
+export function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+/** True for any-interface wildcard binds, whose externally-used Host is unknowable. */
+export function isWildcardHost(host: string): boolean {
+  return host === '0.0.0.0' || host === '::';
+}
+
+/**
+ * Computes the SDK DNS-rebinding `allowedHosts` list (a Host-header allowlist) for a
+ * bind host/port, or `undefined` when protection should stay off.
+ *
+ * Wildcard binds (`0.0.0.0` / `::`) return `undefined` — the Host a client
+ * legitimately uses is unknowable, so the bearer token (required for non-loopback
+ * binds) is the control. Loopback binds allow all three loopback host forms
+ * (bare + `:port`); a specific host (e.g. `192.168.1.50`) allows that host
+ * (bare + `:port`), which is knowable and a free defence-in-depth win.
+ */
+export function computeAllowedHosts(host: string, port: number): string[] | undefined {
+  if (isWildcardHost(host)) return undefined;
+  const hosts = isLoopbackHost(host) ? ['127.0.0.1', 'localhost', '[::1]'] : [host];
+  return hosts.flatMap((h) => [h, `${h}:${port}`]);
+}
+
+/** Builds the SDK transport DNS-rebinding options from a bind host/port. */
+function dnsRebindingOptions(
+  host: string | undefined,
+  port: number | undefined,
+): { enableDnsRebindingProtection?: boolean; allowedHosts?: string[] } {
+  if (host === undefined || port === undefined) return {};
+  const allowedHosts = computeAllowedHosts(host, port);
+  return allowedHosts ? { enableDnsRebindingProtection: true, allowedHosts } : {};
+}
+
 /**
  * Creates a reusable StreamableHTTP request handler.
  *
@@ -140,13 +176,15 @@ export function isLoopbackOrigin(origin: string | undefined): boolean {
  */
 export function createStreamableHttpHandler(
   backend: LocalBackend,
-  opts: { createServer?: () => Server } = {},
+  opts: { createServer?: () => Server; host?: string; port?: number } = {},
 ): {
   handler: (req: Request, res: Response) => Promise<void>;
   cleanup: () => Promise<void>;
 } {
   // Seam: tests inject createServer to observe the per-session Server lifecycle.
   const createServer = opts.createServer ?? ((): Server => createMCPServer(backend));
+  // DNS-rebinding protection (Host-header allowlist) when the bind host is known.
+  const dnsRebinding = dnsRebindingOptions(opts.host, opts.port);
   const sessions = new Map<string, MCPSession>();
 
   // Periodically evict idle sessions (guard against network drops where onclose never fires).
@@ -215,6 +253,7 @@ export function createStreamableHttpHandler(
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        ...dnsRebinding,
       });
       const server = createServer();
       await server.connect(transport);
@@ -273,13 +312,15 @@ export function createStreamableHttpHandler(
 export function createSseHandlers(
   backend: LocalBackend,
   messagesPath = '/messages',
-  opts: { maxSessions?: number } = {},
+  opts: { maxSessions?: number; host?: string; port?: number } = {},
 ): {
   sseHandler: (req: Request, res: Response) => Promise<void>;
   messageHandler: (req: Request, res: Response) => Promise<void>;
   cleanup: () => Promise<void>;
 } {
   const maxSessions = opts.maxSessions ?? MAX_SESSIONS;
+  // DNS-rebinding protection (Host-header allowlist) when the bind host is known.
+  const dnsRebinding = dnsRebindingOptions(opts.host, opts.port);
   const sseSessions = new Map<string, SSESession>();
 
   // Periodically evict stale SSE sessions — mirrors the streamable handler's sweep.
@@ -312,8 +353,8 @@ export function createSseHandlers(
       return;
     }
 
-    // SSEServerTransport(endpoint, res): endpoint is the path clients POST to.
-    const transport = new SSEServerTransport(messagesPath, res);
+    // SSEServerTransport(endpoint, res, options): endpoint is the path clients POST to.
+    const transport = new SSEServerTransport(messagesPath, res, dnsRebinding);
     const server = createMCPServer(backend);
 
     sseSessions.set(transport.sessionId, { server, transport, lastActivity: Date.now() });
@@ -449,7 +490,7 @@ export async function startMcpHttpServer(
   });
 
   // Streamable HTTP (modern MCP clients) at POST /mcp.
-  const streamable = createStreamableHttpHandler(backend);
+  const streamable = createStreamableHttpHandler(backend, { host, port });
   app.all('/mcp', auth, jsonBody, (req: Request, res: Response) => {
     void streamable.handler(req, res).catch((err: unknown) => {
       logger.error({ err }, 'MCP /mcp request failed');
@@ -464,7 +505,7 @@ export async function startMcpHttpServer(
   });
 
   // Legacy SSE: GET /sse opens the stream; POST /messages receives JSON-RPC messages.
-  const sse = createSseHandlers(backend, '/messages');
+  const sse = createSseHandlers(backend, '/messages', { host, port });
   app.get('/sse', auth, (req: Request, res: Response) => {
     void sse.sseHandler(req, res).catch((err: unknown) => {
       logger.error({ err }, 'MCP /sse failed');
