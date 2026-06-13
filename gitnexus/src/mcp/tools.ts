@@ -130,10 +130,13 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
     inputSchema: {
       type: 'object',
       properties: {
+        // #2175: the legacy `query` key is still accepted by the handler
+        // (resolveAliasString in local-backend.ts), but is deliberately NOT named in the
+        // advertised property or its description — surfacing "query" in the schema an LLM
+        // reads would nudge it to send `query`, the exact argument Claude Code drops.
         search_query: {
           type: 'string',
-          description:
-            'Natural language or keyword search query. Legacy alias: "query" (still accepted, but Claude Code drops an argument named exactly "query" — see #2175).',
+          description: 'Natural language or keyword search query.',
         },
         task_context: {
           type: 'string',
@@ -228,10 +231,13 @@ TIPS:
     inputSchema: {
       type: 'object',
       properties: {
+        // #2175: the legacy `query` key is still accepted by the handler
+        // (resolveAliasString in local-backend.ts), but is deliberately NOT named in the
+        // advertised property or its description — surfacing "query" in the schema an LLM
+        // reads would nudge it to send `query`, the exact argument Claude Code drops.
         statement: {
           type: 'string',
-          description:
-            'Cypher statement to execute. Legacy alias: "query" (still accepted, but Claude Code drops an argument named exactly "query" — see #2175).',
+          description: 'Cypher statement to execute.',
         },
         params: {
           type: 'object',
