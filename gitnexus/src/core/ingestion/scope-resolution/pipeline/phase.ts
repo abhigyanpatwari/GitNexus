@@ -42,6 +42,8 @@ import {
   forceGc,
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
+import type { FunctionSummary } from '../../taint/summary-model.js';
+import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -64,6 +66,12 @@ export interface ScopeResolutionOutput {
       readonly referenceEdgesEmitted: number;
     }
   >;
+  /**
+   * Per-function taint summaries harvested in the pdg window (#2084 M4 U1),
+   * across all languages. Empty unless `--pdg` and a registered taint model.
+   * The `taintSummaries` phase composes these over the `CALLS` graph.
+   */
+  readonly functionSummaries: readonly FunctionSummary[];
 }
 
 const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
@@ -73,6 +81,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   referenceEdgesEmitted: 0,
   resolutionOutcomes: [],
   perLanguage: new Map(),
+  functionSummaries: [],
 });
 
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
@@ -143,6 +152,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalRefs = 0;
     let anyRan = false;
     const resolutionOutcomes: ResolutionOutcome[] = [];
+    // M4 (#2084 U1): per-function taint summaries accumulated across every
+    // language pass; the cross-function fixpoint phase reads this output.
+    const functionSummaries: FunctionSummary[] = [];
     const perLanguage = new Map<
       SupportedLanguages,
       {
@@ -221,6 +233,14 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     );
     const sharedNodeLookup = totalScopeFiles > 0 ? buildGraphNodeLookup(ctx.graph) : undefined;
     logHeapProbe('scope-setup-nodeLookup-end', `langs=${totalScopeLangs}`);
+    // M4 (#2084 review P2-6): build the functionish-node index ONCE for the
+    // taint summary harvest, shared across every language pass (it is a whole-
+    // graph scan and language-agnostic). Only when pdg is on — off ⇒ undefined,
+    // no scan, byte-identical.
+    const sharedFnNodeIndex =
+      ctx.options?.pdg === true && totalScopeFiles > 0
+        ? buildFunctionNodeIndex(ctx.graph)
+        : undefined;
 
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       // Standalone providers (COBOL, JCL) don't emit graph edges yet
@@ -348,6 +368,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           files,
           resolutionConfig,
           prebuiltNodeLookup: sharedNodeLookup,
+          prebuiltFunctionNodeIndex: sharedFnNodeIndex,
           preExtractedParsedFiles: preExtractedByPath,
           scopeIndexStorePath: parsedFileStorePath,
           // CFG/PDG emission (#2081 M1) — opt-in; off ⇒ byte-identical graph.
@@ -434,6 +455,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
       processedScopeFiles += langFileCount;
       anyRan = true;
+      functionSummaries.push(...stats.functionSummaries);
       totalFiles += stats.filesProcessed;
       totalImports += stats.importsEmitted;
       totalRefs += stats.referenceEdgesEmitted;
@@ -480,6 +502,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       referenceEdgesEmitted: totalRefs,
       resolutionOutcomes,
       perLanguage,
+      functionSummaries,
     };
   },
 };

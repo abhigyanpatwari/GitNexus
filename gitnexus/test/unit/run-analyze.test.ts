@@ -342,6 +342,9 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
     maxReachingDefEdgesPerFunction: 4000,
     maxTaintFindingsPerFunction: 200,
     maxTaintHops: 32,
+    maxInterprocFindings: 2000,
+    maxInterprocHops: 32,
+    maxInterprocEdges: 1000,
     // Content digest, not a tunable cap — pinned via the exported constant
     // (its VALUE changes whenever the built-in model changes, by design).
     taintModelVersion,
@@ -364,6 +367,9 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
         pdgMaxReachingDefEdgesPerFunction: 0,
         pdgMaxTaintFindingsPerFunction: 0,
         pdgMaxTaintHops: 0,
+        pdgMaxInterprocFindings: 0,
+        pdgMaxInterprocHops: 0,
+        pdgMaxInterprocEdges: 0,
       }),
     ).toEqual({
       maxFunctionLines: 0,
@@ -371,6 +377,9 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
       maxReachingDefEdgesPerFunction: 0,
       maxTaintFindingsPerFunction: 0,
       maxTaintHops: 0,
+      maxInterprocFindings: 0,
+      maxInterprocHops: 0,
+      maxInterprocEdges: 0,
       taintModelVersion, // not a cap — always stamped on a pdg-on run
     });
   });
