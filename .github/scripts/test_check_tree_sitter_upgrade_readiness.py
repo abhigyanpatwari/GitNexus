@@ -321,5 +321,57 @@ class OfflineMode(TestCase):
         self.assertNotIn("?", sanitized)
 
 
+class VendoredAbiBranches(TestCase):
+    """main()'s vendored-ABI classification reads through vendored_abi_from_repo
+    (the same local-read seam --assert-current uses), so a single patch drives the
+    out-of-range and prebuilt-only branches that no real vendor dir can trigger
+    today (all ship parser.c at ABI 14)."""
+
+    def _render_with_vendored_abi(self, override):
+        """Render main() with the standard production-faithful network mock plus a
+        vendored_abi_from_repo override (dict: name -> int|None; others read real)."""
+        real = readiness.vendored_abi_from_repo
+
+        def abi_seam(name, parser_path):
+            return override[name] if name in override else real(name, parser_path)
+
+        def fake_npm(pkg):
+            return {"version": "9.9.9", "peerDependencies": {"tree-sitter": "^0.25.0"}}
+
+        def fake_fetch(url, timeout=8):
+            if "parser.c" in url and "alex-pinkus" not in url:
+                return "#define LANGUAGE_VERSION 14\n"
+            if "/commits/" in url:
+                return json.dumps({"sha": "0123456789abcdef"})
+            return None
+
+        buf = io.StringIO()
+        with mock.patch.object(readiness, "vendored_abi_from_repo", side_effect=abi_seam), \
+             mock.patch.object(readiness, "npm_view_json", side_effect=fake_npm), \
+             mock.patch.object(readiness, "fetch_text", side_effect=fake_fetch), \
+             contextlib.redirect_stdout(buf):
+            code = readiness.main()
+        return buf.getvalue(), code
+
+    def _row(self, report, name):
+        line = next(l for l in report.splitlines() if l.startswith(f"| `{name}` |"))
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+
+    def test_out_of_range_vendored_abi_is_a_blocker(self):
+        # Force tree-sitter-dart's vendored ABI outside the target range (13–15).
+        report, code = self._render_with_vendored_abi({"tree-sitter-dart": 99})
+        cells = self._row(report, "tree-sitter-dart")
+        self.assertEqual(cells[-1], "Vendored (ABI out of range)")
+        self.assertEqual(cells[5], "99")
+        self.assertEqual(code, 1)  # out-of-range vendored grammar is a blocker
+
+    def test_prebuilt_only_vendored_abi_renders_prebuilt_not_question(self):
+        # vendored_abi None (a future binary-only vendor with no parser.c).
+        report, _ = self._render_with_vendored_abi({"tree-sitter-dart": None})
+        cells = self._row(report, "tree-sitter-dart")
+        self.assertEqual(cells[5], "prebuilt")  # labeled, never a bare '?'
+        self.assertEqual(cells[4], "Yes")  # prebuilt is assumed target-compatible
+
+
 if __name__ == "__main__":
     main()
