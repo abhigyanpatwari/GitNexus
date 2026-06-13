@@ -204,6 +204,33 @@ class ReportRendering(TestCase):
         sanitized = self.report.replace("Satisfies 0.25?", "Satisfies 0.25")
         self.assertNotIn("?", sanitized, "report still contains a bare '?' placeholder")
 
+    def test_malformed_npm_version_renders_unknown_in_prose_not_bare_question(self):
+        # A successful (200) npm /latest response that omits `version` leaves
+        # npm_version == "?"; the grammar is still bucketed (fetch did not fail), so
+        # its disposition PROSE line must show the labeled sentinel, never a bare '?'.
+        def fake_npm(pkg: str):
+            if pkg == "tree-sitter-go":
+                return {"peerDependencies": {"tree-sitter": "^0.25.0"}}  # no 'version'
+            return {"version": "9.9.9", "peerDependencies": {"tree-sitter": "^0.25.0"}}
+
+        def fake_fetch(url: str, timeout: int = 8):
+            if "parser.c" in url and "alex-pinkus" not in url:
+                return "#define LANGUAGE_VERSION 14\n"
+            if "/commits/" in url:
+                return json.dumps({"sha": "0123456789abcdef"})
+            return None
+
+        buf = io.StringIO()
+        with mock.patch.object(readiness, "npm_view_json", side_effect=fake_npm), \
+             mock.patch.object(readiness, "fetch_text", side_effect=fake_fetch), \
+             contextlib.redirect_stdout(buf):
+            readiness.main()
+        report = buf.getvalue()
+        sanitized = report.replace("Satisfies 0.25?", "Satisfies 0.25")
+        self.assertNotIn("?", sanitized)
+        # The Ready bucket prose line for go shows the labeled 'unknown', not '?'.
+        self.assertRegex(report, r"`tree-sitter-go`.*npm latest `unknown`")
+
     def test_every_vendored_grammar_shows_numeric_abi_not_question_mark(self):
         for name in readiness.VENDORED_NAMES:
             row = self._matrix_row(name)

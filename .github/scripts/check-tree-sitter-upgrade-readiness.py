@@ -590,6 +590,11 @@ def _classify_grammar(
         "name": name,
         "pinned_spec": pinned_spec or "—",
         "npm_version": npm_version,
+        # Display form for the disposition prose: a grammar bucketed here has
+        # `info is not None` (fetch succeeded), but a malformed 200 response could
+        # still lack a `version` key, leaving npm_version == "?". Launder it so the
+        # prose never shows a bare "?" — the matrix cell already does this (#858/#2187).
+        "npm_version_label": "unknown" if npm_version == "?" else npm_version,
         "peer_range": peer_range,
         "target_compat": target_compat,
         "current_compat": current_compat,
@@ -891,7 +896,7 @@ def main() -> int:
         lines.append("")
         for r in sorted(bump_now, key=lambda r: r["name"]):
             lines.append(
-                f"- `{r['name']}`: `{r['pinned_spec']}` → `{r['npm_version']}` "
+                f"- `{r['name']}`: `{r['pinned_spec']}` → `{r['npm_version_label']}` "
                 f"(peer `{r['peer_range'] or 'none'}`)"
             )
         lines.append("")
@@ -914,7 +919,7 @@ def main() -> int:
         "These grammars' npm-latest peer dep already accepts the target runtime. No action needed for the upgrade.",
         by_bucket["ready"],
         lambda r: (
-            f"- `{r['name']}` — pinned `{r['pinned_spec']}`, npm latest `{r['npm_version']}`"
+            f"- `{r['name']}` — pinned `{r['pinned_spec']}`, npm latest `{r['npm_version_label']}`"
             + ("  _(also a bump candidate — see above)_" if r["bump_now"] else "")
         ),
     )
@@ -930,7 +935,7 @@ def main() -> int:
             reason = INTENTIONAL_PINS.get(r["name"], "(no rationale recorded)")
             lines.append(
                 f"- `{r['name']}` pinned at `{r['pinned_spec']}` "
-                f"(npm latest `{r['npm_version']}`)\n  {reason}"
+                f"(npm latest `{r['npm_version_label']}`)\n  {reason}"
             )
         lines.append("")
 
@@ -940,7 +945,7 @@ def main() -> int:
         "We can move forward as soon as upstream cuts a release.",
         by_bucket["waiting"],
         lambda r: (
-            f"- `{r['name']}@{r['npm_version']}` — peer `{r['peer_range'] or 'none'}`. "
+            f"- `{r['name']}@{r['npm_version_label']}` — peer `{r['peer_range'] or 'none'}`. "
             f"_{r['upstream_progress']}_"
         ),
     )
@@ -950,7 +955,7 @@ def main() -> int:
         "Peer dep is too tight on both the latest npm release and on upstream main. "
         "These need an upstream issue/PR before we can proceed.",
         by_bucket["blocked"],
-        lambda r: f"- `{r['name']}@{r['npm_version']}` — peer `{r['peer_range'] or 'none'}`",
+        lambda r: f"- `{r['name']}@{r['npm_version_label']}` — peer `{r['peer_range'] or 'none'}`",
     )
 
     _emit_bucket(
