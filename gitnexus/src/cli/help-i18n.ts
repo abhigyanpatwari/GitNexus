@@ -46,6 +46,7 @@ const COMMAND_DESCRIPTION_KEYS = {
 
 const OPTION_DESCRIPTION_KEYS = {
   '|-V, --version': 'help.option.version',
+  'setup|-c, --coding-agent <agents>': 'help.option.setup.codingAgent',
   'analyze|-f, --force': 'help.option.analyze.force',
   'analyze|--repair-fts': 'help.option.analyze.repairFts',
   'analyze|--embeddings [limit]': 'help.option.analyze.embeddings',
