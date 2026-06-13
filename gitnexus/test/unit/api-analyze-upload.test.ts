@@ -334,6 +334,29 @@ describe('createLocalhostOriginGuard (bound host)', () => {
     expect(callWith('192.168.1.100', 'http://[::1]:4747').passed).toBe(true);
   });
 
+  it('normalizes mixed-case host binds to match the WHATWG origin hostname', () => {
+    // WHATWG lowercases the Origin hostname; boundHost must canonicalize the same way.
+    expect(callWith('MyHost.local', 'http://myhost.local:4747').passed).toBe(true);
+  });
+
+  it('normalizes IPv6 host binds (compressed + non-canonical) to match the origin', () => {
+    expect(callWith('fe80::1', 'http://[fe80::1]:4747').passed).toBe(true);
+    // Expanded form must compress to the same WHATWG hostname as the origin.
+    expect(callWith('fe80:0:0:0:0:0:0:1', 'http://[fe80::1]:4747').passed).toBe(true);
+    // Already-bracketed input is idempotent.
+    expect(callWith('[fe80::1]', 'http://[fe80::1]:4747').passed).toBe(true);
+  });
+
+  it('keeps wildcard binds (0.0.0.0 / :: / expanded) loopback-only', () => {
+    // No browser Origin equals a wildcard, so non-loopback writes are rejected...
+    expect(callWith('0.0.0.0', 'http://192.168.1.5:4747').passed).toBe(false);
+    expect(callWith('::', 'http://[fe80::1]:4747').passed).toBe(false);
+    expect(callWith('0:0:0:0:0:0:0:0', 'http://[fe80::1]:4747').passed).toBe(false);
+    // ...while loopback still passes under a wildcard bind.
+    expect(callWith('0.0.0.0', 'http://localhost:5173').passed).toBe(true);
+    expect(callWith('::', 'http://127.0.0.1:4747').passed).toBe(true);
+  });
+
   it('rejects other RFC1918 origins that do not match bound host', () => {
     expect(callWith('192.168.1.100', 'http://192.168.1.101:4747').passed).toBe(false);
     expect(callWith('192.168.1.100', 'http://10.0.0.1:4747').passed).toBe(false);

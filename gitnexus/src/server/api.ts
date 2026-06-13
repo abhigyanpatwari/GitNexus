@@ -35,7 +35,7 @@ import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-import { createLocalhostOriginGuard } from './middleware.js';
+import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
@@ -723,6 +723,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Same-host origin guard for write routes. Only allows loopback and the
   // server's own bound host — scoped to prevent CSRF from other LAN devices.
   const requireLocalhostOrigin = createLocalhostOriginGuard(host);
+
+  // A wildcard bind (`0.0.0.0`/`::`) has no single host identity for the
+  // same-host check, so browser write routes accept only loopback origins.
+  // Warn the operator so a remote-access deployment isn't silently write-blocked.
+  if (host && normalizeBoundHost(host) === undefined) {
+    logger.warn(
+      { host },
+      `[gitnexus serve] Bound to a wildcard address (${host}); browser write routes ` +
+        `accept only loopback origins (localhost/127.0.0.1/[::1]). To allow writes from a ` +
+        `specific LAN address, bind --host <that-address> instead of a wildcard.`,
+    );
+  }
 
   // No explicit OPTIONS route is registered. The Chromium Private Network
   // Access header is set by the global middleware above (pre-cors), and
