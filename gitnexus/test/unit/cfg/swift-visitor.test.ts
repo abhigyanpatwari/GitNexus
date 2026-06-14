@@ -238,6 +238,17 @@ describe('Swift CfgVisitor — do/catch (error handling)', () => {
     expect(reaches(cfg, thr, block(cfg, 'done()'))).toBe(false);
     expect(reachable(cfg, block(cfg, 'done()'))).toBe(true); // via the if false branch
   });
+
+  it('multi-catch: EVERY catch handler is reachable from ENTRY (#2195)', () => {
+    // The protected body can throw an error matching ANY clause, so the 2nd..Nth
+    // catch must not be orphaned — the bug routed the throw edge only to the
+    // first handler, leaving later handlers unreachable from ENTRY.
+    const cfg = swift.cfgOf(`func f() { do { try r() } catch A { ha() } catch { hb() } }`);
+    expect(reachable(cfg, block(cfg, 'ha()'))).toBe(true);
+    expect(reachable(cfg, block(cfg, 'hb()'))).toBe(true);
+    // the protected `try r()` reaches both handlers.
+    expect(reaches(cfg, block(cfg, 'try r()'), block(cfg, 'hb()'))).toBe(true);
+  });
 });
 
 describe('Swift CfgVisitor — defer (LIFO scope-exit)', () => {

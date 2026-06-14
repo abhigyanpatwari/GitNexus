@@ -740,10 +740,14 @@ class SwiftCfgWalk {
     const bodyRes = bodyNode ? this.visitSeq(this.statementsOf(bodyNode)) : null;
     this.handlers.pop();
 
-    // Conservative exceptional edges: every protected-region block → the handler.
-    if (catchBlocks.length > 0) {
+    // Conservative exceptional edges: every protected-region block → EACH catch
+    // handler. Swift tries the catch clauses in order until one matches; the
+    // thrown type is unknown at CFG time, so any protected block may reach ANY
+    // clause. Edging only the first handler orphaned the 2nd..Nth catch blocks
+    // (unreachable from ENTRY, stranding their error bindings + def/use facts).
+    if (handlerEntries.length > 0) {
       for (let b = protectedStart; b < this.builder.blockCount; b++) {
-        this.builder.edge(b, doHandler, 'throw');
+        for (const handler of handlerEntries) this.builder.edge(b, handler, 'throw');
       }
     }
 
