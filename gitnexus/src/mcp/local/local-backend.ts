@@ -4185,7 +4185,11 @@ export class LocalBackend {
         edges.unshift({ relType: info.edgeType, confidence: info.confidence });
         current = info.from;
       }
-      path.unshift({ name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine });
+      path.unshift({
+        name: fromSym.name,
+        filePath: fromSym.filePath,
+        startLine: fromSym.startLine,
+      });
 
       return {
         status: 'ok',

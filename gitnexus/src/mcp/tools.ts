@@ -791,7 +791,10 @@ Returns: ordered hops with file:line, and an aligned edges[] of edge type + conf
           description: 'Include test-file symbols in traversal (default: false)',
           default: false,
         },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: [],
     },

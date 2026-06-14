@@ -166,8 +166,22 @@ describe('trace: dispatch', () => {
   });
   it('returns ambiguous with candidates when source has multiple matches', async () => {
     (executeParameterized as any).mockResolvedValue([
-      { id: 'func:login:1', name: 'login', type: 'Function', filePath: 'src/auth.ts', startLine: 1, endLine: 10 },
-      { id: 'func:login:2', name: 'login', type: 'Function', filePath: 'src/admin.ts', startLine: 5, endLine: 15 },
+      {
+        id: 'func:login:1',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/auth.ts',
+        startLine: 1,
+        endLine: 10,
+      },
+      {
+        id: 'func:login:2',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/admin.ts',
+        startLine: 5,
+        endLine: 15,
+      },
     ]);
 
     const result = await backend.callTool('trace', { from: 'login', to: 'bar' });
@@ -178,12 +192,24 @@ describe('trace: dispatch', () => {
   });
 
   it('returns ambiguous with candidates when target has multiple matches', async () => {
-    (executeParameterized as any)
-      .mockResolvedValueOnce([SYMBOL_A])
-      .mockResolvedValue([
-        { id: 'func:db:1', name: 'db', type: 'Function', filePath: 'src/db.ts', startLine: 1, endLine: 10 },
-        { id: 'func:db:2', name: 'db', type: 'Function', filePath: 'src/db2.ts', startLine: 1, endLine: 10 },
-      ]);
+    (executeParameterized as any).mockResolvedValueOnce([SYMBOL_A]).mockResolvedValue([
+      {
+        id: 'func:db:1',
+        name: 'db',
+        type: 'Function',
+        filePath: 'src/db.ts',
+        startLine: 1,
+        endLine: 10,
+      },
+      {
+        id: 'func:db:2',
+        name: 'db',
+        type: 'Function',
+        filePath: 'src/db2.ts',
+        startLine: 1,
+        endLine: 10,
+      },
+    ]);
 
     const result = await backend.callTool('trace', { from: 'A', to: 'db' });
 
@@ -218,10 +244,18 @@ describe('trace: BFS core', () => {
   it('finds direct 1-hop path A→B', async () => {
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_B], {
-        'func:A': [{
-          sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function',
-          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-        }],
+        'func:A': [
+          {
+            sourceId: 'func:A',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
       }),
     );
 
@@ -240,14 +274,30 @@ describe('trace: BFS core', () => {
   it('finds 2-hop path A→C→B', async () => {
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_B], {
-        'func:A': [{
-          sourceId: 'func:A', id: 'func:C', name: 'C', type: 'Function',
-          filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-        }],
-        'func:C': [{
-          sourceId: 'func:C', id: 'func:B', name: 'B', type: 'Function',
-          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 0.95,
-        }],
+        'func:A': [
+          {
+            sourceId: 'func:A',
+            id: 'func:C',
+            name: 'C',
+            type: 'Function',
+            filePath: 'src/c.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
+        'func:C': [
+          {
+            sourceId: 'func:C',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 0.95,
+          },
+        ],
       }),
     );
 
@@ -262,13 +312,28 @@ describe('trace: BFS core', () => {
   });
 
   it('reports furthest reachable node when no path exists', async () => {
-    const SYMBOL_X = { id: 'func:X', name: 'X', type: 'Function', filePath: 'src/x.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_X = {
+      id: 'func:X',
+      name: 'X',
+      type: 'Function',
+      filePath: 'src/x.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_X], {
-        'func:A': [{
-          sourceId: 'func:A', id: 'func:C', name: 'C', type: 'Function',
-          filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-        }],
+        'func:A': [
+          {
+            sourceId: 'func:A',
+            id: 'func:C',
+            name: 'C',
+            type: 'Function',
+            filePath: 'src/c.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
       }),
     );
 
@@ -282,15 +347,49 @@ describe('trace: BFS core', () => {
   });
 
   it('handles cycles without infinite loop', async () => {
-    const SYMBOL_X = { id: 'func:X', name: 'X', type: 'Function', filePath: 'src/x.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_X = {
+      id: 'func:X',
+      name: 'X',
+      type: 'Function',
+      filePath: 'src/x.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_X], {
         'func:A': [
-          { sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
-          { sourceId: 'func:A', id: 'func:A', name: 'A', type: 'Function', filePath: 'src/a.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          {
+            sourceId: 'func:A',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+          {
+            sourceId: 'func:A',
+            id: 'func:A',
+            name: 'A',
+            type: 'Function',
+            filePath: 'src/a.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
         ],
         'func:B': [
-          { sourceId: 'func:B', id: 'func:A', name: 'A', type: 'Function', filePath: 'src/a.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          {
+            sourceId: 'func:B',
+            id: 'func:A',
+            name: 'A',
+            type: 'Function',
+            filePath: 'src/a.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
         ],
       }),
     );
@@ -301,14 +400,72 @@ describe('trace: BFS core', () => {
   }, 5000);
 
   it('respects maxDepth limit', async () => {
-    const SYMBOL_D = { id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, endLine: 5 };
-    const SYMBOL_E = { id: 'func:E', name: 'E', type: 'Function', filePath: 'src/e.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_D = {
+      id: 'func:D',
+      name: 'D',
+      type: 'Function',
+      filePath: 'src/d.ts',
+      startLine: 1,
+      endLine: 5,
+    };
+    const SYMBOL_E = {
+      id: 'func:E',
+      name: 'E',
+      type: 'Function',
+      filePath: 'src/e.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_E], {
-        'func:A': [{ sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
-        'func:B': [{ sourceId: 'func:B', id: 'func:C', name: 'C', type: 'Function', filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
-        'func:C': [{ sourceId: 'func:C', id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
-        'func:D': [{ sourceId: 'func:D', id: 'func:E', name: 'E', type: 'Function', filePath: 'src/e.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }],
+        'func:A': [
+          {
+            sourceId: 'func:A',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
+        'func:B': [
+          {
+            sourceId: 'func:B',
+            id: 'func:C',
+            name: 'C',
+            type: 'Function',
+            filePath: 'src/c.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
+        'func:C': [
+          {
+            sourceId: 'func:C',
+            id: 'func:D',
+            name: 'D',
+            type: 'Function',
+            filePath: 'src/d.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
+        'func:D': [
+          {
+            sourceId: 'func:D',
+            id: 'func:E',
+            name: 'E',
+            type: 'Function',
+            filePath: 'src/e.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
       }),
     );
 
@@ -321,13 +478,21 @@ describe('trace: BFS core', () => {
     const oneHop = {
       'func:A': [
         {
-          sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function',
-          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+          sourceId: 'func:A',
+          id: 'func:B',
+          name: 'B',
+          type: 'Function',
+          filePath: 'src/b.ts',
+          startLine: 1,
+          edgeType: 'CALLS',
+          confidence: 1.0,
         },
       ],
     };
     for (const badDepth of [0, -5, NaN]) {
-      (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_B], oneHop));
+      (executeParameterized as any).mockImplementation(
+        makeResolveMock([SYMBOL_A], [SYMBOL_B], oneHop),
+      );
       const result = await backend.callTool('trace', { from: 'A', to: 'B', maxDepth: badDepth });
       expect(result.status, `maxDepth=${badDepth}`).toBe('ok');
       expect(result.hopCount, `maxDepth=${badDepth}`).toBe(1);
@@ -335,13 +500,28 @@ describe('trace: BFS core', () => {
   });
 
   it('reaches a target that lives in a test file even when includeTests is false', async () => {
-    const SYMBOL_T = { id: 'func:T', name: 'T', type: 'Function', filePath: 'src/t.test.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_T = {
+      id: 'func:T',
+      name: 'T',
+      type: 'Function',
+      filePath: 'src/t.test.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_T], {
-        'func:A': [{
-          sourceId: 'func:A', id: 'func:T', name: 'T', type: 'Function',
-          filePath: 'src/t.test.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-        }],
+        'func:A': [
+          {
+            sourceId: 'func:A',
+            id: 'func:T',
+            name: 'T',
+            type: 'Function',
+            filePath: 'src/t.test.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
       }),
     );
 
@@ -354,21 +534,41 @@ describe('trace: BFS core', () => {
 
   it('still filters a non-target test-file hop when includeTests is false', async () => {
     const graph = {
-      'func:A': [{
-        sourceId: 'func:A', id: 'func:M', name: 'M', type: 'Function',
-        filePath: 'src/m.test.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-      }],
-      'func:M': [{
-        sourceId: 'func:M', id: 'func:B', name: 'B', type: 'Function',
-        filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-      }],
+      'func:A': [
+        {
+          sourceId: 'func:A',
+          id: 'func:M',
+          name: 'M',
+          type: 'Function',
+          filePath: 'src/m.test.ts',
+          startLine: 1,
+          edgeType: 'CALLS',
+          confidence: 1.0,
+        },
+      ],
+      'func:M': [
+        {
+          sourceId: 'func:M',
+          id: 'func:B',
+          name: 'B',
+          type: 'Function',
+          filePath: 'src/b.ts',
+          startLine: 1,
+          edgeType: 'CALLS',
+          confidence: 1.0,
+        },
+      ],
     };
 
-    (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_B], graph));
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], graph),
+    );
     const filtered = await backend.callTool('trace', { from: 'A', to: 'B' });
     expect(filtered.status).toBe('no_path');
 
-    (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_B], graph));
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], graph),
+    );
     const included = await backend.callTool('trace', { from: 'A', to: 'B', includeTests: true });
     expect(included.status).toBe('ok');
     expect(included.hops.map((h: any) => h.name)).toEqual(['A', 'M', 'B']);
@@ -377,10 +577,18 @@ describe('trace: BFS core', () => {
   it('caps the per-level query with a LIMIT and does not truncate a normal trace', async () => {
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_B], {
-        'func:A': [{
-          sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function',
-          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
-        }],
+        'func:A': [
+          {
+            sourceId: 'func:A',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ],
       }),
     );
 
@@ -400,10 +608,23 @@ describe('trace: BFS core', () => {
     // returning exactly that many (none being the target) trips the cap.
     const ROW_CAP = 200;
     const hubRows = Array.from({ length: ROW_CAP }, (_, i) => ({
-      sourceId: 'func:A', id: `func:N${i}`, name: `N${i}`, type: 'Function',
-      filePath: 'src/n.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+      sourceId: 'func:A',
+      id: `func:N${i}`,
+      name: `N${i}`,
+      type: 'Function',
+      filePath: 'src/n.ts',
+      startLine: 1,
+      edgeType: 'CALLS',
+      confidence: 1.0,
     }));
-    const SYMBOL_Z = { id: 'func:Z', name: 'Z', type: 'Function', filePath: 'src/z.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_Z = {
+      id: 'func:Z',
+      name: 'Z',
+      type: 'Function',
+      filePath: 'src/z.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_Z], { 'func:A': hubRows }),
     );
@@ -439,22 +660,53 @@ describe('trace: BFS core', () => {
   });
 
   it('resolves from_uid/to_uid without name-based lookup', async () => {
-    (executeParameterized as any).mockImplementation(
-      (_db: string, query: string, params: any) => {
-        if (params.uid === 'uid:from') return [{ id: 'uid:from', name: 'A', type: 'Function', filePath: 'src/a.ts', startLine: 1, endLine: 10 }];
-        if (params.uid === 'uid:to') return [{ id: 'uid:to', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, endLine: 5 }];
-        if (params.frontierIds?.includes('uid:from')) {
-          return [{ sourceId: 'uid:from', id: 'uid:to', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }];
-        }
-        return [];
-      },
-    );
+    (executeParameterized as any).mockImplementation((_db: string, query: string, params: any) => {
+      if (params.uid === 'uid:from')
+        return [
+          {
+            id: 'uid:from',
+            name: 'A',
+            type: 'Function',
+            filePath: 'src/a.ts',
+            startLine: 1,
+            endLine: 10,
+          },
+        ];
+      if (params.uid === 'uid:to')
+        return [
+          {
+            id: 'uid:to',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            endLine: 5,
+          },
+        ];
+      if (params.frontierIds?.includes('uid:from')) {
+        return [
+          {
+            sourceId: 'uid:from',
+            id: 'uid:to',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ];
+      }
+      return [];
+    });
 
     const result = await backend.callTool('trace', { from_uid: 'uid:from', to_uid: 'uid:to' });
 
     expect(result.status).toBe('ok');
     expect(result.hopCount).toBe(1);
-    const calls = (executeParameterized as any).mock.calls as Array<[string, string, Record<string, unknown>]>;
+    const calls = (executeParameterized as any).mock.calls as Array<
+      [string, string, Record<string, unknown>]
+    >;
     for (const [, cypher] of calls) {
       expect(cypher).not.toMatch(/WHERE n\.name = \$symName/);
     }
@@ -464,18 +716,61 @@ describe('trace: BFS core', () => {
     // A→B→E (dead end) and A→C→D (target). The path is only reachable via the
     // second frontier node (C); a mock that returned just the first frontier
     // node's neighbors would (wrongly) report no_path.
-    const SYMBOL_D = { id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_D = {
+      id: 'func:D',
+      name: 'D',
+      type: 'Function',
+      filePath: 'src/d.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_D], {
         'func:A': [
-          { sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
-          { sourceId: 'func:A', id: 'func:C', name: 'C', type: 'Function', filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          {
+            sourceId: 'func:A',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+          {
+            sourceId: 'func:A',
+            id: 'func:C',
+            name: 'C',
+            type: 'Function',
+            filePath: 'src/c.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
         ],
         'func:B': [
-          { sourceId: 'func:B', id: 'func:E', name: 'E', type: 'Function', filePath: 'src/e.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          {
+            sourceId: 'func:B',
+            id: 'func:E',
+            name: 'E',
+            type: 'Function',
+            filePath: 'src/e.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
         ],
         'func:C': [
-          { sourceId: 'func:C', id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          {
+            sourceId: 'func:C',
+            id: 'func:D',
+            name: 'D',
+            type: 'Function',
+            filePath: 'src/d.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
         ],
       }),
     );
@@ -491,7 +786,16 @@ describe('trace: BFS core', () => {
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_A], [SYMBOL_B], {
         'func:A': [
-          { sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 0 },
+          {
+            sourceId: 'func:A',
+            id: 'func:B',
+            name: 'B',
+            type: 'Function',
+            filePath: 'src/b.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 0,
+          },
         ],
       }),
     );
@@ -503,15 +807,47 @@ describe('trace: BFS core', () => {
   });
 
   it('traverses HAS_METHOD edges and reports a mixed per-hop edge-type chain', async () => {
-    const SYMBOL_CLASS = { id: 'class:K', name: 'K', type: 'Class', filePath: 'src/k.ts', startLine: 1, endLine: 20 };
-    const SYMBOL_TGT = { id: 'func:T2', name: 'T2', type: 'Function', filePath: 'src/t2.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_CLASS = {
+      id: 'class:K',
+      name: 'K',
+      type: 'Class',
+      filePath: 'src/k.ts',
+      startLine: 1,
+      endLine: 20,
+    };
+    const SYMBOL_TGT = {
+      id: 'func:T2',
+      name: 'T2',
+      type: 'Function',
+      filePath: 'src/t2.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(
       makeResolveMock([SYMBOL_CLASS], [SYMBOL_TGT], {
         'class:K': [
-          { sourceId: 'class:K', id: 'func:m', name: 'm', type: 'Method', filePath: 'src/k.ts', startLine: 5, edgeType: 'HAS_METHOD', confidence: 0.95 },
+          {
+            sourceId: 'class:K',
+            id: 'func:m',
+            name: 'm',
+            type: 'Method',
+            filePath: 'src/k.ts',
+            startLine: 5,
+            edgeType: 'HAS_METHOD',
+            confidence: 0.95,
+          },
         ],
         'func:m': [
-          { sourceId: 'func:m', id: 'func:T2', name: 'T2', type: 'Function', filePath: 'src/t2.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          {
+            sourceId: 'func:m',
+            id: 'func:T2',
+            name: 'T2',
+            type: 'Function',
+            filePath: 'src/t2.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
         ],
       }),
     );
@@ -525,7 +861,14 @@ describe('trace: BFS core', () => {
   });
 
   it('returns no_path with furthest null when the source has no outgoing edges', async () => {
-    const SYMBOL_X = { id: 'func:X', name: 'X', type: 'Function', filePath: 'src/x.ts', startLine: 1, endLine: 5 };
+    const SYMBOL_X = {
+      id: 'func:X',
+      name: 'X',
+      type: 'Function',
+      filePath: 'src/x.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_X], {}));
 
     const result = await backend.callTool('trace', { from: 'A', to: 'X' });
@@ -535,23 +878,50 @@ describe('trace: BFS core', () => {
   });
 
   it('uses from_file to disambiguate same-named symbols', async () => {
-    const helperA = { id: 'func:helperA', name: 'helper', type: 'Function', filePath: 'src/a.ts', startLine: 1, endLine: 5 };
-    const target = { id: 'func:target', name: 'target', type: 'Function', filePath: 'src/t.ts', startLine: 1, endLine: 5 };
+    const helperA = {
+      id: 'func:helperA',
+      name: 'helper',
+      type: 'Function',
+      filePath: 'src/a.ts',
+      startLine: 1,
+      endLine: 5,
+    };
+    const target = {
+      id: 'func:target',
+      name: 'target',
+      type: 'Function',
+      filePath: 'src/t.ts',
+      startLine: 1,
+      endLine: 5,
+    };
     (executeParameterized as any).mockImplementation((_db: string, _q: string, params: any) => {
       if (params.symName === 'helper' && params.filePath === 'src/a.ts') return [helperA];
       if (params.symName === 'target') return [target];
       if (params.frontierIds?.includes('func:helperA')) {
-        return [{ sourceId: 'func:helperA', id: 'func:target', name: 'target', type: 'Function', filePath: 'src/t.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }];
+        return [
+          {
+            sourceId: 'func:helperA',
+            id: 'func:target',
+            name: 'target',
+            type: 'Function',
+            filePath: 'src/t.ts',
+            startLine: 1,
+            edgeType: 'CALLS',
+            confidence: 1.0,
+          },
+        ];
       }
       return [];
     });
 
-    const result = await backend.callTool('trace', { from: 'helper', from_file: 'src/a.ts', to: 'target' });
+    const result = await backend.callTool('trace', {
+      from: 'helper',
+      from_file: 'src/a.ts',
+      to: 'target',
+    });
 
     expect(result.status).toBe('ok');
     expect(result.from.filePath).toBe('src/a.ts');
     expect(result.hopCount).toBe(1);
   });
 });
-
-

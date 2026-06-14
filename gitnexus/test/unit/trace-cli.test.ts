@@ -118,9 +118,6 @@ describe('CLI trace command', () => {
   it('forwards --include-tests as includeTests', async () => {
     await traceCommand('A', 'B', { includeTests: true });
 
-    expect(callTool).toHaveBeenCalledWith(
-      'trace',
-      expect.objectContaining({ includeTests: true }),
-    );
+    expect(callTool).toHaveBeenCalledWith('trace', expect.objectContaining({ includeTests: true }));
   });
 });
