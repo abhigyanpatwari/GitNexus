@@ -187,6 +187,17 @@ describe('ciSetupCommand', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  it('rejects a base --port whose proxy port would exceed 65535', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => {
+      throw new Error('process.exit called');
+    });
+    const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
+    await expect(
+      ciSetupCommand({ ci: 'github-actions', deploy: 'docker', port: '65535', outputDir: tempDir }),
+    ).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
   it('--auth none generates no Caddyfile', async () => {
     const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
     await ciSetupCommand({

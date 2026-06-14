@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
+import { spawnSync } from 'child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import { generateFiles } from '../../src/cli/ci-setup/templates.js';
 import type { CiSetupOptions, DetectResult } from '../../src/cli/ci-setup/types.js';
 
@@ -187,6 +191,57 @@ describe('version pinning (U9)', () => {
     const md = gitnexusMd({ version: '9.9.9' });
     expect(md).toContain('"gitnexus@9.9.9"'); // persisted Cursor stdio config — pinned
     expect(md).toContain('npx gitnexus@latest analyze'); // human-run re-index — intentionally unpinned
+  });
+});
+
+describe('generated artifact integrity (U11)', () => {
+  it('generated ACA deploy script is syntactically valid bash (bash -n)', () => {
+    const bashAvailable = spawnSync('bash', ['-c', 'exit 0']).status === 0;
+    if (!bashAvailable) return; // portability: skip where bash is unavailable
+    const files = generateFiles(makeOpts({ deploy: 'azure-container-app' }), DEFAULT_DETECT);
+    const script = files.find((f) => f.relativePath === 'gitnexus-aca-deploy.sh');
+    expect(script).toBeDefined();
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gn-aca-'));
+    try {
+      const p = path.join(dir, 'deploy.sh');
+      writeFileSync(p, script?.content ?? '');
+      const res = spawnSync('bash', ['-n', p], { encoding: 'utf8' });
+      expect(res.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('proxy port follows --port at the upper boundary (65534 -> 65535)', () => {
+    const files = generateFiles(
+      makeOpts({ auth: 'token', deploy: 'docker', port: 65534 }),
+      DEFAULT_DETECT,
+    );
+    const cf = files.find((f) => f.relativePath === 'Caddyfile');
+    expect(cf?.content).toContain(':65535 {');
+    const snip = files.find((f) => f.relativePath === '.claude/gitnexus-mcp-snippet.json');
+    expect(snip?.content).toContain(':65535/api/mcp');
+  });
+
+  it('workflows and docs pin the same version; manual re-index stays @latest', () => {
+    const files = generateFiles(makeOpts({ version: '9.9.9', ci: 'both' }), DEFAULT_DETECT);
+    const wf = files.find((f) => f.relativePath === '.github/workflows/gitnexus-ci.yml');
+    const az = files.find((f) => f.relativePath === 'azure-pipelines-gitnexus.yml');
+    const md = files.find((f) => f.relativePath === 'GITNEXUS.md');
+    expect(wf?.content).toContain('gitnexus@9.9.9 analyze');
+    expect(az?.content).toContain('gitnexus@9.9.9 analyze');
+    expect(md?.content).toContain('"gitnexus@9.9.9"'); // Cursor persisted config
+    expect(md?.content).toContain('npx gitnexus@latest analyze'); // manual re-index — intentional
+    // automation must not leave an unpinned @latest
+    expect(wf?.content).not.toContain('gitnexus@latest');
+    expect(az?.content).not.toContain('gitnexus@latest');
+  });
+
+  it('GITNEXUS.md staleness claims match the generated workflow behavior', () => {
+    const md = gitnexusMd();
+    // the workflow only verifies output exists; the doc must not claim staleness blocking
+    expect(md).not.toContain('stale-index PRs are blocked at CI');
+    expect(md).not.toContain('volume-sharing mechanism');
   });
 });
 
