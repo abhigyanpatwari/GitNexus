@@ -86,6 +86,32 @@ describe('GITNEXUS.md / workflow accuracy (U8)', () => {
   });
 });
 
+describe('security hardening (U5)', () => {
+  it('no-auth compose binds via GITNEXUS_HOST defaulting to loopback', () => {
+    const files = generateFiles(makeOpts({ auth: 'none', port: 4747 }), DEFAULT_DETECT);
+    const dc = files.find((f) => f.relativePath === 'docker-compose.gitnexus.yml');
+    expect(dc?.content).toContain('${GITNEXUS_HOST:-127.0.0.1}:${GITNEXUS_PORT:-4747}:4747');
+    // still valid YAML with the host prefix
+    expect(() => yaml.load(dc?.content ?? '')).not.toThrow();
+  });
+
+  it('Caddyfile carries TLS guidance and a standalone empty-token warning', () => {
+    const files = generateFiles(makeOpts({ auth: 'token' }), DEFAULT_DETECT);
+    const cf = files.find((f) => f.relativePath === 'Caddyfile');
+    expect(cf?.content).toContain('HTTPS');
+    expect(cf?.content).toContain('cleartext');
+    expect(cf?.content).toContain('GITNEXUS_TOKEN MUST be set');
+    // the gate itself is unchanged (fail-closed for a non-empty token)
+    expect(cf?.content).toContain('respond "Unauthorized" 401');
+  });
+
+  it('GITNEXUS.md (token mode) warns the bearer token is cleartext over HTTP', () => {
+    const content = gitnexusMd({ auth: 'token' });
+    expect(content).toContain('cleartext');
+    expect(content).toContain('TLS');
+  });
+});
+
 describe('version pinning (U9)', () => {
   it('pins the GitHub Actions workflow analyze step to the wizard version', () => {
     const files = generateFiles(makeOpts({ version: '9.9.9' }), DEFAULT_DETECT);
