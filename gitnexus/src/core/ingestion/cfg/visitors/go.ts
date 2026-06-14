@@ -869,7 +869,7 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     const afterDefers = walk.finishDefers(normalExits);
     builder.connect(afterDefers, builder.exitIndex, 'seq');
     walk.flushGotos(builder);
-    return builder.finish(harvest.table());
+    return builder.finish(harvest.bindingTable());
   } catch (err) {
     // Never throw out of buildFunctionCfg — a malformed AST shape must skip only
     // this one function's CFG, never drop the whole file's language group (R4).

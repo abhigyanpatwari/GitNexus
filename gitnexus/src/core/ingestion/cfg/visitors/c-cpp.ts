@@ -738,11 +738,11 @@ function buildFunctionCfg(
     walk.finishGotos();
     if (!res) {
       builder.edge(builder.entryIndex, builder.exitIndex, 'seq'); // empty body
-      return builder.finish(harvest.table());
+      return builder.finish(harvest.bindingTable());
     }
     builder.edge(builder.entryIndex, res.entry, 'seq');
     builder.connect(res.exits, builder.exitIndex, 'seq'); // normal fall-off → EXIT
-    return builder.finish(harvest.table());
+    return builder.finish(harvest.bindingTable());
   } catch (err) {
     // Never throw out of buildFunctionCfg — a malformed AST shape must skip only
     // this one function's CFG, never drop the whole file's language group (R4).

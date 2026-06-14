@@ -116,7 +116,7 @@ export class CCppHarvester {
   }
 
   /** The completed binding table — pass to `CfgBuilder.finish`. */
-  table(): readonly BindingEntry[] {
+  bindingTable(): readonly BindingEntry[] {
     return this.bindings;
   }
 
