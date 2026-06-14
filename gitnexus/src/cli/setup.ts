@@ -21,6 +21,7 @@ import {
   skillTarget,
   hookTarget,
   detectIndentation,
+  type EditorId,
 } from './editor-targets.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -83,6 +84,37 @@ interface SetupResult {
   configured: string[];
   skipped: string[];
   errors: string[];
+}
+
+const CODING_AGENT_IDS = {
+  cursor: 'cursor',
+  claude: 'claude',
+  antigravity: 'antigravity',
+  opencode: 'opencode',
+  codex: 'codex',
+} as const satisfies Record<EditorId, EditorId>;
+const SUPPORTED_CODING_AGENTS = Object.values(CODING_AGENT_IDS);
+
+function selectedCodingAgents(values: string[] | string | undefined): Set<EditorId> | null {
+  if (values == null) return new Set(SUPPORTED_CODING_AGENTS);
+  const rawValues = Array.isArray(values) ? values : [values];
+  const requested = rawValues
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const invalid = requested.filter(
+    (value): value is string => !SUPPORTED_CODING_AGENTS.includes(value as EditorId),
+  );
+  if (requested.length === 0 || invalid.length > 0) {
+    const detail =
+      requested.length === 0
+        ? 'No coding agents were provided.'
+        : `Unknown: ${invalid.join(', ')}.`;
+    process.stderr.write(`${detail} Valid values: ${SUPPORTED_CODING_AGENTS.join(', ')}.\n`);
+    process.exitCode = 1;
+    return null;
+  }
+  return new Set(requested as EditorId[]);
 }
 
 /**
@@ -968,7 +1000,11 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
 
 // ─── Main command ──────────────────────────────────────────────────
 
-export const setupCommand = async () => {
+export const setupCommand = async (options?: { codingAgent?: string[] | string }) => {
+  const explicitSelection = options?.codingAgent != null;
+  const selected = selectedCodingAgents(options?.codingAgent);
+  if (!selected) return;
+
   console.log('');
   console.log('  GitNexus Setup');
   console.log('  ==============');
@@ -985,20 +1021,24 @@ export const setupCommand = async () => {
   };
 
   // Detect and configure each editor's MCP
-  await setupCursor(result);
-  await setupClaudeCode(result);
-  await setupAntigravity(result);
-  await setupOpenCode(result);
-  await setupCodex(result);
+  if (selected.has('cursor')) await setupCursor(result);
+  if (selected.has('claude')) await setupClaudeCode(result);
+  if (selected.has('antigravity')) await setupAntigravity(result);
+  if (selected.has('opencode')) await setupOpenCode(result);
+  if (selected.has('codex')) await setupCodex(result);
 
   // Install global skills for platforms that support them
-  await installClaudeCodeSkills(result);
-  await installClaudeCodeHooks(result);
-  await installAntigravitySkills(result);
-  await installAntigravityHooks(result);
-  await installCursorSkills(result);
-  await installOpenCodeSkills(result);
-  await installCodexSkills(result);
+  if (selected.has('claude')) {
+    await installClaudeCodeSkills(result);
+    await installClaudeCodeHooks(result);
+  }
+  if (selected.has('antigravity')) {
+    await installAntigravitySkills(result);
+    await installAntigravityHooks(result);
+  }
+  if (selected.has('cursor')) await installCursorSkills(result);
+  if (selected.has('opencode')) await installOpenCodeSkills(result);
+  if (selected.has('codex')) await installCodexSkills(result);
 
   // Print results
   if (result.configured.length > 0) {
@@ -1032,10 +1072,17 @@ export const setupCommand = async () => {
   console.log(
     `    Skills installed to: ${result.configured.filter((c) => c.includes('skills')).length > 0 ? result.configured.filter((c) => c.includes('skills')).join(', ') : 'none'}`,
   );
+  const configurationSucceeded = result.configured.length > 0;
+  if (explicitSelection && !configurationSucceeded) {
+    process.stderr.write('None of the explicitly selected coding agents were configured.\n');
+    process.exitCode = 1;
+  }
   console.log('');
-  console.log('  Next steps:');
-  console.log('    1. cd into any git repo');
-  console.log('    2. Run: gitnexus analyze');
-  console.log('    3. Open the repo in your editor — MCP is ready!');
+  if (configurationSucceeded) {
+    console.log('  Next steps:');
+    console.log('    1. cd into any git repo');
+    console.log('    2. Run: gitnexus analyze');
+    console.log('    3. Open the repo in your editor — MCP is ready!');
+  }
   console.log('');
 };

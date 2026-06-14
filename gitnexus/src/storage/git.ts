@@ -4,6 +4,8 @@ import path from 'path';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
+const chompGitOutput = (value: Buffer): string => value.toString().replace(/\r?\n$/, '');
+
 export const isGitRepo = (repoPath: string): boolean => {
   try {
     execSync('git rev-parse --is-inside-work-tree', {
@@ -102,14 +104,14 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
  */
 export const getGitRoot = (fromPath: string): string | null => {
   try {
-    const raw = execSync('git rev-parse --show-toplevel', {
-      cwd: fromPath,
-      // Suppress stderr -- see getCurrentCommit comment and #1172.
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
-      .toString()
-      .trim();
+    const raw = chompGitOutput(
+      execSync('git rev-parse --show-toplevel', {
+        cwd: fromPath,
+        // Suppress stderr -- see getCurrentCommit comment and #1172.
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      }),
+    );
     // On Windows, git returns /d/Projects/Foo — path.resolve normalizes to D:\Projects\Foo
     return path.resolve(raw);
   } catch {
@@ -146,13 +148,13 @@ export const getGitRoot = (fromPath: string): string | null => {
  */
 export const getCanonicalRepoRoot = (fromPath: string): string | null => {
   try {
-    const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', {
-      cwd: fromPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
-      .toString()
-      .trim();
+    const commonDir = chompGitOutput(
+      execSync('git rev-parse --path-format=absolute --git-common-dir', {
+        cwd: fromPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      }),
+    );
     if (!commonDir) return null;
     // Common dir is `<repo>/.git` for both the main checkout and all
     // linked worktrees. Its parent is the canonical repo root.

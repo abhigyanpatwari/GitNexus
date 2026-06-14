@@ -55,6 +55,20 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/Unknown key "defalutBranch"/);
   });
 
+  it('accepts embeddingBaseUrl / embeddingModel but rejects embeddingDims (CLI/env-only)', async () => {
+    // URL + MODEL are read lazily at runtime, so they are valid config keys.
+    await writeRc(JSON.stringify({ embeddingBaseUrl: 'http://h/v1', embeddingModel: 'm' }));
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      embeddingBaseUrl: 'http://h/v1',
+      embeddingModel: 'm',
+    });
+    // DIMS is read at module-load (before .gitnexusrc), so it is intentionally
+    // not a config key — a typo'd/intended value fails closed rather than
+    // silently sizing nothing.
+    await writeRc(JSON.stringify({ embeddingDims: 4096 }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/Unknown key "embeddingDims"/);
+  });
+
   it('parses the flat form and maps aliases onto AnalyzeOptions', async () => {
     await writeRc(
       JSON.stringify({

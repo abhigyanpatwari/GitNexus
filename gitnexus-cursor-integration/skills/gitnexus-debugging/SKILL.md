@@ -15,10 +15,10 @@ description: Trace bugs through call chains using knowledge graph
 ## Workflow
 
 ```
-1. query({query: "<error or symptom>"})            → Find related execution flows
+1. query({search_query: "<error or symptom>"})            → Find related execution flows
 2. context({name: "<suspect>"})                    → See callers/callees/processes
 3. READ gitnexus://repo/{name}/process/{name}                → Trace execution flow
-4. cypher({query: "MATCH path..."})                 → Custom traces if needed
+4. cypher({statement: "MATCH path..."})                 → Custom traces if needed
 ```
 
 > If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
@@ -49,7 +49,7 @@ description: Trace bugs through call chains using knowledge graph
 
 **query** — find code related to error:
 ```
-query({query: "payment validation error"})
+query({search_query: "payment validation error"})
 → Processes: CheckoutFlow, ErrorHandling
 → Symbols: validatePayment, handlePaymentError, PaymentException
 ```
@@ -71,7 +71,7 @@ RETURN [n IN nodes(path) | n.name] AS chain
 ## Example: "Payment endpoint returns 500 intermittently"
 
 ```
-1. query({query: "payment error handling"})
+1. query({search_query: "payment error handling"})
    → Processes: CheckoutFlow, ErrorHandling
    → Symbols: validatePayment, handlePaymentError
 

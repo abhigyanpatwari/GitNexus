@@ -24,6 +24,7 @@ import {
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
+  deleteAllInterprocTaintPaths,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -48,7 +49,18 @@ import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
 } from './ingestion/cfg/emit.js';
+import {
+  DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_TAINT_HOPS,
+} from './ingestion/taint/propagate.js';
+import {
+  DEFAULT_MAX_INTERPROC_HOPS,
+  DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+} from './ingestion/taint/interproc-solver.js';
+import { DEFAULT_PDG_MAX_INTERPROC_EDGES } from './ingestion/taint/interproc-emit.js';
+import { taintModelVersion } from './ingestion/taint/typescript-model.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
   extractChangedSubgraph,
@@ -141,6 +153,23 @@ export interface AnalyzeOptions {
   /** Per-function REACHING_DEF edge cap (#2082 M2). Forwarded to
    *  `PipelineOptions.pdgMaxReachingDefEdgesPerFunction`. */
   pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function CDG edge cap (#2085 M5). Forwarded to
+   *  `PipelineOptions.pdgMaxCdgEdgesPerFunction`. No CLI flag or rc key —
+   *  programmatic / server path only, like the other pdg caps. */
+  pdgMaxCdgEdgesPerFunction?: number;
+  /** Per-function taint findings cap (#2083 M3). Forwarded to
+   *  `PipelineOptions.pdgMaxTaintFindingsPerFunction`. No CLI flag or rc key
+   *  (KTD8) — programmatic / server path only, like the other pdg caps. */
+  pdgMaxTaintFindingsPerFunction?: number;
+  /** Per-finding taint hop cap (#2083 M3, KTD6). Forwarded to
+   *  `PipelineOptions.pdgMaxTaintHops`. No CLI flag or rc key (KTD8). */
+  pdgMaxTaintHops?: number;
+  /** Per-run cross-function findings/hops/edges caps (#2084 review P1-3).
+   *  Forwarded to the matching `PipelineOptions.pdgMaxInterproc*`; resolved
+   *  into `RepoMeta.pdg`. No CLI flag or rc key (KTD8). */
+  pdgMaxInterprocFindings?: number;
+  pdgMaxInterprocHops?: number;
+  pdgMaxInterprocEdges?: number;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -343,7 +372,16 @@ export const collectBranchCacheKeys = async (
  */
 type PdgOptions = Pick<
   AnalyzeOptions,
-  'pdg' | 'pdgMaxFunctionLines' | 'pdgMaxEdgesPerFunction' | 'pdgMaxReachingDefEdgesPerFunction'
+  | 'pdg'
+  | 'pdgMaxFunctionLines'
+  | 'pdgMaxEdgesPerFunction'
+  | 'pdgMaxReachingDefEdgesPerFunction'
+  | 'pdgMaxCdgEdgesPerFunction'
+  | 'pdgMaxTaintFindingsPerFunction'
+  | 'pdgMaxTaintHops'
+  | 'pdgMaxInterprocFindings'
+  | 'pdgMaxInterprocHops'
+  | 'pdgMaxInterprocEdges'
 >;
 
 export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
@@ -354,6 +392,29 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         maxReachingDefEdgesPerFunction:
           options.pdgMaxReachingDefEdgesPerFunction ??
           DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+        // #2085 M5: control-dependence cap. Absent on any pre-M5 (M2/M3/M4-era)
+        // stamp → the key-union pdgModeMismatch trips the first CDG-aware run
+        // over an existing `--pdg` index and forces the full writeback that
+        // materialises CDG edges for every file without `--force`.
+        maxCdgEdgesPerFunction:
+          options.pdgMaxCdgEdgesPerFunction ?? DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
+        // #2083 M3: taint caps + model identity. The key-union comparator in
+        // pdgModeMismatch picks these up structurally — an M2-era stamp lacks
+        // all three, so the first M3 run over an M2 `--pdg` index trips a full
+        // writeback that populates TAINTED/SANITIZES rows without `--force`.
+        maxTaintFindingsPerFunction:
+          options.pdgMaxTaintFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+        maxTaintHops: options.pdgMaxTaintHops ?? DEFAULT_PDG_MAX_TAINT_HOPS,
+        // #2084 review P1-3: cross-function caps. Absent on an M3-era stamp →
+        // pdgModeMismatch trips the first run that adds them (key-union),
+        // forcing the full writeback that re-materialises TAINT_PATH bounded.
+        maxInterprocFindings: options.pdgMaxInterprocFindings ?? DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+        maxInterprocHops: options.pdgMaxInterprocHops ?? DEFAULT_MAX_INTERPROC_HOPS,
+        maxInterprocEdges: options.pdgMaxInterprocEdges ?? DEFAULT_PDG_MAX_INTERPROC_EDGES,
+        // Built-in model digest (KTD7/R7): persisted findings must never
+        // outlive the model that produced them — ANY model-content change
+        // ships as a new digest and repopulates the taint edges.
+        taintModelVersion,
       }
     : undefined;
 
@@ -753,6 +814,12 @@ export async function runFullAnalysis(
       pdgMaxFunctionLines: options.pdgMaxFunctionLines,
       pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
       pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+      pdgMaxTaintHops: options.pdgMaxTaintHops,
+      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
       fetchWrappers: options.fetchWrappers,
     },
   );
@@ -972,6 +1039,15 @@ export async function runFullAnalysis(
       //    from the fresh pipeline output below. Required for the
       //    "Leiden runs on the FULL graph" correctness invariant.
       await deleteAllCommunitiesAndProcesses();
+      // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+      //     — their validity is a whole-program property (an A→C flow can be
+      //     invalidated by a change to an intermediate function on a third
+      //     file), so endpoint-writability extraction can't refresh them.
+      //     extractChangedSubgraph re-includes all of them from the fresh
+      //     graph (isGraphWideRelType), mirroring Community/Process.
+      if (options.pdg === true) {
+        await deleteAllInterprocTaintPaths();
+      }
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
       //    only that. Unchanged-file rows in the DB stay untouched. Pass
@@ -1360,6 +1436,7 @@ export async function runFullAnalysis(
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
           },
         );
       } catch {

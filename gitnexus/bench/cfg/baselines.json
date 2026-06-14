@@ -9,20 +9,20 @@
     "_note": "#2081 M1 / #2082 M2: ONE function, N coalescing statements (extendBlock text accumulation + per-statement fact harvest). Runs at 2000->8000. M2 REWROTE the old 'output is constant 4 blocks' note: statement facts make disk/heap LINEAR in N (a free gate on the harvest payload); TIME still guards the concat path (array-join ~1.0; a genuine O(n^2) re-join accumulation is ~3.8). M2 adds rd_scaling_budget (measured ~0.74) and disk_bytes_large_max -- an ABSOLUTE ceiling ~1.35x the measured indexed-encoding bytes (969,986 at N=8000, ~121 B/stmt); a named-record encoding regression (~4x facts bytes) blows it. Re-baseline the fingerprint only on an intentional CFG/harvest-shape change (the canon now includes statements+bindings)."
   },
   "many-functions": {
-    "fingerprint": "f3bcc5e6ef4cf58aefe4e7d801a8fea0215494b9688833e501c2afc6df029c1b",
+    "fingerprint": "d881f60e77f0262bdc1b5c7049aa4acf5071e0eabc536476be293c3a133e626e",
     "scaling_budget": 1.5,
     "disk_bytes_budget": 1.2,
     "heap_budget": 1.3,
     "rd_scaling_budget": 2.0,
-    "_note": "#2081 M1 / #2082 M2: N small branchy functions (collect walk + per-function build + per-function solve). Time ~1.0, disk ~1.01, heap ~1.0, rd ~0.86 (solver is per-function; N functions scale linearly)."
+    "_note": "#2081 M1 / #2082 M2 / #2083 M3 U1: N small branchy functions (collect walk + per-function build + per-function solve). Time ~1.0, disk ~1.01, heap ~1.0, rd ~0.86 (solver is per-function; N functions scale linearly). M3 U1 re-fingerprinted: taint sites join StatementFacts (a()/b() call sites); disk_large 2565641->2721641 (+6.1% measured site-harvest cost at N=2000)."
   },
   "branchy": {
-    "fingerprint": "5b5886521ab21604df8f78af98c8c28a6be8e64c24f3d67b165c2d96ba2a3d52",
+    "fingerprint": "936765bba5c3f8fc7058737c48351e03e4e1da7fed448467e8fcc8a0fb7786ce",
     "scaling_budget": 1.8,
     "disk_bytes_budget": 1.2,
     "heap_budget": 1.3,
     "rd_scaling_budget": 2.0,
-    "_note": "#2081 M1 / #2082 M2: ONE function, N sequential ifs (block/edge growth in one CFG). Time ~1.1-1.25 (noisiest scenario; budget 1.8 absorbs noise, catches ~4.0 quadratic), disk ~1.03, heap ~1.0, rd ~0.7."
+    "_note": "#2081 M1 / #2082 M2 / #2083 M3 U1: ONE function, N sequential ifs (block/edge growth in one CFG). Time ~1.1-1.25 (noisiest scenario; budget 1.8 absorbs noise, catches ~4.0 quadratic), disk ~1.03, heap ~1.0, rd ~0.7. M3 U1 re-fingerprinted (s{i}() call sites); disk_large 908964->993854 (+9.3%)."
   },
   "dense-bindings": {
     "fingerprint": "e4d7eb3c7e8b3772423af25cef391e0e6b68067b554819e81b543439a487403f",
@@ -33,12 +33,25 @@
     "_note": "#2082 M2: N bindings live across ~N blocks in one loop -- bindings x blocks scale JOINTLY (the solver-lattice stressor). The overlay design measures rd ~5.2 normalized: the OUT spine copy on genning blocks is O(V) per block, which is quadratic when V scales with B (bounded in prod by maxFunctionLines; real functions have V~10-40). Budget 10 deliberately tolerates that known shape and exists to catch the repo's recurring per-item-rescan class (a per-use scan over all defs is O(n^3) here, ratio >=16). If rd drops well below 5, tighten."
   },
   "fact-fanout": {
-    "fingerprint": "488e63e072d514a9229e21872615e32c7b099ccbd65ec8c045ba517568fd3e5d",
+    "fingerprint": "83a8243a8aff117f69aeecb39d02a483e6cca70439d75f63e433f4e4ac85578f",
     "scaling_budget": 1.8,
     "disk_bytes_budget": 1.2,
     "heap_budget": 1.3,
     "rd_scaling_budget": 3.0,
     "facts_large_max": 16000,
-    "_note": "#2082 M2: N switch-arm defs of one variable + N later uses -- facts are O(defs x uses) BY SPEC, so the gate is BOUNDEDNESS, not linearity: with the production fact limit engaged (DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION=16000) the materialized fact count stays pinned at the limit as N grows (facts_large_max), and rd time stays bounded (measured ~1.4). Losing the maxFacts early-stop shows as facts_large exploding quadratically."
+    "_note": "#2082 M2 / #2083 M3 U1: N switch-arm defs of one variable + N later uses -- facts are O(defs x uses) BY SPEC, so the gate is BOUNDEDNESS, not linearity: with the production fact limit engaged (DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION=16000) the materialized fact count stays pinned at the limit as N grows (facts_large_max), and rd time stays bounded (measured ~1.4). Losing the maxFacts early-stop shows as facts_large exploding quadratically. M3 U1 re-fingerprinted (u{i}(x) call sites); disk_large 996737->1107627 (+11.1%)."
+  },
+  "taint-dense": {
+    "fingerprint": "218a1a0c7e092550c233607c67daa401543a25bf8d3f122899d30cd9c30c3a89",
+    "scaling_budget": 1.5,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "disk_bytes_large_max": 3150000,
+    "taint_findings_per_fn_pin": 8,
+    "taint_scaling_budget": 2.0,
+    "taint_reason_bytes_large_max": 198000,
+    "taint_zero_match_budget": 0.5,
+    "_note": "#2083 M3 U7 (R10): N functions, each with 12 req.body sources + a 4-hop chain + 13 eval sinks (13 deduped findings/fn) at 125->500 fns; the zero-match control (inp.payload/evalish) keeps the identical CFG shape with zero model hits. BOUNDEDNESS pin: kept findings/function == 8 (the scenario cap) at BOTH sizes -- above means the cap was lost, below means detection regressed; total findings grow linearly with N by design. disk_bytes_large_max is the LOAD-BEARING site-harvest absolute ceiling (densest sites of the suite; measured 2335772 at N=500, ceiling ~1.35x). taint_reason_bytes_large_max caps the persisted TAINTED reason bytes (measured 146827 = ~37 B/finding, ceiling ~1.35x; blows on hop-encoding bloat or cap loss). taint_zero_match_budget 0.5 vs measured 0.15: the zero-match pass (match gate only, no solver) must stay a small fraction of the match-dense pass. taint scaling measured ~0.93 (per-function work is N-linear); time/disk/heap/rd ratios all ~1.0."
   }
 }

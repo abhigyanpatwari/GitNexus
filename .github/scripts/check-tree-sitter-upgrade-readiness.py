@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
-"""Monitor tree-sitter 0.25 upgrade readiness.
+"""Monitor tree-sitter 0.25 upgrade readiness — two things Dependabot can't see:
 
-Tracks two things Dependabot cannot see:
+  1. Peer-dep compatibility: when every grammar's *latest npm release* accepts
+     tree-sitter@0.25.0 (so we can upgrade without --legacy-peer-deps).
+  2. Vendored upstream drift: whether a vendored grammar's upstream parser.c moved.
 
-  1. Peer-dep compatibility. Each tree-sitter-* grammar declares a peer
-     dependency on the tree-sitter runtime. We want to know when every
-     grammar's *latest npm release* satisfies tree-sitter@0.25.0 so we
-     can upgrade without --legacy-peer-deps.
-
-  2. Vendored upstream drift. vendor/tree-sitter-proto/ is a snapshot of
-     coder3101/tree-sitter-proto's parser.c. When upstream moves, we want
-     to know whether we can pick it up.
-
-Invoked from .github/workflows/tree-sitter-upgrade-readiness.yml daily.
-Runs locally too:
-
-    python3 .github/scripts/check-tree-sitter-upgrade-readiness.py
-
-Outputs Markdown to stdout. Exit 0 when every grammar is upgrade-ready
-and the vendored proto is in sync. Exit 1 when blockers remain (the
-workflow uses this to open or update a tracking issue).
-
-No external deps -- stdlib only, so it runs on any vanilla runner.
+Invoked daily from tree-sitter-upgrade-readiness.yml; runs locally too. Outputs
+Markdown to stdout; exit 1 when blockers remain (the workflow upserts a tracking
+issue). stdlib-only — runs on any vanilla runner.
+    python3 .github/scripts/check-tree-sitter-upgrade-readiness.py [--offline | --assert-current]
 """
 
 from __future__ import annotations
@@ -37,6 +24,11 @@ import urllib.request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GITNEXUS_DIR = REPO_ROOT / "gitnexus"
+
+# Offline mode (--offline flag or GITNEXUS_TS_READINESS_OFFLINE=1): skip ALL network
+# so the script + tests run hermetically. npm columns render "n/a (offline)";
+# vendored ABIs are still read from the repo. The read-path mirror of --assert-current.
+OFFLINE = os.environ.get("GITNEXUS_TS_READINESS_OFFLINE", "") not in ("", "0", "false")
 
 # ── Upgrade target ──────────────────────────────────────────────────────
 # The runtime version we want to upgrade TO. Update this when the goal
@@ -78,21 +70,67 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     "tree-sitter-proto":      ("coder3101/tree-sitter-proto",        "main",   "src/parser.c"),
 }
 
-# Grammars deliberately held below npm latest. The readiness report surfaces
-# these so reviewers can tell intentional pins apart from drift, and so the
-# context for each pin (which issue motivated it) is visible at a glance.
-# Add an entry whenever you pin a grammar below npm latest.
+# npm-installed grammars deliberately held below npm latest (surfaced so reviewers
+# can tell intentional pins from drift). Add an entry when you pin an npm grammar.
+# VENDORED grammars carry their hold in .github/vendored-grammars.json instead, so a
+# vendored grammar's hold lives in one place — tree-sitter-c's is there, not here.
 INTENTIONAL_PINS: dict[str, str] = {
-    "tree-sitter-c": (
-        "#1242 — last release built against the tree-sitter@0.21 ABI; "
-        "tree-sitter-c@0.23.x prebuilds segfault on Windows under tree-sitter@0.21.1"
-    ),
     "tree-sitter-cpp": (
         "#1242 — last 0.23.x release before tree-sitter-cpp added a runtime "
         "dep on the broken-ABI tree-sitter-c@^0.23.1; pinning here removes "
         "the need for a transitive override"
     ),
 }
+
+
+def load_vendored_manifest() -> dict[str, dict]:
+    """Load the shared vendored-grammar manifest (.github/vendored-grammars.json).
+
+    The single source of truth — shared with update-vendored-grammars.mjs — for
+    which grammars are *vendored* (shipped from gitnexus/vendor/<name>, not npm)
+    and any policy ``hold`` (e.g. tree-sitter-c, #1242/#858). Membership routes a
+    grammar to the vendored branch, which reads its ABI from the repo instead of
+    node_modules (the #858 source of the old bare ``?``). Returns
+    ``{ name: {"hold": str | None} }``; upstream-drift coords stay in ``GRAMMARS``.
+    """
+    manifest_path = REPO_ROOT / ".github" / "vendored-grammars.json"
+    # Fail loud with a pointer, not a bare traceback: this runs at module import,
+    # so a missing/corrupt manifest would otherwise crash both the script and any
+    # test that imports it with an opaque FileNotFoundError/JSONDecodeError.
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"vendored-grammars manifest not found at {manifest_path}. "
+            f"It is the shared source of truth for vendored grammars "
+            f"(see CONTRIBUTING.md → CI automation contracts)."
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"vendored-grammars manifest at {manifest_path} is not valid JSON: {exc}."
+        ) from exc
+    out: dict[str, dict] = {}
+    for key, g in (data.get("grammars") or {}).items():
+        name = g.get("name")
+        if not name:
+            raise SystemExit(
+                f"vendored-grammars manifest entry {key!r} is missing a 'name' field "
+                f"({manifest_path})."
+            )
+        # Defense-in-depth (#2187): `name` is joined into gitnexus/vendor/<name>, so
+        # reject anything not a plain grammar name before it can traverse ("../etc").
+        if not re.fullmatch(r"tree-sitter-[a-z0-9-]+", name):
+            raise SystemExit(
+                f"vendored-grammars manifest entry {key!r} has an invalid grammar "
+                f"name {name!r} (must match tree-sitter-[a-z0-9-]+)."
+            )
+        out[name] = {"hold": g.get("hold")}
+    return out
+
+
+# Vendored set + holds, keyed by full grammar name (e.g. "tree-sitter-c").
+VENDORED: dict[str, dict] = load_vendored_manifest()
+VENDORED_NAMES: frozenset[str] = frozenset(VENDORED)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -134,6 +172,8 @@ def npm_view_json(pkg: str) -> dict | None:
     being available (it's a batch file on Windows which complicates
     subprocess calls).
     """
+    if OFFLINE:
+        return None
     url = f"https://registry.npmjs.org/{pkg}/latest"
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -190,6 +230,8 @@ def fetch_text(url: str, timeout: int = 8) -> str | None:
     Adds an Authorization header for github.com URLs when GITHUB_TOKEN is
     set (raises the rate limit from 60 to 5 000 requests/hour).
     """
+    if OFFLINE:
+        return None
     headers: dict[str, str] = {}
     # Parse the URL and check the hostname rather than substring-matching
     # on the full URL string (CodeQL py/incomplete-url-substring-sanitization).
@@ -231,14 +273,8 @@ def md_h(text: str, level: int = 2) -> str:
 
 
 def _first_sentence(text: str) -> str:
-    """Return the leading sentence of a free-form rationale string.
-
-    Vendor package.json `_vendoredBy` fields often look like
-    "<reason>. <install-script breadcrumb>. Do NOT <warning>." — the
-    first sentence is what reviewers actually want to read; the rest is
-    noise in this context. Match a sentence-ending '.' followed by
-    whitespace; fall back to the whole string if nothing matches.
-    """
+    """Return the leading sentence of a `_vendoredBy` rationale (the rest tails off
+    into install-script breadcrumbs); fall back to the whole string."""
     text = text.strip()
     match = re.search(r"\.\s+[A-Z]", text)
     return text[: match.start() + 1] if match else text
@@ -262,21 +298,26 @@ def range_includes(spec: str | None, version: str) -> bool:
     return spec.strip() == version.strip()
 
 
-def is_vendored_pin(spec: str | None) -> bool:
-    return bool(spec) and spec.startswith(("file:", "git", "http"))
+def vendored_abi_from_repo(name: str, parser_path: str) -> int | None:
+    """Read a vendored grammar's ABI directly from gitnexus/vendor/<name>.
+
+    Local-only (no network) — the offline half of ``vendored_drift_summary``,
+    factored out so the hermetic ``--assert-current`` gate can introspect vendored
+    ABIs without triggering the upstream-drift fetches it never uses (#858 review).
+    """
+    vendor_dir = GITNEXUS_DIR / "vendor" / name
+    vendored_parser = vendor_dir / parser_path
+    if not vendored_parser.is_file():
+        vendored_parser = vendor_dir / "src" / "parser.c"
+    return extract_language_version(vendored_parser)
 
 
 def vendored_drift_summary(
     name: str, upstream_repo: str, upstream_branch: str, parser_path: str
 ) -> dict:
-    """Inspect a vendored grammar under gitnexus/vendor/<name>.
-
-    Returns the vendored package.json's ``version`` and ``_vendoredBy``
-    fields (which carry the human rationale for vendoring), the vendored
-    parser's ABI, and a comparison against upstream main. We deliberately
-    rely on ``_vendoredBy`` rather than a parallel registry in this
-    script: the rationale belongs next to the vendored sources, not in
-    a daily-running CI script.
+    """Inspect a vendored grammar under gitnexus/vendor/<name>: returns its
+    package.json ``version`` + ``_vendoredBy`` (the rationale, kept next to the
+    sources), the vendored ABI, and a comparison against upstream main.
     """
     vendor_dir = GITNEXUS_DIR / "vendor" / name
     pkg: dict = {}
@@ -290,7 +331,7 @@ def vendored_drift_summary(
     vendored_parser = vendor_dir / parser_path
     if not vendored_parser.is_file():
         vendored_parser = vendor_dir / "src" / "parser.c"
-    vendored_abi = extract_language_version(vendored_parser)
+    vendored_abi = vendored_abi_from_repo(name, parser_path)
 
     upstream_url = (
         f"https://raw.githubusercontent.com/{upstream_repo}/"
@@ -302,10 +343,13 @@ def vendored_drift_summary(
     sha_text = fetch_text(
         f"https://api.github.com/repos/{upstream_repo}/commits/{upstream_branch}"
     )
-    upstream_sha = "?"
+    # Labeled fallback rather than a bare "?": in CI this fetch succeeds, but
+    # offline (or on a transient API miss) the report should say *why* it's
+    # blank instead of leaving a placeholder (#858).
+    upstream_sha = "unknown"
     if sha_text:
         try:
-            upstream_sha = json.loads(sha_text).get("sha", "?")[:12]
+            upstream_sha = json.loads(sha_text).get("sha", "unknown")[:12]
         except json.JSONDecodeError:
             pass
 
@@ -321,7 +365,9 @@ def vendored_drift_summary(
 
     return {
         "name": name,
-        "vendored_version": pkg.get("version", "?"),
+        # Labeled fallback, never a bare "?": a vendor package.json should always
+        # carry a version, but if one is missing the report says so plainly (#858).
+        "vendored_version": pkg.get("version") or "unknown",
         "vendored_by": pkg.get("_vendoredBy"),
         "vendored_abi": vendored_abi,
         "upstream_repo": upstream_repo,
@@ -336,27 +382,14 @@ def vendored_drift_summary(
 
 
 def assert_current() -> int:
-    """Assert every grammar's ABI is loadable by the CURRENT runtime.
+    """Assert every grammar's compiled ABI loads on the CURRENT runtime.
 
-    Unlike the readiness report (which probes the npm registry + upstream
-    main for the *target* runtime), this mode is hermetic and offline: it
-    reads only what's checked out / installed locally and asserts each
-    grammar's compiled ABI lies within the current runtime's
-    ``RUNTIME_ABI_RANGES`` window. It is the static half of the #1922 ABI
-    gate; the runtime load-smoke (`parser-loader-abi.test.ts`) is the
-    dynamic half.
-
-    Coverage, reusing the existing helpers:
-      - npm-installed grammars: ABI from node_modules/<name>/<parser.c>.
-      - vendored grammars (dart/proto/swift): ABI via ``vendored_drift_summary``.
-      - Swift is prebuilt-only (no parser.c) → not introspectable here;
-        treated as "covered by the runtime load-smoke", not asserted.
-      - INTENTIONAL_PINS are honored: a pinned grammar is expected to sit at
-        an ABI the current runtime loads (that's *why* it's pinned), so it is
-        asserted like any other rather than skipped.
-
+    The hermetic/offline static half of the #1922 ABI gate (the runtime
+    load-smoke is the dynamic half): reads only local files — npm ABIs from
+    node_modules/<name>, vendored ABIs from gitnexus/vendor/<name> via
+    ``vendored_abi_from_repo`` (no network). A prebuilt-only vendor (no
+    parser.c) is skipped; INTENTIONAL_PINS are asserted like any other grammar.
     Returns 0 when every introspectable grammar is in range, 1 otherwise.
-    Prints a plain-text (non-Markdown) report so CI logs stay readable.
     """
     current_runtime = read_current_runtime()
     abi_range = RUNTIME_ABI_RANGES.get(current_runtime)
@@ -380,13 +413,20 @@ def assert_current() -> int:
 
     for name, (upstream_repo, upstream_branch, parser_path) in sorted(GRAMMARS.items()):
         pinned_spec = pinned_versions.get(name, "—")
-        pin_note = f" [intentional pin: {pinned_spec}]" if name in INTENTIONAL_PINS else ""
+        if name in VENDORED_NAMES and VENDORED[name].get("hold"):
+            pin_note = " [vendored, held]"
+        elif name in INTENTIONAL_PINS:
+            pin_note = f" [intentional pin: {pinned_spec}]"
+        else:
+            pin_note = ""
 
-        if is_vendored_pin(pinned_spec):
-            v = vendored_drift_summary(name, upstream_repo, upstream_branch, parser_path)
-            abi = v["vendored_abi"]
+        # Vendored grammars: ABI read locally from the repo via vendored_abi_from_repo
+        # (NOT vendored_drift_summary, which fetches upstream — this gate is hermetic),
+        # so the offline #1922 gate covers them instead of skipping them (#858/#2187).
+        if name in VENDORED_NAMES:
+            abi = vendored_abi_from_repo(name, parser_path)
             if abi is None:
-                # Prebuilt-only vendor (e.g. tree-sitter-swift): no parser.c to
+                # Prebuilt-only vendor (e.g. a binary-only grammar): no parser.c to
                 # introspect. The runtime load-smoke covers it instead.
                 skipped.append(f"{name} (vendored, prebuilt — covered by load-smoke)")
                 continue
@@ -453,32 +493,18 @@ def _classify_grammar(
 ) -> dict:
     """Decide a single primary disposition + a separate bump-now hint.
 
-    Buckets are mutually exclusive and ordered by what a reviewer should
-    look at first:
-      - fetch_failed   : npm registry fetch failed (treat as blocker, but
-                          surface separately so reviewers don't confuse it
-                          with an upstream block)
-      - intentional    : pinned in INTENTIONAL_PINS — explicit choice
-      - ready          : npm-latest peer dep already accepts the target
-                          runtime; nothing to do
-      - waiting        : main has a fix (ABI 15 or relaxed peer) but no
-                          published npm release yet
-      - blocked        : peer dep too tight on both npm and main
-
-    Independently of bucket, `bump_now` reports whether reviewers can
-    move the pin forward today without touching the runtime — we only
-    suggest it when npm-latest's peer dep also accepts our *current*
-    runtime, otherwise the bump would break `npm install`.
+    Mutually-exclusive buckets, ordered by reviewer priority: ``fetch_failed``
+    (npm fetch failed — surfaced apart from upstream blocks), ``intentional``
+    (in INTENTIONAL_PINS), ``ready`` (npm-latest peer accepts the target),
+    ``waiting`` (a fix on main, unpublished), ``blocked`` (peer too tight on
+    both). ``bump_now`` is independent: True only when npm-latest's peer also
+    accepts our *current* runtime (else the bump would break ``npm install``).
     """
-    is_vendored = is_vendored_pin(pinned_spec)
-    behind_latest = (
-        not is_vendored
-        and npm_version != "?"
-        and not range_includes(pinned_spec, npm_version)
-    )
-    # Intentional pins must never appear as actionable bumps — by definition
-    # we're holding them back on purpose. The pin can only be lifted by
-    # editing INTENTIONAL_PINS and package.json together.
+    # Only npm-path grammars reach this function — vendored grammars are routed
+    # to the vendored branch in main() and `continue` before classification.
+    behind_latest = npm_version != "?" and not range_includes(pinned_spec, npm_version)
+    # Intentional pins are never actionable bumps (held on purpose; lifted only by
+    # editing INTENTIONAL_PINS + package.json together).
     bump_now = behind_latest and current_compat and name not in INTENTIONAL_PINS
 
     if fetch_failed:
@@ -496,6 +522,9 @@ def _classify_grammar(
         "name": name,
         "pinned_spec": pinned_spec or "—",
         "npm_version": npm_version,
+        # Display form for the disposition prose, laundering a "?" (a malformed 200
+        # npm response lacking `version`) so it never shows bare, like the matrix cell.
+        "npm_version_label": "unknown" if npm_version == "?" else npm_version,
         "peer_range": peer_range,
         "target_compat": target_compat,
         "current_compat": current_compat,
@@ -503,15 +532,105 @@ def _classify_grammar(
         "behind_latest": behind_latest,
         "bump_now": bump_now,
         "bucket": bucket,
-        "is_vendored": is_vendored,
     }
+
+
+def _render_vendored_section(
+    vendored_grammars: list[dict],
+    target_abi_range: tuple[int, int],
+    blockers: dict[str, str],
+) -> list[str]:
+    """Render the 'Vendored parsers' prose block. Appends any runtime-side blocker
+    (upstream ABI beyond the target range) to ``blockers`` in place; returns the
+    markdown lines (empty when nothing is vendored). Extracted from main() so that
+    function coordinates named render phases rather than inlining them (#2187)."""
+    if not vendored_grammars:
+        return []
+    # Hoisted out of the list literal below: an implicit string concatenation
+    # inside a list display trips CodeQL py/implicit-string-concatenation-in-list
+    # (it reads as a possibly-missing comma between elements).
+    intro = (
+        "These grammars ship from `gitnexus/vendor/` rather than the npm "
+        "registry. Their compatibility is governed by the **vendored "
+        "ABI** (must lie in the target runtime's range), not by a peer-"
+        "dep negotiation. The rationale for each vendored copy lives in "
+        "its own `package.json` `_vendoredBy` field."
+    )
+    lines = [md_h(f"Vendored parsers ({len(vendored_grammars)})", 2), intro, ""]
+    for v in sorted(vendored_grammars, key=lambda v: v["name"]):
+        sync_label = "in sync with upstream" if v["in_sync"] else "diverged from upstream"
+        if v["abi_state"] == "in_range":
+            abi_label = f"ABI `{v['vendored_abi']}` (in target range)"
+        elif v["abi_state"] == "prebuilt":
+            abi_label = "ABI `prebuilt` (binary-only vendor, source not introspectable)"
+        else:
+            abi_label = (
+                f"ABI `{v['vendored_abi']}` (**outside** target range "
+                f"{target_abi_range[0]}..{target_abi_range[1]})"
+            )
+        # Never a bare "?": when upstream parser.c can't be read (generated at build,
+        # or a transient fetch miss), use the neutral `n/a` token (#858).
+        upstream_abi_str = (
+            f"ABI `{v['upstream_abi']}`" if v["upstream_abi"] is not None else "ABI `n/a`"
+        )
+        lines.append(
+            f"- **`{v['name']}`** `{v['vendored_version']}` — {abi_label}, "
+            f"upstream `{v['upstream_repo']}@{v['upstream_sha']}` "
+            f"{upstream_abi_str} · {sync_label}"
+        )
+        if v.get("hold"):
+            lines.append(f"  - **Held:** {v['hold']}")
+        if v["vendored_by"]:
+            # First sentence only — vendor _vendoredBy fields tail off into noise.
+            lines.append(f"  - **Why vendored:** {_first_sentence(v['vendored_by'])}")
+        # Action: regen iff upstream ABI exceeds vendored AND stays within target;
+        # beyond target is a runtime-side blocker. Prebuilt-only vendors get a
+        # manual-refresh action driven by the in-sync flag instead.
+        if v["abi_state"] == "prebuilt":
+            if not v["in_sync"]:
+                lines.append(
+                    "  - **Action:** check whether upstream has shipped a new "
+                    "prebuilt release; this vendor ships binary-only artefacts."
+                )
+        elif v["upstream_abi"] and v["vendored_abi"] and v["upstream_abi"] > v["vendored_abi"]:
+            if v["upstream_abi"] <= target_abi_range[1]:
+                lines.append(
+                    f"  - **Action:** after upgrading to tree-sitter@{TARGET_RUNTIME}, "
+                    f"regenerate `parser.c` from upstream `{v['upstream_sha']}`."
+                )
+            else:
+                lines.append(
+                    f"  - **Action:** wait for a runtime supporting ABI "
+                    f"{v['upstream_abi']}; current target ({TARGET_RUNTIME}) only "
+                    f"goes up to ABI {target_abi_range[1]}."
+                )
+                blockers[f"vendored-{v['name']}-abi"] = (
+                    f"vendored {v['name']}: upstream ABI {v['upstream_abi']} outside target range"
+                )
+        elif not v["in_sync"]:
+            lines.append(
+                "  - **Action:** review upstream changes; vendored copy may "
+                "need a refresh (no ABI bump required)."
+            )
+    lines.append("")
+    return lines
 
 
 def main() -> int:
     blockers: dict[str, str] = {}
     lines: list[str] = []
+    # Label for npm/upstream values we couldn't determine: in --offline mode the
+    # fetch was deliberately skipped (not "failed"), so say so honestly.
+    miss_label = "offline" if OFFLINE else "fetch failed"
     lines.append(md_h("Tree-sitter 0.25 upgrade readiness", 1))
     lines.append("")
+    if OFFLINE:
+        lines.append(
+            "> **Offline mode** — npm registry + upstream GitHub checks were skipped. "
+            "npm-installed grammars show as unverified; vendored-grammar ABIs are read "
+            "from `gitnexus/vendor/`."
+        )
+        lines.append("")
 
     current_runtime = read_current_runtime()
     current_abi_range = RUNTIME_ABI_RANGES.get(current_runtime, (0, 0))
@@ -525,10 +644,9 @@ def main() -> int:
     )
     lines.append("")
 
-    # First pass: gather raw data + classification per grammar. We render
-    # the human-friendly buckets first, then the raw matrix in a <details>
-    # block at the end. Status text in the matrix is preserved verbatim
-    # so the workflow's row-diff change-detection keeps working.
+    # First pass: gather + classify per grammar. Human buckets render first, then
+    # the raw matrix in a <details> block (Status text preserved verbatim so the
+    # workflow's row-diff change-detection keeps working).
     grammar_rows: list[dict] = []
     raw_matrix: list[str] = [
         "| Grammar | Pinned | npm latest | Peer dep | Satisfies 0.25? | ABI | Upstream ABI | Status |",
@@ -540,17 +658,17 @@ def main() -> int:
     for name, (upstream_repo, upstream_branch, parser_path) in sorted(GRAMMARS.items()):
         pinned_spec = pinned_versions.get(name, "—")
 
-        # Vendored grammars don't have an "npm latest" we install from —
-        # we ship our own copy under gitnexus/vendor/<name>. Treat them
-        # as a separate kind of artefact: their readiness for the runtime
-        # upgrade depends on the vendored ABI being in the target range,
-        # not on a peer-dep negotiation.
-        if is_vendored_pin(pinned_spec):
+        # Vendored grammars are classified by manifest membership (NOT a file: pin
+        # heuristic — they aren't in package.json at all, the #858 misrouting bug).
+        # Their readiness is governed by the vendored ABI, read from the repo, not a
+        # peer-dep negotiation. npm-latest columns get sentinels.
+        if name in VENDORED_NAMES:
             v = vendored_drift_summary(name, upstream_repo, upstream_branch, parser_path)
             v["pinned_spec"] = pinned_spec
-            # Three-state classification: in-range, out-of-range, or
-            # not-introspectable (e.g. tree-sitter-swift ships only
-            # prebuilt .node binaries, no parser.c — assume compatible).
+            hold = VENDORED[name].get("hold")
+            v["hold"] = hold
+            # Three-state ABI classification: in-range, out-of-range, or
+            # not-introspectable (e.g. a prebuilt-only vendor with no parser.c).
             if v["vendored_abi"] is None:
                 v["target_compat"] = True
                 v["abi_state"] = "prebuilt"
@@ -567,13 +685,37 @@ def main() -> int:
                     f"vendored `{name}`: ABI {v['vendored_abi']} outside target range "
                     f"{target_abi_range[0]}..{target_abi_range[1]}"
                 )
+            # A held vendored grammar (e.g. tree-sitter-c, #1242/#858) is frozen below
+            # a runtime upgrade: in-range ABI or not, keep it a blocker until the hold
+            # (from the manifest) is lifted — same treatment as npm INTENTIONAL_PINS.
+            if hold:
+                v["target_compat"] = False
+                status = "Vendored — held"
+                # Compose with any out-of-range reason rather than overwriting it:
+                # both share the blockers[name] key, and the ABI-out-of-range
+                # detail would otherwise be lost from the blockers summary.
+                hold_reason = f"vendored `{name}` held: {hold}"
+                prior = blockers.get(name)
+                blockers[name] = f"{prior}; {hold_reason}" if prior else hold_reason
+            # Cell sentinels: never emit a bare "?". A vendored grammar's ABI is
+            # the real LANGUAGE_VERSION when introspectable, else a labeled token.
+            vendored_abi_cell = (
+                str(v["vendored_abi"]) if v["vendored_abi"] is not None else "prebuilt"
+            )
+            # A None upstream ABI means the upstream parser.c couldn't be read —
+            # either it is generated at build time (e.g. swift) or the fetch
+            # missed. We can't tell which here, so use a neutral label rather
+            # than asserting "generated at build". Never a bare "?".
+            upstream_abi_cell = (
+                str(v["upstream_abi"]) if v["upstream_abi"] is not None else "n/a"
+            )
             # Keep vendored grammars in the raw matrix so the workflow's
-            # row-diff change-detection picks up status transitions on
-            # them too. npm-only columns get sentinels.
+            # row-diff change-detection picks up status transitions on them too.
+            # npm-only columns get sentinels.
             raw_matrix.append(
                 f"| `{name}` | {pinned_spec} | (vendored) | (vendored) | "
                 f"{'Yes' if v['target_compat'] else '**No**'} | "
-                f"{v['vendored_abi'] or '?'} | {v['upstream_abi'] or '?'} | {status} |"
+                f"{vendored_abi_cell} | {upstream_abi_cell} | {status} |"
             )
             vendored_grammars.append(v)
             continue
@@ -593,7 +735,7 @@ def main() -> int:
             peer_optional = ts_meta.get("optional", False) if peer_range else True
 
         if fetch_failed:
-            peer_display = "? (fetch failed)"
+            peer_display = f"n/a ({miss_label})"
             target_compat = False
             current_compat = False
         else:
@@ -609,7 +751,9 @@ def main() -> int:
             # Fallback to default location.
             installed_parser = GITNEXUS_DIR / "node_modules" / name / "src" / "parser.c"
         installed_abi = extract_language_version(installed_parser)
-        abi_display = str(installed_abi) if installed_abi else "?"
+        # Labeled sentinel, never a bare "?": CI's `npm ci` populates node_modules,
+        # but if it's absent say so plainly rather than leaving a placeholder (#858).
+        abi_display = str(installed_abi) if installed_abi else "n/a (not installed)"
 
         # Check upstream (main/master branch) ABI for unreleased work.
         upstream_url = (
@@ -618,23 +762,19 @@ def main() -> int:
         )
         upstream_text = fetch_text(upstream_url)
         upstream_abi = extract_abi_from_text(upstream_text) if upstream_text else None
-        upstream_abi_display = str(upstream_abi) if upstream_abi else "?"
+        upstream_abi_display = str(upstream_abi) if upstream_abi else "n/a"
 
         # Status text + upstream-progress detection. The Status column
         # values are preserved as-is to keep the workflow's row-diff
         # change-detection working on the raw matrix below.
         upstream_progress: str | None = None
         if fetch_failed:
-            status = "Unknown (fetch failed)"
-            blockers[name] = f"`{name}`: npm registry fetch failed — could not verify peer dep"
+            status = f"Unknown ({miss_label})"
+            reason = "checks skipped (offline)" if OFFLINE else "npm registry fetch failed"
+            blockers[name] = f"`{name}`: {reason} — could not verify peer dep"
         elif name in INTENTIONAL_PINS:
-            # An intentional pin is, by definition, a held-back grammar:
-            # whatever npm-latest's peer dep says, our shipped version is
-            # the one whose ABI/peer must accept the target runtime, and
-            # the pin entry exists precisely because it does not. Treat
-            # it as a blocker until the pin is lifted (entry removed from
-            # INTENTIONAL_PINS), at which point this grammar falls back
-            # to standard classification on the next run.
+            # A held-back grammar: treated as a blocker until the pin is lifted
+            # (entry removed from INTENTIONAL_PINS), then reclassified next run.
             status = "Intentionally pinned"
             blockers[name] = (
                 f"`{name}` intentionally pinned at `{pinned_spec}` "
@@ -675,8 +815,11 @@ def main() -> int:
 
         pinned_spec = pinned_versions.get(name, "—")
         compat_icon = "Yes" if target_compat else "**No**"
+        # "?" stays the internal fetch-failed sentinel (compared above); render a
+        # labeled token in the matrix so the report never shows a bare "?" (#858).
+        npm_version_cell = f"n/a ({miss_label})" if npm_version == "?" else npm_version
         raw_matrix.append(
-            f"| `{name}` | {pinned_spec} | {npm_version} | {peer_display} | "
+            f"| `{name}` | {pinned_spec} | {npm_version_cell} | {peer_display} | "
             f"{compat_icon} | {abi_display} | {upstream_abi_display} | {status} |"
         )
 
@@ -726,7 +869,8 @@ def main() -> int:
     lines.append(f"- {len(by_bucket['waiting'])} waiting on an upstream npm release")
     lines.append(f"- {len(by_bucket['blocked'])} blocked on upstream (no fix even on main)")
     if by_bucket['fetch_failed']:
-        lines.append(f"- {len(by_bucket['fetch_failed'])} could not be checked (npm registry unreachable)")
+        why = "checks skipped in offline mode" if OFFLINE else "npm registry unreachable"
+        lines.append(f"- {len(by_bucket['fetch_failed'])} could not be checked ({why})")
     if bump_now:
         lines.append(
             f"- **{len(bump_now)} bump candidate(s) you can take TODAY** (npm-latest "
@@ -745,7 +889,7 @@ def main() -> int:
         lines.append("")
         for r in sorted(bump_now, key=lambda r: r["name"]):
             lines.append(
-                f"- `{r['name']}`: `{r['pinned_spec']}` → `{r['npm_version']}` "
+                f"- `{r['name']}`: `{r['pinned_spec']}` → `{r['npm_version_label']}` "
                 f"(peer `{r['peer_range'] or 'none'}`)"
             )
         lines.append("")
@@ -768,7 +912,7 @@ def main() -> int:
         "These grammars' npm-latest peer dep already accepts the target runtime. No action needed for the upgrade.",
         by_bucket["ready"],
         lambda r: (
-            f"- `{r['name']}` — pinned `{r['pinned_spec']}`, npm latest `{r['npm_version']}`"
+            f"- `{r['name']}` — pinned `{r['pinned_spec']}`, npm latest `{r['npm_version_label']}`"
             + ("  _(also a bump candidate — see above)_" if r["bump_now"] else "")
         ),
     )
@@ -784,7 +928,7 @@ def main() -> int:
             reason = INTENTIONAL_PINS.get(r["name"], "(no rationale recorded)")
             lines.append(
                 f"- `{r['name']}` pinned at `{r['pinned_spec']}` "
-                f"(npm latest `{r['npm_version']}`)\n  {reason}"
+                f"(npm latest `{r['npm_version_label']}`)\n  {reason}"
             )
         lines.append("")
 
@@ -794,7 +938,7 @@ def main() -> int:
         "We can move forward as soon as upstream cuts a release.",
         by_bucket["waiting"],
         lambda r: (
-            f"- `{r['name']}@{r['npm_version']}` — peer `{r['peer_range'] or 'none'}`. "
+            f"- `{r['name']}@{r['npm_version_label']}` — peer `{r['peer_range'] or 'none'}`. "
             f"_{r['upstream_progress']}_"
         ),
     )
@@ -804,90 +948,23 @@ def main() -> int:
         "Peer dep is too tight on both the latest npm release and on upstream main. "
         "These need an upstream issue/PR before we can proceed.",
         by_bucket["blocked"],
-        lambda r: (
-            f"- `{r['name']}@{r['npm_version']}` — peer `{r['peer_range'] or 'none'}`"
-            + (" _(vendored)_" if r["is_vendored"] else "")
-        ),
+        lambda r: f"- `{r['name']}@{r['npm_version_label']}` — peer `{r['peer_range'] or 'none'}`",
     )
 
     _emit_bucket(
         "Could not check",
-        "npm registry fetch failed for these grammars. Re-run the workflow to retry.",
+        (
+            "Checks were skipped because the report ran in `--offline` mode. "
+            "Re-run online to verify these grammars."
+            if OFFLINE
+            else "npm registry fetch failed for these grammars. Re-run the workflow to retry."
+        ),
         by_bucket["fetch_failed"],
         lambda r: f"- `{r['name']}` (pinned `{r['pinned_spec']}`)",
     )
 
     # ── Vendored parsers ────────────────────────────────────────────
-    if vendored_grammars:
-        lines.append(md_h(f"Vendored parsers ({len(vendored_grammars)})", 2))
-        lines.append(
-            "These grammars ship from `gitnexus/vendor/` rather than the npm "
-            "registry. Their compatibility is governed by the **vendored "
-            "ABI** (must lie in the target runtime's range), not by a peer-"
-            "dep negotiation. The rationale for each vendored copy lives in "
-            "its own `package.json` `_vendoredBy` field."
-        )
-        lines.append("")
-        for v in sorted(vendored_grammars, key=lambda v: v["name"]):
-            sync_label = (
-                "in sync with upstream" if v["in_sync"] else "diverged from upstream"
-            )
-            if v["abi_state"] == "in_range":
-                abi_label = f"ABI `{v['vendored_abi']}` (in target range)"
-            elif v["abi_state"] == "prebuilt":
-                abi_label = "ABI `prebuilt` (binary-only vendor, source not introspectable)"
-            else:
-                abi_label = (
-                    f"ABI `{v['vendored_abi']}` (**outside** target range "
-                    f"{target_abi_range[0]}..{target_abi_range[1]})"
-                )
-            upstream_abi_str = (
-                f"ABI `{v['upstream_abi']}`" if v["upstream_abi"] else "ABI `?`"
-            )
-            lines.append(
-                f"- **`{v['name']}`** `{v['vendored_version']}` — {abi_label}, "
-                f"upstream `{v['upstream_repo']}@{v['upstream_sha']}` "
-                f"{upstream_abi_str} · {sync_label}"
-            )
-            if v["vendored_by"]:
-                # Show the first sentence — vendor package.json fields tend
-                # to start with the rationale and tail off into install-
-                # script breadcrumbs that aren't useful in this report.
-                rationale = _first_sentence(v["vendored_by"])
-                lines.append(f"  - **Why vendored:** {rationale}")
-            # Action computation: needs regen iff upstream ABI exceeds
-            # vendored AND is still within target range. If upstream ABI
-            # exceeds the target, that's a runtime-side blocker. For
-            # prebuilt-only vendors we can't drive this from source ABI;
-            # the action is a manual upstream-binary refresh, surfaced
-            # via the in-sync flag instead.
-            if v["abi_state"] == "prebuilt":
-                if not v["in_sync"]:
-                    lines.append(
-                        "  - **Action:** check whether upstream has shipped a new "
-                        "prebuilt release; this vendor ships binary-only artefacts."
-                    )
-            elif v["upstream_abi"] and v["vendored_abi"] and v["upstream_abi"] > v["vendored_abi"]:
-                if v["upstream_abi"] <= target_abi_range[1]:
-                    lines.append(
-                        f"  - **Action:** after upgrading to tree-sitter@{TARGET_RUNTIME}, "
-                        f"regenerate `parser.c` from upstream `{v['upstream_sha']}`."
-                    )
-                else:
-                    lines.append(
-                        f"  - **Action:** wait for a runtime supporting ABI "
-                        f"{v['upstream_abi']}; current target ({TARGET_RUNTIME}) only "
-                        f"goes up to ABI {target_abi_range[1]}."
-                    )
-                    blockers[f"vendored-{v['name']}-abi"] = (
-                        f"vendored {v['name']}: upstream ABI {v['upstream_abi']} outside target range"
-                    )
-            elif not v["in_sync"]:
-                lines.append(
-                    "  - **Action:** review upstream changes; vendored copy may "
-                    "need a refresh (no ABI bump required)."
-                )
-        lines.append("")
+    lines.extend(_render_vendored_section(vendored_grammars, target_abi_range, blockers))
 
     # ── Raw matrix (for completeness + workflow row-diff) ────────────
     lines.append(md_h("Full grammar matrix", 2))
@@ -911,6 +988,11 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     except Exception:
         pass
+    # `--offline` skips all network so the readiness report renders hermetically
+    # (vendored ABIs from the repo; npm columns marked unverified). Useful for
+    # air-gapped runs and deterministic tests.
+    if "--offline" in sys.argv[1:]:
+        OFFLINE = True
     # `--assert-current` is the offline CI gate (#1922): assert every grammar's
     # ABI loads on the CURRENT runtime. Bare invocation keeps the original
     # target-runtime readiness report behaviour.

@@ -35,6 +35,12 @@ export interface AIContextOptions {
    * plain caller that omits it gets "main", preserving prior behavior.
    */
   defaultBranch?: string;
+  /**
+   * Whether the index was built with `--pdg` (#2086 M6). Gates the `pdg_query`
+   * line in the generated block — without the PDG layer the tool only returns a
+   * "no PDG layer" note, so advertising it on a non-`--pdg` index is noise.
+   */
+  hasPdg?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -105,26 +111,45 @@ export function markdownSafeBranch(branch: string): string {
   return branch.replace(/`/g, '');
 }
 
+/** Options for {@link generateGitNexusContent} (collapsed from positional
+ *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
+export interface GitNexusContentOptions {
+  generatedSkills?: GeneratedSkillInfo[];
+  groupNames?: string[];
+  noStats?: boolean;
+  skipSkills?: boolean;
+  /** Project-relative path to the runner `gitnexus analyze` drops next to the
+   *  index (#1945). Referenced by docs so a single CLI-neutral command resolves
+   *  the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time. */
+  runnerPath?: string;
+  /** Default branch for the regression-compare example (#243). Configurable so
+   *  projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
+   *  back over their fix on every analyze. The value is embedded inside a
+   *  Markdown inline-code span: validateBranchName rejects backticks upstream,
+   *  and `markdownSafeBranch` strips any remaining backtick here as defense in
+   *  depth, so JSON.stringify's quote/escape handling is sufficient and the
+   *  branch cannot break out of the span (#1996 tri-review P1). */
+  defaultBranch?: string;
+  /** Whether the index was built with `--pdg` (#2086 M6). Gates the pdg_query
+   *  line below — false (default) omits it, so a non-pdg index doesn't advertise
+   *  a tool that only returns a "no PDG layer" note. */
+  hasPdg?: boolean;
+}
+
 export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
-  generatedSkills?: GeneratedSkillInfo[],
-  groupNames?: string[],
-  noStats?: boolean,
-  skipSkills?: boolean,
-  // Project-relative path to the runner `gitnexus analyze` drops next to the
-  // index (#1945). Referenced by docs so a single CLI-neutral command resolves
-  // the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time.
-  runnerPath: string = '.gitnexus/run.cjs',
-  // Default branch for the regression-compare example (#243). Configurable so
-  // projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
-  // back over their fix on every analyze. The value is embedded inside a
-  // Markdown inline-code span: validateBranchName rejects backticks upstream,
-  // and `markdownSafeBranch` strips any remaining backtick here as defense in
-  // depth, so JSON.stringify's quote/escape handling is sufficient and the
-  // branch cannot break out of the span (#1996 tri-review P1).
-  defaultBranch: string = 'main',
+  opts: GitNexusContentOptions = {},
 ): string {
+  const {
+    generatedSkills,
+    groupNames,
+    noStats,
+    skipSkills,
+    runnerPath = '.gitnexus/run.cjs',
+    defaultBranch = 'main',
+    hasPdg = false,
+  } = opts;
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
       ? generatedSkills
@@ -177,8 +202,13 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.
 - **MUST run \`detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use \`query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When exploring unfamiliar code, use \`query({search_query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
+- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
+    hasPdg
+      ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol"})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
+      : ''
+  }
 
 ## Never Do
 
@@ -446,16 +476,15 @@ export async function generateAIContextFiles(
     logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
   }
 
-  const content = generateGitNexusContent(
-    projectName,
-    stats,
+  const content = generateGitNexusContent(projectName, stats, {
     generatedSkills,
     groupNames,
-    options?.noStats,
-    options?.skipSkills,
+    noStats: options?.noStats,
+    skipSkills: options?.skipSkills,
     runnerPath,
-    options?.defaultBranch ?? 'main',
-  );
+    defaultBranch: options?.defaultBranch ?? 'main',
+    hasPdg: options?.hasPdg ?? false,
+  });
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {

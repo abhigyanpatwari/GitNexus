@@ -15,6 +15,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
+import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-pdg-flip-');
@@ -57,6 +58,121 @@ describe('pdgModeMismatch — M1→M2 stamp upgrade (#2082 M2, pure)', () => {
     expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxReachingDefEdgesPerFunction: 4000 })).toBe(
       false, // explicit default ≡ default (resolution before comparison)
     );
+  });
+});
+
+describe('pdgModeMismatch — M2→M3 stamp upgrade (#2083 M3 U5, pure)', () => {
+  it('an M2-era stamp (no taint keys) mismatches an M3 request — upgrade forces full writeback', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    // Exactly what an M2 run wrote: the three pre-taint resolved caps, no
+    // maxTaintFindingsPerFunction / maxTaintHops / taintModelVersion. The
+    // key-union comparator sees e.g. 200 !== undefined and trips the full
+    // writeback that populates TAINTED/SANITIZES rows without --force (R7).
+    const m2Stamp = {
+      maxFunctionLines: 2000,
+      maxEdgesPerFunction: 5000,
+      maxReachingDefEdgesPerFunction: 4000,
+    };
+    expect(pdgModeMismatch(m2Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('an identical resolved M3 config compares equal (steady state keeps incremental)', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true })).toBe(false);
+  });
+
+  it('a taint cap change alone trips the mismatch', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxTaintFindingsPerFunction: 10 })).toBe(true);
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxTaintHops: 4 })).toBe(true);
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxTaintFindingsPerFunction: 200 })).toBe(
+      false, // explicit default ≡ default (resolution before comparison)
+    );
+  });
+
+  it('a model-version change ALONE trips the mismatch (the R7 repopulation guarantee)', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    // A stamp written by a hypothetical older binary whose built-in model
+    // differed — every cap identical, only the digest moved. Persisted
+    // findings must never outlive the model that produced them.
+    const stamp = resolvePdgConfig({ pdg: true });
+    const oldModelStamp = { ...stamp, taintModelVersion: '000000000000' };
+    expect(stamp?.taintModelVersion).not.toBe('000000000000'); // guard the premise
+    expect(pdgModeMismatch(oldModelStamp, { pdg: true })).toBe(true);
+  });
+});
+
+describe('pdgModeMismatch — M3→M4 interproc-cap stamp upgrade (#2084 review P1-3, pure)', () => {
+  it('resolvePdgConfig stamps the three resolved interproc caps', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(stamp?.maxInterprocFindings).toBe(2000);
+    expect(stamp?.maxInterprocHops).toBe(32);
+    expect(stamp?.maxInterprocEdges).toBe(1000);
+  });
+
+  it('an M3-era stamp (no interproc keys) mismatches a post-fix request — upgrade forces full writeback', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    // What an M3 run wrote: every taint cap + model digest, but none of the
+    // interproc caps. The key-union comparator sees 2000 !== undefined and
+    // trips the full writeback that re-materialises TAINT_PATH within bounds.
+    const m3Stamp = {
+      maxFunctionLines: 2000,
+      maxEdgesPerFunction: 5000,
+      maxReachingDefEdgesPerFunction: 4000,
+      maxTaintFindingsPerFunction: 200,
+      maxTaintHops: 32,
+      taintModelVersion: 'deadbeefcafe',
+    };
+    expect(pdgModeMismatch(m3Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('an interproc cap change alone trips the mismatch', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocFindings: 10 })).toBe(true);
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocEdges: 50 })).toBe(true);
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocHops: 8 })).toBe(true);
+    // explicit default ≡ default (resolution before comparison)
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxInterprocFindings: 2000 })).toBe(false);
+  });
+});
+
+describe('pdgModeMismatch — pre-M5→M5 CDG-cap stamp upgrade (#2085 M5, pure)', () => {
+  it('resolvePdgConfig stamps the resolved CDG cap', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(stamp?.maxCdgEdgesPerFunction).toBe(5000);
+  });
+
+  it('a pre-M5 stamp (no CDG key) mismatches a CDG-aware request — upgrade forces full writeback', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    // What an M4-era run wrote: every cap through the interproc set + model
+    // digest, but NO maxCdgEdgesPerFunction. The key-union comparator sees
+    // 5000 !== undefined and trips the full writeback that materialises CDG
+    // edges for every file without --force.
+    const m4Stamp = {
+      maxFunctionLines: 2000,
+      maxEdgesPerFunction: 5000,
+      maxReachingDefEdgesPerFunction: 4000,
+      maxTaintFindingsPerFunction: 200,
+      maxTaintHops: 32,
+      maxInterprocFindings: 2000,
+      maxInterprocHops: 32,
+      maxInterprocEdges: 1000,
+      taintModelVersion,
+    };
+    expect(pdgModeMismatch(m4Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('a CDG cap change alone trips the mismatch', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxCdgEdgesPerFunction: 10 })).toBe(true);
+    // explicit default ≡ default (resolution before comparison)
+    expect(pdgModeMismatch(stamp, { pdg: true, pdgMaxCdgEdgesPerFunction: 5000 })).toBe(false);
   });
 });
 
@@ -135,6 +251,13 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxFunctionLines: 2000,
         maxEdgesPerFunction: 5000,
         maxReachingDefEdgesPerFunction: 4000,
+        maxCdgEdgesPerFunction: 5000,
+        maxTaintFindingsPerFunction: 200,
+        maxTaintHops: 32,
+        maxInterprocFindings: 2000,
+        maxInterprocHops: 32,
+        maxInterprocEdges: 1000,
+        taintModelVersion,
       });
       expect(stamped!.incrementalInProgress).toBeUndefined(); // cleared on success
 
@@ -184,6 +307,13 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxFunctionLines: 2000,
         maxEdgesPerFunction: 1,
         maxReachingDefEdgesPerFunction: 4000,
+        maxCdgEdgesPerFunction: 5000,
+        maxTaintFindingsPerFunction: 200,
+        maxTaintHops: 32,
+        maxInterprocFindings: 2000,
+        maxInterprocHops: 32,
+        maxInterprocEdges: 1000,
+        taintModelVersion,
       });
       // The CFG layer survives a rebuild under a tighter edge cap (blocks are
       // never capped, only edges).

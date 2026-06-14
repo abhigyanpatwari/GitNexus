@@ -39,7 +39,7 @@
  * parsedfile-store reviver dedups objects keyed on that field name.
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import type { BindingEntry, StatementFacts } from '../types.js';
+import type { BindingEntry, SiteArgOccurrence, SiteRecord, StatementFacts } from '../types.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -83,6 +83,31 @@ const TYPE_CONTEXT_TYPES = new Set([
   'asserts_annotation',
 ]);
 
+/**
+ * Wrappers that don't change which VALUE flows through them (#2083 M3 U1) —
+ * unwrapped when resolving call-result attribution (`const b = (await
+ * escape(t))!` still attaches `resultDefs: [b]` to the escape site) and
+ * member-chain roots. Distinct from {@link TsHarvester.unwrapLvalue}, which is
+ * the narrower LVALUE set.
+ */
+const VALUE_WRAPPER_TYPES = new Set([
+  'parenthesized_expression',
+  'non_null_expression',
+  'as_expression',
+  'satisfies_expression',
+  'await_expression',
+]);
+
+/** Literal text of a `string` node (concatenated fragments; raw escapes kept). */
+const stringLiteralText = (node: SyntaxNode): string => {
+  let out = '';
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const c = node.namedChild(i);
+    if (c?.type === 'string_fragment' || c?.type === 'escape_sequence') out += c.text;
+  }
+  return out;
+};
+
 interface Scope {
   readonly parent: Scope | null;
   /** name → binding index */
@@ -112,6 +137,16 @@ export class TsHarvester {
    * here falsely kills the prior def on the not-taken path).
    */
   private conditionalDepth = 0;
+  /**
+   * Call/new node id → bindings whose declarator/assignment VALUE is exactly
+   * that call (#2083 M3 U1). Registered by the declarator/assignment handlers
+   * BEFORE the value walk, consumed by {@link visitCall} when it reaches the
+   * node — the indirection keeps result-def attribution per-declarator
+   * (`const a = t, b = escape(t)` attaches `[b]` to the escape site only) and
+   * top-level-only (`const c = cond ? escape(b) : b` attaches nothing — the
+   * bypass occurrence must keep `c` taintable, plan KTD4a).
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -458,7 +493,9 @@ export class TsHarvester {
           // live def (`x = source(); var x; sink(x)` must keep source→sink;
           // tri-review P2). `let`/`const` declarators genuinely initialize.
           if (name && (value || t === 'lexical_declaration')) {
+            const snap = acc.defSnapshot();
             this.walkDefPattern(name, acc);
+            if (value) this.registerResultDefs(value, acc.defsSince(snap));
           }
           if (value) this.walkValue(value, acc);
         }
@@ -466,7 +503,11 @@ export class TsHarvester {
       case 'assignment_expression': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
-        if (left) this.walkDefPattern(this.unwrapLvalue(left), acc);
+        if (left) {
+          const snap = acc.defSnapshot();
+          this.walkDefPattern(this.unwrapLvalue(left), acc);
+          if (right) this.registerResultDefs(right, acc.defsSince(snap));
+        }
         if (right) this.walkValue(right, acc);
         return;
       }
@@ -552,6 +593,39 @@ export class TsHarvester {
         if (body) this.walkValue(body, acc);
         return;
       }
+      case 'call_expression':
+        // #2083 M3 U1: explicit case (previously default-descended) — same
+        // uses, plus a taint-site record. MUST keep defs/uses byte-identical.
+        this.visitCall(node, acc, 'call');
+        return;
+      case 'new_expression':
+        this.visitCall(node, acc, 'new');
+        return;
+      case 'member_expression':
+      case 'subscript_expression':
+        // #2083 M3 U1: value-position member chain — same uses as the old
+        // default descent (root identifier + dynamic subscript indices), plus
+        // a member-read site for the innermost identifier-rooted access.
+        this.walkChain(node, acc, false);
+        return;
+      case 'sequence_expression': {
+        // Comma operator: only the LAST operand's value flows. Earlier operands
+        // are evaluated for side effects — record their uses but suppress
+        // occurrence fan-out so `exec((log(x), 'safe'))` does not taint exec's
+        // arg 0 with `x` (review fix). Defs/uses stay byte-identical to the old
+        // default descent; only the sites layer narrows.
+        const operands: SyntaxNode[] = [];
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (c) operands.push(c);
+        }
+        const last = operands.length - 1;
+        operands.forEach((op, i) => {
+          if (i === last) this.walkValue(op, acc);
+          else acc.suppressOccurrences(() => this.walkValue(op, acc));
+        });
+        return;
+      }
       default:
         for (let i = 0; i < node.namedChildCount; i++) {
           const c = node.namedChild(i);
@@ -593,8 +667,11 @@ export class TsHarvester {
       case 'member_expression':
       case 'subscript_expression':
         // Property/element write — NOT a scalar def (KTD4); its identifiers
-        // (object, computed key) are uses.
-        this.walkValue(node, acc);
+        // (object, computed key) are uses. WRITE position (#2083 M3 U1): the
+        // written access itself is not a value read — no member-read site for
+        // it (`obj.p = q` records nothing; `req.body.x = v`'s mid-chain LOAD
+        // of `req.body` still does).
+        this.walkChain(node, acc, true);
         return;
       default:
         for (let i = 0; i < node.namedChildCount; i++) {
@@ -603,6 +680,201 @@ export class TsHarvester {
         }
     }
   }
+
+  // ── taint-site harvest (#2083 M3 U1) ────────────────────────────────────
+
+  /** Strip value-transparent wrappers (`(x)`, `x!`, `x as T`, `await x`). */
+  private unwrapValueWrappers(node: SyntaxNode): SyntaxNode {
+    let n = node;
+    while (VALUE_WRAPPER_TYPES.has(n.type)) {
+      const inner = n.namedChild(0);
+      if (!inner) break;
+      n = inner;
+    }
+    return n;
+  }
+
+  /**
+   * When `value`'s root (after unwrapping) is a call/new node, remember that
+   * its site should carry `resultDefs: defs` — consumed by {@link visitCall}
+   * once the value walk reaches the node.
+   */
+  private registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
+    if (defs.length === 0) return;
+    const root = this.unwrapValueWrappers(value);
+    if (root.type === 'call_expression' || root.type === 'new_expression') {
+      this.resultDefTargets.set(root.id, [...defs]);
+    }
+  }
+
+  /**
+   * Explicit call/new handler: records a call site (callee path, receiver,
+   * per-arg occurrence entries, spread/template markers, require literal,
+   * result defs) while reproducing EXACTLY the uses the old default descent
+   * recorded — callee chain root + dynamic subscript indices + arguments.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator, kind: 'call' | 'new'): void {
+    const calleeNode = node.childForFieldName(kind === 'new' ? 'constructor' : 'function');
+    const argsNode = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite(kind);
+    acc.pushFrame(siteIdx);
+    let calleePath: string | undefined;
+    if (calleeNode) {
+      const callee = this.unwrapValueWrappers(calleeNode);
+      if (callee.type === 'identifier') {
+        // The callee NAME is a statement-level use but NOT a value occurrence
+        // flowing into any enclosing argument — `exec(escape(x))` must not
+        // put the `escape` binding itself into exec's arg 0 (only x, tagged
+        // via the escape site). Receiver-chain roots DO fan out (KTD5 TITO).
+        acc.addUseWithoutOccurrence(this.resolve(callee));
+        calleePath = callee.text;
+      } else if (callee.type === 'member_expression' || callee.type === 'subscript_expression') {
+        // skipFinalRead: the final access IS the callee, carried by the
+        // dotted path — recording it as a member read would double-count.
+        // Mid-chain reads (`req.body` inside `req.body.toString()`) ARE
+        // recorded (plan KTD2).
+        const chain = this.walkChain(callee, acc, true);
+        calleePath = chain.path;
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        // Call-rooted chains, IIFEs, function expressions — no dotted path;
+        // the walk still records uses and nested sites.
+        this.walkValue(callee, acc);
+      }
+      if (calleePath !== undefined) acc.setSiteCallee(siteIdx, calleePath);
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    if (argsNode?.type === 'template_string') {
+      // Tagged template (`sql\`…${id}\``): the `arguments` field is a
+      // template_string, not an arguments node — substitution occurrences
+      // aggregate at position 0 and the site is marked non-positional.
+      acc.setSiteTemplate(siteIdx);
+      acc.setFrameArg(0);
+      this.walkValue(argsNode, acc);
+    } else if (argsNode) {
+      let pos = 0;
+      for (let i = 0; i < argsNode.namedChildCount; i++) {
+        const arg = argsNode.namedChild(i);
+        if (!arg || arg.type === 'comment') continue;
+        acc.setFrameArg(pos);
+        if (arg.type === 'spread_element') {
+          acc.setSiteSpread(siteIdx, pos);
+          const inner = arg.namedChild(0);
+          if (inner) this.walkValue(inner, acc);
+        } else {
+          if (kind === 'call' && pos === 0 && calleePath === 'require' && arg.type === 'string') {
+            // CommonJS `require('lit')` — record the literal so the matcher
+            // resolves require'd aliases like ESM imports (plan KTD7).
+            acc.setSiteRequireArg(siteIdx, stringLiteralText(arg));
+          }
+          this.walkValue(arg, acc);
+        }
+        pos++;
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * Member/subscript chain walk shared by value position, write position, and
+   * callee position. Use-recording is identical to the old default descent
+   * (chain-root identifier once, dynamic subscript index expressions, full
+   * walk of non-identifier roots) — NO double-recording. Member-read sites:
+   * at most ONE per chain — the INNERMOST access — and only when the chain
+   * root is an identifier and the access's key is static (`.prop` or a
+   * string-literal subscript); `skipFinalRead` suppresses it when that access
+   * is the final one (callee / write target). Optional chaining (`?.`) never
+   * appears in the output (field-based traversal normalizes it); dynamic
+   * computed keys record nothing (documented KTD10 FN).
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    // Collect accesses outer→inner (unshift), then resolve the root.
+    const accesses: Array<{ prop?: string; dynamicIndex?: SyntaxNode }> = [];
+    let cur: SyntaxNode = this.unwrapValueWrappers(node);
+    for (;;) {
+      if (cur.type === 'member_expression') {
+        const prop = cur.childForFieldName('property');
+        accesses.unshift({ prop: prop?.text });
+        const obj = cur.childForFieldName('object');
+        if (!obj) break;
+        cur = this.unwrapValueWrappers(obj);
+      } else if (cur.type === 'subscript_expression') {
+        const index = cur.childForFieldName('index');
+        if (index?.type === 'string') {
+          accesses.unshift({ prop: stringLiteralText(index) });
+        } else {
+          accesses.unshift({ dynamicIndex: index ?? undefined });
+        }
+        const obj = cur.childForFieldName('object');
+        if (!obj) break;
+        cur = this.unwrapValueWrappers(obj);
+      } else {
+        break;
+      }
+    }
+    let rootIdx: number | undefined;
+    let rootSegment: string | undefined;
+    if (cur.type === 'identifier') {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+      rootSegment = cur.text;
+    } else if (cur.type === 'this' || cur.type === 'super') {
+      rootSegment = cur.text; // path segment only — `this`/`super` never bind
+    } else {
+      this.walkValue(cur, acc); // call-rooted etc. — uses + nested sites
+    }
+    // Dynamic subscript index expressions are real value reads (old default
+    // descent walked them) — inner→outer matches the old recording order.
+    for (const a of accesses) {
+      if (a.dynamicIndex) this.walkValue(a.dynamicIndex, acc);
+    }
+    const innermost = accesses[0];
+    if (
+      rootIdx !== undefined &&
+      innermost?.prop !== undefined &&
+      !(skipFinalRead && accesses.length === 1)
+    ) {
+      acc.addMemberRead(rootIdx, innermost.prop);
+    }
+    const path =
+      rootSegment !== undefined && accesses.every((a) => a.prop !== undefined)
+        ? [rootSegment, ...accesses.map((a) => a.prop as string)].join('.')
+        : undefined;
+    return { path, rootIdx };
+  }
+}
+
+/** Mutable build-time view of a {@link SiteRecord}. */
+interface MutableSite {
+  kind: SiteRecord['kind'];
+  parent?: [number, number];
+  callee?: string;
+  receiver?: number;
+  args?: SiteArgOccurrence[][];
+  resultDefs?: number[];
+  spread?: number;
+  template?: boolean;
+  requireArg?: string;
+  object?: number;
+  property?: string;
+}
+
+/**
+ * One open call/new site during the walk (#2083 M3 U1). `argIdx` is the
+ * argument position currently being walked, or -1 while outside any argument
+ * (callee walk) — occurrences recorded then do NOT land in this frame's args
+ * (they still fan out to enclosing arg-active frames, via-tagged through this
+ * frame's site: the receiver of a nested call flows into the outer argument
+ * through that call).
+ */
+interface SiteFrame {
+  siteIdx: number;
+  argIdx: number;
 }
 
 /** Ordered, deduplicating def/use collector for one statement record. */
@@ -613,6 +885,13 @@ class FactAccumulator {
   private readonly defSeen = new Set<number>();
   private readonly useSeen = new Set<number>();
   private readonly mayDefSeen = new Set<number>();
+  /** Taint sites recorded for this statement (#2083 M3 U1). */
+  private readonly sites: MutableSite[] = [];
+  /** Composite (object|property|parent) keys of recorded member-read sites, so
+   *  dedup is O(1) instead of a rescan of `sites` per read. */
+  private readonly memberReadKeys = new Set<string>();
+  /** Stack of open call/new sites — the occurrence fan-out targets. */
+  private readonly frames: SiteFrame[] = [];
 
   constructor(private readonly line: number) {}
 
@@ -630,6 +909,17 @@ class FactAccumulator {
   }
 
   addUse(idx: number): void {
+    // Occurrence fan-out happens BEFORE the statement-level dedup: `exec(x, x)`
+    // records x at BOTH arg positions even though `uses` lists it once.
+    this.recordOccurrence(idx);
+    this.addUseWithoutOccurrence(idx);
+  }
+
+  /**
+   * Statement-level use that is NOT a value occurrence in any open site
+   * argument — bare callee names only (#2083 M3 U1, see visitCall).
+   */
+  addUseWithoutOccurrence(idx: number): void {
     if (this.useSeen.has(idx)) return;
     this.useSeen.add(idx);
     this.uses.push(idx);
@@ -643,6 +933,147 @@ class FactAccumulator {
     return this.uses.length;
   }
 
+  // ── site machinery (#2083 M3 U1) ─────────────────────────────────────────
+
+  /** `[defs.length, mayDefs.length]` marker for {@link defsSince}. */
+  defSnapshot(): readonly [number, number] {
+    return [this.defs.length, this.mayDefs.length];
+  }
+
+  /** Binding indices def'd (must- OR may-) since the snapshot was taken. */
+  defsSince(snap: readonly [number, number]): number[] {
+    return [...this.defs.slice(snap[0]), ...this.mayDefs.slice(snap[1])];
+  }
+
+  /** Open a call/new site; parent = innermost enclosing argument position. */
+  openCallSite(kind: 'call' | 'new'): number {
+    const site: MutableSite = { kind };
+    const parent = this.innermostArgPosition();
+    if (parent) site.parent = parent;
+    this.sites.push(site);
+    return this.sites.length - 1;
+  }
+
+  pushFrame(siteIdx: number): void {
+    this.frames.push({ siteIdx, argIdx: -1 });
+  }
+
+  popFrame(): void {
+    this.frames.pop();
+  }
+
+  /** Set the argument position the top frame is currently walking. */
+  setFrameArg(argIdx: number): void {
+    const top = this.frames[this.frames.length - 1];
+    if (top) top.argIdx = argIdx;
+  }
+
+  /**
+   * Run `fn` with all open arg frames temporarily detached (argIdx = -1), so
+   * identifier reads inside still record USES but do NOT fan occurrences into
+   * the enclosing sink-argument position. Used for the non-value operands of a
+   * sequence (comma) expression — only the final operand's value flows.
+   */
+  suppressOccurrences(fn: () => void): void {
+    const saved = this.frames.map((f) => f.argIdx);
+    for (const f of this.frames) f.argIdx = -1;
+    try {
+      fn();
+    } finally {
+      this.frames.forEach((f, i) => {
+        f.argIdx = saved[i];
+      });
+    }
+  }
+
+  setSiteCallee(siteIdx: number, callee: string): void {
+    this.sites[siteIdx].callee = callee;
+  }
+
+  setSiteReceiver(siteIdx: number, receiver: number): void {
+    this.sites[siteIdx].receiver = receiver;
+  }
+
+  setSiteResultDefs(siteIdx: number, resultDefs: readonly number[]): void {
+    this.sites[siteIdx].resultDefs = [...resultDefs];
+  }
+
+  setSiteSpread(siteIdx: number, firstSpreadArg: number): void {
+    const site = this.sites[siteIdx];
+    if (site.spread === undefined) site.spread = firstSpreadArg;
+  }
+
+  setSiteTemplate(siteIdx: number): void {
+    this.sites[siteIdx].template = true;
+  }
+
+  setSiteRequireArg(siteIdx: number, literal: string): void {
+    this.sites[siteIdx].requireArg = literal;
+  }
+
+  /**
+   * Record a value-position member read. Exact duplicates within the
+   * statement (same object/property/parent position) dedup; reads at
+   * DIFFERENT argument positions stay distinct (`exec(req.body, req.body)`
+   * is two occurrences — KTD6 finding identity needs both).
+   */
+  addMemberRead(object: number, property: string): void {
+    const parent = this.innermostArgPosition();
+    const dedupKey = `${object}|${property}|${parent ? `${parent[0]}:${parent[1]}` : 'top'}`;
+    if (this.memberReadKeys.has(dedupKey)) return;
+    this.memberReadKeys.add(dedupKey);
+    const site: MutableSite = { kind: 'member-read' };
+    if (parent) site.parent = parent;
+    site.object = object;
+    site.property = property;
+    this.sites.push(site);
+  }
+
+  private innermostArgPosition(): [number, number] | undefined {
+    for (let i = this.frames.length - 1; i >= 0; i--) {
+      const f = this.frames[i];
+      if (f.argIdx >= 0) return [f.siteIdx, f.argIdx];
+    }
+    return undefined;
+  }
+
+  /**
+   * Fan a binding occurrence out to every arg-active open frame. The entry is
+   * via-tagged with the site of the IMMEDIATELY nested frame when one exists:
+   * `exec(escape(x))` puts a plain `x` in escape's arg 0 and `[x, escapeIdx]`
+   * in exec's arg 0 — the KTD4a interposition substrate.
+   */
+  private recordOccurrence(idx: number): void {
+    for (let i = this.frames.length - 1; i >= 0; i--) {
+      const f = this.frames[i];
+      if (f.argIdx < 0) continue;
+      const via = i + 1 < this.frames.length ? this.frames[i + 1].siteIdx : undefined;
+      this.pushArgEntry(f.siteIdx, f.argIdx, idx, via);
+    }
+  }
+
+  private pushArgEntry(
+    siteIdx: number,
+    argIdx: number,
+    bindingIdx: number,
+    via: number | undefined,
+  ): void {
+    const site = this.sites[siteIdx];
+    const args = (site.args ??= []);
+    while (args.length <= argIdx) args.push([]);
+    const list = args[argIdx];
+    // Dedup exact (binding, via) pairs per position — `f(x + x)` is one entry;
+    // `f(x + g(x))` keeps the plain AND the via-tagged entry (distinct paths).
+    for (const e of list) {
+      const match =
+        typeof e === 'number'
+          ? via === undefined && e === bindingIdx
+          : via !== undefined && e[0] === bindingIdx && e[1] === via;
+      if (match) return;
+    }
+    list.push(via === undefined ? bindingIdx : [bindingIdx, via]);
+  }
+
   finish(): StatementFacts {
     return {
       line: this.line,
@@ -651,6 +1082,21 @@ class FactAccumulator {
       // Optional field stays absent when empty — keeps the serialized
       // side-channel payload lean (most statements have no may-defs).
       ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
+      // Sites likewise omit-when-empty (#2083 M3 U1): flag-off runs never
+      // harvest, and most fact-bearing statements carry no calls.
+      ...(this.sites.length > 0 ? { sites: this.sites.map(finalizeSite) } : {}),
     };
   }
 }
+
+/** Trim trailing empty arg positions; drop `args` entirely when all-empty. */
+const finalizeSite = (site: MutableSite): SiteRecord => {
+  const args = site.args;
+  if (args !== undefined) {
+    let end = args.length;
+    while (end > 0 && args[end - 1].length === 0) end--;
+    if (end === 0) delete site.args;
+    else if (end < args.length) site.args = args.slice(0, end);
+  }
+  return site as SiteRecord;
+};

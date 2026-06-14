@@ -129,7 +129,16 @@
     "runLayout": "Run Layout Again",
     "layoutOptimizing": "Layout optimizing...",
     "turnOffHighlights": "Turn off all highlights",
-    "turnOnHighlights": "Turn on AI highlights"
+    "turnOnHighlights": "Turn on AI highlights",
+    "chatOnly": {
+      "title": "Graph not loaded",
+      "description": "This is a large project, so the graph was skipped to keep the browser responsive. AI chat works normally.",
+      "descriptionWithCount": "This project has {{count}} nodes, so the graph was skipped to keep the browser responsive. AI chat works normally.",
+      "citationNote": "While the graph is unloaded, inline file citations from chat won't auto-open in the Code panel.",
+      "loadAnyway": "Load graph anyway",
+      "loadAnywayWarning": "This project has {{count}} nodes. Loading the full graph may make the browser slow or unresponsive. Continue?",
+      "loadAnywayWarningUnknown": "This may be a large project. Loading the full graph may make the browser slow or unresponsive. Continue?"
+    }
   },
   "processes": {
     "unknownStep": "Unknown",
