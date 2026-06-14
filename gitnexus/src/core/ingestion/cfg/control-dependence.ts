@@ -13,8 +13,12 @@
  * post-dom-tree children) in O(N + E + output) — each up-step is charged to a
  * distinct emitted edge, NOT re-walked per CFG edge as the original §3.1.1
  * up-walk did (which was Θ(N²) on a deep post-dom chain). The two formulations
- * enumerate the IDENTICAL `(controller, dependent, label)` set (verified
- * byte-identical on 3203 CFGs); LLVM, Joern and WALA use the reverse-DF form.
+ * enumerate the IDENTICAL full `(controller, dependent, label)` set (verified
+ * byte-identical on 3203 CFGs + ~1M-case differential fuzz); LLVM, Joern and WALA
+ * use the reverse-DF form. (Only the rare TRUNCATED prefix — when a function
+ * exceeds `maxEdges` — differs from the old prefix: it is now a sorted
+ * deterministic prefix rather than CFG-edge-iteration order. Both are valid,
+ * deterministic subsets; the full untruncated output is unchanged.)
  * The branch SENSE ('T' | 'F') of the controlling edge becomes the edge label
  * (KTD4 / KTD3 — it rides the persisted relation's `reason` column).
  *
@@ -113,10 +117,14 @@ function labelFor(kind: CfgEdgeKind, controller: ArmSenses): CdgLabel {
 export function computeControlDependence(
   cfg: FunctionCfg,
   postDom?: PostDomTree,
-  // Heap-safety ceiling on materialized edges, mirroring computeReachingDefs'
-  // `maxFacts` (#2188 review): the pre-dedup walk is O(edges × post-dom depth),
-  // so bound it before it can spike. `0` ⇒ unbounded. On overflow `edges` is a
-  // deterministic prefix and `truncated` is set — never a silent drop.
+  // Output-size ceiling, mirroring computeReachingDefs' `maxFacts` (#2188 review).
+  // The reverse-DF set is the bounded (controller, dependent, label) dependence
+  // relation, so peak working set ≈ output here (no pre-dedup spike like the old
+  // up-walk) — this caps the final edge COUNT, not transient memory. `0` ⇒
+  // unbounded. On overflow `edges` is a deterministic SORTED prefix and
+  // `truncated` is set — never a silent drop. (The sorted prefix is the prefix
+  // CONTENTS may differ from the old up-walk's CFG-edge-iteration prefix at the
+  // cap boundary; the FULL untruncated set is byte-identical — see the module doc.)
   maxEdges: number = 0,
 ): ControlDepResult {
   const tree = postDom ?? computePostDominators(cfg);
