@@ -12,11 +12,20 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { createRequire } from 'module';
 import { detectEnvironment, checkPortAvailable } from './ci-setup/detect.js';
 import { resolveOptions } from './ci-setup/prompts.js';
 import { generateFiles } from './ci-setup/templates.js';
 import type { CiSetupOptions, CiSetupResult, GeneratedFile } from './ci-setup/types.js';
 import type { CiSystem, DeployTarget, AuthMode, BranchStrategy } from './ci-setup/types.js';
+
+// Pin generated automation/config to the wizard's own version (mirrors setup.ts).
+// Read here (src/cli/, where ../../package.json resolves to gitnexus/package.json);
+// do NOT read it from templates.ts, which is one level deeper.
+const moduleRequire = createRequire(import.meta.url);
+const pkgJson = moduleRequire('../../package.json') as { version?: unknown };
+const GITNEXUS_VERSION =
+  typeof pkgJson.version === 'string' && pkgJson.version ? pkgJson.version : 'latest';
 
 const CI_SYSTEMS: readonly CiSystem[] = ['github-actions', 'azure-devops', 'both'];
 const DEPLOY_TARGETS: readonly DeployTarget[] = ['docker', 'azure-container-app', 'both'];
@@ -95,6 +104,7 @@ export const ciSetupCommand = async (options?: {
   if (options?.apply !== undefined) partial.apply = options.apply;
   if (options?.yes !== undefined) partial.yes = options.yes;
   if (options?.outputDir) partial.outputDir = options.outputDir;
+  partial.version = GITNEXUS_VERSION;
 
   // Default: dry-run when neither --dry-run nor --apply is given
   if (!partial.dryRun && !partial.apply) {

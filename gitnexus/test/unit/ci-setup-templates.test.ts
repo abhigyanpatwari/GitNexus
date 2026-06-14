@@ -21,6 +21,7 @@ function makeOpts(overrides?: Partial<CiSetupOptions>): CiSetupOptions {
     apply: false,
     yes: false,
     outputDir: '/repo',
+    version: '9.9.9',
     ...overrides,
   };
 }
@@ -82,6 +83,28 @@ describe('GITNEXUS.md / workflow accuracy (U8)', () => {
     expect(content).not.toContain('written into the repository by the CI workflow');
     expect(content).toContain('does **not** commit them');
     expect(content).toContain('contents: write');
+  });
+});
+
+describe('version pinning (U9)', () => {
+  it('pins the GitHub Actions workflow analyze step to the wizard version', () => {
+    const files = generateFiles(makeOpts({ version: '9.9.9' }), DEFAULT_DETECT);
+    const wf = files.find((f) => f.relativePath === '.github/workflows/gitnexus-ci.yml');
+    expect(wf?.content).toContain('gitnexus@9.9.9 analyze');
+    expect(wf?.content).not.toContain('gitnexus@latest');
+  });
+
+  it('pins the Azure pipeline analyze step', () => {
+    const files = generateFiles(makeOpts({ version: '9.9.9', ci: 'azure-devops' }), DEFAULT_DETECT);
+    const az = files.find((f) => f.relativePath === 'azure-pipelines-gitnexus.yml');
+    expect(az?.content).toContain('gitnexus@9.9.9 analyze');
+    expect(az?.content).not.toContain('gitnexus@latest');
+  });
+
+  it('pins the Cursor MCP launch but leaves manual re-index commands at @latest', () => {
+    const md = gitnexusMd({ version: '9.9.9' });
+    expect(md).toContain('"gitnexus@9.9.9"'); // persisted Cursor stdio config — pinned
+    expect(md).toContain('npx gitnexus@latest analyze'); // human-run re-index — intentionally unpinned
   });
 });
 

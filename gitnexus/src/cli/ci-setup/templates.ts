@@ -58,7 +58,7 @@ jobs:
           node-version: '22'
 
       - name: Analyze repository
-        run: npx gitnexus@latest analyze --skills
+        run: npx gitnexus@${opts.version} analyze --skills
 
       - name: Upload index artifact
         uses: actions/upload-artifact@v4
@@ -113,7 +113,7 @@ steps:
       versionSpec: '22.x'
     displayName: 'Set up Node.js 22'
 
-  - script: npx gitnexus@latest analyze --skills
+  - script: npx gitnexus@${opts.version} analyze --skills
     displayName: 'Analyze repository'
 
   - task: PublishPipelineArtifact@1
@@ -389,7 +389,7 @@ Add to \`~/.cursor/mcp.json\` under \`mcpServers\`:
 \`\`\`json
 "gitnexus": {
   "command": "npx",
-  "args": ["-y", "gitnexus@latest", "mcp"],
+  "args": ["-y", "gitnexus@${opts.version}", "mcp"],
   "env": {}
 }
 \`\`\`

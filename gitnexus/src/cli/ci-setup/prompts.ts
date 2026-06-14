@@ -32,6 +32,7 @@ export async function resolveOptions(
     apply: partial.apply ?? false,
     yes: partial.yes ?? false,
     outputDir: partial.outputDir ?? detect.gitRoot ?? process.cwd(),
+    version: partial.version ?? 'latest',
   };
 }
 

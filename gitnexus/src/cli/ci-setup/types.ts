@@ -13,6 +13,8 @@ export interface CiSetupOptions {
   apply: boolean;
   yes: boolean;
   outputDir: string;
+  /** gitnexus version the generated automation/config should pin to. */
+  version: string;
 }
 
 export interface DetectResult {
