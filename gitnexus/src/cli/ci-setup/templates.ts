@@ -67,7 +67,7 @@ jobs:
           path: .gitnexus/
           retention-days: 30
 
-      - name: Check index staleness
+      - name: Verify index was produced
         run: |
           if [ -f .gitnexus/meta.json ]; then
             echo "✓ GitNexus index updated at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -129,7 +129,7 @@ steps:
       else
         echo "✗ GitNexus index not found" && exit 1
       fi
-    displayName: 'Check index staleness'
+    displayName: 'Verify index was produced'
 `;
 }
 
@@ -495,7 +495,7 @@ When the CI workflow runs \`analyze --skills\`, GitNexus generates repo-specific
 - \`.claude/skills/gitnexus/\` — standard GitNexus MCP skills (query, impact, context, detect-changes)
 - \`.claude/skills/generated/\` — community-detected area skills (one file per functional cluster)
 
-These are written into the repository by the CI workflow. To share them with your team, add a \`git add .claude/skills/ && git commit\` step after \`analyze --skills\` in your workflow, or commit them manually after the first run.
+The CI workflow generates these on the runner but does **not** commit them — it runs with \`permissions: contents: read\`. To share them with your team, commit them manually after a run, or add a \`git add .claude/skills/ && git commit && git push\` step to the workflow (which also requires granting it \`permissions: contents: write\`).
 
 ---
 
@@ -503,8 +503,9 @@ These are written into the repository by the CI workflow. To share them with you
 
 The CI workflow uploads the \`.gitnexus/\` directory as a workflow artifact (30-day retention) on every run.
 If the index is stale (CI hasn't run since the last push), Claude Code will still function but may operate
-on a slightly outdated graph. The staleness check step in the workflow fails the run if indexing produced
-no output, so stale-index PRs are blocked at CI.
+on a slightly outdated graph. The "Verify index was produced" step fails the run only if \`analyze\`
+produced no output — it does not compare the index against the current commit, so it does not detect
+or block stale-index PRs.
 
 > **The wizard does not automate index delivery to the shared server.** CI uploads \`.gitnexus/\` as a
 > workflow artifact; the running server reads its own persistent volume, and nothing connects the two

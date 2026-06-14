@@ -57,6 +57,34 @@ describe('GITNEXUS.md index delivery (U7)', () => {
   });
 });
 
+describe('GITNEXUS.md / workflow accuracy (U8)', () => {
+  function workflow(overrides?: Partial<CiSetupOptions>): string {
+    const files = generateFiles(makeOpts(overrides), DEFAULT_DETECT);
+    const wf = files.find((f) => f.relativePath === '.github/workflows/gitnexus-ci.yml');
+    if (!wf) throw new Error('workflow not generated');
+    return wf.content;
+  }
+
+  it('drops the false "stale-index PRs are blocked at CI" claim', () => {
+    const content = gitnexusMd();
+    expect(content).not.toContain('stale-index PRs are blocked at CI');
+    expect(content).toContain('does not detect');
+  });
+
+  it('renames the misleading "Check index staleness" workflow step', () => {
+    const content = workflow();
+    expect(content).not.toContain('Check index staleness');
+    expect(content).toContain('Verify index was produced');
+  });
+
+  it('is honest that skills are not auto-committed (contents: read)', () => {
+    const content = gitnexusMd();
+    expect(content).not.toContain('written into the repository by the CI workflow');
+    expect(content).toContain('does **not** commit them');
+    expect(content).toContain('contents: write');
+  });
+});
+
 describe('generateFiles', () => {
   describe('GitHub Actions workflow', () => {
     it('generates with correct port in healthcheck', () => {
