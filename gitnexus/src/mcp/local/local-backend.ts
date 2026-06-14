@@ -408,6 +408,17 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
  */
 export const REPO_ID_HASH_LENGTH = 6;
 
+interface TraceParams {
+  from?: string;
+  from_uid?: string;
+  from_file?: string;
+  to?: string;
+  to_uid?: string;
+  to_file?: string;
+  maxDepth?: number;
+  includeTests?: boolean;
+}
+
 interface ImpactParams {
   target: string;
   target_uid?: string;
@@ -1320,6 +1331,8 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'trace':
+        return this.trace(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3946,6 +3959,261 @@ export class LocalBackend {
       text_search_edits: astSearchEdits,
       changes: allChanges,
       applied: !dry_run,
+    };
+  }
+
+  private async trace(repo: RepoHandle, params: TraceParams): Promise<any> {
+    try {
+      return await this._traceImpl(repo, params);
+    } catch (err: any) {
+      return {
+        status: 'error',
+        error: (err instanceof Error ? err.message : String(err)) || 'Trace analysis failed',
+        from: { name: params.from },
+        to: { name: params.to },
+        suggestion:
+          'The graph query failed — try gitnexus context <symbol> to see connections, ' +
+          'or check if an interface bridges them.',
+        ...(isWalCorruptionError(err) ? { recoverySuggestion: WAL_RECOVERY_SUGGESTION } : {}),
+      };
+    }
+  }
+
+  private async _traceImpl(repo: RepoHandle, params: TraceParams): Promise<any> {
+    await this.ensureInitialized(repo);
+
+    // resolveSymbolCandidates feeds `from`/`to` into string operations
+    // (e.g. name.includes), so a non-string param would surface a low-level
+    // "x.includes is not a function". Reject it with a clear message instead.
+    const isStringOrAbsent = (v: unknown): boolean => v === undefined || typeof v === 'string';
+    if (
+      !isStringOrAbsent(params.from) ||
+      !isStringOrAbsent(params.to) ||
+      !isStringOrAbsent(params.from_uid) ||
+      !isStringOrAbsent(params.to_uid)
+    ) {
+      return {
+        status: 'error',
+        error: "'from', 'to', and their *_uid variants must be strings.",
+        suggestion: 'Pass symbol names or UIDs as strings, e.g. trace from="A" to="B".',
+      };
+    }
+
+    const fromOutcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid: params.from_uid, name: params.from },
+      { file_path: params.from_file },
+    );
+
+    if (fromOutcome.kind === 'not_found') {
+      return {
+        status: 'not_found',
+        error: `Source symbol '${params.from_uid ?? params.from}' not found.`,
+        suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
+      };
+    }
+    if (fromOutcome.kind === 'ambiguous') {
+      return {
+        status: 'ambiguous',
+        role: 'from',
+        message: `Found ${fromOutcome.candidates.length} symbols matching '${params.from}'. Disambiguate with --from-uid.`,
+        candidates: fromOutcome.candidates,
+      };
+    }
+
+    const toOutcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid: params.to_uid, name: params.to },
+      { file_path: params.to_file },
+    );
+
+    if (toOutcome.kind === 'not_found') {
+      return {
+        status: 'not_found',
+        error: `Target symbol '${params.to_uid ?? params.to}' not found.`,
+        suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
+      };
+    }
+    if (toOutcome.kind === 'ambiguous') {
+      return {
+        status: 'ambiguous',
+        role: 'to',
+        message: `Found ${toOutcome.candidates.length} symbols matching '${params.to}'. Disambiguate with --to-uid.`,
+        candidates: toOutcome.candidates,
+      };
+    }
+
+    const fromSym = fromOutcome.symbol;
+    const toSym = toOutcome.symbol;
+
+    if (fromSym.id === toSym.id) {
+      return {
+        status: 'ok',
+        from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
+        to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
+        hopCount: 0,
+        hops: [{ name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine }],
+        edges: [],
+      };
+    }
+
+    // Sanitize maxDepth at the real boundary: the MCP inputSchema's
+    // minimum/maximum is advisory only (callTool is reachable directly), so a
+    // caller can pass 0, a negative, NaN, or a non-integer. `??` does NOT
+    // recover 0/NaN, and Math.min has no lower bound — left unguarded, any of
+    // those makes the BFS loop run zero iterations and return a false no_path.
+    const DEFAULT_TRACE_DEPTH = 10;
+    const MAX_TRACE_DEPTH = 30;
+    const requestedDepth =
+      Number.isInteger(params.maxDepth) && (params.maxDepth as number) > 0
+        ? (params.maxDepth as number)
+        : DEFAULT_TRACE_DEPTH;
+    const maxDepth = Math.min(requestedDepth, MAX_TRACE_DEPTH);
+    const includeTests = params.includeTests ?? false;
+    // Traversal vocabulary: CALLS for actual calls, HAS_METHOD so a class-rooted
+    // trace can descend into its methods. Not "calls only" — per-hop edge type is
+    // surfaced in edges[] so containment hops stay distinguishable.
+    const TRAVERSAL_EDGE_TYPES = ['CALLS', 'HAS_METHOD'];
+
+    // Bound the traversal so a high-fanout hub (a logger/util reached by many
+    // symbols) can't materialize an unbounded frontier. Per-level rows are
+    // capped and the total visited set is capped; either cap sets `truncated`
+    // so a resulting no_path is never reported as if the graph was exhausted.
+    const PER_NODE_FANOUT_CAP = 200;
+    const ABS_ROW_CAP = 5000;
+    const MAX_VISITED = 50000;
+    let truncated = false;
+
+    const visited = new Set<string>([fromSym.id]);
+    let frontier = [fromSym.id];
+    const parent = new Map<
+      string,
+      {
+        from: string;
+        name: string;
+        filePath: string;
+        startLine: number;
+        edgeType: string;
+        confidence: number;
+      }
+    >();
+
+    let found = false;
+    // The last node discovered at the deepest reached level — surfaced as
+    // `furthest` in the no_path response to hint where the chain breaks.
+    let lastReached: {
+      name: string;
+      filePath: string;
+      startLine: number;
+    } | null = null;
+    let reachedDepth = 0;
+
+    for (let depth = 1; depth <= maxDepth && frontier.length > 0 && !found; depth++) {
+      const nextFrontier: string[] = [];
+      // LadybugDB/Kuzu does not support a parameterized LIMIT, so the cap is
+      // interpolated (it is a derived integer, not user input).
+      const rowCap = Math.min(frontier.length * PER_NODE_FANOUT_CAP, ABS_ROW_CAP);
+
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (n)-[r:CodeRelation]->(m)
+         WHERE n.id IN $frontierIds AND r.type IN $edgeTypes
+         RETURN n.id AS sourceId, m.id AS id, m.name AS name, labels(m)[0] AS type,
+                m.filePath AS filePath, m.startLine AS startLine,
+                r.type AS edgeType, r.confidence AS confidence
+         LIMIT ${rowCap}`,
+        { frontierIds: frontier, edgeTypes: TRAVERSAL_EDGE_TYPES },
+      );
+
+      // A clipped level may have dropped a node that lies on the only shortest
+      // path, so any subsequent no_path is not authoritative.
+      if (rows.length >= rowCap) truncated = true;
+
+      for (const row of rows) {
+        // Decode once. The `?? row[N]` fallback handles LadybugDB tuple-mode
+        // returns; the positional indices mirror the RETURN column order above.
+        const nodeId = (row.id ?? row[1]) as string;
+        const sourceId = (row.sourceId ?? row[0]) as string;
+        const name = (row.name ?? row[2]) as string;
+        const filePath = (row.filePath ?? row[4]) as string;
+        const startLine = (row.startLine ?? row[5]) as number;
+        const edgeType = (row.edgeType ?? row[6]) as string;
+        const storedConfidence = row.confidence ?? row[7];
+        const confidence =
+          typeof storedConfidence === 'number' && storedConfidence > 0
+            ? storedConfidence
+            : confidenceForRelType(edgeType);
+
+        // Match the explicitly-requested target before the test-file filter.
+        // resolveSymbolCandidates does not exclude test-file symbols, so a
+        // target (or a required hop) that lives in a test file would otherwise
+        // be dropped by the includeTests guard below and produce a false
+        // no_path even when a direct edge exists.
+        if (nodeId === toSym.id) {
+          parent.set(nodeId, { from: sourceId, name, filePath, startLine, edgeType, confidence });
+          found = true;
+          break;
+        }
+
+        // Skip non-target nodes that live in test files unless includeTests.
+        if (!includeTests && isTestFilePath(filePath)) continue;
+
+        if (!visited.has(nodeId)) {
+          visited.add(nodeId);
+          parent.set(nodeId, { from: sourceId, name, filePath, startLine, edgeType, confidence });
+          nextFrontier.push(nodeId);
+          lastReached = { name, filePath, startLine };
+          reachedDepth = depth;
+        }
+      }
+
+      frontier = nextFrontier;
+      if (visited.size >= MAX_VISITED) {
+        truncated = true;
+        break;
+      }
+    }
+
+    if (found) {
+      const path: Array<{ name: string; filePath: string; startLine: number }> = [];
+      const edges: Array<{ relType: string; confidence: number }> = [];
+      let current = toSym.id;
+
+      while (current !== fromSym.id) {
+        const info = parent.get(current)!;
+        path.unshift({ name: info.name, filePath: info.filePath, startLine: info.startLine });
+        edges.unshift({ relType: info.edgeType, confidence: info.confidence });
+        current = info.from;
+      }
+      path.unshift({
+        name: fromSym.name,
+        filePath: fromSym.filePath,
+        startLine: fromSym.startLine,
+      });
+
+      return {
+        status: 'ok',
+        from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
+        to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
+        hopCount: edges.length,
+        hops: path,
+        edges,
+      };
+    }
+
+    return {
+      status: 'no_path',
+      from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
+      to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
+      furthest: lastReached ? { ...lastReached, depth: reachedDepth } : null,
+      ...(truncated ? { truncated: true } : {}),
+      suggestion: truncated
+        ? 'Search was truncated at a traversal cap before exhausting the graph — a path ' +
+          'may still exist. Narrow the search (a lower --depth, or trace from a more ' +
+          'specific symbol), or use gitnexus context <symbol> to inspect connections.'
+        : 'No directed path found. The call chain likely breaks at dynamic dispatch, ' +
+          'reflection, or an external API boundary. Try gitnexus context <symbol> to see ' +
+          "both symbols' connections, or check if an interface/abstraction bridges them.",
     };
   }
 
