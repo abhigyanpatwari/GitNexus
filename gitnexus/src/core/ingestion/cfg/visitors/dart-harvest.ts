@@ -212,10 +212,18 @@ export class DartHarvester {
     }
   }
 
-  /** Declare the `name:identifier` of an `initialized_variable_definition`. */
+  /** Declare every name of an `initialized_variable_definition` (`var a = 1, b = 2`). */
   private declareInitializedVar(node: SyntaxNode, kind: BindingEntry['kind']): void {
     const name = node.childForFieldName('name');
     if (name) this.declare(name, kind);
+    // Trailing comma-separated bindings: each `initialized_identifier` (`b = 2`)
+    // names another local that the `name` field alone misses.
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c?.type !== 'initialized_identifier') continue;
+      const id = c.namedChildren.find((g) => g.type === 'identifier');
+      if (id) this.declare(id, kind);
+    }
   }
 
   /**
@@ -367,6 +375,16 @@ export class DartHarvester {
         if (value) this.walkValue(value, acc);
         const name = node.childForFieldName('name');
         if (name) this.def(name, acc);
+        // Trailing comma-separated bindings (`var a = 1, b = 2;`): each
+        // `initialized_identifier` is an `identifier` + its own value expr.
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (c?.type !== 'initialized_identifier') continue;
+          const id = c.namedChildren.find((g) => g.type === 'identifier');
+          const val = c.namedChildren.find((g) => g.type !== 'identifier');
+          if (val) this.walkValue(val, acc);
+          if (id) this.def(id, acc);
+        }
         return;
       }
       case 'assignment_expression': {

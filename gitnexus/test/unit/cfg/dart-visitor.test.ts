@@ -387,6 +387,15 @@ describe('Dart CfgVisitor — def/use harvest', () => {
     // `obj` is used (it is the assignment target's root); no scalar `x` binding.
     expect(usesBinding(cfg, bindingIdx(cfg, 'obj'))).toBe(true);
   });
+
+  it('multi-variable declaration `var a = 1, b = 2;` defines BOTH names (#2195 P2)', () => {
+    const cfg = dart.cfgOf(`void f() { var a = 1, b = 2; use(a); use(b); }`);
+    // The bug dropped every name after the first — `b` became a synthetic
+    // global. Both must be real locals defined by the declaration.
+    expect(definesBinding(cfg, bindingIdx(cfg, 'a'))).toBe(true);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'b'))).toBe(true);
+    expect(usesBinding(cfg, bindingIdx(cfg, 'b'))).toBe(true); // use(b)
+  });
 });
 
 describe('Dart CfgVisitor — functionStartColumn', () => {
