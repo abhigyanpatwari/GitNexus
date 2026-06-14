@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { select } from '@inquirer/prompts';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -186,5 +187,50 @@ describe('ciSetupCommand', () => {
 
     const entries = await fs.readdir(tempDir);
     expect(entries).toHaveLength(0);
+  });
+});
+
+describe('resolveOptions (U1: interactive prompts reachable)', () => {
+  const detect = {
+    gitRoot: '/tmp/repo',
+    detectedCi: null,
+    hasDocker: false,
+    portAvailable: true,
+    primaryLanguage: 'TypeScript',
+  };
+  let originalTTY: boolean | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    originalTTY = process.stdin.isTTY;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalTTY, configurable: true });
+  });
+
+  it('TTY with no auth/branch flags prompts for them (prompts are not dead code)', async () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    const { resolveOptions } = await import('../../src/cli/ci-setup/prompts.js');
+    await resolveOptions(detect, { dryRun: true });
+    // select() is the prompt primitive for all four questions; reaching it proves
+    // promptAuth/promptBranchStrategy are no longer short-circuited by a commander default.
+    expect(vi.mocked(select)).toHaveBeenCalled();
+  });
+
+  it('non-TTY falls back to token/pr-scoped without prompting', async () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    const { resolveOptions } = await import('../../src/cli/ci-setup/prompts.js');
+    const resolved = await resolveOptions(detect, { dryRun: true });
+    expect(resolved.auth).toBe('token');
+    expect(resolved.branchStrategy).toBe('pr-scoped');
+    expect(vi.mocked(select)).not.toHaveBeenCalled();
+  });
+
+  it('explicit auth flag wins over the prompt', async () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    const { resolveOptions } = await import('../../src/cli/ci-setup/prompts.js');
+    const resolved = await resolveOptions(detect, { auth: 'none', dryRun: true });
+    expect(resolved.auth).toBe('none');
   });
 });

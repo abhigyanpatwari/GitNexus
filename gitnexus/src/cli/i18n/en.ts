@@ -167,8 +167,9 @@ export const en = {
   'help.option.ciSetup.ci': 'CI/CD system: github-actions, azure-devops, or both',
   'help.option.ciSetup.deploy': 'Deploy target: docker, azure-container-app, or both',
   'help.option.ciSetup.port': 'Host port to bind (container always runs on 4747)',
-  'help.option.ciSetup.auth': 'Auth mode: token (Caddy proxy) or none',
-  'help.option.ciSetup.branchStrategy': 'Index strategy: pr-scoped or main-only',
+  'help.option.ciSetup.auth': 'Auth mode: token (Caddy proxy) or none (defaults to token)',
+  'help.option.ciSetup.branchStrategy':
+    'Index strategy: pr-scoped or main-only (defaults to pr-scoped)',
   'help.option.ciSetup.dryRun':
     'Print generated files without writing (default when no mode flag given)',
   'help.option.ciSetup.apply': 'Write files with per-file confirmation gates',
