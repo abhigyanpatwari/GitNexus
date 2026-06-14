@@ -7,6 +7,8 @@ import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
 import { fixtureTaintTotals } from '../../helpers/taint-fixture.js';
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
 // U7 — end-to-end proof that the `--pdg` opt-in reaches BOTH sinks: the parse
 // worker builds a per-function CFG (workerData.pdg) and scope-resolution emits
@@ -248,14 +250,21 @@ const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string; hazard?: string }
 // COBOL is the deliberate non-goal of #2195 (no installed grammar; exotic
 // PERFORM / GO-TO control flow). Its provider has no `cfgVisitor`, so the worker
 // emits no cfgSideChannel — that gate is asserted in `worker-roundtrip.test.ts`.
-const REMAINING_LANGS: ReadonlyArray<{ lang: string; fixture: string; hazard?: string }> = [
+const REMAINING_LANGS: ReadonlyArray<{
+  lang: string;
+  fixture: string;
+  hazard?: string;
+  // Vendored/optional grammar: gate on isLanguageAvailable so CI on a platform
+  // lacking the prebuilt grammar skips rather than fails (#2197 U4).
+  vendored?: boolean;
+}> = [
   { lang: 'Python', fixture: 'python-hazards.py', hazard: 'should_stop' }, // while_true_loop
   { lang: 'PHP', fixture: 'php-hazards.php', hazard: 'tick(' }, // infiniteLoop: while(true)
   { lang: 'Ruby', fixture: 'ruby-hazards.rb', hazard: 'handle()' }, // infinite_loop: while true
   { lang: 'Rust', fixture: 'rust-hazards.rs', hazard: 'tick(' }, // loop_forever: loop {}
-  { lang: 'Swift', fixture: 'swift-hazards.swift', hazard: 'poll(' }, // eventLoop: while true
-  { lang: 'Kotlin', fixture: 'kotlin-hazards.kt', hazard: 'step(' }, // spin: while(true)
-  { lang: 'Dart', fixture: 'dart-hazards.dart', hazard: 'work(' }, // spin: while(true)
+  { lang: 'Swift', fixture: 'swift-hazards.swift', hazard: 'poll(', vendored: true }, // eventLoop: while true
+  { lang: 'Kotlin', fixture: 'kotlin-hazards.kt', hazard: 'step(', vendored: true }, // spin: while(true)
+  { lang: 'Dart', fixture: 'dart-hazards.dart', hazard: 'work(', vendored: true }, // spin: while(true)
   { lang: 'Vue', fixture: 'vue-hazards.vue', hazard: 'shouldStop' }, // eventLoop: while(true)
 ];
 
@@ -454,8 +463,14 @@ describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)
     for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  for (const { lang, fixture, hazard } of REMAINING_LANGS) {
-    it(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
+  for (const { lang, fixture, hazard, vendored } of REMAINING_LANGS) {
+    // Vendored grammars (Swift/Kotlin/Dart) may lack a prebuild on the CI
+    // platform — skip rather than fail when the grammar can't load (#2197 U4).
+    const testFn =
+      !vendored || isLanguageAvailable(SupportedLanguages[lang as keyof typeof SupportedLanguages])
+        ? it
+        : it.skip;
+    testFn(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
       const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
       // The CFG is built in the worker — a stale dist silently zeros this.
       expect(result.usedWorkerPool, `${lang} used the worker pool`).toBe(true);
@@ -497,7 +512,7 @@ describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)
       }
     }, 60000);
 
-    it(`${lang}: --pdg off emits zero PDG nodes/edges (the R3 flag-off gate)`, async () => {
+    testFn(`${lang}: --pdg off emits zero PDG nodes/edges (the R3 flag-off gate)`, async () => {
       // Default (no pdg flag) and explicit pdg:false must both produce a graph
       // with NO PDG layer — the existing-user path stays untouched.
       const defaultRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_OFF);
