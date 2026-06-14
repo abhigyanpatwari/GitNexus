@@ -16,6 +16,18 @@ function caddyProxyPort(opts: CiSetupOptions): number {
   return opts.port + 1;
 }
 
+/**
+ * The URL an MCP client uses to reach the shared server, by deployment target.
+ * - Docker: HTTP on the Caddy proxy port (token) or the direct port (no-auth).
+ * - Azure Container App: HTTPS on the app FQDN (ACA terminates ingress on 443);
+ *   there is no Caddy proxy, so advertising a `port+1` proxy port would be wrong.
+ */
+function mcpServerUrl(opts: CiSetupOptions): string {
+  if (opts.deploy === 'azure-container-app') return 'https://<GITNEXUS_HOST>/api/mcp';
+  const port = opts.auth === 'token' ? caddyProxyPort(opts) : opts.port;
+  return `http://<GITNEXUS_HOST>:${port}/api/mcp`;
+}
+
 function buildGitHubActionsWorkflow(opts: CiSetupOptions): string {
   const onBlock =
     opts.branchStrategy === 'pr-scoped'
@@ -247,10 +259,12 @@ function buildCaddyfile(opts: CiSetupOptions): string {
 function buildAcaDeployScript(opts: CiSetupOptions): string {
   const authComment =
     opts.auth === 'token'
-      ? `# Auth: enable Azure Container Apps built-in authentication (Easy Auth) for token enforcement.
-# In the Azure portal, go to your Container App → Settings → Authentication → Add Identity Provider.`
-      : `# ⚠ NO AUTH configured. Restrict access via Azure Container Apps ingress settings
-# or use Easy Auth (Azure portal → Authentication) before exposing to users.`;
+      ? `# Auth: this deploys with --ingress internal (reachable only inside the Container Apps
+# environment's VNet). It does NOT enforce GITNEXUS_TOKEN — Azure Easy Auth is AAD/OIDC-based,
+# a different mechanism. For bearer-token enforcement, add a Caddy/NGINX sidecar in front;
+# otherwise rely on the internal-ingress network boundary.`
+      : `# ⚠ NO AUTH. The app uses --ingress internal (VNet-only). Do not switch to external ingress
+# without putting authentication in front of it.`;
 
   return `#!/usr/bin/env bash
 # ${COMMERCIAL_NOTICE.slice(2)}
@@ -267,29 +281,35 @@ RESOURCE_GROUP="\${RESOURCE_GROUP:-gitnexus-rg}"
 LOCATION="\${LOCATION:-eastus}"
 ENVIRONMENT="\${CONTAINER_APP_ENV:-gitnexus-env}"
 APP_NAME="\${APP_NAME:-gitnexus}"
-STORAGE_ACCOUNT="\${STORAGE_ACCOUNT:-gitnexusstorage}"
+# Storage account names are GLOBALLY unique across Azure (3-24 chars, lowercase alphanumeric).
+# Randomized for first-run so the default does not collide; set STORAGE_ACCOUNT to a fixed,
+# globally-unique name for repeatable/idempotent re-deploys.
+STORAGE_ACCOUNT="\${STORAGE_ACCOUNT:-gitnexus\${RANDOM}\${RANDOM}}"
 FILE_SHARE="\${FILE_SHARE:-gitnexus-data}"
 
-echo "Creating resource group..."
-az group create --name "\$RESOURCE_GROUP" --location "\$LOCATION"
+echo "Creating resource group (idempotent)..."
+az group create --name "\$RESOURCE_GROUP" --location "\$LOCATION" --output none
 
 echo "Creating storage account for persistent index..."
-az storage account create \\
-  --name "\$STORAGE_ACCOUNT" \\
-  --resource-group "\$RESOURCE_GROUP" \\
-  --location "\$LOCATION" \\
-  --sku Standard_LRS
+az storage account show --name "\$STORAGE_ACCOUNT" --resource-group "\$RESOURCE_GROUP" >/dev/null 2>&1 \\
+  || az storage account create \\
+    --name "\$STORAGE_ACCOUNT" \\
+    --resource-group "\$RESOURCE_GROUP" \\
+    --location "\$LOCATION" \\
+    --sku Standard_LRS
 
-az storage share-rm create \\
-  --name "\$FILE_SHARE" \\
-  --storage-account "\$STORAGE_ACCOUNT" \\
-  --resource-group "\$RESOURCE_GROUP"
+az storage share-rm show --name "\$FILE_SHARE" --storage-account "\$STORAGE_ACCOUNT" --resource-group "\$RESOURCE_GROUP" >/dev/null 2>&1 \\
+  || az storage share-rm create \\
+    --name "\$FILE_SHARE" \\
+    --storage-account "\$STORAGE_ACCOUNT" \\
+    --resource-group "\$RESOURCE_GROUP"
 
 echo "Creating Container Apps environment..."
-az containerapp env create \\
-  --name "\$ENVIRONMENT" \\
-  --resource-group "\$RESOURCE_GROUP" \\
-  --location "\$LOCATION"
+az containerapp env show --name "\$ENVIRONMENT" --resource-group "\$RESOURCE_GROUP" >/dev/null 2>&1 \\
+  || az containerapp env create \\
+    --name "\$ENVIRONMENT" \\
+    --resource-group "\$RESOURCE_GROUP" \\
+    --location "\$LOCATION"
 
 echo "Mounting Azure Files into the environment..."
 STORAGE_KEY=\$(az storage account keys list \\
@@ -305,20 +325,23 @@ az containerapp env storage set \\
   --azure-file-account-key "\$STORAGE_KEY" \\
   --azure-file-share-name "\$FILE_SHARE" \\
   --access-mode ReadWrite
+# Drop the storage key from the environment once it has been registered.
+unset STORAGE_KEY
 
 echo "Deploying GitNexus container app..."
-az containerapp create \\
-  --name "\$APP_NAME" \\
-  --resource-group "\$RESOURCE_GROUP" \\
-  --environment "\$ENVIRONMENT" \\
-  --image ${GITNEXUS_IMAGE} \\
-  --target-port ${CONTAINER_PORT} \\
-  --ingress internal \\
-  --env-vars "GITNEXUS_HOME=/data/gitnexus" \\
-  --volume-name gitnexus-data \\
-  --volume-storage-type AzureFile \\
-  --volume-storage-name gitnexus-data \\
-  --mount-path /data/gitnexus
+az containerapp show --name "\$APP_NAME" --resource-group "\$RESOURCE_GROUP" >/dev/null 2>&1 \\
+  || az containerapp create \\
+    --name "\$APP_NAME" \\
+    --resource-group "\$RESOURCE_GROUP" \\
+    --environment "\$ENVIRONMENT" \\
+    --image ${GITNEXUS_IMAGE} \\
+    --target-port ${CONTAINER_PORT} \\
+    --ingress internal \\
+    --env-vars "GITNEXUS_HOME=/data/gitnexus" \\
+    --volume-name gitnexus-data \\
+    --volume-storage-type AzureFile \\
+    --volume-storage-name gitnexus-data \\
+    --mount-path /data/gitnexus
 
 echo "Done. Container App URL:"
 az containerapp show \\
@@ -329,14 +352,17 @@ az containerapp show \\
 }
 
 function buildMcpSnippet(opts: CiSetupOptions): string {
-  const proxyPort = opts.auth === 'token' ? opts.port + 1 : opts.port;
-  const urlComment =
-    opts.auth === 'token'
+  const isAca = opts.deploy === 'azure-container-app';
+  const url = mcpServerUrl(opts);
+  const urlComment = isAca
+    ? `  // Azure Container App FQDN (HTTPS on 443). With --ingress internal it is reachable only inside the environment's VNet; ACA does not enforce GITNEXUS_TOKEN.`
+    : opts.auth === 'token'
       ? `  // Proxy port (Caddy enforces GITNEXUS_TOKEN). Change <GITNEXUS_HOST> to the server's IP or hostname.`
       : `  // Direct gitnexus port (no auth). Change <GITNEXUS_HOST> to the server's IP or hostname.`;
 
+  // The Caddy proxy enforces the bearer token; on ACA there is no Caddy, so no header.
   const headersBlock =
-    opts.auth === 'token'
+    opts.auth === 'token' && !isAca
       ? `,
       "headers": {
         "Authorization": "Bearer YOUR_GITNEXUS_TOKEN"
@@ -350,7 +376,7 @@ function buildMcpSnippet(opts: CiSetupOptions): string {
   "mcpServers": {
     "gitnexus": {
       "type": "http",
-      "url": "http://<GITNEXUS_HOST>:${proxyPort}/api/mcp"${headersBlock}
+      "url": "${url}"${headersBlock}
     }
   }
 }
@@ -378,25 +404,51 @@ function buildGitnexusMd(opts: CiSetupOptions, detect: DetectResult): string {
   const branchLabel =
     opts.branchStrategy === 'pr-scoped' ? 'Main branch + all open PRs' : 'Main branch only';
 
-  const connectSection =
-    opts.auth === 'token'
-      ? `### Claude Code
+  const isAca = opts.deploy === 'azure-container-app';
+  const useTokenHeader = opts.auth === 'token' && !isAca;
 
-Copy the MCP entry from \`.claude/gitnexus-mcp-snippet.json\` into \`~/.claude/settings.json\`:
-
-\`\`\`json
-"mcpServers": {
+  const claudeEntry = useTokenHeader
+    ? `"mcpServers": {
   "gitnexus": {
     "type": "http",
-    "url": "http://<GITNEXUS_HOST>:${caddyProxyPort(opts)}/api/mcp",
+    "url": "${mcpServerUrl(opts)}",
     "headers": {
       "Authorization": "Bearer YOUR_GITNEXUS_TOKEN"
     }
   }
-}
+}`
+    : `"mcpServers": {
+  "gitnexus": {
+    "type": "http",
+    "url": "${mcpServerUrl(opts)}"
+  }
+}`;
+
+  const tlsNote = useTokenHeader
+    ? `
+
+> **Security:** the proxy serves plain HTTP, so the bearer token is sent in cleartext. Put it behind
+> TLS — give Caddy a real hostname for automatic HTTPS, or terminate TLS at a load balancer — before
+> exposing the server beyond localhost or a trusted LAN.`
+    : '';
+
+  const acaNote = isAca
+    ? `
+
+> **Azure Container App:** deployed with \`--ingress internal\`, so the FQDN is reachable only inside
+> the environment's VNet. To reach it from a developer machine, enable external ingress and put
+> authentication in front of it (ACA does not enforce \`GITNEXUS_TOKEN\`), or connect from within the VNet.`
+    : '';
+
+  const connectSection = `### Claude Code
+
+Copy the MCP entry from \`.claude/gitnexus-mcp-snippet.json\` into \`~/.claude/settings.json\`:
+
+\`\`\`json
+${claudeEntry}
 \`\`\`
 
-Replace \`<GITNEXUS_HOST>\` with the server's IP or hostname. Set \`GITNEXUS_TOKEN\` to the same value used when starting the server.
+Replace \`<GITNEXUS_HOST>\` with the server's ${isAca ? 'Container App FQDN' : 'IP or hostname'}.${useTokenHeader ? ' Set `GITNEXUS_TOKEN` to the same value used when starting the server.' : ''}
 
 ### Cursor
 
@@ -410,25 +462,7 @@ Add to \`~/.cursor/mcp.json\` under \`mcpServers\`:
 }
 \`\`\`
 
-*Or* point Cursor at the shared HTTP server using the same \`type: http\` entry as Claude Code.
-
-> **Security:** the proxy serves plain HTTP, so the bearer token is sent in cleartext. Put it behind
-> TLS — give Caddy a real hostname for automatic HTTPS, or terminate TLS at a load balancer — before
-> exposing the server beyond localhost or a trusted LAN.`
-      : `### Claude Code
-
-Copy the MCP entry from \`.claude/gitnexus-mcp-snippet.json\` into \`~/.claude/settings.json\`:
-
-\`\`\`json
-"mcpServers": {
-  "gitnexus": {
-    "type": "http",
-    "url": "http://<GITNEXUS_HOST>:${opts.port}/api/mcp"
-  }
-}
-\`\`\`
-
-Replace \`<GITNEXUS_HOST>\` with the server's IP or hostname.`;
+*Or* point Cursor at the shared HTTP server using the same \`type: http\` entry as Claude Code.${tlsNote}${acaNote}`;
 
   const dockerDelivery = `**Docker:** the simplest option is to re-index on the server host directly, so the
 \`gitnexus-data\` volume stays fresh without any artifact handoff:

@@ -112,6 +112,56 @@ describe('security hardening (U5)', () => {
   });
 });
 
+describe('ACA deploy script + connection guidance (U6)', () => {
+  function aca(overrides?: Partial<CiSetupOptions>): string {
+    const files = generateFiles(
+      makeOpts({ deploy: 'azure-container-app', ...overrides }),
+      DEFAULT_DETECT,
+    );
+    const s = files.find((f) => f.relativePath === 'gitnexus-aca-deploy.sh');
+    if (!s) throw new Error('ACA script not generated');
+    return s.content;
+  }
+
+  it('does not default STORAGE_ACCOUNT to the global literal gitnexusstorage', () => {
+    const s = aca();
+    expect(s).not.toContain(':-gitnexusstorage}');
+    expect(s).toContain('${RANDOM}');
+  });
+
+  it('is idempotent (show || create guards) and unsets the storage key', () => {
+    const s = aca();
+    expect(s).toContain('az storage account show');
+    expect(s).toContain('az containerapp show');
+    expect(s).toContain('|| az containerapp create');
+    expect(s).toContain('unset STORAGE_KEY');
+  });
+
+  it('does not claim Easy Auth enforces the bearer token', () => {
+    const s = aca({ auth: 'token' });
+    expect(s).not.toContain('Easy Auth) for token enforcement');
+    expect(s).toContain('does NOT enforce GITNEXUS_TOKEN');
+  });
+
+  it('ACA MCP snippet uses an HTTPS FQDN, not a non-existent Caddy proxy port', () => {
+    const files = generateFiles(
+      makeOpts({ deploy: 'azure-container-app', auth: 'token' }),
+      DEFAULT_DETECT,
+    );
+    const snip = files.find((f) => f.relativePath === '.claude/gitnexus-mcp-snippet.json');
+    expect(snip?.content).toContain('https://<GITNEXUS_HOST>/api/mcp');
+    expect(snip?.content).not.toContain(':4748/api/mcp');
+    expect(snip?.content).not.toContain('Authorization'); // ACA does not enforce the token
+  });
+
+  it('GITNEXUS.md (ACA) documents internal ingress instead of a proxy port', () => {
+    const md = gitnexusMd({ deploy: 'azure-container-app', auth: 'token' });
+    expect(md).toContain('https://<GITNEXUS_HOST>/api/mcp');
+    expect(md).toContain('ingress internal');
+    expect(md).not.toContain(':4748/api/mcp');
+  });
+});
+
 describe('version pinning (U9)', () => {
   it('pins the GitHub Actions workflow analyze step to the wizard version', () => {
     const files = generateFiles(makeOpts({ version: '9.9.9' }), DEFAULT_DETECT);
