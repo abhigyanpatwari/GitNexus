@@ -12,7 +12,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { detectEnvironment } from './ci-setup/detect.js';
+import { detectEnvironment, checkPortAvailable } from './ci-setup/detect.js';
 import { resolveOptions } from './ci-setup/prompts.js';
 import { generateFiles } from './ci-setup/templates.js';
 import type { CiSetupOptions, CiSetupResult, GeneratedFile } from './ci-setup/types.js';
@@ -68,9 +68,6 @@ export const ciSetupCommand = async (options?: {
   if (detect.hasDocker) {
     console.log('   ✓ Docker: docker-compose or Dockerfile found');
   }
-  console.log(
-    `   ${detect.portAvailable ? '✓' : '⚠'} Port 4747: ${detect.portAvailable ? 'available' : 'in use (serve may already be running)'}`,
-  );
   console.log('   ⚠ License: PolyForm-Noncommercial — confirm non-commercial use\n');
 
   // Parse and validate options from commander flags. An explicitly-passed but
@@ -105,6 +102,14 @@ export const ciSetupCommand = async (options?: {
   }
 
   const resolved = await resolveOptions(detect, partial);
+
+  // Probe the *resolved* port (now that --port / prompts are settled) rather
+  // than a hardcoded default at detection time.
+  const portAvailable = await checkPortAvailable(resolved.port);
+  console.log(
+    `   ${portAvailable ? '✓' : '⚠'} Port ${resolved.port}: ${portAvailable ? 'available' : 'in use (serve may already be running)'}`,
+  );
+
   const files = generateFiles(resolved, detect);
 
   const result: CiSetupResult = { generated: [], skipped: [], errors: [] };

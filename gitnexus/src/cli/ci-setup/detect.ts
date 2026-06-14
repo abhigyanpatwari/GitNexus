@@ -105,7 +105,12 @@ async function detectPrimaryLanguage(repoRoot: string): Promise<string> {
   return top;
 }
 
-function checkPortAvailable(port: number): Promise<boolean> {
+/**
+ * Whether `port` can be bound on the loopback interface. Exported so the caller
+ * can probe the *resolved* --port (known only after option parsing) rather than
+ * a hardcoded default at detection time.
+ */
+export function checkPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once('error', () => resolve(false));
@@ -124,17 +129,15 @@ export async function detectEnvironment(cwd: string): Promise<DetectResult> {
       gitRoot: null,
       detectedCi: null,
       hasDocker: false,
-      portAvailable: false,
       primaryLanguage: 'Unknown',
     };
   }
 
-  const [detectedCi, hasDocker, portAvailable, primaryLanguage] = await Promise.all([
+  const [detectedCi, hasDocker, primaryLanguage] = await Promise.all([
     detectCiSystem(gitRoot),
     detectDocker(gitRoot),
-    checkPortAvailable(4747),
     detectPrimaryLanguage(gitRoot),
   ]);
 
-  return { gitRoot, detectedCi, hasDocker, portAvailable, primaryLanguage };
+  return { gitRoot, detectedCi, hasDocker, primaryLanguage };
 }

@@ -231,6 +231,28 @@ describe('ciSetupCommand', () => {
     const entries = await fs.readdir(tempDir);
     expect(entries).toHaveLength(0);
   });
+
+  it('probes the resolved --port for availability (not a hardcoded 4747)', async () => {
+    vi.resetModules();
+    vi.doMock('../../src/cli/ci-setup/detect.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/cli/ci-setup/detect.js')>(
+        '../../src/cli/ci-setup/detect.js',
+      );
+      return { ...actual, checkPortAvailable: vi.fn(() => Promise.resolve(true)) };
+    });
+    const detectMod = await import('../../src/cli/ci-setup/detect.js');
+    const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
+    await ciSetupCommand({
+      ci: 'github-actions',
+      deploy: 'docker',
+      auth: 'token',
+      port: '4748',
+      dryRun: true,
+      outputDir: tempDir,
+    });
+    expect(vi.mocked(detectMod.checkPortAvailable)).toHaveBeenCalledWith(4748);
+    vi.doUnmock('../../src/cli/ci-setup/detect.js');
+  });
 });
 
 describe('resolveOptions (U1: interactive prompts reachable)', () => {
@@ -238,7 +260,6 @@ describe('resolveOptions (U1: interactive prompts reachable)', () => {
     gitRoot: '/tmp/repo',
     detectedCi: null,
     hasDocker: false,
-    portAvailable: true,
     primaryLanguage: 'TypeScript',
   };
   let originalTTY: boolean | undefined;

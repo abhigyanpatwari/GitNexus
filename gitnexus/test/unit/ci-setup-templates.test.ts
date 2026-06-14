@@ -7,7 +7,6 @@ const DEFAULT_DETECT: DetectResult = {
   gitRoot: '/repo',
   detectedCi: 'github-actions',
   hasDocker: true,
-  portAvailable: true,
   primaryLanguage: 'TypeScript',
 };
 

@@ -19,7 +19,6 @@ export interface DetectResult {
   gitRoot: string | null;
   detectedCi: CiSystem | null;
   hasDocker: boolean;
-  portAvailable: boolean;
   primaryLanguage: string;
 }
 
