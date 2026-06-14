@@ -425,6 +425,20 @@ export class KotlinHarvester {
         }
         return;
       }
+      case 'postfix_expression':
+      case 'prefix_expression': {
+        // `x++` / `--x` — def AND use the operand when it is a plain identifier
+        // and the operator is an increment/decrement. Other pre/postfix forms
+        // (`-x`, `!x`, `x!!`, `x?`) are pure reads → walk the operand as a use.
+        const operand = node.namedChild(0);
+        if (operand?.type === 'simple_identifier' && this.isIncDec(node)) {
+          this.def(operand, acc);
+          this.use(operand, acc);
+        } else if (operand) {
+          this.walkValue(operand, acc);
+        }
+        return;
+      }
       case 'navigation_expression': {
         // `a.b` / `a?.b` — value read of the chain root only; the suffix name is
         // not a scalar binding.
@@ -465,6 +479,15 @@ export class KotlinHarvester {
           if (c) this.walkValue(c, acc);
         }
     }
+  }
+
+  /** True iff `node` carries a `++` / `--` operator token (`x++` / `--x`). */
+  private isIncDec(node: SyntaxNode): boolean {
+    for (let i = 0; i < node.childCount; i++) {
+      const c = node.child(i);
+      if (c && !c.isNamed && (c.text === '++' || c.text === '--')) return true;
+    }
+    return false;
   }
 
   /** The `= value` expression of a `property_declaration` (the child after `=`). */

@@ -316,6 +316,24 @@ describe('Kotlin CfgVisitor — def/use harvest', () => {
     expect(definesBinding(cfg, x)).toBe(true);
     expect(usesBinding(cfg, x)).toBe(true);
   });
+
+  const defStmtCount = (cfg: FunctionCfg, idx: number): number =>
+    cfg.blocks.flatMap((bl) => bl.statements ?? []).filter((s) => s.defs.includes(idx)).length;
+
+  it('postfix `x++` defines AND uses the operand (#2195 P2)', () => {
+    const cfg = kotlin.cfgOf(`fun f() { var x = 0; x++ }`);
+    const x = bindingIdx(cfg, 'x');
+    // `var x = 0` defs x once; `x++` must def it AGAIN (the loop-counter
+    // reaching-def the bug dropped) — not record x as a use-only.
+    expect(defStmtCount(cfg, x)).toBe(2);
+    expect(usesBinding(cfg, x)).toBe(true);
+  });
+
+  it('prefix `--x` defines the operand too (#2195 P2)', () => {
+    const cfg = kotlin.cfgOf(`fun f() { var x = 0; --x }`);
+    const x = bindingIdx(cfg, 'x');
+    expect(defStmtCount(cfg, x)).toBe(2);
+  });
 });
 
 describe('Kotlin CfgVisitor — functionStartColumn', () => {
