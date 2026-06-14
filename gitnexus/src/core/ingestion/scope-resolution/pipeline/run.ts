@@ -778,6 +778,7 @@ export function runScopeResolution(
     let rdTruncated = 0;
     let cdgEdges = 0;
     let cdgDropped = 0;
+    let cdgSkippedUnsound = 0;
     // ── M3 taint setup (#2083 U4) ────────────────────────────────────────
     // Explicit model-registration seam (idempotent, cheap) — the registry
     // stays empty on non-pdg runs, preserving default-run parity. The
@@ -899,6 +900,7 @@ export function runScopeResolution(
         if (PROF) pdgMs += performance.now() - tCdg;
         cdgEdges += cdg.edges;
         cdgDropped += cdg.droppedEdges;
+        cdgSkippedUnsound += cdg.skippedUnsoundFunctions;
 
         // M3 (#2083 U4): taint over the SAME validated CFGs, inside the SAME
         // per-file try (a taint throw costs this file's taint layer only —
@@ -975,6 +977,9 @@ export function runScopeResolution(
           (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : '') +
           `; ${cdgEdges} CDG edges` +
           (cdgDropped > 0 ? `, ${cdgDropped} CDG edges dropped (per-function cap)` : '') +
+          (cdgSkippedUnsound > 0
+            ? `, ${cdgSkippedUnsound} function(s) CDG-skipped (EXIT not reachable from all blocks)`
+            : '') +
           // M3 volume telemetry — only for languages with a registered model.
           (taintSpec !== undefined
             ? `; taint: ${taintTotals.findings} TAINTED, ${taintTotals.kills} SANITIZES ` +
