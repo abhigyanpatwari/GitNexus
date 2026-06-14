@@ -165,48 +165,45 @@ class RustCfgWalk {
 
   /** Visit a body that may be a `block` or a single expression. */
   private visitBody(node: SyntaxNode | undefined | null): SeqResult {
-    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
-    try {
+    return this.builder.withNesting(() => {
       if (!node) return null;
       if (node.type === 'block') return this.visitSeq(this.statementsOf(node));
       return this.visitStmt(node);
-    } finally {
-      this.builder.exitNesting();
-    }
+    });
   }
 
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
-    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
-    let entry: number | undefined;
-    let dangling: number[] = [];
-    let openSimple: number | undefined;
+    return this.builder.withNesting(() => {
+      let entry: number | undefined;
+      let dangling: number[] = [];
+      let openSimple: number | undefined;
 
-    for (const stmt of stmts) {
-      if (this.isControlFlow(stmt)) {
-        openSimple = undefined; // close any open straight-line block
-        const res = this.visitStmt(stmt);
-        if (res === null) continue; // transparent (empty nested block)
-        if (entry === undefined) entry = res.entry;
-        else this.builder.connect(dangling, res.entry, 'seq');
-        dangling = [...res.exits];
-      } else {
-        const idx =
-          openSimple === undefined ? this.openBlock(stmt) : this.extendOpen(openSimple, stmt);
-        if (openSimple === undefined) {
-          if (entry === undefined) entry = idx;
-          else this.builder.connect(dangling, idx, 'seq');
-          dangling = [idx];
+      for (const stmt of stmts) {
+        if (this.isControlFlow(stmt)) {
+          openSimple = undefined; // close any open straight-line block
+          const res = this.visitStmt(stmt);
+          if (res === null) continue; // transparent (empty nested block)
+          if (entry === undefined) entry = res.entry;
+          else this.builder.connect(dangling, res.entry, 'seq');
+          dangling = [...res.exits];
+        } else {
+          const idx =
+            openSimple === undefined ? this.openBlock(stmt) : this.extendOpen(openSimple, stmt);
+          if (openSimple === undefined) {
+            if (entry === undefined) entry = idx;
+            else this.builder.connect(dangling, idx, 'seq');
+            dangling = [idx];
+          }
+          openSimple = idx;
+          // A straight-line statement that contains a `?` early-returns to EXIT.
+          this.wireTryExits(stmt, idx);
         }
-        openSimple = idx;
-        // A straight-line statement that contains a `?` early-returns to EXIT.
-        this.wireTryExits(stmt, idx);
       }
-    }
 
-    this.builder.exitNesting();
-    if (entry === undefined) return null;
-    return { entry, exits: dangling };
+      if (entry === undefined) return null;
+      return { entry, exits: dangling };
+    });
   }
 
   private openBlock(stmt: SyntaxNode): number {

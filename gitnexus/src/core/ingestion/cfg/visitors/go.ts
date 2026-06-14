@@ -175,58 +175,55 @@ class GoCfgWalk {
 
   /** Visit a body that may be a `block` or a single statement. */
   private visitBody(node: SyntaxNode | undefined | null): SeqResult {
-    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
-    try {
+    return this.builder.withNesting(() => {
       if (!node) return null;
       if (node.type === 'block') return this.visitSeq(this.statementsOf(node));
       return this.visitStmt(node);
-    } finally {
-      this.builder.exitNesting();
-    }
+    });
   }
 
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
-    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
-    let entry: number | undefined;
-    let dangling: number[] = [];
-    let openSimple: number | undefined;
+    return this.builder.withNesting(() => {
+      let entry: number | undefined;
+      let dangling: number[] = [];
+      let openSimple: number | undefined;
 
-    for (const stmt of stmts) {
-      if (CONTROL_FLOW_TYPES.has(stmt.type)) {
-        openSimple = undefined; // close any open straight-line block
-        const res = this.visitStmt(stmt);
-        if (res === null) continue; // transparent (empty nested block)
-        if (entry === undefined) entry = res.entry;
-        else this.builder.connect(dangling, res.entry, 'seq');
-        dangling = [...res.exits];
-      } else {
-        if (openSimple === undefined) {
-          const idx = this.builder.newBlock(
-            startLineOf(stmt),
-            endLineOf(stmt),
-            stmt.text,
-            'normal',
-            this.harvest.facts(stmt),
-          );
-          if (entry === undefined) entry = idx;
-          else this.builder.connect(dangling, idx, 'seq');
-          openSimple = idx;
-          dangling = [idx];
+      for (const stmt of stmts) {
+        if (CONTROL_FLOW_TYPES.has(stmt.type)) {
+          openSimple = undefined; // close any open straight-line block
+          const res = this.visitStmt(stmt);
+          if (res === null) continue; // transparent (empty nested block)
+          if (entry === undefined) entry = res.entry;
+          else this.builder.connect(dangling, res.entry, 'seq');
+          dangling = [...res.exits];
         } else {
-          this.builder.extendBlock(
-            openSimple,
-            endLineOf(stmt),
-            stmt.text,
-            this.harvest.facts(stmt),
-          );
+          if (openSimple === undefined) {
+            const idx = this.builder.newBlock(
+              startLineOf(stmt),
+              endLineOf(stmt),
+              stmt.text,
+              'normal',
+              this.harvest.facts(stmt),
+            );
+            if (entry === undefined) entry = idx;
+            else this.builder.connect(dangling, idx, 'seq');
+            openSimple = idx;
+            dangling = [idx];
+          } else {
+            this.builder.extendBlock(
+              openSimple,
+              endLineOf(stmt),
+              stmt.text,
+              this.harvest.facts(stmt),
+            );
+          }
         }
       }
-    }
 
-    this.builder.exitNesting();
-    if (entry === undefined) return null;
-    return { entry, exits: dangling };
+      if (entry === undefined) return null;
+      return { entry, exits: dangling };
+    });
   }
 
   /** Dispatch one statement to its handler. Non-null except for empty blocks. */
