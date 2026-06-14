@@ -421,7 +421,9 @@ export interface ParseWorkerResult {
    * by reason (#2195): too-many-lines, too-deeply-nested (the proactive
    * depth-guard bail), or build-error. Survives the parse cache (a small number
    * map, kept by `...result` in slimParseWorkerResultsForCache) and is merged +
-   * logged per-language in mergeChunkResults, so a CFG coverage gap is visible.
+   * logged per-language in `dispatchChunkParse` (alongside `skippedLanguages`),
+   * so a CFG coverage gap is visible. Like that sibling telemetry the warn is
+   * emitted for freshly-parsed chunks, not re-emitted on a warm cache hit.
    * Optional for cache backward-compatibility — older shards predate it.
    */
   cfgSkipped?: Record<string, CfgSkipCounts>;
@@ -2417,6 +2419,7 @@ let accumulated: ParseWorkerResult = {
   fileScopeBindings: [],
   parsedFiles: [],
   skippedLanguages: {},
+  cfgSkipped: {},
   fileCount: 0,
 };
 let cumulativeProcessed = 0;
@@ -2556,6 +2559,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         fileScopeBindings: [],
         parsedFiles: [],
         skippedLanguages: {},
+        cfgSkipped: {},
         fileCount: 0,
       };
       cumulativeProcessed = 0;
