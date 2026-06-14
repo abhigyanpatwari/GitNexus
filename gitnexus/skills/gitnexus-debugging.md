@@ -45,6 +45,7 @@ description: "Use when the user is debugging a bug, tracing an error, or asking 
 | Intermittent failure | `context` → look for external calls, async deps            |
 | Performance issue    | `context` → find symbols with many callers (hot paths)     |
 | Recent regression    | `detect_changes` to see what your changes affect           |
+| "How does A reach B?" | `trace` between the two symbols — shortest call chain in one call |
 
 ## Tools
 
@@ -71,6 +72,17 @@ context({name: "validatePayment"})
 MATCH path = (a)-[:CodeRelation {type: 'CALLS'}*1..2]->(b:Function {name: "validatePayment"})
 RETURN [n IN nodes(path) | n.name] AS chain
 ```
+
+**trace** — shortest call chain between two symbols ("how does A reach B?"), one call instead of chaining `context` hops:
+
+```
+trace({ from: "processCheckout", to: "fetchRates" })
+→ status: ok, hopCount: 3
+→ hops: processCheckout → validatePayment → verifyCard → fetchRates
+→ edges: CALLS (1.0), CALLS (0.95), CALLS (1.0)
+```
+
+When no path exists, `trace` reports the furthest reachable node — exactly where the chain breaks (dynamic dispatch, reflection, or an external boundary).
 
 ## Example: "Payment endpoint returns 500 intermittently"
 
