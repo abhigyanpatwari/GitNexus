@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import { createPhpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/php.js';
 import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
 // The PHP CfgVisitor, one hazard per test (real-parser regression, NOT
 // snapshot-pinning). Each fixture's distinctive statement text (a(), step(),
@@ -183,11 +185,15 @@ describe('PHP CfgVisitor — loops', () => {
     expect(exitReachableFromAll(cfg)).toBe(true);
   });
 
-  it('while (true) {} keeps EXIT reverse-reachable (structural cond-false escape)', () => {
+  it('while (true) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
     const cfg = php.cfgOf(wrap(`while (true) { if ($x) { g(); } }`));
-    // The cond-false escape edge must exist so the post-dominator/CDG pass runs.
+    // The inner `if` is a real control point; assert through the production
+    // post-dom/CDG passes (matching go/python/ruby/rust/vue) — CDG is only
+    // computed when EXIT stays reverse-reachable, so a non-empty CDG proves the
+    // structural cond-false escape edge keeps the function CDG-bearing.
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 
   it('for (;;) {} (no condition) keeps EXIT reverse-reachable', () => {

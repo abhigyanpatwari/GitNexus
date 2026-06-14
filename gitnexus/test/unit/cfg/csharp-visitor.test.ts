@@ -182,17 +182,22 @@ describe('C# CfgVisitor — loops', () => {
     expect(hasDef(cfg, x)).toBe(true);
   });
 
-  it('while (true) {} keeps EXIT reverse-reachable (structural exit-escape edge)', () => {
-    const cfg = cs.cfgOf(`class C { void M() { while (true) { work(); } } }`);
+  it('while (true) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    // The inner `if` is a real control point; assert through the production
+    // post-dom/CDG passes (matching go/python/ruby/rust/vue) — CDG is only
+    // computed when EXIT stays reverse-reachable, so a non-empty CDG proves the
+    // structural exit-escape edge keeps the function CDG-bearing.
+    const cfg = cs.cfgOf(`class C { void M(bool x) { while (true) { if (x) { g(); } } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 
-  it('for (;;) {} keeps EXIT reverse-reachable', () => {
-    const cfg = cs.cfgOf(`class C { void M() { for (;;) { work(); } } }`);
+  it('for (;;) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    const cfg = cs.cfgOf(`class C { void M(bool x) { for (;;) { if (x) { g(); } } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 });
 

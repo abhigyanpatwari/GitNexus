@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import { createJavaCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/java.js';
 import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
 // U4 — the Java CfgVisitor, one hazard per test (KTD5: real-parser regression,
 // NOT snapshot-pinning). Each fixture's distinctive statement text (step(),
@@ -192,17 +194,22 @@ describe('Java CfgVisitor — loops', () => {
     expect(hasDef(cfg, v)).toBe(true);
   });
 
-  it('while (true) {} keeps EXIT reverse-reachable (structural exit-escape edge)', () => {
-    const cfg = java.cfgOf(`class C { void m() { while (true) { work(); } } }`);
+  it('while (true) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    // The inner `if` is a real control point; assert through the production
+    // post-dom/CDG passes (matching go/python/ruby/rust/vue) — CDG is only
+    // computed when EXIT stays reverse-reachable, so a non-empty CDG proves the
+    // structural exit-escape edge keeps the function CDG-bearing.
+    const cfg = java.cfgOf(`class C { void m(boolean x) { while (true) { if (x) { g(); } } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 
-  it('for (;;) {} keeps EXIT reverse-reachable', () => {
-    const cfg = java.cfgOf(`class C { void m() { for (;;) { work(); } } }`);
+  it('for (;;) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    const cfg = java.cfgOf(`class C { void m(boolean x) { for (;;) { if (x) { g(); } } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 });
 

@@ -3,6 +3,8 @@ import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-g
 import { createDartCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/dart.js';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
 // The Dart CfgVisitor, one hazard per test (real-parser regression, NOT
 // snapshot-pinning). Dart's grammar is VENDORED (not an npm package): the grammar
@@ -190,18 +192,22 @@ describe('Dart CfgVisitor — loops', () => {
     expect(reaches(cfg, cond, block(cfg, 'done();'))).toBe(true);
   });
 
-  it('while (true) {} keeps EXIT reverse-reachable (structural exit-escape edge)', () => {
-    const cfg = dart.cfgOf(`void f() { while (true) { work(); } }`);
+  it('while (true) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    // The inner `if` is a real control point; assert through the production
+    // post-dom/CDG passes (matching go/python/ruby/rust/vue) — CDG is only
+    // computed when EXIT stays reverse-reachable, so a non-empty CDG proves the
+    // structural exit-escape edge keeps the function CDG-bearing.
+    const cfg = dart.cfgOf(`void f(bool x) { while (true) { if (x) { g(); } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 
-  it('for (;;) {} keeps EXIT reverse-reachable', () => {
-    const cfg = dart.cfgOf(`void f() { for (;;) { work(); } }`);
+  it('for (;;) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    const cfg = dart.cfgOf(`void f(bool x) { for (;;) { if (x) { g(); } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 });
 

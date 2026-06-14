@@ -196,9 +196,14 @@ describe('U7 — end-to-end --pdg pipeline', () => {
 // repo (one hazard fixture with real branching AND a non-terminating
 // loop/`select`) and we assert, under `--pdg`:
 //   - BasicBlock + CFG > 0 (the worker built a per-function CFG and emit wired it)
-//   - REACHING_DEF + CDG > 0 (the def/use harvest + the post-dom/CDG passes
-//     populate — CDG > 0 proves EXIT stays reverse-reachable end-to-end through
-//     the worker even with the non-terminating loop, not just in unit probes)
+//   - REACHING_DEF > 0 (the def/use harvest populates the data-dependence layer)
+//   - CDG > 0 AND ≥1 CDG edge is sourced INSIDE the non-terminating-loop
+//     function itself (`hazard`, below) — not merely an aggregate satisfied by
+//     any branching function in the fixture. This is the load-bearing claim:
+//     the post-dom/CDG pass was NOT skipped for the function whose loop traps
+//     EXIT, i.e. EXIT stays reverse-reachable end-to-end through the worker even
+//     with the non-terminating loop/`select`. (#2197 U3 — the prior whole-
+//     fixture `cdg > 0` aggregate did not isolate the hazard function.)
 // and without `--pdg` (both the default run and an explicit `pdg:false` run):
 //   - BasicBlock + CFG + REACHING_DEF + CDG == 0
 //   - the non-PDG graph is byte-identical between the two flag-off runs and
@@ -211,12 +216,18 @@ describe('U7 — end-to-end --pdg pipeline', () => {
 
 const C_FAMILY_FIXTURES = path.join(__dirname, 'fixtures');
 
-const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string }> = [
-  { lang: 'C', fixture: 'c-hazards.c' },
-  { lang: 'C++', fixture: 'cpp-hazards.cpp' },
-  { lang: 'C#', fixture: 'csharp-hazards.cs' },
-  { lang: 'Java', fixture: 'java-hazards.java' },
-  { lang: 'Go', fixture: 'go-hazards.go' },
+// `hazard`: a substring of a BasicBlock's `text` that appears ONLY inside the
+// fixture's non-terminating-loop function (`for(;;)` / `while(true)` / `for{}`).
+// It locates that function's block anchor so the CDG assertion can prove the
+// function specifically is CDG-bearing (see `cdgSourcedInHazardFunction`). C#
+// has no such loop (its `Retry` goto-cycle is conditional and terminates), so
+// it has no `hazard` and keeps the whole-fixture aggregate only.
+const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string; hazard?: string }> = [
+  { lang: 'C', fixture: 'c-hazards.c', hazard: 'handle_request' }, // server_forever: for(;;)
+  { lang: 'C++', fixture: 'cpp-hazards.cpp', hazard: 'poll(' }, // run_forever: while(true)
+  { lang: 'C#', fixture: 'csharp-hazards.cs' }, // no non-terminating loop in the fixture
+  { lang: 'Java', fixture: 'java-hazards.java', hazard: 'ready(' }, // serve: while(true)
+  { lang: 'Go', fixture: 'go-hazards.go', hazard: 'handle(v)' }, // forInfinite: for{}
 ];
 
 // ── Remaining-language worker-mode PDG (#2195 capstone) ─────────────────────
@@ -227,23 +238,25 @@ const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string }> = [
 // Kotlin, Dart), AND Vue (whose provider reuses the TypeScript CfgVisitor — the
 // .vue file routes through the worker's Vue→TypeScript grammar mapping and the
 // SFC <script setup> extractor). Each fixture carries real branching AND a
-// non-terminating loop (`while True:` / `loop {}` / `while (true)`), so CDG > 0
-// proves EXIT stays reverse-reachable end-to-end through the worker even with
-// the silent-zero hazard. The right extension per language routes the worker to
+// non-terminating loop (`while True:` / `loop {}` / `while (true)`), and we
+// assert CDG > 0 AND that ≥1 CDG edge is sourced INSIDE that non-terminating-
+// loop function (`hazard`) — proving EXIT stays reverse-reachable end-to-end
+// through the worker for the silent-zero hazard function specifically, not just
+// in aggregate (#2197 U3). The right extension per language routes the worker to
 // the correct provider/grammar (Swift/Kotlin/Dart grammars are vendored).
 //
 // COBOL is the deliberate non-goal of #2195 (no installed grammar; exotic
 // PERFORM / GO-TO control flow). Its provider has no `cfgVisitor`, so the worker
 // emits no cfgSideChannel — that gate is asserted in `worker-roundtrip.test.ts`.
-const REMAINING_LANGS: ReadonlyArray<{ lang: string; fixture: string }> = [
-  { lang: 'Python', fixture: 'python-hazards.py' },
-  { lang: 'PHP', fixture: 'php-hazards.php' },
-  { lang: 'Ruby', fixture: 'ruby-hazards.rb' },
-  { lang: 'Rust', fixture: 'rust-hazards.rs' },
-  { lang: 'Swift', fixture: 'swift-hazards.swift' },
-  { lang: 'Kotlin', fixture: 'kotlin-hazards.kt' },
-  { lang: 'Dart', fixture: 'dart-hazards.dart' },
-  { lang: 'Vue', fixture: 'vue-hazards.vue' },
+const REMAINING_LANGS: ReadonlyArray<{ lang: string; fixture: string; hazard?: string }> = [
+  { lang: 'Python', fixture: 'python-hazards.py', hazard: 'should_stop' }, // while_true_loop
+  { lang: 'PHP', fixture: 'php-hazards.php', hazard: 'tick(' }, // infiniteLoop: while(true)
+  { lang: 'Ruby', fixture: 'ruby-hazards.rb', hazard: 'handle()' }, // infinite_loop: while true
+  { lang: 'Rust', fixture: 'rust-hazards.rs', hazard: 'tick(' }, // loop_forever: loop {}
+  { lang: 'Swift', fixture: 'swift-hazards.swift', hazard: 'poll(' }, // eventLoop: while true
+  { lang: 'Kotlin', fixture: 'kotlin-hazards.kt', hazard: 'step(' }, // spin: while(true)
+  { lang: 'Dart', fixture: 'dart-hazards.dart', hazard: 'work(' }, // spin: while(true)
+  { lang: 'Vue', fixture: 'vue-hazards.vue', hazard: 'shouldStop' }, // eventLoop: while(true)
 ];
 
 const cFamilyTmpDirs: string[] = [];
@@ -312,12 +325,53 @@ function graphDigest(result: PipelineResult): {
   };
 }
 
+/**
+ * Parse a BasicBlock node id into its function anchor (#2197 U3). emit.ts
+ * templates the id as `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIndex>`
+ * (filePath may itself contain `:` on some platforms) — so the anchor is every
+ * segment except the trailing block index, and the function anchor is the id
+ * with its final `:<blockIndex>` segment stripped. All blocks of one function
+ * share that anchor; block indices restart at 0 per function.
+ */
+function functionAnchorOf(blockId: string): string {
+  return blockId.slice(0, blockId.lastIndexOf(':'));
+}
+
+/**
+ * Whether ≥1 CDG edge is sourced inside the fixture's non-terminating-loop
+ * function — the load-bearing #2197 U3 claim. Locates that function via
+ * `hazardMarker` (a substring of a block `text` unique to the hazard function),
+ * derives its block anchor, collects every BasicBlock id under that anchor, and
+ * checks whether any CDG edge's source block is one of them. Unlike the whole-
+ * fixture `cdg > 0` aggregate (satisfied by ANY branching function), this proves
+ * the post-dom/CDG pass actually ran for the function whose loop traps EXIT.
+ */
+function cdgSourcedInHazardFunction(result: PipelineResult, hazardMarker: string): boolean {
+  // Find the hazard function's anchor from the block whose text carries the
+  // marker, and (separately) every block id grouped by anchor.
+  let hazardAnchor: string | undefined;
+  const idsByAnchor = new Map<string, Set<string>>();
+  result.graph.forEachNode((n) => {
+    if (n.label !== 'BasicBlock') return;
+    const anchor = functionAnchorOf(n.id);
+    (idsByAnchor.get(anchor) ?? idsByAnchor.set(anchor, new Set()).get(anchor)!).add(n.id);
+    const text = (n.properties as { text?: string }).text ?? '';
+    if (text.includes(hazardMarker)) hazardAnchor = anchor;
+  });
+  if (hazardAnchor === undefined) return false; // marker not found → fail the assertion
+  const hazardBlockIds = idsByAnchor.get(hazardAnchor) ?? new Set<string>();
+  for (const rel of result.graph.iterRelationships()) {
+    if (rel.type === 'CDG' && hazardBlockIds.has(rel.sourceId)) return true;
+  }
+  return false;
+}
+
 describe('U7 — C-family worker-mode --pdg pipeline', () => {
   afterAll(() => {
     for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  for (const { lang, fixture } of C_FAMILY) {
+  for (const { lang, fixture, hazard } of C_FAMILY) {
     it(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
       const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
       // The CFG is built in the worker — a stale dist silently zeros this.
@@ -327,10 +381,20 @@ describe('U7 — C-family worker-mode --pdg pipeline', () => {
       expect(cfgEdges, `${lang} CFG edge count`).toBeGreaterThan(0);
       // def/use harvest populated the data-dependence layer.
       expect(reachingDefs, `${lang} REACHING_DEF count`).toBeGreaterThan(0);
-      // CDG > 0 proves the post-dom/CDG pass was NOT skipped — i.e. EXIT stays
-      // reverse-reachable end-to-end through the worker, including from the
-      // fixture's non-terminating loop/`select` (the silent-zero hazard).
+      // CDG > 0 proves the post-dom/CDG pass ran for SOME function in the fixture.
       expect(cdg, `${lang} CDG count`).toBeGreaterThan(0);
+      // The load-bearing claim (#2197 U3): ≥1 CDG edge is sourced INSIDE the
+      // non-terminating-loop function itself — so the post-dom/CDG pass was NOT
+      // skipped for the function whose loop traps EXIT, i.e. EXIT stays
+      // reverse-reachable end-to-end through the worker even with that loop. The
+      // whole-fixture aggregate above would pass on any branching function; this
+      // pins it to the hazard. (C# has no such loop → no `hazard` → aggregate only.)
+      if (hazard !== undefined) {
+        expect(
+          cdgSourcedInHazardFunction(result, hazard),
+          `${lang} CDG edge sourced inside the non-terminating-loop function (marker ${JSON.stringify(hazard)})`,
+        ).toBe(true);
+      }
 
       // Both CFG and CDG endpoints are persisted BasicBlocks; CDG carries a T/F.
       const blockIds = new Set<string>();
@@ -390,7 +454,7 @@ describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)
     for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  for (const { lang, fixture } of REMAINING_LANGS) {
+  for (const { lang, fixture, hazard } of REMAINING_LANGS) {
     it(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
       const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
       // The CFG is built in the worker — a stale dist silently zeros this.
@@ -400,10 +464,20 @@ describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)
       expect(cfgEdges, `${lang} CFG edge count`).toBeGreaterThan(0);
       // def/use harvest populated the data-dependence layer.
       expect(reachingDefs, `${lang} REACHING_DEF count`).toBeGreaterThan(0);
-      // CDG > 0 proves the post-dom/CDG pass was NOT skipped — i.e. EXIT stays
-      // reverse-reachable end-to-end through the worker, including from the
-      // fixture's non-terminating loop (the silent-zero hazard).
+      // CDG > 0 proves the post-dom/CDG pass ran for SOME function in the fixture.
       expect(cdg, `${lang} CDG count`).toBeGreaterThan(0);
+      // The load-bearing claim (#2197 U3): ≥1 CDG edge is sourced INSIDE the
+      // non-terminating-loop function itself — so the post-dom/CDG pass was NOT
+      // skipped for the function whose loop traps EXIT, i.e. EXIT stays
+      // reverse-reachable end-to-end through the worker even with that loop. The
+      // whole-fixture aggregate above would pass on any branching function; this
+      // pins it to the hazard.
+      if (hazard !== undefined) {
+        expect(
+          cdgSourcedInHazardFunction(result, hazard),
+          `${lang} CDG edge sourced inside the non-terminating-loop function (marker ${JSON.stringify(hazard)})`,
+        ).toBe(true);
+      }
 
       // Both CFG and CDG endpoints are persisted BasicBlocks; CDG carries a T/F.
       const blockIds = new Set<string>();

@@ -156,12 +156,16 @@ describe('C CfgVisitor — loops', () => {
     expect(reaches(cfg, header, block(cfg, 'done();'))).toBe(true);
   });
 
-  it('for(;;) {} keeps EXIT reverse-reachable (structural exit-escape edge)', () => {
-    const cfg = c.cfgOf(`void f() { for (;;) { work(); } }`);
-    // The header has a cond-false escape to the loop-exit even with no condition.
+  it('for(;;) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
+    // The header has a cond-false escape to the loop-exit even with no condition;
+    // the inner `if` is a real control point. Assert through the production
+    // post-dom/CDG passes (matching go/python/ruby/rust/vue) — CDG is only
+    // computed when EXIT stays reverse-reachable, so a non-empty CDG proves the
+    // structural exit-escape edge keeps the function CDG-bearing.
+    const cfg = c.cfgOf(`void f(int x) { for (;;) { if (x) { g(); } } }`);
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
   });
 });
 
