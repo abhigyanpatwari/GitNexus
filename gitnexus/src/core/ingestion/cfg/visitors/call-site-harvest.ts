@@ -58,6 +58,65 @@ interface SiteFrame {
 }
 
 /**
+ * Minimal ordered, deduplicating def/use collector for one statement record,
+ * with NO call-site machinery (#2195 U7). The Kotlin / Python / Ruby / Rust /
+ * Dart / Swift harvesters each carried a BYTE-IDENTICAL copy of this class:
+ * those units harvest NO call sites (the taint substrate is a later step), so a
+ * site-free accumulator keeps their emitted facts free of any `sites` key
+ * (matching the Python harvester) and byte-identical to one another. This is the
+ * no-site sibling of {@link CallSiteFactAccumulator}; `finish` omits `sites`
+ * entirely. `useCount` is live (Ruby's emit guard is `defCount() ||
+ * useCount()`).
+ */
+export class DefUseAccumulator {
+  private readonly defs: number[] = [];
+  private readonly uses: number[] = [];
+  private readonly mayDefs: number[] = [];
+  private readonly defSeen = new Set<number>();
+  private readonly useSeen = new Set<number>();
+  private readonly mayDefSeen = new Set<number>();
+
+  constructor(private readonly line: number) {}
+
+  addDef(idx: number): void {
+    if (this.defSeen.has(idx)) return;
+    this.defSeen.add(idx);
+    this.defs.push(idx);
+  }
+
+  /** A def that may not execute (conditional context) — gen without kill. */
+  addMayDef(idx: number): void {
+    if (this.mayDefSeen.has(idx)) return;
+    this.mayDefSeen.add(idx);
+    this.mayDefs.push(idx);
+  }
+
+  addUse(idx: number): void {
+    if (this.useSeen.has(idx)) return;
+    this.useSeen.add(idx);
+    this.uses.push(idx);
+  }
+
+  defCount(): number {
+    return this.defs.length + this.mayDefs.length;
+  }
+
+  useCount(): number {
+    return this.uses.length;
+  }
+
+  finish(): StatementFacts {
+    return {
+      line: this.line,
+      defs: this.defs,
+      uses: this.uses,
+      // Stay absent when empty — keeps the serialized side-channel payload lean.
+      ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
+    };
+  }
+}
+
+/**
  * Ordered, deduplicating def/use collector for one statement record, PLUS the
  * call-site harvest machinery (#2195 U6). A drop-in superset of the simple
  * def/use accumulator the C-family harvesters used before the substrate landed

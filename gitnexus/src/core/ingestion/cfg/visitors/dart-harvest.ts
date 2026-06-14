@@ -78,6 +78,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
+import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set(['function_expression', 'function_body']);
@@ -85,58 +86,6 @@ const NESTED_FUNCTION_TYPES = new Set(['function_expression', 'function_body']);
 const COMMENT_TYPES = new Set(['comment', 'documentation_comment']);
 
 const FUNCTION_VALUE_TYPES = new Set(['function_expression']);
-
-/**
- * Minimal ordered, deduplicating def/use collector for one statement record.
- * Deliberately NOT the shared {@link import('./call-site-harvest.js')
- * CallSiteFactAccumulator} — this unit harvests NO call sites (taint substrate is
- * a later step), so a local accumulator with only the def/use/may-def machinery
- * keeps `dart-harvest.ts` free of site logic and guarantees the emitted facts
- * carry no `sites` key (mirrors the Kotlin / Swift / Python / Rust harvesters).
- */
-class FactAccumulator {
-  private readonly defs: number[] = [];
-  private readonly uses: number[] = [];
-  private readonly mayDefs: number[] = [];
-  private readonly defSeen = new Set<number>();
-  private readonly useSeen = new Set<number>();
-  private readonly mayDefSeen = new Set<number>();
-
-  constructor(private readonly line: number) {}
-
-  addDef(idx: number): void {
-    if (this.defSeen.has(idx)) return;
-    this.defSeen.add(idx);
-    this.defs.push(idx);
-  }
-
-  /** A def that may not execute (conditional context) — gen without kill. */
-  addMayDef(idx: number): void {
-    if (this.mayDefSeen.has(idx)) return;
-    this.mayDefSeen.add(idx);
-    this.mayDefs.push(idx);
-  }
-
-  addUse(idx: number): void {
-    if (this.useSeen.has(idx)) return;
-    this.useSeen.add(idx);
-    this.uses.push(idx);
-  }
-
-  defCount(): number {
-    return this.defs.length + this.mayDefs.length;
-  }
-
-  finish(): StatementFacts {
-    return {
-      line: this.line,
-      defs: this.defs,
-      uses: this.uses,
-      // Stay absent when empty — keeps the serialized side-channel payload lean.
-      ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
-    };
-  }
-}
 
 export class DartHarvester {
   private readonly bindings: BindingEntry[] = [];
