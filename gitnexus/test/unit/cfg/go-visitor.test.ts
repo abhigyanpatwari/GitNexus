@@ -407,6 +407,16 @@ describe('Go CfgVisitor — def/use harvest', () => {
     expect(hasUse(cfg, bindingIdx(cfg, 'k'))).toBe(true);
     void hasMayDef; // may-def path covered structurally by the conditional walk
   });
+
+  it('select receive `case v := <-ch` defines v, not a use-only (#2195 P2)', () => {
+    const cfg = go.cfgOf(pkg(`func f(ch chan int) { select { case v := <-ch: use(v) } }`));
+    const v = bindingIdx(cfg, 'v');
+    // the channel-received binding is a DEF (the channel-sourced value flows
+    // into v) — the bug recorded it as a use of an uninitialized var instead.
+    expect(hasDef(cfg, v)).toBe(true);
+    // and the channel `ch` is read.
+    expect(hasUse(cfg, bindingIdx(cfg, 'ch'))).toBe(true);
+  });
 });
 
 describe('Go CfgVisitor — functionStartColumn', () => {

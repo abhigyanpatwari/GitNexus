@@ -438,6 +438,18 @@ export class GoHarvester extends ScopeTreeHarvester {
         if (left) this.defLeftList(left, acc, op !== '=');
         return;
       }
+      case 'receive_statement': {
+        // `select { case v := <-ch: }` / `case v = <-ch:` — the left
+        // identifier(s) are DEFS of the channel-received value; `<-ch` (right)
+        // is a use of the channel. A bare `case <-ch:` has no left (uses only).
+        const left = node.childForFieldName('left');
+        const right = node.childForFieldName('right');
+        const isShort = node.children.some((c) => !c.isNamed && c.text === ':=');
+        if (isShort && left && right) this.registerListResultDefs(left, right);
+        if (right) this.walkValue(right, acc);
+        if (left) this.defLeftList(left, acc, false);
+        return;
+      }
       case 'inc_statement':
       case 'dec_statement': {
         // `x++` / `x--` — def AND use the lvalue when it's a plain identifier.
