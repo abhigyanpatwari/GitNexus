@@ -6,8 +6,10 @@ import {
 } from '../../../src/core/ingestion/cfg/control-dependence.js';
 import {
   computePostDominators,
+  isExitReachableFromAllBlocks,
   postDominates,
 } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { augmentForPostDom } from '../../../src/core/ingestion/cfg/synthetic-escape.js';
 import type {
   BasicBlockData,
   CfgEdgeData,
@@ -76,8 +78,10 @@ function succsOf(cfg: FunctionCfg): number[][] {
  * post-dominates `b` iff every path from `b` to EXIT passes through `p`:
  * reflexive (`p === b`), else true exactly when EXIT is unreachable from `b`
  * once `p` is removed (AND `b` can reach EXIT at all). Defined only for the
- * exit-reachable fixtures used below — the exit-unreachable case is the known
- * unsound region (#2188 F2) and is deliberately excluded from the AC2 set.
+ * exit-reachable fixtures used below. A raw exit-unreachable cycle (#2188 F2)
+ * would be unsound, so the AC2 set now feeds the synthetic-escape pass's
+ * AUGMENTED view of every goto-cycle fixture (#2197 U1) — once bridged it IS
+ * exit-reachable and the Ferrante walk must equal this independent reference.
  */
 function independentPostDom(cfg: FunctionCfg, succs: number[][], p: number, b: number): boolean {
   if (p === b) return true;
@@ -255,10 +259,42 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [2, 1, 'loop-back'],
         [1, 3, 'cond-false'],
       ]),
-      // NOTE: the exit-unreachable case is deliberately NOT an AC2 fixture — its
-      // dependence set is unsound (#2188 F2), so asserting walk == independent
-      // reference would (correctly) fail. It has its own characterization test
-      // above that documents the degenerate behavior.
+      // Escaped `goto`-cycle (#2197 U1): after the synthetic-escape pass the
+      // exit-unreachable cycle is bridged and the dependence set becomes a SOUND
+      // over-approximation, so it now joins the AC2 set (the obsolete
+      // exit-unreachable exclusion is lifted — see the AUGMENTED-view note below).
+      // Repro shape: ENTRY=0, EXIT=1, b2=`(a>0)` predicate, b3=`work()`,
+      // b4=`goto start`; the `if` predicate (b2) is the only control point.
+      gotoCycle: augmentForPostDom(
+        mkCfg(
+          5,
+          [
+            [0, 2, 'seq'],
+            [2, 3, 'cond-true'],
+            [2, 4, 'seq'],
+            [3, 4, 'seq'],
+            [4, 2, 'seq'],
+          ],
+          { entry: 0, exit: 1 },
+        ),
+      ),
+      // Spine before the goto label — ENTRY + straight-line stmts are in the
+      // exit-unreachable closure but must reach EXIT after the bridge.
+      gotoCycleSpine: augmentForPostDom(
+        mkCfg(
+          7,
+          [
+            [0, 2, 'seq'],
+            [2, 3, 'seq'],
+            [3, 4, 'seq'],
+            [4, 5, 'cond-true'],
+            [4, 6, 'seq'],
+            [5, 6, 'seq'],
+            [6, 4, 'seq'],
+          ],
+          { entry: 0, exit: 1 },
+        ),
+      ),
       // nested if: outer branch (0) → inner branch (1) or outer-else (5);
       // inner branch → 2/3 → inner join (4); 4 and 5 → outer join (6, exit).
       nestedIf: mkCfg(
@@ -285,6 +321,15 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [4, 5, 'break'],
       ]),
     };
+
+    it.each(Object.keys(fixtures))(
+      '%s: is exit-reachable from all blocks (the AC2 reference is well-defined)',
+      (name) => {
+        // Every AC2 fixture — including the AUGMENTED goto-cycle ones (#2197 U1)
+        // — must be exit-reachable, else the node-removal reference is undefined.
+        expect(isExitReachableFromAllBlocks(fixtures[name])).toBe(true);
+      },
+    );
 
     it.each(Object.keys(fixtures))(
       '%s: tree-walk pair set equals the brute-force reference',

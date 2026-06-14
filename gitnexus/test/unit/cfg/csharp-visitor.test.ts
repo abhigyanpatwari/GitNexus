@@ -3,6 +3,9 @@ import { createRequire } from 'node:module';
 import { createCsharpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/csharp.js';
 import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { augmentForPostDom } from '../../../src/core/ingestion/cfg/synthetic-escape.js';
+import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
 // U3 — the C# CfgVisitor, one hazard per test (KTD5: real-parser regression,
 // NOT snapshot-pinning). Each fixture's distinctive statement text (step(),
@@ -318,6 +321,17 @@ describe('C# CfgVisitor — goto / labels', () => {
     const label = block(cfg, 'done();');
     expect(reaches(cfg, gotoB, label)).toBe(true);
     expect(reachable(cfg, block(cfg, 'work();'))).toBe(true);
+  });
+
+  // #2197 U1 — an UNCONDITIONAL goto-cycle traps EXIT (the `goto start` has no
+  // exit path); the synthetic-escape pass bridges it so CDG is emitted instead
+  // of withheld. The conditional goto tests above already had an exit path.
+  it('unconditional goto-cycle: bridged → EXIT reachable AND CDG emitted', () => {
+    const cfg = cs.cfgOf(`class K { void handler(int a){ start: if(a>0){work();} goto start; } }`);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(false); // trapped without the pass
+    const view = augmentForPostDom(cfg);
+    expect(isExitReachableFromAllBlocks(view)).toBe(true);
+    expect(computeControlDependence(view).edges.length).toBeGreaterThan(0);
   });
 });
 

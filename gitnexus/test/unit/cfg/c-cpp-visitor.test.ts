@@ -7,6 +7,9 @@ import {
 } from '../../../src/core/ingestion/cfg/visitors/c-cpp.js';
 import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { augmentForPostDom } from '../../../src/core/ingestion/cfg/synthetic-escape.js';
+import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
 // U2 — the C/C++ CfgVisitor, one hazard per test (KTD5: real-parser regression,
 // NOT snapshot-pinning). Each fixture's distinctive statement text (step(),
@@ -218,6 +221,27 @@ describe('C CfgVisitor — goto / labels', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // #2197 U1 — an UNCONDITIONAL goto-cycle traps EXIT (the `goto start` has no
+  // exit path), so without the synthetic-escape pass `emitFileCdg` would withhold
+  // ALL control dependence. After the pass the cycle is bridged and CDG is
+  // emitted. The conditional goto tests above already had an exit path (the
+  // if-false arm reaches `done()`), so they did NOT exercise this gap.
+  it('unconditional goto-cycle: bridged → EXIT reachable AND CDG emitted (C)', () => {
+    const cfg = c.cfgOf(`void handler(int a){ start: if(a>0){work();} goto start; }`);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(false); // trapped without the pass
+    const view = augmentForPostDom(cfg);
+    expect(isExitReachableFromAllBlocks(view)).toBe(true);
+    expect(computeControlDependence(view).edges.length).toBeGreaterThan(0);
+  });
+
+  it('unconditional goto-cycle: bridged → EXIT reachable AND CDG emitted (C++)', () => {
+    const cfg = cpp.cfgOf(`void handler(int a){ start: if(a>0){work();} goto start; }`);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(false);
+    const view = augmentForPostDom(cfg);
+    expect(isExitReachableFromAllBlocks(view)).toBe(true);
+    expect(computeControlDependence(view).edges.length).toBeGreaterThan(0);
   });
 });
 

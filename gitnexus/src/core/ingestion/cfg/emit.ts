@@ -27,6 +27,7 @@ import {
   isExitReachableFromAllBlocks,
   NO_IPDOM,
 } from './post-dominators.js';
+import { augmentForPostDom } from './synthetic-escape.js';
 import type { BindingEntry, FunctionCfg } from './types.js';
 
 /**
@@ -511,12 +512,24 @@ export function emitFileCdg(
 
   for (const cfg of cfgs) {
     const { filePath, functionStartLine, functionStartColumn } = cfg;
+    // Synthetic-escape pass (#2197 U1): restore EXIT reverse-reachability for a
+    // genuine exit-unreachable CYCLE (an unconditional `goto`-cycle / infinite
+    // loop) so the post-dom / CDG pass runs instead of being withheld. A no-op
+    // (returns `cfg` unchanged) for terminating functions and properly-escaped
+    // loops — those stay byte-identical. The synthetic edges are ANALYSIS-ONLY:
+    // they live on the returned shallow clone, never on the persisted `cfg`, so
+    // CFG / REACHING_DEF and the byte-identical-off golden are unaffected. Both
+    // the gate below AND the post-dom / CDG passes must see the augmented view
+    // (KTD7 — the Ferrante walk re-reads `cfg.edges`).
+    const view = augmentForPostDom(cfg);
     // Sound post-dominance requires EXIT reachable from every entry-reachable
-    // block (#2188 review). A CFG that violates it — a future visitor's
-    // multi-terminal / non-terminating shape — would yield a CDG that both
-    // drops real and invents spurious dependences, so skip CDG for it. CFG and
-    // REACHING_DEF (emitted elsewhere, independent of post-dominance) are kept.
-    if (!isExitReachableFromAllBlocks(cfg)) {
+    // block (#2188 review). The synthetic-escape pass recovers genuine cycles;
+    // anything STILL unreachable after it is a residual non-cycle anomaly (a
+    // dangling/dead-end block, a branch-less trapping spin, or a construction
+    // error) — NOT something we bridge (that would mask the bug). Skip CDG for
+    // it and surface the skip. CFG and REACHING_DEF (emitted elsewhere,
+    // independent of post-dominance) are kept.
+    if (!isExitReachableFromAllBlocks(view)) {
       result.skippedUnsoundFunctions++;
       onWarn?.(
         `[cdg] ${filePath}:${functionStartLine}: EXIT not reachable from all ` +
@@ -525,13 +538,16 @@ export function emitFileCdg(
       continue;
     }
     // Compute the post-dom tree once and feed it to the control-dependence
-    // pass (avoids recomputing it) and to the optional POST_DOMINATE emit.
-    const tree = computePostDominators(cfg);
+    // pass (avoids recomputing it) and to the optional POST_DOMINATE emit. The
+    // CDG edges reference BLOCK INDICES, which are identical in `view` and `cfg`
+    // (the augmentation only appends edges), so persisting them keyed off the
+    // original block ids is correct.
+    const tree = computePostDominators(view);
     // Bound the pre-dedup materialization (heap parity with REACHING_DEF). The
     // fixed ceiling is a catastrophe backstop; the per-function edge cap below
     // remains the reporting authority. A ceiling hit is surfaced, not silent.
     const { edges: cdgEdges, truncated } = computeControlDependence(
-      cfg,
+      view,
       tree,
       DEFAULT_PDG_MAX_CDG_MATERIALIZATION_PER_FUNCTION,
     );
