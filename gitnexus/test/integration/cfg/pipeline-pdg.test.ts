@@ -219,6 +219,33 @@ const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string }> = [
   { lang: 'Go', fixture: 'go-hazards.go' },
 ];
 
+// ── Remaining-language worker-mode PDG (#2195 capstone) ─────────────────────
+//
+// The same both-sinks worker proof, run for the eight languages whose CFG
+// visitors completed the PDG-language rollout AFTER the C-family: the dynamic
+// languages (Python, PHP, Ruby), the systems/app languages (Rust, Swift,
+// Kotlin, Dart), AND Vue (whose provider reuses the TypeScript CfgVisitor — the
+// .vue file routes through the worker's Vue→TypeScript grammar mapping and the
+// SFC <script setup> extractor). Each fixture carries real branching AND a
+// non-terminating loop (`while True:` / `loop {}` / `while (true)`), so CDG > 0
+// proves EXIT stays reverse-reachable end-to-end through the worker even with
+// the silent-zero hazard. The right extension per language routes the worker to
+// the correct provider/grammar (Swift/Kotlin/Dart grammars are vendored).
+//
+// COBOL is the deliberate non-goal of #2195 (no installed grammar; exotic
+// PERFORM / GO-TO control flow). Its provider has no `cfgVisitor`, so the worker
+// emits no cfgSideChannel — that gate is asserted in `worker-roundtrip.test.ts`.
+const REMAINING_LANGS: ReadonlyArray<{ lang: string; fixture: string }> = [
+  { lang: 'Python', fixture: 'python-hazards.py' },
+  { lang: 'PHP', fixture: 'php-hazards.php' },
+  { lang: 'Ruby', fixture: 'ruby-hazards.rb' },
+  { lang: 'Rust', fixture: 'rust-hazards.rs' },
+  { lang: 'Swift', fixture: 'swift-hazards.swift' },
+  { lang: 'Kotlin', fixture: 'kotlin-hazards.kt' },
+  { lang: 'Dart', fixture: 'dart-hazards.dart' },
+  { lang: 'Vue', fixture: 'vue-hazards.vue' },
+];
+
 const cFamilyTmpDirs: string[] = [];
 function freshLangRepo(fixture: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-lang-'));
@@ -354,6 +381,69 @@ describe('U7 — C-family worker-mode --pdg pipeline', () => {
       // Committed golden: the flag-off graph is pinned by snapshot so a future
       // refactor that silently rewires the C-family graph trips this gate.
       expect(defaultDigest).toMatchSnapshot();
+    }, 90000);
+  }
+});
+
+describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)', () => {
+  afterAll(() => {
+    for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  for (const { lang, fixture } of REMAINING_LANGS) {
+    it(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
+      const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
+      // The CFG is built in the worker — a stale dist silently zeros this.
+      expect(result.usedWorkerPool, `${lang} used the worker pool`).toBe(true);
+      const { basicBlocks, cfgEdges, reachingDefs, cdg } = counts(result);
+      expect(basicBlocks, `${lang} BasicBlock count`).toBeGreaterThan(0);
+      expect(cfgEdges, `${lang} CFG edge count`).toBeGreaterThan(0);
+      // def/use harvest populated the data-dependence layer.
+      expect(reachingDefs, `${lang} REACHING_DEF count`).toBeGreaterThan(0);
+      // CDG > 0 proves the post-dom/CDG pass was NOT skipped — i.e. EXIT stays
+      // reverse-reachable end-to-end through the worker, including from the
+      // fixture's non-terminating loop (the silent-zero hazard).
+      expect(cdg, `${lang} CDG count`).toBeGreaterThan(0);
+
+      // Both CFG and CDG endpoints are persisted BasicBlocks; CDG carries a T/F.
+      const blockIds = new Set<string>();
+      result.graph.forEachNode((n) => {
+        if (n.label === 'BasicBlock') blockIds.add(n.id);
+      });
+      for (const rel of result.graph.iterRelationships()) {
+        if (rel.type === 'CFG' || rel.type === 'REACHING_DEF' || rel.type === 'CDG') {
+          expect(blockIds.has(rel.sourceId), `${lang} ${rel.type} source is a BasicBlock`).toBe(
+            true,
+          );
+          expect(blockIds.has(rel.targetId), `${lang} ${rel.type} target is a BasicBlock`).toBe(
+            true,
+          );
+        }
+        if (rel.type === 'CDG') expect(['T', 'F']).toContain(rel.reason);
+      }
+    }, 60000);
+
+    it(`${lang}: --pdg off emits zero PDG nodes/edges (the R3 flag-off gate)`, async () => {
+      // Default (no pdg flag) and explicit pdg:false must both produce a graph
+      // with NO PDG layer — the existing-user path stays untouched.
+      const defaultRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_OFF);
+      const offRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, {
+        ...WORKER_OFF,
+        pdg: false,
+      });
+
+      for (const r of [defaultRun, offRun]) {
+        const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg } = counts(r);
+        expect(basicBlocks).toBe(0);
+        expect(cfgEdges).toBe(0);
+        expect(reachingDefs).toBe(0);
+        expect(tainted).toBe(0);
+        expect(sanitizes).toBe(0);
+        expect(cdg).toBe(0);
+      }
+
+      // pdg:false ≡ pdg-absent — the symbolic graph digest is identical.
+      expect(graphDigest(offRun)).toEqual(graphDigest(defaultRun));
     }, 90000);
   }
 });

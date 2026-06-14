@@ -37,6 +37,7 @@ import {
   resolveTsImportTarget,
 } from './typescript/index.js';
 import { emitVueScopeCaptures } from './vue/captures.js';
+import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -88,6 +89,11 @@ export const vueProvider = defineLanguage({
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
   builtInNames: VUE_BUILT_INS,
+  // Vue SFC <script> blocks are extracted and parsed with the TypeScript
+  // grammar (parse-worker GRAMMAR_BY_LANGUAGE[Vue] = TypeScript.typescript),
+  // so the TS CFG visitor builds CFGs for the script's functions verbatim —
+  // no Vue-specific visitor needed (#2195).
+  cfgVisitor: createTypeScriptCfgVisitor(),
   // Scope-resolution pipeline hooks (RFC #909 Ring 3)
   emitScopeCaptures: emitVueScopeCaptures,
   interpretImport: interpretTsImport,
