@@ -410,6 +410,38 @@ Copy the MCP entry from \`.claude/gitnexus-mcp-snippet.json\` into \`~/.claude/s
 
 Replace \`<GITNEXUS_HOST>\` with the server's IP or hostname.`;
 
+  const dockerDelivery = `**Docker:** the simplest option is to re-index on the server host directly, so the
+\`gitnexus-data\` volume stays fresh without any artifact handoff:
+
+\`\`\`sh
+# On the server, on a schedule (e.g. a cron entry):
+# 0 * * * * cd /path/to/repo && npx gitnexus@latest analyze --skills
+\`\`\`
+
+Or download the CI artifact and copy it into the running container's volume:
+
+\`\`\`sh
+# gh run download --name "gitnexus-index-<sha>" --dir ./gitnexus-index
+# docker compose cp ./gitnexus-index/. gitnexus:/data/gitnexus/
+\`\`\``;
+
+  const acaDelivery = `**Azure Container App:** push the index to the Azure File share the app mounts:
+
+\`\`\`sh
+# From a machine with ./.gitnexus and an \`az login\` session:
+# az storage file upload-batch \\
+#   --account-name "$STORAGE_ACCOUNT" \\
+#   --destination "$FILE_SHARE" \\
+#   --source ./.gitnexus
+\`\`\``;
+
+  const deliverySection =
+    opts.deploy === 'azure-container-app'
+      ? acaDelivery
+      : opts.deploy === 'both'
+        ? `${dockerDelivery}\n\n${acaDelivery}`
+        : dockerDelivery;
+
   return `# GitNexus — Shared Code Intelligence Server
 
 GitNexus builds a knowledge graph of this repository and serves it as an MCP (Model Context Protocol)
@@ -474,8 +506,12 @@ If the index is stale (CI hasn't run since the last push), Claude Code will stil
 on a slightly outdated graph. The staleness check step in the workflow fails the run if indexing produced
 no output, so stale-index PRs are blocked at CI.
 
-For the shared server: the container reads the index from the persistent volume, which is updated
-when the volume-sharing mechanism (rsync, artifact download, or live-mount) delivers a fresh index.
+> **The wizard does not automate index delivery to the shared server.** CI uploads \`.gitnexus/\` as a
+> workflow artifact; the running server reads its own persistent volume, and nothing connects the two
+> automatically. Delivering the fresh index to the server's volume is a required operator step — pick
+> the approach that matches your deployment (the commands below are commented; adapt paths/names):
+
+${deliverySection}
 
 ---
 

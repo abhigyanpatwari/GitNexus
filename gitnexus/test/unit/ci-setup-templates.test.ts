@@ -25,6 +25,38 @@ function makeOpts(overrides?: Partial<CiSetupOptions>): CiSetupOptions {
   };
 }
 
+function gitnexusMd(overrides?: Partial<CiSetupOptions>): string {
+  const files = generateFiles(makeOpts(overrides), DEFAULT_DETECT);
+  const md = files.find((f) => f.relativePath === 'GITNEXUS.md');
+  if (!md) throw new Error('GITNEXUS.md not generated');
+  return md.content;
+}
+
+describe('GITNEXUS.md index delivery (U7)', () => {
+  it('does not oversell auto-delivery with a non-existent volume-sharing mechanism', () => {
+    const content = gitnexusMd();
+    expect(content).not.toContain('volume-sharing mechanism');
+    expect(content).toContain('does not automate index delivery');
+  });
+
+  it('docker deploy shows an on-server delivery example (docker compose cp)', () => {
+    const content = gitnexusMd({ deploy: 'docker' });
+    expect(content).toContain('docker compose cp');
+    expect(content).not.toContain('az storage file upload-batch');
+  });
+
+  it('ACA deploy shows an az storage file upload-batch example', () => {
+    const content = gitnexusMd({ deploy: 'azure-container-app' });
+    expect(content).toContain('az storage file upload-batch');
+  });
+
+  it('both deploy shows both delivery paths', () => {
+    const content = gitnexusMd({ deploy: 'both' });
+    expect(content).toContain('docker compose cp');
+    expect(content).toContain('az storage file upload-batch');
+  });
+});
+
 describe('generateFiles', () => {
   describe('GitHub Actions workflow', () => {
     it('generates with correct port in healthcheck', () => {
