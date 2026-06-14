@@ -273,7 +273,7 @@ function buildAcaDeployScript(opts: CiSetupOptions): string {
 # Deploy GitNexus as an Azure Container App.
 # Requires: az CLI, logged in with Contributor on the target resource group.
 #
-# ${authComment}
+${authComment}
 
 set -euo pipefail
 

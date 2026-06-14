@@ -160,6 +160,12 @@ describe('ACA deploy script + connection guidance (U6)', () => {
     expect(md).toContain('ingress internal');
     expect(md).not.toContain(':4748/api/mcp');
   });
+
+  it('ACA auth comment is not double-hashed (U10)', () => {
+    expect(aca({ auth: 'token' })).not.toContain('# # ');
+    expect(aca({ auth: 'none' })).not.toContain('# # ');
+    expect(aca({ auth: 'token' })).toContain('# Auth: this deploys with --ingress internal');
+  });
 });
 
 describe('version pinning (U9)', () => {
