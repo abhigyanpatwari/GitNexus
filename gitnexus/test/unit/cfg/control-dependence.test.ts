@@ -402,6 +402,79 @@ describe('computeControlDependence — maxEdges materialization ceiling (#2188)'
   });
 });
 
+describe('computeControlDependence — reverse-DF formulation regressions (#2195)', () => {
+  // The Ferrante up-walk was replaced by the reverse-CFG post-dominance frontier
+  // (Cytron/CFRWZ 1991; LLVM ReverseIDFCalculator / Joern CdgPass). These pin the
+  // three invariants the rewrite must preserve: multi-label-per-pair, the
+  // self-edge / NO_IPDOM seed guard, and linear (not quadratic) scaling.
+
+  it('keeps BOTH senses when one controller reaches a dependent via opposite arms', () => {
+    // Minimised goto-cycle shape: A (block 1) reaches X (block 2) by BOTH its true
+    // arm and its false arm, with a third escape (1→3) so X does NOT post-dominate
+    // A (else it would be a plain diamond join controlling nothing). The PDF must
+    // union the label SET — the old (a, cur, label) dedup kept both rows — not
+    // collapse the pair to a single sense.
+    const cfg = mkCfg(
+      4,
+      [
+        [0, 1, 'seq'],
+        [1, 2, 'cond-true'],
+        [1, 2, 'cond-false'],
+        [1, 3, 'seq'], // escape so X(2) is not a post-dominator of A(1)
+        [2, 3, 'seq'],
+      ],
+      { entry: 0, exit: 3 },
+    );
+    const { edges } = computeControlDependence(cfg);
+    expect(serAll(edges).sort()).toEqual(['1->2:F', '1->2:T']);
+  });
+
+  it('a literal self-edge never invents a self control-dependence (PDF_local a!==x guard)', () => {
+    // Standard while loop (header 1, body 2) PLUS a spurious LITERAL self-edge
+    // 1→1. The header legitimately depends on itself via the body back-edge
+    // (1->1:T is inherited through PDF_up), but the literal self in-edge must
+    // contribute NOTHING: without the `a !== x` PDF_local guard it would seed a
+    // bogus 1->1:F (the loop-back complement of the header's true arm).
+    const cfg = mkCfg(4, [
+      [0, 1, 'seq'],
+      [1, 2, 'cond-true'],
+      [2, 1, 'loop-back'],
+      [1, 1, 'loop-back'], // spurious literal self-edge — must be ignored
+      [1, 3, 'cond-false'],
+    ]);
+    const { edges } = computeControlDependence(cfg);
+    expect(serAll(edges).sort()).toEqual(['1->1:T', '1->2:T']);
+    expect(edges.some((e) => ser(e) === '1->1:F')).toBe(false);
+  });
+
+  it('scales linearly on a fan-into-chain (perf tripwire: was a Θ(N²) up-walk)', () => {
+    // fanChain(N): block 0 fans one edge to every node of a length-(N-2) spine
+    // whose ipdom chain tops out at EXIT. The old Ferrante up-walk re-climbed the
+    // shared spine once per fan edge → Θ(N²) (~7.1s at N=16k); the reverse-DF form
+    // is O(N+E+output) (~13ms). Coarse wall-clock tripwire, not a microbenchmark:
+    // a revert to quadratic blows past the ceiling by >5×. post-dom is built
+    // outside the timed region so this isolates the rewritten function.
+    const N = 16000;
+    const M = N - 2; // chain blocks 1..M; block 0 = fan source; block N-1 = EXIT
+    const exit = N - 1;
+    const edges: [number, number, CfgEdgeKind][] = [];
+    for (let i = 1; i <= M; i++) {
+      edges.push([0, i, 'switch-case']); // fan: 0 → every chain node
+      edges.push([i, i === M ? exit : i + 1, 'seq']); // spine: i → i+1 (→ EXIT)
+    }
+    const cfg = mkCfg(N, edges, { entry: 0, exit });
+    const postDom = computePostDominators(cfg); // built OUTSIDE the timed region
+    const t0 = performance.now();
+    const { edges: cdg } = computeControlDependence(cfg, postDom);
+    const ms = performance.now() - t0;
+    // Block 0 controls every chain node EXCEPT the last (M): the sole edge into
+    // EXIT is M→exit, so M post-dominates the whole fan (ipdom[0]===M) and is
+    // controlled by nothing. The other M-1 spine nodes are each 0-controlled.
+    expect(cdg).toHaveLength(M - 1);
+    expect(ms).toBeLessThan(1000);
+  });
+});
+
 describe('#2188 F1 — branch-label correctness on the REAL TS visitor (regression)', () => {
   // The label is the AC3 "under what condition does X run?" answer. The bug:
   // branchSense inferred it from the edge KIND alone, but the M1 visitor wires a
