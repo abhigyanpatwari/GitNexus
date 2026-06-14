@@ -239,6 +239,18 @@ describe('Kotlin CfgVisitor — try/catch/finally', () => {
     expect(reaches(cfg, thr, block(cfg, 'done()'))).toBe(false);
     expect(reachable(cfg, block(cfg, 'done()'))).toBe(true); // via the if false branch
   });
+
+  it('empty try {} with catch + finally keeps the catch handler reachable (#2195)', () => {
+    // An empty try body still establishes a protected region — the catch (and
+    // its error binding) must not be orphaned/unreachable from ENTRY.
+    const cfg = kotlin.cfgOf(
+      `fun f() { try {} catch (e: Exception) { handle(e) } finally { cl() }; a() }`,
+    );
+    expect(reachable(cfg, block(cfg, 'handle(e)'))).toBe(true);
+    expect(reachable(cfg, block(cfg, 'cl()'))).toBe(true);
+    expect(reachable(cfg, block(cfg, 'a()'))).toBe(true);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'e'))).toBe(true);
+  });
 });
 
 describe('Kotlin CfgVisitor — labeled break/continue', () => {

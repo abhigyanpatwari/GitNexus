@@ -739,8 +739,18 @@ class KotlinCfgWalk {
     const tryHandler = firstCatchEntry ?? finalizerEntry ?? this.currentHandler();
     const protectedStart = this.builder.blockCount;
     this.handlers.push(tryHandler);
-    const bodyRes = bodyNode ? this.visitSeq(this.statementsOf(bodyNode)) : null;
+    let bodyRes = bodyNode ? this.visitSeq(this.statementsOf(bodyNode)) : null;
     this.handlers.pop();
+
+    if (bodyRes === null && (catchBlocks.length > 0 || finalizerEntry !== undefined)) {
+      // An empty `try {}` body still establishes a protected region. Synthesize
+      // one block (like the empty-`catch` case above) so the throw-edge loop
+      // wires the catch handler(s) and the try's entry is the body — otherwise
+      // the catch handler block + its error binding are orphaned (unreachable
+      // from ENTRY) and control routes straight to the finally, bypassing catch.
+      const idx = this.builder.newBlock(startLineOf(stmt), startLineOf(stmt), '');
+      bodyRes = { entry: idx, exits: [idx] };
+    }
 
     if (catchBlocks.length > 0 || finalizerEntry !== undefined) {
       for (let b = protectedStart; b < this.builder.blockCount; b++) {
