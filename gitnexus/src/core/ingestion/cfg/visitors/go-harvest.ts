@@ -68,12 +68,7 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
 import { CallSiteFactAccumulator } from './call-site-harvest.js';
-
-/**
- * The per-statement def/use + call-site collector, aliased to the shared
- * {@link CallSiteFactAccumulator} (one name for the value and the type).
- */
-type FactAccumulator = CallSiteFactAccumulator;
+import { ScopeTreeHarvester, type Scope, type FactAccumulator } from './scope-tree-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -100,41 +95,13 @@ const SCOPE_TYPES = new Set([
   'communication_case',
 ]);
 
-interface Scope {
-  readonly parent: Scope | null;
-  /** name → binding index */
-  readonly table: Map<string, number>;
-}
-
-export class GoHarvester {
-  private readonly bindings: BindingEntry[] = [];
-  private readonly scopeByNode = new Map<number, Scope>();
-  private readonly root: Scope = { parent: null, table: new Map() };
-  private readonly synthetic = new Map<string, number>();
-  private readonly fnId: number;
-  /** Innermost enclosing scope per visited node id (prescan-filled) — O(scope-chain) phase-2 resolution. */
-  private readonly nearestScopeCache = new Map<number, Scope>();
-  /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
-  private conditionalDepth = 0;
-  /**
-   * Call node id → bindings whose declaration/assignment VALUE is exactly that
-   * call (#2195 U6). Registered before the value walk, consumed by
-   * {@link visitCall} (mirrors the TS harvester's `resultDefTargets`).
-   */
-  private readonly resultDefTargets = new Map<number, number[]>();
-
-  constructor(private readonly fnNode: SyntaxNode) {
-    this.fnId = fnNode.id;
-    this.scopeByNode.set(fnNode.id, this.root);
+export class GoHarvester extends ScopeTreeHarvester {
+  constructor(fnNode: SyntaxNode) {
+    super(fnNode);
     this.declareReceiver(fnNode);
     this.declareParams(fnNode);
     const body = this.bodyOf(fnNode);
     if (body && body.type === 'block') this.prescan(body, this.openScope(body));
-  }
-
-  /** The completed binding table — pass to `CfgBuilder.finish`. */
-  bindingTable(): readonly BindingEntry[] {
-    return this.bindings;
   }
 
   /** The function/method/literal body node (always a `block` in Go). */
@@ -144,24 +111,8 @@ export class GoHarvester {
 
   // ── phase 1: declaration pre-scan ────────────────────────────────────────
 
-  private openScope(node: SyntaxNode): Scope {
-    const existing = this.scopeByNode.get(node.id);
-    if (existing) return existing;
-    const scope: Scope = { parent: this.nearestScopeOf(node), table: new Map() };
-    this.scopeByNode.set(node.id, scope);
-    return scope;
-  }
-
-  private nearestScopeOf(node: SyntaxNode): Scope {
-    for (let p = node.parent; p; p = p.parent) {
-      const s = this.scopeByNode.get(p.id);
-      if (s) return s;
-      if (p.id === this.fnId) break;
-    }
-    return this.root;
-  }
-
-  private declare(nameNode: SyntaxNode, kind: BindingEntry['kind'], scope: Scope): void {
+  /** Go override: `_` is the blank identifier and binds nothing. */
+  protected override declare(nameNode: SyntaxNode, kind: BindingEntry['kind'], scope: Scope): void {
     const name = nameNode.text;
     if (!name || name === '_' || scope.table.has(name)) return; // `_` is the blank identifier
     scope.table.set(name, this.bindings.length);
@@ -201,7 +152,7 @@ export class GoHarvester {
     }
   }
 
-  private prescan(node: SyntaxNode, scope: Scope): void {
+  protected prescan(node: SyntaxNode, scope: Scope): void {
     this.nearestScopeCache.set(node.id, scope);
     const t = node.type;
     if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
@@ -393,55 +344,17 @@ export class GoHarvester {
     return acc.defCount() ? acc.finish() : undefined;
   }
 
-  private resolve(nameNode: SyntaxNode): number {
-    const name = nameNode.text;
-    const cached = this.nearestScopeCache.get(nameNode.id);
-    let startScope: Scope | null = cached ?? null;
-    if (!startScope) {
-      for (let p: SyntaxNode | null = nameNode; p; p = p.parent) {
-        const scope = this.scopeByNode.get(p.id) ?? this.nearestScopeCache.get(p.id);
-        if (scope) {
-          startScope = scope;
-          break;
-        }
-        if (p.id === this.fnId) {
-          startScope = this.root;
-          break;
-        }
-      }
-    }
-    for (let s: Scope | null = startScope; s; s = s.parent) {
-      const idx = s.table.get(name);
-      if (idx !== undefined) return idx;
-    }
-    let idx = this.synthetic.get(name);
-    if (idx === undefined) {
-      idx = this.bindings.length;
-      this.synthetic.set(name, idx);
-      this.bindings.push({ name, declLine: 0, declColumn: 0, kind: 'module', synthetic: true });
-    }
-    return idx;
-  }
-
-  private def(nameNode: SyntaxNode, acc: FactAccumulator): void {
+  /** Go override: the blank identifier (`_`) defines nothing. */
+  protected override def(nameNode: SyntaxNode, acc: FactAccumulator): void {
     if (nameNode.text === '_') return; // blank identifier defines nothing
     if (this.conditionalDepth > 0) acc.addMayDef(this.resolve(nameNode));
     else acc.addDef(this.resolve(nameNode));
   }
 
-  private use(nameNode: SyntaxNode, acc: FactAccumulator): void {
+  /** Go override: the blank identifier (`_`) is read of nothing. */
+  protected override use(nameNode: SyntaxNode, acc: FactAccumulator): void {
     if (nameNode.text === '_') return;
     acc.addUse(this.resolve(nameNode));
-  }
-
-  /** Run `fn` with defs demoted to may-defs (conditionally-evaluated context). */
-  private conditional(fn: () => void): void {
-    this.conditionalDepth++;
-    try {
-      fn();
-    } finally {
-      this.conditionalDepth--;
-    }
   }
 
   /** Strip parenthesized wrappers around an lvalue (`(x) = 1`). */
