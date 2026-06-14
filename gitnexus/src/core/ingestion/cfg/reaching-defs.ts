@@ -227,6 +227,18 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
   }
 
   // ── iteration order: RPO over reachable blocks, then the rest by index ──
+  // WTO / loop-aware iteration (Bourdoncle 1993) was evaluated as a fix for the
+  // O(blocks²) deep-loop-nest blow-up and REJECTED: on the dense-loop benchmark a
+  // faithful weak-topological-order solver was 104/104 byte-identical to this RPO
+  // worklist but 0% faster. The cost is inherent to dense-set propagation +
+  // lattice merges on the iterated dominance frontier, not to visitation order, so
+  // re-ordering passes buys nothing; the "skip re-evaluating a loop body once its
+  // header stabilises" shortcut is additionally unsound on irreducible (goto)
+  // CFGs. The sound, shipped backstop is the maxBlockVisits ceiling below (a
+  // blocks×64 budget — see emit.ts DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS),
+  // which truncates the pathological nest to a sound-empty result. The only real
+  // asymptotic fix is SSA-sparse reaching-defs (propagate along def-use chains, not
+  // dense block sets) — deferred to a tracked follow-up, not a reordering tweak.
   const order = reversePostOrder(cfg.entryIndex, succs, n);
 
   // ── fixpoint ────────────────────────────────────────────────────────────

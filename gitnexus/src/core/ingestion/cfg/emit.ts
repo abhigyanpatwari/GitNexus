@@ -107,6 +107,11 @@ export const DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION =
  * 2000-line all-loops function whose fact count stays linear (so `maxFacts`
  * never fires). Truncation degrades to a sound empty REACHING_DEF for that one
  * function (status `truncated`), never wrong facts.
+ *
+ * This ceiling is the SOUND backstop, not a perf fix: WTO / loop-aware iteration
+ * ordering was benchmarked and rejected (0% faster — the cost is dense-set
+ * propagation, not visitation order; see the no-go note in reaching-defs.ts at
+ * the RPO-order site). SSA-sparse reaching-defs is the deferred real fix.
  */
 export const DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS = 64;
 
