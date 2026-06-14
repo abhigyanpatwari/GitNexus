@@ -1,0 +1,389 @@
+import { describe, it, expect, vi } from 'vitest';
+import { createRequire } from 'node:module';
+import { createCsharpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/csharp.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+
+// U3 — the C# CfgVisitor, one hazard per test (KTD5: real-parser regression,
+// NOT snapshot-pinning). Each fixture's distinctive statement text (step(),
+// done(), handle(e), …) lets us locate the block for a region by text and assert
+// the control-flow topology around it.
+
+// tree-sitter-c-sharp declares `main: "bindings/node"` (no extension) — load the
+// explicit subpath, mirroring parser-loader.ts (#1013).
+const csGrammar = createRequire(import.meta.url)(
+  'tree-sitter-c-sharp/bindings/node/index.js',
+) as Parameters<typeof makeCfgHarness>[0];
+
+const cs: CfgHarness = makeCfgHarness(csGrammar, createCsharpCfgVisitor(), 'fixture.cs');
+
+const block = (cfg: FunctionCfg, substr: string): number => {
+  const b = cfg.blocks.find((bl) => bl.text.includes(substr));
+  if (!b) throw new Error(`no block containing ${JSON.stringify(substr)}`);
+  return b.index;
+};
+
+const edgeKinds = (cfg: FunctionCfg): Set<string> => new Set(cfg.edges.map((e) => e.kind));
+
+function reaches(cfg: FunctionCfg, from: number, to: number): boolean {
+  const adj = new Map<number, number[]>();
+  for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const n = stack.pop() as number;
+    if (n === to) return true;
+    for (const nx of adj.get(n) ?? []) if (!seen.has(nx)) (seen.add(nx), stack.push(nx));
+  }
+  return seen.has(to);
+}
+const reachable = (cfg: FunctionCfg, idx: number): boolean => reaches(cfg, cfg.entryIndex, idx);
+
+/** Is EXIT reverse-reachable from every reachable block? (CDG soundness gate.) */
+function exitReachableFromAll(cfg: FunctionCfg): boolean {
+  for (const b of cfg.blocks) {
+    if (b.index === cfg.exitIndex) continue;
+    if (!reachable(cfg, b.index)) continue; // unreachable blocks exempt
+    if (!reaches(cfg, b.index, cfg.exitIndex)) return false;
+  }
+  return true;
+}
+
+/** Resolve a binding by name → its index in the function's binding table. */
+function bindingIdx(cfg: FunctionCfg, name: string): number {
+  const i = (cfg.bindings ?? []).findIndex((b) => b.name === name);
+  if (i < 0) throw new Error(`no binding ${name}`);
+  return i;
+}
+
+const hasDef = (cfg: FunctionCfg, idx: number): boolean =>
+  cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(idx)));
+const hasUse = (cfg: FunctionCfg, idx: number): boolean =>
+  cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(idx)));
+const hasMayDef = (cfg: FunctionCfg, idx: number): boolean =>
+  cfg.blocks.some((bl) => bl.statements?.some((s) => (s.mayDefs ?? []).includes(idx)));
+
+const wrap = (body: string): string => `class C { void M(${''}) { ${body} } }`;
+
+describe('C# CfgVisitor — structure', () => {
+  it('straight-line body: ENTRY → block → EXIT (seq)', () => {
+    const cfg = cs.cfgOf(`class C { void M() { a(); b(); c(); } }`);
+    expect(cfg.blocks.filter((b) => b.kind === 'normal')).toHaveLength(1);
+    const body = block(cfg, 'a();');
+    expect(cfg.edges).toContainEqual({ from: cfg.entryIndex, to: body, kind: 'seq' });
+    expect(reaches(cfg, body, cfg.exitIndex)).toBe(true);
+  });
+
+  it('empty body: ENTRY → EXIT', () => {
+    const cfg = cs.cfgOf(`class C { void M() {} }`);
+    expect(cfg.blocks).toHaveLength(2);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('expression-bodied method: single block returns its value', () => {
+    const cfg = cs.cfgOf(`class C { int M(int n) => n * 2; }`);
+    const body = block(cfg, 'n * 2');
+    expect(cfg.edges).toContainEqual({ from: body, to: cfg.exitIndex, kind: 'return' });
+  });
+
+  it('constructor and local function are CFG-bearing functions', () => {
+    const cfgs = cs.cfgsOf(`class C { C(int a) { x = a; } void Outer() { int L(int z) { return z; } L(1); } }`);
+    // constructor C, Outer, and the local function L = 3 CFGs.
+    expect(cfgs.length).toBeGreaterThanOrEqual(3);
+    for (const cfg of cfgs) expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('unmodeled member shape (no body) → graceful partial, no throw', () => {
+    // An abstract method has no body block → buildFunctionCfg returns undefined,
+    // never throws; a property (not a function) is not collected at all.
+    const root = cs.parse(`abstract class C { public abstract void M(); int P => 1; }`);
+    const fns = cs.collectFunctions(root);
+    for (const fn of fns) {
+      expect(() => createCsharpCfgVisitor().buildFunctionCfg(fn, 'f.cs')).not.toThrow();
+    }
+  });
+});
+
+describe('C# CfgVisitor — branching', () => {
+  it('if/else: cond-true to then, cond-false to else, both reach the join', () => {
+    const cfg = cs.cfgOf(wrap(`if (x > 0) { a(); } else { b(); } c();`).replace('M()', 'M(int x)'));
+    const kinds = edgeKinds(cfg);
+    expect(kinds.has('cond-true')).toBe(true);
+    expect(kinds.has('cond-false')).toBe(true);
+    const join = block(cfg, 'c();');
+    expect(reaches(cfg, block(cfg, 'a();'), join)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'b();'), join)).toBe(true);
+  });
+
+  it('else if chains through the nested alternative (no else_clause wrapper)', () => {
+    const cfg = cs.cfgOf(
+      `class C { void M(int x) { if (x > 0) { a(); } else if (x < 0) { b(); } else { c(); } } }`,
+    );
+    // all three arms reach EXIT; the else-if condition is its own block.
+    expect(reaches(cfg, block(cfg, 'a();'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'b();'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c();'), cfg.exitIndex)).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — loops', () => {
+  it('while loop: header + back-edge + exit', () => {
+    const cfg = cs.cfgOf(`class C { void M(int x) { while (x > 0) { step(); } done(); } }`);
+    const header = block(cfg, 'x > 0');
+    const body = block(cfg, 'step();');
+    expect(cfg.edges).toContainEqual({ from: body, to: header, kind: 'loop-back' });
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(reaches(cfg, header, block(cfg, 'done();'))).toBe(true);
+  });
+
+  it('do-while runs the body BEFORE testing, then loops back from the bottom', () => {
+    const cfg = cs.cfgOf(`class C { void M(int x) { do { step(); } while (x > 0); done(); } }`);
+    const body = block(cfg, 'step();');
+    const cond = block(cfg, 'x > 0');
+    expect(reaches(cfg, cfg.entryIndex, body)).toBe(true); // body runs first
+    expect(reaches(cfg, body, cond)).toBe(true);
+    expect(cfg.edges).toContainEqual({ from: cond, to: body, kind: 'loop-back' });
+    expect(reaches(cfg, cond, block(cfg, 'done();'))).toBe(true);
+  });
+
+  it('C-style for: init once, condition header, back-edge through update', () => {
+    const cfg = cs.cfgOf(`class C { void M(int n) { for (int i = 0; i < n; i++) { step(); } done(); } }`);
+    const init = block(cfg, 'int i = 0');
+    const header = block(cfg, 'i < n');
+    const incr = block(cfg, 'i++');
+    const body = block(cfg, 'step();');
+    expect(cfg.edges).toContainEqual({ from: cfg.entryIndex, to: init, kind: 'seq' });
+    expect(reaches(cfg, body, incr)).toBe(true);
+    expect(cfg.edges).toContainEqual({ from: incr, to: header, kind: 'loop-back' });
+    expect(reaches(cfg, header, block(cfg, 'done();'))).toBe(true);
+  });
+
+  it('foreach: header + body + loop-back + exit; loop var is a def, source a use', () => {
+    const cfg = cs.cfgOf(`class C { void M(int[] xs) { foreach (var x in xs) { use(x); } done(); } }`);
+    const body = block(cfg, 'use(x);');
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('loop-back')).toBe(true);
+    const header = cfg.edges.find((e) => e.kind === 'loop-back' && e.from === body)?.to;
+    expect(header).toBeDefined();
+    expect(reaches(cfg, header!, block(cfg, 'done();'))).toBe(true);
+    const x = bindingIdx(cfg, 'x');
+    expect(hasDef(cfg, x)).toBe(true);
+  });
+
+  it('while (true) {} keeps EXIT reverse-reachable (structural exit-escape edge)', () => {
+    const cfg = cs.cfgOf(`class C { void M() { while (true) { work(); } } }`);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('for (;;) {} keeps EXIT reverse-reachable', () => {
+    const cfg = cs.cfgOf(`class C { void M() { for (;;) { work(); } } }`);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(exitReachableFromAll(cfg)).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — switch', () => {
+  it('switch_statement: cases dispatch, break-terminated case rejoins after', () => {
+    const cfg = cs.cfgOf(`class C { void M(int x) {
+      switch (x) {
+        case 1: one(); break;
+        case 2: two(); break;
+        default: other(); break;
+      }
+      after();
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'one();'), block(cfg, 'after();'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'two();'), block(cfg, 'after();'))).toBe(true);
+    // break-terminated case 1 does not fall into case 2.
+    expect(reaches(cfg, block(cfg, 'one();'), block(cfg, 'two();'))).toBe(false);
+  });
+
+  it('empty case section falls through to the next section', () => {
+    const cfg = cs.cfgOf(`class C { void M(int x) {
+      switch (x) { case 1: case 2: shared(); break; default: d(); break; }
+      after();
+    } }`);
+    // case 1 (empty) reaches the shared body.
+    expect(reaches(cfg, block(cfg, 'shared();'), block(cfg, 'after();'))).toBe(true);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+  });
+
+  it('switch_expression arms each dispatch as a guarded branch (switch-case)', () => {
+    const cfg = cs.cfgOf(`class C { int M(int x) { return x switch { 1 => a(), 2 => b(), _ => c() }; } }`);
+    // The switch-expression lives inside the return block — it does not break a
+    // basic block, but the function still has a well-formed single-exit CFG.
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — using / lock (deterministic finalizer)', () => {
+  it('using runs the body then dispose on the NORMAL exit path', () => {
+    const cfg = cs.cfgOf(`class C { void M() { using (var f = Open()) { read(f); } after(); } }`);
+    const body = block(cfg, 'read(f);');
+    const dispose = block(cfg, 'dispose');
+    // body → dispose → after()  (normal completion threads through the dispose).
+    expect(reaches(cfg, body, dispose)).toBe(true);
+    expect(reaches(cfg, dispose, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('using disposes on the EXCEPTION path too (throw routes through dispose)', () => {
+    const cfg = cs.cfgOf(`class C { void M() { using (var f = Open()) { risky(f); } } }`);
+    const body = block(cfg, 'risky(f);');
+    const dispose = block(cfg, 'dispose');
+    // a throw in the protected body reaches the dispose finalizer.
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    expect(reaches(cfg, body, dispose)).toBe(true);
+  });
+
+  it('a return inside using crosses the dispose (finally-return completion edge)', () => {
+    const cfg = cs.cfgOf(`class C { int M() { using (var f = Open()) { return read(f); } } }`);
+    expect(edgeKinds(cfg).has('finally-return')).toBe(true);
+  });
+
+  it('lock body runs then releases the monitor (finalizer semantics)', () => {
+    const cfg = cs.cfgOf(`class C { void M(object sync) { lock (sync) { touch(); } after(); } }`);
+    const body = block(cfg, 'touch();');
+    const release = block(cfg, 'release');
+    expect(reaches(cfg, body, release)).toBe(true);
+    expect(reaches(cfg, release, block(cfg, 'after();'))).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — try/catch/finally completion edges', () => {
+  it('try/catch: a throw edge runs from each protected block to the handler', () => {
+    const cfg = cs.cfgOf(`class C { void M() {
+      try { risky(); deeper(); } catch (System.Exception e) { handle(e); }
+      after();
+    } }`);
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    const handler = block(cfg, 'handle(e);');
+    expect(reaches(cfg, block(cfg, 'risky();'), handler)).toBe(true);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('finally runs on normal completion of the try', () => {
+    const cfg = cs.cfgOf(`class C { void M() {
+      try { work(); } finally { cleanup(); }
+      after();
+    } }`);
+    const body = block(cfg, 'work();');
+    const fin = block(cfg, 'cleanup();');
+    expect(reaches(cfg, body, fin)).toBe(true);
+    expect(reaches(cfg, fin, block(cfg, 'after();'))).toBe(true);
+  });
+
+  it('return crossing a finally emits a finally-return completion edge', () => {
+    const cfg = cs.cfgOf(`class C { int M() {
+      try { return compute(); } finally { cleanup(); }
+    } }`);
+    expect(edgeKinds(cfg).has('finally-return')).toBe(true);
+  });
+
+  it('break crossing a finally emits a finally-break completion edge', () => {
+    const cfg = cs.cfgOf(`class C { void M(int n) {
+      for (int i = 0; i < n; i++) {
+        try { if (done()) break; } finally { tick(); }
+      }
+      after();
+    } }`);
+    expect(edgeKinds(cfg).has('finally-break')).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — goto / labels', () => {
+  it('backward goto wires to an already-seen label block', () => {
+    const cfg = cs.cfgOf(`class C { void M() { int i = 0; top: work(); i++; if (i < 10) goto top; done(); } }`);
+    const gotoB = block(cfg, 'goto top;');
+    const label = block(cfg, 'work();');
+    expect(reaches(cfg, gotoB, label)).toBe(true);
+    expect(cfg.edges.some((e) => e.from === gotoB && e.to === label)).toBe(true);
+  });
+
+  it('forward goto wires to a label that appears later', () => {
+    const cfg = cs.cfgOf(`class C { void M(int x) { if (x > 0) goto end; work(); end: done(); } }`);
+    const gotoB = block(cfg, 'goto end;');
+    const label = block(cfg, 'done();');
+    expect(reaches(cfg, gotoB, label)).toBe(true);
+    expect(reachable(cfg, block(cfg, 'work();'))).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — yield', () => {
+  it('yield break terminates the iterator (routes to EXIT)', () => {
+    const cfg = cs.cfgOf(`class C { System.Collections.Generic.IEnumerable<int> G(int x) {
+      if (x < 0) { yield break; }
+      yield return x;
+    } }`);
+    const yb = block(cfg, 'yield break;');
+    expect(reaches(cfg, yb, cfg.exitIndex)).toBe(true);
+    // yield break terminates its block — does not fall into yield return.
+    expect(reaches(cfg, yb, block(cfg, 'yield return x;'))).toBe(false);
+  });
+
+  it('yield return continues to the next statement', () => {
+    const cfg = cs.cfgOf(`class C { System.Collections.Generic.IEnumerable<int> G() {
+      yield return 1;
+      done();
+    } }`);
+    const yr = block(cfg, 'yield return 1;');
+    expect(reaches(cfg, yr, block(cfg, 'done();'))).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — def/use harvest', () => {
+  it('local declaration: int x = a + b; use(x); → def of x + use of x', () => {
+    const cfg = cs.cfgOf(`class C { void M(int a, int b) { int x = a + b; use(x); } }`);
+    const x = bindingIdx(cfg, 'x');
+    expect(hasDef(cfg, x)).toBe(true);
+    expect(hasUse(cfg, x)).toBe(true);
+  });
+
+  it('c ?? (c = load()) records c as a MAY-def, not a must-kill', () => {
+    const cfg = cs.cfgOf(`class C { void M(string c) { var v = c ?? (c = load()); use(v); } }`);
+    const c = bindingIdx(cfg, 'c');
+    expect(hasMayDef(cfg, c)).toBe(true);
+  });
+
+  it('a && (x = f()) records x as a may-def inside the short-circuit', () => {
+    const cfg = cs.cfgOf(`class C { void M(bool a) { int x = 0; if (a && (x = g()) > 0) h(x); } }`);
+    const x = bindingIdx(cfg, 'x');
+    expect(hasMayDef(cfg, x)).toBe(true);
+  });
+
+  it('compound assignment reads AND writes the lvalue', () => {
+    const cfg = cs.cfgOf(`class C { void M() { int z = 1; z += 3; } }`);
+    const z = bindingIdx(cfg, 'z');
+    expect(hasDef(cfg, z)).toBe(true);
+    expect(hasUse(cfg, z)).toBe(true);
+  });
+});
+
+describe('C# CfgVisitor — functionStartColumn', () => {
+  it('two same-line methods get distinct functionStartColumn', () => {
+    const cfgs = cs.cfgsOf(`class C { int A() { return 1; } int B() { return 2; } }`);
+    expect(cfgs).toHaveLength(2);
+    expect(cfgs[0].functionStartLine).toBe(cfgs[1].functionStartLine); // same line
+    expect(cfgs[0].functionStartColumn).not.toBe(cfgs[1].functionStartColumn); // distinct column
+  });
+});
+
+describe('C# CfgVisitor — does not throw on exotic shapes', () => {
+  it('lambda / anonymous method bodies build their own CFGs', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const cfgs = cs.cfgsOf(`class C { void M() {
+        System.Func<int, int> f = x => { if (x > 0) { return x; } return 0; };
+        System.Action h = delegate () { act(); };
+        f(1); h();
+      } }`);
+      expect(cfgs.length).toBeGreaterThanOrEqual(3); // M, lambda, anon method
+      for (const cfg of cfgs) expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

@@ -24,6 +24,7 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { csharpVariableConfig } from '../variable-extractors/configs/csharp.js';
+import { createCsharpCfgVisitor } from '../cfg/visitors/csharp.js';
 import {
   emitCsharpScopeCaptures,
   interpretCsharpImport,
@@ -200,6 +201,7 @@ export const csharpProvider = defineLanguage({
   // the full per-hook rationale and the canonical capture vocabulary
   // in ./csharp/query.ts (CSHARP_SCOPE_QUERY constant).
   emitScopeCaptures: emitCsharpScopeCaptures,
+  cfgVisitor: createCsharpCfgVisitor(),
   interpretImport: interpretCsharpImport,
   interpretTypeBinding: interpretCsharpTypeBinding,
   bindingScopeFor: csharpBindingScopeFor,
