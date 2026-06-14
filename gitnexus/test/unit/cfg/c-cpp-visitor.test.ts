@@ -253,6 +253,19 @@ describe('C++ CfgVisitor — structured bindings (#2195 P1)', () => {
   });
 });
 
+describe('C++ CfgVisitor — coroutines (#2195 P1)', () => {
+  it('co_return edges to EXIT (return), not a seq fallthrough to the next statement', () => {
+    const cfg = cpp.cfgOf(`Task f(int x) { if (x) co_return early(); main(); }`);
+    const co = block(cfg, 'co_return early();');
+    // co_return is a return terminator: it edges to EXIT…
+    expect(
+      cfg.edges.some((e) => e.from === co && e.to === cfg.exitIndex && e.kind === 'return'),
+    ).toBe(true);
+    // …and never falls through to the following statement.
+    expect(cfg.edges.some((e) => e.from === co && e.kind === 'seq')).toBe(false);
+  });
+});
+
 describe('C CfgVisitor — functionStartColumn', () => {
   it('two same-line functions get distinct functionStartColumn', () => {
     const cfgs = c.cfgsOf(`int a(){return 1;} int b(){return 2;}`);

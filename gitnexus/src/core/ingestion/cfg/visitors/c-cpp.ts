@@ -93,6 +93,7 @@ const CPP_CONTROL_FLOW_TYPES = new Set([
   'for_range_loop',
   'try_statement',
   'throw_statement',
+  'co_return_statement',
 ]);
 
 const LOOP_OR_SWITCH_TYPES = new Set([
@@ -589,6 +590,11 @@ class CppCfgWalk extends CCfgWalk {
         return this.visitTry(stmt);
       case 'throw_statement':
         return this.visitThrow(stmt);
+      case 'co_return_statement':
+        // A coroutine `co_return` terminates the coroutine like an ordinary
+        // return: edge to EXIT, no fallthrough (`co_await`/`co_yield` are plain
+        // expressions that continue, so they need no control-flow handling).
+        return this.visitReturn(stmt);
       default:
         return undefined;
     }
