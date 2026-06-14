@@ -292,6 +292,21 @@ describe('Swift CfgVisitor — def/use harvest', () => {
     expect(cfgs.length).toBeGreaterThanOrEqual(2);
     for (const cfg of cfgs) expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
+
+  it('switch `case let n` binds n as a (may-)def, not a synthetic global (#2195 P2)', () => {
+    const cfg = swift.cfgOf(
+      `func f(x: Int) { switch x { case let n where n > 0: use(n); default: break } }`,
+    );
+    const n = bindingIdx(cfg, 'n');
+    // The case value-binding defines n (a may-def — the case may not match);
+    // the bug left n a synthetic module binding with no def at all.
+    const defined = cfg.blocks.some((bl) =>
+      bl.statements?.some((s) => s.defs.includes(n) || (s.mayDefs ?? []).includes(n)),
+    );
+    expect(defined).toBe(true);
+    // use(n) (and the `where n > 0` guard) read n.
+    expect(cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(n)))).toBe(true);
+  });
 });
 
 describe('Swift CfgVisitor — functionStartColumn', () => {

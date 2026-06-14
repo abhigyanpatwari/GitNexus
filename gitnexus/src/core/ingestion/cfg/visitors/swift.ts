@@ -616,6 +616,10 @@ class SwiftCfgWalk {
     // uses onto the dispatch block (a later case tests only when earlier ones
     // didn't match; any def there is a may-def).
     for (const entry of entries) {
+      // `case let n` value bindings are may-defs on the dispatch block (the case
+      // may not match) — propagated into the body where the name is read.
+      const pat = this.entryPattern(entry);
+      if (pat) this.builder.attachFacts(dispatch, this.harvest.switchPatternFacts(pat));
       const guard = this.entryGuard(entry);
       if (guard) this.builder.attachFacts(dispatch, this.harvest.factsConditional(guard));
     }
@@ -648,6 +652,11 @@ class SwiftCfgWalk {
 
     this.cfc.pop();
     return { entry: dispatch, exits: [switchExit] };
+  }
+
+  /** The `switch_pattern` of a `switch_entry` (absent for `default:`). */
+  private entryPattern(entry: SyntaxNode): SyntaxNode | undefined {
+    return entry.namedChildren.find((c) => c.type === 'switch_pattern');
   }
 
   /** The `where` guard expression of a `switch_entry`, if any. */

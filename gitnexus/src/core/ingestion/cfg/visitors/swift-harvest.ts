@@ -196,6 +196,13 @@ export class SwiftHarvester {
         if (err) this.declarePattern(err);
         break;
       }
+      case 'switch_pattern': {
+        // `case let n` / `case (let a, let b)` / `case .some(let v)` — declare
+        // the value binding(s) so a body use resolves to a real local.
+        const pat = node.namedChildren.find((c) => c.type === 'pattern');
+        if (pat) this.declarePattern(pat);
+        break;
+      }
       default:
         // Optional binding (`if let` / `while let` / `guard let`): a
         // `value_binding_pattern` condition followed by a `bound_identifier`.
@@ -261,6 +268,19 @@ export class SwiftHarvester {
   factsConditional(node: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(node.startPosition.row + 1);
     this.conditional(() => this.walkValue(node, acc));
+    return acc.finish();
+  }
+
+  /**
+   * MAY-def facts for a `switch_pattern`'s value bindings (`case let n` /
+   * `case .some(let v)`). The binding only takes effect when the case matches,
+   * so it is a may-def on the dispatch block — propagated into the case body
+   * where the bound name is read.
+   */
+  switchPatternFacts(switchPattern: SyntaxNode): StatementFacts {
+    const acc = new FactAccumulator(switchPattern.startPosition.row + 1);
+    const pat = switchPattern.namedChildren.find((c) => c.type === 'pattern');
+    if (pat) this.conditional(() => this.defPattern(pat, acc));
     return acc.finish();
   }
 
