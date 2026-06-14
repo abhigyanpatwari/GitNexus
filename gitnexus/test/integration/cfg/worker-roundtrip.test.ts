@@ -27,15 +27,17 @@ const tsVisitor = (): CfgVisitor<SyntaxNode> => {
   return v;
 };
 
-describe('U3 — TS/JS provider exposes a cfgVisitor; others do not (worker gate)', () => {
+describe('CFG provider gate — a cfgVisitor enables the worker CFG path', () => {
   it('TS and JS providers carry a cfgVisitor', () => {
     expect(getProvider(SupportedLanguages.TypeScript).cfgVisitor).toBeDefined();
     expect(getProvider(SupportedLanguages.JavaScript).cfgVisitor).toBeDefined();
   });
 
-  it('a non-CFG language (Python) has no cfgVisitor ⇒ worker emits no cfgSideChannel', () => {
+  it('a non-CFG language (COBOL) has no cfgVisitor ⇒ worker emits no cfgSideChannel', () => {
     // `provider.cfgVisitor &&` short-circuits in the worker → no CFG, no field.
-    expect(getProvider(SupportedLanguages.Python).cfgVisitor).toBeUndefined();
+    // COBOL is the deliberate non-goal of the PDG-language rollout (#2195) —
+    // every other supported language now carries a cfgVisitor.
+    expect(getProvider(SupportedLanguages.Cobol).cfgVisitor).toBeUndefined();
   });
 });
 

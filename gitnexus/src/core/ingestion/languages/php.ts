@@ -20,6 +20,7 @@ import {
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
+import { createPhpCfgVisitor } from '../cfg/visitors/php.js';
 import { defineLanguage, type AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
@@ -297,6 +298,7 @@ export const phpProvider = defineLanguage({
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────────────────
   emitScopeCaptures: emitPhpScopeCaptures,
+  cfgVisitor: createPhpCfgVisitor(),
   interpretImport: interpretPhpImport,
   interpretTypeBinding: interpretPhpTypeBinding,
   // LanguageProvider uses (def, callsite); phpArityCompatibility uses (def, callsite) — same.
