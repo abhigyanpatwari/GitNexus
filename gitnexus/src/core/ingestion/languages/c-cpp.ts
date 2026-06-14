@@ -70,6 +70,7 @@ import {
   type CppConstraintPayload,
 } from './cpp/constraint-extractor.js';
 import { assertCloneable } from '../workers/clone-safety.js';
+import { createCCfgVisitor, createCppCfgVisitor } from '../cfg/visitors/c-cpp.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -401,6 +402,7 @@ export const cProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   emitScopeCaptures: emitCScopeCaptures,
+  cfgVisitor: createCCfgVisitor(),
   // Worker-side: snapshot the module-level `static`-linkage marks
   // `emitCScopeCaptures` just populated for this file (`markStaticName` →
   // `staticNames`) into plain data on `ParsedFile.captureSideChannel`, so the
@@ -484,6 +486,7 @@ export const cppProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   emitScopeCaptures: emitCppScopeCaptures,
+  cfgVisitor: createCppCfgVisitor(),
   // Worker-side: snapshot the module-level capture marks `emitCppScopeCaptures`
   // just populated for this file into plain data on `ParsedFile.captureSideChannel`,
   // so the main thread can restore them via `applyCaptureSideChannel` WITHOUT a
