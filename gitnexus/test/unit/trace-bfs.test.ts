@@ -109,8 +109,10 @@ function makeResolveMock(
   bfsRowsByFrontier?: Record<string, any[]>,
 ) {
   const bfsMap = bfsRowsByFrontier ?? {};
-  return (_db: string, query: string, params: any) => {
-    if (query.includes('WHERE n.id = $uid') && params.uid) {
+  return (_db: string, _query: string, params: any) => {
+    // UID lookup keys on params.uid — the real query is `MATCH (n {id: $uid})`,
+    // so matching on query text ('WHERE n.id = $uid') never fired.
+    if (params.uid) {
       if (fromRows.length === 1 && fromRows[0].id === params.uid) return fromRows;
       if (toRows.length === 1 && toRows[0].id === params.uid) return toRows;
     }
@@ -119,9 +121,13 @@ function makeResolveMock(
       if (params.symName === toRows[0]?.name && toRows.length > 0) return toRows;
     }
     if (params.frontierIds) {
+      // The real per-level query fetches neighbors for ALL frontier ids at
+      // once; concatenate so a multi-node frontier is modelled faithfully.
+      const rows: any[] = [];
       for (const frontierId of params.frontierIds) {
-        if (bfsMap[frontierId]) return bfsMap[frontierId];
+        if (bfsMap[frontierId]) rows.push(...bfsMap[frontierId]);
       }
+      return rows;
     }
     return [];
   };
@@ -452,6 +458,99 @@ describe('trace: BFS core', () => {
     for (const [, cypher] of calls) {
       expect(cypher).not.toMatch(/WHERE n\.name = \$symName/);
     }
+  });
+
+  it('finds a shortest path that runs through the second node of a multi-node frontier', async () => {
+    // A→B→E (dead end) and A→C→D (target). The path is only reachable via the
+    // second frontier node (C); a mock that returned just the first frontier
+    // node's neighbors would (wrongly) report no_path.
+    const SYMBOL_D = { id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_D], {
+        'func:A': [
+          { sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+          { sourceId: 'func:A', id: 'func:C', name: 'C', type: 'Function', filePath: 'src/c.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+        ],
+        'func:B': [
+          { sourceId: 'func:B', id: 'func:E', name: 'E', type: 'Function', filePath: 'src/e.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+        ],
+        'func:C': [
+          { sourceId: 'func:C', id: 'func:D', name: 'D', type: 'Function', filePath: 'src/d.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+        ],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'D' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(2);
+    expect(result.hops.map((h: any) => h.name)).toEqual(['A', 'C', 'D']);
+  });
+
+  it('falls back to the relation-type confidence when stored confidence is 0', async () => {
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], {
+        'func:A': [
+          { sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function', filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 0 },
+        ],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'B' });
+
+    expect(result.status).toBe('ok');
+    expect(result.edges[0].confidence).toBe(0.9); // CALLS confidence floor
+  });
+
+  it('traverses HAS_METHOD edges and reports a mixed per-hop edge-type chain', async () => {
+    const SYMBOL_CLASS = { id: 'class:K', name: 'K', type: 'Class', filePath: 'src/k.ts', startLine: 1, endLine: 20 };
+    const SYMBOL_TGT = { id: 'func:T2', name: 'T2', type: 'Function', filePath: 'src/t2.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_CLASS], [SYMBOL_TGT], {
+        'class:K': [
+          { sourceId: 'class:K', id: 'func:m', name: 'm', type: 'Method', filePath: 'src/k.ts', startLine: 5, edgeType: 'HAS_METHOD', confidence: 0.95 },
+        ],
+        'func:m': [
+          { sourceId: 'func:m', id: 'func:T2', name: 'T2', type: 'Function', filePath: 'src/t2.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 },
+        ],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'K', to: 'T2' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(2);
+    expect(result.edges.map((e: any) => e.relType)).toEqual(['HAS_METHOD', 'CALLS']);
+    expect(result.hops.map((h: any) => h.name)).toEqual(['K', 'm', 'T2']);
+  });
+
+  it('returns no_path with furthest null when the source has no outgoing edges', async () => {
+    const SYMBOL_X = { id: 'func:X', name: 'X', type: 'Function', filePath: 'src/x.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_X], {}));
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'X' });
+
+    expect(result.status).toBe('no_path');
+    expect(result.furthest).toBeNull();
+  });
+
+  it('uses from_file to disambiguate same-named symbols', async () => {
+    const helperA = { id: 'func:helperA', name: 'helper', type: 'Function', filePath: 'src/a.ts', startLine: 1, endLine: 5 };
+    const target = { id: 'func:target', name: 'target', type: 'Function', filePath: 'src/t.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation((_db: string, _q: string, params: any) => {
+      if (params.symName === 'helper' && params.filePath === 'src/a.ts') return [helperA];
+      if (params.symName === 'target') return [target];
+      if (params.frontierIds?.includes('func:helperA')) {
+        return [{ sourceId: 'func:helperA', id: 'func:target', name: 'target', type: 'Function', filePath: 'src/t.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0 }];
+      }
+      return [];
+    });
+
+    const result = await backend.callTool('trace', { from: 'helper', from_file: 'src/a.ts', to: 'target' });
+
+    expect(result.status).toBe('ok');
+    expect(result.from.filePath).toBe('src/a.ts');
+    expect(result.hopCount).toBe(1);
   });
 });
 
