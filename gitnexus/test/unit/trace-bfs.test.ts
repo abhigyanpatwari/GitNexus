@@ -408,6 +408,15 @@ describe('trace: BFS core', () => {
     expect(result.truncated).toBe(true);
   });
 
+  it('returns status:error for a non-string from/to instead of a low-level TypeError', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('trace', { from: 42 as any, to: 'realSymbol' });
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/must be strings/);
+  });
+
   it('returns status:error with a suggestion when the BFS query throws', async () => {
     (executeParameterized as any).mockImplementation((_db: string, _q: string, params: any) => {
       if (params.frontierIds) throw new Error('boom: graph exploded');

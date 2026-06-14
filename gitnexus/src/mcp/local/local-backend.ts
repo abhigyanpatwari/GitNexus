@@ -3982,6 +3982,23 @@ export class LocalBackend {
   private async _traceImpl(repo: RepoHandle, params: TraceParams): Promise<any> {
     await this.ensureInitialized(repo);
 
+    // resolveSymbolCandidates feeds `from`/`to` into string operations
+    // (e.g. name.includes), so a non-string param would surface a low-level
+    // "x.includes is not a function". Reject it with a clear message instead.
+    const isStringOrAbsent = (v: unknown): boolean => v === undefined || typeof v === 'string';
+    if (
+      !isStringOrAbsent(params.from) ||
+      !isStringOrAbsent(params.to) ||
+      !isStringOrAbsent(params.from_uid) ||
+      !isStringOrAbsent(params.to_uid)
+    ) {
+      return {
+        status: 'error',
+        error: "'from', 'to', and their *_uid variants must be strings.",
+        suggestion: 'Pass symbol names or UIDs as strings, e.g. trace from="A" to="B".',
+      };
+    }
+
     const fromOutcome = await this.resolveSymbolCandidates(
       repo,
       { uid: params.from_uid, name: params.from },
