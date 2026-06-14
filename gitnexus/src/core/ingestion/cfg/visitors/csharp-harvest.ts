@@ -155,6 +155,14 @@ export class CsharpHarvester extends ScopeTreeHarvester {
         if (name) this.declare(name, 'var', childScope);
         break;
       }
+      case 'declaration_expression': {
+        // `f(out var n)` / `f(out int n)` — `n` is a fresh out-binding written
+        // by the callee; declare it so its def + later uses resolve to a real
+        // local rather than a synthetic module binding.
+        const name = node.childForFieldName('name');
+        if (name) this.declare(name, 'var', childScope);
+        break;
+      }
       default:
         break;
     }
@@ -171,7 +179,15 @@ export class CsharpHarvester extends ScopeTreeHarvester {
       const d = declNode.namedChild(i);
       if (d?.type !== 'variable_declarator') continue;
       const name = d.childForFieldName('name');
-      if (name) this.declare(name, 'var', scope);
+      if (name) {
+        this.declare(name, 'var', scope);
+      } else {
+        // Deconstruction declaration `var (a, b) = …;` — the declarator's name
+        // slot is a `tuple_pattern`; declare each identifier under it (reusing
+        // the foreach tuple-target logic).
+        const tuple = d.namedChildren.find((c) => c.type === 'tuple_pattern');
+        if (tuple) this.declareForeachTarget(tuple, scope);
+      }
     }
   }
 
@@ -290,6 +306,20 @@ export class CsharpHarvester extends ScopeTreeHarvester {
             const d = decl.namedChild(i);
             if (d?.type !== 'variable_declarator') continue;
             const name = d.childForFieldName('name');
+            if (!name) {
+              // Deconstruction declaration `var (a, b) = e;` — def each
+              // identifier in the `tuple_pattern`; the initializer is the
+              // declarator's non-pattern child.
+              const tuple = d.namedChildren.find((c) => c.type === 'tuple_pattern');
+              const tupleInit = d.namedChildren.find((c) => c.type !== 'tuple_pattern');
+              if (tuple) {
+                const snap = acc.defSnapshot();
+                this.defTupleTargets(tuple, acc);
+                if (tupleInit) this.registerResultDefs(tupleInit, acc.defsSince(snap));
+              }
+              if (tupleInit) this.walkValue(tupleInit, acc);
+              continue;
+            }
             // The initializer (if any) is the LAST named child after `name`.
             const init = this.declaratorInit(d);
             if (name && init) {
@@ -300,6 +330,13 @@ export class CsharpHarvester extends ScopeTreeHarvester {
             if (init) this.walkValue(init, acc);
           }
         }
+        return;
+      }
+      case 'declaration_expression': {
+        // `out var n` / `out int n` — the callee writes `n` (a must-def: C#
+        // requires an out parameter to be assigned before the method returns).
+        const name = node.childForFieldName('name');
+        if (name) this.def(name, acc);
         return;
       }
       case 'assignment_expression': {

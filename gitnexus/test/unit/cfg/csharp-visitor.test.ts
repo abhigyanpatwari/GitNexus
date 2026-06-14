@@ -360,6 +360,19 @@ describe('C# CfgVisitor — def/use harvest', () => {
     expect(hasDef(cfg, z)).toBe(true);
     expect(hasUse(cfg, z)).toBe(true);
   });
+
+  it('out var n records n as a callee-written def (#2195 P1)', () => {
+    const cfg = cs.cfgOf(`class C { void M(string s) { int.TryParse(s, out var n); use(n); } }`);
+    const n = bindingIdx(cfg, 'n');
+    expect(hasDef(cfg, n)).toBe(true);
+    expect(hasUse(cfg, n)).toBe(true);
+  });
+
+  it('var (a, b) = T() deconstruction declaration defines BOTH a and b (#2195 P1)', () => {
+    const cfg = cs.cfgOf(`class C { void M() { var (a, b) = T(); use(a); use(b); } }`);
+    expect(hasDef(cfg, bindingIdx(cfg, 'a'))).toBe(true);
+    expect(hasDef(cfg, bindingIdx(cfg, 'b'))).toBe(true);
+  });
 });
 
 describe('C# CfgVisitor — functionStartColumn', () => {
