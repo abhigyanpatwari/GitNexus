@@ -3967,6 +3967,7 @@ export class LocalBackend {
       return await this._traceImpl(repo, params);
     } catch (err: any) {
       return {
+        status: 'error',
         error: (err instanceof Error ? err.message : String(err)) || 'Trace analysis failed',
         from: { name: params.from },
         to: { name: params.to },

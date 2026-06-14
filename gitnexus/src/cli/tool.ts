@@ -318,6 +318,7 @@ export async function traceCommand(
     output(result);
   } catch (err: unknown) {
     output({
+      status: 'error',
       error:
         (err instanceof Error ? err.message : String(err)) || 'Trace analysis failed unexpectedly',
       from: { name: from },

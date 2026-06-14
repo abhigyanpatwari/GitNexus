@@ -408,6 +408,21 @@ describe('trace: BFS core', () => {
     expect(result.truncated).toBe(true);
   });
 
+  it('returns status:error with a suggestion when the BFS query throws', async () => {
+    (executeParameterized as any).mockImplementation((_db: string, _q: string, params: any) => {
+      if (params.frontierIds) throw new Error('boom: graph exploded');
+      if (params.symName === 'A') return [SYMBOL_A];
+      if (params.symName === 'B') return [SYMBOL_B];
+      return [];
+    });
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'B' });
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('boom');
+    expect(result.suggestion).toBeDefined();
+  });
+
   it('resolves from_uid/to_uid without name-based lookup', async () => {
     (executeParameterized as any).mockImplementation(
       (_db: string, query: string, params: any) => {
