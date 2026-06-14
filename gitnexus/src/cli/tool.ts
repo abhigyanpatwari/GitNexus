@@ -76,7 +76,8 @@ export async function queryCommand(
 
   const backend = await getBackend();
   const result = await backend.callTool('query', {
-    query: queryText,
+    // #2175: canonical param is search_query; the backend still accepts legacy "query".
+    search_query: queryText,
     task_context: options?.context,
     goal: options?.goal,
     limit: options?.limit ? parseInt(options.limit) : undefined,
@@ -204,7 +205,8 @@ export async function cypherCommand(
 
   const backend = await getBackend();
   const result = await backend.callTool('cypher', {
-    query,
+    // #2175: canonical param is statement; the backend still accepts legacy "query".
+    statement: query,
     repo: options?.repo,
     branch: options?.branch,
   });

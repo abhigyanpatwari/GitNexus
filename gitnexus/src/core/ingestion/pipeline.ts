@@ -32,6 +32,7 @@ import {
   crossFilePhase,
   scopeResolutionPhase,
   pruneLocalSymbolsPhase,
+  taintSummariesPhase,
   mroPhase,
   communitiesPhase,
   processesPhase,
@@ -82,6 +83,44 @@ export interface PipelineOptions {
    * programmatic / server path only, like the M1 caps.
    */
   pdgMaxReachingDefEdgesPerFunction?: number;
+  /**
+   * Per-function CDG (control-dependence) edge cap for the scope-resolution
+   * emit step (#2085 M5). `undefined` ⇒ `DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION`
+   * (5000); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the
+   * parse-cache chunk key; recorded resolved in `RepoMeta.pdg` so introducing
+   * CDG (an absent stamp key) forces a full writeback for pre-CDG `--pdg`
+   * indexes. No CLI flag — programmatic / server path only.
+   */
+  pdgMaxCdgEdgesPerFunction?: number;
+  /**
+   * Per-function taint findings cap for the scope-resolution taint pass
+   * (#2083 M3). `undefined` ⇒ `DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION`
+   * (200); `0` ⇒ no cap (unlimited). Emit-time-only — NOT folded into the
+   * parse-cache chunk key; recorded resolved in `RepoMeta.pdg` so a cap
+   * change forces a full writeback. No CLI flag or rc key (KTD8) —
+   * programmatic / server path only, like the other pdg caps.
+   */
+  pdgMaxTaintFindingsPerFunction?: number;
+  /**
+   * Per-finding taint hop cap (#2083 M3, KTD6 — bounds the persisted
+   * hop-encoded `reason`). `undefined` ⇒ `DEFAULT_PDG_MAX_TAINT_HOPS` (32);
+   * `0` ⇒ no cap (unlimited). Same emit-time-only / RepoMeta-stamped /
+   * no-CLI-flag discipline as `pdgMaxTaintFindingsPerFunction`.
+   */
+  pdgMaxTaintHops?: number;
+  /**
+   * Per-run cross-function findings cap (#2084 M4 review P1-3). `undefined` ⇒
+   * `DEFAULT_PDG_MAX_INTERPROC_FINDINGS` (2000); `0` ⇒ no cap. Consumed by the
+   * `taintSummaries` phase; RepoMeta-stamped, no CLI flag (KTD8) — same
+   * discipline as the per-function taint caps.
+   */
+  pdgMaxInterprocFindings?: number;
+  /** Per-finding cross-function hop cap (#2084 review P1-3). `undefined` ⇒
+   *  `DEFAULT_MAX_INTERPROC_HOPS` (32); `0` ⇒ no cap. */
+  pdgMaxInterprocHops?: number;
+  /** Per-run `TAINT_PATH` edge cap (#2084 review P1-3). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_INTERPROC_EDGES` (1000); `0` ⇒ no cap. */
+  pdgMaxInterprocEdges?: number;
   /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
@@ -207,6 +246,10 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(crossFilePhase)
       .register(scopeResolutionPhase)
       .register(pruneLocalSymbolsPhase)
+      // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
+      // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
+      // phase depends on it (a filtered-out dep would throw in getPhaseOutput).
+      .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })

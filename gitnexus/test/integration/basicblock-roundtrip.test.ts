@@ -4,11 +4,13 @@
  *
  * Exercises the real csv-generator → loadGraphToLbug → COPY → query path:
  *  - a BasicBlock node (id/filePath/startLine/endLine/text) round-trips
- *  - one edge of each new type (CFG/REACHING_DEF/TAINTED/SANITIZES/TAINT_PATH)
- *    between two BasicBlocks round-trips (asserts the new FROM/TO DDL pair +
- *    REL_TYPES load through bulk COPY)
+ *  - one edge of each new type (CFG/REACHING_DEF/TAINTED/SANITIZES/TAINT_PATH,
+ *    plus CDG/POST_DOMINATE from #2085 M5) between two BasicBlocks round-trips
+ *    (asserts the new FROM/TO DDL pair + REL_TYPES load through bulk COPY)
  *  - REACHING_DEF carries its `variable` in the existing `reason` column
  *    (M0/S1 storage decision) and a variable-filtered query returns it
+ *  - CDG carries its branch label ('T'|'F') in the same `reason` column
+ *    (#2085 M5) and a label-filtered query returns it
  *  - the DDL (BASICBLOCK_SCHEMA wired into NODE_SCHEMA_QUERIES) loads on a
  *    fresh DB — if BASICBLOCK_SCHEMA were not in SCHEMA_QUERIES, initLbug would
  *    never create the table and these COPYs would fail (F1 guard, end-to-end)
@@ -27,7 +29,15 @@ let dbPath: string;
 
 const BB1 = 'BasicBlock:src/a.ts:0';
 const BB2 = 'BasicBlock:src/a.ts:1';
-const NEW_EDGE_TYPES = ['CFG', 'REACHING_DEF', 'TAINTED', 'SANITIZES', 'TAINT_PATH'] as const;
+const NEW_EDGE_TYPES = [
+  'CFG',
+  'REACHING_DEF',
+  'TAINTED',
+  'SANITIZES',
+  'TAINT_PATH',
+  'CDG',
+  'POST_DOMINATE',
+] as const;
 
 beforeAll(async () => {
   tmpBase = path.join(os.tmpdir(), `gitnexus-bb-roundtrip-${Date.now()}-${process.pid}`);
@@ -65,7 +75,7 @@ beforeAll(async () => {
       sourceId: BB1,
       targetId: BB2,
       type,
-      reason: type === 'REACHING_DEF' ? 'x' : `${type.toLowerCase()}-edge`,
+      reason: type === 'REACHING_DEF' ? 'x' : type === 'CDG' ? 'T' : `${type.toLowerCase()}-edge`,
     })),
   );
 
@@ -146,6 +156,16 @@ describe('BasicBlock + taint/PDG edge round-trip (#2080)', () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const rows = await adapter.executeQuery(
       "MATCH (a:BasicBlock)-[r:CodeRelation {type: 'REACHING_DEF', reason: 'x'}]->(b:BasicBlock) RETURN a.id AS from, b.id AS to",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].from).toBe(BB1);
+    expect(rows[0].to).toBe(BB2);
+  });
+
+  it('CDG carries its branch label in reason and is queryable by it (#2085 M5)', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const rows = await adapter.executeQuery(
+      "MATCH (a:BasicBlock)-[r:CodeRelation {type: 'CDG', reason: 'T'}]->(b:BasicBlock) RETURN a.id AS from, b.id AS to",
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].from).toBe(BB1);

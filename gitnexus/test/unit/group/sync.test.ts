@@ -166,20 +166,19 @@ describe('syncGroup', () => {
     expect(result).toBeDefined();
   });
 
-  it('test_syncGroup_closes_only_opened_pools', async () => {
+  it('test_syncGroup_does_not_force_close_pools (release-not-close, #2191 review)', async () => {
+    // Post windowed-resolution refactor, syncGroup releases its eviction leases
+    // and lets the pool's LRU reclaim repos — it does NOT call closeLbug. This
+    // avoids tearing down a pool entry a concurrent MCP reader may share.
     const config = makeConfig({
       'app/backend': 'backend-repo',
       'app/frontend': 'frontend-repo',
     });
 
-    const closedIds: string[] = [];
-
     const { vi } = await import('vitest');
     const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
     const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
-    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockImplementation(async (id?: string) => {
-      if (id) closedIds.push(id);
-    });
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
 
     try {
       await syncGroup(config, {
@@ -192,19 +191,8 @@ describe('syncGroup', () => {
         skipWrite: true,
       }).catch(() => {});
 
-      // closeLbug must have been called at least once with specific pool ids
-      expect(closeSpy.mock.calls.length).toBeGreaterThan(0);
-      expect(closedIds).toContain('app-backend');
-      expect(closedIds).toContain('app-frontend');
-
-      // Every call must have a truthy string id
-      for (const id of closedIds) {
-        expect(id).toBeTruthy();
-        expect(typeof id).toBe('string');
-      }
-      // No blanket close (no-arg or empty-string or undefined)
-      const blanketCalls = closeSpy.mock.calls.filter((args) => args.length === 0 || !args[0]);
-      expect(blanketCalls).toHaveLength(0);
+      // No closeLbug — repos are left evictable for the LRU to reclaim.
+      expect(closeSpy.mock.calls.length).toBe(0);
     } finally {
       initSpy.mockRestore();
       closeSpy.mockRestore();
@@ -534,7 +522,9 @@ service OrderService {
         },
       });
       expect(initSpy).toHaveBeenCalledWith('billing-repo', path.join(storageDir, 'lbug'));
-      expect(closeSpy).toHaveBeenCalledWith('billing-repo');
+      // syncGroup no longer force-closes pools (release-not-close, #2191 review);
+      // repos are left evictable for the LRU. Assert no teardown call here.
+      expect(closeSpy).not.toHaveBeenCalled();
     } finally {
       initSpy.mockRestore();
       closeSpy.mockRestore();
@@ -1044,18 +1034,20 @@ service OrderService {
         skipWrite: true,
       });
 
-      // Manifest symbol resolution must run while pools are still open
+      // Manifest symbol resolution runs against live (leased) pools.
       expect(manifestResolvedWhilePoolOpen).toBe(true);
-      expect(closeLbugCalled).toBe(true);
 
       // The manifest cross-link must use the real UID from the DB, not synthetic
+      // — the #2189 fix, now via windowed resolution (the svc/orders↔svc/payments
+      // link forms one window whose repos are re-inited + leased for resolution).
       const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
       expect(manifestLinks).toHaveLength(1);
       expect(manifestLinks[0].to.symbolUid).toBe('real-uid-checkout');
       expect(manifestLinks[0].to.symbolUid).not.toContain('manifest::');
 
-      // closeLbug must fire exactly twice (one per repo)
-      expect(closeSpy).toHaveBeenCalledTimes(2);
+      // syncGroup no longer force-closes pools (release-not-close, #2191 review).
+      expect(closeLbugCalled).toBe(false);
+      expect(closeSpy).not.toHaveBeenCalled();
     } finally {
       initSpy.mockRestore();
       closeSpy.mockRestore();
@@ -1102,6 +1094,198 @@ service OrderService {
     expect(manifestLinks).toHaveLength(1);
     expect(manifestLinks[0].from.symbolUid).toBe('manifest::svc/orders::http::GET::/api/checkout');
     expect(manifestLinks[0].to.symbolUid).toBe('manifest::svc/payments::http::GET::/api/checkout');
+  });
+});
+
+// Lifecycle wiring for issue #2189: syncGroup must pin every repo it
+// initializes (so a group larger than MAX_POOL_SIZE survives deferred
+// manifest/workspace resolution) and release those pins on completion AND on
+// error. The eviction-survival MECHANISM itself is proven against real
+// evictLRU in test/unit/lbug-pool-pinning.test.ts; these tests prove the sync
+// loop drives that mechanism correctly. (A full end-to-end proof through the
+// real pool — real symbolUid instead of synthetic after >5 repos — would
+// require a real or fully-native-mocked LadybugDB stack; mechanism + wiring
+// coverage stands in for it here.)
+describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)', () => {
+  const groupConfig = (count: number, links: GroupManifestLink[] = []): GroupConfig => {
+    const repos: Record<string, string> = {};
+    for (let i = 1; i <= count; i++) repos[`app/repo-${i}`] = `repo-${i}`;
+    return {
+      version: 1,
+      name: 'test',
+      description: '',
+      repos,
+      links,
+      packages: {},
+      detect: {
+        http: true,
+        grpc: false,
+        thrift: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+        workspace_deps: false,
+      },
+      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    };
+  };
+
+  const okHandle = async (_name: string, groupPath: string): Promise<RepoHandle> => ({
+    id: groupPath.replace(/\//g, '-'),
+    path: groupPath,
+    repoPath: '/tmp/' + groupPath,
+    storagePath: '/tmp/' + groupPath + '/.gitnexus',
+  });
+
+  const httpLink = (from: string, to: string): GroupManifestLink => ({
+    from,
+    to,
+    type: 'http',
+    contract: 'GET::/api/x',
+    role: 'consumer',
+  });
+
+  // pinRepo now returns a release disposer; the spy returns a tracked spy fn so
+  // tests can assert every acquired lease was released.
+  const setupPoolSpies = async () => {
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const releaseSpies: Array<ReturnType<typeof vi.fn>> = [];
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {
+      const release = vi.fn();
+      releaseSpies.push(release);
+      return release;
+    });
+    const restore = () => {
+      initSpy.mockRestore();
+      execSpy.mockRestore();
+      pinSpy.mockRestore();
+    };
+    return { releaseSpies, initSpy, execSpy, pinSpy, restore };
+  };
+
+  it('pins only the repos referenced by manifest links, not the whole group', async () => {
+    const { pinSpy, restore } = await setupPoolSpies();
+    try {
+      await syncGroup(groupConfig(8, [httpLink('app/repo-1', 'app/repo-2')]), {
+        resolveRepoHandle: okHandle,
+        skipWrite: true,
+      });
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]).sort();
+      // Only the windowed (link-referenced) repos are leased — bounded residency,
+      // not the whole 8-repo group.
+      expect(pinnedIds).toEqual(['app-repo-1', 'app-repo-2']);
+      expect(pinnedIds).not.toContain('app-repo-3');
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not pin during the init loop when there are no manifest links', async () => {
+    const { pinSpy, restore } = await setupPoolSpies();
+    try {
+      await syncGroup(groupConfig(8, []), { resolveRepoHandle: okHandle, skipWrite: true });
+      // The init loop extracts contracts without pinning; with no links there
+      // are no resolution windows, so nothing is ever pinned.
+      expect(pinSpy.mock.calls.length).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('releases every window lease on successful completion', async () => {
+    const { releaseSpies, restore } = await setupPoolSpies();
+    try {
+      await syncGroup(
+        groupConfig(8, [
+          httpLink('app/repo-1', 'app/repo-2'),
+          httpLink('app/repo-7', 'app/repo-8'),
+        ]),
+        { resolveRepoHandle: okHandle, skipWrite: true },
+      );
+      expect(releaseSpies.length).toBeGreaterThan(0);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('releases the window leases even when resolution throws mid-window', async () => {
+    const { ManifestExtractor } =
+      await import('../../../src/core/group/extractors/manifest-extractor.js');
+    const { releaseSpies, restore } = await setupPoolSpies();
+    const manifestSpy = vi
+      .spyOn(ManifestExtractor.prototype, 'extractFromManifest')
+      .mockRejectedValue(new Error('resolution boom'));
+    try {
+      await expect(
+        syncGroup(groupConfig(8, [httpLink('app/repo-1', 'app/repo-2')]), {
+          resolveRepoHandle: okHandle,
+          skipWrite: true,
+        }),
+      ).rejects.toThrow('resolution boom');
+      // The window's finally released its acquired leases despite the throw.
+      expect(releaseSpies.length).toBeGreaterThan(0);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalled();
+    } finally {
+      restore();
+      manifestSpy.mockRestore();
+    }
+  });
+
+  it('does not pin a repo that fails to resolve (no pool handle)', async () => {
+    const { pinSpy, restore } = await setupPoolSpies();
+    try {
+      await syncGroup(groupConfig(3, [httpLink('app/repo-1', 'app/repo-2')]), {
+        resolveRepoHandle: async (_name, groupPath) =>
+          groupPath === 'app/repo-2' ? null : okHandle(_name, groupPath),
+        skipWrite: true,
+      });
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]);
+      // repo-2 has no handle (resolve returned null) → not in knownRepos →
+      // never windowed, never leased; repo-1 (resolved) is.
+      expect(pinnedIds).toContain('app-repo-1');
+      expect(pinnedIds).not.toContain('app-repo-2');
+    } finally {
+      restore();
+    }
+  });
+
+  it('releases an already-acquired lease when a later init in the same window throws', async () => {
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const releaseSpies: Array<ReturnType<typeof vi.fn>> = [];
+    // Throw on the SECOND init of app-repo-2 — the first is the init-loop
+    // extraction; the second is the window re-init. This isolates the failure
+    // to window setup, after app-repo-1's lease was already acquired.
+    const initCounts = new Map<string, number>();
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockImplementation(async (id: string) => {
+      const n = (initCounts.get(id) ?? 0) + 1;
+      initCounts.set(id, n);
+      if (id === 'app-repo-2' && n === 2) throw new Error('window init boom');
+    });
+    const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {
+      const release = vi.fn();
+      releaseSpies.push(release);
+      return release;
+    });
+    try {
+      await expect(
+        syncGroup(groupConfig(2, [httpLink('app/repo-1', 'app/repo-2')]), {
+          resolveRepoHandle: okHandle,
+          skipWrite: true,
+        }),
+      ).rejects.toThrow('window init boom');
+      // Exactly one lease was acquired (app-repo-1) before app-repo-2's init
+      // threw, and the window finally released it — no leaked lease.
+      expect(releaseSpies.length).toBe(1);
+      expect(releaseSpies[0]).toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      execSpy.mockRestore();
+      pinSpy.mockRestore();
+    }
   });
 });
 

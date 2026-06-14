@@ -47,6 +47,7 @@ const COMMAND_DESCRIPTION_KEYS = {
 
 const OPTION_DESCRIPTION_KEYS = {
   '|-V, --version': 'help.option.version',
+  'setup|-c, --coding-agent <agents>': 'help.option.setup.codingAgent',
   'ci-setup|--ci <system>': 'help.option.ciSetup.ci',
   'ci-setup|--deploy <target>': 'help.option.ciSetup.deploy',
   'ci-setup|--port <port>': 'help.option.ciSetup.port',
@@ -79,6 +80,10 @@ const OPTION_DESCRIPTION_KEYS = {
   'analyze|--embedding-device <device>': 'help.option.analyze.embeddingDevice',
   'index|-f, --force': 'help.option.index.force',
   'index|--allow-non-git': 'help.option.index.allowNonGit',
+  'mcp|--http': 'help.option.mcp.http',
+  'mcp|-p, --port <port>': 'help.option.port',
+  'mcp|--host <host>': 'help.option.mcp.host',
+  'mcp|--auth-token <token>': 'help.option.mcp.authToken',
   'serve|-p, --port <port>': 'help.option.port',
   'serve|--host <host>': 'help.option.serve.host',
   'uninstall|-f, --force': 'help.option.uninstall.force',

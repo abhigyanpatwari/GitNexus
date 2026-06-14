@@ -17,7 +17,7 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 
 ```
 1. impact({target: "X", direction: "upstream"})  → Map all dependents
-2. query({query: "X"})                            → Find execution flows involving X
+2. query({search_query: "X"})                            → Find execution flows involving X
 3. context({name: "X"})                           → See all incoming/outgoing refs
 4. Plan update order: interfaces → implementations → callers → tests
 ```

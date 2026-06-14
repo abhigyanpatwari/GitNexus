@@ -54,8 +54,48 @@ import {
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
-import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from '../tools.js';
+import {
+  LIST_REPOS_DEFAULT_LIMIT,
+  LIST_REPOS_MAX_LIMIT,
+  EXPLAIN_DEFAULT_LIMIT,
+  EXPLAIN_MAX_LIMIT,
+  PDG_QUERY_DEFAULT_LIMIT,
+  PDG_QUERY_MAX_LIMIT,
+} from '../tools.js';
 import { findImportCycles } from '../../core/graph/import-cycles.js';
+import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
+import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
+
+/** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
+ *  excluding the empty entry and the `/index.*` forms — used to decide whether
+ *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
+const SOURCE_FILE_EXTENSIONS: readonly string[] = EXTENSIONS.filter(
+  (e) => e.startsWith('.') && !e.includes('/'),
+);
+/** A target is path-ish if it has a path separator or ends in a known source
+ *  extension. A bare dotted symbol (`UserController.create`) is NOT path-ish. */
+function looksLikeFilePath(target: string): boolean {
+  if (/[\\/]/.test(target)) return true;
+  const lower = target.toLowerCase();
+  return SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/**
+ * Resolve a string tool param from its canonical name or legacy alias (#2175).
+ * Returns the first NON-BLANK string of [canonical, legacy] — the canonical (new)
+ * name is preferred when it carries a real value, otherwise the legacy value is used.
+ * A blank/whitespace new value therefore does NOT clobber a valid legacy value (e.g. a
+ * gradually-migrating client that always emits the new key, blank when unset). A
+ * non-string value (the MCP envelope is not schema-validated, so clients can send any
+ * JSON type) and an all-blank input resolve to `undefined`, so the caller returns a
+ * friendly required-param error instead of throwing `TypeError` on `.trim()`.
+ */
+function resolveAliasString(canonical: unknown, legacy: unknown): string | undefined {
+  for (const value of [canonical, legacy]) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1221,6 +1261,16 @@ export class LocalBackend {
     }
 
     const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+
+    // #2175: Claude Code drops a tool-call argument named exactly "query", so the
+    // query/cypher tools advertise "search_query"/"statement" while still accepting the
+    // legacy "query" key for backward compat. The alias is resolved with `?? ` (new name
+    // wins) at every consumer site rather than by mutating params here, so precedence is
+    // uniform and there is no hidden mutation: query()/cypher() read it directly, the
+    // legacy "search" alias routes through query(), and the cross-repo group-forward
+    // resolves it self-contained in callToolAtGroupRepo. This is permanent compatibility
+    // — third-party MCP clients may legitimately send "query", so the alias is not slated
+    // for removal even if Claude Code's argument handling later changes.
     if (
       (method === 'impact' || method === 'query' || method === 'context') &&
       typeof p.repo === 'string' &&
@@ -1243,6 +1293,10 @@ export class LocalBackend {
       }
       case 'context':
         return this.context(repo, params);
+      case 'explain':
+        return this.explain(repo, params);
+      case 'pdg_query':
+        return this.pdgQuery(repo, params);
       case 'impact':
         return this.impact(repo, params);
       case 'detect_changes':
@@ -1322,7 +1376,8 @@ export class LocalBackend {
   private async query(
     repo: RepoHandle,
     params: {
-      query: string;
+      query?: string;
+      search_query?: string;
       task_context?: string;
       goal?: string;
       limit?: number;
@@ -1330,8 +1385,12 @@ export class LocalBackend {
       include_content?: boolean;
     },
   ): Promise<any> {
-    if (!params.query?.trim()) {
-      return { error: 'query parameter is required and cannot be empty.' };
+    // #2175: each consumer resolves the search_query/query alias itself (there is no
+    // chokepoint mutation in callTool). This also serves the GroupService port, which
+    // reaches query() carrying only the legacy `query` key.
+    const rawQuery = resolveAliasString(params.search_query, params.query);
+    if (!rawQuery?.trim()) {
+      return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
     }
 
     await this.ensureInitialized(repo);
@@ -1339,7 +1398,7 @@ export class LocalBackend {
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
-    const searchQuery = params.query.trim();
+    const searchQuery = rawQuery.trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
     // observable sub-step of the search pipeline so production latency can
@@ -1909,7 +1968,9 @@ export class LocalBackend {
 
   private async cypher(
     repo: RepoHandle,
-    request: { query: string; params?: Record<string, unknown> },
+    // #2175: "statement" is the advertised param; "query" is the legacy alias,
+    // still accepted (and the field the internal executeCypher() passes). New wins.
+    request: { query?: string; statement?: string; params?: Record<string, unknown> },
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
@@ -1922,8 +1983,15 @@ export class LocalBackend {
       };
     }
 
+    const cypherText = resolveAliasString(request.statement, request.query) ?? '';
+    if (!cypherText.trim()) {
+      // Mirror query()'s friendly required-param error instead of letting an empty
+      // string fall through to a raw LadybugDB prepare error (#2175 review).
+      return { error: 'statement (or legacy query) parameter is required and cannot be empty.' };
+    }
+
     try {
-      const result = await executeParameterized(repo.lbugPath, request.query, request.params ?? {});
+      const result = await executeParameterized(repo.lbugPath, cypherText, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
@@ -2727,6 +2795,598 @@ export class LocalBackend {
         step_index: r.step || r[2],
         step_count: r.stepCount || r[3],
       })),
+    };
+  }
+
+  /**
+   * Resolve a `target` (file path OR symbol/function name) into a BasicBlock
+   * SOURCE-block anchor, shared by `explain` (TAINTED) and `pdg_query`
+   * (CDG/REACHING_DEF) — both reconstruct the symbol↔block join the same way
+   * (there is no Function→BasicBlock edge). #2188 review: extracted from two
+   * near-identical copies that had DRIFTED — `_explainImpl` used a 0-based,
+   * un-widened span window that dropped a function's final-line block and could
+   * leak a neighbor's line-above block; this single resolver applies the correct
+   * `[symStart+1, symEnd+1]` window (1-based BasicBlock startLine vs 0-based
+   * symbol span) to BOTH callers.
+   *
+   * Returns a BARE `anchorClause` (no leading `AND`) so each caller composes its
+   * own `WHERE`; `early` carries the not-found/ambiguous payload (caller returns
+   * it verbatim). `target` / symbol names flow only through `queryParams` bind
+   * params — never interpolated into Cypher.
+   */
+  private async resolveBlockAnchor(
+    repo: RepoHandle,
+    target: string,
+    toolName: 'explain' | 'pdg_query',
+  ): Promise<{
+    anchorClause: string;
+    queryParams: Record<string, unknown>;
+    anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
+    early?: Record<string, unknown>;
+  }> {
+    if (looksLikeFilePath(target)) {
+      return {
+        anchorClause:
+          '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)',
+        queryParams: {
+          idPrefix: `BasicBlock:${target}:`,
+          targetPath: target,
+          targetSuffix: `/${target}`,
+        },
+        anchor: { file: target },
+      };
+    }
+    const outcome = await this.resolveSymbolCandidates(repo, { name: target }, {});
+    if (outcome.kind === 'not_found') {
+      return {
+        anchorClause: '',
+        queryParams: {},
+        anchor: { file: '' },
+        early: { error: `Symbol '${target}' not found` },
+      };
+    }
+    if (outcome.kind === 'ambiguous') {
+      return {
+        anchorClause: '',
+        queryParams: {},
+        anchor: { file: '' },
+        early: {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call ${toolName} with the file path, or disambiguate via context() first.`,
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        },
+      };
+    }
+    const sym = outcome.symbol;
+    const idPrefix = `BasicBlock:${sym.filePath}:`;
+    if (
+      typeof sym.startLine === 'number' &&
+      typeof sym.endLine === 'number' &&
+      sym.endLine >= sym.startLine
+    ) {
+      // BasicBlock startLine is 1-based; the symbol span is 0-based. Shift BOTH
+      // bounds +1 so the window is the function's true block span: the lower +1
+      // excludes a neighbor's block on the line directly above, the upper +1
+      // keeps a guard/def/use on the final line (#2188 review).
+      return {
+        anchorClause:
+          'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
+        queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+        anchor: {
+          file: sym.filePath,
+          symbol: sym.name,
+          startLine: sym.startLine,
+          endLine: sym.endLine,
+        },
+      };
+    }
+    // No usable span — degrade to the file-level filter (documented).
+    return {
+      anchorClause: 'a.id STARTS WITH $idPrefix',
+      queryParams: { idPrefix },
+      anchor: { file: sym.filePath, symbol: sym.name },
+    };
+  }
+
+  /**
+   * Explain tool (#2083 M3 U6) — persisted taint-finding explanation.
+   * WAL-aware wrapper mirroring `context`.
+   */
+  private async explain(
+    repo: RepoHandle,
+    params: { target?: string; limit?: number },
+  ): Promise<any> {
+    try {
+      return await this._explainImpl(repo, params);
+    } catch (err: any) {
+      const msg = (err instanceof Error ? err.message : String(err)) || 'Explain query failed';
+      if (isWalCorruptionError(err)) {
+        return {
+          error: msg,
+          recoverySuggestion: WAL_RECOVERY_SUGGESTION,
+        };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Taint findings are persisted as `TAINTED` rows in CodeRelation whose
+   * endpoints are BOTH BasicBlock nodes — the label anchor restricts every
+   * query here to the BasicBlock→BasicBlock partition of the rel table
+   * (which holds only the sparse, per-function-capped pdg layers), never a
+   * global symbol-space scan (the S1 verdict; LadybugDB has no rel-property
+   * index, so the label anchor IS the bound).
+   *
+   * Anchoring granularity:
+   * - file target → BasicBlock id prefix (`BasicBlock:<filePath>:` — the
+   *   shared `basicBlockId` template) with an exact-or-suffix path match so
+   *   `vuln.ts` finds `src/vuln.ts`.
+   * - symbol target → resolved via `resolveSymbolCandidates` (the context()
+   *   path: ambiguous ⇒ ranked candidates, unknown ⇒ not-found), then the
+   *   file id-prefix PLUS source-block startLine within the symbol's
+   *   [startLine, endLine] span. Findings are intra-procedural, so filtering
+   *   the SOURCE endpoint is sufficient — both endpoints share the function.
+   *   Symbols without a line span degrade to the file-level filter.
+   *
+   * The per-finding `sinkKind` and hop path decode from the persisted
+   * `reason` via the SHARED `taint/path-codec.ts` (the U4 write path encodes
+   * with the same module — `;<kind>` header + ordered `variable:line` hops).
+   */
+  private async _explainImpl(
+    repo: RepoHandle,
+    params: { target?: string; limit?: number },
+  ): Promise<any> {
+    await this.ensureInitialized(repo);
+
+    const rawLimit = params.limit ?? EXPLAIN_DEFAULT_LIMIT;
+    if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > EXPLAIN_MAX_LIMIT) {
+      return {
+        error: `Invalid "limit": expected an integer in [1, ${EXPLAIN_MAX_LIMIT}], got ${JSON.stringify(params.limit)}.`,
+      };
+    }
+    const limit = rawLimit;
+
+    const NO_TAINT_NOTE =
+      'no taint layer — run gitnexus analyze --pdg to record taint findings for this repo';
+
+    // Cheap meta probe: the TAINT layer exists iff the pdg stamp carries a
+    // `taintModelVersion` (the field M3 added). An M1/M2-era `--pdg` index has
+    // `meta.pdg` defined but no taintModelVersion — BasicBlock/REACHING_DEF
+    // exist, zero TAINTED rows do — so it must surface the no-taint-layer hint,
+    // not the generic "analyzed, nothing found" note. An unreadable meta (e.g.
+    // a seeded test DB) falls through to the row-existence probe below.
+    let pdgStamped: boolean | undefined;
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      if (meta) pdgStamped = meta.pdg?.taintModelVersion !== undefined;
+    } catch {
+      /* meta unreadable — decide from the DB below */
+    }
+    if (pdgStamped === false) {
+      return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
+    }
+
+    // Resolve the optional anchor into a WHERE clause on the SOURCE block.
+    const target = typeof params.target === 'string' ? params.target.trim() : '';
+    let anchorClause = '';
+    let queryParams: Record<string, unknown> = {};
+    let anchor: { file: string; symbol?: string; startLine?: number; endLine?: number } | undefined;
+
+    // Bounded by construction: the BasicBlock→BasicBlock partition holds only
+    // the sparse pdg layers, TAINTED rows are per-function-capped at analyze
+    // time, and the page is LIMIT-bounded (the limit is a validated integer —
+    // interpolated because LadybugDB does not parameterize LIMIT).
+    const runAnchoredQuery = async (): Promise<{ rows: unknown[]; totalFindings: number }> => {
+      const matchClause = `
+      MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+      WHERE r.type = 'TAINTED'${anchorClause ? ` AND ${anchorClause}` : ''}`;
+      const [qRows, countRows] = await Promise.all([
+        executeParameterized(
+          repo.lbugPath,
+          `${matchClause}
+      RETURN a.id AS sourceBlockId, a.filePath AS file, a.startLine AS sourceStart,
+             b.startLine AS sinkStart, r.reason AS reason, b.id AS sinkBlockId
+      ORDER BY sourceBlockId, sinkBlockId, reason
+      LIMIT ${limit}`,
+          queryParams,
+        ),
+        executeParameterized(
+          repo.lbugPath,
+          `${matchClause}
+      RETURN COUNT(*) AS total`,
+          queryParams,
+        ),
+      ]);
+      return {
+        rows: qRows,
+        totalFindings: Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0),
+      };
+    };
+
+    if (target) {
+      // Shared symbol↔block anchor resolver (#2188): file id-prefix OR symbol
+      // span, with the corrected [symStart+1, symEnd+1] window. A bare/dotted
+      // symbol name resolves as a symbol rather than silently file-anchoring.
+      const resolved = await this.resolveBlockAnchor(repo, target, 'explain');
+      if (resolved.early) return resolved.early;
+      anchorClause = resolved.anchorClause;
+      queryParams = resolved.queryParams;
+      anchor = resolved.anchor;
+    }
+
+    const { rows, totalFindings } = await runAnchoredQuery();
+
+    // M4 (#2084 U7): cross-function findings ride TAINT_PATH edges (Function/
+    // Method → Function/Method), separate from the intra-procedural TAINTED
+    // BasicBlock rows above. Enumerate them too so `explain` is the discovery
+    // surface for interprocedural flows (TAINT_PATH stays out of
+    // VALID_RELATION_TYPES + the web schema, like TAINTED). File-anchored:
+    // filter on the source function's file; symbol-anchored: either endpoint
+    // matches the symbol name; anchorless: all (bounded by LIMIT). Computed
+    // BEFORE the no-taint early returns — a repo with ONLY cross-function
+    // findings (no intra-procedural TAINTED rows) must not look empty.
+    const runInterprocQuery = async (): Promise<{ findings: any[]; total: number }> => {
+      const where: string[] = [`r.type = 'TAINT_PATH'`];
+      const p: Record<string, unknown> = {};
+      if (anchor?.symbol) {
+        where.push('(a.name = $ipSym OR b.name = $ipSym)');
+        p.ipSym = anchor.symbol;
+      } else if (anchor?.file) {
+        // Match EITHER endpoint's file — a cross-function flow anchored on the
+        // SINK's file (b) is as relevant as one anchored on the source's (a).
+        where.push(
+          '(a.filePath = $ipFile OR a.filePath ENDS WITH $ipSuffix OR ' +
+            'b.filePath = $ipFile OR b.filePath ENDS WITH $ipSuffix)',
+        );
+        p.ipFile = anchor.file;
+        p.ipSuffix = `/${anchor.file}`;
+      }
+      const matchClause = `MATCH (a)-[r:CodeRelation]->(b)\n      WHERE ${where.join(' AND ')}`;
+      // Page query + a separate COUNT (#2084 review P2-4): the page is
+      // LIMIT-capped, so its row count cannot stand in for the true total —
+      // run a COUNT with the same WHERE (no LIMIT) like the intra layer does.
+      const [ipRows, ipCountRows] = await Promise.all([
+        executeParameterized(
+          repo.lbugPath,
+          `${matchClause}
+      RETURN a.filePath AS file, a.name AS sourceFn, a.startLine AS sourceLine,
+             b.name AS sinkFn, b.startLine AS sinkLine, r.reason AS reason
+      ORDER BY sourceFn, sinkFn, reason
+      LIMIT ${limit}`,
+          p,
+        ),
+        executeParameterized(repo.lbugPath, `${matchClause}\n      RETURN COUNT(*) AS total`, p),
+      ]);
+      const total = Number((ipCountRows[0] as any)?.total ?? (ipCountRows[0] as any)?.[0] ?? 0);
+      const findings = ipRows.map((r: any) => {
+        const decoded = decodeTaintPath(r.reason ?? r[5]);
+        const hops = decoded.ok
+          ? decoded.hops.map((h) => ({ function: h.variable, line: h.line }))
+          : [];
+        return {
+          interprocedural: true,
+          file: String(r.file ?? r[0] ?? ''),
+          sinkKind: decoded.ok ? (decoded.kind ?? 'unknown') : 'unknown',
+          source: { function: String(r.sourceFn ?? r[1] ?? ''), line: r.sourceLine ?? r[2] },
+          sink: { function: String(r.sinkFn ?? r[3] ?? ''), line: r.sinkLine ?? r[4] },
+          hops,
+          ...(decoded.ok && decoded.truncated ? { pathIncomplete: true } : {}),
+        };
+      });
+      return { findings, total };
+    };
+    const { findings: interprocFindings, total: interprocTotal } = await runInterprocQuery();
+
+    if (
+      totalFindings === 0 &&
+      interprocFindings.length === 0 &&
+      pdgStamped === undefined &&
+      !target
+    ) {
+      // Meta was unreadable and the repo-wide enumerate (both layers) found
+      // nothing — the counts above WERE the existence probe; surface the hint.
+      return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
+    }
+    if (
+      totalFindings === 0 &&
+      interprocFindings.length === 0 &&
+      pdgStamped === undefined &&
+      target
+    ) {
+      // Anchored miss with unreadable meta: one extra bounded probe decides
+      // "no findings for this anchor" vs "no taint layer at all". Probe BOTH
+      // intra (TAINTED) and inter (TAINT_PATH) existence.
+      const probe = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock) WHERE r.type = 'TAINTED' RETURN r.reason AS reason LIMIT 1`,
+        {},
+      );
+      const ipProbe =
+        probe.length === 0
+          ? await executeParameterized(
+              repo.lbugPath,
+              `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type = 'TAINT_PATH' RETURN r.reason AS reason LIMIT 1`,
+              {},
+            )
+          : [];
+      if (probe.length === 0 && ipProbe.length === 0) {
+        return { findings: [], totalFindings: 0, note: NO_TAINT_NOTE };
+      }
+    }
+
+    const findings = rows.map((r: any) => {
+      const sourceBlockId = String(r.sourceBlockId ?? r[0] ?? '');
+      const file = String(r.file ?? r[1] ?? '');
+      const sourceStart = (r.sourceStart ?? r[2]) as number | undefined;
+      const sinkStart = (r.sinkStart ?? r[3]) as number | undefined;
+      const reason = r.reason ?? r[4];
+      // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` —
+      // split from the RIGHT (the filePath may itself contain ':').
+      const idParts = sourceBlockId.split(':');
+      const fnLine = Number(idParts[idParts.length - 3]);
+      const decoded = decodeTaintPath(reason);
+      if (!decoded.ok) {
+        // Unreadable reason (foreign/corrupt row): surface the finding's
+        // existence with its block anchors, never throw.
+        return {
+          file,
+          ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+          sinkKind: 'unknown',
+          source: { line: sourceStart },
+          sink: { line: sinkStart },
+          hops: [],
+          pathIncomplete: true,
+        };
+      }
+      const hops = decoded.hops.map((h) => ({
+        variable: h.variable,
+        line: h.line,
+        ...(h.viaCall ? { viaCall: true } : {}),
+      }));
+      const first = hops[0];
+      const last = hops[hops.length - 1];
+      return {
+        file,
+        ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+        sinkKind: decoded.kind ?? 'unknown',
+        source: first ? { variable: first.variable, line: first.line } : { line: sourceStart },
+        sink: { line: last?.line ?? sinkStart },
+        hops,
+        ...(decoded.truncated ? { pathIncomplete: true } : {}),
+      };
+    });
+
+    // Combine both layers and re-apply the page LIMIT to the union — each
+    // layer was queried with its own LIMIT, so the union can hold up to 2×;
+    // cap it so `findings.length` honours the caller's `limit`. `truncated`
+    // reflects EITHER layer overflowing OR the union being trimmed here, and
+    // `totalFindings` counts both layers' matched rows (the intra COUNT plus
+    // the interproc rows returned — interproc has no separate COUNT, so a
+    // capped interproc layer is reflected via `truncated`, never undercounted
+    // into a false "complete" signal). Review: code-review #2/#4 (explain
+    // accounting + sink-file anchoring) — both layers now accounted.
+    const combined = [...findings, ...interprocFindings];
+    const pageFindings = combined.length > limit ? combined.slice(0, limit) : combined;
+    // Truncated iff EITHER layer overflowed its own LIMIT (strict `>` — exactly
+    // `limit` rows is not truncated), OR the combined union was trimmed to the
+    // page (#2084 review P2-4). `totalFindings` uses the interproc COUNT, not
+    // the capped slice length, so it never undercounts.
+    const truncated =
+      totalFindings > findings.length ||
+      interprocTotal > interprocFindings.length ||
+      combined.length > pageFindings.length;
+
+    return {
+      ...(anchor ? { anchor } : {}),
+      findings: pageFindings,
+      totalFindings: totalFindings + interprocTotal,
+      ...(truncated ? { truncated: true } : {}),
+      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
+    };
+  }
+
+  private async pdgQuery(
+    repo: RepoHandle,
+    params: { mode?: string; target?: string; variable?: string; limit?: number },
+  ): Promise<any> {
+    try {
+      return await this._pdgQueryImpl(repo, params);
+    } catch (err: any) {
+      const msg = (err instanceof Error ? err.message : String(err)) || 'pdg_query failed';
+      if (isWalCorruptionError(err)) {
+        return { error: msg, recoverySuggestion: WAL_RECOVERY_SUGGESTION };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Query the persisted PDG (#2086 M6) — the control/data-dependence analog of
+   * `explain`. `controls` reads CDG ("under what condition does X run?", branch
+   * sense 'T'|'F' in `reason`); `flows` reads REACHING_DEF (def→use, variable
+   * name in `reason`). Intra-procedural, basic-block granular.
+   *
+   * Bounded by construction: the BasicBlock→BasicBlock partition holds only the
+   * sparse, per-function-capped pdg layers, the query is anchored to one file/
+   * symbol, and the page is LIMIT-bounded (validated integer, interpolated
+   * because LadybugDB does not parameterize LIMIT). LadybugDB has no rel-
+   * property index, so the anchor IS the bound — there is no anchorless mode.
+   *
+   * Symbol↔block join: there is no Function→BasicBlock edge; the SOURCE block
+   * (`a` — controller for CDG, def for REACHING_DEF) is filtered by the
+   * BasicBlock id-prefix (`basicBlockId` template) plus its `startLine` within
+   * the symbol's span. BasicBlock `startLine` is 1-based while symbol-node
+   * `startLine`/`endLine` are 0-based, so BOTH bounds are shifted +1
+   * (`[symStart+1, symEnd+1]`) onto the block basis: the upper +1 keeps a
+   * guard/def/use on the function's final line, and the lower +1 excludes an
+   * adjacent function's block on the line directly above (#2188 review). Both
+   * endpoints share the function (intra-procedural), so filtering the source
+   * endpoint suffices.
+   */
+  private async _pdgQueryImpl(
+    repo: RepoHandle,
+    params: { mode?: string; target?: string; variable?: string; limit?: number } = {},
+  ): Promise<any> {
+    await this.ensureInitialized(repo);
+
+    // Mode validation — the JSON-schema enum is advisory for MCP clients, so
+    // the backend enforces it (an unhandled mode would otherwise fall through).
+    const mode = params.mode;
+    if (mode !== 'controls' && mode !== 'flows') {
+      return {
+        error: `Invalid "mode": expected "controls" or "flows", got ${JSON.stringify(params.mode)}.`,
+      };
+    }
+
+    const rawLimit = params.limit ?? PDG_QUERY_DEFAULT_LIMIT;
+    if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > PDG_QUERY_MAX_LIMIT) {
+      return {
+        error: `Invalid "limit": expected an integer in [1, ${PDG_QUERY_MAX_LIMIT}], got ${JSON.stringify(params.limit)}.`,
+      };
+    }
+    const limit = rawLimit;
+
+    // PDG queries are always anchored (no rel-property index ⇒ an unanchored
+    // basic-block path scan is unbounded). `target` is required.
+    const target = typeof params.target === 'string' ? params.target.trim() : '';
+    if (!target) {
+      return {
+        error:
+          'pdg_query requires a "target" (a file path or symbol/function name) — PDG queries are always anchored.',
+      };
+    }
+
+    const edgeType = mode === 'controls' ? 'CDG' : 'REACHING_DEF';
+    // Definitive: the meta stamp says this layer was never recorded.
+    const NO_PDG_NOTE = `no PDG layer — run gitnexus analyze --pdg to record ${edgeType} edges for this repo`;
+    // Inconclusive: meta is unreadable AND a global probe found zero rows of this
+    // edge type — but a genuinely edge-free layer (all-linear functions) looks
+    // identical to a missing one, so don't assert absence (#2188 review).
+    const PDG_LAYER_UNKNOWN_NOTE = `no ${edgeType} edges found for this target; PDG layer status unknown — was this repo indexed with gitnexus analyze --pdg?`;
+
+    // Cheap meta probe: the layer exists iff the pdg stamp carries the
+    // mode-relevant cap (maxCdgEdgesPerFunction for CDG, maxReachingDef…
+    // for REACHING_DEF). Absent ⇒ the no-layer hint without a DB scan.
+    let pdgStamped: boolean | undefined;
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      if (meta) {
+        pdgStamped =
+          mode === 'controls'
+            ? meta.pdg?.maxCdgEdgesPerFunction !== undefined
+            : meta.pdg?.maxReachingDefEdgesPerFunction !== undefined;
+      }
+    } catch {
+      /* meta unreadable — decide from the DB below */
+    }
+    if (pdgStamped === false) {
+      return { mode, results: [], total: 0, note: NO_PDG_NOTE };
+    }
+
+    // Resolve the anchor on the SOURCE block via the shared resolver also used
+    // by explain (#2188): file id-prefix OR symbol span on the corrected
+    // [symStart+1, symEnd+1] window. `target` is required, so the early cases
+    // (not-found/ambiguous) return here and `anchor`/`anchorClause` are always
+    // set below (anchor stays non-optional — no `| undefined` — #2188 CodeQL).
+    const resolved = await this.resolveBlockAnchor(repo, target, 'pdg_query');
+    if (resolved.early) return resolved.early;
+    const { anchorClause, anchor } = resolved;
+    const queryParams = resolved.queryParams;
+
+    // Optional variable filter (flows mode) — REACHING_DEF stores the variable
+    // name in `reason`.
+    let reasonClause = '';
+    if (mode === 'flows' && typeof params.variable === 'string' && params.variable.trim()) {
+      reasonClause = ' AND r.reason = $variable';
+      queryParams.variable = params.variable.trim();
+    }
+
+    // edgeType is a hardcoded per-mode literal (never user input); `target` /
+    // `variable` flow only through bind params (no Cypher interpolation).
+    const matchClause = `
+      MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+      WHERE r.type = '${edgeType}' AND ${anchorClause}${reasonClause}`;
+    const [rows, countRows] = await Promise.all([
+      executeParameterized(
+        repo.lbugPath,
+        `${matchClause}
+      RETURN a.id AS srcId, a.startLine AS srcLine, b.startLine AS dstLine, b.text AS dstText, r.reason AS reason
+      ORDER BY srcId, dstLine, reason
+      LIMIT ${limit}`,
+        queryParams,
+      ),
+      executeParameterized(
+        repo.lbugPath,
+        `${matchClause}\n      RETURN COUNT(*) AS total`,
+        queryParams,
+      ),
+    ]);
+    const total = Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0);
+
+    // Unreadable meta + anchored miss: one bounded probe distinguishes "no rows
+    // for this anchor" from "no rows of this edge type at all". With meta
+    // unreadable we cannot tell a missing layer from an edge-free one, so the
+    // note is the inconclusive "status unknown" form, not the definitive
+    // NO_PDG_NOTE (which is reserved for the meta-stamped absence above).
+    if (total === 0 && pdgStamped === undefined) {
+      const probe = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type = '${edgeType}' RETURN r.reason AS reason LIMIT 1`,
+        {},
+      );
+      if (probe.length === 0) return { mode, results: [], total: 0, note: PDG_LAYER_UNKNOWN_NOTE };
+    }
+
+    // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` — split
+    // from the RIGHT (filePath may contain ':').
+    const fnLineOf = (id: string): number => {
+      const parts = id.split(':');
+      return Number(parts[parts.length - 3]);
+    };
+
+    const results =
+      mode === 'controls'
+        ? rows.map((r: any) => {
+            const fnLine = fnLineOf(String(r.srcId ?? r[0] ?? ''));
+            const dstText = String(r.dstText ?? r[3] ?? '');
+            // A CDG edge into an early-exit block is a guard clause (subsumes
+            // #559): the controller predicate gates the dependent via `label`.
+            const isGuardExit = /^\s*(return|throw|continue|break)\b/.test(dstText);
+            return {
+              ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+              controller: { line: (r.srcLine ?? r[1]) as number | undefined },
+              dependent: { line: (r.dstLine ?? r[2]) as number | undefined, text: dstText },
+              label: String(r.reason ?? r[4] ?? ''),
+              ...(isGuardExit ? { guard: true } : {}),
+            };
+          })
+        : rows.map((r: any) => {
+            const fnLine = fnLineOf(String(r.srcId ?? r[0] ?? ''));
+            return {
+              ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
+              variable: String(r.reason ?? r[4] ?? ''),
+              def: { line: (r.srcLine ?? r[1]) as number | undefined },
+              use: {
+                line: (r.dstLine ?? r[2]) as number | undefined,
+                text: String(r.dstText ?? r[3] ?? ''),
+              },
+            };
+          });
+
+    return {
+      mode,
+      anchor,
+      results,
+      total,
+      ...(total > results.length ? { truncated: true } : {}),
     };
   }
 
@@ -4444,7 +5104,10 @@ export class LocalBackend {
     if (method === 'query') {
       const queryArgs: Record<string, unknown> = {
         name: groupName,
-        query: params.query,
+        // #2175: resolve the search_query alias here (new name wins, same rule as the
+        // local query() handler) so the group path is self-contained and does not depend
+        // on params being normalized upstream. groupQuery() reads `query`.
+        query: resolveAliasString(params.search_query, params.query),
       };
       if (typeof params.task_context === 'string') queryArgs.task_context = params.task_context;
       if (typeof params.goal === 'string') queryArgs.goal = params.goal;

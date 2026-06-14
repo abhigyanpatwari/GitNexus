@@ -14,6 +14,13 @@ name: Vendored grammar update monitor
 # never auto-bumped — a maintainer re-vendors it deliberately after a runtime
 # upgrade.
 #
+# The vendored set + per-grammar upstream coords + the tree-sitter-c hold live in
+# .github/vendored-grammars.json — the SHARED source of truth this monitor and
+# tree-sitter-upgrade-readiness.yml both read, so the two workflows can never
+# disagree about which grammars are vendored (#858). This monitor additionally
+# resolves each grammar's upstream from it; the readiness report reads vendored
+# ABIs from gitnexus/vendor/ and keeps its own upstream-drift coords.
+#
 # Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
 
 on:

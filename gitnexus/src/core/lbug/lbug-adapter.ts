@@ -1839,6 +1839,62 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
   return { nodesDeleted };
 };
 
+/**
+ * Drop every interprocedural `TAINT_PATH` relationship (#2084 M4 U6). Used at
+ * the start of an incremental `--pdg` writeback so the `taintSummaries` phase
+ * re-materialises them from scratch on the FULL recomputed graph.
+ *
+ * TAINT_PATH validity is a WHOLE-PROGRAM property (a flow A→C can be
+ * invalidated by a change to an INTERMEDIATE function whose file is neither A
+ * nor C). The endpoint-writability extract rule (`extractChangedSubgraph`)
+ * cannot see that — an A→C edge between two unchanged files would be skipped
+ * and a stale finding would survive. So, exactly like Community/Process, the
+ * sound move is delete-all-then-rebuild: cheap because TAINT_PATH is sparse
+ * (per-run capped), and the compute side already rebuilds every summary each
+ * run. Relationship-level (TAINT_PATH is an edge type, not a node label), so a
+ * plain DELETE on the typed CodeRelation rows — endpoints are untouched.
+ */
+export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: number }> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  let edgesDeleted = 0;
+  let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+  try {
+    countResult = await conn.query(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' RETURN count(r) AS cnt`,
+    );
+    const result = Array.isArray(countResult) ? countResult[0] : countResult;
+    const rows = await result.getAll();
+    const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+    if (count > 0) {
+      await conn.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`);
+      edgesDeleted = count;
+    }
+  } catch (err) {
+    // A missing table on a freshly-initialized DB is the benign, expected case
+    // (the count query above is what throws) — stay silent. Any OTHER failure
+    // (lock, disk, native error) would leave stale TAINT_PATH rows that the
+    // subsequent re-extract then DUPLICATES (CodeRelation has no PK), so it
+    // must ABORT the writeback (#2084 review P2-5): re-throw so the caller's
+    // crash-recovery dirty flag forces a clean full rebuild on the next run,
+    // rather than silently writing duplicate cross-function findings.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+      if (countResult) await closeQueryResults(countResult);
+      return { edgesDeleted };
+    }
+    if (countResult) await closeQueryResults(countResult);
+    throw new Error(
+      `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
+        `re-write (${msg}) — aborting to avoid duplicate cross-function findings; ` +
+        `the next run will full-rebuild`,
+    );
+  }
+  if (countResult) await closeQueryResults(countResult);
+  return { edgesDeleted };
+};
+
 // ============================================================================
 // Full-Text Search (FTS) Functions
 // ============================================================================

@@ -43,6 +43,16 @@ export interface ProgramPoint {
   readonly line: number;
 }
 
+/**
+ * Canonical `block:stmt` string key for a program point. Colon-separated to
+ * match the codebase's `blockIndex:stmtIndex` id conventions. Shared by the
+ * taint propagation engine (dedup/state keys) and the taint emit path
+ * (persisted edge-id material) so the two never drift.
+ */
+export function pointKey(p: ProgramPoint): string {
+  return `${p.blockIndex}:${p.stmtIndex}`;
+}
+
 /** One def→use fact: the definition at `def` reaches the use at `use`. */
 export interface DefUseFact {
   /** Index into {@link FunctionDefUse.bindings}. */

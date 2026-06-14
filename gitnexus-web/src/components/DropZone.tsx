@@ -206,6 +206,10 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
       try {
+        // Landing-screen repo selection auto-detects by size (#2178). The
+        // ?skipGraph URL param is a bookmark hint for the initial auto-connect
+        // only; honoring a stale value for a different repo here would risk the
+        // hang it is meant to prevent.
         const result = await connectToServer(
           detectedBackendUrl,
           (p, downloaded, total) => {

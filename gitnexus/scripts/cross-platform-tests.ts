@@ -37,6 +37,7 @@ const PLATFORM_LOGIC = [
   'test/unit/repo-manager.test.ts',
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/hooks.test.ts',
+  'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
   'test/unit/sidecar-recovery.test.ts',
   'test/unit/pool-wal-recovery.test.ts',

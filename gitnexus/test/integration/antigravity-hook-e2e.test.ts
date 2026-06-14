@@ -396,7 +396,13 @@ describe('antigravity hook adapter e2e', () => {
   // (its lock/probe helpers only resolve from the install dir). A faked lsof/ps +
   // an empty `lbug` lock force hasGitNexusServerOwner() => true; a marker-writing
   // fake CLI proves augment never ran.
-  describe.skipIf(process.platform === 'win32')(
+  //
+  // #2180: skipped on Linux too — the probe's Linux backend no longer uses
+  // lsof/ps, so the faked lsof/ps can't force owner=true there. This stays as the
+  // macOS/other-Unix lsof-path lane; the antigravity adapter shares the identical
+  // gated owner-skip with the claude/plugin copies, whose Linux owner detection
+  // is covered against a fake /proc in test/unit/hook-db-lock-probe.test.ts.
+  describe.skipIf(process.platform === 'win32' || process.platform === 'linux')(
     'AfterTool — augment skipped when MCP server owns the DB (#1913)',
     () => {
       const OWNER_PROBE = {

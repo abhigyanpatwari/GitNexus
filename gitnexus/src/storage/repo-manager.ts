@@ -158,6 +158,42 @@ export interface RepoMeta {
      * type for that reason; resolved (always present) on every M2+ write.
      */
     maxReachingDefEdgesPerFunction?: number;
+    /**
+     * Emit-side per-function CDG (control-dependence) edge cap, resolved
+     * (0 = unlimited; #2085 M5). ABSENT on any pre-M5 stamp — that absence is
+     * what trips `pdgModeMismatch` on the first CDG-aware run and forces the
+     * full writeback that materialises CDG edges. Optional for that upgrade
+     * reason; resolved (always present) on every M5+ write.
+     */
+    maxCdgEdgesPerFunction?: number;
+    /**
+     * Per-function taint findings cap, resolved (0 = unlimited; #2083 M3).
+     * ABSENT on an M1/M2-era stamp — like `maxReachingDefEdgesPerFunction`,
+     * that absence is what trips `pdgModeMismatch` on the first M3 run and
+     * forces the full writeback that populates TAINTED/SANITIZES rows.
+     */
+    maxTaintFindingsPerFunction?: number;
+    /** Per-finding taint hop cap, resolved (0 = unlimited; #2083 M3 KTD6 —
+     *  bounds the persisted hop-encoded `reason`). Optional for the same
+     *  M2-era-stamp upgrade reason as the findings cap. */
+    maxTaintHops?: number;
+    /**
+     * Per-run cross-function caps, resolved (0 = unlimited; #2084 M4 review
+     * P1-3). ABSENT on an M3-era stamp — that absence trips `pdgModeMismatch`
+     * on the first run that adds them and forces the full writeback that
+     * re-materialises TAINT_PATH within bounds. Optional for that upgrade
+     * reason; resolved (always present) on every post-fix write.
+     */
+    maxInterprocFindings?: number;
+    maxInterprocHops?: number;
+    maxInterprocEdges?: number;
+    /**
+     * Digest of the built-in taint model the persisted findings were
+     * produced under (#2083 M3 KTD7/R7). Any model-content change ships a
+     * new digest → mismatch → full writeback repopulates taint edges
+     * without `--force`. Optional: absent on pre-M3 stamps.
+     */
+    taintModelVersion?: string;
   };
 }
 

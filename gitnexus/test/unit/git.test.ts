@@ -159,11 +159,11 @@ describe('git utilities', () => {
       );
     });
 
-    it('trims output before resolving path', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('  /repo  \n'));
+    it('preserves path whitespace while removing the trailing newline', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('/repo \n'));
       const result = getGitRoot('/repo/src');
       expect(result).not.toBeNull();
-      expect(result!.trim()).toBe(result);
+      expect(result).toBe(path.resolve('/repo '));
     });
   });
 

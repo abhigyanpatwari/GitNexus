@@ -1,0 +1,102 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`U7 — taint findings/kills snapshot on the pdg-repo fixture battery > matches the committed findings/kills for every fixture function 1`] = `
+[
+  {
+    "dropped": 0,
+    "file": "vuln.ts",
+    "findings": [
+      "cmd@10->cmd@11:command-injection",
+    ],
+    "kills": [],
+    "startLine": 9,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "vuln.ts",
+    "findings": [],
+    "kills": [
+      "value@17<-17:path-traversal,xss",
+    ],
+    "startLine": 16,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "taint-cases.ts",
+    "findings": [
+      "req@15:command-injection",
+    ],
+    "kills": [],
+    "startLine": 14,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "taint-cases.ts",
+    "findings": [
+      "a@20->b@21->c@22->c@23:command-injection",
+    ],
+    "kills": [],
+    "startLine": 19,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "taint-cases.ts",
+    "findings": [
+      "text@34->text@38:xss",
+    ],
+    "kills": [
+      "text@36<-36:path-traversal,xss",
+    ],
+    "startLine": 29,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "taint-cases.ts",
+    "findings": [
+      "cmd@44->cmd@48:command-injection",
+    ],
+    "kills": [],
+    "startLine": 43,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "taint-cases.ts",
+    "findings": [
+      "raw@54->built@55*->built@56:command-injection",
+    ],
+    "kills": [],
+    "startLine": 53,
+    "status": "computed",
+  },
+  {
+    "dropped": 0,
+    "file": "taint-cases.ts",
+    "findings": [],
+    "kills": [],
+    "startLine": 59,
+    "status": "no-match",
+  },
+  {
+    "dropped": 0,
+    "file": "sample.ts",
+    "findings": [],
+    "kills": [],
+    "startLine": 5,
+    "status": "no-match",
+  },
+  {
+    "dropped": 0,
+    "file": "sample.ts",
+    "findings": [],
+    "kills": [],
+    "startLine": 14,
+    "status": "no-match",
+  },
+]
+`;

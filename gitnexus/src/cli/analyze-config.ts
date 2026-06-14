@@ -107,6 +107,16 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
+  // Auth token AND dims are intentionally CLI/env-only — no embeddingAuthToken
+  // or embeddingDims key here:
+  //   - the token keeps secrets out of a committed .gitnexusrc;
+  //   - dims cannot take effect from .gitnexusrc anyway — schema.ts reads
+  //     GITNEXUS_EMBEDDING_DIMS at module-load (before .gitnexusrc is loaded in
+  //     analyzeCommandImpl), so a config value would size nothing and silently
+  //     mismatch the vector column. Use --embedding-dims or GITNEXUS_EMBEDDING_DIMS.
+  // (URL/MODEL are safe as config keys: they are read lazily at runtime, not at module-load.)
+  embeddingBaseUrl: { target: 'embeddingBaseUrl', kind: 'string' },
+  embeddingModel: { target: 'embeddingModel', kind: 'string' },
 };
 
 /** Top-level container key for the nested form; not itself an `AnalyzeOptions` field. */

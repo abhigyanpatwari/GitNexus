@@ -6,6 +6,7 @@
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction, createLbugLazyAction } from './lazy-action.js';
+import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
@@ -14,12 +15,21 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();
 
+function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), ...value.split(',')];
+}
+
 program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
 
 program
   .command('setup')
   .description(
     'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+  )
+  .option(
+    '-c, --coding-agent <agents>',
+    'Configure only these coding agents (comma-separated or repeatable)',
+    collectCodingAgents,
   )
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
@@ -30,6 +40,15 @@ program
   )
   .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
   .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
+
+// Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook
+// before it overwrites the var, so the postAction hook can restore it. The
+// analyzeCommand env snapshot is taken AFTER this hook runs, so it cannot undo
+// the hook's write on its own — without this restore a CLI --embedding-dims
+// would leak into a later in-process program.parseAsync (tests / long-running
+// hosts). Single-shot CLI exits the process, making the restore a no-op there.
+let dimsEnvBaseline: string | undefined;
+let dimsEnvCaptured = false;
 
 program
   .command('ci-setup')
@@ -128,7 +147,63 @@ program
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
   .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
+  .option(
+    '--embedding-base-url <url>',
+    'OpenAI-compatible embeddings base URL including the /v1 suffix ' +
+      '(e.g. http://10.219.32.29:11434/v1 for Ollama). Overrides GITNEXUS_EMBEDDING_URL.',
+  )
+  .option(
+    '--embedding-model <model>',
+    'Embedding model name (e.g. qwen3-embedding:8b). Overrides GITNEXUS_EMBEDDING_MODEL.',
+  )
+  .option(
+    '--embedding-auth-token <token>',
+    'Bearer token for the embeddings endpoint (omit for unauthenticated servers like Ollama). ' +
+      'Overrides GITNEXUS_EMBEDDING_API_KEY.',
+  )
+  .option(
+    '--embedding-dims <number>',
+    'Embedding vector dimensions (positive integer; e.g. 4096 for Qwen3-Embedding-8B). ' +
+      'Must match what the index was built with. Overrides GITNEXUS_EMBEDDING_DIMS.',
+  )
   .addHelpText('after', () => t('help.analyze.environment'))
+  .hook('preAction', (thisCommand: Command) => {
+    // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
+    // module-load time during the lazy import('./analyze.js') below (via the
+    // static chain analyze.ts → run-analyze.ts → schema.ts), so deferring to
+    // analyzeCommandImpl would be too late. URL / MODEL / API_KEY are read
+    // lazily at runtime (readConfig), so analyzeCommandImpl is their sole
+    // setter — keeping them out of this hook means they fall under the impl's
+    // env snapshot/restore and don't leak across in-process invocations.
+    const dimsOpt = thisCommand.opts()['embeddingDims'];
+    if (dimsOpt !== undefined) {
+      // Validate + normalize BEFORE writing the env var: schema.ts throws on a
+      // bad value at module-load, which — on the synchronous program.parse()
+      // path, before the analyze fatal-handlers are installed — would surface
+      // as a raw unhandled rejection instead of this friendly message.
+      const dims = normalizeEmbeddingDims(String(dimsOpt));
+      if (dims === null) {
+        process.stderr.write(`\n  ${EMBEDDING_DIMS_ERROR}\n\n`);
+        process.exit(1);
+      }
+      dimsEnvBaseline = process.env.GITNEXUS_EMBEDDING_DIMS;
+      dimsEnvCaptured = true;
+      process.env.GITNEXUS_EMBEDDING_DIMS = dims;
+    }
+  })
+  .hook('postAction', () => {
+    // Restore the pre-hook GITNEXUS_EMBEDDING_DIMS so a CLI override doesn't
+    // persist into a later program.parseAsync in the same process. (Fires on a
+    // microtask after a successful parse; the crash path never reaches here,
+    // but the hook validates dims before writing, so there's nothing to undo.)
+    if (!dimsEnvCaptured) return;
+    dimsEnvCaptured = false;
+    if (dimsEnvBaseline === undefined) {
+      delete process.env.GITNEXUS_EMBEDDING_DIMS;
+    } else {
+      process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
+    }
+  })
   .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
@@ -149,7 +224,21 @@ program
 
 program
   .command('mcp')
-  .description('Start MCP server (stdio) — serves all indexed repos')
+  .description(
+    'Start MCP server. Default: stdio. Use --http for a remote HTTP server ' +
+      '(Streamable HTTP at POST /mcp + legacy SSE at GET /sse, POST /messages).',
+  )
+  .option('--http', 'Serve MCP over HTTP instead of stdio (for remote clients)')
+  .option('-p, --port <port>', 'HTTP port (only with --http). Default: 3000', '3000')
+  .option(
+    '--host <host>',
+    'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
+    '127.0.0.1',
+  )
+  .option(
+    '--auth-token <token>',
+    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+  )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program

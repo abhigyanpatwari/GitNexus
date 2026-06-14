@@ -13,7 +13,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBreaker } from 'gitnexus-shared';
 import { __resetBreakerRegistry__ } from 'gitnexus-shared/test-helpers';
-import { fetchRepos, setBackendUrl, startAnalyze } from '../../src/services/backend-client';
+import {
+  deleteRepo,
+  fetchRepos,
+  setBackendUrl,
+  startAnalyze,
+} from '../../src/services/backend-client';
 
 const BASE = 'http://localhost:4747';
 
@@ -87,6 +92,40 @@ describe('backend-client retry budget (method-aware)', () => {
     const bKey = 'web-backend:http://host-b.test:4747';
     expect(getBreaker(bKey).getState()).toBe('closed');
     expect(getBreaker(bKey).getConsecutiveFailures()).toBe(0);
+  });
+
+  it('maps an origin-blocked 403 to BackendError code "origin_blocked"', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: 'This endpoint is restricted to same-host origins',
+            code: 'origin_not_allowed',
+          }),
+          { status: 403, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(deleteRepo('my-repo')).rejects.toMatchObject({
+      status: 403,
+      code: 'origin_blocked',
+    });
+    // 403 is a terminal client error — never retried.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a generic 403 (no recognized code) to BackendError code "client" (back-compat)', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'forbidden' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(deleteRepo('my-repo')).rejects.toMatchObject({ status: 403, code: 'client' });
   });
 
   it('breaker not incremented when timeout fires (TimeoutError, not AbortError)', async () => {

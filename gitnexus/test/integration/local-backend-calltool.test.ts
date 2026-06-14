@@ -119,6 +119,26 @@ withTestLbugDB(
         expect(result).not.toHaveProperty('partial');
       });
 
+      // #2175: end-to-end proof that the renamed parameters work against a real
+      // index (Claude Code drops a tool arg named exactly "query").
+      it('query tool returns results via the new search_query param (#2175)', async () => {
+        const result = await backend.callTool('query', { search_query: 'login' });
+        expect(result).not.toHaveProperty('error');
+        expect(result).toHaveProperty('processes');
+        expect(result.processes.map((p: any) => p.id)).toContain('proc:login-flow');
+        expect(result.process_symbols.map((s: any) => s.id)).toContain('func:login');
+      });
+
+      it('cypher tool executes via the new statement param (#2175)', async () => {
+        const result = await backend.callTool('cypher', {
+          statement: 'MATCH (n:Function) RETURN n.name AS name ORDER BY n.name',
+        });
+        expect(result).toHaveProperty('markdown');
+        expect(result).toHaveProperty('row_count');
+        expect(result.row_count).toBeGreaterThanOrEqual(3);
+        expect(result.markdown).toContain('login');
+      });
+
       // PR #222 port: the query tool batches per-symbol process/cohesion/content
       // lookups (N+1 → 2-3 `WHERE n.id IN $nodeIds` queries). These assertions
       // guard the batch-adaptation hazards that a naive cherry-pick would break:
