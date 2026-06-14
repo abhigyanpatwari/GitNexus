@@ -183,6 +183,14 @@ function mode2Files(): string[] {
       if (existsSync(cap)) files.push(cap);
     }
   }
+  // CFG visitors (cfg/visitors/<lang>.ts) hard-code tree-sitter node-type and
+  // field literals directly; include them so the gate validates per-language
+  // CFG literals against the right grammar (basename → grammar via
+  // `fileLanguages`: c-cpp → C+C++, csharp → C#, java → Java, go → Go,
+  // typescript[-harvest] → TS). Without this, the gate stays green on dead
+  // literals in a new visitor — the exact failure KTD5 warns about.
+  const cfgVisitorsDir = join(INGESTION_DIR, 'cfg', 'visitors');
+  if (existsSync(cfgVisitorsDir)) walkTs(cfgVisitorsDir, files);
   const exportDetection = join(INGESTION_DIR, 'export-detection.ts');
   if (existsSync(exportDetection)) files.push(exportDetection);
   return files;

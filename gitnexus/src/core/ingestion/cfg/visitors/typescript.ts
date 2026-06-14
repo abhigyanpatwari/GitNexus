@@ -76,8 +76,6 @@ const TS_FUNCTION_TYPES = new Set([
   'method_definition',
   'generator_function_declaration',
   'generator_function',
-  'async_function_declaration',
-  'async_arrow_function',
 ]);
 
 /** Statement node types that break a basic block (everything else coalesces). */
@@ -87,7 +85,6 @@ const CONTROL_FLOW_TYPES = new Set([
   'do_statement',
   'for_statement',
   'for_in_statement',
-  'for_of_statement',
   'switch_statement',
   'try_statement',
   'return_statement',
@@ -103,7 +100,6 @@ const LOOP_OR_SWITCH_TYPES = new Set([
   'do_statement',
   'for_statement',
   'for_in_statement',
-  'for_of_statement',
   'switch_statement',
 ]);
 
@@ -206,7 +202,6 @@ class TsCfgWalk {
       case 'for_statement':
         return this.visitFor(stmt);
       case 'for_in_statement':
-      case 'for_of_statement':
         return this.visitForIn(stmt);
       case 'switch_statement':
         return this.visitSwitch(stmt);
