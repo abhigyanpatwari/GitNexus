@@ -112,6 +112,35 @@ describe('U4 — emitFileCfgs node/edge shape', () => {
   });
 });
 
+describe('collectFunctionCfgs — lineOffset → file coordinates (#2195 P1, Vue SFC)', () => {
+  it('shifts functionStartLine + block + statement lines by lineOffset', () => {
+    const code = `function f(x: number) { if (x) { a(); } else { b(); } }`;
+    const base = collectFunctionCfgs(tsRoot(code), visitor(), 'x.vue').cfgs;
+    const shifted = collectFunctionCfgs(tsRoot(code), visitor(), 'x.vue', 0, 5).cfgs;
+    expect(base.length).toBeGreaterThan(0);
+    expect(shifted).toHaveLength(base.length);
+    expect(shifted[0].functionStartLine).toBe(base[0].functionStartLine + 5);
+    expect(shifted[0].functionEndLine).toBe(base[0].functionEndLine + 5);
+    // functionStartColumn is a COLUMN, not a line — unchanged.
+    expect(shifted[0].functionStartColumn).toBe(base[0].functionStartColumn);
+    for (let i = 0; i < base[0].blocks.length; i++) {
+      expect(shifted[0].blocks[i].startLine).toBe(base[0].blocks[i].startLine + 5);
+      expect(shifted[0].blocks[i].endLine).toBe(base[0].blocks[i].endLine + 5);
+    }
+    // per-statement source lines shift too (file-accurate taint/explain hops).
+    const stmtLines = (cfgs: readonly FunctionCfg[]): number[] =>
+      cfgs[0].blocks.flatMap((b) => (b.statements ?? []).map((s) => s.line));
+    expect(stmtLines(shifted)).toEqual(stmtLines(base).map((l) => l + 5));
+  });
+
+  it('lineOffset 0 is a byte-identical no-op (non-embedded files unchanged)', () => {
+    const code = `function g() { while (true) { tick(); } }`;
+    const withZero = collectFunctionCfgs(tsRoot(code), visitor(), 'g.ts', 0, 0).cfgs;
+    const omitted = collectFunctionCfgs(tsRoot(code), visitor(), 'g.ts').cfgs;
+    expect(JSON.stringify(withZero)).toBe(JSON.stringify(omitted));
+  });
+});
+
 describe('U4 — AC2: every BasicBlock is reachable from its function ENTRY', () => {
   // Fixtures deliberately contain no dead code, so the reachability closure
   // from each function's ENTRY (block index 0) must cover all of its blocks.

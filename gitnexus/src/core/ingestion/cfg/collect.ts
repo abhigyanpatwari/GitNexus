@@ -30,11 +30,42 @@ export interface CollectedCfgs {
   readonly skipped: number;
 }
 
+/**
+ * Convert a CFG built from an EXTRACTED sub-document's AST (script-relative
+ * tree-sitter rows) into the enclosing file's coordinates by adding `offset` to
+ * every source-line field. Needed for embedded scripts — a Vue SFC `<script>`
+ * block parses at row 0 but lives at `lineOffset` in the `.vue` file, and every
+ * other worker-emitted graph node is already file-relative; without this, the
+ * CFG's `functionStartLine` would never join its Function/Method graph node
+ * (inter-procedural taint silently resolves nothing) and BasicBlock source
+ * lines would point at the wrong `.vue` line. A 0 offset returns the input
+ * unchanged (the common case: `.ts`/`.js`/etc. parse at the file root), keeping
+ * non-embedded languages byte-identical. Synthetic bindings keep `declLine` 0.
+ */
+function shiftCfgLines(cfg: FunctionCfg, offset: number): FunctionCfg {
+  if (offset === 0) return cfg;
+  return {
+    ...cfg,
+    functionStartLine: cfg.functionStartLine + offset,
+    functionEndLine: cfg.functionEndLine + offset,
+    blocks: cfg.blocks.map((b) => ({
+      ...b,
+      startLine: b.startLine + offset,
+      endLine: b.endLine + offset,
+      statements: b.statements?.map((s) => ({ ...s, line: s.line + offset })),
+    })),
+    bindings: cfg.bindings?.map((bd) =>
+      bd.declLine > 0 ? { ...bd, declLine: bd.declLine + offset } : bd,
+    ),
+  };
+}
+
 export function collectFunctionCfgs(
   root: SyntaxNode,
   visitor: CfgVisitor<SyntaxNode>,
   filePath: string,
   maxFunctionLines = 0,
+  lineOffset = 0,
 ): CollectedCfgs {
   const cfgs: FunctionCfg[] = [];
   let skipped = 0;
@@ -48,7 +79,7 @@ export function collectFunctionCfgs(
         skipped++;
       } else {
         const cfg = visitor.buildFunctionCfg(node, filePath);
-        if (cfg) cfgs.push(cfg);
+        if (cfg) cfgs.push(shiftCfgLines(cfg, lineOffset));
       }
     }
     // Descend regardless (a skipped mega-function may still contain small

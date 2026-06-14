@@ -1269,6 +1269,10 @@ const processFileGroup = (
             provider.cfgVisitor,
             file.path,
             PDG_MAX_FUNCTION_LINES,
+            // Embedded scripts (Vue SFC <script>) parse at row 0 but live at
+            // `lineOffset` in the file — shift the CFG into file coordinates so
+            // it joins its graph node and BasicBlock lines map to source.
+            lineOffset,
           );
           if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
         } catch (err) {
