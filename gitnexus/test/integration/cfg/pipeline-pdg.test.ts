@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
@@ -186,4 +187,173 @@ describe('U7 — end-to-end --pdg pipeline', () => {
     expect(sanitizes).toBe(0);
     expect(cdg).toBe(0);
   }, 60000);
+});
+
+// ── C-family worker-mode PDG (#2195 U7) ─────────────────────────────────────
+//
+// The same both-sinks proof as the TS block above, run through the REAL worker
+// pipeline for each of C, C++, C#, Java, Go. Each language gets its own tiny
+// repo (one hazard fixture with real branching AND a non-terminating
+// loop/`select`) and we assert, under `--pdg`:
+//   - BasicBlock + CFG > 0 (the worker built a per-function CFG and emit wired it)
+//   - REACHING_DEF + CDG > 0 (the def/use harvest + the post-dom/CDG passes
+//     populate — CDG > 0 proves EXIT stays reverse-reachable end-to-end through
+//     the worker even with the non-terminating loop, not just in unit probes)
+// and without `--pdg` (both the default run and an explicit `pdg:false` run):
+//   - BasicBlock + CFG + REACHING_DEF + CDG == 0
+//   - the non-PDG graph is byte-identical between the two flag-off runs and
+//     matches a committed digest snapshot (the per-language byte-identical-off
+//     golden parity gate — R3; the cross-repo gate is pipeline-graph-golden).
+//
+// ⚠ Requires a FRESH `dist/parse-worker.js` — CFGs are built in the worker from
+// `dist/`. A stale bundle silently zeros CFG output. `pretest:integration` (and
+// the U7 verification recipe) run `node scripts/build.js` first.
+
+const C_FAMILY_FIXTURES = path.join(__dirname, 'fixtures');
+
+const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string }> = [
+  { lang: 'C', fixture: 'c-hazards.c' },
+  { lang: 'C++', fixture: 'cpp-hazards.cpp' },
+  { lang: 'C#', fixture: 'csharp-hazards.cs' },
+  { lang: 'Java', fixture: 'java-hazards.java' },
+  { lang: 'Go', fixture: 'go-hazards.go' },
+];
+
+const cFamilyTmpDirs: string[] = [];
+function freshLangRepo(fixture: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-lang-'));
+  fs.copyFileSync(path.join(C_FAMILY_FIXTURES, fixture), path.join(dir, fixture));
+  cFamilyTmpDirs.push(dir);
+  return dir;
+}
+
+// Force worker-pool parsing even for a single small file: the CFG is built IN
+// the worker, so the proof is only meaningful on the worker path.
+const WORKER_PDG = {
+  pdg: true,
+  workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+  workerPoolSize: 2,
+} as const;
+const WORKER_OFF = {
+  workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+  workerPoolSize: 2,
+} as const;
+
+/**
+ * Deterministic, path/id-independent digest of the non-PDG graph: sorted
+ * label→count and relType→count maps + a sha256 over symbolic edge triples
+ * (label:name keyed, not opaque ids). Mirrors `pipeline-graph-golden`'s
+ * technique so the snapshot is stable across id-format refactors and only
+ * trips on a real semantic change to the C-family graph.
+ */
+function graphDigest(result: PipelineResult): {
+  symbols: number;
+  relationships: number;
+  byType: Record<string, number>;
+  byRelType: Record<string, number>;
+  edgeDigest: string;
+} {
+  const byType: Record<string, number> = {};
+  const byRelType: Record<string, number> = {};
+  const nodeKey = new Map<string, string>();
+  result.graph.forEachNode((n) => {
+    byType[n.label] = (byType[n.label] ?? 0) + 1;
+    const props = n.properties as Record<string, unknown>;
+    const fp = (props.filePath as string | undefined) ?? '';
+    const nm = (props.name as string | undefined) ?? '';
+    nodeKey.set(n.id, `${n.label}:${nm}@${fp}`);
+  });
+  const triples: string[] = [];
+  for (const rel of result.graph.iterRelationships()) {
+    byRelType[rel.type] = (byRelType[rel.type] ?? 0) + 1;
+    const src = nodeKey.get(rel.sourceId) ?? `?:${rel.sourceId}`;
+    const dst = nodeKey.get(rel.targetId) ?? `?:${rel.targetId}`;
+    triples.push(`${rel.type}|${src}|${dst}`);
+  }
+  triples.sort();
+  const sortObj = (o: Record<string, number>): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const k of Object.keys(o).sort()) out[k] = o[k];
+    return out;
+  };
+  return {
+    symbols: result.graph.nodeCount,
+    relationships: result.graph.relationshipCount,
+    byType: sortObj(byType),
+    byRelType: sortObj(byRelType),
+    edgeDigest: crypto.createHash('sha256').update(triples.join('\n')).digest('hex'),
+  };
+}
+
+describe('U7 — C-family worker-mode --pdg pipeline', () => {
+  afterAll(() => {
+    for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  for (const { lang, fixture } of C_FAMILY) {
+    it(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
+      const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
+      // The CFG is built in the worker — a stale dist silently zeros this.
+      expect(result.usedWorkerPool).toBe(true);
+      const { basicBlocks, cfgEdges, reachingDefs, cdg } = counts(result);
+      expect(basicBlocks, `${lang} BasicBlock count`).toBeGreaterThan(0);
+      expect(cfgEdges, `${lang} CFG edge count`).toBeGreaterThan(0);
+      // def/use harvest populated the data-dependence layer.
+      expect(reachingDefs, `${lang} REACHING_DEF count`).toBeGreaterThan(0);
+      // CDG > 0 proves the post-dom/CDG pass was NOT skipped — i.e. EXIT stays
+      // reverse-reachable end-to-end through the worker, including from the
+      // fixture's non-terminating loop/`select` (the silent-zero hazard).
+      expect(cdg, `${lang} CDG count`).toBeGreaterThan(0);
+
+      // Both CFG and CDG endpoints are persisted BasicBlocks; CDG carries a T/F.
+      const blockIds = new Set<string>();
+      result.graph.forEachNode((n) => {
+        if (n.label === 'BasicBlock') blockIds.add(n.id);
+      });
+      for (const rel of result.graph.iterRelationships()) {
+        if (rel.type === 'CFG' || rel.type === 'REACHING_DEF' || rel.type === 'CDG') {
+          expect(blockIds.has(rel.sourceId), `${lang} ${rel.type} source is a BasicBlock`).toBe(
+            true,
+          );
+          expect(blockIds.has(rel.targetId), `${lang} ${rel.type} target is a BasicBlock`).toBe(
+            true,
+          );
+        }
+        if (rel.type === 'CDG') expect(['T', 'F']).toContain(rel.reason);
+      }
+    }, 60000);
+
+    it(`${lang}: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest)`, async () => {
+      // Default (no pdg flag) and explicit pdg:false must produce the IDENTICAL
+      // graph — the R3 parity property — and neither carries any PDG layer.
+      const defaultRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_OFF);
+      const offRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, {
+        ...WORKER_OFF,
+        pdg: false,
+      });
+
+      for (const r of [defaultRun, offRun]) {
+        const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg } = counts(r);
+        expect(basicBlocks).toBe(0);
+        expect(cfgEdges).toBe(0);
+        expect(reachingDefs).toBe(0);
+        expect(tainted).toBe(0);
+        expect(sanitizes).toBe(0);
+        expect(cdg).toBe(0);
+      }
+
+      const defaultDigest = graphDigest(defaultRun);
+      const offDigest = graphDigest(offRun);
+      // pdg:false ≡ pdg-absent — the dominant existing-user path is untouched.
+      expect(offDigest).toEqual(defaultDigest);
+      // None of the PDG node/rel types leak into the flag-off graph.
+      for (const t of ['BasicBlock'] as const)
+        expect(defaultDigest.byType[t]).toBeUndefined();
+      for (const t of ['CFG', 'REACHING_DEF', 'CDG', 'TAINTED', 'SANITIZES'] as const)
+        expect(defaultDigest.byRelType[t]).toBeUndefined();
+      // Committed golden: the flag-off graph is pinned by snapshot so a future
+      // refactor that silently rewires the C-family graph trips this gate.
+      expect(defaultDigest).toMatchSnapshot();
+    }, 90000);
+  }
 });
