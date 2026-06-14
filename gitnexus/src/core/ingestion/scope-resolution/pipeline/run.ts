@@ -992,6 +992,20 @@ export function runScopeResolution(
             : ''),
       );
     }
+    // R8 (#2195): CDG soundness skips surface UNCONDITIONALLY (parity with the
+    // taint/RD gap warns) — not buried in the logger.debug stats line above. A
+    // function whose EXIT is not reverse-reachable from every block gets NO
+    // control dependence (an unmodeled non-terminating / multi-terminal CFG
+    // shape the synthetic-escape pass could not bridge). Withholding CDG
+    // silently would let a language's control dependence erode unnoticed; CFG
+    // and REACHING_DEF do not depend on post-dominance and are unaffected.
+    if (cdgSkippedUnsound > 0) {
+      logger.warn(
+        `[cfg] lang=${provider.language}: ${cdgSkippedUnsound} function(s) had control ` +
+          `dependence skipped (EXIT not reverse-reachable from all blocks); ` +
+          `CFG and REACHING_DEF are unaffected`,
+      );
+    }
     // R4: taint coverage gaps and cap drops surface UNCONDITIONALLY (never
     // logger.debug, never input.onWarn) at the per-language aggregate, with
     // counts and up to 5 example functions. Per-function warns above cover
