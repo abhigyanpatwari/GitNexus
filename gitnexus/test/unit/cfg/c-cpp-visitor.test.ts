@@ -231,6 +231,28 @@ describe('C CfgVisitor — def/use harvest', () => {
   });
 });
 
+describe('C++ CfgVisitor — structured bindings (#2195 P1)', () => {
+  const isDef = (cfg: FunctionCfg, idx: number): boolean =>
+    cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(idx)));
+
+  it('auto [a, b] = mk(); defines BOTH a and b (not just the first / neither)', () => {
+    const cfg = cpp.cfgOf(`void f() { auto [a, b] = mk(); use(a); use(b); }`);
+    expect(isDef(cfg, bindingIdx(cfg, 'a'))).toBe(true);
+    expect(isDef(cfg, bindingIdx(cfg, 'b'))).toBe(true);
+    // a later use(a) must resolve to the SAME binding the declaration defs —
+    // i.e. `a` is a real local, not a synthetic module binding.
+    const a = bindingIdx(cfg, 'a');
+    const usedA = cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(a)));
+    expect(usedA).toBe(true);
+  });
+
+  it('auto& [a, b] = ref(); (reference structured binding) defines both names', () => {
+    const cfg = cpp.cfgOf(`void f() { auto& [a, b] = ref(); sink(a, b); }`);
+    expect(isDef(cfg, bindingIdx(cfg, 'a'))).toBe(true);
+    expect(isDef(cfg, bindingIdx(cfg, 'b'))).toBe(true);
+  });
+});
+
 describe('C CfgVisitor — functionStartColumn', () => {
   it('two same-line functions get distinct functionStartColumn', () => {
     const cfgs = c.cfgsOf(`int a(){return 1;} int b(){return 2;}`);

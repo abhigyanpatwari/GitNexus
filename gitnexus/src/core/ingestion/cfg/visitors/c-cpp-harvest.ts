@@ -190,13 +190,46 @@ export class CCppHarvester extends ScopeTreeHarvester {
     }
   }
 
+  /**
+   * The `structured_binding_declarator` a declarator binds (C++17 `auto [a,b]`,
+   * or `auto& [a,b]` whose binding sits under a `reference_declarator`), or
+   * undefined. C has no structured bindings, so this is inert for C.
+   */
+  private structuredBinding(declarator: SyntaxNode | null | undefined): SyntaxNode | undefined {
+    let cur = declarator ?? undefined;
+    let hops = 4;
+    while (cur && hops-- > 0) {
+      if (cur.type === 'structured_binding_declarator') return cur;
+      if (cur.type !== 'reference_declarator' && cur.type !== 'pointer_declarator') break;
+      cur = cur.namedChildren.find(
+        (c) =>
+          c.type === 'structured_binding_declarator' ||
+          c.type === 'reference_declarator' ||
+          c.type === 'pointer_declarator',
+      );
+    }
+    return undefined;
+  }
+
+  /** The identifier leaves a `structured_binding_declarator` binds (`[a, b]`). */
+  private structuredBindingNames(sbd: SyntaxNode): SyntaxNode[] {
+    return sbd.namedChildren.filter((c) => c.type === 'identifier');
+  }
+
   private declareDeclarators(declNode: SyntaxNode, scope: Scope): void {
     for (let i = 0; i < declNode.namedChildCount; i++) {
       const d = declNode.namedChild(i);
       if (!d) continue;
       if (d.type === 'init_declarator') {
-        const name = this.declaratorName(d.childForFieldName('declarator') ?? null);
-        if (name) this.declare(name, 'var', scope);
+        const declarator = d.childForFieldName('declarator');
+        const sbd = this.structuredBinding(declarator);
+        if (sbd) {
+          // `auto [a, b] = e;` — every identifier binds a scalar local.
+          for (const id of this.structuredBindingNames(sbd)) this.declare(id, 'var', scope);
+        } else {
+          const name = this.declaratorName(declarator ?? null);
+          if (name) this.declare(name, 'var', scope);
+        }
       } else if (
         d.type === 'identifier' ||
         d.type === 'pointer_declarator' ||
@@ -301,6 +334,16 @@ export class CCppHarvester extends ScopeTreeHarvester {
           if (d?.type !== 'init_declarator') continue;
           const declarator = d.childForFieldName('declarator');
           const value = d.childForFieldName('value');
+          const sbd = this.structuredBinding(declarator);
+          if (sbd && value) {
+            // `auto [a, b] = e;` — each identifier is a scalar def; the result
+            // of `e` flows into all of them (resultDefs covers the whole list).
+            const snap = acc.defSnapshot();
+            for (const id of this.structuredBindingNames(sbd)) this.def(id, acc);
+            this.registerResultDefs(value, acc.defsSince(snap));
+            this.walkValue(value, acc);
+            continue;
+          }
           const name = declarator ? this.declaratorName(declarator) : undefined;
           // Only an INITIALIZED declarator writes (`int x = e;`). A bare
           // `int x;` is not a def (it writes nothing at runtime), matching the
