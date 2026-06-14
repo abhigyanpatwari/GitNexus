@@ -257,6 +257,7 @@ export const en = {
   'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',
   'help.option.trace.toFile': 'Target file path to disambiguate common names',
   'help.option.trace.depth': 'Max path length in hops (default: 10)',
+  'help.option.trace.includeTests': 'Traverse through test-file symbols (default: false)',
   'help.option.detectChanges.scope': 'What to analyze: unstaged, staged, all, or compare',
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',

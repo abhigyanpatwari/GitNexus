@@ -101,4 +101,26 @@ describe('CLI trace command', () => {
     expect(callTool).not.toHaveBeenCalled();
     exitSpy.mockRestore();
   });
+
+  it('exits with usage when --from-uid or --to-uid is a swallowed flag value', async () => {
+    for (const opts of [{ fromUid: '--oops' }, { toUid: '--oops' }]) {
+      callTool.mockReset();
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit');
+      });
+      await expect(traceCommand('A', 'B', opts)).rejects.toThrow('process.exit');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(callTool).not.toHaveBeenCalled();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('forwards --include-tests as includeTests', async () => {
+    await traceCommand('A', 'B', { includeTests: true });
+
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({ includeTests: true }),
+    );
+  });
 });

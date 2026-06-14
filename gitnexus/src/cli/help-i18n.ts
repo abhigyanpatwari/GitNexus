@@ -137,7 +137,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'trace|--to-uid <uid>': 'help.option.trace.toUid',
   'trace|--to-file <path>': 'help.option.trace.toFile',
   'trace|--depth <n>': 'help.option.trace.depth',
-  'trace|--include-tests': 'help.option.impact.includeTests',
+  'trace|--include-tests': 'help.option.trace.includeTests',
   'trace|-r, --repo <name>': 'help.option.repo.target',
   'trace|--branch <name>': 'help.option.branch',
   'eval-server|-p, --port <port>': 'help.option.port',

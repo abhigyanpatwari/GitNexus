@@ -240,6 +240,7 @@ export const zhCN = {
   'help.option.trace.toUid': '目标符号 UID（零歧义查找）',
   'help.option.trace.toFile': '目标文件路径，用于消除常见名称歧义',
   'help.option.trace.depth': '最大路径跳数（默认：10）',
+  'help.option.trace.includeTests': '遍历时包含测试文件中的符号（默认：false）',
   'help.option.detectChanges.scope': '分析范围：unstaged、staged、all 或 compare',
   'help.option.detectChanges.baseRef': 'compare 范围的分支/提交（例如 main）',
   'help.option.check.cycles': '检测循环导入，并在发现循环时失败',
