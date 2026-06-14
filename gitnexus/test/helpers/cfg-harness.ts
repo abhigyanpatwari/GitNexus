@@ -10,7 +10,7 @@
  */
 import Parser from 'tree-sitter';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
-import type { CfgVisitor, FunctionCfg } from '../../src/core/ingestion/cfg/types.js';
+import type { CfgVisitor, FunctionCfg, SiteRecord } from '../../src/core/ingestion/cfg/types.js';
 
 export interface CfgHarness {
   /** Parse `code` with the configured grammar; returns the root node. */
@@ -66,4 +66,56 @@ export function makeCfgHarness(
       .filter((c): c is FunctionCfg => c !== undefined);
 
   return { parse, collectFunctions, cfgOf, cfgsOf };
+}
+
+// ── shared CFG-shape assertions (#2195 U8) ───────────────────────────────────
+// Byte-identical helpers the per-language `*-visitor.test.ts` files each copied.
+// CFG-shape only — EXIT-reachability soundness asserts against the production
+// `isExitReachableFromAllBlocks` (post-dominators.ts) directly, not a re-impl.
+
+/** The distinct edge kinds present in `cfg`. */
+export const edgeKinds = (cfg: FunctionCfg): Set<string> => new Set(cfg.edges.map((e) => e.kind));
+
+/** Index of the (first) block whose text contains `substr`. Throws if none. */
+export const block = (cfg: FunctionCfg, substr: string): number => {
+  const b = cfg.blocks.find((bl) => bl.text.includes(substr));
+  if (!b) throw new Error(`no block containing ${JSON.stringify(substr)}`);
+  return b.index;
+};
+
+/** Is `to` forward-reachable from `from` over `cfg`'s edges? */
+export function reaches(cfg: FunctionCfg, from: number, to: number): boolean {
+  const adj = new Map<number, number[]>();
+  for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const n = stack.pop() as number;
+    if (n === to) return true;
+    for (const nx of adj.get(n) ?? []) if (!seen.has(nx)) (seen.add(nx), stack.push(nx));
+  }
+  return seen.has(to);
+}
+
+/** Is `idx` reachable from ENTRY? */
+export const reachable = (cfg: FunctionCfg, idx: number): boolean =>
+  reaches(cfg, cfg.entryIndex, idx);
+
+/** Resolve a binding by name → its index in the function's binding table. */
+export function bindingIdx(cfg: FunctionCfg, name: string): number {
+  const i = (cfg.bindings ?? []).findIndex((b) => b.name === name);
+  if (i < 0) throw new Error(`no binding ${name}`);
+  return i;
+}
+
+/** Every taint `SiteRecord` harvested across the function's statements. */
+export function allSites(cfg: FunctionCfg): SiteRecord[] {
+  const out: SiteRecord[] = [];
+  for (const b of cfg.blocks) for (const s of b.statements ?? []) out.push(...(s.sites ?? []));
+  return out;
+}
+
+/** True iff at least one statement carries a (non-empty) `sites` array. */
+export function hasAnySites(cfg: FunctionCfg): boolean {
+  return cfg.blocks.some((b) => (b.statements ?? []).some((s) => (s.sites ?? []).length > 0));
 }

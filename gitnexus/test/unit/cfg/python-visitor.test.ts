@@ -2,7 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { createPythonCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/python.js';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
-import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import {
+  makeCfgHarness,
+  type CfgHarness,
+  block,
+  edgeKinds,
+  reaches,
+  reachable,
+  bindingIdx,
+} from '../../helpers/cfg-harness.js';
 import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
 import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
@@ -19,35 +27,6 @@ const pyGrammar = createRequire(import.meta.url)('tree-sitter-python') as Parame
 >[0];
 
 const py: CfgHarness = makeCfgHarness(pyGrammar, createPythonCfgVisitor(), 'fixture.py');
-
-const block = (cfg: FunctionCfg, substr: string): number => {
-  const b = cfg.blocks.find((bl) => bl.text.includes(substr));
-  if (!b) throw new Error(`no block containing ${JSON.stringify(substr)}`);
-  return b.index;
-};
-
-const edgeKinds = (cfg: FunctionCfg): Set<string> => new Set(cfg.edges.map((e) => e.kind));
-
-function reaches(cfg: FunctionCfg, from: number, to: number): boolean {
-  const adj = new Map<number, number[]>();
-  for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
-  const seen = new Set([from]);
-  const stack = [from];
-  while (stack.length) {
-    const n = stack.pop() as number;
-    if (n === to) return true;
-    for (const nx of adj.get(n) ?? []) if (!seen.has(nx)) (seen.add(nx), stack.push(nx));
-  }
-  return seen.has(to);
-}
-const reachable = (cfg: FunctionCfg, idx: number): boolean => reaches(cfg, cfg.entryIndex, idx);
-
-/** Resolve a binding by name → its index in the function's binding table. */
-function bindingIdx(cfg: FunctionCfg, name: string): number {
-  const i = (cfg.bindings ?? []).findIndex((b) => b.name === name);
-  if (i < 0) throw new Error(`no binding ${name}`);
-  return i;
-}
 
 const hasDef = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(idx)));

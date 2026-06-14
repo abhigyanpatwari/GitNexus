@@ -6,7 +6,17 @@ import {
   createCppCfgVisitor,
 } from '../../../src/core/ingestion/cfg/visitors/c-cpp.js';
 import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
-import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import {
+  makeCfgHarness,
+  type CfgHarness,
+  block,
+  edgeKinds,
+  reaches,
+  reachable,
+  bindingIdx,
+  allSites,
+  hasAnySites,
+} from '../../helpers/cfg-harness.js';
 import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
 import { augmentForPostDom } from '../../../src/core/ingestion/cfg/synthetic-escape.js';
 import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
@@ -23,57 +33,6 @@ const cppGrammar = createRequire(import.meta.url)('tree-sitter-cpp') as Paramete
 
 const c: CfgHarness = makeCfgHarness(cGrammar, createCCfgVisitor(), 'fixture.c');
 const cpp: CfgHarness = makeCfgHarness(cppGrammar, createCppCfgVisitor(), 'fixture.cpp');
-
-const block = (cfg: FunctionCfg, substr: string): number => {
-  const b = cfg.blocks.find((bl) => bl.text.includes(substr));
-  if (!b) throw new Error(`no block containing ${JSON.stringify(substr)}`);
-  return b.index;
-};
-
-const edgeKinds = (cfg: FunctionCfg): Set<string> => new Set(cfg.edges.map((e) => e.kind));
-
-function reaches(cfg: FunctionCfg, from: number, to: number): boolean {
-  const adj = new Map<number, number[]>();
-  for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
-  const seen = new Set([from]);
-  const stack = [from];
-  while (stack.length) {
-    const n = stack.pop() as number;
-    if (n === to) return true;
-    for (const nx of adj.get(n) ?? []) if (!seen.has(nx)) (seen.add(nx), stack.push(nx));
-  }
-  return seen.has(to);
-}
-const reachable = (cfg: FunctionCfg, idx: number): boolean => reaches(cfg, cfg.entryIndex, idx);
-
-/** Is EXIT reverse-reachable from every reachable block? (CDG soundness gate.) */
-function exitReachableFromAll(cfg: FunctionCfg): boolean {
-  for (const b of cfg.blocks) {
-    if (b.index === cfg.exitIndex) continue;
-    if (!reachable(cfg, b.index)) continue; // unreachable blocks exempt
-    if (!reaches(cfg, b.index, cfg.exitIndex)) return false;
-  }
-  return true;
-}
-
-/** Resolve a binding by name → its index in the function's binding table. */
-function bindingIdx(cfg: FunctionCfg, name: string): number {
-  const i = (cfg.bindings ?? []).findIndex((b) => b.name === name);
-  if (i < 0) throw new Error(`no binding ${name}`);
-  return i;
-}
-
-/** Every taint `SiteRecord` harvested across the function's statements. */
-function allSites(cfg: FunctionCfg): SiteRecord[] {
-  const out: SiteRecord[] = [];
-  for (const b of cfg.blocks) for (const s of b.statements ?? []) out.push(...(s.sites ?? []));
-  return out;
-}
-
-/** True iff at least one statement carries a (non-empty) `sites` array. */
-function hasAnySites(cfg: FunctionCfg): boolean {
-  return cfg.blocks.some((b) => (b.statements ?? []).some((s) => (s.sites ?? []).length > 0));
-}
 
 describe('C CfgVisitor — structure', () => {
   it('straight-line body: ENTRY → block → EXIT (seq)', () => {
@@ -322,7 +281,7 @@ describe('C++ CfgVisitor — range-for', () => {
     const header = cfg.edges.find((e) => e.kind === 'loop-back' && e.from === body)?.to;
     expect(header).toBeDefined();
     expect(reachable(cfg, block(cfg, 'done();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('range-for declarator defines the loop variable; iterated expr is a use', () => {

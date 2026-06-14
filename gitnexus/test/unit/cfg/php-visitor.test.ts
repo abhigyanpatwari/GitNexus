@@ -2,7 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { createPhpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/php.js';
 import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
-import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import {
+  makeCfgHarness,
+  type CfgHarness,
+  block,
+  edgeKinds,
+  reaches,
+  reachable,
+  bindingIdx,
+  allSites,
+} from '../../helpers/cfg-harness.js';
 import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
 import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
 
@@ -19,58 +28,12 @@ const php: CfgHarness = makeCfgHarness(phpGrammar, createPhpCfgVisitor(), 'fixtu
 
 const wrap = (body: string): string => `<?php function f($x) { ${body} }`;
 
-const block = (cfg: FunctionCfg, substr: string): number => {
-  const b = cfg.blocks.find((bl) => bl.text.includes(substr));
-  if (!b) throw new Error(`no block containing ${JSON.stringify(substr)}`);
-  return b.index;
-};
-
-const edgeKinds = (cfg: FunctionCfg): Set<string> => new Set(cfg.edges.map((e) => e.kind));
-
-function reaches(cfg: FunctionCfg, from: number, to: number): boolean {
-  const adj = new Map<number, number[]>();
-  for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
-  const seen = new Set([from]);
-  const stack = [from];
-  while (stack.length) {
-    const n = stack.pop() as number;
-    if (n === to) return true;
-    for (const nx of adj.get(n) ?? []) if (!seen.has(nx)) (seen.add(nx), stack.push(nx));
-  }
-  return seen.has(to);
-}
-const reachable = (cfg: FunctionCfg, idx: number): boolean => reaches(cfg, cfg.entryIndex, idx);
-
-/** Is EXIT reverse-reachable from every reachable block? (CDG soundness gate.) */
-function exitReachableFromAll(cfg: FunctionCfg): boolean {
-  for (const b of cfg.blocks) {
-    if (b.index === cfg.exitIndex) continue;
-    if (!reachable(cfg, b.index)) continue; // unreachable blocks exempt
-    if (!reaches(cfg, b.index, cfg.exitIndex)) return false;
-  }
-  return true;
-}
-
-/** Resolve a binding by name → its index in the function's binding table. */
-function bindingIdx(cfg: FunctionCfg, name: string): number {
-  const i = (cfg.bindings ?? []).findIndex((b) => b.name === name);
-  if (i < 0) throw new Error(`no binding ${name}`);
-  return i;
-}
-
 const hasDef = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(idx)));
 const hasUse = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(idx)));
 const hasMayDef = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => (s.mayDefs ?? []).includes(idx)));
-
-/** Every taint `SiteRecord` harvested across the function's statements. */
-function allSites(cfg: FunctionCfg): SiteRecord[] {
-  const out: SiteRecord[] = [];
-  for (const b of cfg.blocks) for (const s of b.statements ?? []) out.push(...(s.sites ?? []));
-  return out;
-}
 
 describe('PHP CfgVisitor — structure', () => {
   it('straight-line body: ENTRY → block → EXIT (seq)', () => {
@@ -127,7 +90,7 @@ describe('PHP CfgVisitor — branching', () => {
     expect(reaches(cfg, block(cfg, 'pos();'), after)).toBe(true);
     expect(reaches(cfg, block(cfg, 'neg();'), after)).toBe(true);
     expect(reaches(cfg, block(cfg, 'zero();'), after)).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('alternative colon if/elseif/else (endif) is modeled like the brace form', () => {
@@ -140,7 +103,7 @@ describe('PHP CfgVisitor — branching', () => {
     const after = block(cfg, 'after();');
     expect(reaches(cfg, block(cfg, 'pos();'), after)).toBe(true);
     expect(reaches(cfg, block(cfg, 'zero();'), after)).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 
@@ -152,7 +115,7 @@ describe('PHP CfgVisitor — loops', () => {
     expect(kinds.has('loop-back')).toBe(true);
     expect(kinds.has('cond-false')).toBe(true);
     expect(reaches(cfg, block(cfg, 'body();'), block(cfg, 'after();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('foreach ($it as $v): loops with cond-true / loop-back / cond-false', () => {
@@ -161,7 +124,7 @@ describe('PHP CfgVisitor — loops', () => {
     expect(kinds.has('cond-true')).toBe(true);
     expect(kinds.has('loop-back')).toBe(true);
     expect(kinds.has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('while: cond-true / loop-back / cond-false', () => {
@@ -170,7 +133,7 @@ describe('PHP CfgVisitor — loops', () => {
     expect(kinds.has('cond-true')).toBe(true);
     expect(kinds.has('loop-back')).toBe(true);
     expect(kinds.has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('do-while: body runs before the test (loop-back from the condition)', () => {
@@ -182,7 +145,7 @@ describe('PHP CfgVisitor — loops', () => {
     const body = block(cfg, 'tick();');
     expect(reachable(cfg, body)).toBe(true);
     expect(reaches(cfg, body, block(cfg, 'after();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('while (true) {} keeps EXIT reverse-reachable AND emits CDG > 0', () => {
@@ -199,7 +162,7 @@ describe('PHP CfgVisitor — loops', () => {
   it('for (;;) {} (no condition) keeps EXIT reverse-reachable', () => {
     const cfg = php.cfgOf(wrap(`for (;;) { step(); }`));
     expect(edgeKinds(cfg).has('cond-false')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 
@@ -217,7 +180,7 @@ describe('PHP CfgVisitor — switch / match', () => {
     expect(cfg.edges).toContainEqual({ from: c2, to: c3, kind: 'fallthrough' });
     // case 1's break skips case 2's body, but the switch join is reachable.
     expect(reaches(cfg, block(cfg, 'a();'), block(cfg, 'e();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('switch without break: no switch-case edge is mislabeled fallthrough at the dispatch', () => {
@@ -225,7 +188,7 @@ describe('PHP CfgVisitor — switch / match', () => {
     // No default → the no-match path reaches the join directly.
     expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     expect(reaches(cfg, block(cfg, 'a();'), block(cfg, 'after();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('match is a value expression (no fallthrough), kept inline — value flows to the assign', () => {
@@ -235,7 +198,7 @@ describe('PHP CfgVisitor — switch / match', () => {
     expect(edgeKinds(cfg).has('switch-case')).toBe(false);
     // The match value and the return both reach EXIT.
     expect(reaches(cfg, block(cfg, 'match ($x)'), cfg.exitIndex)).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 
@@ -250,7 +213,7 @@ describe('PHP CfgVisitor — try / catch / finally', () => {
     expect(reaches(cfg, block(cfg, 'risky();'), fin)).toBe(true);
     expect(reaches(cfg, block(cfg, 'handle($e)'), fin)).toBe(true);
     expect(reaches(cfg, fin, block(cfg, 'after();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('multi-catch type list (TypeError | ValueError) catches and reaches the join', () => {
@@ -259,7 +222,7 @@ describe('PHP CfgVisitor — try / catch / finally', () => {
     );
     expect(edgeKinds(cfg).has('throw')).toBe(true);
     expect(reaches(cfg, block(cfg, 'handle($e)'), block(cfg, 'after();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('return inside try threads through finally (finally-return completion edge)', () => {
@@ -271,7 +234,7 @@ describe('PHP CfgVisitor — try / catch / finally', () => {
     const ret = block(cfg, 'return early()');
     const fin = block(cfg, 'release();');
     expect(reaches(cfg, ret, fin)).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 
@@ -309,14 +272,14 @@ describe('PHP CfgVisitor — break N / continue N', () => {
       }`,
     );
     expect(edgeKinds(cfg).has('continue')).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
   it('bare break targets the nearest loop', () => {
     const cfg = php.cfgOf(wrap(`while ($x) { if ($x) { break; } step(); } after();`));
     expect(edgeKinds(cfg).has('break')).toBe(true);
     expect(reaches(cfg, block(cfg, 'break;'), block(cfg, 'after();'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 
@@ -415,6 +378,6 @@ describe('PHP CfgVisitor — robustness', () => {
   it('goto / named label are modeled as straight-line blocks (no crash)', () => {
     const cfg = php.cfgOf(`<?php function f() { start(); goto end; end: done(); }`);
     expect(reachable(cfg, block(cfg, 'done()'))).toBe(true);
-    expect(exitReachableFromAll(cfg)).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });

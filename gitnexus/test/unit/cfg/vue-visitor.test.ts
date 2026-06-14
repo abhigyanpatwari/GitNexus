@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import TypeScript from 'tree-sitter-typescript';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
-import { makeCfgHarness } from '../../helpers/cfg-harness.js';
+import { makeCfgHarness, block, edgeKinds, reaches } from '../../helpers/cfg-harness.js';
 import { extractVueScript } from '../../../src/core/ingestion/vue-sfc-extractor.js';
 import { getProvider } from '../../../src/core/ingestion/languages/index.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
@@ -33,28 +33,6 @@ function cfgsOfSfc(sfc: string): FunctionCfg[] {
 }
 
 const FIXTURE = path.join(__dirname, '../../integration/cfg/fixtures/vue-hazards.vue');
-
-const block = (cfg: FunctionCfg, substr: string): number => {
-  const b = cfg.blocks.find((bl) => bl.text.includes(substr));
-  if (!b) throw new Error(`no block containing ${JSON.stringify(substr)}`);
-  return b.index;
-};
-
-const edgeKinds = (cfg: FunctionCfg): Set<string> => new Set(cfg.edges.map((e) => e.kind));
-
-/** Does control reach `to` from `from` following edges? */
-function reaches(cfg: FunctionCfg, from: number, to: number): boolean {
-  const adj = new Map<number, number[]>();
-  for (const e of cfg.edges) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
-  const seen = new Set([from]);
-  const stack = [from];
-  while (stack.length) {
-    const n = stack.pop() as number;
-    if (n === to) return true;
-    for (const nx of adj.get(n) ?? []) if (!seen.has(nx)) (seen.add(nx), stack.push(nx));
-  }
-  return seen.has(to);
-}
 
 describe('Vue CfgVisitor reuse — SFC <script> → TypeScript CFG', () => {
   it('extracts the <script setup> block and builds one CFG per script function', () => {
