@@ -328,6 +328,46 @@ describe('trace: BFS core', () => {
     }
   });
 
+  it('reaches a target that lives in a test file even when includeTests is false', async () => {
+    const SYMBOL_T = { id: 'func:T', name: 'T', type: 'Function', filePath: 'src/t.test.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_T], {
+        'func:A': [{
+          sourceId: 'func:A', id: 'func:T', name: 'T', type: 'Function',
+          filePath: 'src/t.test.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+        }],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'T' });
+
+    expect(result.status).toBe('ok');
+    expect(result.hopCount).toBe(1);
+    expect(result.hops[1].name).toBe('T');
+  });
+
+  it('still filters a non-target test-file hop when includeTests is false', async () => {
+    const graph = {
+      'func:A': [{
+        sourceId: 'func:A', id: 'func:M', name: 'M', type: 'Function',
+        filePath: 'src/m.test.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+      }],
+      'func:M': [{
+        sourceId: 'func:M', id: 'func:B', name: 'B', type: 'Function',
+        filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+      }],
+    };
+
+    (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_B], graph));
+    const filtered = await backend.callTool('trace', { from: 'A', to: 'B' });
+    expect(filtered.status).toBe('no_path');
+
+    (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_B], graph));
+    const included = await backend.callTool('trace', { from: 'A', to: 'B', includeTests: true });
+    expect(included.status).toBe('ok');
+    expect(included.hops.map((h: any) => h.name)).toEqual(['A', 'M', 'B']);
+  });
+
   it('resolves from_uid/to_uid without name-based lookup', async () => {
     (executeParameterized as any).mockImplementation(
       (_db: string, query: string, params: any) => {

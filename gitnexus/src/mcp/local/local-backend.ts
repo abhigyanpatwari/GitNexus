@@ -4094,9 +4094,6 @@ export class LocalBackend {
         const nodeId = (row.id ?? row[1]) as string;
         const sourceId = (row.sourceId ?? row[0]) as string;
         const filePath = (row.filePath ?? row[4]) as string;
-
-        if (!includeTests && isTestFilePath(filePath)) continue;
-
         const edgeType = (row.edgeType ?? row[6]) as string;
         const storedConfidence = row.confidence ?? row[7];
         const effectiveConfidence =
@@ -4104,6 +4101,11 @@ export class LocalBackend {
             ? storedConfidence
             : confidenceForRelType(edgeType);
 
+        // Match the explicitly-requested target before the test-file filter.
+        // resolveSymbolCandidates does not exclude test-file symbols, so a
+        // target (or a required hop) that lives in a test file would otherwise
+        // be dropped by the includeTests guard below and produce a false
+        // no_path even when a direct edge exists.
         if (nodeId === toSym.id) {
           parent.set(nodeId, {
             from: sourceId,
@@ -4117,6 +4119,9 @@ export class LocalBackend {
           found = true;
           break;
         }
+
+        // Skip non-target nodes that live in test files unless includeTests.
+        if (!includeTests && isTestFilePath(filePath)) continue;
 
         if (!visited.has(nodeId)) {
           visited.add(nodeId);
