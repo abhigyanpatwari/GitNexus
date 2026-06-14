@@ -95,6 +95,21 @@ export const REACHING_DEF_FACTS_PER_EDGE_CAP = 4;
 export const DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION =
   REACHING_DEF_FACTS_PER_EDGE_CAP * DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION;
 
+/**
+ * Fixpoint-iteration budget for {@link computeReachingDefs}, as a multiple of
+ * the function's block count ({@link emitFileReachingDefs} passes
+ * `blocks.length × this` as `maxBlockVisits`). Iterative reaching-defs on a
+ * reducible CFG converges in O(loop-nesting-depth) passes, so a worklist
+ * re-visits each block a small multiple of times for real code; this budget
+ * tolerates a nesting depth far beyond any hand-written function (real code is
+ * ≤ ~15 deep) while truncating the pathological deep nest that otherwise drives
+ * the solver to O(blocks²) — measured at seconds + GB on a machine-generated
+ * 2000-line all-loops function whose fact count stays linear (so `maxFacts`
+ * never fires). Truncation degrades to a sound empty REACHING_DEF for that one
+ * function (status `truncated`), never wrong facts.
+ */
+export const DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS = 64;
+
 export interface CfgEmitResult {
   blocks: number;
   edges: number;
@@ -359,7 +374,10 @@ export function emitFileReachingDefs(
       );
       continue;
     }
-    const r = computeReachingDefs(cfg, { maxFacts });
+    const r = computeReachingDefs(cfg, {
+      maxFacts,
+      maxBlockVisits: cfg.blocks.length * DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS,
+    });
     if (r.status === 'no-facts') continue;
     result.facts += r.facts.length;
 

@@ -67,6 +67,19 @@ export interface ReachingDefsLimits {
    * `status: 'truncated'`. `undefined`/0 ⇒ unlimited.
    */
   readonly maxFacts?: number;
+  /**
+   * Maximum total block dequeues in the dataflow fixpoint. Iterative
+   * reaching-defs on a reducible CFG converges in O(loop-nesting-depth) passes,
+   * so a worklist visits each block a small multiple of times for real code; a
+   * pathologically deep loop nest (machine-generated / obfuscated) drives the
+   * pass count — and thus the visit total — to O(blocks²) and the solver to
+   * seconds + GB of heap (`maxFacts` does not help: fact count stays linear).
+   * When the visit total exceeds this budget the fixpoint has NOT converged, so
+   * any facts would be unsound — the solver bails to a sound empty
+   * `status: 'truncated'` (like the `overflow` guard). `undefined`/0 ⇒ unlimited
+   * (the default for direct callers; the emit path sets a per-function budget).
+   */
+  readonly maxBlockVisits?: number;
 }
 
 export interface FunctionDefUse {
@@ -222,11 +235,24 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
 
   const inWorklist = new Array(n).fill(true);
   let pending = n;
+  // Fixpoint-iteration ceiling (see ReachingDefsLimits.maxBlockVisits): bound the
+  // total block dequeues so a pathologically deep loop nest can't drive the
+  // worklist to O(blocks²). undefined/0 ⇒ unlimited.
+  const maxBlockVisits =
+    limits?.maxBlockVisits && limits.maxBlockVisits > 0 ? limits.maxBlockVisits : Infinity;
+  let blockVisits = 0;
   while (pending > 0) {
     for (const b of order) {
       if (!inWorklist[b]) continue;
       inWorklist[b] = false;
       pending -= 1;
+      if (++blockVisits > maxBlockVisits) {
+        // Did NOT converge within the budget — the in/out sets are not at the
+        // fixpoint, so any facts would be unsound. Bail to a sound empty
+        // `truncated` result (a coverage gap, not an error), carrying the def/use
+        // telemetry already gathered.
+        return { status: 'truncated', bindings: cfg.bindings, facts: [], defCount, useCount };
+      }
 
       const p = preds[b];
       const inB: Lattice =
