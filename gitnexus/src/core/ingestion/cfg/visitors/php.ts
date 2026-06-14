@@ -173,15 +173,21 @@ class PhpCfgWalk {
 
   /** Visit a body that may be a block-ish container or a single statement. */
   private visitBody(node: SyntaxNode | undefined | null): SeqResult {
-    if (!node) return null;
-    if (node.type === 'compound_statement' || node.type === 'colon_block') {
-      return this.visitSeq(this.statementsOf(node));
+    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
+    try {
+      if (!node) return null;
+      if (node.type === 'compound_statement' || node.type === 'colon_block') {
+        return this.visitSeq(this.statementsOf(node));
+      }
+      return this.visitStmt(node);
+    } finally {
+      this.builder.exitNesting();
     }
-    return this.visitStmt(node);
   }
 
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
+    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
     let entry: number | undefined;
     let dangling: number[] = [];
     let openSimple: number | undefined;
@@ -221,6 +227,7 @@ class PhpCfgWalk {
       }
     }
 
+    this.builder.exitNesting();
     if (entry === undefined) return null;
     return { entry, exits: dangling };
   }

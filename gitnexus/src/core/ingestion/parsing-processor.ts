@@ -8,6 +8,7 @@ import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './c
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { SkippedPath } from './workers/clone-safety.js';
+import type { CfgSkipCounts } from './cfg/collect.js';
 import { logger } from '../logger.js';
 import type {
   ParseWorkerResult,
@@ -196,6 +197,31 @@ export const dispatchChunkParse = async (
       .map(([lang, count]) => `${lang}: ${count}`)
       .join(', ');
     logger.warn(`  Skipped unsupported languages: ${summary}`);
+  }
+
+  // Per-language CFG skip telemetry (#2195): functions skipped during the worker
+  // CFG walk, bucketed by reason. Only surfaced for a `--pdg` run (otherwise
+  // `cfgSkipped` is empty). Warn ONLY when a robustness-relevant bucket
+  // (too-deeply-nested / build-error) is non-zero — a too-many-lines skip is the
+  // expected, benign minified/generated-code case and would otherwise be spam.
+  const cfgSkipped = new Map<string, CfgSkipCounts>();
+  for (const result of chunkResults) {
+    for (const [lang, counts] of Object.entries(result.cfgSkipped ?? {})) {
+      const prev = cfgSkipped.get(lang) ?? { tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 };
+      cfgSkipped.set(lang, {
+        tooManyLines: prev.tooManyLines + counts.tooManyLines,
+        tooDeeplyNested: prev.tooDeeplyNested + counts.tooDeeplyNested,
+        buildError: prev.buildError + counts.buildError,
+      });
+    }
+  }
+  for (const [lang, c] of cfgSkipped) {
+    if (c.tooDeeplyNested > 0 || c.buildError > 0) {
+      logger.warn(
+        `  CFG functions skipped (${lang}): ${c.tooDeeplyNested} too-deeply-nested, ` +
+          `${c.buildError} build-error(s), ${c.tooManyLines} over line cap`,
+      );
+    }
   }
 
   // Clone-safety telemetry (#2112): files whose parse output carried a value

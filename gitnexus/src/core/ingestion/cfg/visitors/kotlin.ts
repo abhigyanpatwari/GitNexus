@@ -190,14 +190,20 @@ class KotlinCfgWalk {
 
   /** Visit a `control_structure_body` (block or single statement). */
   private visitBody(csb: SyntaxNode | undefined | null): SeqResult {
-    const inner = this.bodyOf(csb);
-    if (!inner) return null;
-    if (inner.type === 'statements') return this.visitSeq(this.statementsOf(inner));
-    return this.visitStmt(inner);
+    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
+    try {
+      const inner = this.bodyOf(csb);
+      if (!inner) return null;
+      if (inner.type === 'statements') return this.visitSeq(this.statementsOf(inner));
+      return this.visitStmt(inner);
+    } finally {
+      this.builder.exitNesting();
+    }
   }
 
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
+    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
     let entry: number | undefined;
     let dangling: number[] = [];
     let openSimple: number | undefined;
@@ -234,6 +240,7 @@ class KotlinCfgWalk {
       }
     }
 
+    this.builder.exitNesting();
     if (entry === undefined) return null;
     return { entry, exits: dangling };
   }

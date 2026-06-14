@@ -142,13 +142,19 @@ class TsCfgWalk {
 
   /** Visit a body that may be a `statement_block` or a single statement. */
   private visitBody(node: SyntaxNode | undefined | null): SeqResult {
-    if (!node) return null;
-    if (node.type === 'statement_block') return this.visitSeq(this.statementsOf(node));
-    return this.visitStmt(node);
+    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
+    try {
+      if (!node) return null;
+      if (node.type === 'statement_block') return this.visitSeq(this.statementsOf(node));
+      return this.visitStmt(node);
+    } finally {
+      this.builder.exitNesting();
+    }
   }
 
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
+    this.builder.enterNesting(); // nesting-depth guard (#2195) — see CfgBuilder.enterNesting
     let entry: number | undefined;
     let dangling: number[] = [];
     let openSimple: number | undefined;
@@ -186,6 +192,7 @@ class TsCfgWalk {
       }
     }
 
+    this.builder.exitNesting();
     if (entry === undefined) return null;
     return { entry, exits: dangling };
   }

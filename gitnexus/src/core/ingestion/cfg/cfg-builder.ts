@@ -42,10 +42,38 @@ interface MutableBlock {
   statements: StatementFacts[];
 }
 
+/**
+ * Hard ceiling on CFG recursive-descent NESTING depth (#2195). A language
+ * `CfgVisitor` increments {@link CfgBuilder.enterNesting} on entering each nested
+ * block scope (its `visitBody` / `visitSeq` choke points) and decrements on
+ * leaving, so the live count tracks lexical nesting, not statement width. Real
+ * source nests ≤ ~50 deep; this fires only on machine-generated / adversarial
+ * input. The cap is deliberately far below the engine's native stack limit
+ * (~1.2k+ nesting levels even on the raised worker `stackSizeMb`) so the bail is
+ * a DETERMINISTIC, language-independent {@link CfgNestingDepthError} rather than
+ * a nondeterministic `RangeError` thrown somewhere mid-walk.
+ */
+export const MAX_CFG_NESTING_DEPTH = 500;
+
+/**
+ * Thrown by the visitor nesting-depth guard ({@link CfgBuilder.enterNesting})
+ * when lexical nesting exceeds {@link MAX_CFG_NESTING_DEPTH}. `collectFunctionCfgs`
+ * catches it and counts the function under `skipped.tooDeeplyNested`, isolating
+ * the bail to one function instead of risking a worker-wide stack overflow.
+ */
+export class CfgNestingDepthError extends Error {
+  constructor(readonly limit: number) {
+    super(`CFG nesting depth exceeded ${limit}`);
+    this.name = 'CfgNestingDepthError';
+  }
+}
+
 export class CfgBuilder {
   private readonly blocks: MutableBlock[] = [];
   private readonly edges: CfgEdgeData[] = [];
   private readonly edgeKeys = new Set<string>();
+  /** Live recursive-descent nesting depth — see {@link enterNesting}. */
+  private nesting = 0;
   readonly entryIndex: number;
   readonly exitIndex: number;
 
@@ -117,6 +145,23 @@ export class CfgBuilder {
 
   get blockCount(): number {
     return this.blocks.length;
+  }
+
+  /**
+   * Enter a nested block scope (#2195). Called at the top of each visitor's
+   * `visitBody` / `visitSeq`; PAIR with {@link exitNesting} in a `finally` so
+   * sibling blocks don't accumulate. Throws {@link CfgNestingDepthError} when the
+   * live depth exceeds {@link MAX_CFG_NESTING_DEPTH} — a proactive, deterministic
+   * bail before the native stack can overflow on a pathologically nested function.
+   */
+  enterNesting(): void {
+    if (++this.nesting > MAX_CFG_NESTING_DEPTH)
+      throw new CfgNestingDepthError(MAX_CFG_NESTING_DEPTH);
+  }
+
+  /** Leave a nested block scope — the `finally` partner of {@link enterNesting}. */
+  exitNesting(): void {
+    this.nesting--;
   }
 
   /** Produce the serializable CFG. Caller is responsible for having wired the

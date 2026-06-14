@@ -48,7 +48,7 @@ describe('U3 — collectFunctionCfgs', () => {
       function b() { return 1; }
     `);
     const { cfgs, skipped } = collectFunctionCfgs(root, tsVisitor(), 'a.ts');
-    expect(skipped).toBe(0);
+    expect(skipped).toEqual({ tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 });
     expect(cfgs).toHaveLength(2);
     const a = cfgs.find((c) => c.blocks.some((bl) => bl.text.includes('p();')));
     expect(a).toBeDefined();
@@ -66,17 +66,35 @@ describe('U3 — collectFunctionCfgs', () => {
       'x.ts',
     );
     expect(cfgs).toHaveLength(0);
-    expect(skipped).toBe(0);
+    expect(skipped).toEqual({ tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 });
   });
 
   it('maxFunctionLines skips an over-cap function and counts the skip', () => {
     const big = `function big() {\n${'  step();\n'.repeat(20)}}`;
     const root = tsRoot(`${big}\nfunction small() { ok(); }`);
     const { cfgs, skipped } = collectFunctionCfgs(root, tsVisitor(), 'f.ts', 5);
-    expect(skipped).toBe(1); // big() exceeds the 5-line cap
+    expect(skipped.tooManyLines).toBe(1); // big() exceeds the 5-line cap
+    expect(skipped.tooDeeplyNested).toBe(0);
+    expect(skipped.buildError).toBe(0);
     // small() is still built
     expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
     expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('step();')))).toBe(false);
+  });
+
+  it('a pathologically deep nest is bailed proactively and counted (#2195)', () => {
+    // A function nested far past MAX_CFG_NESTING_DEPTH (real code is ≤ ~50 deep).
+    // The visitor's proactive guard throws CfgNestingDepthError; collect counts
+    // it under tooDeeplyNested and ISOLATES it — the sibling function still
+    // builds (the bail must not drop the whole file's CFGs).
+    const deep = `function deep() { ${'if (c) {'.repeat(1200)} leaf(); ${'}'.repeat(1200)} }`;
+    const root = tsRoot(`${deep}\nfunction sibling() { ok(); }`);
+    const { cfgs, skipped } = collectFunctionCfgs(root, tsVisitor(), 'deep.ts');
+    expect(skipped.tooDeeplyNested).toBe(1);
+    expect(skipped.tooManyLines).toBe(0);
+    expect(skipped.buildError).toBe(0);
+    // sibling() survives the bail
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('leaf();')))).toBe(false);
   });
 });
 

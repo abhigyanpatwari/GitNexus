@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { CfgBuilder, reachableBlocks } from '../../../src/core/ingestion/cfg/cfg-builder.js';
+import {
+  CfgBuilder,
+  CfgNestingDepthError,
+  MAX_CFG_NESTING_DEPTH,
+  reachableBlocks,
+} from '../../../src/core/ingestion/cfg/cfg-builder.js';
 import { ControlFlowContext } from '../../../src/core/ingestion/cfg/control-flow-context.js';
 
 // The CFG core is AST-agnostic — these tests drive the builder + context the
@@ -116,5 +121,31 @@ describe('ControlFlowContext', () => {
     expect(ctx.breakTarget('outer')).toBe(200);
     expect(ctx.continueTarget('outer')).toBe(100);
     expect(ctx.breakTarget()).toBe(210); // unlabeled → nearest (inner)
+  });
+});
+
+describe('CfgBuilder — nesting-depth guard (#2195)', () => {
+  it('throws a typed CfgNestingDepthError once the depth exceeds the cap', () => {
+    const b = new CfgBuilder('f.ts', 1, 1);
+    // Drive enterNesting up to the cap — exactly MAX is allowed, MAX+1 bails.
+    for (let i = 0; i < MAX_CFG_NESTING_DEPTH; i++) b.enterNesting();
+    expect(() => b.enterNesting()).toThrow(CfgNestingDepthError);
+    try {
+      b.enterNesting();
+    } catch (err) {
+      expect(err).toBeInstanceOf(CfgNestingDepthError);
+      expect((err as CfgNestingDepthError).limit).toBe(MAX_CFG_NESTING_DEPTH);
+    }
+  });
+
+  it('exitNesting unwinds the counter so sibling scopes do not accumulate', () => {
+    const b = new CfgBuilder('f.ts', 1, 1);
+    // Enter/exit a shallow scope many more times than the cap: paired exits keep
+    // the live depth at 0, so width (sibling blocks) never trips the guard.
+    for (let i = 0; i < MAX_CFG_NESTING_DEPTH * 3; i++) {
+      b.enterNesting();
+      b.exitNesting();
+    }
+    expect(() => b.enterNesting()).not.toThrow();
   });
 });

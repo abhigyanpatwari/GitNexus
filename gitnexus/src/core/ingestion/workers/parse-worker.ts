@@ -130,7 +130,11 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
-import { collectFunctionCfgs, DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
+import {
+  collectFunctionCfgs,
+  DEFAULT_PDG_MAX_FUNCTION_LINES,
+  type CfgSkipCounts,
+} from '../cfg/collect.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -412,6 +416,15 @@ export interface ParseWorkerResult {
    * entries predate the field; consumers must guard with `?? []`.
    */
   skippedPaths?: SkippedPath[];
+  /**
+   * Per-language CFG-bearing functions skipped during the worker walk, bucketed
+   * by reason (#2195): too-many-lines, too-deeply-nested (the proactive
+   * depth-guard bail), or build-error. Survives the parse cache (a small number
+   * map, kept by `...result` in slimParseWorkerResultsForCache) and is merged +
+   * logged per-language in mergeChunkResults, so a CFG coverage gap is visible.
+   * Optional for cache backward-compatibility — older shards predate it.
+   */
+  cfgSkipped?: Record<string, CfgSkipCounts>;
   fileCount: number;
 }
 
@@ -878,6 +891,7 @@ const processBatch = (
     fileScopeBindings: [],
     parsedFiles: [],
     skippedLanguages: {},
+    cfgSkipped: {},
     fileCount: 0,
   };
 
@@ -1258,13 +1272,15 @@ const processFileGroup = (
       // SCHEMA_BUMP + the pdg-folded chunk-hash key (see parse-cache.ts).
       if (PDG_ENABLED && provider.cfgVisitor) {
         // Isolate the CFG build per file: a throw here (an unexpected tree-sitter
-        // node shape, a deep-nesting stack overflow) must NOT propagate — it
-        // would escape processFileGroup to the language-group catch, which treats
-        // any throw as "parser unavailable" and silently drops EVERY remaining
-        // file in the group. Skip CFG for this one file; parsing + scope
-        // resolution proceed unaffected (CFG is a strictly-additive opt-in).
+        // node shape) must NOT propagate — it would escape processFileGroup to the
+        // language-group catch, which treats any throw as "parser unavailable" and
+        // silently drops EVERY remaining file in the group. Skip CFG for this one
+        // file; parsing + scope resolution proceed unaffected (CFG is a
+        // strictly-additive opt-in). collectFunctionCfgs ALSO isolates per
+        // FUNCTION now (#2195) — a deep-nesting bail or a single malformed function
+        // is counted in `skipped` and skipped, not allowed to lose the whole file.
         try {
-          const { cfgs } = collectFunctionCfgs(
+          const { cfgs, skipped } = collectFunctionCfgs(
             tree.rootNode,
             provider.cfgVisitor,
             file.path,
@@ -1275,6 +1291,18 @@ const processFileGroup = (
             lineOffset,
           );
           if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
+          // Surface per-function CFG skips per-language (#2195): merged + logged
+          // in mergeChunkResults. Only accumulate when something was skipped so
+          // the common (nothing-skipped) case stays a no-op.
+          if (skipped.tooManyLines || skipped.tooDeeplyNested || skipped.buildError) {
+            const agg = (result.cfgSkipped ??= {});
+            const prev = agg[language] ?? { tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 };
+            agg[language] = {
+              tooManyLines: prev.tooManyLines + skipped.tooManyLines,
+              tooDeeplyNested: prev.tooDeeplyNested + skipped.tooDeeplyNested,
+              buildError: prev.buildError + skipped.buildError,
+            };
+          }
         } catch (err) {
           const message = `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`;
           if (parentPort) parentPort.postMessage({ type: 'warning', message });
