@@ -128,10 +128,6 @@ class FactAccumulator {
     return this.defs.length + this.mayDefs.length;
   }
 
-  useCount(): number {
-    return this.uses.length;
-  }
-
   finish(): StatementFacts {
     return {
       line: this.line,
