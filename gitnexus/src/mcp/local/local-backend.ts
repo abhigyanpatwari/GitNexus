@@ -4091,7 +4091,6 @@ export class LocalBackend {
       {
         from: string;
         name: string;
-        type: string;
         filePath: string;
         startLine: number;
         edgeType: string;
@@ -4100,7 +4099,9 @@ export class LocalBackend {
     >();
 
     let found = false;
-    let deepestInfo: {
+    // The last node discovered at the deepest reached level — surfaced as
+    // `furthest` in the no_path response to hint where the chain breaks.
+    let lastReached: {
       name: string;
       filePath: string;
       startLine: number;
@@ -4129,12 +4130,16 @@ export class LocalBackend {
       if (rows.length >= rowCap) truncated = true;
 
       for (const row of rows) {
+        // Decode once. The `?? row[N]` fallback handles LadybugDB tuple-mode
+        // returns; the positional indices mirror the RETURN column order above.
         const nodeId = (row.id ?? row[1]) as string;
         const sourceId = (row.sourceId ?? row[0]) as string;
+        const name = (row.name ?? row[2]) as string;
         const filePath = (row.filePath ?? row[4]) as string;
+        const startLine = (row.startLine ?? row[5]) as number;
         const edgeType = (row.edgeType ?? row[6]) as string;
         const storedConfidence = row.confidence ?? row[7];
-        const effectiveConfidence =
+        const confidence =
           typeof storedConfidence === 'number' && storedConfidence > 0
             ? storedConfidence
             : confidenceForRelType(edgeType);
@@ -4145,15 +4150,7 @@ export class LocalBackend {
         // be dropped by the includeTests guard below and produce a false
         // no_path even when a direct edge exists.
         if (nodeId === toSym.id) {
-          parent.set(nodeId, {
-            from: sourceId,
-            name: (row.name ?? row[2]) as string,
-            type: (row.type ?? row[3]) as string,
-            filePath,
-            startLine: (row.startLine ?? row[5]) as number,
-            edgeType,
-            confidence: effectiveConfidence,
-          });
+          parent.set(nodeId, { from: sourceId, name, filePath, startLine, edgeType, confidence });
           found = true;
           break;
         }
@@ -4163,17 +4160,9 @@ export class LocalBackend {
 
         if (!visited.has(nodeId)) {
           visited.add(nodeId);
-          parent.set(nodeId, {
-            from: sourceId,
-            name: (row.name ?? row[2]) as string,
-            type: (row.type ?? row[3]) as string,
-            filePath,
-            startLine: (row.startLine ?? row[5]) as number,
-            edgeType,
-            confidence: effectiveConfidence,
-          });
+          parent.set(nodeId, { from: sourceId, name, filePath, startLine, edgeType, confidence });
           nextFrontier.push(nodeId);
-          deepestInfo = { name: (row.name ?? row[2]) as string, filePath, startLine: (row.startLine ?? row[5]) as number };
+          lastReached = { name, filePath, startLine };
           reachedDepth = depth;
         }
       }
@@ -4212,7 +4201,7 @@ export class LocalBackend {
       status: 'no_path',
       from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
       to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
-      furthest: deepestInfo ? { ...deepestInfo, depth: reachedDepth } : null,
+      furthest: lastReached ? { ...lastReached, depth: reachedDepth } : null,
       ...(truncated ? { truncated: true } : {}),
       suggestion: truncated
         ? 'Search was truncated at a traversal cap before exhausting the graph — a path ' +
