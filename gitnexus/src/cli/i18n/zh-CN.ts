@@ -59,6 +59,8 @@ export const zhCN = {
   'tool.usage.context': '用法：gitnexus context <符号名> [--uid <uid>] [--file <路径>]',
   'tool.usage.impact':
     '用法：gitnexus impact <符号名> [--uid <uid>] [--file <路径>] [--kind <类型>] [--direction upstream|downstream]',
+  'tool.usage.trace':
+    '用法：gitnexus trace <起点> <终点> [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
@@ -138,6 +140,7 @@ export const zhCN = {
   'help.command.query.description': '搜索知识图谱中与概念相关的执行流程',
   'help.command.context.description': '查看代码符号的 360 度视图：调用者、被调用者、流程',
   'help.command.impact.description': '影响面分析：修改符号会影响什么',
+  'help.command.trace.description': '查找两个符号之间的最短有向路径（调用与类成员边）',
   'help.command.cypher.description': '对知识图谱执行原始 Cypher 查询',
   'help.command.detectChanges.description': '将 git diff hunk 映射到已索引符号和受影响执行流程',
   'help.command.check.description': '对已索引图谱运行结构检查',
@@ -232,6 +235,12 @@ export const zhCN = {
   'help.option.impact.limit': '每层深度最大符号数（默认：100）',
   'help.option.impact.offset': '每层深度跳过 N 个符号（分页用）',
   'help.option.impact.summaryOnly': '仅返回计数和风险等级，省略符号列表',
+  'help.option.trace.fromUid': '源符号 UID（零歧义查找）',
+  'help.option.trace.fromFile': '源文件路径，用于消除常见名称歧义',
+  'help.option.trace.toUid': '目标符号 UID（零歧义查找）',
+  'help.option.trace.toFile': '目标文件路径，用于消除常见名称歧义',
+  'help.option.trace.depth': '最大路径跳数（默认：10）',
+  'help.option.trace.includeTests': '遍历时包含测试文件中的符号（默认：false）',
   'help.option.detectChanges.scope': '分析范围：unstaged、staged、all 或 compare',
   'help.option.detectChanges.baseRef': 'compare 范围的分支/提交（例如 main）',
   'help.option.check.cycles': '检测循环导入，并在发现循环时失败',

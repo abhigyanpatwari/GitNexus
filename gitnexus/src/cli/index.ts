@@ -354,6 +354,19 @@ program
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program
+  .command('trace <from> <to>')
+  .description('Find the shortest directed path between two symbols (call + class-member edges)')
+  .option('--from-uid <uid>', 'Source symbol UID (zero-ambiguity)')
+  .option('--from-file <path>', 'Source file path hint')
+  .option('--to-uid <uid>', 'Target symbol UID (zero-ambiguity)')
+  .option('--to-file <path>', 'Target file path hint')
+  .option('--depth <n>', 'Max path length in hops (default: 10)')
+  .option('--include-tests', 'Include test files in results')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index')
+  .action(createLbugLazyAction(() => import('./tool.js'), 'traceCommand'));
+
+program
   .command('cypher <query>')
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')

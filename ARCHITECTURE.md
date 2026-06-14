@@ -38,6 +38,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | `detect_changes` | Map git diffs to affected symbols and processes |
 | `rename` | Graph-assisted multi-file rename with `dry_run` preview |
 | `api_impact` | Pre-change impact report for an API route handler |
+| `trace` | Shortest directed path between two symbols (call + class-member edges) |
 | `route_map` | API route → handler → consumer mappings |
 | `tool_map` | MCP/RPC tool definitions and handlers |
 | `shape_check` | Response shape vs consumer property access mismatches |

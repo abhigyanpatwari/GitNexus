@@ -55,6 +55,8 @@ export const en = {
   'tool.usage.context': 'Usage: gitnexus context <symbol_name> [--uid <uid>] [--file <path>]',
   'tool.usage.impact':
     'Usage: gitnexus impact <symbol_name> [--uid <uid>] [--file <path>] [--kind <kind>] [--direction upstream|downstream]',
+  'tool.usage.trace':
+    'Usage: gitnexus trace <from> <to> [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
@@ -141,6 +143,8 @@ export const en = {
   'help.command.context.description':
     '360-degree view of a code symbol: callers, callees, processes',
   'help.command.impact.description': 'Blast radius analysis: what breaks if you change a symbol',
+  'help.command.trace.description':
+    'Find the shortest directed path between two symbols (call + class-member edges)',
   'help.command.cypher.description': 'Execute raw Cypher query against the knowledge graph',
   'help.command.detectChanges.description':
     'Map git diff hunks to indexed symbols and affected execution flows',
@@ -248,6 +252,12 @@ export const en = {
   'help.option.impact.limit': 'Max symbols per depth level (default: 100)',
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
+  'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',
+  'help.option.trace.fromFile': 'Source file path to disambiguate common names',
+  'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',
+  'help.option.trace.toFile': 'Target file path to disambiguate common names',
+  'help.option.trace.depth': 'Max path length in hops (default: 10)',
+  'help.option.trace.includeTests': 'Traverse through test-file symbols (default: false)',
   'help.option.detectChanges.scope': 'What to analyze: unstaged, staged, all, or compare',
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',
