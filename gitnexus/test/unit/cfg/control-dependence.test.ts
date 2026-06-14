@@ -470,7 +470,12 @@ describe('computeControlDependence — reverse-DF formulation regressions (#2195
     // Block 0 controls every chain node EXCEPT the last (M): the sole edge into
     // EXIT is M→exit, so M post-dominates the whole fan (ipdom[0]===M) and is
     // controlled by nothing. The other M-1 spine nodes are each 0-controlled.
+    // Assert IDENTITY too (not just count) so a fast-but-wrong reimplementation
+    // emitting M-1 mis-attributed edges can't pass on length alone.
     expect(cdg).toHaveLength(M - 1);
+    expect(cdg.every((e) => e.controllerBlock === 0)).toBe(true);
+    expect(cdg.every((e) => e.dependentBlock >= 1 && e.dependentBlock < M)).toBe(true);
+    expect(new Set(cdg.map((e) => e.dependentBlock)).size).toBe(M - 1); // all distinct
     expect(ms).toBeLessThan(1000);
   });
 });

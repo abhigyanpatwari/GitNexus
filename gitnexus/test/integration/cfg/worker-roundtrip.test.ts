@@ -96,6 +96,26 @@ describe('U3 — collectFunctionCfgs', () => {
     expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
     expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('leaf();')))).toBe(false);
   });
+
+  it('isolates a generic build error to one function and counts it (buildError, #2195)', () => {
+    // A non-CfgNestingDepthError throw from buildFunctionCfg used to escape to the
+    // worker language-group catch and drop EVERY remaining file's CFG. It must now
+    // be caught per function, counted under buildError, and NOT stop the sibling.
+    const real = tsVisitor();
+    const flaky: CfgVisitor<SyntaxNode> = {
+      isFunction: (n) => real.isFunction(n),
+      buildFunctionCfg: (n, fp) => {
+        if (n.text.includes('boom()')) throw new Error('synthetic build failure');
+        return real.buildFunctionCfg(n, fp);
+      },
+    };
+    const root = tsRoot(`function bad() { boom(); }\nfunction good() { ok(); }`);
+    const { cfgs, skipped } = collectFunctionCfgs(root, flaky, 'be.ts');
+    expect(skipped).toEqual({ tooManyLines: 0, tooDeeplyNested: 0, buildError: 1 });
+    // good() still builds — the throw didn't drop the file's other CFGs
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('boom();')))).toBe(false);
+  });
 });
 
 describe('U3 — CFG side-channel JSON round-trip (no AST leakage, no field loss)', () => {

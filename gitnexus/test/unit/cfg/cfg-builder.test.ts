@@ -125,23 +125,42 @@ describe('ControlFlowContext', () => {
 });
 
 describe('CfgBuilder — nesting-depth guard (#2195)', () => {
-  it('throws a typed CfgNestingDepthError once the depth exceeds the cap', () => {
+  it('throws a typed CfgNestingDepthError carrying the limit once the depth exceeds the cap', () => {
     const b = new CfgBuilder('f.ts', 1, 1);
     // Drive enterNesting up to the cap — exactly MAX is allowed, MAX+1 bails.
     for (let i = 0; i < MAX_CFG_NESTING_DEPTH; i++) b.enterNesting();
-    expect(() => b.enterNesting()).toThrow(CfgNestingDepthError);
+    // Capture unconditionally: a `catch`-only assertion would silently pass if a
+    // future change stopped throwing (the error never surfaces). `caught` stays
+    // undefined and the instanceof check fails loudly if no throw occurs.
+    let caught: unknown;
     try {
       b.enterNesting();
     } catch (err) {
-      expect(err).toBeInstanceOf(CfgNestingDepthError);
-      expect((err as CfgNestingDepthError).limit).toBe(MAX_CFG_NESTING_DEPTH);
+      caught = err;
     }
+    expect(caught).toBeInstanceOf(CfgNestingDepthError);
+    expect((caught as CfgNestingDepthError).limit).toBe(MAX_CFG_NESTING_DEPTH);
+  });
+
+  it('withNesting balances the counter on return AND on throw (sibling scopes do not accumulate)', () => {
+    const b = new CfgBuilder('f.ts', 1, 1);
+    // Run/throw a shallow scope many more times than the cap: withNesting's
+    // finally keeps the live depth at 0, so width (sibling blocks) never trips
+    // the guard — including the throwing path (the finally must still fire).
+    for (let i = 0; i < MAX_CFG_NESTING_DEPTH * 3; i++) {
+      expect(b.withNesting(() => 7)).toBe(7);
+      expect(() =>
+        b.withNesting(() => {
+          throw new Error('boom');
+        }),
+      ).toThrow('boom');
+    }
+    // Depth is back to 0, so one more scope is fine.
+    expect(() => b.withNesting(() => 0)).not.toThrow();
   });
 
   it('exitNesting unwinds the counter so sibling scopes do not accumulate', () => {
     const b = new CfgBuilder('f.ts', 1, 1);
-    // Enter/exit a shallow scope many more times than the cap: paired exits keep
-    // the live depth at 0, so width (sibling blocks) never trips the guard.
     for (let i = 0; i < MAX_CFG_NESTING_DEPTH * 3; i++) {
       b.enterNesting();
       b.exitNesting();
