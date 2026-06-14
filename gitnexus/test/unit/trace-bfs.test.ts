@@ -311,6 +311,23 @@ describe('trace: BFS core', () => {
     expect(result.status).toBe('no_path');
   });
 
+  it('treats maxDepth 0 / negative / NaN as the default rather than a false no_path', async () => {
+    const oneHop = {
+      'func:A': [
+        {
+          sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function',
+          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+        },
+      ],
+    };
+    for (const badDepth of [0, -5, NaN]) {
+      (executeParameterized as any).mockImplementation(makeResolveMock([SYMBOL_A], [SYMBOL_B], oneHop));
+      const result = await backend.callTool('trace', { from: 'A', to: 'B', maxDepth: badDepth });
+      expect(result.status, `maxDepth=${badDepth}`).toBe('ok');
+      expect(result.hopCount, `maxDepth=${badDepth}`).toBe(1);
+    }
+  });
+
   it('resolves from_uid/to_uid without name-based lookup', async () => {
     (executeParameterized as any).mockImplementation(
       (_db: string, query: string, params: any) => {

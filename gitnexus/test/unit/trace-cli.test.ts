@@ -91,4 +91,14 @@ describe('CLI trace command', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
   });
+
+  it('exits with usage when --depth is non-numeric instead of forwarding NaN', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(traceCommand('A', 'B', { depth: 'abc' })).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
 });

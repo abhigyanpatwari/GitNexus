@@ -4039,7 +4039,18 @@ export class LocalBackend {
       };
     }
 
-    const maxDepth = Math.min(params.maxDepth ?? 10, 30);
+    // Sanitize maxDepth at the real boundary: the MCP inputSchema's
+    // minimum/maximum is advisory only (callTool is reachable directly), so a
+    // caller can pass 0, a negative, NaN, or a non-integer. `??` does NOT
+    // recover 0/NaN, and Math.min has no lower bound — left unguarded, any of
+    // those makes the BFS loop run zero iterations and return a false no_path.
+    const DEFAULT_TRACE_DEPTH = 10;
+    const MAX_TRACE_DEPTH = 30;
+    const requestedDepth =
+      Number.isInteger(params.maxDepth) && (params.maxDepth as number) > 0
+        ? (params.maxDepth as number)
+        : DEFAULT_TRACE_DEPTH;
+    const maxDepth = Math.min(requestedDepth, MAX_TRACE_DEPTH);
     const includeTests = params.includeTests ?? false;
     const EDGE_TYPES = ['CALLS', 'HAS_METHOD'];
 

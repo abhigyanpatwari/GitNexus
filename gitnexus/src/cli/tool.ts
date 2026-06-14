@@ -291,6 +291,15 @@ export async function traceCommand(
     cliErrorKey('tool.usage.trace');
     process.exit(1);
   }
+  // Reject a non-numeric / non-positive --depth up front rather than forwarding
+  // NaN (which the backend would silently treat as the default).
+  if (options?.depth !== undefined) {
+    const parsedDepth = Number(options.depth);
+    if (!Number.isInteger(parsedDepth) || parsedDepth < 1) {
+      cliErrorKey('tool.usage.trace');
+      process.exit(1);
+    }
+  }
 
   try {
     const backend = await getBackend();
