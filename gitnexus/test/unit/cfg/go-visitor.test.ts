@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { createGoCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/go.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
 import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
 import { computeControlDependence } from '../../../src/core/ingestion/cfg/control-dependence.js';
@@ -53,6 +53,15 @@ const hasUse = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(idx)));
 const hasMayDef = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => (s.mayDefs ?? []).includes(idx)));
+
+/** Every taint `SiteRecord` harvested across the function's statements. */
+function allSites(cfg: FunctionCfg): SiteRecord[] {
+  const out: SiteRecord[] = [];
+  for (const b of cfg.blocks) for (const s of b.statements ?? []) out.push(...(s.sites ?? []));
+  return out;
+}
+const hasAnySites = (cfg: FunctionCfg): boolean =>
+  cfg.blocks.some((b) => (b.statements ?? []).some((s) => (s.sites ?? []).length > 0));
 
 /** Wrap a Go function body in a minimal compilable package. */
 const pkg = (src: string): string => `package main\n${src}\n`;
@@ -422,5 +431,59 @@ describe('Go CfgVisitor — functionStartColumn', () => {
     expect(cfgs).toHaveLength(2);
     expect(cfgs[0].functionStartLine).toBe(cfgs[1].functionStartLine);
     expect(cfgs[0].functionStartColumn).not.toBe(cfgs[1].functionStartColumn);
+  });
+});
+
+// U6 — call-site `sites[]` taint substrate. INERT BY DESIGN: no Go taint model
+// is registered, so these sites produce zero TAINTED edges; they only give the
+// deferred per-language source/sink model something to match against. Go has no
+// `new` — constructor-style calls are plain `call_expression`s.
+describe('Go CfgVisitor — call-site sites[] substrate', () => {
+  const cfgOf = (body: string): FunctionCfg =>
+    go.cfgOf(pkg(`func f(cmd, x, a int, xs []int) { ${body} }`));
+
+  it('a bare call records a `call` site with callee name + arg occurrence', () => {
+    const cfg = cfgOf(`exec(cmd)`);
+    const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'exec');
+    expect(site).toBeDefined();
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'cmd'));
+  });
+
+  it('a selector call (`db.Query(x)`) records the receiver binding + dotted callee', () => {
+    const cfg = cfgOf(`db.Query(x)`);
+    const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'db.Query');
+    expect(site).toBeDefined();
+    expect(site?.receiver).toBe(bindingIdx(cfg, 'db'));
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'x'));
+  });
+
+  it('a call assigned with `:=` records resultDefs', () => {
+    const cfg = cfgOf(`r := load(a); _ = r`);
+    const site = allSites(cfg).find((s) => s.callee === 'load');
+    expect(site?.resultDefs).toContain(bindingIdx(cfg, 'r'));
+  });
+
+  it('a variadic call (`g(xs...)`) marks the spread position', () => {
+    const cfg = cfgOf(`g(xs...)`);
+    const site = allSites(cfg).find((s) => s.callee === 'g');
+    expect(site?.spread).toBe(0);
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'xs'));
+  });
+
+  it('a nested call via-tags the inner site (sanitizer substrate)', () => {
+    const cfg = cfgOf(`exec(escape(x))`);
+    const sites = allSites(cfg);
+    const exec = sites.findIndex((s) => s.callee === 'exec');
+    const escape = sites.findIndex((s) => s.callee === 'escape');
+    expect(exec).toBeGreaterThanOrEqual(0);
+    expect(escape).toBeGreaterThanOrEqual(0);
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escape].args?.[0]).toContainEqual(x);
+    expect(sites[exec].args?.[0]).toContainEqual([x, escape]);
+  });
+
+  it('a CFG-only function (no calls) emits NO sites key (omit-when-empty)', () => {
+    const cfg = cfgOf(`x := a + a; _ = x`);
+    expect(hasAnySites(cfg)).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import {
   createCCfgVisitor,
   createCppCfgVisitor,
 } from '../../../src/core/ingestion/cfg/visitors/c-cpp.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
 
 // U2 — the C/C++ CfgVisitor, one hazard per test (KTD5: real-parser regression,
@@ -58,6 +58,18 @@ function bindingIdx(cfg: FunctionCfg, name: string): number {
   const i = (cfg.bindings ?? []).findIndex((b) => b.name === name);
   if (i < 0) throw new Error(`no binding ${name}`);
   return i;
+}
+
+/** Every taint `SiteRecord` harvested across the function's statements. */
+function allSites(cfg: FunctionCfg): SiteRecord[] {
+  const out: SiteRecord[] = [];
+  for (const b of cfg.blocks) for (const s of b.statements ?? []) out.push(...(s.sites ?? []));
+  return out;
+}
+
+/** True iff at least one statement carries a (non-empty) `sites` array. */
+function hasAnySites(cfg: FunctionCfg): boolean {
+  return cfg.blocks.some((b) => (b.statements ?? []).some((s) => (s.sites ?? []).length > 0));
 }
 
 describe('C CfgVisitor — structure', () => {
@@ -301,5 +313,72 @@ describe('C++ CfgVisitor — lambdas are CFG-bearing functions', () => {
     for (const cfg of cfgs) {
       expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
     }
+  });
+});
+
+// U6 — call-site `sites[]` taint substrate. INERT BY DESIGN: no C-family taint
+// model is registered, so these sites produce zero TAINTED edges; they only
+// give the deferred per-language source/sink model something to match against.
+// The assertions verify the substrate is harvested in the TS `SiteRecord` shape.
+describe('C CfgVisitor — call-site sites[] substrate', () => {
+  it('a bare call records a `call` site with callee name + arg occurrence', () => {
+    const cfg = c.cfgOf(`void f(int cmd) { exec(cmd); }`);
+    const sites = allSites(cfg);
+    const exec = sites.find((s) => s.kind === 'call' && s.callee === 'exec');
+    expect(exec).toBeDefined();
+    // `cmd` (binding 0) occurs at argument position 0.
+    expect(exec?.args?.[0]).toContainEqual(bindingIdx(cfg, 'cmd'));
+  });
+
+  it('a method call (`db.query(x)`) records the receiver binding + dotted callee', () => {
+    const cfg = c.cfgOf(`void f(int x) { db.query(x); }`);
+    const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'db.query');
+    expect(site).toBeDefined();
+    expect(site?.receiver).toBe(bindingIdx(cfg, 'db'));
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'x'));
+  });
+
+  it('a nested call (`exec(escape(x))`) via-tags the inner site (sanitizer substrate)', () => {
+    const cfg = c.cfgOf(`void f(int x) { exec(escape(x)); }`);
+    const sites = allSites(cfg);
+    const exec = sites.findIndex((s) => s.callee === 'exec');
+    const escape = sites.findIndex((s) => s.callee === 'escape');
+    expect(exec).toBeGreaterThanOrEqual(0);
+    expect(escape).toBeGreaterThanOrEqual(0);
+    const x = bindingIdx(cfg, 'x');
+    // escape's arg 0 carries a plain `x`; exec's arg 0 carries `[x, escapeSiteIdx]`.
+    expect(sites[escape].args?.[0]).toContainEqual(x);
+    expect(sites[exec].args?.[0]).toContainEqual([x, escape]);
+  });
+
+  it('a call assigned to a variable records resultDefs', () => {
+    const cfg = c.cfgOf(`void f(int a) { int y = load(a); }`);
+    const site = allSites(cfg).find((s) => s.callee === 'load');
+    expect(site?.resultDefs).toContain(bindingIdx(cfg, 'y'));
+  });
+
+  it('a CFG-only function (no calls) emits NO sites key (omit-when-empty)', () => {
+    const cfg = c.cfgOf(`void f(int a, int b) { int x = a + b; }`);
+    expect(hasAnySites(cfg)).toBe(false);
+    expect(allSites(cfg)).toHaveLength(0);
+  });
+});
+
+describe('C++ CfgVisitor — call-site sites[] substrate', () => {
+  it('a `new Foo(x)` records a `new` site with the constructor as callee', () => {
+    const cfg = cpp.cfgOf(`void f(int x) { auto p = new Foo(x); }`);
+    const site = allSites(cfg).find((s) => s.kind === 'new');
+    expect(site).toBeDefined();
+    expect(site?.callee).toBe('Foo');
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'x'));
+    // `auto p = new Foo(x)` attaches resultDefs of `p` to the new site.
+    expect(site?.resultDefs).toContain(bindingIdx(cfg, 'p'));
+  });
+
+  it('a `ns::g(z)` namespace call folds `::` into a dotted callee path', () => {
+    const cfg = cpp.cfgOf(`void f(int z) { ns::g(z); }`);
+    const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'ns.g');
+    expect(site).toBeDefined();
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'z'));
   });
 });

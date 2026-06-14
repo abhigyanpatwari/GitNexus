@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { createJavaCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/java.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
 
 // U4 — the Java CfgVisitor, one hazard per test (KTD5: real-parser regression,
@@ -53,6 +53,15 @@ function bindingIdx(cfg: FunctionCfg, name: string): number {
   if (i < 0) throw new Error(`no binding ${name}`);
   return i;
 }
+
+/** Every taint `SiteRecord` harvested across the function's statements. */
+function allSites(cfg: FunctionCfg): SiteRecord[] {
+  const out: SiteRecord[] = [];
+  for (const b of cfg.blocks) for (const s of b.statements ?? []) out.push(...(s.sites ?? []));
+  return out;
+}
+const hasAnySites = (cfg: FunctionCfg): boolean =>
+  cfg.blocks.some((b) => (b.statements ?? []).some((s) => (s.sites ?? []).length > 0));
 
 const hasDef = (cfg: FunctionCfg, idx: number): boolean =>
   cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(idx)));
@@ -511,5 +520,55 @@ describe('Java CfgVisitor — does not throw on exotic shapes', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// U6 — call-site `sites[]` taint substrate. INERT BY DESIGN: no Java taint model
+// is registered, so these sites produce zero TAINTED edges; they only give the
+// deferred per-language source/sink model something to match against.
+describe('Java CfgVisitor — call-site sites[] substrate', () => {
+  const cfgOf = (body: string): FunctionCfg =>
+    java.cfgOf(`class C { void f(int cmd, int x, int a) { ${body} } }`);
+
+  it('a bare method call records a `call` site with callee + arg occurrence', () => {
+    const cfg = cfgOf(`exec(cmd);`);
+    const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'exec');
+    expect(site).toBeDefined();
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'cmd'));
+  });
+
+  it('a receiver call (`db.query(x)`) records the receiver binding + dotted callee', () => {
+    // Java carries the method NAME on the `name` field and the receiver on the
+    // sibling `object` field — the substrate normalizes both to receiver+callee.
+    const cfg = cfgOf(`db.query(x);`);
+    const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'db.query');
+    expect(site).toBeDefined();
+    expect(site?.receiver).toBe(bindingIdx(cfg, 'db'));
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'x'));
+  });
+
+  it('`new Foo(x)` records a `new` site with the type as callee', () => {
+    const cfg = cfgOf(`Object p = new Foo(x);`);
+    const site = allSites(cfg).find((s) => s.kind === 'new');
+    expect(site?.callee).toBe('Foo');
+    expect(site?.args?.[0]).toContainEqual(bindingIdx(cfg, 'x'));
+    expect(site?.resultDefs).toContain(bindingIdx(cfg, 'p'));
+  });
+
+  it('a nested call via-tags the inner site (sanitizer substrate)', () => {
+    const cfg = cfgOf(`exec(escape(x));`);
+    const sites = allSites(cfg);
+    const exec = sites.findIndex((s) => s.callee === 'exec');
+    const escape = sites.findIndex((s) => s.callee === 'escape');
+    expect(exec).toBeGreaterThanOrEqual(0);
+    expect(escape).toBeGreaterThanOrEqual(0);
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escape].args?.[0]).toContainEqual(x);
+    expect(sites[exec].args?.[0]).toContainEqual([x, escape]);
+  });
+
+  it('a CFG-only function (no calls) emits NO sites key (omit-when-empty)', () => {
+    const cfg = java.cfgOf(`class C { void f(int a, int b) { int x = a + b; } }`);
+    expect(hasAnySites(cfg)).toBe(false);
   });
 });

@@ -46,6 +46,13 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
+import { CallSiteFactAccumulator } from './call-site-harvest.js';
+
+/**
+ * The per-statement def/use + call-site collector, aliased to the shared
+ * {@link CallSiteFactAccumulator} (one name for the value and the type).
+ */
+type FactAccumulator = CallSiteFactAccumulator;
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -89,6 +96,12 @@ export class CsharpHarvester {
   private readonly nearestScopeCache = new Map<number, Scope>();
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * Call/new node id → bindings whose declarator/assignment VALUE is exactly
+   * that call (#2195 U6). Registered before the value walk, consumed by
+   * {@link visitCall} (mirrors the TS harvester's `resultDefTargets`).
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -390,7 +403,11 @@ export class CsharpHarvester {
             const name = d.childForFieldName('name');
             // The initializer (if any) is the LAST named child after `name`.
             const init = this.declaratorInit(d);
-            if (name && init) this.def(name, acc);
+            if (name && init) {
+              const snap = acc.defSnapshot();
+              this.def(name, acc);
+              this.registerResultDefs(init, acc.defsSince(snap));
+            }
             if (init) this.walkValue(init, acc);
           }
         }
@@ -403,8 +420,10 @@ export class CsharpHarvester {
         if (left) {
           const lv = this.unwrapLvalue(left);
           if (lv.type === 'identifier') {
+            const snap = acc.defSnapshot();
             this.def(lv, acc);
             if (op !== '=') this.use(lv, acc); // compound assign reads too
+            if (op === '=' && right) this.registerResultDefs(right, acc.defsSince(snap));
           } else if (lv.type === 'tuple_expression') {
             this.defTupleTargets(lv, acc); // `(a, b) = …` deconstruction
           } else {
@@ -452,11 +471,20 @@ export class CsharpHarvester {
         if (alt) this.conditional(() => this.walkValue(alt, acc));
         return;
       }
+      case 'invocation_expression':
+        // #2195 U6: explicit case (previously default-descended) — same uses,
+        // plus a taint-site record. Defs/uses stay byte-identical.
+        this.visitCall(node, acc, 'call');
+        return;
+      case 'object_creation_expression':
+        // `new Foo(x)` — constructor call site (`type` field is the callee).
+        this.visitCall(node, acc, 'new');
+        return;
       case 'member_access_expression': {
         // `a.B` — value read of the chain root only; the member name is not a
-        // scalar binding. Mirrors the TS member-read use semantics.
-        const expr = node.childForFieldName('expression');
-        if (expr) this.walkValue(expr, acc);
+        // scalar binding. Mirrors the TS member-read use semantics, plus a
+        // member-read site for the innermost identifier-rooted access.
+        this.walkChain(node, acc, false);
         return;
       }
       default:
@@ -465,6 +493,133 @@ export class CsharpHarvester {
           if (c) this.walkValue(c, acc);
         }
     }
+  }
+
+  // ── taint-site harvest (#2195 U6) ────────────────────────────────────────
+
+  /**
+   * When `value`'s root (after stripping parens) is an invocation/creation
+   * node, remember that its site should carry `resultDefs: defs` — consumed by
+   * {@link visitCall} once the value walk reaches the node.
+   */
+  private registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
+    if (defs.length === 0) return;
+    const root = this.unwrapLvalue(value);
+    if (root.type === 'invocation_expression' || root.type === 'object_creation_expression') {
+      this.resultDefTargets.set(root.id, [...defs]);
+    }
+  }
+
+  /**
+   * Explicit invocation / object-creation handler: records a call site (callee
+   * path, receiver, per-arg occurrence entries, result defs) while reproducing
+   * EXACTLY the uses the old default descent recorded. C# wraps each argument in
+   * an `argument` node; `new Foo(...)` reads the `type` field as the callee.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator, kind: 'call' | 'new'): void {
+    const calleeNode = node.childForFieldName(kind === 'new' ? 'type' : 'function');
+    const argsNode = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite(kind);
+    acc.pushFrame(siteIdx);
+    let calleePath: string | undefined;
+    if (calleeNode) {
+      const callee = this.unwrapLvalue(calleeNode);
+      if (callee.type === 'identifier') {
+        // For a `new Foo(...)`, the `type` is a type name, not a scalar
+        // binding — record neither a use nor an occurrence for it; for a bare
+        // call the callee name is a statement-level use but not an occurrence.
+        if (kind === 'call') acc.addUseWithoutOccurrence(this.resolve(callee));
+        calleePath = callee.text;
+      } else if (callee.type === 'member_access_expression') {
+        // skipFinalRead: the final access IS the callee, carried by the path.
+        // A static dotted path (`System.Console.WriteLine(...)`) parses as a
+        // member_access_expression chain too, so this one branch covers both
+        // instance and static dotted callees.
+        const chain = this.walkChain(callee, acc, true);
+        calleePath = chain.path;
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        this.walkValue(callee, acc);
+      }
+      if (calleePath !== undefined) acc.setSiteCallee(siteIdx, calleePath);
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    if (argsNode) {
+      let pos = 0;
+      for (let i = 0; i < argsNode.namedChildCount; i++) {
+        const arg = argsNode.namedChild(i);
+        // C# wraps each value in an `argument` node; the value is the inner
+        // expression (a named argument `name: x` exposes the label through the
+        // `name` field — skip it so `x` is what flows).
+        if (!arg || arg.type === 'comment') continue;
+        acc.setFrameArg(pos);
+        const value = arg.type === 'argument' ? this.argumentValue(arg) : arg;
+        if (value) this.walkValue(value, acc);
+        pos++;
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * The value expression inside an `argument` node. A named argument
+   * (`name: x`) carries the label on the `name` field and the value as a
+   * sibling; a positional argument is just the value. Returns the last named
+   * child that is not the `name`-field label (and skips `ref`/`out`/`in`
+   * modifier keywords, which are anonymous tokens, not named children).
+   */
+  private argumentValue(arg: SyntaxNode): SyntaxNode | undefined {
+    const label = arg.childForFieldName('name');
+    for (let i = arg.namedChildCount - 1; i >= 0; i--) {
+      const c = arg.namedChild(i);
+      if (c && c.id !== label?.id) return c;
+    }
+    return undefined;
+  }
+
+  /**
+   * Member chain walk shared by value position and callee position. Records the
+   * chain-root identifier as a use (identical to the old default descent), plus
+   * at most ONE member-read site — the INNERMOST access — when the root is an
+   * identifier; `skipFinalRead` suppresses it when that access is the callee.
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapLvalue(node);
+    for (;;) {
+      if (cur.type === 'member_access_expression') {
+        const name = cur.childForFieldName('name');
+        accesses.unshift(name?.text ?? '');
+        const expr = cur.childForFieldName('expression');
+        if (!expr) break;
+        cur = this.unwrapLvalue(expr);
+      } else {
+        break;
+      }
+    }
+    let rootIdx: number | undefined;
+    let rootSegment: string | undefined;
+    if (cur.type === 'identifier') {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+      rootSegment = cur.text;
+    } else {
+      this.walkValue(cur, acc);
+    }
+    const innermost = accesses[0];
+    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
+      acc.addMemberRead(rootIdx, innermost);
+    }
+    const path =
+      rootSegment !== undefined && accesses.every((a) => a !== '')
+        ? [rootSegment, ...accesses].join('.')
+        : undefined;
+    return { path, rootIdx };
   }
 
   /** The initializer value of a `variable_declarator` — the named child after `name`. */
@@ -499,45 +654,9 @@ export class CsharpHarvester {
   }
 }
 
-/** Ordered, deduplicating def/use collector for one statement record. */
-class FactAccumulator {
-  private readonly defs: number[] = [];
-  private readonly uses: number[] = [];
-  private readonly mayDefs: number[] = [];
-  private readonly defSeen = new Set<number>();
-  private readonly useSeen = new Set<number>();
-  private readonly mayDefSeen = new Set<number>();
-
-  constructor(private readonly line: number) {}
-
-  addDef(idx: number): void {
-    if (this.defSeen.has(idx)) return;
-    this.defSeen.add(idx);
-    this.defs.push(idx);
-  }
-
-  addMayDef(idx: number): void {
-    if (this.mayDefSeen.has(idx)) return;
-    this.mayDefSeen.add(idx);
-    this.mayDefs.push(idx);
-  }
-
-  addUse(idx: number): void {
-    if (this.useSeen.has(idx)) return;
-    this.useSeen.add(idx);
-    this.uses.push(idx);
-  }
-
-  defCount(): number {
-    return this.defs.length + this.mayDefs.length;
-  }
-
-  finish(): StatementFacts {
-    return {
-      line: this.line,
-      defs: this.defs,
-      uses: this.uses,
-      ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
-    };
-  }
-}
+/**
+ * Ordered, deduplicating def/use + call-site collector for one statement record.
+ * The shared {@link CallSiteFactAccumulator} carries the def/use machinery the
+ * old local class had, plus the taint-site harvest (#2195 U6).
+ */
+const FactAccumulator = CallSiteFactAccumulator;

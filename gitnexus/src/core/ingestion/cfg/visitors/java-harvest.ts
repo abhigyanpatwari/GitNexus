@@ -43,6 +43,13 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
+import { CallSiteFactAccumulator } from './call-site-harvest.js';
+
+/**
+ * The per-statement def/use + call-site collector, aliased to the shared
+ * {@link CallSiteFactAccumulator} (one name for the value and the type).
+ */
+type FactAccumulator = CallSiteFactAccumulator;
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -89,6 +96,12 @@ export class JavaHarvester {
   private readonly nearestScopeCache = new Map<number, Scope>();
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * Call/new node id → bindings whose declarator/assignment VALUE is exactly
+   * that call (#2195 U6). Registered before the value walk, consumed by
+   * {@link visitCall} (mirrors the TS harvester's `resultDefTargets`).
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -384,7 +397,11 @@ export class JavaHarvester {
           // Only an INITIALIZED declarator writes (`int x = e;`). A bare
           // `int x;` is not a def (it writes nothing at runtime), matching the
           // TS bare-`var` rule.
-          if (name && value) this.def(name, acc);
+          if (name && value) {
+            const snap = acc.defSnapshot();
+            this.def(name, acc);
+            this.registerResultDefs(value, acc.defsSince(snap));
+          }
           if (value) this.walkValue(value, acc);
         }
         return;
@@ -396,8 +413,10 @@ export class JavaHarvester {
         if (left) {
           const lv = this.unwrapLvalue(left);
           if (lv.type === 'identifier') {
+            const snap = acc.defSnapshot();
             this.def(lv, acc);
             if (op !== '=') this.use(lv, acc); // compound assign reads too
+            if (op === '=' && right) this.registerResultDefs(right, acc.defsSince(snap));
           } else {
             this.walkValue(lv, acc); // field/array target — uses only
           }
@@ -439,11 +458,20 @@ export class JavaHarvester {
         if (alt) this.conditional(() => this.walkValue(alt, acc));
         return;
       }
+      case 'method_invocation':
+        // #2195 U6: explicit case (previously default-descended) — same uses,
+        // plus a taint-site record. Defs/uses stay byte-identical.
+        this.visitCall(node, acc);
+        return;
+      case 'object_creation_expression':
+        // `new Foo(x)` — constructor call site (`type` field is the callee).
+        this.visitNew(node, acc);
+        return;
       case 'field_access': {
         // `a.b` — value read of the object root only; the field name is not a
-        // scalar binding. Mirrors the TS member-read use semantics.
-        const obj = node.childForFieldName('object');
-        if (obj) this.walkValue(obj, acc);
+        // scalar binding. Mirrors the TS member-read use semantics, plus a
+        // member-read site for the innermost identifier-rooted access.
+        this.walkChain(node, acc, false);
         return;
       }
       default:
@@ -452,6 +480,134 @@ export class JavaHarvester {
           if (c) this.walkValue(c, acc);
         }
     }
+  }
+
+  // ── taint-site harvest (#2195 U6) ────────────────────────────────────────
+
+  /**
+   * When `value`'s root (after stripping parens) is a method-invocation /
+   * object-creation node, remember its site should carry `resultDefs: defs`.
+   */
+  private registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
+    if (defs.length === 0) return;
+    const root = this.unwrapLvalue(value);
+    if (root.type === 'method_invocation' || root.type === 'object_creation_expression') {
+      this.resultDefTargets.set(root.id, [...defs]);
+    }
+  }
+
+  /**
+   * Explicit `method_invocation` handler. Unlike a member-chain callee, Java
+   * carries the method NAME on the `name` field and the receiver on a sibling
+   * `object` field (`db.query(x)` ⇒ object `db`, name `query`); a bare call
+   * (`exec(x)`) has no `object`. Reproduces EXACTLY the uses the old default
+   * descent recorded (object root + arguments) and adds the call site.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const objectNode = node.childForFieldName('object');
+    const nameNode = node.childForFieldName('name');
+    const argsNode = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite('call');
+    acc.pushFrame(siteIdx);
+    let receiverPath: string | undefined;
+    if (objectNode) {
+      // The receiver is a value read (object chain root) — record its uses and
+      // the member-read sites, and capture its dotted path + binding root.
+      const chain = this.walkChain(objectNode, acc, false);
+      receiverPath = chain.path;
+      if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+    }
+    if (nameNode) {
+      // The method NAME was a (synthetic) statement-level use under the old
+      // default descent — preserve it byte-identically, but never as a value
+      // occurrence in an enclosing argument (`exec(escape(x))` must not put the
+      // `escape` name into exec's arg 0).
+      acc.addUseWithoutOccurrence(this.resolve(nameNode));
+      const callee =
+        receiverPath !== undefined ? `${receiverPath}.${nameNode.text}` : nameNode.text;
+      acc.setSiteCallee(siteIdx, callee);
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    this.walkArgs(argsNode, acc);
+    acc.popFrame();
+  }
+
+  /** Explicit `object_creation_expression` (`new Foo(x)`) handler. */
+  private visitNew(node: SyntaxNode, acc: FactAccumulator): void {
+    const typeNode = node.childForFieldName('type');
+    const argsNode = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite('new');
+    acc.pushFrame(siteIdx);
+    if (typeNode) {
+      // The type name is not a scalar binding — record it only as the callee
+      // path, never a use/occurrence (matches the type-position semantics).
+      acc.setSiteCallee(siteIdx, typeNode.text.replace(/\s+/g, ''));
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    this.walkArgs(argsNode, acc);
+    acc.popFrame();
+  }
+
+  /** Walk an `argument_list`, tagging each positional argument for occurrences. */
+  private walkArgs(argsNode: SyntaxNode | null, acc: FactAccumulator): void {
+    if (!argsNode) return;
+    let pos = 0;
+    for (let i = 0; i < argsNode.namedChildCount; i++) {
+      const arg = argsNode.namedChild(i);
+      if (!arg || COMMENT_TYPES.has(arg.type)) continue;
+      acc.setFrameArg(pos);
+      this.walkValue(arg, acc);
+      pos++;
+    }
+  }
+
+  /**
+   * `field_access` chain walk shared by value position and the method-invocation
+   * receiver. Records the chain-root identifier as a use (identical to the old
+   * default descent) plus at most ONE member-read site — the INNERMOST access —
+   * when the root is an identifier; `skipFinalRead` suppresses it when that
+   * access is the callee (never the case for `field_access`, which is value-only).
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapLvalue(node);
+    for (;;) {
+      if (cur.type === 'field_access') {
+        const field = cur.childForFieldName('field');
+        accesses.unshift(field?.text ?? '');
+        const obj = cur.childForFieldName('object');
+        if (!obj) break;
+        cur = this.unwrapLvalue(obj);
+      } else {
+        break;
+      }
+    }
+    let rootIdx: number | undefined;
+    let rootSegment: string | undefined;
+    if (cur.type === 'identifier') {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+      rootSegment = cur.text;
+    } else if (cur.type === 'this' || cur.type === 'super') {
+      rootSegment = cur.text; // `this`/`super` are path segments, never bind
+    } else {
+      this.walkValue(cur, acc);
+    }
+    const innermost = accesses[0];
+    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
+      acc.addMemberRead(rootIdx, innermost);
+    }
+    const path =
+      rootSegment !== undefined && accesses.every((a) => a !== '')
+        ? [rootSegment, ...accesses].join('.')
+        : undefined;
+    return { path, rootIdx };
   }
 
   /** The operand identifier of an `update_expression` (`x++` / `--x`). */
@@ -464,49 +620,9 @@ export class JavaHarvester {
   }
 }
 
-/** Ordered, deduplicating def/use collector for one statement record. */
-class FactAccumulator {
-  private readonly defs: number[] = [];
-  private readonly uses: number[] = [];
-  private readonly mayDefs: number[] = [];
-  private readonly defSeen = new Set<number>();
-  private readonly useSeen = new Set<number>();
-  private readonly mayDefSeen = new Set<number>();
-
-  constructor(private readonly line: number) {}
-
-  addDef(idx: number): void {
-    if (this.defSeen.has(idx)) return;
-    this.defSeen.add(idx);
-    this.defs.push(idx);
-  }
-
-  addMayDef(idx: number): void {
-    if (this.mayDefSeen.has(idx)) return;
-    this.mayDefSeen.add(idx);
-    this.mayDefs.push(idx);
-  }
-
-  addUse(idx: number): void {
-    if (this.useSeen.has(idx)) return;
-    this.useSeen.add(idx);
-    this.uses.push(idx);
-  }
-
-  defCount(): number {
-    return this.defs.length + this.mayDefs.length;
-  }
-
-  useCount(): number {
-    return this.uses.length;
-  }
-
-  finish(): StatementFacts {
-    return {
-      line: this.line,
-      defs: this.defs,
-      uses: this.uses,
-      ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
-    };
-  }
-}
+/**
+ * Ordered, deduplicating def/use + call-site collector for one statement record.
+ * The shared {@link CallSiteFactAccumulator} carries the def/use machinery the
+ * old local class had, plus the taint-site harvest (#2195 U6).
+ */
+const FactAccumulator = CallSiteFactAccumulator;

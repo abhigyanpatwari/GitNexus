@@ -67,6 +67,13 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
+import { CallSiteFactAccumulator } from './call-site-harvest.js';
+
+/**
+ * The per-statement def/use + call-site collector, aliased to the shared
+ * {@link CallSiteFactAccumulator} (one name for the value and the type).
+ */
+type FactAccumulator = CallSiteFactAccumulator;
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -109,6 +116,12 @@ export class GoHarvester {
   private readonly nearestScopeCache = new Map<number, Scope>();
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * Call node id → bindings whose declaration/assignment VALUE is exactly that
+   * call (#2195 U6). Registered before the value walk, consumed by
+   * {@link visitCall} (mirrors the TS harvester's `resultDefTargets`).
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -474,6 +487,10 @@ export class GoHarvester {
       case 'short_var_declaration': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
+        // Register result-defs BEFORE walking the value so the nested call site
+        // (reached during the value walk) carries them — single-target only
+        // (`x := f(a)`; a multi-target `a, b := f()` attaches nothing).
+        if (left && right) this.registerListResultDefs(left, right);
         if (right) this.walkValue(right, acc);
         if (left) {
           for (let i = 0; i < left.namedChildCount; i++) {
@@ -486,6 +503,7 @@ export class GoHarvester {
       case 'var_declaration': {
         for (const spec of this.varSpecs(node)) {
           const value = spec.childForFieldName('value');
+          if (value && this.singleSpecName(spec)) this.registerResultDefs(value, [spec]);
           if (value) this.walkValue(value, acc);
           if (value) {
             for (let i = 0; i < spec.namedChildCount; i++) {
@@ -500,6 +518,9 @@ export class GoHarvester {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         const op = node.childForFieldName('operator')?.text ?? '=';
+        // Plain `x = f(a)` attaches `resultDefs: [x]`; a compound `x += f(a)`
+        // does not (the prior value flows in too).
+        if (op === '=' && left && right) this.registerListResultDefs(left, right);
         if (right) this.walkValue(right, acc);
         if (left) this.defLeftList(left, acc, op !== '=');
         return;
@@ -528,11 +549,17 @@ export class GoHarvester {
         }
         return;
       }
+      case 'call_expression':
+        // #2195 U6: explicit case (previously default-descended) — same uses,
+        // plus a taint-site record. Go has no `new` (constructor calls are plain
+        // `call_expression`s). Defs/uses stay byte-identical.
+        this.visitCall(node, acc);
+        return;
       case 'selector_expression': {
         // `a.b` — value read of the operand root only; the field name is not a
-        // scalar binding. Mirrors the TS member-read use semantics.
-        const operand = node.childForFieldName('operand');
-        if (operand) this.walkValue(operand, acc);
+        // scalar binding. Mirrors the TS member-read use semantics, plus a
+        // member-read site for the innermost identifier-rooted access.
+        this.walkChain(node, acc, false);
         return;
       }
       default:
@@ -542,47 +569,177 @@ export class GoHarvester {
         }
     }
   }
+
+  // ── taint-site harvest (#2195 U6) ────────────────────────────────────────
+
+  /** The single `var_spec` name when the spec declares exactly one name, else undefined. */
+  private singleSpecName(spec: SyntaxNode): SyntaxNode | undefined {
+    const names: SyntaxNode[] = [];
+    for (let i = 0; i < spec.namedChildCount; i++) {
+      const c = spec.namedChild(i);
+      if (c?.type === 'identifier') names.push(c);
+    }
+    return names.length === 1 ? names[0] : undefined;
+  }
+
+  /**
+   * Register result-defs for a single-target LHS `expression_list` → RHS
+   * `expression_list` whose sole element is a call. `a, b := f()` (multi-target)
+   * and `x, y := f(), g()` attach nothing — the per-target mapping is ambiguous,
+   * matching the TS harvester's per-declarator restriction.
+   */
+  private registerListResultDefs(left: SyntaxNode, right: SyntaxNode): void {
+    const leftNames = this.listIdentifiers(left);
+    const rightVals = this.listElements(right);
+    if (leftNames.length !== 1 || rightVals.length !== 1) return;
+    this.registerResultDefs(rightVals[0], [leftNames[0]]);
+  }
+
+  /** Identifier elements of an `expression_list` (`a, b` ⇒ [a, b]). */
+  private listIdentifiers(list: SyntaxNode): SyntaxNode[] {
+    const out: SyntaxNode[] = [];
+    for (let i = 0; i < list.namedChildCount; i++) {
+      const c = list.namedChild(i);
+      if (c?.type === 'identifier') out.push(c);
+    }
+    return out;
+  }
+
+  /** Named elements of an `expression_list` (or the node itself if not a list). */
+  private listElements(list: SyntaxNode): SyntaxNode[] {
+    if (list.type !== 'expression_list') return [list];
+    const out: SyntaxNode[] = [];
+    for (let i = 0; i < list.namedChildCount; i++) {
+      const c = list.namedChild(i);
+      if (c) out.push(c);
+    }
+    return out;
+  }
+
+  /**
+   * When `value`'s root (after stripping parens) is a call, remember its site
+   * should carry `resultDefs` — the binding indices of `targets` (def-position
+   * identifiers, resolved against the completed scope tree). Consumed by
+   * {@link visitCall} once the value walk reaches the node.
+   */
+  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
+    const root = this.unwrapLvalue(value);
+    if (root.type !== 'call_expression') return;
+    const defs: number[] = [];
+    for (const target of targets) {
+      // A `var_spec` carries its name(s) as children; an identifier resolves
+      // directly. Skip the blank identifier (`_`), which binds nothing.
+      const names =
+        target.type === 'identifier' ? [target] : this.listIdentifiers(target);
+      for (const n of names) {
+        if (n.text === '_') continue;
+        defs.push(this.resolve(n));
+      }
+    }
+    if (defs.length > 0) this.resultDefTargets.set(root.id, defs);
+  }
+
+  /**
+   * Explicit `call_expression` handler. Records a call site (callee path,
+   * receiver, per-arg occurrence entries, result defs) while reproducing EXACTLY
+   * the uses the old default descent recorded (callee chain root + arguments).
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const calleeNode = node.childForFieldName('function');
+    const argsNode = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite('call');
+    acc.pushFrame(siteIdx);
+    let calleePath: string | undefined;
+    if (calleeNode) {
+      const callee = this.unwrapLvalue(calleeNode);
+      if (callee.type === 'identifier') {
+        if (callee.text !== '_') acc.addUseWithoutOccurrence(this.resolve(callee));
+        calleePath = callee.text;
+      } else if (callee.type === 'selector_expression') {
+        // skipFinalRead: the final `.field` IS the callee, carried by the path.
+        const chain = this.walkChain(callee, acc, true);
+        calleePath = chain.path;
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        // Call-rooted chains, conversions (`T(x)`), parenthesized funcs — the
+        // walk still records uses and nested sites.
+        this.walkValue(callee, acc);
+      }
+      if (calleePath !== undefined) acc.setSiteCallee(siteIdx, calleePath);
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    if (argsNode) {
+      let pos = 0;
+      for (let i = 0; i < argsNode.namedChildCount; i++) {
+        const arg = argsNode.namedChild(i);
+        if (!arg || arg.type === 'comment') continue;
+        // `f(xs...)` — a variadic spread. Mark the first spread position so the
+        // matcher degrades soundly; the inner value still walks for occurrences.
+        if (arg.type === 'variadic_argument') {
+          acc.setFrameArg(pos);
+          acc.setSiteSpread(siteIdx, pos);
+          const inner = arg.namedChild(0);
+          if (inner) this.walkValue(inner, acc);
+        } else {
+          acc.setFrameArg(pos);
+          this.walkValue(arg, acc);
+        }
+        pos++;
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * `selector_expression` chain walk shared by value position and callee
+   * position. Records the chain-root identifier as a use (identical to the old
+   * default descent) plus at most ONE member-read site — the INNERMOST access —
+   * when the root is an identifier; `skipFinalRead` suppresses it when that
+   * access is the callee (carried by the dotted path instead).
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapLvalue(node);
+    for (;;) {
+      if (cur.type === 'selector_expression') {
+        const field = cur.childForFieldName('field');
+        accesses.unshift(field?.text ?? '');
+        const operand = cur.childForFieldName('operand');
+        if (!operand) break;
+        cur = this.unwrapLvalue(operand);
+      } else {
+        break;
+      }
+    }
+    let rootIdx: number | undefined;
+    let rootSegment: string | undefined;
+    if (cur.type === 'identifier' && cur.text !== '_') {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+      rootSegment = cur.text;
+    } else {
+      this.walkValue(cur, acc);
+    }
+    const innermost = accesses[0];
+    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
+      acc.addMemberRead(rootIdx, innermost);
+    }
+    const path =
+      rootSegment !== undefined && accesses.every((a) => a !== '')
+        ? [rootSegment, ...accesses].join('.')
+        : undefined;
+    return { path, rootIdx };
+  }
 }
 
-/** Ordered, deduplicating def/use collector for one statement record. */
-class FactAccumulator {
-  private readonly defs: number[] = [];
-  private readonly uses: number[] = [];
-  private readonly mayDefs: number[] = [];
-  private readonly defSeen = new Set<number>();
-  private readonly useSeen = new Set<number>();
-  private readonly mayDefSeen = new Set<number>();
-
-  constructor(private readonly line: number) {}
-
-  addDef(idx: number): void {
-    if (this.defSeen.has(idx)) return;
-    this.defSeen.add(idx);
-    this.defs.push(idx);
-  }
-
-  addMayDef(idx: number): void {
-    if (this.mayDefSeen.has(idx)) return;
-    this.mayDefSeen.add(idx);
-    this.mayDefs.push(idx);
-  }
-
-  addUse(idx: number): void {
-    if (this.useSeen.has(idx)) return;
-    this.useSeen.add(idx);
-    this.uses.push(idx);
-  }
-
-  defCount(): number {
-    return this.defs.length + this.mayDefs.length;
-  }
-
-  finish(): StatementFacts {
-    return {
-      line: this.line,
-      defs: this.defs,
-      uses: this.uses,
-      ...(this.mayDefs.length > 0 ? { mayDefs: this.mayDefs } : {}),
-    };
-  }
-}
+/**
+ * Ordered, deduplicating def/use + call-site collector for one statement record.
+ * The shared {@link CallSiteFactAccumulator} carries the def/use machinery the
+ * old local class had, plus the taint-site harvest (#2195 U6).
+ */
+const FactAccumulator = CallSiteFactAccumulator;
