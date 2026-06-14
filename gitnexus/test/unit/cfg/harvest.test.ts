@@ -710,3 +710,71 @@ describe('M3 U1 — taint-site harvest: templates, callbacks, statement granular
     expect(execSite.args).toEqual([[bindingIdx(cfg, 'x')]]);
   });
 });
+
+import {
+  CallSiteFactAccumulator,
+  DEFAULT_PDG_MAX_SITES_PER_STATEMENT as MAX_SITES,
+} from '../../../src/core/ingestion/cfg/visitors/call-site-harvest.js';
+
+describe('U11 — per-statement site cap (defensive bound on harvested sites[])', () => {
+  it('records every site for a statement below the cap (unchanged)', () => {
+    const acc = new CallSiteFactAccumulator(1);
+    for (let i = 0; i < 5; i++) acc.setSiteCallee(acc.openCallSite('call'), `f${i}`);
+    const facts = acc.finish();
+    expect(facts.sites).toHaveLength(5);
+    expect(acc.sitesTruncated).toBe(false);
+    expect(facts.sites!.map((s) => s.callee)).toEqual(['f0', 'f1', 'f2', 'f3', 'f4']);
+  });
+
+  it('caps a pathological statement at exactly the limit and flags truncation', () => {
+    const acc = new CallSiteFactAccumulator(1);
+    const indices: number[] = [];
+    for (let i = 0; i < MAX_SITES + 50; i++) {
+      const idx = acc.openCallSite('call');
+      acc.setSiteCallee(idx, `f${i}`);
+      indices.push(idx);
+    }
+    const facts = acc.finish();
+    // exactly the cap recorded — not the requested over-count, not unbounded
+    expect(facts.sites).toHaveLength(MAX_SITES);
+    expect(acc.sitesTruncated).toBe(true);
+    // under-cap opens get 0..cap-1; the first over-cap open gets the -1 sentinel
+    expect(indices[MAX_SITES - 1]).toBe(MAX_SITES - 1);
+    expect(indices[MAX_SITES]).toBe(-1);
+    // KEPT sites stay fully intact (no clobber from the dropped tail)
+    expect(facts.sites![0].callee).toBe('f0');
+    expect(facts.sites![MAX_SITES - 1].callee).toBe(`f${MAX_SITES - 1}`);
+  });
+
+  it('member-reads past the cap are dropped, not unbounded', () => {
+    const acc = new CallSiteFactAccumulator(1);
+    for (let i = 0; i < MAX_SITES; i++) acc.openCallSite('call'); // fill to the cap
+    acc.addMemberRead(0, 'body'); // would-be site #cap+1
+    expect(acc.finish().sites).toHaveLength(MAX_SITES);
+    expect(acc.sitesTruncated).toBe(true);
+  });
+
+  it('occurrence machinery stays sound when a nested frame is cap-dropped', () => {
+    const acc = new CallSiteFactAccumulator(1);
+    const outer = acc.openCallSite('call'); // a KEPT outer sink site
+    acc.setSiteCallee(outer, 'sink');
+    acc.pushFrame(outer);
+    acc.setFrameArg(0);
+    // Saturate the remaining budget so the next openCallSite is cap-dropped.
+    for (let i = 1; i < MAX_SITES; i++) acc.openCallSite('call');
+    const nested = acc.openCallSite('call'); // over cap → -1 sentinel
+    expect(nested).toBe(-1);
+    acc.setSiteCallee(nested, 'dropped'); // must no-op, not throw
+    acc.pushFrame(nested);
+    acc.setFrameArg(0);
+    acc.addUse(7); // a use inside the dropped nested call — must not crash
+    acc.popFrame();
+    acc.popFrame();
+    const facts = acc.finish();
+    expect(facts.uses).toContain(7); // still recorded statement-level
+    // outer (kept) fanned the use in as a PLAIN occurrence — no dangling -1 via
+    const flat = (facts.sites![outer].args ?? []).flat();
+    expect(flat).toContain(7);
+    expect(flat.some((e) => Array.isArray(e) && e[1] === -1)).toBe(false);
+  });
+});

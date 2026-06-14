@@ -117,6 +117,18 @@ export class DefUseAccumulator {
 }
 
 /**
+ * Defensive per-statement cap on harvested taint `sites` (#2195 U11). A real
+ * statement carries a handful of call / member-read sites; this only bounds a
+ * pathological or machine-generated statement (e.g. hundreds of nested calls)
+ * from producing an unbounded site list. Mirrors the PDG edge/fact caps' style
+ * (a generous-but-finite limit, checked before each push). Overflow is silent
+ * but observable via {@link CallSiteFactAccumulator.sitesTruncated}; the first
+ * `DEFAULT_PDG_MAX_SITES_PER_STATEMENT` sites are kept fully intact (callee,
+ * args, parent), the over-cap tail is dropped.
+ */
+export const DEFAULT_PDG_MAX_SITES_PER_STATEMENT = 512;
+
+/**
  * Ordered, deduplicating def/use collector for one statement record, PLUS the
  * call-site harvest machinery (#2195 U6). A drop-in superset of the simple
  * def/use accumulator the C-family harvesters used before the substrate landed
@@ -137,8 +149,15 @@ export class CallSiteFactAccumulator {
   private readonly memberReadKeys = new Set<string>();
   /** Stack of open call/new sites — the occurrence fan-out targets. */
   private readonly frames: SiteFrame[] = [];
+  /** Set once the per-statement site cap is hit; over-cap sites are dropped. */
+  private _sitesTruncated = false;
 
   constructor(private readonly line: number) {}
+
+  /** True iff this statement hit {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}. */
+  get sitesTruncated(): boolean {
+    return this._sitesTruncated;
+  }
 
   addDef(idx: number): void {
     if (this.defSeen.has(idx)) return;
@@ -190,8 +209,17 @@ export class CallSiteFactAccumulator {
     return [...this.defs.slice(snap[0]), ...this.mayDefs.slice(snap[1])];
   }
 
-  /** Open a call/new site; parent = innermost enclosing argument position. */
+  /**
+   * Open a call/new site; parent = innermost enclosing argument position.
+   * Returns the new site index, or -1 when the per-statement site cap is hit
+   * (the caller threads -1 through `pushFrame`/`setSite*`, all of which no-op on
+   * a sentinel index — see {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}).
+   */
   openCallSite(kind: 'call' | 'new'): number {
+    if (this.sites.length >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
+      this._sitesTruncated = true;
+      return -1;
+    }
     const site: MutableSite = { kind };
     const parent = this.innermostArgPosition();
     if (parent) site.parent = parent;
@@ -232,20 +260,23 @@ export class CallSiteFactAccumulator {
   }
 
   setSiteCallee(siteIdx: number, callee: string): void {
-    this.sites[siteIdx].callee = callee;
+    const site = this.sites[siteIdx];
+    if (site) site.callee = callee;
   }
 
   setSiteReceiver(siteIdx: number, receiver: number): void {
-    this.sites[siteIdx].receiver = receiver;
+    const site = this.sites[siteIdx];
+    if (site) site.receiver = receiver;
   }
 
   setSiteResultDefs(siteIdx: number, resultDefs: readonly number[]): void {
-    this.sites[siteIdx].resultDefs = [...resultDefs];
+    const site = this.sites[siteIdx];
+    if (site) site.resultDefs = [...resultDefs];
   }
 
   setSiteSpread(siteIdx: number, firstSpreadArg: number): void {
     const site = this.sites[siteIdx];
-    if (site.spread === undefined) site.spread = firstSpreadArg;
+    if (site && site.spread === undefined) site.spread = firstSpreadArg;
   }
 
   /**
@@ -257,6 +288,10 @@ export class CallSiteFactAccumulator {
     const parent = this.innermostArgPosition();
     const dedupKey = `${object}|${property}|${parent ? `${parent[0]}:${parent[1]}` : 'top'}`;
     if (this.memberReadKeys.has(dedupKey)) return;
+    if (this.sites.length >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
+      this._sitesTruncated = true;
+      return;
+    }
     this.memberReadKeys.add(dedupKey);
     const site: MutableSite = { kind: 'member-read' };
     if (parent) site.parent = parent;
@@ -283,7 +318,9 @@ export class CallSiteFactAccumulator {
     for (let i = this.frames.length - 1; i >= 0; i--) {
       const f = this.frames[i];
       if (f.argIdx < 0) continue;
-      const via = i + 1 < this.frames.length ? this.frames[i + 1].siteIdx : undefined;
+      // A nested frame whose site was cap-dropped (siteIdx -1) is not a real via.
+      const next = i + 1 < this.frames.length ? this.frames[i + 1].siteIdx : undefined;
+      const via = next !== undefined && next >= 0 ? next : undefined;
       this.pushArgEntry(f.siteIdx, f.argIdx, idx, via);
     }
   }
@@ -295,6 +332,7 @@ export class CallSiteFactAccumulator {
     via: number | undefined,
   ): void {
     const site = this.sites[siteIdx];
+    if (!site) return; // cap-dropped frame (siteIdx -1) — no target to fan into
     const args = (site.args ??= []);
     while (args.length <= argIdx) args.push([]);
     const list = args[argIdx];
