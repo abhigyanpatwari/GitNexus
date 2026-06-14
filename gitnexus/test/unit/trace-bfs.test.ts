@@ -94,14 +94,6 @@ const SYMBOL_B = {
   startLine: 1,
   endLine: 5,
 };
-const SYMBOL_C = {
-  id: 'func:C',
-  name: 'C',
-  type: 'Function',
-  filePath: 'src/c.ts',
-  startLine: 1,
-  endLine: 8,
-};
 
 function makeResolveMock(
   fromRows: any[],
@@ -400,14 +392,6 @@ describe('trace: BFS core', () => {
   }, 5000);
 
   it('respects maxDepth limit', async () => {
-    const SYMBOL_D = {
-      id: 'func:D',
-      name: 'D',
-      type: 'Function',
-      filePath: 'src/d.ts',
-      startLine: 1,
-      endLine: 5,
-    };
     const SYMBOL_E = {
       id: 'func:E',
       name: 'E',
